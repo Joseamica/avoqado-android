@@ -18,6 +18,18 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface ApiService {
+    @retrofit2.http.Headers("X-Avoqado-Background: 1")
+    @retrofit2.http.POST("mobile/venues/{venueId}/sync/intents")
+    fun syncIntentsAdmittedQ16(@retrofit2.http.Path("venueId") venueId: String,
+        @retrofit2.http.Body body: com.avoqado.pos.core.data.sync.SyncIntentsRequest,
+        @retrofit2.http.Tag priceAdmissionQ16: Any? = null): retrofit2.Call<com.avoqado.pos.core.data.sync.SyncIntentsResponse>
+
+    /** Readonly: never runs the reducer or creates an order. */
+    @retrofit2.http.Headers("X-Avoqado-Background: 1")
+    @retrofit2.http.POST("mobile/venues/{venueId}/sync/recovery")
+    suspend fun recoverSyncQ16(@retrofit2.http.Path("venueId") venueId: String,
+        @retrofit2.http.Body body: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject
+
 
     // MARK: - Auth
 
@@ -258,6 +270,14 @@ interface ApiService {
 
     @GET("mobile/venues/{venueId}/tables")
     suspend fun getTables(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.TablesResponse
+
+    /** Plano en el POS (spec 2026-10-09 §3.2): la pregunta barata de cada 10 s. 404 = servidor viejo. */
+    @GET("mobile/venues/{venueId}/tables/version")
+    suspend fun getTablesVersion(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.TablesVersionResponse
+
+    /** Plano en el POS: áreas + elementos activos (las mesas viajan en /tables). */
+    @GET("mobile/venues/{venueId}/floor-plan")
+    suspend fun getFloorPlan(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.FloorPlanResponse
 
     @POST("mobile/venues/{venueId}/tables/{tableId}/open")
     suspend fun openTable(

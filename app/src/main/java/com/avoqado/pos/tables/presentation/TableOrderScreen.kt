@@ -67,6 +67,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,6 +111,11 @@ import com.avoqado.pos.core.util.aCentavos
  * pending course slots). "Pagar" hands off to the register's proven PAYING
  * seam; everything ordering-related lives here.
  */
+/** El toque real pasa por la guarda de la cuenta antes de abrir el flujo de pago. */
+internal suspend fun prepararPagoDeMesa(viewModel: TableOrderViewModel, onReady: () -> Unit) {
+    if (viewModel.preparePagar()) onReady()
+}
+
 @Composable
 fun TableOrderScreen(
     isTablet: Boolean,
@@ -123,8 +130,12 @@ fun TableOrderScreen(
     // onExit and popped the NavHost empty → blank screen).
     // Snapshot MUTABLE: colectar la sesión causaba double-pop, pero el selector
     // de cuenta necesita reemplazarlo al cambiar de cheque.
+    val pagarScope = rememberCoroutineScope()
+    var preparandoPago by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf(viewModel.tableSession.current()) }
     val check by viewModel.check.collectAsState()
+    val chequeAlDia by viewModel.chequeAlDia.collectAsState()
+    val preCuentaBlockedReason = chequeAlDia.let { viewModel.printPreBillBlockedReason }
     val splittableItems by viewModel.splittableItems.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
     val blockedNotice by viewModel.blockedNotice.collectAsState()
@@ -165,6 +176,7 @@ fun TableOrderScreen(
 
     val context = LocalContext.current
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
+    var notaDeLinea by remember { mutableStateOf<String?>(null) }
     var showSearch by remember { mutableStateOf(false) }
     // Square's right-panel tabs: Cuenta (the check) / Acciones (the catalog).
     var panelTab by remember { mutableStateOf(PanelTab.CUENTA) }
@@ -255,8 +267,7 @@ fun TableOrderScreen(
     fun requestExit() {
         if (pendingLines.isNotEmpty()) showDiscardDialog = true
         else {
-            viewModel.exitToFloor()
-            exitOnce()
+            if (viewModel.exitToFloor()) exitOnce()
         }
     }
     BackHandler { requestExit() }
@@ -295,9 +306,18 @@ fun TableOrderScreen(
         viewModel.sendRound()
     }
 
+    fun prepararPago(onReady: () -> Unit) {
+        if (preparandoPago) return
+        preparandoPago = true
+        pagarScope.launch {
+            try { prepararPagoDeMesa(viewModel, onReady) }
+            finally { preparandoPago = false }
+        }
+    }
+
     fun firePagar() {
         if (blockIfCannotPay()) return
-        if (viewModel.preparePagar()) {
+        prepararPago {
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
@@ -313,7 +333,7 @@ fun TableOrderScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         // Square: el header (regresar + mesa + comensales) vive en la COLUMNA
         // IZQUIERDA — el panel del cheque gana toda la altura en tablet.
         val contextBar: @Composable () -> Unit = {
@@ -400,6 +420,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
+                                onEditNote = { id -> if (!isSending && !blockIfReadOnly()) notaDeLinea = id },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
@@ -408,10 +429,12 @@ fun TableOrderScreen(
                                 onCourseMenu = { c, label -> courseMenuTarget = c to label },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
+                                payableTotalCents = viewModel.payableTotalCents,
+                                saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 onBlocked = { viewModel.showBlockedReason(it) },
-                                printBlockedReason = viewModel.printPreBillBlockedReason,
+                                printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onPagar = { firePagar() },
@@ -420,6 +443,7 @@ fun TableOrderScreen(
                             PanelTab.ACCIONES -> TableActionsPanel(
                                 hasPending = pendingLines.isNotEmpty(),
                                 hasSent = !check?.items.isNullOrEmpty(),
+                                printBlockedReason = preCuentaBlockedReason,
                                 // Separar SÍ funciona sin red: las líneas enviadas
                                 // offline se referencian por su externalId. Sin esto
                                 // el botón quedaba gris justo cuando más se necesita.
@@ -518,7 +542,7 @@ fun TableOrderScreen(
                     }
                 }
                 // Phone bottom bar → full-screen check
-                val totalCents = checkTotalCents(check) + viewModel.pendingTotalCents
+                val totalCents = viewModel.payableTotalCents
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -534,7 +558,7 @@ fun TableOrderScreen(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = centsDisplay(totalCents),
+                        text = if (viewModel.saldoDeMesaConocido) centsDisplay(totalCents) else "Saldo por confirmar",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.inverseOnSurface,
                     )
@@ -570,6 +594,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
+                                onEditNote = { id -> if (!isSending && !blockIfReadOnly()) notaDeLinea = id },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
@@ -578,10 +603,12 @@ fun TableOrderScreen(
                                 onCourseMenu = { c, label -> courseMenuTarget = c to label },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
+                                payableTotalCents = viewModel.payableTotalCents,
+                                saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 onBlocked = { viewModel.showBlockedReason(it) },
-                                printBlockedReason = viewModel.printPreBillBlockedReason,
+                                printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onPagar = { showPhoneCheck = false; firePagar() },
@@ -590,6 +617,7 @@ fun TableOrderScreen(
                             PanelTab.ACCIONES -> TableActionsPanel(
                                 hasPending = pendingLines.isNotEmpty(),
                                 hasSent = !check?.items.isNullOrEmpty(),
+                                printBlockedReason = preCuentaBlockedReason,
                                 // Separar SÍ funciona sin red: las líneas enviadas
                                 // offline se referencian por su externalId. Sin esto
                                 // el botón quedaba gris justo cuando más se necesita.
@@ -676,6 +704,18 @@ fun TableOrderScreen(
         orderId = active.orderId, onDismiss = { showPreparation = false })
     if (showUrgentPreparation) com.avoqado.pos.kds.presentation.PreparationServiceScreen(
         orderId = active.orderId, onDismiss = { showUrgentPreparation = false }, urgentSelection = true)
+    }
+
+    // Nota de una línea pendiente («sin aceite»): la misma hoja que el carrito de Mostrador.
+    // Si la línea ya se envió mientras la hoja estaba abierta, simplemente no se pinta.
+    notaDeLinea?.let { id -> pendingLines.firstOrNull { it.item.id == id } }?.let { linea ->
+        val id = linea.item.id
+        NotaDeLineaPendiente(
+            isTablet = isTablet,
+            nota = linea.item.itemNote.orEmpty(),
+            onGuardar = { viewModel.updatePendingNote(id, it); notaDeLinea = null },
+            onCerrar = { notaDeLinea = null },
+        )
     }
 
     // Product detail (modifiers/notes) — adds land on the SELECTED course.
@@ -1085,12 +1125,10 @@ fun TableOrderScreen(
             onPorArticulo = { showSplitModes = false; showSplitCheckDialog = true },
             onPartesIguales = {
                 showSplitModes = false
-                if (viewModel.preparePagar()) {
+                prepararPago {
                     paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
                     if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
                     showSplitImporte = true
-                } else {
-                    viewModel.showMessage("La cuenta no tiene cargos todavía")
                 }
             },
         )
@@ -1266,8 +1304,7 @@ fun TableOrderScreen(
                     text = "Descartar y salir",
                     onClick = {
                         showDiscardDialog = false
-                        viewModel.exitToFloor()
-                        exitOnce()
+                        if (viewModel.exitToFloor()) exitOnce()
                     },
                     fullWidth = true,
                     destructive = true,
@@ -1395,11 +1432,14 @@ internal fun TableCheckPanel(
     onAddCourse: () -> Unit,
     onUrgent: (() -> Unit)? = null,
     onRemovePending: (String) -> Unit,
+    onEditNote: (String) -> Unit = {},
     onCycleSeat: (String) -> Unit = {},
     onSentItemTap: (OrderDetailItem) -> Unit,
     onCourseMenu: (String?, String) -> Unit = { _, _ -> },
     pendingCount: Int,
     pendingTotalCents: Int,
+    payableTotalCents: Int,
+    saldoDeMesaConocido: Boolean,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1418,10 +1458,8 @@ internal fun TableCheckPanel(
 ) {
     val sentItems = check?.items.orEmpty()
     val hasPending = pendingLines.isNotEmpty()
-    // Las rondas offline aún no existen en el server: su importe se suma local
-    // para que el subtotal visible nunca mienta mientras esperan sync.
-    val queuedCents = queuedLines.sumOf { it.item.effectiveUnitPrice * it.item.quantity }
-    val subtotalCents = checkTotalCents(check) + pendingTotalCents + queuedCents
+    // Borrador en su tarjeta; Total/Pagar muestran sólo el saldo preparado por el VM.
+    val subtotalCents = payableTotalCents
     val itemCount = sentItems.sumOf { it.quantity } + pendingCount + queuedLines.sumOf { it.item.quantity }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1473,24 +1511,21 @@ internal fun TableCheckPanel(
                 onAddCourse = onAddCourse,
                 onUrgent = onUrgent,
                 onRemovePending = onRemovePending,
+                onEditNote = onEditNote,
                 onCycleSeat = onCycleSeat,
             )
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
             // Subtotal (N) + Total — Square shows both on the check card.
-            val sentSubtotalCents = check?.let {
-                val sub = kotlin.math.round(it.subtotal * 100).toInt()
-                if (sub > 0) sub else kotlin.math.round(it.total * 100).toInt()
-            } ?: 0
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
                 Text(
-                    text = "Subtotal ($itemCount)",
+                    text = "Subtotal (${articulosEnElSubtotal(check)})",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = centsDisplay(sentSubtotalCents + pendingTotalCents),
+                    text = textoSubtotalDeMesa(check),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -1537,7 +1572,7 @@ internal fun TableCheckPanel(
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = centsDisplay(subtotalCents),
+                    text = if (saldoDeMesaConocido) centsDisplay(subtotalCents) else "Saldo por confirmar",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -1615,7 +1650,7 @@ internal fun TableCheckPanel(
                     modifier = Modifier.weight(0.5f),
                 ) {
                     PrimaryButton(
-                        text = "Pagar ${centsDisplay(subtotalCents)}",
+                        text = if (saldoDeMesaConocido) "Pagar ${centsDisplay(subtotalCents)}" else "Pagar",
                         onClick = onPagar,
                         enabled = !sinCargos,
                         modifier = Modifier.fillMaxWidth(),
@@ -1757,6 +1792,7 @@ private fun PendingCard(
     onAddCourse: () -> Unit,
     onUrgent: (() -> Unit)? = null,
     onRemovePending: (String) -> Unit,
+    onEditNote: (String) -> Unit = {},
     onCycleSeat: (String) -> Unit = {},
 ) {
     val allCourses: List<String?> = (availableCourses.map { it.legacyCourse } + pendingLines.map { it.course }).distinct()
@@ -1807,11 +1843,26 @@ private fun PendingCard(
                         ) {
                             Text("${line.item.quantity}×", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                            Column(modifier = Modifier.weight(1f)) {
+                            // Los componentes de un combo viajan como paquete y su nota no llegaría: no se anotan.
+                            Column(modifier = Modifier.weight(1f).clickable(enabled = line.item.promotionInstanceId == null) { onEditNote(line.item.id) }) {
                                 Text(line.item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                line.item.itemNote?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        text = "Nota: $it",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFFF9500),
+                                    )
+                                }
                                 line.item.modifiersSummary?.let {
                                     Text(
                                         text = it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                if (line.item.isCortesia) {
+                                    Text(
+                                        text = "Cortesía" + (line.item.cortesiaReason?.let { " · $it" } ?: ""),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -2015,7 +2066,7 @@ private fun parseIsoMs(iso: String?): Long? {
 /** Hora del NEGOCIO, no la del aparato: una tablet con la zona mal puesta pintaría
  *  "Enviado a la cocina" con horas de diferencia. */
 private fun timeDisplay(epochMs: Long): String =
-    Instant.ofEpochMilli(epochMs).atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+    Instant.ofEpochMilli(epochMs).let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
         .format(DateTimeFormatter.ofPattern("HH:mm"))
 
 /** "0:45" elapsed since [iso] — same format the floor canvas uses. */
@@ -2093,13 +2144,36 @@ internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>
         }
         queuedLines.forEach { line ->
             Row(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${line.item.quantity}× ${line.item.name}" + (com.avoqado.pos.tables.data.kitchenCourseLabel(line.item.serviceCourse, line.course)?.let { " · $it" } ?: ""),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    line.item.modifiersSummary?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // La nota («sin aceite») también se ve mientras la ronda espera la red, igual que antes y después de enviarla.
+                    line.item.itemNote?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = "Nota: $it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFF9500),
+                        )
+                    }
+                    if (line.item.isCortesia) {
+                        Text(
+                            text = "Cortesía" + (line.item.cortesiaReason?.let { " · $it" } ?: ""),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 Text(
-                    text = "${line.item.quantity}× ${line.item.name}" + (com.avoqado.pos.tables.data.kitchenCourseLabel(line.item.serviceCourse, line.course)?.let { " · $it" } ?: ""),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = centsDisplay(line.item.effectiveUnitPrice * line.item.quantity),
+                    text = centsDisplay(line.item.totalPrice),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2233,7 +2307,9 @@ internal fun TableActionsPanel(
     onMenus: () -> Unit = {},
     onFusionar: () -> Unit = {},
     hasLoyalty: Boolean = false,
+    printBlockedReason: String? = null,
 ) {
+    val motivoPreCuenta = motivoPreCuentaEnPanel(hasSent,printBlockedReason)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2332,8 +2408,8 @@ internal fun TableActionsPanel(
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
                 label = "Imprimir cuenta",
-                enabled = hasSent,
-                blockedReason = "Todavía no hay nada enviado a cocina, así que no hay cuenta que imprimir.",
+                enabled = motivoPreCuenta == null,
+                blockedReason = motivoPreCuenta,
                 onBlocked = onBlocked,
                 onClick = onPrintPreBill,
                 modifier = Modifier.weight(1f),
@@ -3438,3 +3514,18 @@ private fun SplitCheckDialog(
             }
     }
 }
+
+/** El número entre paréntesis cuenta sólo lo que el importe de al lado incluye: el borrador y las rondas sin sincronizar
+ *  tienen su propia tarjeta; mezclarlos daba «Subtotal (2) $0.00» (QA de la 2.24, 14-oct). */
+internal fun articulosEnElSubtotal(check: OrderDetail?): Int = check?.items.orEmpty().sumOf { it.quantity }
+
+internal fun textoSubtotalDeMesa(check:OrderDetail?):String {
+    if(check==null) return "Por confirmar"
+    val cents=check.let {
+        val sub=kotlin.math.round(it.subtotal*100).toInt()
+        if(sub>0) sub else kotlin.math.round(it.total*100).toInt()
+    }
+    return centsDisplay(cents)
+}
+internal fun motivoPreCuentaEnPanel(hasSent:Boolean,motivoCuenta:String?):String? =
+    motivoCuenta ?: if(hasSent) null else "Todavía no hay nada enviado a cocina, así que no hay cuenta que imprimir."

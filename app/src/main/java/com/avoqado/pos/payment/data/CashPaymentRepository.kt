@@ -93,10 +93,16 @@ class CashPaymentRepository @Inject constructor(
          * él la comisión/cajón/forma SAT desde su historial.
          */
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
+        /** Dinero de esta captura; orderRequest conserva la orden completa para recrearla. */
+        amountCents: Int = orderRequest.total - orderRequest.tip,
+        tipCents: Int = orderRequest.tip,
+        splitType: String = "FULLPAYMENT",
+        venueId: String? = null,
     ): String {
+        require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val entity = construirFila(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId, orderExternalId,
-            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING,
+            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING, amountCents, tipCents, splitType, venueId ?: secureStorage.venueId.orEmpty(),
         )
         // REPLACE: si este cobro se había reservado (`reservarCobro`, misma llave) la reserva se
         // vuelve la fila de la cola, con los datos finales del intento.
@@ -136,15 +142,22 @@ class CashPaymentRepository @Inject constructor(
         idempotencyKey: String,
         manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
+        /** Dinero de esta captura; orderRequest conserva la orden completa para recrearla. */
+        amountCents: Int = orderRequest.total - orderRequest.tip,
+        tipCents: Int = orderRequest.tip,
+        splitType: String = "FULLPAYMENT",
+        venueId: String? = null,
     ) {
+        require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val entity = construirFila(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId, orderExternalId,
-            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.EN_VUELO,
+            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.EN_VUELO, amountCents, tipCents, splitType, venueId ?: secureStorage.venueId.orEmpty(),
         )
         // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
         // cobro como «sin confirmar» mientras va en vuelo.
         reservasDeEsteProceso += entity.id
-        pendingPaymentDao.insert(entity)
+        try { pendingPaymentDao.insert(entity) }
+        catch (e: Exception) { reservasDeEsteProceso -= entity.id; throw e }
     }
 
     /** El intento terminó (bien, encolado, rechazado o cancelado): la reserva sobra. */
@@ -164,26 +177,36 @@ class CashPaymentRepository @Inject constructor(
     /** Cobros de un proceso que murió a media petición, del local actual. */
     suspend fun cobrosSinConfirmar(): List<PendingPaymentEntity> {
         val venueId = secureStorage.venueId ?: return emptyList()
-        return pendingPaymentDao.enVueloDelVenue(venueId).filter { it.id !in reservasDeEsteProceso }
+        return pendingPaymentDao.enVueloDelVenue(venueId).filter { it.id !in reservasDeEsteProceso && it.q15Reason==null }
     }
 
     /** Lo mismo, en vivo, para el aviso y la cuarentena. */
     fun observarSinConfirmar(): Flow<List<PendingPaymentEntity>> =
         pendingPaymentDao.observarEnVuelo().map { filas ->
             val venueId = secureStorage.venueId
-            filas.filter { it.venueId == venueId && it.id !in reservasDeEsteProceso }
+            filas.filter { it.venueId == venueId && it.id !in reservasDeEsteProceso && it.q15Reason==null }
         }
 
-    /** «Sí se cobró»: a la cola con la MISMA llave. Si el POST sí había llegado, el servidor deduplica. */
-    suspend fun confirmarQueSeCobro(id: String) {
-        pendingPaymentDao.enVueloAPendiente(id)
-        Log.w("💵", "Cobro sin confirmar $id: el cajero dice que SÍ se cobró — se manda a la cola")
+    /** Manager confirmation cannot reconstruct a lost amount or release a price hold. */
+    suspend fun confirmarQueSeCobro(id:String):Boolean {
+        val venue=secureStorage.venueId ?: return false
+        val row=pendingPaymentDao.findForVenue(venue,id) ?: return false
+        if(row.syncStatus!="EN_VUELO" || row.q15Reason!=null) return false
+        if(ConciliacionDelCobro.leerCaptura(row.q15CaptureJson,venue,id)==null) {
+            pendingPaymentDao.retenerPagoQ15(venue,id,ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA,System.currentTimeMillis());return false
+        }
+        return pendingPaymentDao.enVueloAPendiente(id)==1
     }
 
-    /** «No se cobró»: se borra, y sólo si seguía sin confirmar. */
-    suspend fun descartarPorqueNoSeCobro(id: String) {
-        pendingPaymentDao.borrarSiEnVuelo(id)
-        Log.w("💵", "Cobro sin confirmar $id: el cajero dice que NO se cobró — se descarta")
+    /** Uncertain money stays stored. A human assertion alone is not proof of a non-payment. */
+    suspend fun descartarPorqueNoSeCobro(id:String):Boolean {
+        val venue=secureStorage.venueId ?: return false
+        val row=pendingPaymentDao.findForVenue(venue,id) ?: return false
+        if(row.syncStatus!="EN_VUELO") return false
+        val reason=if(ConciliacionDelCobro.leerCaptura(row.q15CaptureJson,venue,id)==null)
+            ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA else ConciliacionDelCobro.RESULTADO_NO_COMPROBADO
+        pendingPaymentDao.retenerPagoQ15(venue,id,reason,System.currentTimeMillis())
+        return false
     }
 
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
@@ -202,16 +225,21 @@ class CashPaymentRepository @Inject constructor(
         manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod?,
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption?,
         estado: PaymentSyncStatus,
+        amountCents: Int,
+        tipCents: Int,
+        splitType: String,
+        venueId: String,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
         val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
-        return PendingPaymentEntity(
+        val entity = PendingPaymentEntity(
             id = localId,
-            venueId = secureStorage.venueId ?: "",
+            venueId = venueId,
             staffId = staffId,
-            amountCents = orderRequest.total - orderRequest.tip,
-            tipCents = orderRequest.tip,
+            amountCents = amountCents,
+            tipCents = tipCents,
+            splitType = splitType,
             // Se guarda el nombre del método MANUAL (o "CASH"); el sync lo
             // traduce al enum del server al reproducirlo.
             method = manualMethod?.name ?: "CASH",
@@ -247,6 +275,15 @@ class CashPaymentRepository @Inject constructor(
             retryCount = 0,
             createdAt = System.currentTimeMillis(),
         )
+        val capture = CapturaDelCobro(
+            venueId = entity.venueId, key = entity.id, orderId = entity.orderId,
+            amountCents = entity.amountCents, tipCents = entity.tipCents, splitType = entity.splitType,
+            method = if (tenderType == null) manualMethod?.serverMethod ?: "CASH" else null,
+            tenderTypeId = entity.tenderTypeId, tenderRevision = entity.tenderRevision,
+            cashTenderedCents = entity.cashTenderedCents, changeCents = entity.changeCents,
+            customerId = entity.customerId, orderRequestJson = entity.orderRequestJson)
+        return entity.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(capture),
+            capturedOrderRef = entity.orderId ?: if (hasOrderItems) orderExternalId ?: "offline-order:$localId" else null)
     }
 }
 

@@ -164,7 +164,7 @@ fun KDSScreen(
     LaunchedEffect(tick) {
         val formatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
         clockText = java.time.Instant.ofEpochMilli(tick)
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(formatter)
     }
 

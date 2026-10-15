@@ -22,10 +22,10 @@ object ReceiptFormat {
 
     /**
      * El instante de la VENTA en la zona del venue. `timezone` tiene que ser válida: el mapeador la
-     * resuelve con `VenueTimeZone.zoneId()`, que ya tiene su respaldo.
+     * resuelve con `VenueTimeZone.timeZoneFor()`, que ya tiene su respaldo.
      */
     fun dateTime(iso: String, timezone: String): String =
-        DATE_TIME.format(parseInstant(iso).atZone(ZoneId.of(timezone)))
+        DATE_TIME.format(com.avoqado.pos.core.util.VenueTimeZone.at(parseInstant(iso), timezone))
 
     private fun parseInstant(iso: String): Instant =
         try { Instant.parse(iso) } catch (_: DateTimeParseException) { OffsetDateTime.parse(iso).toInstant() }

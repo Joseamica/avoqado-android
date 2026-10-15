@@ -50,7 +50,14 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 fun QuarantineSheet(
     onDismissSheet: () -> Unit,
     viewModel: QuarantineViewModel = hiltViewModel(),
+    historial:HistorialDelCobroViewModel = hiltViewModel(),
 ) {
+    val revisiones by historial.filas.collectAsState()
+    val totalRevisiones by historial.total.collectAsState()
+    val revisadas by historial.revisadas.collectAsState()
+    val busqueda by historial.busqueda.collectAsState()
+    val leyendoHistorial by historial.cargando.collectAsState()
+    val mensajeHistorial by historial.mensaje.collectAsState()
     val items by viewModel.items.collectAsState()
     val failedPayments by viewModel.failedPayments.collectAsState()
     val failedReservations by viewModel.failedReservationActions.collectAsState()
@@ -65,7 +72,7 @@ fun QuarantineSheet(
     val cancelacionesEnCurso by cancelacionesViewModel.enCurso.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    LaunchedEffect(Unit) { viewModel.load() }
+    LaunchedEffect(Unit) { viewModel.load();historial.cargar() }
 
     AvoqadoModalBottomSheet(onDismissRequest = onDismissSheet, sheetState = sheetState) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
@@ -92,9 +99,18 @@ fun QuarantineSheet(
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
-            if (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() &&
-                cobrosInterrumpidos.isEmpty()
-            ) {
+            if(historial.canRead) {
+                Row(horizontalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    com.avoqado.pos.designsystem.components.PrimaryButton(text="Por revisar",onClick={historial.cambiarFiltro(false,busqueda)},enabled=revisadas)
+                    com.avoqado.pos.designsystem.components.PrimaryButton(text="Historial",onClick={historial.cambiarFiltro(true,busqueda)},enabled=!revisadas)
+                }
+                Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+                com.avoqado.pos.designsystem.components.SearchPillField(query=busqueda,onQueryChange={historial.cambiarFiltro(revisadas,it)},placeholder="Buscar folio o cuenta")
+                Text("${revisiones.size} de $totalRevisiones cobros",style=MaterialTheme.typography.bodySmall)
+            } else {Text("Un gerente debe revisar este pago.",style=MaterialTheme.typography.bodySmall)}
+            if(historial.canRead) mensajeHistorial?.let {Text(it,style=MaterialTheme.typography.bodySmall)}
+
+            if(historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty()))) {
                 Text(
                     "No hay operaciones pendientes de revisión.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -103,6 +119,24 @@ fun QuarantineSheet(
                 )
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    items(if(historial.canRead) revisiones else emptyList(),key={"revision-${it.origen}-${it.id}"}) { row ->
+                        Column(modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(AvoqadoTheme.spacing.md))
+                            .background(MaterialTheme.colorScheme.surfaceVariant).padding(AvoqadoTheme.spacing.md),
+                            verticalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.xs)) {
+                            Text(historial.motivo(row),style=MaterialTheme.typography.titleSmall,fontWeight=FontWeight.SemiBold)
+                            Text("Folio ${row.id} · cuenta ${row.capturedOrderRef ?: "Sin confirmar"}",style=MaterialTheme.typography.labelSmall)
+                            historial.detalle(row).forEach {Text(it,style=MaterialTheme.typography.bodySmall)}
+                            Text("Detectado ${formatTime(row.q15DetectedAt)}",style=MaterialTheme.typography.labelSmall)
+                            row.q15ReviewedAt?.let {Text("Revisado por ${row.q15ReviewedBy ?: "Sin confirmar"} · ${formatTime(it)}",style=MaterialTheme.typography.labelSmall)}
+                            if(historial.puedeMarcar(row)) {
+                                com.avoqado.pos.designsystem.components.PrimaryButton(text="Marcar revisado",onClick={historial.marcarRevisado(row)})
+                            } else if(row.q15ReviewedAt==null) {Text("El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar.",style=MaterialTheme.typography.bodySmall)}
+                        }
+                    }
+                    if(revisiones.size<totalRevisiones) {item {
+                        com.avoqado.pos.designsystem.components.PrimaryButton(text="Cargar más",onClick=historial::cargarMas,enabled=!leyendoHistorial,isLoading=leyendoHistorial)
+                    }}
+                    if(!revisadas) {
                     // Primero: son dinero que puede no estar registrado en ningún lado.
                     if (cobrosInterrumpidos.isNotEmpty()) {
                         item {
@@ -123,7 +157,7 @@ fun QuarantineSheet(
                             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
                         ) {
                             Text(
-                                "Efectivo · ${formatMoney(cobro.amountCents + cobro.tipCents)}",
+                                "Efectivo · folio ${cobro.id}",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                             )
@@ -143,7 +177,7 @@ fun QuarantineSheet(
                                     horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm, Alignment.End),
                                 ) {
                                     OutlinedButton(onClick = { viewModel.descartarCobroInterrumpido(cobro.id) }) {
-                                        Text("No se cobró")
+                                        Text("Conservar para revisión")
                                     }
                                     OutlinedButton(onClick = { viewModel.confirmarCobroInterrumpido(cobro.id) }) {
                                         Text("Sí, se cobró")
@@ -240,7 +274,7 @@ fun QuarantineSheet(
                             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
                         ) {
                             Text(
-                                "${payment.method} · ${formatMoney(payment.amountCents)}",
+                                "Cobro sin confirmar · folio ${payment.id}",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                             )
@@ -262,16 +296,8 @@ fun QuarantineSheet(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm, Alignment.End),
                                 ) {
-                                    // La guía de la tarjeta puede ordenar "márcalo como
-                                    // resuelto" (caso "ya está pagada"): el botón tiene
-                                    // que existir, no solo el consejo.
                                     val enVuelo = retryingPaymentId != null
-                                    OutlinedButton(
-                                        onClick = { viewModel.dismissPayment(payment.id) },
-                                        enabled = !enVuelo,
-                                    ) {
-                                        Text("Marcar resuelta")
-                                    }
+                                    Text("El pago sigue conservado. No vuelvas a cobrar.",style=MaterialTheme.typography.bodySmall)
                                     OutlinedButton(
                                         onClick = { viewModel.retryPayment(payment.id) },
                                         enabled = !enVuelo,
@@ -368,7 +394,7 @@ fun QuarantineSheet(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            if (viewModel.canResolve) {
+                            if (viewModel.canResolve && item.type!="PAY_CASH") {
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                     OutlinedButton(onClick = { viewModel.dismiss(item.id) }) {
                                         Text("Marcar resuelta")
@@ -376,6 +402,7 @@ fun QuarantineSheet(
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -413,7 +440,7 @@ fun QuarantineSheet(
  */
 private fun formatTime(epochMs: Long): String =
     java.time.Instant.ofEpochMilli(epochMs)
-        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
         .format(java.time.format.DateTimeFormatter.ofPattern("d MMM, HH:mm", Locale("es", "MX")))
 
 private fun formatMoney(cents: Int): String =
@@ -462,12 +489,14 @@ fun CancelacionesPendientesBanner(onClick: () -> Unit) {
  * requiere atención pero nada se perdió.
  */
 @Composable
-fun QuarantineBanner(count: Int, onClick: () -> Unit) {
-    if (count <= 0) return
+fun QuarantineBanner(count:Int,historyAvailable:Boolean=false,historyUnavailable:Boolean=false,onClick:()->Unit) {
+    if(count<=0 && !historyAvailable && !historyUnavailable) return
+    val needsAttention=count>0 || historyUnavailable
+    val color=if(needsAttention) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.onSurfaceVariant
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Warning)
+            .background(if(needsAttention) Warning else MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick)
             .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
         verticalAlignment = Alignment.CenterVertically,
@@ -476,13 +505,13 @@ fun QuarantineBanner(count: Int, onClick: () -> Unit) {
         Icon(
             Icons.Filled.WarningAmber,
             contentDescription = null,
-            tint = androidx.compose.ui.graphics.Color.White,
+            tint = color,
             modifier = Modifier.size(16.dp),
         )
         Spacer(Modifier.size(AvoqadoTheme.spacing.sm))
         Text(
-            text = if (count == 1) "1 operación necesita revisión — toca para resolver" else "$count operaciones necesitan revisión — toca para resolver",
-            color = androidx.compose.ui.graphics.Color.White,
+            text = if(historyUnavailable) "No se pudo leer el historial de cobros — toca para revisar" else if(count<=0) "Historial de cobros — toca para consultar" else if (count == 1) "1 operación necesita revisión — toca para resolver" else "$count operaciones necesitan revisión — toca para resolver",
+            color = color,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
         )

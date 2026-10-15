@@ -97,6 +97,8 @@ class AppState @Inject constructor(
     }
 
     private fun notifyDeviceSessionChanged() {
+        tableSyncCoordinator.onSessionChanged()
+        syncOutbox.refreshQ15Observation()
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()
         }
@@ -126,8 +128,9 @@ class AppState @Inject constructor(
     /** Offline-first Corte B: replay del outbox de comandas + reconciliación. */
     private fun startOfflineOutbox() {
         secureStorage.venueId?.let { venueId ->
-            syncOutbox.start(venueId)
+            // El observador Q15 debe capturar la identidad/epoch ya sincronizados.
             tableSyncCoordinator.start()
+            syncOutbox.start(venueId)
             // 🔴 La comanda que no salió: se recupera lo guardado de ESTE venue y se arranca el
             // reloj que la reintenta sola. Es lo que hace que salga al prender la impresora, sin
             // que nadie tenga que tocar un botón. Ver [ReplayDeComandasPendientes].
@@ -181,6 +184,7 @@ class AppState @Inject constructor(
         // to Landing instead of leaving a zombie session behind.
         viewModelScope.launch {
             secureStorage.sessionInvalidated.collect {
+                tableSyncCoordinator.onSessionInvalidated()
                 stopInventorySync()
                 detenerRedLocal()
                 _isLoggedIn.value = false
@@ -279,13 +283,16 @@ class AppState @Inject constructor(
             paymentSyncService.failedCount,
             reservationRepository.quarantinedCount,
             interrumpidos,
-        ) { rejected, failed, reservas, cobros -> rejected + failed + reservas + cobros }
+            syncOutbox.q15ReviewCount,
+        ) { rejected, failed, reservas, cobros, revisiones -> rejected + failed + reservas + cobros + revisiones }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5_000),
                 initialValue = 0,
             )
     }
+
+    val q15HistoryUnavailable:StateFlow<Boolean> get()=syncOutbox.q15HistoryUnavailable
 
     /** Por miembro, como [deviceCapabilitySyncCoordinator]: no rompe a quien construye este ViewModel a mano. */
     @Inject
@@ -437,6 +444,7 @@ class AppState @Inject constructor(
             stopInventorySync()
             syncOutbox.stop()
             detenerRedLocal()
+            tableSyncCoordinator.onSessionInvalidated()
             secureStorage.clearSession()
             _isLoggedIn.value = false
             notifyDeviceSessionChanged()

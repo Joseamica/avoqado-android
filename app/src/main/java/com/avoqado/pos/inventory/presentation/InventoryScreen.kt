@@ -1225,8 +1225,7 @@ private fun fechaCortaInv(iso: String?): String? {
         val instante = java.time.Instant.parse(texto)
         java.time.format.DateTimeFormatter
             .ofPattern("d MMM, HH:mm", java.util.Locale("es", "MX"))
-            .withZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
-            .format(instante)
+            .format(com.avoqado.pos.core.util.VenueTimeZone.at(instante))
     }.getOrNull()
 }
 

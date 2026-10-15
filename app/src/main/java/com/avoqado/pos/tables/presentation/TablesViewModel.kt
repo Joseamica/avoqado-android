@@ -7,15 +7,25 @@ import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
+import com.avoqado.pos.tables.data.ApiFuenteDeVersiones
 import com.avoqado.pos.tables.data.DiningTable
+import com.avoqado.pos.tables.data.FloorPlanRepository
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
+import com.avoqado.pos.tables.data.TablesVersionPoller
+import com.avoqado.pos.tables.domain.FloorLayout
+import com.avoqado.pos.tables.domain.FloorLayoutBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -44,7 +54,55 @@ class TablesViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     private val lanHub: com.avoqado.pos.core.data.lan.LanHubService,
+    private val floorPlanRepository: FloorPlanRepository,
+    private val roleManager: com.avoqado.pos.core.domain.RoleManager,
+    versionSource: ApiFuenteDeVersiones,
 ) : ViewModel() {
+
+    private var generacion = 0L
+    private var mutacionesEnVuelo = 0
+    private suspend fun <T> mutar(bloque: suspend () -> T): T {
+        generacion++; mutacionesEnVuelo++
+        try { return bloque() }
+        finally { mutacionesEnVuelo--; generacion++ }
+    }
+
+    internal suspend fun prepararPreCuenta(table: DiningTable): com.avoqado.pos.tables.data.OrderDetail? {
+        val order = table.primaryCheck ?: run { _actionState.value = TableActionState.Error("La mesa no tiene cuenta abierta"); return null }
+        val vId = venueId ?: return null
+        val epoch = generacion
+        val contextoAlSalir = tableSession.contextoActual()
+        if (mutacionesEnVuelo > 0) { _actionState.value = TableActionState.Error("La cuenta se está actualizando. Intenta en un momento."); return null }
+        val revisionAlSalir = tableSession.revisionParaPreCuenta(vId, setOf(order.id))
+        val ids = tableSession.idsParaPreCuenta(vId, order.id)
+        val workBefore = try { syncOutbox.trabajoSinResolverDeLaOrden(vId, ids) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { null }
+        val initialReason = when {
+            tableSession.revisionParaPreCuenta(vId, ids) != revisionAlSalir || tableSession.contextoActual() != contextoAlSalir || venueId != vId || generacion != epoch || mutacionesEnVuelo > 0 || repository.tables.value.firstOrNull { it.id == table.id }?.primaryCheck?.id != order.id -> "La cuenta se está actualizando. Intenta en un momento."
+            workBefore == null -> "No se pudo revisar si esta mesa tiene cambios sin sincronizar. Intenta de nuevo."
+            workBefore.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: la pre-cuenta sale cuando se sincronicen."
+            order.isProvisional || revisionAlSalir == null -> "Abre esta cuenta para revisar el saldo antes de imprimir la pre-cuenta."
+            else -> null
+        }
+        if (initialReason != null) { _actionState.value = TableActionState.Error(initialReason); return null }
+        val detail = repository.getOrderDetail(vId, order.id).getOrNull()
+        if (detail == null || detail.id != order.id) {
+            _actionState.value = TableActionState.Error("La cuenta no se pudo leer del servidor: la pre-cuenta sale cuando vuelva la conexión.")
+            return null
+        }
+        val work = try { syncOutbox.trabajoSinResolverDeLaOrden(vId, ids) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { null }
+        if (tableSession.revisionParaPreCuenta(vId, ids) != revisionAlSalir || tableSession.contextoActual() != contextoAlSalir || venueId != vId || generacion != epoch || mutacionesEnVuelo > 0 || repository.tables.value.firstOrNull { it.id == table.id }?.primaryCheck?.id != order.id) {
+            _actionState.value = TableActionState.Error("La cuenta se está actualizando. Intenta en un momento.")
+            return null
+        }
+        val motivo = motivoParaNoImprimirPreCuenta(true, detail, order.id, true, false, work)
+        if (motivo != null) { _actionState.value = TableActionState.Error(motivo); return null }
+        return detail
+    }
+
 
     init {
         // Hub LAN (PREMIUM OFFLINE_LAN_HUB): se enciende al entrar al plano,
@@ -58,6 +116,43 @@ class TablesViewModel @Inject constructor(
 
     val tables: StateFlow<List<DiningTable>> = repository.tables
     val isLoading: StateFlow<Boolean> = repository.isLoading
+
+    // MARK: - Plano (spec 2026-10-09)
+
+    /** Uno por pantalla: el «servidor viejo» se recuerda sólo durante esta visita. Se maneja sólo desde el hilo principal. */
+    private val poller = TablesVersionPoller(repository, floorPlanRepository, versionSource)
+
+    /** Pestañas, mesas puestas, elementos, «sin acomodar» y la lista del teléfono, armados de mesas + plano. */
+    // La versión del plano que anuncian las mesas se asigna ANTES de publicarlas (Task 5) y también se observa: con ella el
+    // armador sabe si el plano guardado está atrasado (C6), y una lista de mesas IGUAL no re-emite, así que sin observarla la
+    // vista provisional de un fallo parcial se quedaba aunque las versiones ya coincidieran (auditoría Codex, hallazgo 1).
+    // Perezoso y sólo mientras alguien lo mira: Cobrar y la cuenta de la mesa también crean este ViewModel y no dibujan el
+    // plano. Arranca armado con lo que ya hay en memoria (sin un primer cuadro vacío al volver a Mesas).
+    val layout: StateFlow<FloorLayout> by lazy {
+        combine(repository.tables, floorPlanRepository.plan, repository.floorPlanVersionFromTablesFlow) { t, p, v ->
+            FloorLayoutBuilder.build(t, p, v)
+        }
+            .flowOn(Dispatchers.Default)
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5_000),
+                FloorLayoutBuilder.build(repository.tables.value, floorPlanRepository.plan.value, repository.floorPlanVersionFromTables),
+            )
+    }
+
+    private val _rememberedTab = MutableStateFlow<String?>(null)
+
+    /** La pestaña de área que este aparato dejó abierta en este venue (spec §4.2). */
+    val rememberedTab: StateFlow<String?> = _rememberedTab.asStateFlow()
+
+    fun selectTab(key: String) {
+        _rememberedTab.value = key
+        venueId?.let { secureStorage.setFloorAreaTab(it, key) }
+    }
+
+    /** Sólo decide si se ve el aviso «Arma el plano en tu computadora…» cuando no hay plano. */
+    val canConfigureTables: Boolean
+        get() = roleManager.canConfigureTables
 
     /**
      * Aviso para el mesero, por el Snackbar del plano.
@@ -105,6 +200,7 @@ class TablesViewModel @Inject constructor(
     private val _actionState = MutableStateFlow<TableActionState>(TableActionState.Idle)
     val actionState: StateFlow<TableActionState> = _actionState.asStateFlow()
 
+    private var aperturaGeneration = 0L
     private var pollJob: Job? = null
 
     private val venueId: String? get() = secureStorage.venueId
@@ -114,8 +210,19 @@ class TablesViewModel @Inject constructor(
     fun startPolling() {
         if (pollJob?.isActive == true) return
         pollJob = viewModelScope.launch {
+            var enPantalla: String? = null
             while (isActive) {
-                venueId?.let { repository.refresh(it) }
+                val vId = venueId
+                if (vId != null && vId == enPantalla) {
+                    // Cada 10 s, sólo «¿cambió algo?»; se baja sólo lo que cambió (spec §4.1).
+                    poller.consultar(vId)
+                } else if (vId != null) {
+                    // Al entrar —o si cambió la sucursal—: lo guardado de inmediato, luego /tables y (si cambió o falta)
+                    // /floor-plan. Nunca se sigue consultando la sucursal anterior (enmienda A8).
+                    enPantalla = vId
+                    _rememberedTab.value = secureStorage.floorAreaTab(vId)
+                    poller.entrar(vId)
+                }
                 delay(POLL_MS)
             }
         }
@@ -126,8 +233,9 @@ class TablesViewModel @Inject constructor(
         pollJob = null
     }
 
+    /** El botón de refrescar: mesas y plano completos, sin mirar versiones. */
     fun refresh() {
-        viewModelScope.launch { venueId?.let { repository.refresh(it) } }
+        viewModelScope.launch { venueId?.let { poller.refrescarTodo(it) } }
     }
 
     // MARK: - Selection
@@ -150,9 +258,22 @@ class TablesViewModel @Inject constructor(
         val vId = venueId ?: return
         // Double-tap guard: one open in flight at a time (avoids opening twice).
         if (_actionState.value is TableActionState.Working) return
+        val original = tableSession.current()
+        val sessionEpoch = tableSession.contextoActual()
+        val apertura = ++aperturaGeneration
+        fun vigente(expected: TableSession.Active?) = apertura == aperturaGeneration && venueId == vId &&
+            tableSession.contextoActual() == sessionEpoch && tableSession.current() == expected
+        fun vigenteAbierta(expected: TableSession.Active): Boolean {
+            val current = tableSession.current() ?: return false
+            return apertura == aperturaGeneration && venueId == vId && tableSession.contextoActual() == sessionEpoch &&
+                current.tableId == expected.tableId && current.mode == expected.mode && current.idsDeLaOrden.any { it in expected.idsDeLaOrden }
+        }
+        fun desistir() {
+            if (apertura == aperturaGeneration && _actionState.value is TableActionState.Working) _actionState.value = TableActionState.Idle
+        }
+        _actionState.value = TableActionState.Working
         viewModelScope.launch {
-            _actionState.value = TableActionState.Working
-
+            if (!vigente(original)) { desistir(); return@launch }
             // 🛰️ Hub LAN: pedir la mesa ANTES de abrirla. Sin internet esto es
             // lo único que impide que dos meseros abran la misma mesa a la vez
             // — el server no se entera hasta el replay. Si no hay hub (isla),
@@ -164,6 +285,7 @@ class TablesViewModel @Inject constructor(
                 staffName = secureStorage.selectedStaffNameForCurrentVenue
                     ?: secureStorage.userFirstName.orEmpty(),
             )
+            if (!vigente(original)) { desistir(); return@launch }
             if (lease is com.avoqado.pos.core.data.lan.LeaseOutcome.Taken) {
                 _actionState.value = TableActionState.Error(
                     "${lease.holderName} está atendiendo esta mesa en otro dispositivo",
@@ -171,10 +293,10 @@ class TablesViewModel @Inject constructor(
                 return@launch
             }
 
-            repository.openTable(vId, table.id, covers).fold(
+            mutar { repository.openTable(vId, table.id, covers) }.fold(
                 onSuccess = { order ->
-                    tableSession.start(
-                        TableSession.Active(
+                    if (!vigente(original)) { desistir(); return@launch }
+                    val opened = TableSession.Active(
                             tableId = table.id,
                             tableNumber = table.number,
                             areaName = table.areaName,
@@ -183,25 +305,32 @@ class TablesViewModel @Inject constructor(
                             version = order.version,
                             totalCents = 0,
                             mode = TableSession.Mode.ORDERING,
-                        ),
                     )
+                    if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) { desistir(); return@launch }
                     repository.refresh(vId)
+                    if (!vigenteAbierta(opened)) { desistir(); return@launch }
                     _actionState.value = TableActionState.Idle
                     _selectedTableId.value = null
                     onReady()
                 },
                 onFailure = { e ->
+                    if (!vigente(original)) { desistir(); return@launch }
                     // Offline-first Corte B: sin red la mesa se abre PROVISIONAL —
                     // intent al outbox (write-ahead), folio particionado, sesión
                     // con UUID local que el ack promoverá al id del server.
                     // Errores de NEGOCIO (403/409/4xx) NO abren offline.
                     if (isNetworkError(e)) {
+                        var aperturaLocal: TableSession.Active? = null
                         try {
-                            openTableOffline(vId, table, covers)
+                            val opened = openTableOffline(vId, table, covers, original, sessionEpoch,
+                                onActivated = { aperturaLocal = it }, sigueOriginal = { vigente(original) })
+                            if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
                             _actionState.value = TableActionState.Idle
                             _selectedTableId.value = null
                             onReady()
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e
                         } catch (_: Exception) {
+                            if (!vigente(original) && aperturaLocal?.let { vigenteAbierta(it) } != true) { desistir(); return@launch }
                             _actionState.value = TableActionState.Error("No se pudo guardar la mesa en este aparato. Libera espacio e inténtalo de nuevo.")
                         }
                     } else {
@@ -213,9 +342,12 @@ class TablesViewModel @Inject constructor(
     }
 
     /** Apertura provisional sin red (el server la confirma en el replay). */
-    private suspend fun openTableOffline(vId: String, table: DiningTable, covers: Int) {
+    private suspend fun openTableOffline(vId: String, table: DiningTable, covers: Int,
+        original: TableSession.Active?, sessionEpoch: Long,
+        onActivated: (TableSession.Active) -> Unit, sigueOriginal: () -> Boolean): TableSession.Active? {
         val localOrderId = java.util.UUID.randomUUID().toString()
         val folio = syncOutbox.nextLocalFolio(vId)
+        if (!sigueOriginal()) return null
         syncOutbox.enqueue(
             vId,
             com.avoqado.pos.core.data.sync.SyncIntentTypes.OPEN_TABLE,
@@ -225,8 +357,7 @@ class TablesViewModel @Inject constructor(
                 put("localOrderId", kotlinx.serialization.json.JsonPrimitive(localOrderId))
             },
         )
-        tableSession.start(
-            TableSession.Active(
+        val opened = TableSession.Active(
                 tableId = table.id,
                 tableNumber = table.number,
                 areaName = table.areaName,
@@ -236,11 +367,13 @@ class TablesViewModel @Inject constructor(
                 totalCents = 0,
                 mode = TableSession.Mode.ORDERING,
                 isProvisional = true,
-            ),
+                localOrderId = localOrderId,
         )
-        repository.markTableOccupiedLocally(table.id, covers, vId)
-        check(secureStorage.venueId == vId) { "La sucursal cambió" }
+        if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) return null
+        onActivated(opened)
+        mutar { repository.markTableOccupiedLocally(table.id, covers, vId) }
         android.util.Log.w("TablesViewModel", "📴 Mesa ${table.number} abierta OFFLINE (folio $folio)")
+        return opened
     }
 
     /** Red caída/timeout — nunca un rechazo de negocio del server. */
@@ -255,7 +388,8 @@ class TablesViewModel @Inject constructor(
         // primaryCheck, NO currentOrder: una mesa con el puntero desincronizado
         // se ve ocupada y debe abrirse igual (ver DiningTable.primaryCheck).
         val order = table.primaryCheck ?: return
-        tableSession.start(
+        val scopedVenue = venueId ?: return
+        val restored = tableSession.abrirDesdePiso(scopedVenue,
             TableSession.Active(
                 tableId = table.id,
                 tableNumber = table.number,
@@ -267,14 +401,15 @@ class TablesViewModel @Inject constructor(
                 mode = TableSession.Mode.ORDERING,
                 isProvisional = order.isProvisional,
             ),
-        )
+        ) ?: return
         _selectedTableId.value = null
         onReady()
     }
 
     /** Multi-cheque: abre la sesión sobre UNA cuenta específica de la mesa. */
     fun startOrderingCheck(table: DiningTable, check: com.avoqado.pos.tables.data.OpenCheckSummary, onReady: () -> Unit) {
-        tableSession.start(
+        val scopedVenue = venueId ?: return
+        val restored = tableSession.abrirDesdePiso(scopedVenue,
             TableSession.Active(
                 tableId = table.id,
                 tableNumber = table.number,
@@ -286,7 +421,7 @@ class TablesViewModel @Inject constructor(
                 mode = TableSession.Mode.ORDERING,
                 isProvisional = check.isProvisional,
             ),
-        )
+        ) ?: return
         _selectedTableId.value = null
         onReady()
     }
@@ -299,32 +434,56 @@ class TablesViewModel @Inject constructor(
      */
     fun startCobrar(table: DiningTable, onReady: () -> Unit) {
         val order = table.primaryCheck ?: return
+        val vId = venueId ?: return
+        if (_actionState.value is TableActionState.Working) return
+        viewModelScope.launch {
+            _actionState.value = TableActionState.Working
+            val epoch = generacion
+            val sessionAlSalir = tableSession.current()
+            val contextoAlSalir = tableSession.contextoActual()
+            val existingForIds = sessionAlSalir?.takeIf { it.orderId == order.id }
+            val work = try { syncOutbox.trabajoSinResolverDeLaOrden(vId, existingForIds?.idsDeLaOrden ?: setOf(order.id)) }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (_: Exception) { null }
+            val reason = when {
+                tableSession.contextoActual() != contextoAlSalir || venueId != vId || tableSession.current() != sessionAlSalir || generacion != epoch || mutacionesEnVuelo > 0 || repository.tables.value.firstOrNull { it.id == table.id }?.primaryCheck?.id != order.id -> "La cuenta se está actualizando. Intenta en un momento."
+                work == null -> "No se pudo revisar si esta mesa tiene cambios sin sincronizar. Intenta de nuevo."
+                work.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
+                order.isProvisional || tableSession.requiereRevisarSaldo(vId, existingForIds?.idsDeLaOrden ?: setOf(order.id)) -> "Abre esta cuenta para revisar el saldo antes de cobrar."
+                else -> null
+            }
+            if (reason != null) { _actionState.value = TableActionState.Error(reason); return@launch }
+            // Mid-split re-entry guard: this table's PAYING session already tracks
+            // the live remainder — restarting it from the floor plan must NOT reset
+            // the charge target back to the original total (overcharge).
+            val existing = tableSession.current()
+            if (existing != null && existing.mode == TableSession.Mode.PAYING && existing.orderId == order.id) {
+                // El piso conserva el saldo propio, pero no acredita si hubo abonos para separar el cargo.
+                tableSession.start(existing.copy(serviceChargeCents = 0))
+                _selectedTableId.value = null
+                _actionState.value = TableActionState.Idle
+                onReady()
+                return@launch
+            }
 
-        // Mid-split re-entry guard: this table's PAYING session already tracks
-        // the live remainder — restarting it from the floor plan must NOT reset
-        // the charge target back to the original total (overcharge).
-        val existing = tableSession.current()
-        if (existing != null && existing.mode == TableSession.Mode.PAYING && existing.orderId == order.id) {
+            tableSession.start(
+                TableSession.Active(
+                    tableId = table.id,
+                    tableNumber = table.number,
+                    areaName = table.areaName,
+                    orderId = order.id,
+                    orderNumber = order.orderNumber,
+                    version = order.version,
+                    totalCents = round(order.total * 100).toInt(),
+                    // Sin cargo: sólo el cheque abierto garantizado conoce sus abonos.
+                    mode = TableSession.Mode.PAYING,
+                    isProvisional = order.isProvisional,
+                ),
+            )
             _selectedTableId.value = null
+            _actionState.value = TableActionState.Idle
             onReady()
-            return
         }
-
-        tableSession.start(
-            TableSession.Active(
-                tableId = table.id,
-                tableNumber = table.number,
-                areaName = table.areaName,
-                orderId = order.id,
-                orderNumber = order.orderNumber,
-                version = order.version,
-                totalCents = round(order.total * 100).toInt(),
-                mode = TableSession.Mode.PAYING,
-                isProvisional = order.isProvisional,
-            ),
-        )
-        _selectedTableId.value = null
-        onReady()
     }
 
     /**
@@ -345,7 +504,7 @@ class TablesViewModel @Inject constructor(
         val vId = venueId ?: return
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
-            repository.compItem(vId, order.id, itemId, reason).fold(
+            mutar { repository.compItem(vId, order.id, itemId, reason) }.fold(
                 onSuccess = {
                     repository.refresh(vId)
                     _actionState.value = TableActionState.Success("Artículo de cortesía — $reason")
@@ -366,16 +525,17 @@ class TablesViewModel @Inject constructor(
     fun anularCuenta(table: DiningTable, reason: String) {
         val order = table.primaryCheck ?: return
         val vId = venueId ?: return
+        val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
-            repository.cancelOrder(vId, order.id, reason).fold(
+            mutar { repository.cancelOrder(vId, order.id, reason) }.fold(
                 onSuccess = {
                     // Belt & suspenders for servers without the release-on-cancel
                     // change: try clearing explicitly (no-op/failure is fine).
-                    repository.clearTable(vId, table.id)
+                    mutar { repository.clearTable(vId, table.id) }
                     repository.refresh(vId)
                     // The cancelled order must never keep steering a session.
-                    if (tableSession.current()?.orderId == order.id) tableSession.clear()
+                    tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                     lanHub.release(table.id)
                     _actionState.value = TableActionState.Success("Cuenta anulada — Mesa ${table.number} liberada")
                     _selectedTableId.value = null
@@ -393,8 +553,10 @@ class TablesViewModel @Inject constructor(
     }
 
     fun exitTableMode() {
-        val tableId = tableSession.current()?.tableId
-        tableSession.clear()
+        val current = tableSession.current()
+        val tableId = current?.tableId
+        val scopedVenue = venueId
+        if (current != null && scopedVenue != null) tableSession.estacionar(scopedVenue, current)
         // Salir del panel sin cobrar NO debe dejar la mesa retenida: se suelta
         // ya, en vez de hacer esperar 30s al TTL. La cuenta sigue abierta en el
         // server; lo que se libera es el permiso de edición en la LAN.
@@ -407,14 +569,15 @@ class TablesViewModel @Inject constructor(
     fun finishTableAfterPayment() {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
             // Server-driven settle check: clearTable succeeds ONLY when the
             // order is fully PAID. If it's still PARTIAL (split-the-bill),
             // keep the session alive so the next payment stays routed to it.
-            val cleared = repository.clearTable(vId, session.tableId).isSuccess
+            val cleared = mutar { repository.clearTable(vId, session.tableId) }.isSuccess
             repository.refresh(vId)
             if (cleared) {
-                tableSession.clear()
+                tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
                 // 🛰️ Soltar el lease: si no, la mesa queda "de este mesero"
                 // hasta que caduque el TTL y nadie más la puede abrir en 30s.
                 lanHub.release(session.tableId)
@@ -427,6 +590,7 @@ class TablesViewModel @Inject constructor(
     /** Anula la cuenta de CADA mesa seleccionada (ocupadas) con una razón. */
     fun bulkAnular(tables: List<DiningTable>, reason: String, onDone: (Int, Int, String?) -> Unit) {
         val vId = venueId ?: return
+        val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
             var ok = 0
             var fail = 0
@@ -435,10 +599,10 @@ class TablesViewModel @Inject constructor(
             var primerMotivo: String? = null
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
-                repository.cancelOrder(vId, order.id, reason).fold(
+                mutar { repository.cancelOrder(vId, order.id, reason) }.fold(
                     onSuccess = {
-                        repository.clearTable(vId, table.id)
-                        if (tableSession.current()?.orderId == order.id) tableSession.clear()
+                        mutar { repository.clearTable(vId, table.id) }
+                        tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                         lanHub.release(table.id)
                         ok++
                     },
@@ -464,7 +628,7 @@ class TablesViewModel @Inject constructor(
             var fail = 0
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
-                repository.assignOrder(vId, order.id, staffId).fold(
+                mutar { repository.assignOrder(vId, order.id, staffId) }.fold(
                     onSuccess = { ok++ },
                     onFailure = { fail++ },
                 )
@@ -482,7 +646,7 @@ class TablesViewModel @Inject constructor(
             var fail = 0
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
-                repository.compWholeOrder(vId, order.id, reason).fold(
+                mutar { repository.compWholeOrder(vId, order.id, reason) }.fold(
                     onSuccess = { ok++ },
                     onFailure = { fail++ },
                 )
@@ -496,9 +660,11 @@ class TablesViewModel @Inject constructor(
     fun bulkMover(source: DiningTable, targetTableId: String, onDone: (Boolean, String) -> Unit) {
         val vId = venueId ?: return
         val order = source.primaryCheck ?: return
+        val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
-            repository.moveOrder(vId, order.id, targetTableId).fold(
+            mutar { repository.moveOrder(vId, order.id, targetTableId) }.fold(
                 onSuccess = {
+                    tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                     repository.refresh(vId)
                     onDone(true, "Cuenta movida")
                 },
@@ -524,6 +690,7 @@ class TablesViewModel @Inject constructor(
     fun bulkUnir(target: DiningTable, sources: List<DiningTable>, onDone: (Int, Int, String?) -> Unit) {
         val vId = venueId ?: return
         val targetOrder = target.primaryCheck ?: return
+        val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
             var ok = 0
             var fail = 0
@@ -538,8 +705,12 @@ class TablesViewModel @Inject constructor(
                 .distinct()
                 .filter { it != targetOrder.id }
             orderIds.forEach { sourceOrderId ->
-                repository.mergeOrders(vId, targetOrder.id, sourceOrderId).fold(
-                    onSuccess = { ok++ },
+                mutar { repository.mergeOrders(vId, targetOrder.id, sourceOrderId) }.fold(
+                    onSuccess = {
+                        tableSession.finalizar(vId, setOf(sourceOrderId), sessionEpoch)
+                        tableSession.marcarSaldoDesconocido(vId, setOf(targetOrder.id), sessionEpoch)
+                        ok++
+                    },
                     onFailure = { e ->
                         fail++
                         if (firstError == null) {
@@ -563,41 +734,41 @@ class TablesViewModel @Inject constructor(
 
     /** Prints the pre-cuenta (items + total, no payment info) on the RECEIPT printer. */
     fun printPreBill(table: DiningTable) {
-        // Único sitio que SÍ necesita la orden completa: una pre-cuenta sin
-        // renglones es un documento de dinero mentiroso, así que no se imprime
-        // desde el resumen. Pero se dice POR QUÉ — el `?: return` mudo dejaba
-        // al mesero picando un botón muerto.
-        val order = table.currentOrder?.takeIf { it.items.isNotEmpty() } ?: run {
-            _actionState.value = TableActionState.Error(
-                if (table.hasOpenCheck) "Abre la cuenta para imprimir la pre-cuenta"
-                else "La mesa no tiene cuenta abierta",
-            )
-            return
-        }
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
             _actionState.value = TableActionState.Error("No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.")
             return
         }
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
+            val order = prepararPreCuenta(table) ?: return@launch
             try {
                 fun cents(v: Double) = round(v * 100).toInt()
+                val subtotal = cents(order.subtotal)
+                val balance = order.preBillBalance
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
                     orderType = "Mesa ${table.number} - PRE-CUENTA",
                     items = order.items.map {
                         ReceiptItem(
-                            name = it.productName,
+                            name = it.productName ?: "Artículo",
                             quantity = it.quantity,
                             unitPrice = cents(it.unitPrice),
                             totalPrice = cents(it.total),
+                            modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
+                            isCortesia = it.isCortesia,
                         )
                     },
-                    subtotal = cents(order.total),
-                    taxAmount = 0,
-                    total = cents(order.total),
+                    subtotal = subtotal,
+                    taxAmount = cents(order.addedTaxAmount),
+                    discountAmount = cents(order.discountAmount).coerceIn(0, subtotal.coerceAtLeast(0)).takeIf { it > 0 },
+                    total = balance?.orderTotalCents ?: cents(order.total),
+                    tipAmount = balance?.tipAmountCents?.takeIf { it > 0 },
+                    serviceChargeAmount = cents(order.serviceChargeAmount).takeIf { it > 0 },
                     venueName = secureStorage.venueName ?: "Avoqado",
                     cashierName = order.waiter?.name,
+                    isPreBill = true,
+                    paidAmount = balance?.totalPaidCents,
+                    remainingAmount = balance?.remainingBalanceCents,
                 )
                 printerService.printReceipt(receipt, printer)
                 _actionState.value = TableActionState.Success("Pre-cuenta impresa")

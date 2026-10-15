@@ -35,7 +35,7 @@ data class CreateClassSessionDraft(
     val productId: String? = null,
     val productName: String? = null,
     val productDuration: Int? = null,
-    val date: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
+    val date: LocalDate = VenueTimeZone.now().toLocalDate(),
     val startTime: LocalTime = LocalTime.of(9, 0),
     val endTime: LocalTime = LocalTime.of(10, 0),
     val capacity: Int = 10,
@@ -90,7 +90,7 @@ class CreateClassSessionViewModel @Inject constructor(
         val time = handle.get<String>("time")?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
         val start = time ?: LocalTime.of(9, 0)
         return CreateClassSessionDraft(
-            date = date ?: LocalDate.now(zone),
+            date = date ?: VenueTimeZone.now(zone.id).toLocalDate(),
             startTime = start,
             endTime = start.plusHours(1),
         )
@@ -140,7 +140,7 @@ class CreateClassSessionViewModel @Inject constructor(
                     else "${bulk.count} clases agendadas"
                 }
             } else {
-                val starts = draft.date.atTime(draft.startTime).atZone(zone)
+                val starts = VenueTimeZone.fromLocalDateTime(draft.date.atTime(draft.startTime), zone.id)
                 if (starts.toInstant().isBefore(java.time.Instant.now().minusSeconds(60))) {
                     Result.failure(Exception("No se puede agendar una clase en el pasado"))
                 } else {
@@ -153,8 +153,8 @@ class CreateClassSessionViewModel @Inject constructor(
     }
 
     private fun CreateClassSessionDraft.toSingleRequest(zoneId: ZoneId): CreateClassSessionRequest {
-        val starts = date.atTime(startTime).atZone(zoneId).withZoneSameInstant(ZoneOffset.UTC)
-        val ends = date.atTime(endTime).atZone(zoneId).withZoneSameInstant(ZoneOffset.UTC)
+        val starts = VenueTimeZone.fromLocalDateTime(date.atTime(startTime), zoneId.id).withZoneSameInstant(ZoneOffset.UTC)
+        val ends = VenueTimeZone.fromLocalDateTime(date.atTime(endTime), zoneId.id).withZoneSameInstant(ZoneOffset.UTC)
         return CreateClassSessionRequest(
             productId = productId!!,
             startsAt = starts.format(DateTimeFormatter.ISO_INSTANT),

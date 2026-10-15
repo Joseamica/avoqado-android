@@ -101,6 +101,9 @@ data class ReceiptSale(
     val reprint: ReceiptReprint? = null,
     val appVersion: String? = null,
     val autofacturaAvailable: Boolean? = null,
+    /** Saldo de una PRE_BILL, en centavos; ausente en documentos legacy. */
+    val paidCents: Long? = null,
+    val remainingCents: Long? = null,
 )
 
 @Serializable

@@ -125,14 +125,14 @@ class SplitMostradorContinuidadTest {
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns
             CashPaymentResult.Success(changeCents = 0)
 
-        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-nueva")))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "fast-1", receiptAccessKey = null))
 
-        coEvery { cashDrawerRepository.addCashSale(any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit
@@ -188,12 +188,12 @@ class SplitMostradorContinuidadTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-parte-1", 5000, any(), any(), any(), any())
+            orderRepository.recordCashPayment("order-parte-1", 5000, any(), any(), any(), any(), capturedVenueId = any())
         }
         // Ni una segunda orden ni un cobro suelto: los dos caminos por los que
         // hoy se parte la venta.
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 
     @Test
@@ -209,7 +209,7 @@ class SplitMostradorContinuidadTest {
         advanceUntilIdle()
 
         assertEquals("order-parte-1", orderIdSlot.captured)
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 
     // ── 2. BYPRODUCT: el carrito conserva productos REALES ──────────────────────
@@ -221,9 +221,9 @@ class SplitMostradorContinuidadTest {
         viewModel.processCashPayment(3000)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-parte-1", 3000, any(), any(), any(), any())
+            orderRepository.recordCashPayment("order-parte-1", 3000, any(), any(), any(), any(), capturedVenueId = any())
         }
     }
 
@@ -233,7 +233,7 @@ class SplitMostradorContinuidadTest {
     fun `tras cerrar la venta, un cobro nuevo crea SU propia orden`() = runTest {
         val idsCobrados = mutableListOf<String>()
         coEvery {
-            orderRepository.recordCashPayment(capture(idsCobrados), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(capture(idsCobrados), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         // Venta 1, parte 2 — contra la orden vieja.
@@ -248,7 +248,7 @@ class SplitMostradorContinuidadTest {
         viewModel.processCashPayment(3000)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
         assertEquals(listOf("order-parte-1", "order-nueva"), idsCobrados)
     }
 
@@ -261,9 +261,9 @@ class SplitMostradorContinuidadTest {
         viewModel.processCashPayment(3000)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-nueva", 3000, any(), any(), any(), any())
+            orderRepository.recordCashPayment("order-nueva", 3000, any(), any(), any(), any(), capturedVenueId = any())
         }
     }
 
@@ -285,8 +285,8 @@ class SplitMostradorContinuidadTest {
         viewModel.processCashPayment(2500)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(2500, any(), any(), any(), any()) }
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(2500, any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 
     // ── 5. Regresión mesa: el camino de mesa manda y no cambia ──────────────────
@@ -312,9 +312,9 @@ class SplitMostradorContinuidadTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-mesa", 5000, any(), any(), any(), any())
+            orderRepository.recordCashPayment("order-mesa", 5000, any(), any(), any(), any(), capturedVenueId = any())
         }
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 
     @Test
@@ -338,7 +338,7 @@ class SplitMostradorContinuidadTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-mesa", 5000, any(), any(), any(), any())
+            orderRepository.recordCashPayment("order-mesa", 5000, any(), any(), any(), any(), capturedVenueId = any())
         }
     }
 
@@ -346,7 +346,7 @@ class SplitMostradorContinuidadTest {
 
     @Test
     fun `buildCompletion prefiere el remainingBalance del server sobre la aritmetica local`() = runTest {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(
                 OrderRepository.CashPayResult(
                     paymentId = "pay-1",
@@ -379,7 +379,7 @@ class SplitMostradorContinuidadTest {
 
     @Test
     fun `buildCompletion conserva los articulos pagados aunque el server mande el saldo`() = runTest {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(
                 OrderRepository.CashPayResult(
                     paymentId = "pay-1",
@@ -416,7 +416,7 @@ class SplitMostradorContinuidadTest {
      */
     @Test
     fun `una orden PAID no deja saldo aunque el numero diga otra cosa`() = runTest {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(
                 OrderRepository.CashPayResult(
                     paymentId = "pay-1",
@@ -441,7 +441,7 @@ class SplitMostradorContinuidadTest {
 
     /** Cobra un split de 2 partes sobre $100 y devuelve el resto que quedó. */
     private suspend fun saldoTrasCobrarMitad(resultado: OrderRepository.CashPayResult): Int {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(resultado)
 
         viewModel.setSplitConfig(type = "EQUALPARTS", numberOfParts = 2)
@@ -572,7 +572,7 @@ class SplitMostradorContinuidadTest {
      */
     @Test
     fun `en pago completo el saldo del server NO se usa`() = runTest {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(
                 OrderRepository.CashPayResult(
                     paymentId = "pay-1",
@@ -593,7 +593,7 @@ class SplitMostradorContinuidadTest {
 
     @Test
     fun `el saldo del server de una venta NO se arrastra a la siguiente`() = runTest {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(
                 OrderRepository.CashPayResult(
                     paymentId = "pay-1",

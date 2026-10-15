@@ -104,10 +104,10 @@ class FastCashClienteTest {
         } returns CashPaymentResult.Success(changeCents = 0)
 
         coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
 
-        coEvery { cashDrawerRepository.addCashSale(any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         every { secureStorage.userId } returns "user-456"
@@ -161,7 +161,7 @@ class FastCashClienteTest {
                 idempotencyKey = any(),
                 manualMethod = null,
                 tenderType = null,
-                customerId = "cmcustomer123",
+                customerId = "cmcustomer123", capturedVenueId = any()
             )
         }
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
@@ -182,7 +182,7 @@ class FastCashClienteTest {
                 idempotencyKey = any(),
                 manualMethod = null,
                 tenderType = null,
-                customerId = null,
+                customerId = null, capturedVenueId = any()
             )
         }
     }
@@ -194,7 +194,7 @@ class FastCashClienteTest {
     @Test
     fun `un aviso del server se pinta y NO dispara otro cobro`() = runTest {
         coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(
             OrderRepository.CashPayResult(
                 paymentId = "pago-1",
@@ -215,7 +215,7 @@ class FastCashClienteTest {
         )
         // 🔴 UNA sola vez: un aviso NUNCA es motivo para volver a cobrar.
         coVerify(exactly = 1) {
-            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
         // La pantalla no puede seguir enseñando un cliente que la venta no tiene.
         assertNull(viewModel.attachedCustomerName.value)

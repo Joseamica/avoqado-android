@@ -1690,17 +1690,26 @@ class CashDrawerRepository @Inject constructor(
      * [SERVER_OWNED_EVENT_TYPES]. Si no desapareciera, la MISMA venta sumaría dos
      * veces y el cajón inventaría un sobrante.
      */
-    suspend fun addCashSale(amountCents: Int, orderId: String?): CashDrawerEventEntity? {
-        val session = getOpenSession() ?: return null
+    suspend fun addCashSale(
+        amountCents: Int,
+        orderId: String?,
+        venueId: String? = null,
+        staffId: String? = null,
+        staffName: String? = null,
+    ): CashDrawerEventEntity? {
+        val capturedVenueId = venueId ?: this.venueId
+        val capturedStaffId = staffId ?: this.staffId
+        val capturedStaffName = staffName ?: this.staffName
+        val session = dao.getOpenSession(capturedVenueId) ?: return null
         val event = CashDrawerEventEntity(
             id = UUID.randomUUID().toString(),
             sessionId = session.id,
-            venueId = venueId,
+            venueId = capturedVenueId,
             type = CashDrawerEventType.CASH_SALE.name,
             amountCents = amountCents,
             note = null,
-            staffId = staffId,
-            staffName = staffName,
+            staffId = capturedStaffId,
+            staffName = capturedStaffName,
             orderId = orderId,
             createdAt = System.currentTimeMillis(),
         )
@@ -1714,7 +1723,7 @@ class CashDrawerRepository @Inject constructor(
             val body = cashDrawerSyncEventJson(event)
                 .toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("$baseUrl/sync")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/${event.venueId}/cash-drawer/sync")
                 .post(body)
                 .build()
             val code = withContext(Dispatchers.IO) { client.newCall(request).execute().use { it.code } }

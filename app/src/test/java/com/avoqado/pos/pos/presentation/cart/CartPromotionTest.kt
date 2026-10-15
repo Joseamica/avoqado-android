@@ -78,6 +78,7 @@ class CartPromotionTest {
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
         every { savedCartsRepository.savedCarts } returns MutableStateFlow<List<SavedCart>>(emptyList())
+        every { savedCartsRepository.saveCart(any()) } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
         every { authRepository.venueSwitched } returns venueSwitchedFlow
         every { classCheckoutSeed.consume() } returns null
@@ -90,15 +91,15 @@ class CartPromotionTest {
         )
     }
 
-    private fun createViewModel(): CartViewModel = CartViewModel(
+    internal fun createViewModel(repo: SavedCartsRepository = savedCartsRepository, staff: StaffRepository = staffRepository): CartViewModel = CartViewModel(
         productsRepository = productsRepository,
         discountsRepository = discountsRepository,
-        savedCartsRepository = savedCartsRepository,
+        savedCartsRepository = repo,
         authRepository = authRepository,
         secureStorage = secureStorage,
         activeCartState = activeCartState,
         orderRepository = orderRepository,
-        staffRepository = staffRepository,
+        staffRepository = staff,
         classCheckoutSeed = classCheckoutSeed,
         validateReferralUseCase = validateReferralUseCase,
         captureReferralUseCase = captureReferralUseCase,
@@ -313,7 +314,7 @@ class CartPromotionTest {
         val vm = createViewModel()
         vm.aplicarPromocion(combo, eleccionEnsaladaConRefresco)
         val guardados = mutableListOf<SavedCart>()
-        every { savedCartsRepository.saveCart(any()) } answers { guardados += firstArg<SavedCart>() }
+        every { savedCartsRepository.saveCart(any()) } answers { guardados += firstArg<SavedCart>(); true }
 
         assertTrue(vm.saveCurrentCart("Mesa 5"))
         vm.restoreSavedCart(guardados.single())
@@ -610,15 +611,12 @@ class CartPromotionTest {
     }
 
     @Test
-    fun `control - D13 no cambia el ciclo de la copia guardada - se borra al restaurar como hoy (el 7b lo cambia a proposito)`() {
+    fun `D13 conserva su aviso y subtotal mientras 7b mantiene la copia al restaurar`() {
         val vm = createViewModel()
-        // Lo que había en el carrito EN EL MOMENTO de borrar la copia (no después): así mover el borrado antes de
-        // poblar el carrito derriba la prueba. Se mide el subtotal (precio de lista, sin impuesto aparte), que es
-        // el mismo antes y después de D13: por eso es un control.
-        var subtotalAlBorrar: Int? = null
-        every { savedCartsRepository.deleteCart("s1") } answers { subtotalAlBorrar = vm.cartState.value.subtotalCents }
         vm.restoreSavedCart(guardadoConImpuesto("s1", 16))
-        verify(exactly = 1) { savedCartsRepository.deleteCart("s1") }
-        assertEquals("el carrito ya está poblado cuando se borra la copia", 5000, subtotalAlBorrar)
+        verify(exactly = 0) { savedCartsRepository.deleteCart("s1") }
+        assertEquals(5000, vm.cartState.value.subtotalCents)
+        assertEquals(5000, vm.cartState.value.totalCents)
+        assertEquals(AVISO_CARRITO_SIN_IMPUESTO, vm.avisoDelCarrito.value)
     }
 }

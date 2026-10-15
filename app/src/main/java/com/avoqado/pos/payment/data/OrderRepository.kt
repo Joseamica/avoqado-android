@@ -32,6 +32,7 @@ import javax.inject.Singleton
 class OrderRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val capturedPayments: com.avoqado.pos.core.data.local.database.PendingPaymentDao? = null,
 ) {
     /**
      * Cliente SOLO para la ruta del dinero (crear orden, cobrar efectivo, fast).
@@ -621,8 +622,10 @@ class OrderRepository @Inject constructor(
         externalId: String = java.util.UUID.randomUUID().toString(),
         stampRewardId: String? = null,
         stampRewardExpectedDiscount: Int? = null,
+        capturedVenueId: String? = null,
     ): Result<CreateOrderResponse> {
-        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
+        val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
@@ -746,6 +749,16 @@ class OrderRepository @Inject constructor(
 
     private data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
 
+
+    private suspend fun guardarRespuestaDeCaptura(venueId: String, key: String, channel: CanalDelCobro, body: String) {
+        val dao = capturedPayments ?: return
+        val original = dao.findForVenue(venueId, key) ?: return // Unsupported/no-reservation flows keep their existing contract.
+        if (original.syncStatus == "SYNCED") return
+        val result = ConciliacionDelCobro.evaluar(original.q15CaptureJson, venueId, key, channel, body)
+        check(dao.registrarResultadoQ15(venueId, key, result.aplicado, result.motivo, result.resultadoJson, System.currentTimeMillis()) == 1)
+        check(result.aplicado) { "El resultado del cobro está por confirmar. Se conservó para revisión; no vuelvas a cobrar." }
+    }
+
     // MARK: - Fast Cash Payment (no products)
 
     suspend fun recordFastCashPayment(
@@ -776,8 +789,10 @@ class OrderRepository @Inject constructor(
          * rechaza dinero ya cobrado.
          */
         customerId: String? = null,
+        capturedVenueId: String? = null,
     ): Result<CashPayResult> {
-        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
+        if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
+        val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
         return try {
@@ -804,6 +819,7 @@ class OrderRepository @Inject constructor(
             }
 
             if (code in 200..299) {
+                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.FAST, body)
                 Log.d("💵", "✅ Fast cash payment recorded: $amount cents, body: ${body.take(200)}")
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
@@ -897,8 +913,10 @@ class OrderRepository @Inject constructor(
          * él la comisión/cajón/forma SAT desde su historial.
          */
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
+        capturedVenueId: String? = null,
     ): Result<CashPayResult> {
-        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
+        if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
+        val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
         return try {
@@ -935,6 +953,7 @@ class OrderRepository @Inject constructor(
             }
 
             if (code in 200..299) {
+                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.ORDER, body)
                 Log.d("💵", "✅ Cash payment recorded for order: $orderId")
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)

@@ -49,7 +49,7 @@ data class AppNotification(
                 minutes < 60 -> "hace $minutes min"
                 hours < 24 -> "hace $hours h"
                 days < 7 -> "hace $days d"
-                else -> instant.atZone(VenueTimeZone.zoneId())
+                else -> instant.let { VenueTimeZone.at(it) }
                     .format(DateTimeFormatter.ofPattern("d MMM", Locale("es", "MX")))
             }
         }

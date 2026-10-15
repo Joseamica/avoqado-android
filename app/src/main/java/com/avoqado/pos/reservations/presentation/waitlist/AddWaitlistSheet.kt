@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.waitlist
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -73,8 +74,8 @@ fun AddWaitlistSheet(
     var phone by remember { mutableStateOf("") }
     var country by remember { mutableStateOf(Countries.byIso("MX")) }
     var partySize by remember { mutableStateOf(2) }
-    var date by remember { mutableStateOf(LocalDate.now(zone)) }
-    var time by remember { mutableStateOf(LocalTime.now(zone).withSecond(0).withNano(0)) }
+    var date by remember { mutableStateOf(VenueTimeZone.now(zone.id).toLocalDate()) }
+    var time by remember { mutableStateOf(VenueTimeZone.now(zone.id).toLocalTime().withSecond(0).withNano(0)) }
     var notes by remember { mutableStateOf("") }
     var isGuest by remember { mutableStateOf(true) }
     var customerId: String? by remember { mutableStateOf(null) }
@@ -107,7 +108,7 @@ fun AddWaitlistSheet(
                 PrimaryButton(
                     text = "Agregar",
                     onClick = {
-                        val instant = ZonedDateTime.of(date, time, zone).toInstant()
+                        val instant = VenueTimeZone.fromLocalDateTime(date.atTime(time), zone.id).toInstant()
                         val iso = DateTimeFormatter.ISO_INSTANT.format(instant)
                         val req = AddToWaitlistRequest(
                             customerId = if (!isGuest) customerId else null,

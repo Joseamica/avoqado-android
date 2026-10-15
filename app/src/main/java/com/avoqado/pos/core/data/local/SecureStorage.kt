@@ -414,6 +414,13 @@ class SecureStorage @Inject constructor(
             plainPrefs.edit().putBoolean(showClassSessionsKey(), value).apply()
         }
 
+    /** Plano en el POS (spec 2026-10-09 §4.2): la pestaña de área que se dejó abierta, por aparato y venue. */
+    fun floorAreaTab(venueId: String): String? = plainPrefs.getString("${KEY_FLOOR_AREA_TAB_PREFIX}_$venueId", null)
+
+    fun setFloorAreaTab(venueId: String, tabKey: String) {
+        plainPrefs.edit().putString("${KEY_FLOOR_AREA_TAB_PREFIX}_$venueId", tabKey).apply()
+    }
+
     fun saveSelectedStaffForCurrentVenue(staffId: String, staffName: String) {
         val currentVenueId = venueId ?: return
         plainPrefs.edit()
@@ -657,6 +664,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_SELECTED_STAFF_NAME_PREFIX = "selectedStaffName"
         private const val KEY_CALENDAR_VIEW_PREFIX = "calendarView"
         private const val KEY_SHOW_CLASS_SESSIONS_PREFIX = "showClassSessions"
+        private const val KEY_FLOOR_AREA_TAB_PREFIX = "floorAreaTab"
     }
 
     private fun selectedStaffIdKey(currentVenueId: String? = venueId): String {

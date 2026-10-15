@@ -1,7 +1,11 @@
 package com.avoqado.pos.core.data.sync
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
+import com.avoqado.pos.core.data.local.database.MAX_SYNC_SEQUENCE
 
 /**
  * Contrato del replay offline — espejo EXACTO por nombre del server
@@ -54,7 +58,25 @@ data class SyncAck(
     val errorCode: String? = null,
     val message: String? = null,
     val result: JsonObject? = null,
+    /** Local observation context. Never part of the server contract. */
+    @Transient val contextoDeSesion: Long? = null,
+    val details: JsonObject? = null,
 ) {
+    /** Sólo el batch enviado y la identidad de su petición pueden aportar el piso. */
+    fun latestSeqFor(
+        sentId: String, sentSeq: Long, rowVenueId: String, sentVenueId: String,
+        sentDeviceId: String, currentDeviceId: String,
+    ): Long? {
+        if (status != "REJECTED" || errorCode != "STALE_DEVICE_SEQUENCE" || id != sentId ||
+            rowVenueId != sentVenueId || sentDeviceId.isBlank() || sentDeviceId != currentDeviceId) return null
+        val raw = details?.get("latestSeq") as? JsonPrimitive ?: return null
+        if (raw.isString) return null
+        val numeric = raw.doubleOrNull ?: return null
+        if (!numeric.isFinite() || numeric < 0 || numeric > MAX_SYNC_SEQUENCE || numeric % 1.0 != 0.0) return null
+        val value = numeric.toLong() // Exacto: ya está acotado al entero de 32 bits del servidor.
+        return value.takeIf { it >= sentSeq }
+    }
+
     val isAcked: Boolean get() = status == "ACKED"
 
     /** Condición TRANSITORIA (conflicto de versión, etc.): el intent se queda

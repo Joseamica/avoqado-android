@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.calendar
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -47,8 +48,8 @@ class CalendarViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(
         CalendarUiState(
-            today = LocalDate.now(zone),
-            selectedDate = LocalDate.now(zone),
+            today = VenueTimeZone.now(zone.id).toLocalDate(),
+            selectedDate = VenueTimeZone.now(zone.id).toLocalDate(),
             view = initialView,
             showClassSessions = secureStorage.showClassSessionsForCurrentVenue,
         ),

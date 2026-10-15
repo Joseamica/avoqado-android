@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.create
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -189,7 +190,7 @@ class CreateReservationViewModel @Inject constructor(
             val prefillGuestName = handle.get<String>("prefillGuestName")
             val prefillPartySize = handle.get<String>("prefillPartySize")?.toIntOrNull()
             val prefillStart = handle.get<String>("prefillStart")?.let {
-                runCatching { java.time.Instant.parse(it).atZone(zone) }.getOrNull()
+                runCatching { VenueTimeZone.at(java.time.Instant.parse(it), zone.id) }.getOrNull()
             }
             _draft.update { d ->
                 d.copy(
@@ -211,7 +212,7 @@ class CreateReservationViewModel @Inject constructor(
         _draft.update { d ->
             d.copy(
                 date = date ?: d.date,
-                time = time ?: if (isWalkIn) nextQuarterHour(LocalTime.now(zone)) else d.time,
+                time = time ?: if (isWalkIn) nextQuarterHour(VenueTimeZone.now(zone.id).toLocalTime()) else d.time,
                 isGuest = if (isWalkIn) true else d.isGuest,
                 guestName = if (isWalkIn) "Sin cita" else d.guestName,
                 channel = if (isWalkIn) ReservationChannel.WALK_IN else d.channel,
@@ -221,7 +222,7 @@ class CreateReservationViewModel @Inject constructor(
 
     private fun seedFromReservation(d: CreateReservationDraft, r: Reservation): CreateReservationDraft {
         val startInstant = java.time.Instant.parse(r.startsAt)
-        val zoned = startInstant.atZone(zone)
+        val zoned = VenueTimeZone.at(startInstant, zone.id)
         return d.copy(
             customerId = r.customerId,
             customerName = r.customer?.fullName,
@@ -414,7 +415,7 @@ class CreateReservationViewModel @Inject constructor(
         if (!_isEditing.value &&
             d.channel != ReservationChannel.WALK_IN &&
             java.time.LocalDateTime.of(d.date, d.time)
-                .isBefore(java.time.LocalDateTime.now(zone).minusMinutes(5))
+                .isBefore(VenueTimeZone.now(zone.id).toLocalDateTime().minusMinutes(5))
         ) {
             _result.value = Result.failure(Exception("Ese horario ya pasó — elige una fecha y hora futura."))
             return

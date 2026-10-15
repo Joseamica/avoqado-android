@@ -88,7 +88,7 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
                 t = t.plusMinutes(15)
             }
         }.filter { slot ->
-            draft.date != java.time.LocalDate.now(zone) || slot.time.isAfter(java.time.LocalTime.now(zone))
+            draft.date != VenueTimeZone.now(zone.id).toLocalDate() || slot.time.isAfter(VenueTimeZone.now(zone.id).toLocalTime())
         }
     }
     val slotRows = remember(slots) { slots.chunked(4) }

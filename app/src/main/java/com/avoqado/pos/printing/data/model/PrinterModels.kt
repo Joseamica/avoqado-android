@@ -352,13 +352,18 @@ data class ReceiptData(
     val serviceChargeAmount: Int? = null,
     /** Comprobante de una devolución: importes en positivo y título DEVOLUCIÓN (IVA por producto, plan 7, r1 #2). */
     val isRefund: Boolean = false,
+    /** Documento de una cuenta abierta; no acredita que se haya cobrado. */
+    val isPreBill: Boolean = false,
+    /** Saldo autoritativo de la lectura de precuenta, en centavos. Null = no disponible. */
+    val paidAmount: Int? = null,
+    val remainingAmount: Int? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"
 
     val formattedDate: String
         get() = date.toInstant()
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(
                 java.time.format.DateTimeFormatter.ofPattern(
                     "dd/MM/yyyy HH:mm",
@@ -460,7 +465,7 @@ data class AreaTicketData(
 
     val formattedTime: String
         get() = timestamp.toInstant()
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
 }
 
@@ -482,7 +487,7 @@ data class KitchenTicketData(
 ) {
     val formattedTime: String
         get() = timestamp.toInstant()
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(
                 java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")),
             )

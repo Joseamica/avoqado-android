@@ -26,6 +26,8 @@ class TableRoundDraftStore(private val directory: File) {
         val cachedCheck: OrderDetail? = null,
         val redirectOrderId: String? = null,
         val preparationRouting: Map<String, com.avoqado.pos.printing.routing.PrintConfig> = emptyMap(),
+        // nil = historical file whose reverse identities are not proven. Never infer empty.
+        val originalOrderIdsQ16: List<String>? = null,
     )
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private fun file(venueId: String, orderId: String): File {
@@ -34,7 +36,7 @@ class TableRoundDraftStore(private val directory: File) {
     }
     private fun read(venueId: String, orderId: String): Snapshot {
         val file = file(venueId, orderId)
-        return if (file.exists()) json.decodeFromString(file.readText()) else Snapshot()
+        return if (file.exists()) json.decodeFromString(file.readText()) else Snapshot(originalOrderIdsQ16 = emptyList())
     }
     private fun resolved(venueId: String, orderId: String): Pair<String, Snapshot> {
         var current = orderId
@@ -50,6 +52,19 @@ class TableRoundDraftStore(private val directory: File) {
     }
     fun load(venueId: String, orderId: String): Snapshot = synchronized(diskLock) { resolved(venueId, orderId).second }
     fun loadResolved(venueId: String, orderId: String): Pair<String, Snapshot> = synchronized(diskLock) { resolved(venueId, orderId) }
+    internal class UnknownHistoryQ16: IllegalStateException("Falta comprobar el enlace original del pedido")
+
+    fun priceReferencesQ16(venueId: String, orderId: String): Set<String> = synchronized(diskLock) {
+        val (target, snapshot) = resolved(venueId, orderId)
+        val inverse = snapshot.originalOrderIdsQ16 ?: throw UnknownHistoryQ16()
+        require(inverse.size <= 98 && inverse.distinct().size == inverse.size)
+        val refs = (inverse + orderId + target).toSet()
+        require(refs.size <= 100 && refs.all { it.isNotBlank() })
+        for (original in inverse) {
+            check(resolved(venueId, original).first == target) { "El enlace original del pedido sigue incompleto" }
+        }
+        refs
+    }
     fun freezePreparationRouting(venueId: String, orderId: String, roundKey: String,
         config: com.avoqado.pos.printing.routing.PrintConfig): com.avoqado.pos.printing.routing.PrintConfig = synchronized(diskLock) {
         val (targetOrder, snapshot) = resolved(venueId, orderId)
@@ -67,13 +82,16 @@ class TableRoundDraftStore(private val directory: File) {
         val now = System.currentTimeMillis()
         val snapshot = Snapshot(pending.filterNot { it.item.id in stagedIds }, rounds,
             rounds.keys.associateWith { previous.createdAtLocal[it] ?: now }, cachedCheck?.copy(id = targetOrder) ?: previous.cachedCheck,
-            preparationRouting = (preparationRouting + previous.preparationRouting).filterKeys { it in rounds })
+            preparationRouting = (preparationRouting + previous.preparationRouting).filterKeys { it in rounds },
+            originalOrderIdsQ16 = previous.originalOrderIdsQ16)
         write(venueId, targetOrder, snapshot)
         snapshot
     }
 
     /** Destination is durable BEFORE the alias and the terminal OPEN_TABLE acknowledgement. */
-    fun promote(venueId: String, localOrderId: String, orderId: String) = synchronized(diskLock) {
+    fun promote(venueId: String, localOrderId: String, orderId: String) {
+        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.begin(venueId)
+        try { synchronized(diskLock) {
         require(localOrderId.isNotBlank() && orderId.isNotBlank())
         val (sourceOrder, source) = resolved(venueId, localOrderId)
         val (targetOrder, target) = resolved(venueId, orderId)
@@ -81,6 +99,9 @@ class TableRoundDraftStore(private val directory: File) {
         check(sourceOrder == localOrderId) { "El pedido ya pertenece a otra cuenta" }
         require(source.cachedCheck == null || source.cachedCheck.id == localOrderId)
         require(target.cachedCheck == null || target.cachedCheck.id == targetOrder)
+        val inverse = if (source.originalOrderIdsQ16 != null && target.originalOrderIdsQ16 != null)
+            (source.originalOrderIdsQ16 + target.originalOrderIdsQ16 + localOrderId).distinct() else null
+        require(inverse == null || inverse.size <= 98) { "No se pudo comprobar la identidad completa del pedido" }
         val rounds = source.rounds + target.rounds
         val stagedIds = rounds.values.flatten().map { it.item.id }.toSet()
         val pending = (source.pending + target.pending).associateBy { it.item.id }.values.filterNot { it.item.id in stagedIds }
@@ -89,8 +110,9 @@ class TableRoundDraftStore(private val directory: File) {
         }
         val routing = (source.preparationRouting + target.preparationRouting).filterKeys { it in rounds }
         write(venueId, targetOrder, Snapshot(pending, rounds, dates, target.cachedCheck ?: source.cachedCheck?.copy(id = targetOrder),
-            preparationRouting = routing))
+            preparationRouting = routing, originalOrderIdsQ16 = inverse))
         write(venueId, localOrderId, Snapshot(redirectOrderId = targetOrder))
+        } } finally { com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.end(venueId) }
     }
     private fun write(venueId: String, orderId: String, snapshot: Snapshot) {
         check(directory.isDirectory || directory.mkdirs()) { "No se pudo guardar el pedido en este aparato" }

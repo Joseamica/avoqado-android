@@ -15,7 +15,11 @@ object ReceiptInputMapper {
         ReceiptInput(sale = sale(receipt, timezone, appVersion), venue = venue(receipt, info, hasLogo))
 
     private fun sale(r: ReceiptData, timezone: String, appVersion: String?) = ReceiptSale(
-        kind = if (r.isRefund) "REFUND" else "SALE", // comprobante de devolución: magnitudes y título DEVOLUCIÓN (plan 7, r1 #2)
+        kind = when {
+            r.isRefund -> "REFUND"
+            r.isPreBill -> "PRE_BILL"
+            else -> "SALE"
+        },
         orderNumber = r.orderNumber,
         orderType = r.orderType,
         occurredAt = r.date.toInstant().toString(),
@@ -49,6 +53,8 @@ object ReceiptInputMapper {
         reprint = r.reprintedAt?.let { ReceiptReprint(it.toInstant().toString()) },
         appVersion = appVersion,
         autofacturaAvailable = r.autofacturaAvailable,
+        paidCents = r.paidAmount?.toLong(),
+        remainingCents = r.remainingAmount?.toLong(),
     )
 
     /**

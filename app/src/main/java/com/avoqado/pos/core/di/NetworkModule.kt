@@ -80,6 +80,7 @@ object NetworkModule {
             .addInterceptor(ForbiddenInterceptor(errorNotifier, managerOverrideCoordinator))
             .addInterceptor(ConnectivityInterceptor(connectivityMonitor))
             .addInterceptor(logging)
+            .addNetworkInterceptor(com.avoqado.pos.core.data.sync.InterceptorDePrecioQ16)
             .authenticator(tokenRefreshAuthenticator)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
