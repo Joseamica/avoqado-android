@@ -21,11 +21,16 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Warning
 
 /**
- * Sin red, el buscador de clientes busca sólo entre lo que la tablet ya recibió, y lo DICE: offline es un estado,
- * nunca un error en rojo (regla todo-funciona-sin-red). Mismo estilo que el aviso de cola de «Cobro exitoso».
+ * Sin red —o si el servidor contestó con un error— el buscador de clientes busca sólo entre lo que la tablet ya recibió,
+ * y lo DICE: es un estado, nunca un error en rojo (regla todo-funciona-sin-red). Mismo estilo que el aviso de cola de
+ * «Cobro exitoso». [texto] = `CustomersViewModel.avisoDeGuardados` ([AVISO_SIN_RED_CLIENTES] o
+ * `AVISO_SERVIDOR_FALLO_CLIENTES`).
  */
 @Composable
-internal fun AvisoSinRedDeClientes(modifier: Modifier = Modifier) {
+internal fun AvisoSinRedDeClientes(
+    texto: String = AVISO_SIN_RED_CLIENTES,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         color = Warning.copy(alpha = 0.15f),
         shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
@@ -37,7 +42,7 @@ internal fun AvisoSinRedDeClientes(modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
             Icon(Icons.Filled.CloudOff, contentDescription = null, tint = Warning, modifier = Modifier.size(20.dp))
-            Text(text = AVISO_SIN_RED_CLIENTES, style = MaterialTheme.typography.bodySmall, color = Warning)
+            Text(text = texto, style = MaterialTheme.typography.bodySmall, color = Warning)
         }
     }
 }

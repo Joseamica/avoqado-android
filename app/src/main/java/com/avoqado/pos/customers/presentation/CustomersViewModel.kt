@@ -7,6 +7,8 @@ import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.CreateCustomerRequest
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.domain.AVISO_SERVIDOR_FALLO_CLIENTES
+import com.avoqado.pos.customers.domain.AVISO_SIN_RED_CLIENTES
 import com.avoqado.pos.customers.domain.avisoDeMasResultados
 import com.avoqado.pos.customers.domain.filtrarClientesLocal
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -45,6 +47,14 @@ class CustomersViewModel @Inject constructor(
     /** true = la última búsqueda no llegó al servidor por falta de red: se busca entre lo guardado y se avisa. */
     val offline: StateFlow<Boolean> = _offline.asStateFlow()
 
+    private val _avisoDeGuardados = MutableStateFlow<String?>(null)
+    /**
+     * El aviso ámbar cuando la lista sale de lo guardado en la tablet y no del servidor: sin red
+     * ([AVISO_SIN_RED_CLIENTES]) o porque el servidor contestó con un error ([AVISO_SERVIDOR_FALLO_CLIENTES]).
+     * null = la lista es la del servidor. Nunca en silencio: sin aviso, «No se encontraron» + «Crear cliente» mentía.
+     */
+    val avisoDeGuardados: StateFlow<String?> = _avisoDeGuardados.asStateFlow()
+
     private val _avisoDeMasResultados = MutableStateFlow<String?>(null)
     /**
      * «2 de 120: escribe más para afinar» cuando el servidor tiene más clientes con ese texto de los que se ven
@@ -61,8 +71,18 @@ class CustomersViewModel @Inject constructor(
 
     private var busqueda: Job? = null
 
-    /** Al abrir la lista: texto vacío y los recientes («Creados recientemente»), sin esperar. */
-    fun abrirLista() = onQueryChange("")
+    /**
+     * Al abrir la lista: texto vacío y los recientes («Creados recientemente»), sin esperar. Antes se borra lo de la
+     * apertura anterior: el ViewModel vive con la pantalla de navegación, así que sus resultados —quizá de OTRA
+     * sucursal— se verían bajo «Creados recientemente» hasta que llegaran los recientes. Con la lista vacía y la carga en
+     * vuelo se ve el cargador. Tampoco se arrastra un error viejo al diálogo de crear cliente.
+     */
+    fun abrirLista() {
+        _customers.value = emptyList()
+        _avisoDeMasResultados.value = null
+        _error.value = null
+        onQueryChange("")
+    }
 
     /**
      * Cada tecla del buscador. Pregunta al servidor [DEBOUNCE_BUSQUEDA_MS] después de la ÚLTIMA tecla (el texto vacío,
@@ -90,25 +110,25 @@ class CustomersViewModel @Inject constructor(
             result.fold(
                 onSuccess = { pagina ->
                     _offline.value = false
+                    _avisoDeGuardados.value = null
+                    _error.value = null
                     _customers.value = pagina.clientes
                     _avisoDeMasResultados.value =
                         avisoDeMasResultados(texto, pagina.clientes.size, pagina.total, pagina.busquedaTopada)
                 },
                 onFailure = { e ->
                     _avisoDeMasResultados.value = null
-                    // Sin red es un ESTADO (regla todo-funciona-sin-red): se busca entre lo guardado y se dice. Otro
-                    // fallo también cae a lo guardado —la caja no se queda sin lista—, pero a una respuesta del
-                    // servidor no se le llama «sin conexión» (mismo criterio que `ServerErrorText.isOffline`, espejo de iOS).
+                    // Sin red es un ESTADO (regla todo-funciona-sin-red): se busca entre lo guardado y se dice. Un error
+                    // del servidor (5xx, 401, sin sucursal) también cae a lo guardado —la caja no se queda sin lista— y
+                    // también se dice, con su propio texto: a una respuesta del servidor no se le llama «sin conexión»
+                    // (mismo criterio que `ServerErrorText.isOffline`, espejo de iOS).
+                    // 🔴 Nunca a `_error`: ese lo pinta `CreateCustomerView` (mismo ViewModel) como «No se pudo crear el
+                    // cliente», y un fallo de BÚSQUEDA abría ese diálogo falso al tocar «Crear».
                     val sinRed = ServerErrorText.isOffline(e)
+                    if (!sinRed) Log.e("👤", "Error buscando clientes: ${e.message}")
                     _offline.value = sinRed
+                    _avisoDeGuardados.value = if (sinRed) AVISO_SIN_RED_CLIENTES else AVISO_SERVIDOR_FALLO_CLIENTES
                     _customers.value = filtrarClientesLocal(repository.clientesGuardados(), texto)
-                    if (!sinRed) {
-                        Log.e("👤", "Error: ${e.message}")
-                        _error.value = ServerErrorText.humanize(
-                            e,
-                            fallback = "No se pudieron cargar los clientes. Inténtalo de nuevo.",
-                        )
-                    }
                 },
             )
             _isLoading.value = false

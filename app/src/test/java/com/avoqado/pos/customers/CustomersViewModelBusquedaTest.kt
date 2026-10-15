@@ -5,6 +5,8 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.data.model.PaginaDeClientes
+import com.avoqado.pos.customers.domain.AVISO_SERVIDOR_FALLO_CLIENTES
+import com.avoqado.pos.customers.domain.AVISO_SIN_RED_CLIENTES
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -107,6 +109,7 @@ class CustomersViewModelBusquedaTest {
 
         assertEquals(listOf(dany), viewModel.customers.value)
         assertTrue(viewModel.offline.value)
+        assertEquals(AVISO_SIN_RED_CLIENTES, viewModel.avisoDeGuardados.value)
         assertNull("sin red no es un error que haya que explicar en un diálogo", viewModel.error.value)
     }
 
@@ -126,20 +129,80 @@ class CustomersViewModelBusquedaTest {
         viewModel.fetchCustomers()
         advanceUntilIdle()
         assertFalse(viewModel.offline.value)
+        assertNull(viewModel.avisoDeGuardados.value)
         assertEquals(listOf(dany), viewModel.customers.value)
     }
 
+    // Revisión A2 (Important): un fallo del SERVIDOR (5xx, 401, «No venue selected») caía en silencio a lo guardado y su
+    // error iba a `error`, que `CreateCustomerView` (mismo ViewModel) pintaba como «No se pudo crear el cliente».
     @Test
-    fun `una respuesta de error del servidor no se llama sin conexion`() = runTest {
+    fun `P1 si el servidor falla la lista sale de lo guardado y lo dice, sin dialogo de error`() = runTest {
         every { repository.clientesGuardados() } returns listOf(dany)
-        coEvery { repository.buscarClientes(any()) } returns Result.failure(Exception("Error al cargar clientes (500)"))
+        coEvery { repository.buscarClientes("Dany") } returnsMany listOf(
+            Result.failure(Exception("Error al cargar clientes (500)")),
+            pagina(dany),
+        )
 
         viewModel.onQueryChange("Dany")
         advanceUntilIdle()
 
-        assertFalse(viewModel.offline.value)
-        assertNotNull(viewModel.error.value)
+        assertFalse("una respuesta del servidor no es «sin conexión»", viewModel.offline.value)
+        assertEquals(AVISO_SERVIDOR_FALLO_CLIENTES, viewModel.avisoDeGuardados.value)
+        assertNull("el error de una búsqueda no abre el diálogo de crear cliente", viewModel.error.value)
         assertEquals("la caja no se queda sin lista", listOf(dany), viewModel.customers.value)
+
+        viewModel.fetchCustomers()
+        advanceUntilIdle()
+        assertNull("cuando el servidor vuelve a contestar, el aviso se quita", viewModel.avisoDeGuardados.value)
+    }
+
+    @Test
+    fun `el aviso de fallo del servidor dice exactamente lo que pasa`() {
+        assertEquals(
+            "No se pudo buscar en el servidor: mostrando sólo los clientes guardados en la tablet",
+            AVISO_SERVIDOR_FALLO_CLIENTES,
+        )
+    }
+
+    @Test
+    fun `un error viejo se limpia al abrir la lista y con una busqueda que si contesta`() = runTest {
+        coEvery { repository.createCustomer(any()) } returns Result.failure(Exception("Este número de teléfono ya está registrado."))
+        coEvery { repository.buscarClientes("Dany") } returns pagina(dany)
+
+        viewModel.createCustomer("Ana", null, "+528112345678", null) {}
+        advanceUntilIdle()
+        assertNotNull(viewModel.error.value)
+        viewModel.abrirLista()
+        assertNull("al volver a abrir no se arrastra un error de antes", viewModel.error.value)
+
+        viewModel.createCustomer("Ana", null, "+528112345678", null) {}
+        advanceUntilIdle()
+        assertNotNull(viewModel.error.value)
+        viewModel.onQueryChange("Dany")
+        advanceUntilIdle()
+        assertNull(viewModel.error.value)
+    }
+
+    // Revisión A2 (Minor): el ViewModel vive con la pantalla de navegación; al reabrir se veían los resultados de la
+    // búsqueda anterior —quizá de OTRA sucursal— bajo «Creados recientemente» hasta que llegaban los recientes.
+    @Test
+    fun `P2 al reabrir la lista no se ve la busqueda anterior, se ve el cargador hasta que llegan los recientes`() = runTest {
+        coEvery { repository.buscarClientes("a") } returns pagina(dany, pedro, total = 120)
+        viewModel.onQueryChange("a")
+        advanceUntilIdle()
+        assertEquals(listOf(dany, pedro), viewModel.customers.value)
+        coEvery { repository.buscarClientes(null) } coAnswers {
+            delay(1_000)
+            pagina(pedro)
+        }
+
+        viewModel.abrirLista()
+
+        assertEquals(emptyList<Customer>(), viewModel.customers.value)
+        assertNull(viewModel.avisoDeMasResultados.value)
+        assertTrue("lista vacía y cargando = el cargador, nunca «No se encontraron»", viewModel.isLoading.value)
+        advanceUntilIdle()
+        assertEquals(listOf(pedro), viewModel.customers.value)
     }
 
     // MARK: - Auditoría A #10: decir cuántos hay de verdad

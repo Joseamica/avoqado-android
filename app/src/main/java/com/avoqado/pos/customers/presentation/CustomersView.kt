@@ -55,7 +55,7 @@ fun CustomersView(
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val offline by viewModel.offline.collectAsState()
+    val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
     val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
     var searchText by remember { mutableStateOf("") }
 
@@ -153,8 +153,10 @@ fun CustomersView(
                 .padding(horizontal = horizontalPadding),
         )
 
-        if (offline) {
+        // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
+        avisoDeGuardados?.let { aviso ->
             AvisoSinRedDeClientes(
+                texto = aviso,
                 modifier = Modifier
                     .padding(horizontal = horizontalPadding)
                     .padding(top = AvoqadoTheme.spacing.sm),

@@ -16,6 +16,13 @@ import java.text.Normalizer
  */
 const val AVISO_SIN_RED_CLIENTES = "Sin conexión: buscando sólo entre los clientes guardados en la tablet"
 
+/**
+ * El servidor SÍ contestó, pero con un error (5xx, 401, sin sucursal): la lista sale de lo guardado y se dice, como sin
+ * red. Antes caía a lo guardado EN SILENCIO y el cajero veía «No se encontraron clientes» + «Crear cliente» para un
+ * cliente que sí existe (revisión A2).
+ */
+const val AVISO_SERVIDOR_FALLO_CLIENTES = "No se pudo buscar en el servidor: mostrando sólo los clientes guardados en la tablet"
+
 private val SOLO_TELEFONO = Regex("^[0-9 +\\-()]+$")
 private val NO_DIGITO = Regex("[^0-9]")
 private val MARCAS_DE_ACENTO = Regex("\\p{Mn}+")

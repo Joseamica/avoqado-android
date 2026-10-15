@@ -118,7 +118,7 @@ private fun TabletCustomersLayout(
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val offline by viewModel.offline.collectAsState()
+    val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
     val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
@@ -250,8 +250,10 @@ private fun TabletCustomersLayout(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            if (offline) {
+            // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
+            avisoDeGuardados?.let { aviso ->
                 AvisoSinRedDeClientes(
+                    texto = aviso,
                     modifier = Modifier.padding(
                         horizontal = AvoqadoTheme.spacing.lg,
                         vertical = AvoqadoTheme.spacing.sm,
@@ -351,7 +353,7 @@ private fun PhoneCustomersLayout(
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val offline by viewModel.offline.collectAsState()
+    val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
     val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
@@ -502,8 +504,10 @@ private fun PhoneCustomersLayout(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-        if (offline) {
+        // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
+        avisoDeGuardados?.let { aviso ->
             AvisoSinRedDeClientes(
+                texto = aviso,
                 modifier = Modifier.padding(
                     horizontal = AvoqadoTheme.spacing.lg,
                     vertical = AvoqadoTheme.spacing.sm,
