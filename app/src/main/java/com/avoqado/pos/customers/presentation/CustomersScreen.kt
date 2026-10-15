@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.domain.filtrarClientesLocal
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -106,16 +107,7 @@ private fun TabletCustomersLayout(
     var showCreateCustomer by remember { mutableStateOf(false) }
 
     val filteredCustomers = remember(searchText, customers) {
-        if (searchText.isEmpty()) {
-            customers
-        } else {
-            val query = searchText.lowercase()
-            customers.filter { customer ->
-                customer.fullName.lowercase().contains(query) ||
-                    (customer.phone?.contains(query) == true) ||
-                    (customer.email?.lowercase()?.contains(query) == true)
-            }
-        }
+        filtrarClientesLocal(customers, searchText)
     }
 
     // Create Customer overlay
@@ -331,16 +323,7 @@ private fun PhoneCustomersLayout(
     var showCreateCustomer by remember { mutableStateOf(false) }
 
     val filteredCustomers = remember(searchText, customers) {
-        if (searchText.isEmpty()) {
-            customers
-        } else {
-            val query = searchText.lowercase()
-            customers.filter { customer ->
-                customer.fullName.lowercase().contains(query) ||
-                    (customer.phone?.contains(query) == true) ||
-                    (customer.email?.lowercase()?.contains(query) == true)
-            }
-        }
+        filtrarClientesLocal(customers, searchText)
     }
 
     // Create Customer overlay
