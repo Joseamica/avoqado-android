@@ -1113,6 +1113,44 @@ class OrderRepository @Inject constructor(
         }
     }
 
+    // MARK: - Sello de la venta (sellos tardíos)
+
+    /** Plazo corto: la consulta corre detrás de «Cobro exitoso» y no tiene por qué colgarse 30 s. */
+    private val selloClient: OkHttpClient by lazy { client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build() }
+
+    /**
+     * `GET /mobile/venues/:venueId/payments/:paymentId/loyalty`: qué pasó con el sello de una venta que se cobró CON
+     * cliente desde el carrito. 🔴 Nunca lanza: sin red, 403 (rol sin `loyalty:read`) o 404 (servidor viejo) son null y la
+     * pantalla de éxito no cambia. Va marcada como tarea de FONDO: un 403 no puede abrir el teclado del PIN encima del
+     * recibo.
+     */
+    suspend fun consultarSelloDeLaVenta(paymentId: String): SaleStampOutcome? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+        if (paymentId.isBlank()) return null
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/loyalty")
+                .header("Authorization", "Bearer $token")
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .get()
+                .build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                selloClient.newCall(request).execute().use { response -> response.code to (response.body?.string() ?: "") }
+            }
+            if (code !in 200..299) {
+                Log.w("🎟️", "Sello de la venta $paymentId: HTTP $code")
+                return null
+            }
+            leerSelloDeLaVenta(body, dentroDeLoyalty = false)?.also { recordarProgramaDeSellos(venueId, it) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("🎟️", "Sello de la venta $paymentId sin respuesta: ${e.message}")
+            null
+        }
+    }
+
     // MARK: - Send Receipt via Email
 
     suspend fun sendReceiptEmail(

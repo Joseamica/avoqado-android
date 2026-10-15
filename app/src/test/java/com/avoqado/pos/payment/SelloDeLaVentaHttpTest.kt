@@ -1,8 +1,10 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.di.NetworkModule
 import com.avoqado.pos.loyalty.data.SaleStampOutcome
+import com.avoqado.pos.loyalty.data.SaleStampReason
 import com.avoqado.pos.payment.data.OrderRepository
 import io.mockk.every
 import io.mockk.mockk
@@ -118,5 +120,54 @@ class SelloDeLaVentaHttpTest {
         val error = repository.attachCustomerToPayment("pago-1", "cm-dany").exceptionOrNull()
 
         assertEquals("Pago no encontrado", error?.message)
+    }
+
+    // MARK: - A5: consulta del sello
+
+    @Test
+    fun `P1 la consulta del sello va como tarea de fondo para que un 403 no abra el teclado del PIN`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":$selloSumado}"""))
+
+        val sello = repository.consultarSelloDeLaVenta("pago-1")
+
+        assertEquals(3, sello?.stampsEarned)
+        val peticion = server.takeRequest()
+        assertEquals("GET", peticion.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/payments/pago-1/loyalty", peticion.path)
+        assertEquals("1", peticion.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+        assertEquals(true, repository.programaDeSellosActivo("venue-1"))
+    }
+
+    @Test
+    fun `pendiente se lee como PENDING para que la pantalla reintente`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"stampsEnabled":true,"stamped":false,"reason":"PENDING","stampsEarned":2,"stampsRequired":7,"rewardReady":false}}"""))
+
+        assertEquals(SaleStampReason.PENDING, repository.consultarSelloDeLaVenta("pago-1")?.reasonCode)
+    }
+
+    @Test
+    fun `venta sin cliente, servidor viejo o sin permiso no traen sello y no lanzan`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":null}"""))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"message":"Not found"}"""))
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","message":"Permission 'loyalty:read' required"}"""))
+
+        assertNull(repository.consultarSelloDeLaVenta("pago-1"))
+        assertNull(repository.consultarSelloDeLaVenta("pago-1"))
+        assertNull(repository.consultarSelloDeLaVenta("pago-1"))
+    }
+
+    @Test
+    fun `P1 una consulta con un numero nulo no lanza ni pinta un sello inventado`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":$selloConNumeroNulo}"""))
+
+        assertNull(repository.consultarSelloDeLaVenta("pago-1"))
+        assertNull("una lectura descartada no dice nada del programa", repository.programaDeSellosActivo("venue-1"))
+    }
+
+    @Test
+    fun `sin red la consulta devuelve null en vez de lanzar`() = runBlocking {
+        repository.baseUrl = "http://127.0.0.1:1/api/v1"
+
+        assertNull(repository.consultarSelloDeLaVenta("pago-1"))
     }
 }

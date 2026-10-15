@@ -11,6 +11,7 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
 import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.loyalty.data.SaleStampReason
 import com.avoqado.pos.loyalty.domain.RenglonDelSello
 import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.payment.data.CashPaymentRepository
@@ -846,6 +847,70 @@ class PaymentFlowViewModel @Inject constructor(
     private val _renglonDelSello = MutableStateFlow<RenglonDelSello?>(null)
     val renglonDelSello: StateFlow<RenglonDelSello?> = _renglonDelSello.asStateFlow()
 
+    /**
+     * La venta cuyo renglón del sello ya se decidió. `Success` se vuelve a emitir con `copy(...)` (avisos que se
+     * limpian) y eso no puede volver a preguntar ni pisar lo que dijo la liga.
+     */
+    private var ventaDelSello: String? = null
+    private var consultaDelSello: kotlinx.coroutines.Job? = null
+
+    init {
+        // Sellos tardíos: al llegar a «Cobro exitoso» con el cliente que venía del CARRITO se pregunta si la venta
+        // sumó sello. Un solo punto de entrada para los ~10 caminos que terminan en Success.
+        // Seguro aquí aunque haya propiedades declaradas más abajo: el primer valor es `Loading`, y `Success` sólo
+        // llega después de construir el ViewModel.
+        viewModelScope.launch {
+            _state.collect { estado -> if (estado is PaymentFlowState.Success) alLlegarAExito(estado) }
+        }
+    }
+
+    /**
+     * 🔴 Nunca bloquea ni retrasa «Cobro exitoso»: corre aparte, y cualquier fallo es silencio (el renglón no sale).
+     * - Cuenta dividida con saldo: la venta aún no está saldada; el renglón (o la promesa sin red) lo da la parte que la
+     *   salda. Va ANTES de lo encolado: la parte 1 sin red tampoco puede prometer un sello que sólo llega al saldarse.
+     * - Venta encolada sin red: no hay pago que consultar; si este aparato ya vio que el negocio tiene sellos, dice
+     *   «El sello se suma al sincronizar» — sólo si la cola LLEVA al cliente (ver [laColaLlevaAlCliente]).
+     * - PENDING: la lealtad aún no termina de procesarse; UN reintento a los [REINTENTO_DEL_SELLO_MS] y luego nada.
+     */
+    private fun alLlegarAExito(exito: PaymentFlowState.Success) {
+        val paymentId = exito.paymentId ?: lastPaymentId
+        val clave = paymentId ?: exito.colaDelCobro?.toString() ?: return
+        if (clave == ventaDelSello) return
+        ventaDelSello = clave
+        consultaDelSello?.cancel()
+        if (attachedCustomerId == null) return
+        if (buildCompletion().remainingBalanceCents > 0) return
+
+        if (exito.isQueued) {
+            val venueId = secureStorage.venueId
+            if (laColaLlevaAlCliente(exito) && venueId != null && orderRepository.programaDeSellosActivo(venueId) == true) {
+                _renglonDelSello.value = RenglonDelSello.SE_SUMA_AL_SINCRONIZAR
+            }
+            return
+        }
+        if (paymentId == null) return
+
+        consultaDelSello = viewModelScope.launch {
+            var sello = orderRepository.consultarSelloDeLaVenta(paymentId)
+            if (sello != null && sello.stampsEnabled && sello.reasonCode == SaleStampReason.PENDING) {
+                delay(REINTENTO_DEL_SELLO_MS)
+                sello = orderRepository.consultarSelloDeLaVenta(paymentId)
+            }
+            if (ventaDelSello != clave) return@launch
+            _renglonDelSello.value = RenglonDelSello.desde(sello)
+        }
+    }
+
+    /**
+     * ¿Al sincronizar, la venta llega al servidor CON su cliente? Sólo entonces se puede prometer el sello.
+     * - Cola de pagos (`pending_payments`) de MOSTRADOR: sí — el cobro rápido manda `customerId` en el replay, y la orden
+     *   creada (en línea o al reproducir, con `orderRequestJson`) nació con él.
+     * - Mesa: no se sabe. El `PAY_CASH` de una mesa provisional (outbox) y su `OPEN_TABLE` no llevan cliente, y el pago
+     *   encolado de una mesa existente va a `/orders/:id/pay`, que no lo liga: la orden de la mesa puede no tenerlo.
+     */
+    private fun laColaLlevaAlCliente(exito: PaymentFlowState.Success): Boolean =
+        exito.colaDelCobro is com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos && mesaDelCobro == null
+
     fun clearCustomerAttachResult() {
         _customerAttachResult.value = null
     }
@@ -887,6 +952,7 @@ class PaymentFlowViewModel @Inject constructor(
                         _attachedCustomerName.value = customerName
                         _customerAttachResult.value = "Cliente agregado: $customerName"
                         // Sellos tardíos: el servidor ya sumó (o no) el sello al ligar; aquí sólo se dice.
+                        consultaDelSello?.cancel()
                         _renglonDelSello.value = RenglonDelSello.desde(sello)
                         // El aviso ya se resolvió: la venta SÍ tiene cliente ahora. Dejarlo
                         // puesto es estado que miente — y era la única divergencia con iOS
@@ -1148,6 +1214,10 @@ class PaymentFlowViewModel @Inject constructor(
         _customerAttachResult.value = null
         _customerAttachSending.value = false
         _renglonDelSello.value = null
+        // La consulta del sello de la venta ANTERIOR no puede pintar sobre ésta.
+        consultaDelSello?.cancel()
+        consultaDelSello = null
+        ventaDelSello = null
         attachedCustomerId = customerId?.takeIf { it.isNotBlank() }
         _attachedCustomerName.value = customerName?.takeIf { it.isNotBlank() }
         lastReceipt = null
@@ -3978,6 +4048,9 @@ class PaymentFlowViewModel @Inject constructor(
     companion object {
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
+
+        /** Sellos tardíos: si la lealtad de la venta aún se procesa (PENDING), se vuelve a preguntar UNA vez, a los 2 s. */
+        internal const val REINTENTO_DEL_SELLO_MS = 2_000L
 
         /**
          * Encabezado de la pantalla de un cobro sin confirmar de OTRA venta, la que abre «Revisar» desde el aviso (25-sep:

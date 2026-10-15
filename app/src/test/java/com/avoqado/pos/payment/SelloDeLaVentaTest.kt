@@ -16,6 +16,8 @@ import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.data.model.ColaDelCobro
+import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -36,10 +38,12 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -295,5 +299,194 @@ class SelloDeLaVentaTest {
         viewModel.startPaymentFlow(otroImporte())
 
         assertNull(viewModel.renglonDelSello.value)
+    }
+
+    // MARK: - A5: el cliente venía del carrito
+
+    @Test
+    fun `P1 con el cliente del carrito al cobrar se consulta el sello y se pinta`() = runTest {
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-1") } returns sello(stamped = true, earned = 3)
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals(RenglonDelSello("✓ +1 sello · 3 de 7", positivo = true), viewModel.renglonDelSello.value)
+        coVerify(exactly = 1) { orderRepository.consultarSelloDeLaVenta("pago-1") }
+    }
+
+    @Test
+    fun `P1 si la lealtad sigue procesandose reintenta una sola vez a los 2 s`() = runTest {
+        val momentos = mutableListOf<Long>()
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-1") } coAnswers {
+            momentos += testScheduler.currentTime
+            if (momentos.size == 1) sello(reason = "PENDING") else sello(stamped = true, earned = 0, reward = true)
+        }
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        assertEquals(2, momentos.size)
+        assertEquals(2_000L, momentos[1] - momentos[0])
+        assertEquals(
+            RenglonDelSello("🎁 ¡Completó su tarjeta! Tiene un premio por cobrar", positivo = true),
+            viewModel.renglonDelSello.value,
+        )
+    }
+
+    @Test
+    fun `si tras el reintento sigue pendiente no pinta nada ni vuelve a preguntar`() = runTest {
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-1") } returns sello(reason = "PENDING")
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { orderRepository.consultarSelloDeLaVenta("pago-1") }
+        assertNull(viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 si la consulta falla la venta sigue en exito y no se pinta nada`() = runTest {
+        coEvery { orderRepository.consultarSelloDeLaVenta(any()) } returns null
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNull(viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `una venta sin cliente no pregunta por el sello`() = runTest {
+        cobrar()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
+    fun `la liga despues de cobrar no dispara ademas la consulta del sello`() = runTest {
+        coEvery { orderRepository.attachCustomerToPayment(any(), any()) } returns Result.success(sello(stamped = true, earned = 3))
+        cobrar()
+        advanceUntilIdle()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+        assertEquals(RenglonDelSello("✓ +1 sello · 3 de 7", positivo = true), viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 la consulta de una venta anterior no pinta sobre la venta nueva`() = runTest {
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-1") } coAnswers {
+            delay(5_000)
+            sello(stamped = true, earned = 3)
+        }
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceTimeBy(1_000)
+        assertTrue("premisa: la venta 1 ya está en «Cobro exitoso»", viewModel.state.value is PaymentFlowState.Success)
+
+        viewModel.startPaymentFlow(otroImporte())
+        advanceUntilIdle()
+
+        assertNull(viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 venta en efectivo encolada sin red con cliente dice que el sello se suma al sincronizar`() = runTest {
+        every { orderRepository.programaDeSellosActivo("venue-1") } returns true
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertTrue(exito.isQueued)
+        assertEquals(RenglonDelSello.SE_SUMA_AL_SINCRONIZAR, viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
+    fun `encolada en un negocio del que no se sabe si tiene sellos no promete nada`() = runTest {
+        every { orderRepository.programaDeSellosActivo(any()) } returns null
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+        assertNull(viewModel.renglonDelSello.value)
+    }
+
+    // MARK: - A5: casos donde el sello NO se puede prometer (la pantalla no puede mentir)
+
+    @Test
+    fun `P1 una mesa abierta sin red no promete el sello porque su cola no lleva al cliente`() = runTest {
+        // El intent PAY_CASH de una mesa provisional (y su OPEN_TABLE) no llevan `customerId`: al sincronizar, la venta
+        // llega sin cliente y nunca suma sello. Prometerlo sería mentir.
+        every { orderRepository.programaDeSellosActivo(any()) } returns true
+        tableSession.start(
+            TableSession.Active("mesa-5", "5", null, "local-5", "LOCAL-5", 0, 10_000, TableSession.Mode.PAYING, isProvisional = true),
+        )
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertTrue("premisa: la mesa provisional se encola en el outbox", exito.colaDelCobro is ColaDelCobro.Outbox)
+        assertNull(viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
+    fun `una mesa cuyo cobro se encola tampoco promete porque la orden de la mesa puede no tener al cliente`() = runTest {
+        every { orderRepository.programaDeSellosActivo(any()) } returns true
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+        tableSession.start(
+            TableSession.Active("mesa-5", "5", null, "orden-mesa-5", "M-5", 0, 10_000, TableSession.Mode.PAYING),
+        )
+
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertTrue("premisa: se encoló en la cola de pagos", exito.colaDelCobro is ColaDelCobro.Pagos)
+        assertNull(viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 la parte 1 de una cuenta dividida no pregunta por el sello`() = runTest {
+        // Contrato §3: con saldo pendiente el servidor respondería NOT_PAID («no está pagada completa») a media división.
+        viewModel.setSplitConfig("CUSTOMAMOUNT", customAmountCents = 4_000)
+        viewModel.startPaymentFlow(otroImporte(), customerId = "cm-dany", customerName = "Dany")
+        viewModel.confirmCashCustom(4_000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertTrue("premisa: queda saldo", viewModel.buildCompletion().remainingBalanceCents > 0)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+        assertNull(viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `la parte 1 de una cuenta dividida encolada sin red tampoco promete el sello`() = runTest {
+        every { orderRepository.programaDeSellosActivo(any()) } returns true
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+        viewModel.setSplitConfig("CUSTOMAMOUNT", customAmountCents = 4_000)
+        viewModel.startPaymentFlow(otroImporte(), customerId = "cm-dany", customerName = "Dany")
+        viewModel.confirmCashCustom(4_000)
+        advanceUntilIdle()
+
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+        assertNull("el sello lo trae la parte que salda la cuenta", viewModel.renglonDelSello.value)
     }
 }
