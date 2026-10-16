@@ -1019,12 +1019,16 @@ class OrderRequestPromotionTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
-    private suspend fun TestScope.cobrarMesaT4(split: String = "FULLPAYMENT", importe: Int = 11500): ReceiptData {
+    private suspend fun TestScope.cobrarMesaT4(
+        split: String = "FULLPAYMENT",
+        importe: Int = 11500,
+        mesa: com.avoqado.pos.tables.data.TableSession.Active = mesaT4(),
+    ): ReceiptData {
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
-        tableSession.start(mesaT4())
+        tableSession.start(mesa)
         val cart = carritoT4()
         paymentViewModel.setSplitConfig(split, selectedItemIds = cart.items.map { it.id },
             numberOfParts = if (split == "EQUALPARTS") 2 else null,
@@ -1186,6 +1190,55 @@ class OrderRequestPromotionTest {
             assertEquals("Negocio B", r.venueName); assertNull(r.serviceChargeAmount)
             assertEquals(11500, r.subtotal); assertEquals(11500, r.items.single().totalPrice)
             assertEquals(11500, r.total); assertTrue(cuadra(r))
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    // MARK: - D4 (mesas40, 14-oct): el ticket del cobro de una MESA
+
+    @Test fun `D4 mesero Ana, cobra Luis - Atendio Ana, el pago sigue a nombre de Luis y el tipo es Mesa 5`() = runTest {
+        // Luis es quien tiene la caja: el carrito lo trae como vendedor (lo que el pago registra como staffId).
+        every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-luis"
+        every { secureStorage.selectedStaffNameForCurrentVenue } returns "Luis"
+        try {
+            val r = cobrarMesaT4(mesa = mesaT4().copy(meseroNombre = "Ana"))
+            assertEquals("Atendió = el mesero dueño de la cuenta", "Ana", r.cashierName)
+            assertEquals("Mesa 5", r.orderType)
+            coVerify(exactly = 1) {
+                orderRepository.recordCashPayment("order-mesa-A", 11500, "staff-luis", any(), any(), any(), any(), any(), capturedVenueId = any())
+            }
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 cuenta sin mesero - Atendio es la sesion, nunca el literal Staff`() = runTest {
+        every { secureStorage.userFirstName } returns "Luis"
+        every { secureStorage.userLastName } returns "Cajero"
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+        tableSession.start(mesaT4(cargo = 0))
+        try {
+            // Así siembra «Pagar» de la pantalla de la mesa (TableOrderScreen): un CartState armado a mano, sin vendedor.
+            paymentViewModel.startPaymentFlow(CartState(items = listOf(CartItem(type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 11500, quantity = 1))))
+            paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+            paymentViewModel.processCashPayment(11500)
+            advanceUntilIdle()
+            assertEquals("Luis Cajero", impreso.captured.cashierName)
+            assertEquals("Mesa 5", impreso.captured.orderType)
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    /**
+     * D4, ronda 2 de Codex (P2): «Pagar» capturaba los platillos (taco $50 + agua $50). Otra caja hace cortesía del taco y
+     * agrega un postre de $50: la cuenta sigue en $100 y se cobran $100 exactos. El cobro no devuelve la versión de la
+     * cuenta, así que nada en el aparato prueba que la foto sigue vigente: el ticket dice «Cuenta Mesa 5», nunca taco y agua
+     * (los platillos con certeza los trae la reimpresión, del servidor). Rojo con la foto capturada: CI 38794433857.
+     */
+    @Test fun `D4 cuenta cambiada en otra caja con el mismo importe - el ticket dice Cuenta Mesa N, nunca la foto de platillos`() = runTest {
+        try {
+            val r = cobrarMesaT4(importe = 10000, mesa = mesaT4(cargo = 0, total = 10000))
+            assertEquals("Cuenta Mesa 5", r.items.single().name)
+            assertEquals(10000, r.total); assertTrue(cuadra(r))
         } finally { paymentViewModel.viewModelScope.cancel() }
     }
 

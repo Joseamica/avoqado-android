@@ -496,6 +496,30 @@ class TablesCobroDelPlanoTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    /** D4 (mesas40): cobrar desde el plano también lleva al ticket quién atiende la cuenta. */
+    @Test fun `D4 el piso lleva el mesero de la cuenta al cobro`() = runTest {
+        val subject = vm()
+        val conMesero = DiningTable("t1", "5", openOrders = listOf(OpenCheckSummary("o1", "ORD-1", total = 100.0, waiterName = "Ana")))
+        coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+        try {
+            subject.startCobrar(conMesero) {}; advanceUntilIdle()
+            assertEquals(TableSession.Mode.PAYING, session.current()!!.mode)
+            assertEquals("Ana", session.current()!!.meseroNombre)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    /** D4, ronda 2 de Codex (P2): el resumen del plano ES la lectura de esa cuenta; si ya no trae mesero, no se conserva el viejo. */
+    @Test fun `D4 asignacion quitada - reentrar al cobro desde el piso no conserva el mesero guardado`() = runTest {
+        val subject = vm()
+        session.start(TableSession.Active("t1", "5", null, "o1", "ORD-1", 3, 6000, TableSession.Mode.PAYING, meseroNombre = "Ana"))
+        coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+        try {
+            subject.startCobrar(table) {}; advanceUntilIdle()
+            assertEquals("montaje: reentró a la sesión PAYING", 6000, session.current()!!.totalCents)
+            assertNull(session.current()!!.meseroNombre)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `T4 el piso limpio crea una sesion sin cargo que tampoco cambia el total del resumen`() = runTest {
         val subject = vm()
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
