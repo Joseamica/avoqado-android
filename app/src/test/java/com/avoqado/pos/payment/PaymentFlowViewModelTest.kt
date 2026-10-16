@@ -4102,4 +4102,27 @@ class PaymentFlowViewModelTest {
         assertNull(storeDePendientes.pendiente.value)
         coVerify(timeout = 5_000, exactly = 1) { entregaPorWifi.cerrarPorPapel("venue-1", "XXXX", listOf(planBarraDeX)) }
     }
+
+    // MARK: - Testarudo, 15-oct: la sesión no se renovó por un parpadeo del internet
+
+    @Test
+    fun `P1 tarjeta - sesion sin renovar por red dice Sin conexion, no Token has expired`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(com.avoqado.pos.core.data.network.SesionSinRenovar("red:UnknownHostException"))
+
+        viewModel.startPaymentFlow(
+            CartState(items = listOf(CartItem(id = "l1", type = CartItemType.ProductItem("prod-1"), name = "Americano", unitPrice = 5500))),
+        )
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("se esperaba Error, fue $estado", estado is PaymentFlowState.Error)
+        estado as PaymentFlowState.Error
+        assertEquals(PaymentFlowViewModel.TARJETA_SIN_RED, estado.message)
+        assertEquals(PaymentErrorSource.NETWORK, estado.source)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
 }

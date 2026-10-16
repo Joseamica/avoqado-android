@@ -71,7 +71,8 @@ object NetworkModule {
             }
         }
 
-        return OkHttpClient.Builder()
+        // Nace del cliente base compartido (ver ConexionesCompartidas): el refresco de sesión reusa estas conexiones.
+        return com.avoqado.pos.core.data.network.ConexionesCompartidas.base.newBuilder()
             .addInterceptor(authInterceptor)
             // Registro pasivo de dispositivos (estilo Square Device Management): manda
             // los headers X-Device-* para que el server registre este aparato en el

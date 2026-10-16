@@ -717,7 +717,13 @@ class PaymentSyncService @Inject constructor(
             return handleSyncResult(payment, code, responseBody, headers.first, headers.second, aliasComprobado)
 
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (e: java.net.UnknownHostException) {
+        catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
+            // La sesión venció sin red para renovarla: igual que el 401 de siempre, no gasta
+            // reintentos (diez parpadeos del internet no pueden mandar un efectivo a cuarentena).
+            Log.w(TAG, "⚠️ Sesión sin renovar (${e.motivo}) — pausing sync, payment ${payment.id} stays PENDING")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+            return true
+        } catch (e: java.net.UnknownHostException) {
             handleNetworkError(payment, "Sin conexión")
             return true
         } catch (e: java.net.ConnectException) {
@@ -753,7 +759,9 @@ class PaymentSyncService @Inject constructor(
                 }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (e: java.net.UnknownHostException) {
+        catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
+            OrderResolution.AuthExpired
+        } catch (e: java.net.UnknownHostException) {
             OrderResolution.RetryableFailure("Sin conexión")
         } catch (e: java.net.ConnectException) {
             OrderResolution.RetryableFailure("No se pudo conectar al servidor")

@@ -1630,6 +1630,15 @@ class PaymentFlowViewModel @Inject constructor(
                                             source = PaymentErrorSource.SERVER,
                                         )
                                     }
+                                } else if (com.avoqado.pos.core.data.network.ServerErrorText.isOffline(error)) {
+                                    // Tarjeta sin red (también si la sesión venció y no hubo red para renovarla,
+                                    // Testarudo 15-oct): se dice como en el selector de terminal, nunca con el
+                                    // mensaje crudo del servidor. La llave se conserva: si la orden sí aterrizó,
+                                    // el reintento la deduplica.
+                                    _state.value = PaymentFlowState.Error(
+                                        message = TARJETA_SIN_RED,
+                                        source = PaymentErrorSource.NETWORK,
+                                    )
                                 } else {
                                     estrenarLlaveTrasRechazoDeOrden(error)
                                     _state.value = PaymentFlowState.Error(
