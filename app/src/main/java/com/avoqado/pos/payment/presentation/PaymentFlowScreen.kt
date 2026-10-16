@@ -369,6 +369,15 @@ fun PaymentFlowScreen(
             // 🔴 Ni éxito ni fracaso: no se sabe si la tarjeta se cobró. Pantalla propia,
             // sin Reintentar a ciegas — ver PaymentUndeterminedView.
             is PaymentFlowState.Undetermined -> {
+                // D2 (mesas40): el servidor resuelve el cobro hasta ~30 s después y Android no tiene socket. Se le vuelve
+                // a preguntar cada 5 s por el MISMO camino de «Volver a consultar», en segundo plano: sólo lee, nunca
+                // cobra, y «no se sabe» (sin red incluido) deja la pantalla como está. Vive mientras se vea esta pantalla.
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        kotlinx.coroutines.delay(5_000)
+                        viewModel.recheckCardCharge(automatica = true)
+                    }
+                }
                 PaymentUndeterminedView(
                     message = currentState.message,
                     isChecking = currentState.checking,

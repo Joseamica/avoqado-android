@@ -400,6 +400,7 @@ class TablesViewModel @Inject constructor(
                 totalCents = round(order.total * 100).toInt(),
                 mode = TableSession.Mode.ORDERING,
                 isProvisional = order.isProvisional,
+                meseroNombre = order.waiterName?.takeIf { it.isNotBlank() },
             ),
         ) ?: return
         _selectedTableId.value = null
@@ -420,6 +421,7 @@ class TablesViewModel @Inject constructor(
                 totalCents = round(check.total * 100).toInt(),
                 mode = TableSession.Mode.ORDERING,
                 isProvisional = check.isProvisional,
+                meseroNombre = check.waiterName?.takeIf { it.isNotBlank() },
             ),
         ) ?: return
         _selectedTableId.value = null
@@ -459,7 +461,9 @@ class TablesViewModel @Inject constructor(
             val existing = tableSession.current()
             if (existing != null && existing.mode == TableSession.Mode.PAYING && existing.orderId == order.id) {
                 // El piso conserva el saldo propio, pero no acredita si hubo abonos para separar el cargo.
-                tableSession.start(existing.copy(serviceChargeCents = 0))
+                // D4 (ronda 2 de Codex): el resumen ES la lectura de esta cuenta; sin mesero ahí, no se conserva el viejo.
+                tableSession.start(existing.copy(serviceChargeCents = 0,
+                    meseroNombre = order.waiterName?.takeIf { it.isNotBlank() }))
                 _selectedTableId.value = null
                 _actionState.value = TableActionState.Idle
                 onReady()
@@ -478,6 +482,8 @@ class TablesViewModel @Inject constructor(
                     // Sin cargo: sólo el cheque abierto garantizado conoce sus abonos.
                     mode = TableSession.Mode.PAYING,
                     isProvisional = order.isProvisional,
+                    // D4: el «Atendió» del ticket es el mesero dueño de la cuenta, también sin red (resumen del plano).
+                    meseroNombre = order.waiterName?.takeIf { it.isNotBlank() },
                 ),
             )
             _selectedTableId.value = null

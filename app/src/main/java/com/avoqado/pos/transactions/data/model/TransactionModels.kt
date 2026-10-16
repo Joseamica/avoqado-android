@@ -120,6 +120,12 @@ data class Transaction(
     /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior (o comprobante raro, A7-R8): se cae a importe y propina del pago. */
     @Serializable(with = TicketTotalsTolerante::class)
     val ticketTotals: TicketTotalsDto? = null,
+    /**
+     * D4 (mesas40), aditivos: el tipo de la orden (DINE_IN, TAKEOUT…) y el número de su mesa, para que la reimpresión diga
+     * «Mesa 5» / «Para llevar» como el ticket del cobro. 🔴 El servidor todavía no los manda: sin ellos, «En tienda».
+     */
+    val orderType: String? = null,
+    val tableNumber: String? = null,
 ) {
     val paymentMethod: String? get() = method
 

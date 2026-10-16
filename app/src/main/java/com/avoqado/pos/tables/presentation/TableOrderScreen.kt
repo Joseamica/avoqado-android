@@ -2911,6 +2911,12 @@ internal val FULFILLMENT_OPTIONS = listOf(
     "PICKUP" to "Pickup",
 )
 
+/** El «Tipo» del ticket (D4, mesas40): «Mesa N» si la venta es de una mesa; si no, la etiqueta del cumplimiento; si no, «En tienda». */
+internal fun etiquetaDelTipoDeOrden(mesa: String?, orderType: String?): String =
+    mesa?.takeIf { it.isNotBlank() }?.let { "Mesa $it" }
+        ?: FULFILLMENT_OPTIONS.firstOrNull { it.first == orderType }?.second
+        ?: "En tienda"
+
 @Composable
 private fun FulfillmentDialog(
     current: String,

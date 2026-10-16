@@ -104,6 +104,21 @@ class CardChargeDecisionTest {
         assertTrue(outcome is CardChargeOutcome.NotCharged)
     }
 
+    /**
+     * D2 (mesas40): la consulta automática aplica lo que esto decida sin que el cajero toque nada. Un CANCELLED sin una
+     * cancelación ACEPTADA (sin disposición, o sólo pedida) no prueba que no se cobró: sigue sin saberse.
+     */
+    @Test
+    fun `D2 CANCELLED sin cancelacion aceptada sigue sin saberse`() {
+        for (disposicion in listOf(null, "REQUESTED")) {
+            val decision = CardChargeDecision.decide(
+                probe = ChargeStatusProbe.Known(status = "CANCELLED", inProgress = false, cancelDisposition = disposicion),
+                isFinalAttempt = true,
+            )
+            assertTrue("disposición $disposicion", (decision as ProbeDecision.Resolved).outcome is CardChargeOutcome.Undetermined)
+        }
+    }
+
     @Test
     fun `CANCELLED tampoco cobró`() {
         val decision = CardChargeDecision.decide(
