@@ -1,8 +1,16 @@
 package com.avoqado.pos.pos.data.model
 import com.avoqado.pos.core.util.formatMoney
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.nullable
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
 import com.avoqado.pos.core.util.aCentavos
 
@@ -68,6 +76,16 @@ data class Product(
     val limitingIngredient: IngredientShortage? = null,
     /** Insumos con los que ya no alcanza NI para una porción. */
     val insufficientIngredients: List<IngredientShortage>? = null,
+    /** Variantes (spec 2026-10-14 §7): familia a la que pertenece esta variante. null = producto suelto o server viejo. */
+    @Serializable(with = TextoTolerante::class)
+    val productGroupId: String? = null,
+    @Serializable(with = TextoTolerante::class)
+    val productGroupName: String? = null,
+    @Serializable(with = TextoTolerante::class)
+    val productGroupImageUrl: String? = null,
+    /** Valores de opción de ESTA variante, ya ordenados por eje. Tolerante: un valor raro da null, nunca tumba el catálogo. */
+    @Serializable(with = OpcionesDeVarianteTolerantes::class)
+    val variantOptions: List<VariantOption>? = null,
 ) {
     val priceInCents: Int get() = priceValue.aCentavos()
 
@@ -81,7 +99,7 @@ data class Product(
         get() = trackInventory == true && (availableQuantity ?: 1) <= 0
 
     val displayPrice: String
-        get() = formatMoney(priceValue) + if (soldByWeight) "/kg" else ""
+        get() = precioConUnidad(priceValue, soldByWeight)
 
     val hasModifiers: Boolean
         get() = !modifierGroups.isNullOrEmpty() &&
@@ -108,6 +126,9 @@ data class Product(
             ?: emptyList()
 }
 
+/** El precio como lo pinta el tile: `$199.00`, o `$199.00/kg` si se vende por peso. Lo comparten el producto y la familia. */
+fun precioConUnidad(precio: Double, porPeso: Boolean): String = formatMoney(precio) + if (porPeso) "/kg" else ""
+
 @Serializable
 data class ProductCategory(
     val id: String,
@@ -115,6 +136,33 @@ data class ProductCategory(
     val color: String? = null,
     val sortOrder: Int? = null,
 )
+
+/** Sin defaults A PROPÓSITO (Codex 5): `[{}]` o un campo faltante no decodifica y el tolerante deja la lista en null (producto suelto). */
+@Serializable
+data class VariantOption(
+    val name: String,
+    val value: String,
+    val namePosition: Int,
+    val valuePosition: Int,
+)
+
+/**
+ * 🔴 Un campo NUEVO con un tipo inesperado NO debe tumbar el catálogo entero (el `catch` de `ProductsRepository.fetchProducts` lo
+ * disfrazaría de «sin red»). Se lee como JSON crudo y, si no es la forma esperada, queda null y el producto se pinta suelto.
+ */
+private class Tolerante<T : Any>(base: KSerializer<T>) : KSerializer<T?> {
+    private val delegado = base.nullable
+    override val descriptor: SerialDescriptor = delegado.descriptor
+    override fun deserialize(decoder: Decoder): T? {
+        val json = decoder as? JsonDecoder ?: return delegado.deserialize(decoder)
+        val elemento = json.decodeJsonElement()
+        return runCatching { json.json.decodeFromJsonElement(delegado, elemento) }.getOrNull()
+    }
+    override fun serialize(encoder: Encoder, value: T?) = delegado.serialize(encoder, value)
+}
+
+object TextoTolerante : KSerializer<String?> by Tolerante(String.serializer())
+object OpcionesDeVarianteTolerantes : KSerializer<List<VariantOption>?> by Tolerante(ListSerializer(VariantOption.serializer()))
 
 @Serializable
 data class ProductVariant(
