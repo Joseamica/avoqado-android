@@ -78,6 +78,16 @@ class Q15HistorialViewModelTest {
         assertTrue(detail.any {it.contains("95.05") && it.contains("10.00")})
         assertFalse(detail.any {it.contains("123.45")})
     }
+    // Q16/C2: el gerente VE cuánto se cobró y cuánto dice el servidor (mismo texto en iOS).
+    @Test fun detalle_muestra_total_al_cobrar_y_total_en_el_servidor_si_el_precio_cambio() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro("FULLTEST-A","p1",null,10000,500))
+        val resultado="""{"paymentId":"sp1","orderId":"o1","amountCents":10000,"tipCents":500,"camposDiferentes":["totalDeLaOrden"],"camposNoComprobados":[],"totalAlCobrarCents":10000,"totalEnElServidorCents":12000}"""
+        val detail=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15InitialResultJson=resultado,q15ResultJson=resultado))
+        assertTrue(detail.toString(),detail.contains("Total al cobrar $100.00 · total en el servidor $120.00"))
+        assertTrue(detail.toString(),detail.contains("Campos distintos: total de la orden"))
+        val igual=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15ResultJson="""{"paymentId":"sp1","amountCents":10000,"tipCents":500}"""))
+        assertFalse(igual.any { it.startsWith("Total al cobrar") })
+    }
     @Test fun detalle_legacy_o_campo_ausente_nunca_muestra_cero_como_prueba() {
         val r=row("p1").copy(q15CaptureJson=null,q15ResultJson="""{"paymentId":"sp1"}""")
         val detail=vm().detalle(r)

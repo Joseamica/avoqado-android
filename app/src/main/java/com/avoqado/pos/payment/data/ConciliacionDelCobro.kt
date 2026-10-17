@@ -70,7 +70,9 @@ object ConciliacionDelCobro {
             .also { guardarCaptura(it) }
     }.getOrNull()
 
-    fun evaluar(captureJson: String?, venueId: String, key: String, canal: CanalDelCobro, body: String, aliasComprobado: Pair<String, String>? = null): EvaluacionDelCobro {
+    fun evaluar(captureJson: String?, venueId: String, key: String, canal: CanalDelCobro, body: String, aliasComprobado: Pair<String, String>? = null,
+        /** Q16: la cola sin red creó ESTA orden desde el pedido de la fila (`PaymentSyncService`). false = como antes. */
+        ordenNacidaEnLaCola: Boolean = false): EvaluacionDelCobro {
         val c = leerCaptura(captureJson, venueId, key)
             ?: return EvaluacionDelCobro(false, CAPTURA_SIN_EVIDENCIA, null)
         val root = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
@@ -101,6 +103,18 @@ object ConciliacionDelCobro {
         compare("splitType", c.splitType, text(payment["splitType"]))
         compare("tenderTypeId", c.tenderTypeId, text(payment["tenderTypeId"]))
         compare("tenderRevision", c.tenderRevision, integer(payment["tenderRevision"]))
+        // 🔴 Q16 (2.24.1): la venta se cobró sin red y su orden nació al sincronizar, desde el pedido de ESTA captura. El
+        // servidor la valoró con su precio de AHORA: si no es el que se cobró (subió, bajó y dio cambio), el gerente lo ve.
+        // Sin propina en los dos lados: `orderTotalCents` la incluye (avoqado-server `orderBalance.ts`). Falta uno ⇒ como antes.
+        // Sólo la cola sin red (`ordenNacidaEnLaCola`); el cobro en línea y una orden previa (Mesas, cuenta abierta), no.
+        val totalDeLaOrden = if (ordenNacidaEnLaCola && canal == CanalDelCobro.ORDER && c.orderId == null && tip != null) {
+            val pedido = runCatching { Json.parseToJsonElement(c.orderRequestJson ?: "").jsonObject }.getOrNull()
+            val alCobrar = pedido?.let { p -> integer(p["total"])?.let { total -> integer(p["tip"])?.let { total - it } } }
+            val enServidor = integer(payment["orderTotalCents"])?.let { it - tip }
+            if (pedido != null && alCobrar != null && enServidor != null &&
+                kotlin.math.abs(alCobrar.toLong() - enServidor) > toleranciaCents(pedido)) alCobrar to enServidor else null
+        } else null
+        if (totalDeLaOrden != null) different.add("totalDeLaOrden")
         val result = buildJsonObject {
             put("paymentId", paymentId); put("orderId", orderId)
             amount?.let { put("amountCents", it) }; tip?.let { put("tipCents", it) }
@@ -108,6 +122,7 @@ object ConciliacionDelCobro {
             integer(payment["tenderRevision"])?.let { put("tenderRevision", it) }
             put("camposDiferentes", JsonArray(different.map(::JsonPrimitive)))
             put("camposNoComprobados", JsonArray(missing.map(::JsonPrimitive)))
+            totalDeLaOrden?.let { (alCobrar, enServidor) -> put("totalAlCobrarCents", alCobrar); put("totalEnElServidorCents", enServidor) }
         }.toString()
         // Sólo importe/propina son obligatorios en el contrato económico común.
         // Los campos opcionales ausentes quedan explícitos; jamás se certifica su igualdad.
@@ -117,6 +132,16 @@ object ConciliacionDelCobro {
             else -> null
         }
         return EvaluacionDelCobro(true, motivo, result, different, missing)
+    }
+
+    /** Q16 (Codex P2-6): 1 centavo por pieza del pedido capturado; mínimo 1 por renglón (promoción y peso cuentan 1). */
+    private fun toleranciaCents(pedido: JsonObject): Long {
+        val renglones = pedido["items"] as? JsonArray ?: return 1
+        // ponytail: tolerancia = 1¢ por pieza, porque carrito y servidor redondean distinto (promoción 3 × $33.33, % por línea,
+        // peso). Techo: varias unidades por renglón con redondeo por unidad pueden pasar de la cota, y un cambio real de precio
+        // menor que la tolerancia no avisa. Salida: alinear las fórmulas del carrito con las del servidor (Codex P2-6).
+        return renglones.sumOf { r -> (r as? JsonObject ?: return 1).let { integer(it["quantity"])?.toLong() ?: 1L }.coerceAtLeast(1L) }
+            .coerceAtLeast(1L)
     }
 
     private fun text(value: JsonElement?): String? = (value as? JsonPrimitive)?.takeIf { it.isString }?.content

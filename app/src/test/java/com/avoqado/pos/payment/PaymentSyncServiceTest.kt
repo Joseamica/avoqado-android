@@ -197,6 +197,27 @@ class PaymentSyncServiceTest {
     }
 
     @Test
+    fun `P1 sesion sin renovar por red NO gasta reintentos - igual que el 401 de siempre`() = runTest {
+        // Testarudo, 15-oct: la sesión venció con el internet parpadeando. Antes eso llegaba aquí
+        // como 401 (no gasta reintentos); ahora llega como SesionSinRenovar (un IOException). Si
+        // contara como corte de red cualquiera, 10 parpadeos mandarían un cobro en efectivo YA
+        // cobrado a cuarentena.
+        val call = mockk<okhttp3.Call>()
+        every { client.newCall(any()) } returns call
+        every { call.execute() } throws com.avoqado.pos.core.data.network.SesionSinRenovar("red:UnknownHostException")
+        // Con su prueba de captura (Q15): sin ella la cola lo retiene antes de llegar a la red.
+        coEvery { dao.getPendingPayments(any()) } returns listOf(conCaptura(pendingPayment().copy(paymentType = "FAST", orderId = null)))
+
+        // La cola sólo trabaja arrancada; `start()` hace su primer intento solo.
+        service.start()
+
+        coVerify(timeout = 5_000) { dao.updateStatus("local-pay-1", PaymentSyncStatus.PENDING.name) }
+        coVerify(exactly = 1) { call.execute() }
+        coVerify(exactly = 0) { dao.incrementRetry(any()) }
+        coVerify(exactly = 0) { dao.updateStatusWithError(any(), any(), any()) }
+    }
+
+    @Test
     fun `backoff formula returns 1s for first retry`() {
         val retryCount = 1
         val initial = 1000L

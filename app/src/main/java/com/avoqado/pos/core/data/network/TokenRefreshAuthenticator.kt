@@ -1,6 +1,7 @@
 package com.avoqado.pos.core.data.network
 
 import android.util.Log
+import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.avoqado.pos.core.data.local.SecureStorage
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -63,13 +64,42 @@ class TokenRefreshAuthenticator @Inject constructor(
      * no obligar a Hilt/Dagger a resolver un `OkHttpClient`/`String` sueltos
      * que no tienen binding en el grafo.
      */
-    internal var refreshHttpClient: OkHttpClient = OkHttpClient.Builder()
+    internal var refreshHttpClient: OkHttpClient = ConexionesCompartidas.base.newBuilder()
+        // Nace del mismo cliente base que el principal: reusa sus conexiones abiertas (ver ConexionesCompartidas).
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
     internal var refreshBaseUrl: String = ApiConstants.BASE_URL
+
+    /**
+     * A dónde va el rastro de un refresco que no se pudo hacer (punto 3 del arreglo de Testarudo,
+     * 15-oct): sin esto el fallo no quedaba en ningún lado y la causa sólo se podía adivinar.
+     * Las pruebas lo sustituyen; Crashlytics no está inicializado en una prueba unitaria.
+     */
+    /**
+     * Reloj MONOTÓNICO en ms (las pruebas lo sustituyen). No la hora del aparato: si el sistema la corrige hacia atrás,
+     * la ventana de [VENTANA_TRAS_FALLO_MS] se volvería una hora (auditoría de Codex, 16-oct).
+     */
+    internal var reloj: () -> Long = { System.nanoTime() / 1_000_000 }
+
+    internal var reportarFallo: (SesionSinRenovar) -> Unit = { e ->
+        runCatching {
+            FirebaseCrashlytics.getInstance().apply {
+                setCustomKey("sesion_sin_renovar_motivo", e.motivo)
+                recordException(e)
+            }
+        }
+    }
+
+    /** Un reporte por ráfaga: con el internet caído, cada petición de la tablet pasaría por aquí. */
+    @Volatile
+    private var ultimoReporteMs: Long? = null
+
+    /** Cuándo falló por red/servidor el último refresco (ver [VENTANA_TRAS_FALLO_MS]). */
+    @Volatile
+    private var ultimoFalloMs = 0L
 
     /**
      * Resultado de UN intento de refresco. Nunca colapsa un fallo de RED y un
@@ -80,7 +110,8 @@ class TokenRefreshAuthenticator @Inject constructor(
      */
     private sealed class RefreshOutcome {
         data class Success(val accessToken: String, val refreshToken: String) : RefreshOutcome()
-        object NetworkFailure : RefreshOutcome()
+        /** [motivo] = `red:<clase del fallo>`, para el reporte. Nunca lleva tokens. */
+        data class NetworkFailure(val motivo: String) : RefreshOutcome()
 
         /**
          * El servidor SÍ contestó, pero con algo que no afirma que el
@@ -115,6 +146,11 @@ class TokenRefreshAuthenticator @Inject constructor(
      */
     companion object {
         const val NO_AUTO_RETRY_HEADER = "X-No-Auto-Retry"
+
+        private const val VENTANA_DE_REPORTE_MS = 5 * 60_000L
+
+        /** Tras un refresco fallido por red/servidor, nadie vuelve a intentarlo durante esta ventana. */
+        const val VENTANA_TRAS_FALLO_MS = 10_000L
     }
 
     override fun authenticate(route: Route?, response: Response): Request? {
@@ -173,8 +209,23 @@ class TokenRefreshAuthenticator @Inject constructor(
                 }
                 // El líder ya notificó (o el wait venció, caso extremo): si
                 // dejó éxito, reintentamos con SU token nuevo. Si dejó fallo
-                // de red o rechazo, no reintentamos — nada nuevo que probar.
-                return if (noReenviar(response)) null else buildRetry(response, lastRefreshOutcome)
+                // de red, esta petición falla igual que la suya (sin red); si
+                // dejó rechazo, no reintentamos — nada nuevo que probar.
+                val delLider = lastRefreshOutcome
+                if (delLider is RefreshOutcome.NetworkFailure || delLider is RefreshOutcome.TransientServerFailure) {
+                    fallarSinRed(response, delLider, reportar = false)
+                }
+                return if (noReenviar(response)) null else buildRetry(response, delLider)
+            }
+            // 🔴 Ráfaga (QA en la D3, 16-oct): al reabrir con el servidor caído, cada petición del arranque
+            // disparaba su propio refresco en cuanto el anterior fallaba — 17 en 4 s. Si el último falló por
+            // red/servidor hace menos de [VENTANA_TRAS_FALLO_MS], esta petición falla igual, sin volver a pedir.
+            val previo = lastRefreshOutcome
+            // `in 0 until`: un transcurrido NEGATIVO (reloj que retrocede) da la ventana por vencida, nunca la alarga.
+            if ((previo is RefreshOutcome.NetworkFailure || previo is RefreshOutcome.TransientServerFailure) &&
+                reloj() - ultimoFalloMs in 0 until VENTANA_TRAS_FALLO_MS
+            ) {
+                fallarSinRed(response, previo, reportar = false)
             }
             isRefreshing = true
         }
@@ -196,6 +247,9 @@ class TokenRefreshAuthenticator @Inject constructor(
                 }
             }
             lastRefreshOutcome = outcome
+            if (outcome is RefreshOutcome.NetworkFailure || outcome is RefreshOutcome.TransientServerFailure) {
+                ultimoFalloMs = reloj()
+            }
             return applyOutcome(response, outcome)
         } finally {
             synchronized(refreshLock) {
@@ -215,21 +269,22 @@ class TokenRefreshAuthenticator @Inject constructor(
                 Log.d("🔐", "Token refreshed successfully")
                 if (noReenviar(response)) null else buildRetry(response, outcome)
             }
-            RefreshOutcome.NetworkFailure -> {
+            is RefreshOutcome.NetworkFailure -> {
                 // offline-first-y-hub-lan.md §2.3: un fallo de RED se
                 // convierte en "sigue vivo", nunca en logout. La sesión, el
                 // outbox y la pantalla se quedan como están; esta petición
-                // sola falla (el 401 original se propaga al llamador, que ya
-                // sabe encolarla) y se reintenta cuando vuelva la red.
-                Log.e("🔐", "Token refresh failed: sin red - la sesion sigue viva")
-                null
+                // falla como lo que es —falta de red— y se reintenta cuando
+                // vuelva. 🔴 Antes devolvía null y el 401 «Token has expired»
+                // llegaba tal cual al cajero (Testarudo, 15-oct).
+                Log.e("🔐", "Token refresh failed: sin red (${outcome.motivo}) - la sesion sigue viva")
+                fallarSinRed(response, outcome, reportar = true)
             }
             is RefreshOutcome.TransientServerFailure -> {
                 // El servidor contestó (no fue un fallo de red), pero con
                 // algo que tampoco afirma que la sesión murió — se trata
                 // IGUAL que NetworkFailure: nunca cierra sesión.
                 Log.e("🔐", "Token refresh failed: error transitorio del servidor (${outcome.httpCode}) - la sesion sigue viva")
-                null
+                fallarSinRed(response, outcome, reportar = true)
             }
             is RefreshOutcome.Rejected -> {
                 // El servidor respondió 401/403: dijo explícitamente que el
@@ -242,6 +297,30 @@ class TokenRefreshAuthenticator @Inject constructor(
                 null
             }
         }
+    }
+
+    /**
+     * La petición no se pudo autenticar porque no hubo red para renovar la sesión: falla como
+     * falta de red ([SesionSinRenovar], un IOException) y no con el 401. Lo que ya sabe tratar la
+     * falta de red (encolar el efectivo, «Sin conexión», reintentar) lo trata bien sin cambiarlo.
+     */
+    private fun fallarSinRed(response: Response, outcome: RefreshOutcome, reportar: Boolean): Nothing {
+        val motivo = when (outcome) {
+            is RefreshOutcome.NetworkFailure -> outcome.motivo
+            is RefreshOutcome.TransientServerFailure -> "servidor:${outcome.httpCode}"
+            else -> "desconocido"
+        }
+        val error = SesionSinRenovar(motivo)
+        val ahora = reloj()
+        val previo = ultimoReporteMs
+        if (reportar && (previo == null || ahora - previo !in 0..VENTANA_DE_REPORTE_MS)) {
+            ultimoReporteMs = ahora
+            reportarFallo(error)
+        }
+        // OkHttp no cierra el cuerpo del 401 si el autenticador lanza: se cierra aquí. `body?`,
+        // no `response.close()`: éste truena con una respuesta sin cuerpo.
+        response.body?.close()
+        throw error
     }
 
     /** ¿Esta petición prohíbe el reenvío automático? Ver [NO_AUTO_RETRY_HEADER]. */
@@ -298,14 +377,14 @@ class TokenRefreshAuthenticator @Inject constructor(
             // Sin conexión, DNS, timeout, host inalcanzable: la definición
             // exacta de "fallo de RED" de offline-first-y-hub-lan.md §2.3.
             Log.e("🔐", "Token refresh network error: ${e.message}")
-            RefreshOutcome.NetworkFailure
+            RefreshOutcome.NetworkFailure("red:${e.javaClass.simpleName}")
         } catch (e: Exception) {
             // JSON corrupto u otro tropiezo que tampoco es el servidor
             // afirmando que la sesión murió. Sólo el TIPO: el mensaje de
             // kotlinx.serialization trae el cuerpo tras «JSON input:», y ahí
             // viajan los tokens de la sesión — no van a logcat.
             Log.e("🔐", "Token refresh unexpected error: ${e.javaClass.simpleName}")
-            RefreshOutcome.NetworkFailure
+            RefreshOutcome.NetworkFailure("red:${e.javaClass.simpleName}")
         }
     }
 }

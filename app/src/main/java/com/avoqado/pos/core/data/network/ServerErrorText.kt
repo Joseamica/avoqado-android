@@ -163,6 +163,8 @@ object ServerErrorText {
         is java.net.SocketException, // ConnectException, NoRouteToHostException, «Connection reset»
         is java.io.InterruptedIOException,
         is javax.net.ssl.SSLException,
+        // La sesión venció y no hubo red para renovarla (Testarudo, 15-oct): es falta de red.
+        is SesionSinRenovar,
         -> true
         else -> false
     }

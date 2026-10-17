@@ -228,5 +228,21 @@ class Q15OnlinePaymentTest {
             assertNull(preserved.q15ResultJson);assertTrue(f.releases.isEmpty());assertEquals(1,f.server.requestCount)
         }
     }
+    // Q16 ronda 1 (controlador): la regla del TOTAL es SÓLO de la cola sin red. El efectivo EN LÍNEA de mostrador reserva su
+    // captura con orderId nulo ANTES de crear la orden (`reservarEfectivo`); aunque el servidor la valore más cara, queda como hoy.
+    @Test fun `ORDER en linea reservado sin orden con precio que subio no estrena aviso de total`() = runTest {
+        Fixture().use { f ->
+            val key="online-sin-orden"
+            val request=CreateOrderRequest(listOf(OrderItemRequest(productId="product-A",name="Artículo A",quantity=1,unitPrice=10000)),subtotal=10000,tip=500,total=10500,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",10500,0,null,orderExternalId=key,idempotencyKey=key,amountCents=10000,tipCents=500,venueId=VENUE)
+            val reserved=f.row(VENUE,key)!!;assertNull(ConciliacionDelCobro.leerCaptura(reserved.q15CaptureJson,VENUE,key)!!.orderId)
+            f.body="""{"success":true,"payment":{"paymentId":"server-payment","orderId":"o-nueva","amount":10000,"tipAmount":500,"method":"CASH","status":"COMPLETED","orderTotalCents":12500,"remainingBalanceCents":2000,"orderPaymentStatus":"PARTIAL"}}"""
+            val payment=async { f.order.recordCashPayment("o-nueva",10000,"original-staff",500,"FULLPAYMENT",key,capturedVenueId=VENUE) }
+            runCurrent();f.arrival();f.answer.countDown();assertTrue(payment.await().isSuccess)
+            val applied=f.row(VENUE,key)!!
+            assertEquals("SYNCED",applied.syncStatus);assertNull(applied.q15Reason)
+            assertFalse(applied.q15ResultJson!!.contains("totalDeLaOrden"));assertFalse(applied.q15ResultJson!!.contains("totalAlCobrarCents"))
+        }
+    }
     companion object { private const val VENUE="FULLTEST-Q15-ORIGINAL" }
 }
