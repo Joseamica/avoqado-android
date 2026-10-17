@@ -23,7 +23,8 @@ Credenciales, por orden:
 
 🔴 La cuenta de Firebase de arriba NO debe copiarse a los secretos de GitHub: además
 de Play, abre Firestore, Auth, Storage y las push de toda la plataforma. Para CI se
-usa una cuenta dedicada con permiso SÓLO de canales de prueba.
+usa una cuenta dedicada (…-play-ci@) que, desde el carril automático a producción
+(2026-10-15), necesita también el permiso de publicar en producción.
 
 Requiere: pip install PyJWT cryptography (ya instalados en esta máquina).
 """
@@ -93,12 +94,14 @@ def main():
     if not a.promote and not a.aab:
         sys.exit("ERROR: falta la ruta del AAB (o usa --promote para no subir nada).")
 
-    # 🔴 Un robot NO publica a producción por su cuenta. Un APK tarda días en llegar
-    # a los usuarios y no hay rollback rápido: la última palabra la da una persona.
-    # El candado es sólo para CI — el uso manual desde la Mac queda igual que siempre.
-    if os.environ.get("CI") and a.track == "production" and a.status == "completed":
-        sys.exit("ERROR: desde CI, producción sólo se acepta con --status draft.\n"
-                 "       El release queda en Play Console esperando tu confirmación.")
+    # 🔴 Desde CI, producción directa (sin borrador) SÓLO por --promote: el binario
+    # EXACTO que el mismo job acaba de publicar en interno, nunca uno recompilado.
+    # Decisión del founder (2026-10-15): cada push a main va también a producción.
+    # El uso manual desde la Mac queda igual que siempre.
+    if (os.environ.get("CI") and a.track == "production" and a.status == "completed"
+            and not a.promote):
+        sys.exit("ERROR: desde CI, producción sin borrador sólo se acepta con --promote.\n"
+                 "       Un AAB recompilado queda en borrador esperando tu confirmación.")
 
     tok = oauth_token()
     H = {"Authorization": f"Bearer {tok}"}

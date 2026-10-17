@@ -360,6 +360,7 @@ fun PaymentFlowScreen(
             is PaymentFlowState.Error -> {
                 PaymentErrorView(
                     message = currentState.message,
+                    sinRed = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     onRetry = { viewModel.retry() },
                     // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si
                     // llegó a existir) y sólo cuando conste que no se cobró se cancela la venta.

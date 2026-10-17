@@ -2,6 +2,7 @@ package com.avoqado.pos.auth
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.RefrescoExclusivo
+import com.avoqado.pos.core.data.network.SesionSinRenovar
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import io.mockk.every
 import io.mockk.mockk
@@ -15,6 +16,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import java.net.ServerSocket
@@ -77,9 +79,8 @@ class AccessVencidoSinRedTest {
             .readTimeout(500, TimeUnit.MILLISECONDS)
             .build()
 
-        val retry = authenticator.authenticate(null, original401())
-
-        assertNull("un fallo de red no produce reintento (el 401 original se propaga)", retry)
+        // Desde el 15-oct (Testarudo) la petición falla como FALTA DE RED, no con el 401: ver SesionSinRenovarTest.
+        assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
         // La sesión local sigue viva: nunca se limpia el storage por un
         // tropiezo de transporte. El outbox no es responsabilidad de esta
         // clase, pero vive exactamente de esto — de que la sesión no muera.
@@ -116,9 +117,7 @@ class AccessVencidoSinRedTest {
             MockResponse().setResponseCode(503).setBody("""{"message":"service unavailable"}"""),
         )
 
-        val retry = authenticator.authenticate(null, original401())
-
-        assertNull("un 503 no produce reintento", retry)
+        assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
         verify(exactly = 0) { secureStorage.clearSession() }
     }
 
@@ -128,9 +127,7 @@ class AccessVencidoSinRedTest {
             MockResponse().setResponseCode(500).setBody("""{"message":"internal error"}"""),
         )
 
-        val retry = authenticator.authenticate(null, original401())
-
-        assertNull(retry)
+        assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
         verify(exactly = 0) { secureStorage.clearSession() }
     }
 
@@ -140,9 +137,7 @@ class AccessVencidoSinRedTest {
             MockResponse().setResponseCode(429).setBody("""{"message":"too many requests"}"""),
         )
 
-        val retry = authenticator.authenticate(null, original401())
-
-        assertNull(retry)
+        assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
         verify(exactly = 0) { secureStorage.clearSession() }
     }
 

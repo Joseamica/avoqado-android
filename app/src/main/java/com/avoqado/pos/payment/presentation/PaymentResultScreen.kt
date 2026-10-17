@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -617,6 +618,11 @@ fun PaymentErrorView(
     message: String,
     onRetry: () -> Unit,
     onCancel: () -> Unit,
+    /**
+     * Falta de red, no un fallo del cobro: se dice «Sin conexión» con el ícono de wifi, como el
+     * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
+     */
+    sinRed: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -626,16 +632,16 @@ fun PaymentErrorView(
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(
-            Icons.Filled.Error,
-            contentDescription = "Error",
-            tint = MaterialTheme.colorScheme.error,
+            if (sinRed) Icons.Filled.WifiOff else Icons.Filled.Error,
+            contentDescription = if (sinRed) "Sin conexión" else "Error",
+            tint = if (sinRed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(80.dp),
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = "Error en el pago",
+            text = if (sinRed) "Sin conexión" else "Error en el pago",
             style = MaterialTheme.typography.headlineLarge,
         )
 

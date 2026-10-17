@@ -5,7 +5,8 @@ name: Release
 #   1. push a main (tocando código de la app) → CANAL INTERNO, automático.
 #      Tus clientes lo reciben en MINUTOS por su Play Store normal, sin revisión
 #      de Google. Es el carril de hotfix. Decisión del founder (2026-09-03): TODOS
-#      los clientes van en él.
+#      los clientes van en él. Y desde 2026-10-15 el MISMO binario se promueve
+#      también a PRODUCCIÓN y se manda solo a revisión de Google.
 #   2. botón "Run workflow" → el canal que elijas. Producción SIEMPRE en borrador:
 #      queda esperando tu clic en Play Console. Ésa es la única puerta humana, y
 #      es suficiente porque nadie recibe nada hasta que la abras.
@@ -224,6 +225,24 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Release: $URL"
 
+      # ── Producción automática ───────────────────────────────────────────────
+      # Decisión del founder (2026-10-15): cada push a main va TAMBIÉN a producción.
+      # Se PROMUEVE el mismo versionCode que acaba de entrar a interno — sin subir
+      # ni recompilar nada. Va después del GitHub Release a propósito: si Play
+      # rechaza producción, el APK para Sunmi ya quedó publicado.
+      #
+      # Google sigue revisando (horas a días) y eso no se puede saltar. Si en Play
+      # Console está encendido "Managed publishing", lo aprobado espera además tu
+      # clic en "Publish"; apagado, sale solo al aprobarse.
+      - name: Promover a producción (carril automático)
+        if: github.event_name == 'push'
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python3 scripts/play_release.py --promote \
+            "${{ steps.v.outputs.versionCode }}" \
+            --track production --status completed --notes /tmp/notas.txt
+
       - name: Guardar artefactos
         uses: actions/upload-artifact@v4
         with:
@@ -248,6 +267,10 @@ jobs:
               echo "Play Console → Test and release → Production → *Review release*."
             else
               echo "Tus probadores internos lo reciben en minutos, sin revisión de Google."
+            fi
+            if [ "${{ github.event_name }}" = "push" ]; then
+              echo ""
+              echo "🚀 También se mandó a **producción**: en revisión de Google (horas a días)."
             fi
             echo ""
             echo "📦 APK/AAB para Sunmi u otro sideload: ${{ steps.gh_release.outputs.url }}"

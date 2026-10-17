@@ -3,13 +3,14 @@ package com.avoqado.pos.escritorio
 import com.avoqado.escritorio.ActividadDeEscritorio
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.SesionSinRenovar
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.readText
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlinx.serialization.Serializable
@@ -64,7 +65,8 @@ class TokenEnLaBitacoraTest {
 
         Bitacora.soloInformativo = true
         try {
-            assertNull(autenticador.authenticate(null, respuesta401), "un 200 inválido no reintenta ni cierra sesión")
+            // Un 200 inválido no reintenta ni cierra sesión: avisa SesionSinRenovar (Testarudo, 15-oct).
+            assertFailsWith<SesionSinRenovar> { autenticador.authenticate(null, respuesta401) }
         } finally { Bitacora.soloInformativo = false }
 
         val texto = log(carpeta)

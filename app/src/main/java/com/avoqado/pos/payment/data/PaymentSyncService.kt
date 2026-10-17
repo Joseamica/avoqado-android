@@ -229,6 +229,21 @@ class PaymentSyncService @Inject constructor(
         data object AuthExpired : OrderResolution
     }
 
+    /** Qué dejó la recuperación de una fila retenida (Q16). */
+    private sealed interface Recuperacion {
+        /** La recuperación vacía soltó la venta sin red: se relee la cola y sale en su lugar FIFO. */
+        data object Soltada : Recuperacion
+        /** Sigue retenida, o se le adoptó su orden del servidor (sale la vuelta siguiente): la vuelta sigue sin ella. */
+        data class Retenida(val ordenAdoptada: String? = null) : Recuperacion
+        /**
+         * Codex N5 (regla final del controlador, igual en iOS): la consulta NO obtuvo respuesta del servidor (sin red,
+         * conexión rechazada, transporte) o la sesión está muerta (401 / sesión sin renovar). Corta la vuelta (C1) sin
+         * gastar reintentos. Una RESPUESTA que no sirve (5xx, 408, 429, ilegible) no es pausa: la fila sigue retenida, para
+         * que un 500 persistente no detenga la cola para siempre.
+         */
+        data object Pausa : Recuperacion
+    }
+
     /** Waits for the real launched drain; no alternate test pipeline. */
     internal suspend fun esperarSincronizacionActualQ16() { syncJob?.join() }
 
@@ -302,33 +317,103 @@ class PaymentSyncService @Inject constructor(
         }
     }
 
-    private suspend fun recuperarOrdenRetenidaQ16(payment: PendingPaymentEntity) {
+    /**
+     * Q16: intenta soltar o adoptar una fila retenida. Una escritura que no se logra (CAS) o un alias ilegible SUBEN y
+     * cortan la vuelta; sin respuesta del servidor o con la sesión muerta es [Recuperacion.Pausa] (Codex N5).
+     */
+    private suspend fun recuperarOrdenRetenidaQ16(payment: PendingPaymentEntity): Recuperacion {
+        val sigue = Recuperacion.Retenida()
         if (payment.paymentType != "ORDER" || payment.q15Reason != ConciliacionDelCobro.PRICE_PROOF_PENDING ||
             (!payment.orderId.isNullOrBlank() && syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId)?.isNotBlank() != true) || payment.venueId.isBlank() ||
-            ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson,payment.venueId,payment.id) == null) return
-        try {
-            val original = json.parseToJsonElement(payment.orderRequestJson ?: return) as? kotlinx.serialization.json.JsonObject ?: return
-            val external = (original["externalId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() && it.content.length <= 256 }?.content ?: return
+            ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson,payment.venueId,payment.id) == null) return sigue
+        val external = externalIdDelPedido(payment.orderRequestJson) ?: return sigue
+        val (code, response) = try {
             val request = Request.Builder().url("${ApiConstants.BASE_URL}/mobile/venues/${payment.venueId}/sync/recovery")
                 .post(buildJsonObject { put("externalOrderIds",kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(external)))) }.toString().toRequestBody(JSON_MEDIA)).build()
-            val response = withContext(Dispatchers.IO) { client.newCall(request).execute().use { if (!it.isSuccessful) null else it.body?.string() } } ?: return
-            val data = json.parseToJsonElement(response).jsonObject["data"] as? kotlinx.serialization.json.JsonObject ?: return
-            if ((data["intents"] as? kotlinx.serialization.json.JsonArray)?.isEmpty() != true) return
-            val orders = data["orders"] as? kotlinx.serialization.json.JsonArray ?: return
-            if (orders.size != 1) return
-            val order = orders.single() as? kotlinx.serialization.json.JsonObject ?: return
-            val ref = (order["externalId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
-            val id = (order["orderId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() }?.content ?: return
-            if (ref != external) return
-            if (!payment.orderId.isNullOrBlank() && syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId) != id) return
-            check(dao.recuperarOrdenQ16(payment.venueId,payment.id,payment.orderId,id) == 1)
+            withContext(Dispatchers.IO) { client.newCall(request).execute().use { it.code to it.body?.string() } }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (error: Exception) { Log.w(TAG,"La orden original sigue esperando: ${error.message}") }
+        catch (error: Exception) {
+            // Sin respuesta (sin red, conexión rechazada, transporte) o sesión sin renovar ⇒ pausa, sin gastar reintentos.
+            Log.w(TAG,"La recuperación no obtuvo respuesta; la vuelta se corta: ${error.message}")
+            return Recuperacion.Pausa
+        }
+        if (code == 401) return Recuperacion.Pausa
+        // Cualquier otra respuesta que no sirva (5xx, 408, 429, 404 de un backend viejo, ilegible) ⇒ sigue retenida y la vuelta sigue.
+        if (code !in 200..299) return sigue
+        val data = runCatching { json.parseToJsonElement(response ?: "").jsonObject["data"] as? kotlinx.serialization.json.JsonObject }.getOrNull()
+            ?: return sigue
+        if ((data["intents"] as? kotlinx.serialization.json.JsonArray)?.isEmpty() != true) return sigue
+        val orders = data["orders"] as? kotlinx.serialization.json.JsonArray ?: return sigue
+        if (orders.isEmpty()) {
+            // Q16 (2.24.1): el servidor no tiene la orden porque nunca se creó (no había red). Se quita la marca
+            // que puso la 2.24.0 y esta misma vuelta la crea y la cobra (ver `ventaSinRedConPedido`).
+            if (!ventaSinRedConPedido(payment)) return sigue
+            check(dao.soltarVentaSinRedQ16(payment.venueId,payment.id) == 1)
+            return Recuperacion.Soltada
+        }
+        if (orders.size != 1) return sigue
+        // Codex P1-3: la captura dice qué venta se cobró. Si trae pedido, su `externalId` tiene que ser el consultado
+        // (el del pedido de la fila); si no, la orden encontrada es de OTRA venta y no se adopta. Captura vieja sin pedido ⇒ como antes.
+        ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson,payment.venueId,payment.id)?.orderRequestJson?.let {
+            if (externalIdDelPedido(it) != external) return sigue
+        }
+        val order = orders.single() as? kotlinx.serialization.json.JsonObject ?: return sigue
+        val ref = (order["externalId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+        val id = (order["orderId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() }?.content ?: return sigue
+        if (ref != external) return sigue
+        if (!payment.orderId.isNullOrBlank() && syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId) != id) return sigue
+        check(dao.recuperarOrdenQ16(payment.venueId,payment.id,payment.orderId,id) == 1)
+        // Codex N1: la orden adoptada entra a lo bloqueado de esta vuelta (la fila ya la trae; el objeto en memoria no).
+        return Recuperacion.Retenida(ordenAdoptada = id)
+    }
+
+    /**
+     * Adenda Q16: con qué orden se identifica una fila — su `orderId` y el de su captura (servidor, `local_…` o alias de
+     * Mesas, cada uno con la orden a la que resuelve su alias) y el `externalId` del pedido de la fila y del de la captura
+     * (Codex N2). Dos filas que comparten una son de la MISMA cuenta. Vacío (FAST sin artículos) = no depende de nadie. Si
+     * un alias no se puede leer, el error SUBE y corta la vuelta: seguir con menos identidades dejaría cobrar antes otra fila.
+     */
+    private suspend fun identidadesDeOrden(payment: PendingPaymentEntity): Set<String> {
+        val captura = ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id)
+        val ordenes = listOfNotNull(payment.orderId, captura?.orderId).filter { it.isNotBlank() }.distinct()
+        return buildSet {
+            addAll(ordenes)
+            for (id in ordenes) syncOutbox.aliasDurableQ16(payment.venueId, id)?.takeIf { it.isNotBlank() }?.let { add(it) }
+            externalIdDelPedido(payment.orderRequestJson)?.let { add(it) }
+            externalIdDelPedido(captura?.orderRequestJson)?.let { add(it) }
+        }
+    }
+
+    private fun externalIdDelPedido(raw: String?): String? = runCatching {
+        (json.parseToJsonElement(raw ?: return null).jsonObject["externalId"] as? kotlinx.serialization.json.JsonPrimitive)
+            ?.takeIf { it.isString && it.content.isNotBlank() && it.content.length <= 256 }?.content
+    }.getOrNull()
+
+    /**
+     * 🔴 Q16 (2.24.1): la venta de mostrador cobrada SIN RED. Nace con `orderId` nulo porque crear la orden falló, y su
+     * captura Q15 guarda el pedido completo con su `externalId`. Con eso la cola crea la orden al volver la red con el
+     * MISMO `externalId` (el servidor deduplica) y la cobra con la MISMA llave; si el precio cambió, lo marca
+     * `ConciliacionDelCobro` (aviso Q15 al gerente). La 2.24.0 la retenía esperando una «prueba de precio» que nadie
+     * emite, y la cola se congelaba para siempre. Sólo `orderId == null`, que es lo que escribe la caja: `""`, el alias
+     * de Mesas o un pedido distinto del capturado siguen retenidos.
+     */
+    private fun ventaSinRedConPedido(payment: PendingPaymentEntity): Boolean = payment.orderId == null && nacioSinOrden(payment)
+
+    /**
+     * La CAPTURA (inmutable) dice que la venta nació SIN orden y con el mismo pedido que la fila. Se decide con la captura
+     * y no con la fila porque la recuperación Q16 puede escribirle a la fila el `orderId` de una orden ya creada (Codex P1-4).
+     */
+    private fun nacioSinOrden(payment: PendingPaymentEntity): Boolean {
+        if (payment.paymentType != "ORDER") return false
+        val captura = ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id) ?: return false
+        val external = externalIdDelPedido(captura.orderRequestJson) ?: return false
+        return captura.orderId == null && external == externalIdDelPedido(payment.orderRequestJson)
     }
 
     private suspend fun requierePruebaDePrecio(payment: PendingPaymentEntity): Boolean {
         if (payment.paymentType == "ORDER") return try {
-            payment.orderId.isNullOrBlank() || syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId)?.isNotBlank() == true
+            !ventaSinRedConPedido(payment) &&
+                (payment.orderId.isNullOrBlank() || syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId)?.isNotBlank() == true)
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (_: Exception) { true }
         if (payment.paymentType != "FAST") return true
@@ -342,6 +427,9 @@ class PaymentSyncService @Inject constructor(
 
     // MARK: - Core Sync Logic
 
+    // Codex N4: «¿hay un drenado activo? / arranco uno» es atómico; si no, reconexión y reintento manual podían
+    // arrancar dos drenados a la vez sobre la misma cola.
+    @Synchronized
     fun syncNow() {
         if (syncJob?.isActive == true) {
             Log.d(TAG, "Sync already in progress, skipping")
@@ -366,20 +454,44 @@ class PaymentSyncService @Inject constructor(
                 val cutoff = System.currentTimeMillis() - CLEANUP_AFTER_MS
                 dao.deleteSynced(cutoff)
 
+                // 🔴 Adenda Q16 (founder, 16-oct) + Codex 2.ª pasada: una venta RETENIDA ya no tapa la cola. Se queda
+                // PENDIENTE con su marca y la vuelta sigue; sólo esperan, sin tocar la red, las filas de su MISMA orden
+                // (`identidadesDeOrden`, más la orden que se le adoptó o que su envío resolvió). Como iOS, cada lote lee la
+                // cola PENDIENTE entera y el tope cuenta cobros INTENTADOS: lo que espera no gasta el lote (N6). `esperan`
+                // dura la vuelta ⇒ cada retenida pide `/sync/recovery` a lo más una vez. La red, el backoff, la recuperación
+                // caída y la cuenta por sincronizar siguen cortando la vuelta (FIFO, C1).
+                val esperan = mutableSetOf<String>()
+                val bloqueadas = mutableSetOf<String>()
+                fun esperar(payment: PendingPaymentEntity, identidades: Set<String>) { esperan += payment.id; bloqueadas += identidades }
                 repeat(MAX_DRAIN_BATCHES) {
                     if (!isStarted || !connectivityMonitor.isServerReachable.value) return@launch
 
-                    val pending = dao.getPendingPayments(MAX_PAYMENTS_PER_SYNC)
+                    // ponytail: cada lote lee y decodifica toda la cola local (decenas de filas; la prueba usa 1,000). Techo:
+                    // con decenas de miles pendientes cada lote pesa. Salida: paginar por cursor (createdAt, id).
+                    val pending = dao.getPendingPayments(Int.MAX_VALUE).filter { it.id !in esperan }
                     if (pending.isEmpty()) {
                         Log.d(TAG, "No pending payments to sync")
                         return@launch
                     }
 
                     Log.d(TAG, "Syncing ${pending.size} pending payments")
-                    var shouldStopDrain = false
+                    var intentados = 0
+                    var soltada = false
 
                     for (payment in pending) {
                         if (!isStarted) return@launch
+                        if (intentados >= MAX_PAYMENTS_PER_SYNC) break // lote lleno: se relee la cola
+                        val identidades = identidadesDeOrden(payment)
+                        if (identidades.any { it in bloqueadas }) { esperar(payment, identidades); continue }
+
+                        if (payment.q15Reason != null) {
+                            when (val recuperacion = recuperarOrdenRetenidaQ16(payment)) {
+                                // Q16: se soltó ⇒ se relee la cola y sale en esta misma vuelta, en su lugar FIFO.
+                                Recuperacion.Soltada -> { soltada = true; break }
+                                Recuperacion.Pausa -> return@launch
+                                is Recuperacion.Retenida -> { esperar(payment, identidades + listOfNotNull(recuperacion.ordenAdoptada)); continue }
+                            }
+                        }
 
                         // FIFO: si el más viejo sigue en backoff, no adelantamos
                         // cobros posteriores y esperamos el próximo trigger.
@@ -388,24 +500,17 @@ class PaymentSyncService @Inject constructor(
                             val timeSinceLastRetry = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
                             if (timeSinceLastRetry < backoff) {
                                 Log.d(TAG, "Stopping drain at ${payment.id} — backoff not elapsed")
-                                shouldStopDrain = true
-                                break
+                                return@launch
                             }
                         }
 
-                        if (payment.q15Reason != null) {
-                            recuperarOrdenRetenidaQ16(payment)
-                            shouldStopDrain = true; break
-                        }
                         if (ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id) == null) {
                             check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, System.currentTimeMillis()) == 1) { "No se pudo conservar el cobro por revisar" }
-                            shouldStopDrain = true
-                            break
+                            esperar(payment, identidades); continue
                         }
                         if (requierePruebaDePrecio(payment)) {
                             check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.PRICE_PROOF_PENDING, System.currentTimeMillis()) == 1)
-                            shouldStopDrain = true
-                            break
+                            esperar(payment, identidades); continue
                         }
                         if (payment.orderId != null) {
                             val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(
@@ -413,19 +518,25 @@ class PaymentSyncService @Inject constructor(
                             )
                             if (trabajo.enCamino > 0) {
                                 Log.d(TAG, "Stopping drain at ${payment.id} — order changes still queued")
-                                shouldStopDrain = true
-                                break
+                                return@launch
                             }
                         }
 
+                        intentados++
                         dao.updateStatus(payment.id, PaymentSyncStatus.SYNCING.name)
-                        if (syncPayment(payment)) {
-                            shouldStopDrain = true
-                            break
+                        var resuelta: String? = null
+                        if (syncPayment(payment) { resuelta = it }) {
+                            // Codex N3/N4: «retenida» lo dice la FILA (quedó PENDIENTE con su marca en la misma escritura),
+                            // no una bandera. Retenida ⇒ sólo espera su orden (más la que su envío resolvió, N1); lo demás corta.
+                            val fila = dao.findForVenue(payment.venueId, payment.id)
+                            if (fila != null && fila.syncStatus == PaymentSyncStatus.PENDING.name && fila.q15Reason != null) {
+                                esperar(payment, identidades + listOfNotNull(resuelta)); continue
+                            }
+                            return@launch
                         }
                     }
 
-                    if (shouldStopDrain || pending.size < MAX_PAYMENTS_PER_SYNC) return@launch
+                    if (!soltada && intentados < MAX_PAYMENTS_PER_SYNC) return@launch
                 }
                 Log.w(TAG, "Drain alcanzó el límite de seguridad de $MAX_DRAIN_BATCHES batches")
             } catch (e: Exception) {
@@ -529,7 +640,8 @@ class PaymentSyncService @Inject constructor(
 
     // MARK: - Single Payment Sync
 
-    private suspend fun syncPayment(payment: PendingPaymentEntity): Boolean {
+    /** [alResolverOrden] recibe la orden que creó `/orders`, para bloquear su cuenta si el envío termina retenido (Codex N1). */
+    private suspend fun syncPayment(payment: PendingPaymentEntity, alResolverOrden: (String) -> Unit = {}): Boolean {
         // true = detener el drain (auth o infraestructura transitoria).
         val venueId = payment.venueId.ifBlank { secureStorage.venueId.orEmpty() }
         if (venueId.isBlank()) {
@@ -545,7 +657,7 @@ class PaymentSyncService @Inject constructor(
             var resolvedOrderId: String? = payment.orderId
             if (payment.paymentType == "ORDER" && resolvedOrderId == null) {
                 when (val result = resolveMissingOrderId(payment, venueId)) {
-                    is OrderResolution.Ready -> resolvedOrderId = result.orderId
+                    is OrderResolution.Ready -> resolvedOrderId = result.orderId.also(alResolverOrden)
                     is OrderResolution.AuthExpired -> {
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                         return true
@@ -580,7 +692,8 @@ class PaymentSyncService @Inject constructor(
                     catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (_: Exception) { null }
                 if (external?.isString != true || external.content.isBlank() || durable != resolvedOrderId) {
-                    check(dao.retenerPagoQ15(venueId,payment.id,ConciliacionDelCobro.PRICE_PROOF_PENDING,System.currentTimeMillis()) == 1)
+                    // Codex N3: PENDIENTE y con su marca en la MISMA escritura (la de resultado); si no se logra, corta la vuelta.
+                    check(dao.registrarResultadoQ15(venueId,payment.id,false,ConciliacionDelCobro.PRICE_PROOF_PENDING,null,System.currentTimeMillis()) == 1)
                     return true
                 }
                 originalId to requireNotNull(resolvedOrderId)
@@ -604,7 +717,13 @@ class PaymentSyncService @Inject constructor(
             return handleSyncResult(payment, code, responseBody, headers.first, headers.second, aliasComprobado)
 
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (e: java.net.UnknownHostException) {
+        catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
+            // La sesión venció sin red para renovarla: igual que el 401 de siempre, no gasta
+            // reintentos (diez parpadeos del internet no pueden mandar un efectivo a cuarentena).
+            Log.w(TAG, "⚠️ Sesión sin renovar (${e.motivo}) — pausing sync, payment ${payment.id} stays PENDING")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+            return true
+        } catch (e: java.net.UnknownHostException) {
             handleNetworkError(payment, "Sin conexión")
             return true
         } catch (e: java.net.ConnectException) {
@@ -640,7 +759,9 @@ class PaymentSyncService @Inject constructor(
                 }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (e: java.net.UnknownHostException) {
+        catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
+            OrderResolution.AuthExpired
+        } catch (e: java.net.UnknownHostException) {
             OrderResolution.RetryableFailure("Sin conexión")
         } catch (e: java.net.ConnectException) {
             OrderResolution.RetryableFailure("No se pudo conectar al servidor")
@@ -665,17 +786,21 @@ class PaymentSyncService @Inject constructor(
         return when {
             code in 200..299 -> {
                 val evaluation = ConciliacionDelCobro.evaluar(payment.q15CaptureJson, payment.venueId, payment.id,
-                    if (payment.paymentType == "FAST") CanalDelCobro.FAST else CanalDelCobro.ORDER, body, aliasComprobado)
+                    if (payment.paymentType == "FAST") CanalDelCobro.FAST else CanalDelCobro.ORDER, body, aliasComprobado,
+                    // Q16: la orden nació en la cola desde el pedido de esta fila (`resolveMissingOrderId`, o la que adoptó
+                    // la recuperación). Se decide con la captura: la adopción ya le escribió `orderId` a la fila (Codex P1-4).
+                    ordenNacidaEnLaCola = nacioSinOrden(payment))
                 try {
                     check(dao.registrarResultadoQ15(payment.venueId, payment.id, evaluation.aplicado,
                         evaluation.motivo, evaluation.resultadoJson, System.currentTimeMillis()) == 1) { "No se pudo conservar el resultado del cobro" }
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) {
-                    runCatching { dao.retenerPagoQ15(payment.venueId,payment.id,ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,System.currentTimeMillis()) }
+                    // Codex N3: el respaldo deja la fila PENDIENTE con su marca en una sola escritura (no SYNCING).
+                    runCatching { dao.registrarResultadoQ15(payment.venueId,payment.id,false,ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,null,System.currentTimeMillis()) }
                     Log.e(TAG,"No se pudo conservar el resultado; el cobro sigue guardado",e)
                     return true
                 }
-                !evaluation.aplicado // Unknown identity holds this UUID and the FIFO; applied never replays.
+                !evaluation.aplicado // Unknown identity holds this UUID (and, desde la adenda Q16, sólo a las filas de su orden); applied never replays.
             }
             code == 401 -> {
                 // Auth expired — don't burn retries, stop batch
