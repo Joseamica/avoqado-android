@@ -84,7 +84,10 @@ class Q15PaymentSyncTest {
         val subject=service()
         coEvery { dao.registrarResultadoQ15(any(),any(),any(),any(),any(),any()) } throws java.io.IOException("disco de prueba")
         assertTrue(subject.handleSyncResult(captured(),200,"""{"success":true,"payment":{"paymentId":"sp1","orderId":"o1","amount":10005,"tipAmount":500,"status":"COMPLETED"}}"""))
-        coVerify(exactly=1) { dao.retenerPagoQ15("FULLTEST-A","p1",ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,any()) }
+        // Codex 2.ª pasada (N3): el respaldo deja la fila PENDIENTE con su marca en la MISMA escritura (la de resultado),
+        // no sólo la marca con la fila en SYNCING (la vuelta siguiente no la vería y su orden se cobraría).
+        coVerify(exactly=1) { dao.registrarResultadoQ15("FULLTEST-A","p1",false,ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,null,any()) }
+        coVerify(exactly=0) { dao.retenerPagoQ15(any(),any(),any(),any()) }
         coVerify(exactly=0) { dao.incrementRetry(any(),any()) }
         coVerify(exactly=0) { dao.updateStatus("p1","FAILED") }
     }
