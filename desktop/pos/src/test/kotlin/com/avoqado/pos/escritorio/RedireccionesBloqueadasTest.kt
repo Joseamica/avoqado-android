@@ -5,6 +5,7 @@ import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.Escritorio
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.PermissionOverrideRepository
+import com.avoqado.pos.core.data.network.SesionSinRenovar
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import com.sun.net.httpserver.HttpServer
 import java.io.IOException
@@ -16,7 +17,6 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -86,7 +86,8 @@ class RedireccionesBloqueadasTest {
         autenticador.refreshBaseUrl = servidorDeEsteBuild   // su POST /mobile/auth/refresh va a A, que contesta 307 hacia B
         val pedido = Request.Builder().url("$servidorDeEsteBuild/mobile/venues/v1/orders").build()
         val respuesta401 = Response.Builder().request(pedido).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized").build()
-        assertNull(autenticador.authenticate(null, respuesta401), "un refresco cortado es «sin red»: ni reintenta ni cierra sesión")
+        // Un refresco cortado es «sin red»: no reintenta con otro token ni cierra sesión, avisa SesionSinRenovar (Testarudo, 15-oct).
+        assertFailsWith<SesionSinRenovar> { autenticador.authenticate(null, respuesta401) }
         assertEquals(0, aB.get(), "el refresh token llegó a B")
         assertEquals("refresh-SECRETO", inyector.getInstance(SecureStorage::class.java).refreshToken, "no cerró la sesión")
     }
