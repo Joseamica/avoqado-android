@@ -599,6 +599,64 @@ class DisplayModeRemoteRepositoryTest {
         )
     }
 
+    // ── La ficha del aparato (F2, Task 1.4): GET /customer-display ──
+
+    @Test
+    fun `200 trae la ficha y los origenes`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"imageOrigins\":[\"https://storage.googleapis.com\"]," +
+                    "\"ficha\":{\"schemaVersion\":1,\"fingerprint\":\"$HUELLA_A\",\"theme\":\"DARK\"," +
+                    "\"accent\":{\"custom\":true,\"color\":\"#1A7F5A\",\"on\":\"#FFFFFF\"},\"logo\":null," +
+                    "\"welcomeText\":\"Hola\",\"thanksText\":null,\"slides\":[],\"slideSeconds\":6," +
+                    "\"promotionCards\":{\"enabled\":false},\"poweredBy\":true}}}",
+            ),
+        )
+
+        val result = repository.fetchCustomerDisplay("venue /café")
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(
+                CustomerDisplayPayload(
+                    terminalId = "t1",
+                    ficha = FichaDto(
+                        schemaVersion = 1,
+                        fingerprint = HUELLA_A,
+                        theme = "DARK",
+                        accent = AccentDto(custom = true, color = "#1A7F5A", on = "#FFFFFF"),
+                        welcomeText = "Hola",
+                    ),
+                    imageOrigins = listOf("https://storage.googleapis.com"),
+                ),
+            ),
+            result,
+        )
+        val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("GET", request.method)
+        assertEquals("/api/v1/mobile/venues/venue%20%2Fcaf%C3%A9/customer-display", request.path)
+        assertEquals("1", request.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+    }
+
+    @Test
+    fun `404 DEVICE_NOT_FOUND llega como Rejected 404`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(404)
+                .setBody("{\"code\":\"DEVICE_NOT_FOUND\",\"message\":\"Dispositivo POS Android no encontrado.\"}"),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(404, "DEVICE_NOT_FOUND", "Dispositivo POS Android no encontrado."),
+            repository.fetchCustomerDisplay("venue-1"),
+        )
+    }
+
+    @Test
+    fun `500 de la ficha es reintentable`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(500).setBody("{}"))
+
+        assertEquals(DisplayModeRemoteOutcome.Retryable(500), repository.fetchCustomerDisplay("venue-1"))
+    }
+
     private fun repositoryWith(client: OkHttpClient): DisplayModeRemoteRepository =
         DisplayModeRemoteRepository(client) {
             server.url("/api/v1").toString().removeSuffix("/")

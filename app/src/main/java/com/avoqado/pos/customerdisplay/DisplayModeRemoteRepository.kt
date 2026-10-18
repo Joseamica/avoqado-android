@@ -79,6 +79,14 @@ data class PollSignals(
     val capabilityReportRequested: Boolean = false,
 )
 
+/** El bloque de `GET …/customer-display`: la ficha cruda (se normaliza con `toFicha`) y los orígenes de imagen permitidos. */
+@Serializable
+data class CustomerDisplayPayload(
+    val terminalId: String,
+    val ficha: FichaDto,
+    val imageOrigins: List<String> = emptyList(),
+)
+
 /** Lo que la pantalla del cliente agrega al reporte de capacidades: qué versión de diseño entiende y qué instalación es. */
 data class DesignReport(
     val designVersion: Int,
@@ -199,6 +207,22 @@ class DisplayModeRemoteRepository @Inject constructor(
                     ),
                 )
             }
+        },
+    )
+
+    /** La ficha de ESTE aparato (`GET …/customer-display`), con los orígenes de imagen que el server permite. */
+    suspend fun fetchCustomerDisplay(
+        venueId: String,
+    ): DisplayModeRemoteOutcome<CustomerDisplayPayload> = execute(
+        requestFactory = {
+            Request.Builder()
+                .url(venueUrl(venueId).newBuilder().addPathSegment("customer-display").build())
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
+                .get()
+                .build()
+        },
+        decodeSuccess = { body ->
+            DisplayModeRemoteOutcome.Success(json.decodeFromString<CustomerDisplayEnvelope>(body).data)
         },
     )
 
@@ -437,6 +461,9 @@ class DisplayModeRemoteRepository @Inject constructor(
         val customerDisplayDesignVersion: Int,
         val installationId: String,
     )
+
+    @Serializable
+    private data class CustomerDisplayEnvelope(val data: CustomerDisplayPayload)
 
     @Serializable
     private data class PollEnvelope(val data: PollData)
