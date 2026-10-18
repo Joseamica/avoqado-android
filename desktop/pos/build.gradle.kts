@@ -42,9 +42,14 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
 
-// --- BuildConfig: los 4 campos que la app lee (BASE_URL, DASHBOARD_URL, DEBUG, VERSION_NAME) ---
+// --- BuildConfig: los 5 campos que la app lee (BASE_URL, DASHBOARD_URL, DEBUG, VERSION_NAME, VERSION_CODE) ---
 val versionAndroid = Regex("""versionName\s*=\s*"([^"]+)"""")
     .find(appAndroid.resolve("build.gradle.kts").readText())?.groupValues?.get(1) ?: "0.0.0"
+// El número de compilación de Android (`x-app-version-code`). Sin él, el build truena: un 0 inventado haría que el server
+// creyera que este POS no entiende la pantalla del cliente.
+val versionCodeAndroid = Regex("""versionCode\s*=\s*(\d+)""")
+    .find(appAndroid.resolve("build.gradle.kts").readText())?.groupValues?.get(1)?.toInt()
+    ?: throw GradleException("No encontré `versionCode = N` en app/build.gradle.kts de Android")
 // -Pavoqado.produccion=true: build de PRODUCCIÓN (DEBUG=false, hosts fijos de avoqado.io, carpeta de datos segura). Por defecto, PRUEBA.
 val produccion = providers.gradleProperty("avoqado.produccion").map {
     when (it) {
@@ -61,6 +66,7 @@ val dashboardPorDefecto = if (produccion) "https://dashboard.avoqado.io"
 val generarBuildConfig by tasks.registering {
     val archivo = layout.buildDirectory.file("generated/buildconfig/com/avoqado/pos/BuildConfig.kt")
     inputs.property("version", versionAndroid)
+    inputs.property("versionCode", versionCodeAndroid)
     inputs.property("produccion", produccion)
     inputs.property("api", apiPorDefecto)
     inputs.property("dashboard", dashboardPorDefecto)
@@ -75,6 +81,7 @@ val generarBuildConfig by tasks.registering {
             |    const val PRODUCCION: Boolean = $produccion
             |    const val DEBUG: Boolean = ${!produccion}
             |    const val VERSION_NAME: String = "$versionAndroid-escritorio"
+            |    const val VERSION_CODE: Int = $versionCodeAndroid
             |    val BASE_URL: String = com.avoqado.escritorio.Urls.api(porDefecto = "$apiPorDefecto", produccion = PRODUCCION)
             |    val DASHBOARD_URL: String = com.avoqado.escritorio.Urls.dashboard(porDefecto = "$dashboardPorDefecto", produccion = PRODUCCION)
             |}
