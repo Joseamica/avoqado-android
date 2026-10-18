@@ -24,6 +24,7 @@ import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.payment.data.model.PaymentFlowState
+import com.avoqado.pos.pos.data.model.TITULO_AVISO_DE_PRECIO
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.EstadoDeComanda
 
@@ -409,11 +410,21 @@ fun PaymentFlowScreen(
         // 🔴 El premio de cartilla no salió como lo anunció el carrito: el total que se cobra
         // cambió. Encima de cualquier estado y con «Entendido» (no se esfuma solo): es dinero.
         val avisoDelPremio by viewModel.avisoDelPremio.collectAsState()
+        // 🔴 El servidor cobró otro precio que el que mostró la caja («se cobra el precio que vio el cliente»): lo mismo, con
+        // «Entendido». Uno a la vez, el premio primero (igual que el overlay de iOS).
+        val avisoDePrecio by viewModel.avisoDePrecio.collectAsState()
         avisoDelPremio?.let { aviso ->
             AvoqadoWarningToast(
                 message = "Revisa el premio",
                 subtitle = aviso,
                 onDismiss = { viewModel.descartarAvisoDelPremio() },
+                secondaryLabel = "Entendido",
+            )
+        } ?: avisoDePrecio?.let { aviso ->
+            AvoqadoWarningToast(
+                message = TITULO_AVISO_DE_PRECIO,
+                subtitle = aviso,
+                onDismiss = { viewModel.descartarAvisoDePrecio() },
                 secondaryLabel = "Entendido",
             )
         }
