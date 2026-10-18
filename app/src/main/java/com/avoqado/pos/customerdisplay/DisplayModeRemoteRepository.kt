@@ -79,6 +79,12 @@ data class PollSignals(
     val capabilityReportRequested: Boolean = false,
 )
 
+/** Lo que la pantalla del cliente agrega al reporte de capacidades: qué versión de diseño entiende y qué instalación es. */
+data class DesignReport(
+    val designVersion: Int,
+    val installationId: String,
+)
+
 private val POLL_FINGERPRINT = Regex("^[0-9a-f]{32}$")
 
 /** La forma de toda huella del server (`canonicalHash.ts`: 32 hex del sha256). */
@@ -111,26 +117,52 @@ class DisplayModeRemoteRepository @Inject constructor(
     }
     private val jsonMediaType = "application/json".toMediaType()
 
+    /**
+     * Sin [design] el cuerpo es byte a byte el de siempre (sin las llaves nuevas). Con [design], versión de diseño e
+     * instalación viajan juntas, como exige el server. La carrera entre dos instalaciones (409
+     * `CUSTOMER_DISPLAY_INSTALLATION_RACE`) se reintenta en el siguiente ciclo.
+     */
     suspend fun reportCapabilities(
         venueId: String,
         snapshot: DisplayCapabilitySnapshot,
+        design: DesignReport? = null,
     ): DisplayModeRemoteOutcome<Unit> = execute(
         requestFactory = {
-            val payload = CapabilityReportBody(
-                customerDisplay = CustomerDisplayBody(
-                    present = snapshot.present,
-                    invertible = snapshot.invertible,
-                ),
-                displayModeProtocolVersion = DISPLAY_MODE_PROTOCOL_VERSION,
+            val customerDisplay = CustomerDisplayBody(
+                present = snapshot.present,
+                invertible = snapshot.invertible,
             )
+            val body = if (design == null) {
+                json.encodeToString(
+                    CapabilityReportBody(
+                        customerDisplay = customerDisplay,
+                        displayModeProtocolVersion = DISPLAY_MODE_PROTOCOL_VERSION,
+                    ),
+                )
+            } else {
+                json.encodeToString(
+                    CapabilityReportWithDesignBody(
+                        customerDisplay = customerDisplay,
+                        displayModeProtocolVersion = DISPLAY_MODE_PROTOCOL_VERSION,
+                        customerDisplayDesignVersion = design.designVersion,
+                        installationId = design.installationId,
+                    ),
+                )
+            }
             Request.Builder()
                 .url(venueUrl(venueId).newBuilder().addPathSegment("device-capabilities").build())
                 .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
-                .put(json.encodeToString(payload).toRequestBody(jsonMediaType))
+                .put(body.toRequestBody(jsonMediaType))
                 .build()
         },
         decodeSuccess = { DisplayModeRemoteOutcome.Success(Unit) },
-    )
+    ).let { outcome ->
+        if (outcome is DisplayModeRemoteOutcome.Rejected && outcome.status == 409 && outcome.code == INSTALLATION_RACE_CODE) {
+            DisplayModeRemoteOutcome.Retryable(409)
+        } else {
+            outcome
+        }
+    }
 
     suspend fun fetchDisplayModeRequest(
         venueId: String,
@@ -397,6 +429,15 @@ class DisplayModeRemoteRepository @Inject constructor(
         val displayModeProtocolVersion: Int,
     )
 
+    /** Propiedades SIN default: con `encodeDefaults = false` una con default se omitiría y el server la pide junto a la otra. */
+    @Serializable
+    private data class CapabilityReportWithDesignBody(
+        val customerDisplay: CustomerDisplayBody,
+        val displayModeProtocolVersion: Int,
+        val customerDisplayDesignVersion: Int,
+        val installationId: String,
+    )
+
     @Serializable
     private data class PollEnvelope(val data: PollData)
 
@@ -440,6 +481,7 @@ class DisplayModeRemoteRepository @Inject constructor(
 
     private companion object {
         const val DISPLAY_MODE_PROTOCOL_VERSION = 1
+        const val INSTALLATION_RACE_CODE = "CUSTOMER_DISPLAY_INSTALLATION_RACE"
         const val BACKGROUND_HEADER_VALUE = "1"
         const val MAX_SERVER_ID_LENGTH = 128
         const val MAX_RESPONSE_BODY_BYTES = 64L * 1024L

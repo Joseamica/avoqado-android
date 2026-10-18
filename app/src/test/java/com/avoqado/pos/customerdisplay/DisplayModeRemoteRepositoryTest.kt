@@ -506,6 +506,99 @@ class DisplayModeRemoteRepositoryTest {
         assertEquals(PollSignals(PollFingerprints(settings = HUELLA_B), designCapability = 1), binding.signals)
     }
 
+    // ── Reporte de capacidades v1 (F2, Task 1.3): versión de diseño e instalación, sólo cuando se mandan ──
+
+    @Test
+    fun `sin diseno el cuerpo es el de hoy`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        repository.reportCapabilities("venue-1", DisplayCapabilitySnapshot(present = true, invertible = false))
+
+        assertEquals(
+            "{\"customerDisplay\":{\"present\":true,\"invertible\":false},\"displayModeProtocolVersion\":1}",
+            server.takeRequest(1, TimeUnit.SECONDS)!!.body.readUtf8(),
+        )
+    }
+
+    @Test
+    fun `con diseno manda version e instalacion`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        val result = repository.reportCapabilities(
+            venueId = "venue-1",
+            snapshot = DisplayCapabilitySnapshot(present = true, invertible = true),
+            design = DesignReport(designVersion = 1, installationId = INSTALACION),
+        )
+
+        assertEquals(DisplayModeRemoteOutcome.Success(Unit), result)
+        val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/device-capabilities", request.path)
+        assertEquals(
+            "{\"customerDisplay\":{\"present\":true,\"invertible\":true},\"displayModeProtocolVersion\":1," +
+                "\"customerDisplayDesignVersion\":1,\"installationId\":\"$INSTALACION\"}",
+            request.body.readUtf8(),
+        )
+    }
+
+    @Test
+    fun `409 de carrera es reintentable`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(409)
+                .setBody("{\"code\":\"CUSTOMER_DISPLAY_INSTALLATION_RACE\",\"message\":\"Otra instalación\"}"),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Retryable(409),
+            repository.reportCapabilities(
+                "venue-1",
+                DisplayCapabilitySnapshot(present = true, invertible = false),
+                DesignReport(1, INSTALACION),
+            ),
+        )
+    }
+
+    @Test
+    fun `503 es reintentable`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(503).setBody("{}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Retryable(503),
+            repository.reportCapabilities(
+                "venue-1",
+                DisplayCapabilitySnapshot(present = true, invertible = false),
+                DesignReport(1, INSTALACION),
+            ),
+        )
+    }
+
+    @Test
+    fun `400 sigue siendo Rejected`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(400)
+                .setBody("{\"code\":\"VALIDATION_ERROR\",\"message\":\"La versión de diseño y la instalación van juntas\"}"),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(400, "VALIDATION_ERROR", "La versión de diseño y la instalación van juntas"),
+            repository.reportCapabilities(
+                "venue-1",
+                DisplayCapabilitySnapshot(present = true, invertible = false),
+                DesignReport(1, INSTALACION),
+            ),
+        )
+    }
+
+    @Test
+    fun `otro 409 del reporte sigue siendo Rejected`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("{\"code\":\"OTRA_COSA\"}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(409, "OTRA_COSA", null),
+            repository.reportCapabilities("venue-1", DisplayCapabilitySnapshot(present = true, invertible = false)),
+        )
+    }
+
     private fun repositoryWith(client: OkHttpClient): DisplayModeRemoteRepository =
         DisplayModeRemoteRepository(client) {
             server.url("/api/v1").toString().removeSuffix("/")
@@ -538,5 +631,6 @@ class DisplayModeRemoteRepositoryTest {
         const val HUELLA_A = "0123456789abcdef0123456789abcdef"
         const val HUELLA_B = "fedcba9876543210fedcba9876543210"
         const val HUELLA_C = "00000000000000000000000000000000"
+        const val INSTALACION = "3f2a9c1e-7b4d-4e8a-9f10-2c3d4e5f6a7b"
     }
 }
