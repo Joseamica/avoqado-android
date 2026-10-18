@@ -4,14 +4,18 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.loyalty.data.SaleStampOutcome
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.OrderData
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden
+import com.avoqado.pos.pos.data.model.CambioDePrecio
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -84,19 +88,76 @@ class OrderRepository @Inject constructor(
     /**
      * Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL].
      *
-     * Hoy sólo lo usa [cancelOrder] —el resto del repositorio arma la URL con la constante—:
-     * es la única llamada cuya LECTURA de la respuesta hay que poder fijar por caso.
+     * Lo usan [cancelOrder], [createOrder], las ligas de cliente y la consulta del sello —el resto del repositorio arma la URL
+     * con la constante—: son las llamadas cuya LECTURA de la respuesta hay que poder fijar por caso.
      */
     @androidx.annotation.VisibleForTesting
     internal var baseUrl: String = ApiConstants.BASE_URL
 
+    /**
+     * Último `stampsEnabled` que dijo el servidor, POR NEGOCIO (attach o consulta del sello): decide si una venta
+     * encolada sin red puede prometer «El sello se suma al sincronizar». null = no se sabe ⇒ no se promete.
+     * 🔴 También queda en las preferencias del aparato ([SecureStorage.programaDeSellosActivo]) y se lee de ahí si la
+     * memoria no lo tiene: sólo en memoria, tras reiniciar la app SIN red la promesa nunca salía (spec §4.1; revisión
+     * final, Minor #7).
+     */
+    private val programaDeSellosPorNegocio = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    fun programaDeSellosActivo(venueId: String): Boolean? =
+        programaDeSellosPorNegocio[venueId] ?: secureStorage.programaDeSellosActivo(venueId)
+
+    private fun recordarProgramaDeSellos(venueId: String, sello: SaleStampOutcome) {
+        programaDeSellosPorNegocio[venueId] = sello.stampsEnabled
+        secureStorage.setProgramaDeSellosActivo(venueId, sello.stampsEnabled)
+    }
+
     // MARK: - Exception types
 
-    class ServerException(val code: Int, message: String) : Exception(message)
+    /**
+     * @param cambiosDePrecio sólo en el 409 `ORDER_PRICE_CHANGED` al crear una orden («se cobra el precio que vio el cliente»):
+     *   qué líneas cobraría hoy el servidor a otro precio. Vacío en cualquier otro rechazo, que se lee como siempre.
+     */
+    class ServerException(
+        val code: Int,
+        message: String,
+        val cambiosDePrecio: List<CambioDePrecio> = emptyList(),
+    ) : Exception(message)
 
     companion object {
+        private const val CODIGO_PRECIO_CAMBIADO = "ORDER_PRICE_CHANGED"
+
+        /**
+         * Los cambios de precio de un rechazo al crear la orden. PURA. Sólo un 409 ESTRUCTURADO (`code == "ORDER_PRICE_CHANGED"`,
+         * `details.priceChanges`) los trae; otro código, un proxy o basura dan lista vacía y el rechazo se lee como siempre. Un
+         * renglón ilegible (sin producto o sin los dos precios) se salta, igual que iOS.
+         */
+        fun leerCambiosDePrecio(body: String): List<CambioDePrecio> {
+            val raiz = runCatching { errorParserJson.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return emptyList()
+            if ((raiz["code"] as? JsonPrimitive)?.contentOrNull != CODIGO_PRECIO_CAMBIADO) return emptyList()
+            val lista = (raiz["details"] as? JsonObject)?.get("priceChanges") as? JsonArray ?: return emptyList()
+            return lista.mapNotNull { runCatching { errorParserJson.decodeFromJsonElement(CambioDePrecio.serializer(), it) }.getOrNull() }
+        }
+
         private val idExtractorJson = Json { ignoreUnknownKeys = true }
         private val errorParserJson = Json { ignoreUnknownKeys = true }
+
+        /**
+         * Mismo molde que el `Json` compartido de la app (`NetworkModule`): SIN `coerceInputValues`, a propósito. Un
+         * número que llega nulo (`"stampsEarned": null`) NO se vuelve 0 — con `stamped: true` eso pintaría «¡Completó
+         * su tarjeta!» sin que fuera cierto—: la lectura entera se descarta y el renglón no sale.
+         */
+        private val selloJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+        /**
+         * El sello de la venta dentro de una respuesta del servidor: `data.loyalty` (attach) o `data` (consulta).
+         * null si no viene (servidor viejo), si viene null, o si no se puede leer: el sello es un aviso y nunca
+         * tumba la liga del cliente (la liga ya quedó en el servidor; decir que falló sería mentir).
+         */
+        internal fun leerSelloDeLaVenta(body: String, dentroDeLoyalty: Boolean): SaleStampOutcome? = runCatching {
+            val data = selloJson.parseToJsonElement(body).jsonObject["data"] as? JsonObject
+            val objeto = if (dentroDeLoyalty) data?.get("loyalty") as? JsonObject else data
+            objeto?.let { selloJson.decodeFromJsonElement(SaleStampOutcome.serializer(), it) }
+        }.getOrNull()
 
         fun isQueueableError(e: Throwable): Boolean {
             return e is java.net.UnknownHostException ||
@@ -429,6 +490,10 @@ class OrderRepository @Inject constructor(
             stampRewardId: String? = null,
             /** Cuánto descontó la caja por el premio al cobrar (centavos). Ver `stampRewardExpectedDiscount` en el servidor. */
             stampRewardExpectedDiscount: Int? = null,
+            /** Sólo la cola sin red y la reserva del efectivo: «la venta ya ocurrió», el servidor nunca la rechaza por precio. */
+            isOfflineReplay: Boolean = false,
+            /** Epoch ms del aparato al CAPTURAR la venta (una sola vez). Viaja sólo con [isOfflineReplay]. */
+            createdAtLocal: Long? = null,
         ): String {
             return buildJsonObject {
                 put(
@@ -498,6 +563,13 @@ class OrderRepository @Inject constructor(
                                                 },
                                             )
                                         }
+                                        // El precio de catálogo que vio el cliente y la hora de ese catálogo: sólo juntos.
+                                        val displayed = item.displayedUnitPrice
+                                        val horaDelCatalogo = item.catalogAt
+                                        if (displayed != null && horaDelCatalogo != null) {
+                                            put("displayedUnitPrice", displayed)
+                                            put("catalogAt", horaDelCatalogo)
+                                        }
                                     } else {
                                         // Custom amount line item (e.g. "Otro importe")
                                         put("name", item.name)
@@ -564,6 +636,10 @@ class OrderRepository @Inject constructor(
                 request.splitType?.let { put("splitType", it) }
                 request.note?.trim()?.takeIf { it.isNotEmpty() }?.let { put("note", it) }
                 request.reservationId?.takeIf { it.isNotBlank() }?.let { put("reservationId", it) }
+                if (isOfflineReplay) {
+                    put("isOfflineReplay", true)
+                    createdAtLocal?.let { put("createdAtLocal", it) }
+                }
             }.toString()
         }
 
@@ -648,7 +724,7 @@ class OrderRepository @Inject constructor(
             val body = payload.toRequestBody("application/json".toMediaType())
 
             val httpRequest = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
+                .url("$baseUrl/mobile/venues/$venueId/orders")
                 .header("Authorization", "Bearer $token")
                 .post(body)
                 .build()
@@ -665,7 +741,7 @@ class OrderRepository @Inject constructor(
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")
                 val message = extractErrorMessage(responseBody) ?: "Error al crear orden ($responseCode)"
-                Result.failure(ServerException(responseCode, message))
+                Result.failure(ServerException(responseCode, message, leerCambiosDePrecio(responseBody)))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Order creation error: ${e.message}")
@@ -750,11 +826,15 @@ class OrderRepository @Inject constructor(
     private data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
 
 
-    private suspend fun guardarRespuestaDeCaptura(venueId: String, key: String, channel: CanalDelCobro, body: String) {
+    private suspend fun guardarRespuestaDeCaptura(venueId: String, key: String, channel: CanalDelCobro, body: String, importeAceptadoCents: Int? = null) {
         val dao = capturedPayments ?: return
         val original = dao.findForVenue(venueId, key) ?: return // Unsupported/no-reservation flows keep their existing contract.
         if (original.syncStatus == "SYNCED") return
-        val result = ConciliacionDelCobro.evaluar(original.q15CaptureJson, venueId, key, channel, body)
+        // Se compara contra lo que el cajero aceptó; lo que se guarda sigue siendo la captura original (evidencia Q15).
+        val contraQue = importeAceptadoCents?.let { aceptado ->
+            ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, venueId, key)?.let { ConciliacionDelCobro.guardarCaptura(it.copy(amountCents = aceptado)) }
+        } ?: original.q15CaptureJson
+        val result = ConciliacionDelCobro.evaluar(contraQue, venueId, key, channel, body)
         check(dao.registrarResultadoQ15(venueId, key, result.aplicado, result.motivo, result.resultadoJson, System.currentTimeMillis()) == 1)
         check(result.aplicado) { "El resultado del cobro está por confirmar. Se conservó para revisión; no vuelvas a cobrar." }
     }
@@ -914,6 +994,11 @@ class OrderRepository @Inject constructor(
          */
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
         capturedVenueId: String? = null,
+        /**
+         * El importe que el cajero ya aceptó en pantalla porque el servidor cambió el precio EN LÍNEA (precio que vio el
+         * cliente). Sólo cambia contra qué se compara el resultado; la captura original no se toca. null = como siempre.
+         */
+        importeAceptadoCents: Int? = null,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -953,7 +1038,7 @@ class OrderRepository @Inject constructor(
             }
 
             if (code in 200..299) {
-                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.ORDER, body)
+                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.ORDER, body, importeAceptadoCents)
                 Log.d("💵", "✅ Cash payment recorded for order: $orderId")
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
@@ -990,10 +1075,14 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Attach customer to completed payment
 
+    /**
+     * Liga al cliente con la venta ya cobrada. Sellos tardíos: el éxito trae el sello que el servidor sumó (o por qué no)
+     * — campo `loyalty`, OPCIONAL: null con un servidor viejo o si no se puede leer, y la liga sigue siendo un éxito.
+     */
     suspend fun attachCustomerToPayment(
         paymentId: String?,
         customerId: String,
-    ): Result<Unit> {
+    ): Result<SaleStampOutcome?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
         val normalizedPaymentId = paymentId?.takeIf { it.isNotBlank() }
@@ -1007,7 +1096,7 @@ class OrderRepository @Inject constructor(
             }.toString()
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/$normalizedPaymentId/customer")
+                .url("$baseUrl/mobile/venues/$venueId/payments/$normalizedPaymentId/customer")
                 .header("Authorization", "Bearer $token")
                 .post(bodyJson.toRequestBody("application/json".toMediaType()))
                 .build()
@@ -1019,7 +1108,8 @@ class OrderRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d("👤", "✅ Customer attached to payment: $normalizedPaymentId")
-                Result.success(Unit)
+                // Sellos tardíos: el servidor dice si esta liga sumó sello (campo `loyalty`, opcional).
+                Result.success(leerSelloDeLaVenta(body, dentroDeLoyalty = true)?.also { recordarProgramaDeSellos(venueId, it) })
             } else {
                 Log.e("👤", "❌ Attach customer failed ($code): $body")
                 val message = extractErrorMessage(body) ?: "Error al agregar cliente ($code)"
@@ -1036,7 +1126,7 @@ class OrderRepository @Inject constructor(
         amountCents: Int,
         tipCents: Int,
         staffId: String,
-    ): Result<Unit> {
+    ): Result<SaleStampOutcome?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
         val normalizedCustomerId = customerId.takeIf { it.isNotBlank() }
@@ -1052,7 +1142,7 @@ class OrderRepository @Inject constructor(
             }.toString()
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/customer")
+                .url("$baseUrl/mobile/venues/$venueId/payments/customer")
                 .header("Authorization", "Bearer $token")
                 .post(bodyJson.toRequestBody("application/json".toMediaType()))
                 .build()
@@ -1064,7 +1154,7 @@ class OrderRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d("👤", "✅ Customer attached to latest payment")
-                Result.success(Unit)
+                Result.success(leerSelloDeLaVenta(body, dentroDeLoyalty = true)?.also { recordarProgramaDeSellos(venueId, it) })
             } else {
                 Log.e("👤", "❌ Attach customer to latest payment failed ($code): $body")
                 val message = extractErrorMessage(body) ?: "Error al agregar cliente ($code)"
@@ -1073,6 +1163,44 @@ class OrderRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e("👤", "❌ Attach customer to latest payment error: ${e.message}")
             Result.failure(e)
+        }
+    }
+
+    // MARK: - Sello de la venta (sellos tardíos)
+
+    /** Plazo corto: la consulta corre detrás de «Cobro exitoso» y no tiene por qué colgarse 30 s. */
+    private val selloClient: OkHttpClient by lazy { client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build() }
+
+    /**
+     * `GET /mobile/venues/:venueId/payments/:paymentId/loyalty`: qué pasó con el sello de una venta que se cobró CON
+     * cliente desde el carrito. 🔴 Nunca lanza: sin red, 403 (rol sin `loyalty:read`) o 404 (servidor viejo) son null y la
+     * pantalla de éxito no cambia. Va marcada como tarea de FONDO: un 403 no puede abrir el teclado del PIN encima del
+     * recibo.
+     */
+    suspend fun consultarSelloDeLaVenta(paymentId: String): SaleStampOutcome? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+        if (paymentId.isBlank()) return null
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/loyalty")
+                .header("Authorization", "Bearer $token")
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .get()
+                .build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                selloClient.newCall(request).execute().use { response -> response.code to (response.body?.string() ?: "") }
+            }
+            if (code !in 200..299) {
+                Log.w("🎟️", "Sello de la venta $paymentId: HTTP $code")
+                return null
+            }
+            leerSelloDeLaVenta(body, dentroDeLoyalty = false)?.also { recordarProgramaDeSellos(venueId, it) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("🎟️", "Sello de la venta $paymentId sin respuesta: ${e.message}")
+            null
         }
     }
 

@@ -26,6 +26,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
+/** Tope del teclado: el mismo `MAX_TERMINAL_PAYMENT_CENTS` del servidor ($1,000,000.00). */
+internal const val MAX_MONTO_DEL_TECLADO_CENTS = 100_000_000
+
+/**
+ * El importe tras teclear [digito]; si pasaría del tope, se queda como estaba. D5 (mesas40): se compara el importe
+ * RESULTANTE — comparar el de antes dejaba pasar $999,999.99 → ~$10 millones con un dígito más.
+ */
+internal fun siguienteMontoDelTeclado(actual: Int, digito: Int): Int {
+    val siguiente = actual.toLong() * 10 + digito
+    return if (siguiente <= MAX_MONTO_DEL_TECLADO_CENTS) siguiente.toInt() else actual
+}
+
 /**
  * Square-style numeric keypad for amount entry.
  * Shows: large amount display, "+ Nota" button, and 4x3 keypad grid.
@@ -174,9 +186,7 @@ fun NumericKeypadView(
                                     }
                                     else -> {
                                         val digit = key.toIntOrNull() ?: return@KeypadButton
-                                        if (amountCents < 100_000_000) {
-                                            onAmountChange(amountCents * 10 + digit)
-                                        }
+                                        onAmountChange(siguienteMontoDelTeclado(amountCents, digit))
                                     }
                                 }
                             },

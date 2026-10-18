@@ -1595,6 +1595,47 @@ class PaymentFlowViewModelTest {
         assertEquals("Ana", impreso.captured.cashierName)
     }
 
+    /** D4 (mesas40): un carrito sin vendedor (`selectedStaffId` vacío) no imprime el literal «Staff»: atendió la sesión. */
+    @Test
+    fun `D4 sin vendedor elegido el ticket dice la sesion, nunca Staff`() = runTest {
+        every { secureStorage.userFirstName } returns "Luis"
+        every { secureStorage.userLastName } returns "Cajero"
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-sesion")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-sesion", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        // Así llega un carrito armado a mano (el de «Pagar» en la mesa): sin vendedor, con el nombre por defecto.
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertEquals("Luis Cajero", impreso.captured.cashierName)
+    }
+
+    /** D4: el tipo de orden del ticket sale del cumplimiento del carrito, con las mismas etiquetas que la cuenta. */
+    @Test
+    fun `D4 una venta de mostrador para llevar imprime Para llevar`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-llevar")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-llevar", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        viewModel.startPaymentFlow(cartConUnProducto().copy(orderType = "TAKEOUT"))
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertEquals("Para llevar", impreso.captured.orderType)
+    }
+
     @Test
     fun `P1 imprimir otra vez desde la pantalla de exito conserva la fecha de la venta`() = runTest {
         val primero = reciboDelCobro { viewModel.confirmCashCustom(1000) }
@@ -2705,6 +2746,236 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // D2 (mesas40, 14-oct): «Cobro sin confirmar» se limpia SOLO. El servidor decide hasta ~30 s después del POST
+    // incierto y Android no tiene socket; la pantalla vuelve a preguntar cada 5 s por el MISMO camino del botón
+    // «Volver a consultar», en segundo plano: sin «Consultando…», sin aviso de permisos, y «no se sabe» no toca nada.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `D2 la consulta automatica aplica un cobro que el servidor ya confirmo, en segundo plano y sin segundo envio`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Success(paymentId = "pay-tarde", requestId = "req-1")
+
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("se limpia sola: $estado", estado is PaymentFlowState.Success)
+        assertEquals("pay-tarde", (estado as PaymentFlowState.Success).paymentId)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        // 🔴 En segundo plano: un 403 de esta consulta no puede abrir el aviso global de permisos.
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("req-1", enSegundoPlano = true) }
+        coVerify(exactly = 0) { terminalPaymentService.resolveOutcome("req-1", enSegundoPlano = false) }
+    }
+
+    @Test
+    fun `D2 si consta que no se cobro, la consulta automatica ofrece cobrar otra vez`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.", requestId = "req-1")
+
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D2 sigue sin saberse (403, sin red o 404 llegan asi) - la consulta automatica deja la pantalla identica`() = runTest {
+        enCobroSinConfirmar()
+        val antes = viewModel.state.value
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("El cobro sigue activo. Confirma en la terminal.", "req-1")
+
+        viewModel.recheckCardCharge(automatica = true)
+        // Mientras pregunta, nada de «Consultando…»: el cajero no tocó nada.
+        assertEquals(antes, viewModel.state.value)
+        advanceUntilIdle()
+
+        assertEquals("«no se sabe» no toca la pantalla: ni mensaje, ni estado", antes, viewModel.state.value)
+    }
+
+    @Test
+    fun `D2 cobro anterior confirmado por la consulta automatica mientras se muestra otra venta - la nueva queda intacta`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("req-vieja", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("req-vieja", false) } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-vieja")
+        coEvery { terminalPaymentService.resolveOutcome("req-vieja", true) } returns
+            TerminalPaymentResult.Success(paymentId = "pay-vieja", requestId = "req-vieja")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
+        advanceUntilIdle()
+        assertTrue("montaje: revisando el cobro de otra venta", (viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+
+        assertFalse("confirmar el cobro anterior NUNCA paga la venta actual", viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+    }
+
+    @Test
+    fun `D2 boton y consulta automatica a la vez - una sola consulta y un solo efecto`() = runTest {
+        enCobroSinConfirmar()
+        val respuesta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { respuesta.await() }
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        assertFalse(
+            "la automática no pinta «Consultando…»",
+            (viewModel.state.value as PaymentFlowState.Undetermined).checking,
+        )
+        viewModel.recheckCardCharge() // el cajero toca «Volver a consultar» con la automática en vuelo
+        runCurrent()
+        respuesta.complete(TerminalPaymentResult.Success(paymentId = "pay-1", requestId = "req-1"))
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("req-1", any()) }
+        assertEquals("pay-1", (viewModel.state.value as PaymentFlowState.Success).paymentId)
+    }
+
+    /**
+     * D2, relevo (15-oct): con WiFi malo la consulta automática dura hasta 35 s (3 GET de 10 s + pausas). Si el toque del
+     * cajero en «Volver a consultar» no hacía nada mientras tanto, el botón parecía muerto (el mismo reclamo del founder del
+     * 21-sep con la declaración). La consulta en vuelo pasa a ser SUYA: ve «Consultando…» y su desenlace, también «no se sabe».
+     */
+    @Test
+    fun `D2 el cajero toca Volver a consultar con la automatica en vuelo - ve Consultando y su desenlace, sin otra consulta`() = runTest {
+        enCobroSinConfirmar()
+        val respuesta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { respuesta.await() }
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        viewModel.recheckCardCharge()
+        runCurrent()
+        assertTrue("el toque se ve: «Consultando…»", (viewModel.state.value as PaymentFlowState.Undetermined).checking)
+
+        val sinRed = "Sin conexión: no se pudo consultar el cobro."
+        respuesta.complete(TerminalPaymentResult.Undetermined(sinRed, "req-1"))
+        advanceUntilIdle()
+
+        val fin = viewModel.state.value as PaymentFlowState.Undetermined
+        assertFalse(fin.checking)
+        assertEquals("el cajero ve la respuesta a SU toque", sinRed, fin.message)
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("req-1", any()) }
+    }
+
+    /**
+     * D2, ronda 2 de Codex (P2): la consulta vive en el VM y sobrevive a salir. Si la pantalla NUEVA hacía suya la espera de
+     * la consulta vieja, su desenlace se descartaba por la generación y la pantalla se quedaba en «Consultando…» para siempre.
+     */
+    @Test
+    fun `D2 salir y reabrir con la automatica en vuelo - el toque de la pantalla nueva recibe su desenlace`() = runTest {
+        enCobroSinConfirmar()
+        val respuesta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { respuesta.await() }
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        viewModel.salirDejandoPendiente()
+        // Reabre la misma cuenta: la lista durable todavía guarda el cobro de esta orden.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-1"
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue("montaje: la pantalla nueva habla del cobro", viewModel.state.value is PaymentFlowState.Undetermined)
+
+        viewModel.recheckCardCharge()
+        runCurrent()
+        val sinRed = "Sin conexión: no se pudo consultar el cobro."
+        respuesta.complete(TerminalPaymentResult.Undetermined(sinRed, "req-1"))
+        advanceUntilIdle()
+
+        val fin = viewModel.state.value as PaymentFlowState.Undetermined
+        assertFalse("no se queda en «Consultando…»", fin.checking)
+        assertTrue("la pantalla nueva ve la respuesta a su toque: ${fin.message}", fin.message.endsWith(sinRed))
+    }
+
+    /**
+     * D2, ronda 2: la declaración se resolvió (liberada) ANTES de que llegara la automática, y el cajero ya volvió a cobrar
+     * (req-2, otra vez sin confirmar). El desenlace tardío de req-1 no gobierna la pantalla de req-2.
+     */
+    @Test
+    fun `D2 declaracion liberada antes de la respuesta automatica - el desenlace viejo no pisa el cobro nuevo`() = runTest {
+        enCobroSinConfirmar()
+        val consulta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { consulta.await() }
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns ResultadoDeDeclaracion.Liberada
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        viewModel.declararNoCobrado()
+        runCurrent()
+        assertTrue("montaje: liberada", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-2")
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        val delCobroNuevo = viewModel.state.value
+        assertTrue("montaje: el cobro nuevo quedó sin confirmar", delCobroNuevo is PaymentFlowState.Undetermined)
+
+        consulta.complete(TerminalPaymentResult.Success(paymentId = "pay-viejo", requestId = "req-1"))
+        advanceUntilIdle()
+
+        assertEquals("el desenlace de req-1 no gobierna la pantalla de req-2", delCobroNuevo, viewModel.state.value)
+    }
+
+    @Test
+    fun `D2 declaracion manual en vuelo - la respuesta tardia de la consulta automatica no la pisa`() = runTest {
+        enCobroSinConfirmar()
+        val consulta = CompletableDeferred<TerminalPaymentResult>()
+        val declaracion = CompletableDeferred<ResultadoDeDeclaracion>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { consulta.await() }
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } coAnswers { declaracion.await() }
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        viewModel.declararNoCobrado()
+        runCurrent()
+        consulta.complete(TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.", requestId = "req-1"))
+        runCurrent()
+
+        val enVuelo = viewModel.state.value
+        assertTrue("la declaración sigue gobernando: $enVuelo", enVuelo is PaymentFlowState.Undetermined && enVuelo.checking)
+
+        val delServidor = "Este cobro sí tiene señales de haber pasado. No lo declares: consulta su resultado."
+        declaracion.complete(ResultadoDeDeclaracion.Rechazada(mensaje = delServidor, code = "POSITIVE_EVIDENCE_EXISTS"))
+        advanceUntilIdle()
+        val fin = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals(delServidor, fin.message)
+        assertTrue(fin.declaracionRechazada)
+    }
+
+    @Test
+    fun `D2 con la declaracion en vuelo la consulta automatica ni siquiera pregunta`() = runTest {
+        enCobroSinConfirmar()
+        var consultas = 0
+        coEvery { terminalPaymentService.resolveOutcome(any(), any()) } coAnswers {
+            consultas++
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-1")
+        }
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } coAnswers { CompletableDeferred<ResultadoDeDeclaracion>().await() }
+
+        viewModel.declararNoCobrado()
+        runCurrent()
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+
+        assertEquals(0, consultas)
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).checking)
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════
@@ -3830,5 +4101,28 @@ class PaymentFlowViewModelTest {
 
         assertNull(storeDePendientes.pendiente.value)
         coVerify(timeout = 5_000, exactly = 1) { entregaPorWifi.cerrarPorPapel("venue-1", "XXXX", listOf(planBarraDeX)) }
+    }
+
+    // MARK: - Testarudo, 15-oct: la sesión no se renovó por un parpadeo del internet
+
+    @Test
+    fun `P1 tarjeta - sesion sin renovar por red dice Sin conexion, no Token has expired`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(com.avoqado.pos.core.data.network.SesionSinRenovar("red:UnknownHostException"))
+
+        viewModel.startPaymentFlow(
+            CartState(items = listOf(CartItem(id = "l1", type = CartItemType.ProductItem("prod-1"), name = "Americano", unitPrice = 5500))),
+        )
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("se esperaba Error, fue $estado", estado is PaymentFlowState.Error)
+        estado as PaymentFlowState.Error
+        assertEquals(PaymentFlowViewModel.TARJETA_SIN_RED, estado.message)
+        assertEquals(PaymentErrorSource.NETWORK, estado.source)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
     }
 }

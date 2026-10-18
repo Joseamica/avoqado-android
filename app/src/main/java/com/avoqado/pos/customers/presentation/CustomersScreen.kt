@@ -74,18 +74,34 @@ fun CustomersScreen(
     onDismiss: () -> Unit,
     viewModel: CustomersViewModel = hiltViewModel(),
 ) {
+    // El texto del buscador vive AQUÍ, arriba de los dos layouts: si el ancho cruza el corte tablet/teléfono el layout
+    // nace de nuevo y, si el texto viviera en él, la caja vería el buscador en blanco con la lista todavía filtrada.
+    // Nace vacío cada vez que se abre la pantalla, igual que el ViewModel en `abrirLista()`: el ViewModel sobrevive
+    // entre aperturas, así que un texto sembrado de su `query` enseñaría la búsqueda anterior sobre los recientes.
+    var searchText by remember { mutableStateOf("") }
+
+    // El texto vive en Compose (el teclado no se desfasa); QUÉ lista se ve lo decide el ViewModel.
+    val buscar: (String) -> Unit = { texto ->
+        searchText = texto
+        viewModel.onQueryChange(texto)
+    }
+
     LaunchedEffect(Unit) {
-        viewModel.fetchCustomers()
+        viewModel.abrirLista()
     }
 
     if (isTablet) {
         TabletCustomersLayout(
             viewModel = viewModel,
+            searchText = searchText,
+            onSearchTextChange = buscar,
             onDismiss = onDismiss,
         )
     } else {
         PhoneCustomersLayout(
             viewModel = viewModel,
+            searchText = searchText,
+            onSearchTextChange = buscar,
             onDismiss = onDismiss,
         )
     }
@@ -96,27 +112,18 @@ fun CustomersScreen(
 @Composable
 private fun TabletCustomersLayout(
     viewModel: CustomersViewModel,
+    searchText: String,
+    onSearchTextChange: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
+    val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
+    val estado = estadoDeLaListaDeClientes(cargando = isLoading, hayClientes = customers.isNotEmpty(), texto = searchText)
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
-    var searchText by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
-
-    val filteredCustomers = remember(searchText, customers) {
-        if (searchText.isEmpty()) {
-            customers
-        } else {
-            val query = searchText.lowercase()
-            customers.filter { customer ->
-                customer.fullName.lowercase().contains(query) ||
-                    (customer.phone?.contains(query) == true) ||
-                    (customer.email?.lowercase()?.contains(query) == true)
-            }
-        }
-    }
 
     // Create Customer overlay
     if (showCreateCustomer) {
@@ -204,7 +211,7 @@ private fun TabletCustomersLayout(
             // Search bar (outlined style)
             TextField(
                 value = searchText,
-                onValueChange = { searchText = it },
+                onValueChange = { onSearchTextChange(it) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AvoqadoTheme.spacing.lg)
@@ -227,7 +234,7 @@ private fun TabletCustomersLayout(
                         Icon(
                             Icons.Filled.Close,
                             contentDescription = "Limpiar",
-                            modifier = Modifier.clickable { searchText = "" },
+                            modifier = Modifier.clickable { onSearchTextChange("") },
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -244,9 +251,32 @@ private fun TabletCustomersLayout(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
+            // La búsqueda va en camino (en WiFi malo tarda): también encima de una lista ya a la vista.
+            BarraDeCargaDeClientes(cargando = estado.barraDeCarga)
+
+            // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
+            avisoDeGuardados?.let { aviso ->
+                AvisoSinRedDeClientes(
+                    texto = aviso,
+                    modifier = Modifier.padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.sm,
+                    ),
+                )
+            }
+            // «2 de 120: escribe más para afinar» (auditoría A #10): hay más clientes con ese texto de los que se ven.
+            avisoDeMas?.let { aviso ->
+                Text(
+                    text = aviso,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.xs),
+                )
+            }
+
             // Customer list
-            when {
-                isLoading && customers.isEmpty() -> {
+            when (estado.contenido) {
+                ContenidoDeLaLista.CARGANDO -> {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -264,7 +294,7 @@ private fun TabletCustomersLayout(
                     }
                 }
 
-                filteredCustomers.isEmpty() && searchText.isNotEmpty() -> {
+                ContenidoDeLaLista.SIN_RESULTADOS -> {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -280,9 +310,9 @@ private fun TabletCustomersLayout(
                     }
                 }
 
-                else -> {
+                ContenidoDeLaLista.LISTA -> {
                     LazyColumn(modifier = Modifier.weight(1f)) {
-                        items(filteredCustomers, key = { it.id }) { customer ->
+                        items(customers, key = { it.id }) { customer ->
                             CustomerListRow(
                                 customer = customer,
                                 isSelected = customer.id == selectedCustomer?.id,
@@ -321,27 +351,18 @@ private fun TabletCustomersLayout(
 @Composable
 private fun PhoneCustomersLayout(
     viewModel: CustomersViewModel,
+    searchText: String,
+    onSearchTextChange: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
+    val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
+    val estado = estadoDeLaListaDeClientes(cargando = isLoading, hayClientes = customers.isNotEmpty(), texto = searchText)
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
-    var searchText by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
-
-    val filteredCustomers = remember(searchText, customers) {
-        if (searchText.isEmpty()) {
-            customers
-        } else {
-            val query = searchText.lowercase()
-            customers.filter { customer ->
-                customer.fullName.lowercase().contains(query) ||
-                    (customer.phone?.contains(query) == true) ||
-                    (customer.email?.lowercase()?.contains(query) == true)
-            }
-        }
-    }
 
     // Create Customer overlay
     if (showCreateCustomer) {
@@ -448,7 +469,7 @@ private fun PhoneCustomersLayout(
         // Search bar
         TextField(
             value = searchText,
-            onValueChange = { searchText = it },
+            onValueChange = { onSearchTextChange(it) },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AvoqadoTheme.spacing.lg)
@@ -471,7 +492,7 @@ private fun PhoneCustomersLayout(
                     Icon(
                         Icons.Filled.Close,
                         contentDescription = "Limpiar",
-                        modifier = Modifier.clickable { searchText = "" },
+                        modifier = Modifier.clickable { onSearchTextChange("") },
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -488,9 +509,32 @@ private fun PhoneCustomersLayout(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
+        // La búsqueda va en camino (en WiFi malo tarda): también encima de una lista ya a la vista.
+        BarraDeCargaDeClientes(cargando = estado.barraDeCarga)
+
+        // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
+        avisoDeGuardados?.let { aviso ->
+            AvisoSinRedDeClientes(
+                texto = aviso,
+                modifier = Modifier.padding(
+                    horizontal = AvoqadoTheme.spacing.lg,
+                    vertical = AvoqadoTheme.spacing.sm,
+                ),
+            )
+        }
+        // «2 de 120: escribe más para afinar» (auditoría A #10): hay más clientes con ese texto de los que se ven.
+        avisoDeMas?.let { aviso ->
+            Text(
+                text = aviso,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.xs),
+            )
+        }
+
         // Customer list content
-        when {
-            isLoading && customers.isEmpty() -> {
+        when (estado.contenido) {
+            ContenidoDeLaLista.CARGANDO -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -508,7 +552,7 @@ private fun PhoneCustomersLayout(
                 }
             }
 
-            filteredCustomers.isEmpty() && searchText.isNotEmpty() -> {
+            ContenidoDeLaLista.SIN_RESULTADOS -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -524,9 +568,9 @@ private fun PhoneCustomersLayout(
                 }
             }
 
-            else -> {
+            ContenidoDeLaLista.LISTA -> {
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(filteredCustomers, key = { it.id }) { customer ->
+                    items(customers, key = { it.id }) { customer ->
                         CustomerListRow(
                             customer = customer,
                             isSelected = false,

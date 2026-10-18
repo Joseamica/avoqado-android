@@ -547,6 +547,36 @@ class TerminalPaymentServiceHttpTest {
 
     // MARK: - resolveOutcome sobre HTTP real
 
+    /**
+     * D2 (mesas40, 14-oct): la consulta AUTOMÁTICA de «Cobro sin confirmar» corre sola cada 5 s. Con el interceptor REAL:
+     * un 403 suyo no puede sacar el aviso global de permisos encima de la pantalla del cajero — y sigue sin saberse.
+     */
+    @Test
+    fun `D2 un 403 de la consulta en segundo plano no abre el aviso de permisos y queda sin saberse`() = runBlocking {
+        val avisos = com.avoqado.pos.core.data.network.ErrorNotifier()
+        val conInterceptor = TerminalPaymentService(
+            secureStorage,
+            OkHttpClient.Builder()
+                .addInterceptor(ForbiddenInterceptor(avisos, mockk(relaxed = true)))
+                .build(),
+        )
+        conInterceptor.baseUrl = server.url("/api/v1").toString().trimEnd('/')
+        val prohibido = """{"error":"Forbidden","message":"Permission 'payments:read' required","required":"payments:read"}"""
+        repeat(3) { enqueue(403, prohibido) }
+
+        val result = conInterceptor.resolveOutcome("req-1", enSegundoPlano = true)
+
+        assertTrue("un 403 no prueba nada del cobro: $result", result is TerminalPaymentResult.Undetermined)
+        assertNull("sin aviso de permisos encima del cajero", avisos.forbiddenError.value)
+        repeat(3) { assertEquals("1", server.takeRequest().getHeader(ForbiddenInterceptor.BACKGROUND_HEADER)) }
+
+        // Control: la consulta del BOTÓN sí lo muestra (el cajero la pidió), así que el interceptor está vivo en esta prueba.
+        enqueue(403, prohibido)
+        conInterceptor.getPaymentStatus("req-1")
+        assertEquals(null, server.takeRequest().getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+        assertTrue(avisos.forbiddenError.value != null)
+    }
+
     @Test
     fun `resolveOutcome insiste mientras la solicitud siga en curso`() = runBlocking {
         enqueue(200, """{"success":true,"inProgress":true,"status":"PENDING"}""")

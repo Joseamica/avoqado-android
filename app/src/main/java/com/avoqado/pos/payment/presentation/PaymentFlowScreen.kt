@@ -21,8 +21,10 @@ import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
+import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.payment.data.model.PaymentFlowState
+import com.avoqado.pos.pos.data.model.TITULO_AVISO_DE_PRECIO
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.EstadoDeComanda
 
@@ -74,6 +76,7 @@ fun PaymentFlowScreen(
     val customersViewModel: CustomersViewModel = hiltViewModel()
     val customerAttachSending by viewModel.customerAttachSending.collectAsState()
     val customerAttachResult by viewModel.customerAttachResult.collectAsState()
+    val renglonDelSello by viewModel.renglonDelSello.collectAsState()
     // Una sola fuente para el nombre: la del ViewModel. Antes esta pantalla
     // guardaba el suyo aparte, arrancando siempre en null — de ahí que el
     // cliente del carrito no apareciera al terminar el cobro.
@@ -303,6 +306,7 @@ fun PaymentFlowScreen(
                             viewModel.clearCustomerAttachResult()
                             showCustomersSheet = true
                         },
+                        renglonDelSello = renglonDelSello,
                         onDone = {
                             // También cerrar la carrera de un toque inmediato contra el
                             // LaunchedEffect: exactamente uno de los dos consume el pago.
@@ -360,6 +364,7 @@ fun PaymentFlowScreen(
             is PaymentFlowState.Error -> {
                 PaymentErrorView(
                     message = currentState.message,
+                    sinRed = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     onRetry = { viewModel.retry() },
                     // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si
                     // llegó a existir) y sólo cuando conste que no se cobró se cancela la venta.
@@ -369,6 +374,15 @@ fun PaymentFlowScreen(
             // 🔴 Ni éxito ni fracaso: no se sabe si la tarjeta se cobró. Pantalla propia,
             // sin Reintentar a ciegas — ver PaymentUndeterminedView.
             is PaymentFlowState.Undetermined -> {
+                // D2 (mesas40): el servidor resuelve el cobro hasta ~30 s después y Android no tiene socket. Se le vuelve
+                // a preguntar cada 5 s por el MISMO camino de «Volver a consultar», en segundo plano: sólo lee, nunca
+                // cobra, y «no se sabe» (sin red incluido) deja la pantalla como está. Vive mientras se vea esta pantalla.
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        kotlinx.coroutines.delay(5_000)
+                        viewModel.recheckCardCharge(automatica = true)
+                    }
+                }
                 PaymentUndeterminedView(
                     message = currentState.message,
                     isChecking = currentState.checking,
@@ -396,11 +410,21 @@ fun PaymentFlowScreen(
         // 🔴 El premio de cartilla no salió como lo anunció el carrito: el total que se cobra
         // cambió. Encima de cualquier estado y con «Entendido» (no se esfuma solo): es dinero.
         val avisoDelPremio by viewModel.avisoDelPremio.collectAsState()
+        // 🔴 El servidor cobró otro precio que el que mostró la caja («se cobra el precio que vio el cliente»): lo mismo, con
+        // «Entendido». Uno a la vez, el premio primero (igual que el overlay de iOS).
+        val avisoDePrecio by viewModel.avisoDePrecio.collectAsState()
         avisoDelPremio?.let { aviso ->
             AvoqadoWarningToast(
                 message = "Revisa el premio",
                 subtitle = aviso,
                 onDismiss = { viewModel.descartarAvisoDelPremio() },
+                secondaryLabel = "Entendido",
+            )
+        } ?: avisoDePrecio?.let { aviso ->
+            AvoqadoWarningToast(
+                message = TITULO_AVISO_DE_PRECIO,
+                subtitle = aviso,
+                onDismiss = { viewModel.descartarAvisoDePrecio() },
                 secondaryLabel = "Entendido",
             )
         }
@@ -485,8 +509,10 @@ fun PaymentFlowScreen(
             if (showCreateCustomer) {
                 CreateCustomerView(
                     viewModel = customersViewModel,
-                    initialPhone = createCustomerSearchText.takeIf { it.all { c -> c.isDigit() || c == '+' } },
-                    initialName = createCustomerSearchText.takeIf { !it.all { c -> c.isDigit() || c == '+' } },
+                    // «81 2944 0042» es un teléfono aunque traiga espacios: antes caía en el NOMBRE y nacía un
+                    // cliente llamado «81 2944 0042» sin teléfono (la clase de dato roto de C3).
+                    initialPhone = createCustomerSearchText.takeIf { esTextoDeTelefono(it) },
+                    initialName = createCustomerSearchText.takeIf { it.isNotBlank() && !esTextoDeTelefono(it) },
                     onCustomerCreated = { customer ->
                         attachCustomer(customer)
                     },

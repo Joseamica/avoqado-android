@@ -64,6 +64,7 @@ import com.avoqado.pos.core.util.formatMoney
 
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
+import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
@@ -1617,6 +1618,9 @@ fun CheckoutScreen(
                         premioConfirmadoCents = completion.premioConfirmadoCents,
                         carritoGuardadoDelCobro = completion.carritoGuardadoDelCobro,
                         identidadDeVentaDelCobro = completion.identidadDeVenta,
+                        // El carrito de la caja queda con el precio de la orden (y su descuento de cuenta como quedó en ella).
+                        cambiosDePrecio = completion.cambiosDePrecio,
+                        descuentoDeCuentaCongelado = completion.descuentoDeCuentaCongelado,
                     )
                     if (!cobro.aplicadoAlCarritoActual) return@PaymentFlowScreen
                     when (cobro.rama) {
@@ -1860,8 +1864,10 @@ fun CheckoutScreen(
             if (showCreateCustomer) {
                 CreateCustomerView(
                     viewModel = customersViewModel,
-                    initialPhone = createCustomerSearchText.takeIf { it.all { c -> c.isDigit() || c == '+' } },
-                    initialName = createCustomerSearchText.takeIf { !it.all { c -> c.isDigit() || c == '+' } },
+                    // «81 2944 0042» es un teléfono aunque traiga espacios: antes caía en el NOMBRE y nacía un
+                    // cliente llamado «81 2944 0042» sin teléfono (la clase de dato roto de C3).
+                    initialPhone = createCustomerSearchText.takeIf { esTextoDeTelefono(it) },
+                    initialName = createCustomerSearchText.takeIf { it.isNotBlank() && !esTextoDeTelefono(it) },
                     onCustomerCreated = { customer ->
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
                         cartViewModel.setSelectedCustomer(customer.id, customer.fullName)

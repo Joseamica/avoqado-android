@@ -51,6 +51,8 @@ data class SavedCartItem(
     val promotionGroupId: String? = null,
     val promotionOptionId: String? = null,
     val serviceCourse: ServiceCourseSnapshot? = null,
+    /// La hora del catálogo con que se agregó la línea (`CartItem.catalogAt`). Nula en carritos viejos.
+    val catalogAt: String? = null,
 )
 
 @Serializable

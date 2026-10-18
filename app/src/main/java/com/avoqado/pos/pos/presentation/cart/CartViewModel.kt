@@ -21,9 +21,13 @@ import com.avoqado.pos.pos.data.soloVendedores
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import com.avoqado.pos.pos.data.StaffMember
 import com.avoqado.pos.pos.data.StaffRepository
+import com.avoqado.pos.pos.data.model.CambioDePrecio
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
+import com.avoqado.pos.pos.data.model.DescuentoCongelado
 import com.avoqado.pos.pos.data.model.Discount
+import com.avoqado.pos.pos.data.model.aplicarCambiosDePrecio
+import com.avoqado.pos.pos.data.model.avisoDeCambioDePrecio
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -116,7 +120,33 @@ data class CartState(
     val carritoGuardadoId: String? = null,
     /** Identidad de la venta en memoria; guardar una copia no la cambia. */
     val identidadDeVenta: String = UUID.randomUUID().toString(),
+    /**
+     * 🔴 DINERO. «Se cobra el precio que vio el cliente» (17-oct): el descuento de CUENTA que viajó en la orden cuyo servidor
+     * corrigió precios. Mientras el carrito siga siendo esa venta ([DescuentoCongelado.vigentePara]), [orderDiscountCents] usa
+     * este monto en vez de recalcular el %: así el carrito cobra lo mismo que la orden. Sólo nace de [conPreciosDelServidor] con
+     * cambios; se suelta al poner o quitar [orderDiscount] y al empezar otra venta; una edición de líneas lo deja sin efecto.
+     */
+    val descuentoDeCuentaCongelado: DescuentoCongelado? = null,
 ) {
+    /**
+     * 🔴 DINERO. Las líneas con el precio que decidió el servidor ([aplicarCambiosDePrecio]). Con [cambios] vacío devuelve el
+     * MISMO estado: no corrige ni congela nada.
+     * - [congelar] (un 201: la orden YA existe con el descuento que viajó): si había descuento de cuenta, queda fijo en el monto
+     *   de ANTES de corregir —el que mandó [orderDiscountCents]; con uno congelado vigente es ese mismo, que se vuelve a sellar—
+     *   con las huellas de las líneas ya corregidas.
+     * - Sin [congelar] (un 409: no se creó nada): el reintento lleva lo que calcule el carrito y el servidor conserva eso. Un %
+     *   sigue siendo %: congelar el 10 % de $100 que sube a $125 cobraría $115 en vez de $112.50, y una cortesía cobraría $25.
+     */
+    fun conPreciosDelServidor(cambios: List<CambioDePrecio>, congelar: Boolean = true): CartState {
+        if (cambios.isEmpty()) return this
+        val queViajo = orderDiscountCents
+        val corregidas = aplicarCambiosDePrecio(items, cambios)
+        return copy(
+            items = corregidas,
+            descuentoDeCuentaCongelado = DescuentoCongelado.de(queViajo, corregidas).takeIf { congelar && queViajo > 0 },
+        )
+    }
+
     val itemCount: Int get() = items.sumOf { it.quantity }
 
     /**
@@ -146,9 +176,18 @@ data class CartState(
      * el bruto. Sobre el bruto regalaría de más en cada venta que combine los dos,
      * y además es lo que hace el server: `orderLevelDiscount` se topa contra
      * `subtotal - itemDiscountTotal`.
+     *
+     * Con el descuento congelado vigente ([descuentoDeCuentaCongelado]) es el monto que viajó, con el mismo tope. El renglón del
+     * descuento ([orderDiscountDisplay]) sale de aquí: lo que ve el cajero es lo que se cobra. Android tiene UN descuento de
+     * cuenta, así que no hay reparto entre renglones (iOS sí lo reparte).
      */
     val orderDiscountCents: Int
-        get() = orderDiscount?.calculateDiscount(netoTrasDescuentosDeLineaCents) ?: 0
+        get() {
+            val descuento = orderDiscount ?: return 0
+            descuentoDeCuentaCongelado?.takeIf { it.vigentePara(items) }
+                ?.let { return it.cents.coerceAtMost(netoTrasDescuentosDeLineaCents) }
+            return descuento.calculateDiscount(netoTrasDescuentosDeLineaCents)
+        }
 
     /** Lo que se pinta como "Descuento": línea + orden, juntos. */
     val discountCents: Int get() = itemDiscountCents + orderDiscountCents
@@ -795,6 +834,22 @@ class CartViewModel @Inject constructor(
         }) }
     }
 
+    /**
+     * Fusión de dos `catalogAt` (ISO 8601; `a` = la que YA tenía la línea). Una válida le gana a nula o ilegible; entre dos
+     * válidas, la más nueva (como `Instant`); si ninguna es válida se queda la que había (`a`), nunca la nueva. Espejo de iOS.
+     */
+    private fun catalogAtMasNueva(a: String?, b: String?): String? {
+        val ia = a?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
+        val ib = b?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
+        return when {
+            ia == null && ib == null -> a
+            ia == null -> b
+            ib == null -> a
+            ib.isAfter(ia) -> b
+            else -> a
+        }
+    }
+
     fun addProduct(product: Product) {
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el registro
         // del sistema puede estar desfasado y el producto sí existir en el
@@ -809,18 +864,25 @@ class CartViewModel @Inject constructor(
             // `quantity = 3` (que el server rechaza junto a `promotionRef`) y el
             // inventario descontaría 3 unidades bajo un 2x1. Los guards de
             // `esLineaFija` no cubren esta puerta: el merge no pasa por ellos.
+            // Tras un refresco del catálogo, otra unidad con OTRO precio es otra línea: la vieja conserva el precio
+            // que el cliente ya vio. Con el MISMO precio se fusiona y se queda la hora más nueva (ese precio era
+            // real en la lista más nueva); exigir la misma hora partiría «Café ×1, Café ×1» en cada refresco.
             val existingIndex = state.items.indexOfFirst {
                 it.type is CartItemType.ProductItem &&
                     (it.type as CartItemType.ProductItem).productId == product.id &&
                     it.selectedModifiers.isEmpty() &&
                     !it.isCortesia &&
-                    it.promotionInstanceId == null
+                    it.promotionInstanceId == null &&
+                    it.unitPrice == product.priceInCents
             }
 
             if (existingIndex >= 0 && !product.hasModifiers) {
                 val updated = state.items.toMutableList()
                 val existing = updated[existingIndex]
-                updated[existingIndex] = existing.copy(quantity = existing.quantity + 1)
+                updated[existingIndex] = existing.copy(
+                    quantity = existing.quantity + 1,
+                    catalogAt = catalogAtMasNueva(existing.catalogAt, product.catalogAt),
+                )
                 state.copy(items = updated)
             } else {
                 val newItem = CartItem(
@@ -831,6 +893,7 @@ class CartViewModel @Inject constructor(
                     colorHex = product.color,
                     categoryId = product.categoryId,
                     serviceCourse = immediateServiceCourse(),
+                    catalogAt = product.catalogAt,
                 )
                 state.copy(items = state.items + newItem)
             }
@@ -874,6 +937,7 @@ class CartViewModel @Inject constructor(
             itemDiscountValue = discount?.value,
             itemDiscountName = discount?.name,
             serviceCourse = immediateServiceCourse(),
+            catalogAt = product.catalogAt,
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added product with modifiers: ${product.name} x$quantity (${modifiers.size} mods)")
@@ -898,6 +962,7 @@ class CartViewModel @Inject constructor(
             categoryId = product.categoryId,
             weightKg = weightKg,
             serviceCourse = immediateServiceCourse(),
+            catalogAt = product.catalogAt,
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added weighted product: ${product.name} (${weightKg} kg)")
@@ -1108,7 +1173,8 @@ class CartViewModel @Inject constructor(
 
     fun applyOrderDiscount(discount: Discount?) {
         if (_cartState.value.items.any { it.locked }) return
-        _cartState.update { it.copy(orderDiscount = discount) }
+        // Otro descuento es otra cuenta: el monto fijo del anterior ya no aplica.
+        _cartState.update { it.copy(orderDiscount = discount, descuentoDeCuentaCongelado = null) }
     }
 
     fun setOrderNote(note: String?) {
@@ -1213,6 +1279,7 @@ class CartViewModel @Inject constructor(
                     promotionGroupId = item.promotionGroupId,
                     promotionOptionId = item.promotionOptionId,
                     serviceCourse = item.serviceCourse,
+                    catalogAt = item.catalogAt,
                 )
             },
             orderDiscount = state.orderDiscount,
@@ -1342,6 +1409,10 @@ class CartViewModel @Inject constructor(
         premioConfirmadoCents: Int? = null,
         carritoGuardadoDelCobro: String? = _cartState.value.carritoGuardadoId,
         identidadDeVentaDelCobro: String? = null,
+        /** Lo que el servidor corrigió en las líneas de esta venta. Vacío = no se toca ni el carrito ni el descuento. */
+        cambiosDePrecio: List<CambioDePrecio> = emptyList(),
+        /** El descuento de cuenta como quedó en la orden (fijo tras un 201 con cambios; null tras un 409 o sin descuento). */
+        descuentoDeCuentaCongelado: DescuentoCongelado? = null,
     ): CobroAplicado {
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
@@ -1357,6 +1428,13 @@ class CartViewModel @Inject constructor(
         }
         val referralPendiente = snapshotReferralPendiente()
         _cartState.update { it.copy(carritoGuardadoId = null) }
+        // 🔴 «Se cobra el precio que vio el cliente»: el carrito de ESTA venta queda con el precio de la orden, y su descuento de
+        // cuenta como quedó en ella. ANTES de quitar lo pagado: la huella es de la venta completa, y lo que quede es un subconjunto.
+        if (cambiosDePrecio.isNotEmpty()) {
+            _cartState.update {
+                it.copy(items = aplicarCambiosDePrecio(it.items, cambiosDePrecio), descuentoDeCuentaCongelado = descuentoDeCuentaCongelado)
+            }
+        }
         // 🔴 El premio ya se canjeó (o no) sobre la ORDEN entera al crearla. Lo que quede por cobrar
         // descuenta lo que el servidor CONFIRMÓ, nunca un estimado nuevo sobre los renglones que quedan
         // (hallazgo P1 de Codex, 27-sep): un monto fijo con lo confirmado, o nada si lo rechazó.
@@ -1540,6 +1618,7 @@ class CartViewModel @Inject constructor(
             state.copy(
                 items = state.items.filterNot { it.locked } + ticketRows,
                 orderDiscount = null,
+                descuentoDeCuentaCongelado = null,
                 orderTaxPercent = null,
             )
         }
@@ -1687,7 +1766,7 @@ class CartViewModel @Inject constructor(
     private fun clearReferralDiscountOnly() {
         _cartState.update { state ->
             if (state.orderDiscount?.source == REFERRAL_DISCOUNT_SOURCE) {
-                state.copy(orderDiscount = null)
+                state.copy(orderDiscount = null, descuentoDeCuentaCongelado = null)
             } else {
                 state
             }
@@ -1713,7 +1792,7 @@ class CartViewModel @Inject constructor(
             scope = "ORDER",
             source = REFERRAL_DISCOUNT_SOURCE,
         )
-        _cartState.update { it.copy(orderDiscount = discount) }
+        _cartState.update { it.copy(orderDiscount = discount, descuentoDeCuentaCongelado = null) }
     }
 
     /**
@@ -1839,6 +1918,7 @@ class CartViewModel @Inject constructor(
                 promotionGroupId = savedItem.promotionGroupId,
                 promotionOptionId = savedItem.promotionOptionId,
                 serviceCourse = savedItem.serviceCourse,
+                catalogAt = savedItem.catalogAt,
                 subtitle = savedItem.promotionName,
             )
         }
@@ -1939,7 +2019,16 @@ class CartViewModel @Inject constructor(
                         Result.success(orderId)
                     }
                 },
-                onFailure = { error -> Result.failure(error) },
+                onFailure = { error ->
+                    val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
+                    if (cambios.isEmpty()) return@fold Result.failure(error)
+                    // 🔴 409 de precio: no se creó la cuenta. Se corrige SIN congelar (el reintento lleva el % recalculado), se
+                    // pide el catálogo y el fallo lo dice con el total nuevo. Un 201 con cambios no avisa: la cuenta ya quedó al
+                    // precio bajo y el carrito se vacía.
+                    _cartState.update { it.conPreciosDelServidor(cambios, congelar = false) }
+                    refreshProducts()
+                    Result.failure(Exception(avisoDeCambioDePrecio(cambios, totalNuevoCents = _cartState.value.totalCents)))
+                },
             )
     }
 

@@ -55,23 +55,21 @@ fun CustomersView(
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
+    val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
     var searchText by remember { mutableStateOf("") }
+    val estado = estadoDeLaListaDeClientes(cargando = isLoading, hayClientes = customers.isNotEmpty(), texto = searchText)
 
-    val filteredCustomers = remember(searchText, customers) {
-        if (searchText.isEmpty()) {
-            customers
-        } else {
-            val query = searchText.lowercase()
-            customers.filter { customer ->
-                customer.fullName.lowercase().contains(query) ||
-                    (customer.phone?.contains(query) == true) ||
-                    (customer.email?.lowercase()?.contains(query) == true)
-            }
-        }
+    // El texto vive en Compose (el teclado no se desfasa); QUÉ lista se ve lo decide el ViewModel.
+    fun buscar(texto: String) {
+        searchText = texto
+        viewModel.onQueryChange(texto)
     }
 
+    // Cada vez que se abre: texto vacío y los recientes. El ViewModel puede venir de la pantalla anfitriona
+    // (Checkout lo conserva entre aperturas) y no debe arrastrar la búsqueda anterior.
     LaunchedEffect(Unit) {
-        viewModel.fetchCustomers()
+        viewModel.abrirLista()
     }
 
     val configuration = LocalConfiguration.current
@@ -148,7 +146,7 @@ fun CustomersView(
 
         SearchPillField(
             query = searchText,
-            onQueryChange = { searchText = it },
+            onQueryChange = { buscar(it) },
             placeholder = "Buscar cliente",
             height = AvoqadoTheme.adaptive.listSearchFieldHeight,
             modifier = Modifier
@@ -156,10 +154,40 @@ fun CustomersView(
                 .padding(horizontal = horizontalPadding),
         )
 
+        // La búsqueda va en camino (en WiFi malo tarda): también encima de una lista ya a la vista.
+        BarraDeCargaDeClientes(
+            cargando = estado.barraDeCarga,
+            modifier = Modifier
+                .padding(horizontal = horizontalPadding)
+                .padding(top = AvoqadoTheme.spacing.xs),
+        )
+
+        // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
+        avisoDeGuardados?.let { aviso ->
+            AvisoSinRedDeClientes(
+                texto = aviso,
+                modifier = Modifier
+                    .padding(horizontal = horizontalPadding)
+                    .padding(top = AvoqadoTheme.spacing.sm),
+            )
+        }
+
+        // «2 de 120: escribe más para afinar» (auditoría A #10): hay más clientes con ese texto de los que se ven.
+        avisoDeMas?.let { aviso ->
+            Text(
+                text = aviso,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(horizontal = horizontalPadding)
+                    .padding(top = AvoqadoTheme.spacing.sm),
+            )
+        }
+
         Spacer(modifier = Modifier.height(if (denseMode) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md))
 
-        when {
-            isLoading && customers.isEmpty() -> {
+        when (estado.contenido) {
+            ContenidoDeLaLista.CARGANDO -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -177,7 +205,7 @@ fun CustomersView(
                 }
             }
 
-            filteredCustomers.isEmpty() && searchText.isNotEmpty() -> {
+            ContenidoDeLaLista.SIN_RESULTADOS -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -221,9 +249,10 @@ fun CustomersView(
                 }
             }
 
-            else -> {
+            ContenidoDeLaLista.LISTA -> {
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    if (filteredCustomers.isNotEmpty()) {
+                    // «Creados recientemente» sólo describe la lista SIN texto: con búsqueda son resultados.
+                    if (customers.isNotEmpty() && searchText.isBlank()) {
                         item {
                             Text(
                                 text = "Creados recientemente",
@@ -237,7 +266,7 @@ fun CustomersView(
                         }
                     }
 
-                    items(filteredCustomers, key = { it.id }) { customer ->
+                    items(customers, key = { it.id }) { customer ->
                         CustomerRow(
                             customer = customer,
                             denseMode = denseMode,

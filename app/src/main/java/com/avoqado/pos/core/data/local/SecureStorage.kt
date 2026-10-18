@@ -421,6 +421,21 @@ class SecureStorage @Inject constructor(
         plainPrefs.edit().putString("${KEY_FLOOR_AREA_TAB_PREFIX}_$venueId", tabKey).apply()
     }
 
+    /**
+     * Sellos tardíos (spec §4.1): el último `stampsEnabled` que dijo el servidor para ESE venue (liga o consulta del
+     * sello). Decide si una venta encolada sin red puede prometer «El sello se suma al sincronizar», también después de
+     * reiniciar la app sin red. null = este aparato nunca lo supo ⇒ no se promete. No es dato personal: va en las
+     * preferencias simples, como la pestaña del plano.
+     */
+    fun programaDeSellosActivo(venueId: String): Boolean? {
+        val llave = "${KEY_PROGRAMA_DE_SELLOS_PREFIX}_$venueId"
+        return if (plainPrefs.contains(llave)) plainPrefs.getBoolean(llave, false) else null
+    }
+
+    fun setProgramaDeSellosActivo(venueId: String, activo: Boolean) {
+        plainPrefs.edit().putBoolean("${KEY_PROGRAMA_DE_SELLOS_PREFIX}_$venueId", activo).apply()
+    }
+
     fun saveSelectedStaffForCurrentVenue(staffId: String, staffName: String) {
         val currentVenueId = venueId ?: return
         plainPrefs.edit()
@@ -665,6 +680,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_CALENDAR_VIEW_PREFIX = "calendarView"
         private const val KEY_SHOW_CLASS_SESSIONS_PREFIX = "showClassSessions"
         private const val KEY_FLOOR_AREA_TAB_PREFIX = "floorAreaTab"
+        private const val KEY_PROGRAMA_DE_SELLOS_PREFIX = "programaDeSellos"
     }
 
     private fun selectedStaffIdKey(currentVenueId: String? = venueId): String {

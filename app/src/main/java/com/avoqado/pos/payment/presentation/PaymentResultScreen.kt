@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -56,6 +57,9 @@ import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
+import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
+import com.avoqado.pos.loyalty.domain.RenglonDelSello
+import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.Countries
@@ -106,6 +110,8 @@ fun PaymentResultScreen(
     customerResultMessage: String? = null,
     onClearCustomerResult: (() -> Unit)? = null,
     onAddCustomer: (() -> Unit)? = null,
+    /** Sellos tardíos: qué pasó con el sello de esta venta. null = nada que decir. */
+    renglonDelSello: RenglonDelSello? = null,
     onDone: () -> Unit,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
@@ -267,6 +273,31 @@ fun PaymentResultScreen(
                 }
             }
 
+            // Renglón del sello (sellos tardíos). Va APARTE del aviso de arriba: «Imprimir» o «Enviar» lo reemplazan,
+            // y el cajero tiene que seguir viendo si la venta sumó. Verde sólo si SÍ sumó; un motivo («Ya recibió su
+            // sello de hoy») es información, no éxito.
+            if (renglonDelSello != null) {
+                Spacer(
+                    modifier = Modifier.height(
+                        if (resultMessage != null && isResultSuccess) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
+                    ),
+                )
+                Surface(
+                    color = if (renglonDelSello.positivo) Success.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                    modifier = Modifier
+                        .widthIn(max = 400.dp)
+                        .fillMaxWidth(),
+                ) {
+                    Text(
+                        text = renglonDelSello.texto,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (renglonDelSello.positivo) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
             Column(
@@ -371,8 +402,18 @@ fun PaymentResultScreen(
         )
     }
 
+    // Sin red al agregar cliente: ÁMBAR, no rojo — offline es un estado, no una falla (todo-funciona-sin-red).
+    val esAvisoSinRed = resultMessage == TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE
+    if (resultMessage != null && esAvisoSinRed) {
+        AvoqadoWarningToast(
+            message = resultMessage,
+            durationMs = 5_000L,
+            onDismiss = { onClearCustomerResult?.invoke() },
+        )
+    }
+
     // Error feedback (printer/email/WhatsApp failures) — reusable red toast
-    if (resultMessage != null && !isResultSuccess) {
+    if (resultMessage != null && !isResultSuccess && !esAvisoSinRed) {
         AvoqadoErrorToast(
             message = resultMessage,
             onDismiss = {
@@ -617,6 +658,11 @@ fun PaymentErrorView(
     message: String,
     onRetry: () -> Unit,
     onCancel: () -> Unit,
+    /**
+     * Falta de red, no un fallo del cobro: se dice «Sin conexión» con el ícono de wifi, como el
+     * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
+     */
+    sinRed: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -626,16 +672,16 @@ fun PaymentErrorView(
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(
-            Icons.Filled.Error,
-            contentDescription = "Error",
-            tint = MaterialTheme.colorScheme.error,
+            if (sinRed) Icons.Filled.WifiOff else Icons.Filled.Error,
+            contentDescription = if (sinRed) "Sin conexión" else "Error",
+            tint = if (sinRed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(80.dp),
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = "Error en el pago",
+            text = if (sinRed) "Sin conexión" else "Error en el pago",
             style = MaterialTheme.typography.headlineLarge,
         )
 

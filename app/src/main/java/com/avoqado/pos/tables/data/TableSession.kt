@@ -55,6 +55,8 @@ class TableSession @Inject constructor() {
         val requiereLecturaServidor: Boolean = false,
         /** Cargo de la cuenta garantizada sin abonos; un cambio de saldo o contexto lo invalida. */
         val serviceChargeCents: Int = 0,
+        /** D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta, aunque cobre otra persona. Null ⇒ la sesión. */
+        val meseroNombre: String? = null,
     ) {
         val label: String get() = "Mesa $tableNumber" + (areaName?.let { " · $it" } ?: "")
         val idsDeLaOrden: Set<String> get() = setOfNotNull(orderId, localOrderId)

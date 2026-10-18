@@ -59,6 +59,22 @@ class TableSessionCargoTest {
         assertEquals(0, session.current()!!.serviceChargeCents); assertTrue(session.current()!!.requiereLecturaServidor)
     }
 
+    /** D4 (mesas40): el mesero es de la cuenta, no de su saldo: un cobro parcial, un saldo desconocido o un cambio no lo borran. */
+    @Test fun `D4 el mesero se conserva aunque cambie el saldo de la cuenta`() {
+        fun conMesero() = cuenta().copy(meseroNombre = "Ana")
+
+        session.start(conMesero(), "venue-A"); session.updateRemaining(6500)
+        assertEquals("tras un cobro parcial", "Ana", session.current()!!.meseroNombre)
+
+        session.start(conMesero(), "venue-A")
+        session.marcarSaldoDesconocido("venue-A", setOf("o1"), session.contextoActual())
+        assertEquals("saldo desconocido", "Ana", session.current()!!.meseroNombre)
+
+        session.start(conMesero(), "venue-A")
+        session.confirmarCambio("venue-A", setOf("local-o1"), 9, 9000, session.contextoActual())
+        assertEquals("cambio confirmado", "Ana", session.current()!!.meseroNombre)
+    }
+
     @Test fun `T4 una actualizacion ajena no borra cargo ni dinero de la cuenta vigente`() {
         session.sincronizarContexto("staff-A", "venue-A"); session.start(cuenta(), "venue-A")
         val before = session.current()

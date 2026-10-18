@@ -3,6 +3,7 @@ package com.avoqado.pos.pos.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.pos.data.model.CategoriesResponse
 import com.avoqado.pos.pos.data.model.CreateProductRequest
@@ -71,15 +72,28 @@ class ProductsRepository @Inject constructor(
         }.onFailure { Log.e("📦", "❌ Cache de productos corrupto: ${it.message}") }
     }
 
-    suspend fun fetchProducts(venueId: String? = null) {
+    /**
+     * @param enSegundoPlano el refresco automático de [RefrescoDelCatalogo]: no es una carga que el usuario pidió, así que
+     * con la lista ya pintada NO toca `isLoading` (el botón «Actualizar» del Cobrar giraría solo cada 5 min) ni `error`, y
+     * un fallo se queda en el log; el catálogo del caché sigue ahí. Con la lista VACÍA es lo único que hay en pantalla y
+     * se ve como la carga normal («Cargando productos…», no «No hay productos»). La petición lleva
+     * [ForbiddenInterceptor.BACKGROUND_HEADER]: este endpoint pide `menu:read` y un 403 de fondo no debe abrir el modal de
+     * permisos ni el teclado del PIN de gerente encima de la venta. La carga que el usuario pide (el valor por omisión)
+     * queda como siempre. Sin negocio activo o sin sesión no hace nada (los dos `return`).
+     */
+    suspend fun fetchProducts(venueId: String? = null, enSegundoPlano: Boolean = false) {
         val venue = venueId ?: secureStorage.venueId ?: return
         // Cache primero: la UI pinta al instante aunque no haya red.
         hydrateFromCache(venue)
         // Se cambió de negocio mientras se leía el disco: la petición del negocio nuevo ya va en camino
         // y es la dueña del indicador y del error; ésta no los toca.
         if (!sigueSiendo(venue)) return
-        _isLoading.value = true
-        _error.value = null
+        // ¿Lo ve el cajero? La carga que él pidió, siempre; la de fondo, sólo si no hay nada más que mostrar.
+        val visible = !enSegundoPlano || _products.value.isEmpty()
+        if (visible) {
+            _isLoading.value = true
+            _error.value = null
+        }
         Log.d("📦", "Fetching products for venue: $venue")
 
         try {
@@ -87,6 +101,7 @@ class ProductsRepository @Inject constructor(
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/products")
                 .header("Authorization", "Bearer $token")
+                .apply { if (enSegundoPlano) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1") }
                 .build()
 
             val response = withContext(Dispatchers.IO) {
@@ -99,7 +114,8 @@ class ProductsRepository @Inject constructor(
                     Log.w("📦", "⏭️ Respuesta de productos de otro negocio ($venue) descartada: se cambió de negocio")
                     return
                 }
-                val activeProducts = result.data.filter { it.active != false }
+                // Cada producto lleva la hora del catálogo con que se mostró su precio (también en el caché).
+                val activeProducts = result.data.filter { it.active != false }.map { it.copy(catalogAt = result.catalogAt) }
                 _products.value = activeProducts
 
                 // Extract unique categories
@@ -121,7 +137,7 @@ class ProductsRepository @Inject constructor(
 
                 Log.d("📦", "✅ Loaded ${activeProducts.size} products, ${cats.size} categories")
             } else if (sigueSiendo(venue)) {
-                _error.value = "Error al cargar productos (${response.code})"
+                if (visible) _error.value = "Error al cargar productos (${response.code})"
                 Log.e("📦", "❌ Products fetch failed: ${response.code}")
             }
         } catch (e: Exception) {
@@ -129,12 +145,12 @@ class ProductsRepository @Inject constructor(
             // se muestra error de pantalla — solo queda el log.
             if (_products.value.isNotEmpty()) {
                 Log.w("📦", "⚠️ Sin red, operando con catálogo cacheado (${_products.value.size} productos)")
-            } else if (sigueSiendo(venue)) {
+            } else if (sigueSiendo(venue) && visible) {
                 _error.value = "Error de conexión al cargar productos"
             }
             Log.e("📦", "❌ Products fetch error: ${e.message}")
         } finally {
-            if (sigueSiendo(venue)) _isLoading.value = false
+            if (visible && sigueSiendo(venue)) _isLoading.value = false
         }
     }
 

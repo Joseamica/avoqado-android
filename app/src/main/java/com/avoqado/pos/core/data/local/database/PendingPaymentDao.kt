@@ -14,6 +14,10 @@ interface PendingPaymentDao {
         com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(venueId) {
             recuperarOrdenSqlQ16(venueId,id,originalOrderId,recoveredOrderId)
         }
+    @Query(Q16_RELEASE_SALE_SQL)
+    suspend fun soltarVentaSinRedSqlQ16(venueId: String, id: String): Int
+    suspend fun soltarVentaSinRedQ16(venueId: String, id: String): Int =
+        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(venueId) { soltarVentaSinRedSqlQ16(venueId,id) }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertRawSqlQ16(payment: PendingPaymentEntity)
@@ -155,4 +159,10 @@ interface PendingPaymentDao {
 // Restore identity only; capture/body/money/retries remain untouched. No legacy release.
 const val Q16_RECOVER_ORDER_SQL = """UPDATE pending_payments SET orderId=:recoveredOrderId,q15Reason=NULL
  WHERE id=:id AND venueId=:venueId AND orderId IS :originalOrderId
+ AND syncStatus='PENDING' AND q15Reason='PRICE_PROOF_PENDING' AND q15CaptureJson IS NOT NULL"""
+
+// Q16 (2.24.1): suelta la venta sin red que la 2.24.0 retuvo para siempre. Sólo quita la marca;
+// llave, captura, cuerpo, reintentos y orderId (nulo) quedan igual. La siguiente vuelta la manda.
+const val Q16_RELEASE_SALE_SQL = """UPDATE pending_payments SET q15Reason=NULL,q15DetectedAt=NULL
+ WHERE id=:id AND venueId=:venueId AND orderId IS NULL
  AND syncStatus='PENDING' AND q15Reason='PRICE_PROOF_PENDING' AND q15CaptureJson IS NOT NULL"""

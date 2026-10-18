@@ -228,5 +228,48 @@ class Q15OnlinePaymentTest {
             assertNull(preserved.q15ResultJson);assertTrue(f.releases.isEmpty());assertEquals(1,f.server.requestCount)
         }
     }
+    // Q16 ronda 1 (controlador): la regla del TOTAL es SÓLO de la cola sin red. El efectivo EN LÍNEA de mostrador reserva su
+    // captura con orderId nulo ANTES de crear la orden (`reservarEfectivo`); aunque el servidor la valore más cara, queda como hoy.
+    @Test fun `ORDER en linea reservado sin orden con precio que subio no estrena aviso de total`() = runTest {
+        Fixture().use { f ->
+            val key="online-sin-orden"
+            val request=CreateOrderRequest(listOf(OrderItemRequest(productId="product-A",name="Artículo A",quantity=1,unitPrice=10000)),subtotal=10000,tip=500,total=10500,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",10500,0,null,orderExternalId=key,idempotencyKey=key,amountCents=10000,tipCents=500,venueId=VENUE)
+            val reserved=f.row(VENUE,key)!!;assertNull(ConciliacionDelCobro.leerCaptura(reserved.q15CaptureJson,VENUE,key)!!.orderId)
+            f.body="""{"success":true,"payment":{"paymentId":"server-payment","orderId":"o-nueva","amount":10000,"tipAmount":500,"method":"CASH","status":"COMPLETED","orderTotalCents":12500,"remainingBalanceCents":2000,"orderPaymentStatus":"PARTIAL"}}"""
+            val payment=async { f.order.recordCashPayment("o-nueva",10000,"original-staff",500,"FULLPAYMENT",key,capturedVenueId=VENUE) }
+            runCurrent();f.arrival();f.answer.countDown();assertTrue(payment.await().isSuccess)
+            val applied=f.row(VENUE,key)!!
+            assertEquals("SYNCED",applied.syncStatus);assertNull(applied.q15Reason)
+            assertFalse(applied.q15ResultJson!!.contains("totalDeLaOrden"));assertFalse(applied.q15ResultJson!!.contains("totalAlCobrarCents"))
+        }
+    }
+    /** Founder 18-oct («A»): un precio que el servidor bajó EN LÍNEA ya se le dijo al cajero; no es alerta para el gerente. */
+    @Test fun `ORDER en linea con el importe que el cajero acepto por cambio de precio no es diferencia y la captura no cambia`() = runTest {
+        Fixture().use { f ->
+            val key="online-precio-bajo"
+            val request=CreateOrderRequest(listOf(OrderItemRequest(productId="product-A",name="Artículo A",quantity=1,unitPrice=8000)),subtotal=8000,tip=0,total=8000,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",10000,2000,null,orderExternalId=key,idempotencyKey=key,amountCents=8000,tipCents=0,venueId=VENUE)
+            val reserved=f.row(VENUE,key)!!
+            f.body="""{"success":true,"payment":{"paymentId":"server-payment","orderId":"o-nueva","amount":6000,"tipAmount":0,"method":"CASH","status":"COMPLETED"}}"""
+            val payment=async { f.order.recordCashPayment("o-nueva",6000,"original-staff",0,"FULLPAYMENT",key,capturedVenueId=VENUE,importeAceptadoCents=6000) }
+            runCurrent();f.arrival();f.answer.countDown();assertTrue(payment.await().isSuccess)
+            val applied=f.row(VENUE,key)!!
+            assertEquals("SYNCED",applied.syncStatus);assertNull(applied.q15Reason)
+            assertEquals("la captura original es evidencia y no se reescribe",reserved.q15CaptureJson,applied.q15CaptureJson)
+            assertEquals(8000,ConciliacionDelCobro.leerCaptura(applied.q15CaptureJson,VENUE,key)!!.amountCents)
+        }
+    }
+    @Test fun `ORDER en linea que registra otro importe del aceptado sigue siendo diferencia`() = runTest {
+        Fixture().use { f ->
+            val key="online-precio-otro"
+            val request=CreateOrderRequest(listOf(OrderItemRequest(productId="product-A",name="Artículo A",quantity=1,unitPrice=8000)),subtotal=8000,tip=0,total=8000,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",10000,2000,null,orderExternalId=key,idempotencyKey=key,amountCents=8000,tipCents=0,venueId=VENUE)
+            f.body="""{"success":true,"payment":{"paymentId":"server-payment","orderId":"o-nueva","amount":5500,"tipAmount":0,"method":"CASH","status":"COMPLETED"}}"""
+            val payment=async { f.order.recordCashPayment("o-nueva",6000,"original-staff",0,"FULLPAYMENT",key,capturedVenueId=VENUE,importeAceptadoCents=6000) }
+            runCurrent();f.arrival();f.answer.countDown();assertTrue(payment.await().isSuccess)
+            assertEquals(ConciliacionDelCobro.DIFERENCIA,f.row(VENUE,key)!!.q15Reason)
+        }
+    }
     companion object { private const val VENUE="FULLTEST-Q15-ORIGINAL" }
 }
