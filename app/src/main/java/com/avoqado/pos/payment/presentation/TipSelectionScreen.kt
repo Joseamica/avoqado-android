@@ -43,6 +43,12 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
+/**
+ * Los centavos de propina de un porcentaje sobre la base SIN IVA. Una sola cuenta para el cajero (este archivo)
+ * y para la pantalla del cliente (la manda el ViewModel ya calculada): trunca, como siempre.
+ */
+internal fun tipCentsForPercent(baseCents: Int, percent: Int): Int = (baseCents * percent / 100.0).toInt()
+
 @Composable
 fun TipSelectionScreen(
     amountCents: Int,
@@ -85,12 +91,12 @@ fun TipSelectionSheet(
     val tipCents = when {
         showCustomInput && customTipCents > 0 -> {
             if (isPercentageMode) {
-                (tipBaseCents * customTipCents / 100.0).toInt()
+                tipCentsForPercent(tipBaseCents, customTipCents)
             } else {
                 customTipCents
             }
         }
-        selectedTipPercent > 0 -> (tipBaseCents * selectedTipPercent / 100.0).toInt()
+        selectedTipPercent > 0 -> tipCentsForPercent(tipBaseCents, selectedTipPercent)
         else -> 0
     }
 
@@ -143,7 +149,7 @@ fun TipSelectionSheet(
             ) {
                 tipSuggestions.forEach { percent ->
                     val isSelected = selectedTipPercent == percent && !showCustomInput
-                    val tipAmount = (tipBaseCents * percent / 100.0).toInt()
+                    val tipAmount = tipCentsForPercent(tipBaseCents, percent)
 
                     Box(
                         modifier = Modifier

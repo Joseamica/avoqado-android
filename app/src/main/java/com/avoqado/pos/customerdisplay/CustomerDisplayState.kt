@@ -54,10 +54,16 @@ sealed interface CustomerContent {
     /** Las estrellas: el cliente califica en SU pantalla. */
     data class Rating(val amountCents: Int) : CustomerContent
 
-    /** Propina: el cliente elige en SU pantalla. */
+    /**
+     * Propina: el cliente elige en SU pantalla.
+     *
+     * 🔴 `options` lleva el monto YA calculado por el ViewModel (base SIN IVA, la misma del cajero): la pantalla sólo
+     * pinta el porcentaje y entrega `tipCents`. Calcular aquí `amountCents * percent / 100` cobraba el «10 %» sobre
+     * el total CON IVA — el mismo toque cobraba distinto según quién lo diera.
+     */
     data class Tip(
         val amountCents: Int,
-        val suggestions: List<Int>,
+        val options: List<TipOption>,
         val selectedTipCents: Int?,
     ) : CustomerContent
 
@@ -88,6 +94,9 @@ sealed interface CustomerContent {
     /** Gracias + QR del recibo digital. */
     data class Done(val totalCents: Int, val receiptUrl: String?) : CustomerContent
 }
+
+/** Una sugerencia de propina: el porcentaje a mostrar y los centavos que cobra (ya calculados). */
+data class TipOption(val percent: Int, val tipCents: Int)
 
 /**
  * Canal único hacia la pantalla del cliente. Los ViewModels de pantalla

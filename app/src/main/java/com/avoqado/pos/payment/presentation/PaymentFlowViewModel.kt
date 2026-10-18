@@ -456,7 +456,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     /**
      * Espejo del flujo de pago a la pantalla del cliente. Traduce estado →
-     * contenido; NO decide nada ni calcula montos (llegan ya resueltos).
+     * contenido; NO decide nada y los montos llegan ya resueltos (la propina, con la misma cuenta que el cajero).
      */
     private fun mirrorToCustomerDisplay(st: PaymentFlowState) {
         customerDisplay.show(
@@ -467,7 +467,12 @@ class PaymentFlowViewModel @Inject constructor(
                 is PaymentFlowState.CollectingTip ->
                     com.avoqado.pos.customerdisplay.CustomerContent.Tip(
                         amountCents = st.amount,
-                        suggestions = settings.tipSuggestions,
+                        // Montos ya calculados sobre la MISMA base que ve el cajero (sin IVA): ver tipCentsForPercent.
+                        options = currentTipPercentageBaseCents().let { base ->
+                            settings.tipSuggestions.map {
+                                com.avoqado.pos.customerdisplay.TipOption(it, tipCentsForPercent(base, it))
+                            }
+                        },
                         selectedTipCents = null,
                     )
 

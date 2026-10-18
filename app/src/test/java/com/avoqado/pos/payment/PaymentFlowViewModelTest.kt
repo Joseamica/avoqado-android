@@ -37,7 +37,9 @@ import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.customerdisplay.CustomerContent
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
+import com.avoqado.pos.payment.presentation.tipCentsForPercent
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.SelectedModifier
@@ -135,6 +137,9 @@ class PaymentFlowViewModelTest {
     }
 
     private lateinit var viewModel: PaymentFlowViewModel
+
+    /** El espejo REAL de la pantalla del cliente: se guarda para leer lo que el ViewModel le empuja. */
+    private lateinit var customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState
 
     /**
      * El coordinador de la cancelación durable, REAL, con disco en memoria y transporte falso: si
@@ -258,7 +263,7 @@ class PaymentFlowViewModelTest {
             comandaDispatcher = comandaDispatcherReal,
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
-            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState().also { customerDisplay = it },
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = cancelacionDeCobro,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
@@ -2260,6 +2265,42 @@ class PaymentFlowViewModelTest {
         viewModel.startPaymentFlow(cart)
 
         assertEquals(1000, viewModel.currentTipPercentageBaseCents())
+    }
+
+    /**
+     * P1 · El «10 %» del cliente es el mismo que el del cajero (base SIN IVA, decisión del founder, 18-sep).
+     * Antes la pantalla del cliente calculaba `amountCents * percent / 100` sobre el total CON IVA: el mismo
+     * toque cobraba distinto según quién lo hiciera. Ahora el ViewModel manda los montos ya calculados y la
+     * pantalla no hace aritmética.
+     */
+    @Test
+    fun `P1 el 10 por ciento del cliente es el del cajero con IVA en el carrito`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = true, tipSuggestions = listOf(10, 15))
+        val cart = CartState(
+            items = listOf(CartItem(id = "l1", type = CartItemType.ProductItem("p1"), name = "Producto", unitPrice = 8621)),
+            orderTaxPercent = 16,
+        )
+        viewModel.startPaymentFlow(cart)
+
+        val tip = customerDisplay.content.value as CustomerContent.Tip
+        val base = viewModel.currentTipPercentageBaseCents()
+        assertNotEquals("el carrito debe llevar IVA", tip.amountCents, base)
+        assertEquals(listOf(10, 15), tip.options.map { it.percent })
+        assertEquals(tipCentsForPercent(base, 10), tip.options[0].tipCents)
+        assertEquals(tipCentsForPercent(base, 15), tip.options[1].tipCents)
+
+        // El toque del cliente llega a submitTip (CustomerDisplayState.onTipPicked → submitTip) con el monto del ViewModel.
+        viewModel.submitTip(tip.options[0].tipCents)
+        val next = viewModel.state.value as PaymentFlowState.SelectingPaymentMethod
+        assertEquals(tip.amountCents + tipCentsForPercent(base, 10), next.amount)
+    }
+
+    @Test
+    fun `tipCentsForPercent trunca igual que el cajero de hoy`() {
+        assertEquals(862, tipCentsForPercent(8621, 10)) // 862.1 → 862
+        assertEquals(1293, tipCentsForPercent(8621, 15)) // 1293.15 → 1293
+        assertEquals(0, tipCentsForPercent(0, 20))
     }
 
     @Test
