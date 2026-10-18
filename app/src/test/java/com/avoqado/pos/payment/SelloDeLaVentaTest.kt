@@ -44,6 +44,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -505,7 +506,10 @@ class SelloDeLaVentaTest {
     }
 
     /** Cobro rápido de $100 con Dany SIN red: se encola en «fila-1» y promete el sello. */
-    private fun cobrarSinRedConDany() {
+    private fun cobrarSinRedConDany() = cobrarSinRed(customerId = "cm-dany", customerName = "Dany")
+
+    /** Cobro rápido de $100 SIN red: se encola en «fila-1». */
+    private fun cobrarSinRed(customerId: String?, customerName: String?) {
         every { orderRepository.programaDeSellosActivo("venue-1") } returns true
         coEvery {
             orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
@@ -516,7 +520,7 @@ class SelloDeLaVentaTest {
             )
         } returns "fila-1"
         every { cashPaymentRepository.observarEstado("fila-1") } returns estadoDeLaFila
-        cobrar(customerId = "cm-dany", customerName = "Dany")
+        cobrar(customerId = customerId, customerName = customerName)
     }
 
     @Test
@@ -620,5 +624,48 @@ class SelloDeLaVentaTest {
         advanceUntilIdle()
 
         assertEquals(RenglonDelSello("✓ +1 sello · 5 de 7", positivo = true), viewModel.renglonDelSello.value)
+    }
+
+    // MARK: - Agregar el cliente a una venta ENCOLADA (Codex r1 #1 de iOS, 18-oct)
+    // Antes se ligaba con «el último pago de $X del mismo empleado en 15 min»: dos cafés de $100 seguidos y el cliente (y
+    // su sello) caían en la OTRA venta. Ahora sólo con el id que el servidor le dio a ESTA fila. Espejo de iOS 0d2c422.
+
+    @Test
+    fun `P1 agregar el cliente a una venta encolada ya sincronizada liga SU pago, nunca el ultimo de 100`() = runTest {
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
+        coEvery { orderRepository.attachCustomerToPayment("pago-servidor-9", "cm-dany") } returns
+            Result.success(sello(stamped = true, earned = 3))
+        cobrarSinRed(customerId = null, customerName = null)
+        advanceUntilIdle()
+        estadoDeLaFila.value = "SYNCED"
+        advanceUntilIdle()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { orderRepository.attachCustomerToPayment("pago-servidor-9", "cm-dany") }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals("Dany", viewModel.attachedCustomerName.value)
+        assertEquals(RenglonDelSello("✓ +1 sello · 3 de 7", positivo = true), viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 una venta encolada que aun no sincroniza no llama al servidor y lo dice`() = runTest {
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns null
+        cobrarSinRed(customerId = null, customerName = null)
+        advanceUntilIdle()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.attachCustomerToPayment(any(), any()) }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals(
+            "Esta venta aún no se sincroniza. Agrega el cliente cuando aparezca «Venta sincronizada».",
+            viewModel.customerAttachResult.value,
+        )
+        assertEquals(TextosDelSello.VENTA_SIN_SINCRONIZAR, viewModel.customerAttachResult.value)
+        assertFalse(viewModel.customerAttachSending.value)
+        assertNull(viewModel.attachedCustomerName.value)
     }
 }
