@@ -17,6 +17,10 @@ object TextosDelSello {
     const val SIN_RED_AL_AGREGAR_CLIENTE =
         "Sin conexión: agrégalo cuando vuelva la red. Tienes 24 h para que sume el sello."
 
+    /** Venta encolada que aún no sube: sin el id que le dé el servidor no hay a qué pago ligar al cliente. */
+    const val VENTA_SIN_SINCRONIZAR =
+        "Esta venta aún no se sincroniza. Agrega el cliente cuando aparezca «Venta sincronizada»."
+
     fun selloSumado(stampsEarned: Int, stampsRequired: Int): String =
         "✓ +1 sello · $stampsEarned de $stampsRequired"
 }
