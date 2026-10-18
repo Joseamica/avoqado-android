@@ -657,6 +657,80 @@ class DisplayModeRemoteRepositoryTest {
         assertEquals(DisplayModeRemoteOutcome.Retryable(500), repository.fetchCustomerDisplay("venue-1"))
     }
 
+    // ── El acuse de la pantalla del cliente (F2, Task 1.5): PUT /customer-display/ack ──
+
+    private fun acuse() = CustomerDisplayAckBody(
+        installationId = INSTALACION,
+        fingerprint = HUELLA_A,
+        seq = 7,
+        storedAt = "2026-10-18T12:00:00.000Z",
+        shownAt = null,
+        surface = null,
+        imagesReady = 0,
+        imagesPending = 1,
+        imagesFailed = 0,
+        unsupportedSchema = false,
+    )
+
+    @Test
+    fun `manda el cuerpo exacto con nulls`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"data\":{\"accepted\":true,\"current\":true}}"))
+
+        val result = repository.acknowledgeCustomerDisplay("venue /café", acuse())
+
+        assertEquals(DisplayModeRemoteOutcome.Success(CustomerDisplayAckResponse(accepted = true, current = true)), result)
+        val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/mobile/venues/venue%20%2Fcaf%C3%A9/customer-display/ack", request.path)
+        assertEquals(
+            "{\"installationId\":\"$INSTALACION\",\"fingerprint\":\"$HUELLA_A\",\"seq\":7," +
+                "\"storedAt\":\"2026-10-18T12:00:00.000Z\",\"shownAt\":null,\"surface\":null," +
+                "\"imagesReady\":0,\"imagesPending\":1,\"imagesFailed\":0,\"unsupportedSchema\":false}",
+            request.body.readUtf8(),
+        )
+        assertEquals("1", request.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+    }
+
+    @Test
+    fun `decodifica acuse guardado pero no vigente y acuse rechazado`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"accepted\":true,\"current\":false,\"currentFingerprint\":\"$HUELLA_B\"}}",
+            ),
+        )
+        server.enqueue(MockResponse().setBody("{\"data\":{\"accepted\":false,\"reason\":\"STALE_SEQ\"}}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(
+                CustomerDisplayAckResponse(accepted = true, current = false, currentFingerprint = HUELLA_B),
+            ),
+            repository.acknowledgeCustomerDisplay("venue-1", acuse()),
+        )
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(CustomerDisplayAckResponse(accepted = false, reason = "STALE_SEQ")),
+            repository.acknowledgeCustomerDisplay("venue-1", acuse()),
+        )
+    }
+
+    @Test
+    fun `503 ACK_BUSY es reintentable`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(503).setBody("{\"code\":\"CUSTOMER_DISPLAY_ACK_BUSY\"}"),
+        )
+
+        assertEquals(DisplayModeRemoteOutcome.Retryable(503), repository.acknowledgeCustomerDisplay("venue-1", acuse()))
+    }
+
+    @Test
+    fun `404 del acuse es Rejected 404`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404).setBody("{\"code\":\"DEVICE_NOT_FOUND\"}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(404, "DEVICE_NOT_FOUND", null),
+            repository.acknowledgeCustomerDisplay("venue-1", acuse()),
+        )
+    }
+
     private fun repositoryWith(client: OkHttpClient): DisplayModeRemoteRepository =
         DisplayModeRemoteRepository(client) {
             server.url("/api/v1").toString().removeSuffix("/")

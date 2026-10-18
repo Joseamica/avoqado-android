@@ -87,6 +87,33 @@ data class CustomerDisplayPayload(
     val imageOrigins: List<String> = emptyList(),
 )
 
+/**
+ * El cuerpo del acuse. Todas las propiedades SIN default: con `encodeDefaults = false` una con default se omitiría, y
+ * así los `null` viajan como `null` (el server los trata igual que omitidos).
+ */
+@Serializable
+data class CustomerDisplayAckBody(
+    val installationId: String,
+    val fingerprint: String,
+    val seq: Long,
+    val storedAt: String,
+    val shownAt: String?,
+    val surface: String?,
+    val imagesReady: Int,
+    val imagesPending: Int,
+    val imagesFailed: Int,
+    val unsupportedSchema: Boolean,
+)
+
+/** `accepted` = «guardé lo que dices mostrar»; `current` dice si eso es lo vigente; `reason` sólo cuando no se aceptó. */
+@Serializable
+data class CustomerDisplayAckResponse(
+    val accepted: Boolean,
+    val current: Boolean? = null,
+    val currentFingerprint: String? = null,
+    val reason: String? = null,
+)
+
 /** Lo que la pantalla del cliente agrega al reporte de capacidades: qué versión de diseño entiende y qué instalación es. */
 data class DesignReport(
     val designVersion: Int,
@@ -223,6 +250,23 @@ class DisplayModeRemoteRepository @Inject constructor(
         },
         decodeSuccess = { body ->
             DisplayModeRemoteOutcome.Success(json.decodeFromString<CustomerDisplayEnvelope>(body).data)
+        },
+    )
+
+    /** El acuse: lo que la tablet DICE tener guardado y mostrar (`PUT …/customer-display/ack`). */
+    suspend fun acknowledgeCustomerDisplay(
+        venueId: String,
+        body: CustomerDisplayAckBody,
+    ): DisplayModeRemoteOutcome<CustomerDisplayAckResponse> = execute(
+        requestFactory = {
+            Request.Builder()
+                .url(venueUrl(venueId).newBuilder().addPathSegment("customer-display").addPathSegment("ack").build())
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
+                .put(json.encodeToString(body).toRequestBody(jsonMediaType))
+                .build()
+        },
+        decodeSuccess = { response ->
+            DisplayModeRemoteOutcome.Success(json.decodeFromString<CustomerDisplayAckEnvelope>(response).data)
         },
     )
 
@@ -461,6 +505,9 @@ class DisplayModeRemoteRepository @Inject constructor(
         val customerDisplayDesignVersion: Int,
         val installationId: String,
     )
+
+    @Serializable
+    private data class CustomerDisplayAckEnvelope(val data: CustomerDisplayAckResponse)
 
     @Serializable
     private data class CustomerDisplayEnvelope(val data: CustomerDisplayPayload)
