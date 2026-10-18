@@ -3918,7 +3918,11 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /**
-     * La base del porcentaje de propina va SIEMPRE sin IVA. Decision del founder, 2026-09-18.
+     * La base del porcentaje de propina es el TOTAL de la cuenta, con el IVA que ya trae el precio (founder, 18-oct-2026,
+     * tras comparar con el mercado: en México la propina se calcula sobre el total, y las terminales de cobro —Mercado
+     * Pago, Netpay— sólo ven el total). El 18-sep se había decidido «sin IVA», pero esta función sólo resta el impuesto
+     * cobrado APARTE (`cart.taxCents` = `orderTaxPercent`, que hoy nadie fija): con el precio con IVA incluido nunca lo
+     * quitó. Se conserva esa resta para el impuesto aparte; no extraer el IVA incluido sin una decisión nueva.
      *
      * Antes esto lo decidia el ajuste `includeTaxInTipBase`, que se retiro por dos razones: era
      * una convencion fiscal de EE.UU. —alla el impuesto se suma aparte y el cliente lo ve; aca el

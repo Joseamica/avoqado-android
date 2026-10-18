@@ -2229,7 +2229,8 @@ class PaymentFlowViewModelTest {
     }
 
     /**
-     * P1 · La base de la propina NUNCA lleva IVA — decision del founder, 2026-09-18.
+     * P1 · La base de la propina no lleva el impuesto cobrado APARTE (`orderTaxPercent`). Con el precio con IVA incluido
+     * la base es el total, como en el mercado mexicano (founder, 18-oct-2026; antes, 18-sep, se había dicho «sin IVA»).
      *
      * El ajuste `includeTaxInTipBase` se retiro: era una convencion fiscal de EE.UU. (alla el
      * impuesto se suma aparte y el cliente lo ve), no de Mexico, donde el precio en pantalla ya
@@ -2238,7 +2239,7 @@ class PaymentFlowViewModelTest {
      * distintas y el dashboard no lo veia.
      *
      * Esta prueba es el candado: aunque llegue un ajuste viejo en `true` —de un cache en disco de
-     * una version anterior, o del servidor algun dia— la base se calcula SIN IVA.
+     * una version anterior, o del servidor algun dia— la base no suma el impuesto aparte.
      */
     @Test
     fun `P1 la base de propina excluye el IVA aunque venga el ajuste viejo encendido`() {
@@ -2268,9 +2269,9 @@ class PaymentFlowViewModelTest {
     }
 
     /**
-     * P1 · El «10 %» del cliente es el mismo que el del cajero (base SIN IVA, decisión del founder, 18-sep).
-     * Antes la pantalla del cliente calculaba `amountCents * percent / 100` sobre el total CON IVA: el mismo
-     * toque cobraba distinto según quién lo hiciera. Ahora el ViewModel manda los montos ya calculados y la
+     * P1 · El «10 %» del cliente es el mismo que el del cajero: una sola base (`currentTipPercentageBaseCents`) y una
+     * sola fórmula. Antes la pantalla del cliente calculaba `amountCents * percent / 100` con su propia base, y con
+     * impuesto cobrado aparte el mismo toque cobraba distinto. Ahora el ViewModel manda los montos ya calculados y la
      * pantalla no hace aritmética.
      */
     @Test

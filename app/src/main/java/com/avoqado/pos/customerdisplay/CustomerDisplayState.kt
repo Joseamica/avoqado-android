@@ -57,9 +57,10 @@ sealed interface CustomerContent {
     /**
      * Propina: el cliente elige en SU pantalla.
      *
-     * 🔴 `options` lleva el monto YA calculado por el ViewModel (base SIN IVA, la misma del cajero): la pantalla sólo
-     * pinta el porcentaje y entrega `tipCents`. Calcular aquí `amountCents * percent / 100` cobraba el «10 %» sobre
-     * el total CON IVA — el mismo toque cobraba distinto según quién lo diera.
+     * 🔴 `options` lleva el monto YA calculado por el ViewModel (la misma base del cajero,
+     * `currentTipPercentageBaseCents`): la pantalla sólo pinta el porcentaje y entrega `tipCents`. Antes calculaba
+     * aquí `amountCents * percent / 100` con su propia base: dos fórmulas para el mismo dinero, que se separaban
+     * cuando el impuesto se cobraba aparte.
      */
     data class Tip(
         val amountCents: Int,
