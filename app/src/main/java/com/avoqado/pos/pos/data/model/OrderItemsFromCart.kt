@@ -82,28 +82,36 @@ internal fun promotionRefDe(items: List<CartItem>, instanceId: String): Promotio
     )
 }
 
-/** Una línea normal del carrito, tal cual viajaba antes de las promociones. */
-private fun CartItem.toOrderItemRequest(): OrderItemRequest = OrderItemRequest(
-    productId = when (val tipo = type) {
-        is CartItemType.ProductItem -> tipo.productId
-        CartItemType.CustomAmount -> null
-        // No es una línea de producto: los créditos se otorgan aparte.
-        is CartItemType.CreditPack -> null
-    },
-    name = name,
-    quantity = quantity,
-    unitPrice = effectiveUnitPrice,
-    modifiers = selectedModifiers.map { modifier ->
-        OrderModifierRequest(
-            modifierId = modifier.modifierId,
-            name = modifier.modifierName,
-            price = modifier.priceInCents,
-        )
-    },
-    note = itemNote,
-    isCortesia = isCortesia,
-    discountId = itemDiscountId,
-    weightQuantity = weightKg,
-    serviceCourse = serviceCourse,
-    externalId = id.takeIf { serviceCourse?.preparationVersion == 1 },
-)
+/**
+ * Una línea normal del carrito, tal cual viajaba antes de las promociones. Si nació del catálogo (tiene
+ * `catalogAt`), además lleva el precio de CATÁLOGO que vio el cliente (nunca el manual) y su identidad.
+ */
+private fun CartItem.toOrderItemRequest(): OrderItemRequest {
+    val delCatalogo = type is CartItemType.ProductItem && catalogAt != null
+    return OrderItemRequest(
+        productId = when (val tipo = type) {
+            is CartItemType.ProductItem -> tipo.productId
+            CartItemType.CustomAmount -> null
+            // No es una línea de producto: los créditos se otorgan aparte.
+            is CartItemType.CreditPack -> null
+        },
+        name = name,
+        quantity = quantity,
+        unitPrice = effectiveUnitPrice,
+        modifiers = selectedModifiers.map { modifier ->
+            OrderModifierRequest(
+                modifierId = modifier.modifierId,
+                name = modifier.modifierName,
+                price = modifier.priceInCents,
+            )
+        },
+        note = itemNote,
+        isCortesia = isCortesia,
+        discountId = itemDiscountId,
+        weightQuantity = weightKg,
+        serviceCourse = serviceCourse,
+        externalId = id.takeIf { delCatalogo || serviceCourse?.preparationVersion == 1 },
+        displayedUnitPrice = unitPrice.takeIf { delCatalogo },
+        catalogAt = catalogAt.takeIf { delCatalogo },
+    )
+}

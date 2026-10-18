@@ -119,7 +119,8 @@ class Q16PrecioCapturadoTest {
                 .put("method", row.method).put("split", row.splitType)
                 .put("tender", row.tenderTypeId ?: JSONObject.NULL).put("revision", row.tenderRevision ?: JSONObject.NULL)
                 .put("cashTendered", row.cashTenderedCents ?: JSONObject.NULL).put("change", row.changeCents ?: JSONObject.NULL).toString()
-            sql("INSERT INTO pending_payments(id,venueId,syncStatus,createdAt,original,q15CaptureJson,capturedOrderRef,orderId) VALUES(:id,:v,:s,:at,:o,:c,:ref,:orderId)",
+            // REPLACE, como `@Insert(onConflict = REPLACE)`: la reserva del efectivo se vuelve la fila de la cola con la misma llave.
+            sql("INSERT OR REPLACE INTO pending_payments(id,venueId,syncStatus,createdAt,original,q15CaptureJson,capturedOrderRef,orderId) VALUES(:id,:v,:s,:at,:o,:c,:ref,:orderId)",
                 mapOf("id" to row.id,"v" to row.venueId,"s" to row.syncStatus,"at" to row.createdAt,"o" to original,
                     "c" to row.q15CaptureJson,"ref" to row.capturedOrderRef,"orderId" to row.orderId))
         }
@@ -132,6 +133,7 @@ class Q16PrecioCapturadoTest {
                 cashTenderedCents=if(p.has("cashTendered")&&!p.isNull("cashTendered")) p.getInt("cashTendered") else null,
                 changeCents=if(p.has("change")&&!p.isNull("change")) p.getInt("change") else null,
                 syncStatus=row["syncStatus"] as String,retryCount=(row["retryCount"] as Number).toInt(),lastRetryAt=(row["lastRetryAt"] as? Number)?.toLong(),
+                createdAt=(row["createdAt"] as Number).toLong(),
                 q15CaptureJson=row["q15CaptureJson"] as String?,q15Reason=row["q15Reason"] as String?,capturedOrderRef=row["capturedOrderRef"] as String?)
         }
         fun row(id:String="p1")=query("SELECT * FROM pending_payments WHERE id=:id",mapOf("id" to id)).single()
@@ -324,6 +326,48 @@ class Q16PrecioCapturadoTest {
             assertFalse(pay.has("method"));assertFalse(pay.has("externalSource"));assertFalse(pay.has("customerId"))
             assertEquals(before["original"],f.row(key)["original"]);assertEquals(before["q15CaptureJson"],f.row(key)["q15CaptureJson"])
             assertEquals("venue-B",f.storage.venueId)
+        }
+    }
+    // Precio que vio el cliente (Task 7): la hora de la venta se captura UNA vez y la cola la hereda aunque se escriba
+    // 15 s después: del pedido capturado (también si la reserva ya se soltó, p. ej. porque la caja abrió otra venta) o de
+    // la reserva en disco. La venta encolada se marca `isOfflineReplay` y lleva su precio mostrado.
+    @Test fun `la venta encolada conserva la hora ORIGINAL de la reserva`() = runTest {
+        Fixture().use { f ->
+            val cat = "2026-10-17T15:00:00.000Z"
+            val request = com.avoqado.pos.payment.data.model.CreateOrderRequest(
+                items = com.avoqado.pos.pos.data.model.buildOrderItemRequests(listOf(com.avoqado.pos.pos.data.model.CartItem(
+                    id = "linea-1", type = com.avoqado.pos.pos.data.model.CartItemType.ProductItem("product-A"),
+                    name = "Café", unitPrice = 4500, catalogAt = cat))),
+                subtotal = 4500, total = 4500, paymentMethod = "CASH")
+            val t0 = System.currentTimeMillis() - 15_000
+            val caja = CashPaymentRepository(f.storage, f.dao)
+            fun revisa(llave: String, key: String) {
+                val row = f.row(key)
+                assertEquals(llave, "PENDING", row["syncStatus"])
+                assertEquals(llave, t0, (row["createdAt"] as Number).toLong())
+                val order = JSONObject(JSONObject(row["original"] as String).getString("orderRequest"))
+                assertEquals(llave, t0, order.getLong("createdAtLocal"))
+                assertTrue(llave, order.getBoolean("isOfflineReplay"))
+                val linea = order.getJSONArray("items").getJSONObject(0)
+                assertEquals(4500, linea.getInt("displayedUnitPrice")); assertEquals(cat, linea.getString("catalogAt"))
+                assertEquals("linea-1", linea.getString("externalId"))
+                // La captura (la evidencia que la cola reproduce) dice lo mismo.
+                val captura = ConciliacionDelCobro.leerCaptura(row["q15CaptureJson"] as String?, VENUE, key)
+                assertEquals(llave, t0, JSONObject(requireNotNull(captura?.orderRequestJson)).getLong("createdAtLocal"))
+            }
+            // 1) El pedido capturado trae la hora; la reserva se soltó antes de encolar (la caja abrió otra venta).
+            val pedido = request.copy(createdAtLocal = t0)
+            caja.reservarCobro(pedido, "staff-A", 5000, 500, null, orderExternalId = "venta-pedido", idempotencyKey = "venta-pedido", venueId = VENUE)
+            assertEquals(t0, (f.row("venta-pedido")["createdAt"] as Number).toLong())
+            f.sql("DELETE FROM pending_payments WHERE id='venta-pedido'")
+            revisa("venta-pedido", caja.queueCashPayment(pedido, "staff-A", 5000, 500, null, orderExternalId = "venta-pedido",
+                idempotencyKey = "venta-pedido", venueId = VENUE))
+            // 2) El pedido no trae la hora: la hereda de la reserva en disco con la misma llave.
+            caja.reservarCobro(request, "staff-A", 5000, 500, null, orderExternalId = "venta-disco", idempotencyKey = "venta-disco",
+                venueId = VENUE, capturadaEn = t0)
+            assertEquals("EN_VUELO", f.row("venta-disco")["syncStatus"])
+            revisa("venta-disco", caja.queueCashPayment(request, "staff-A", 5000, 500, null, orderExternalId = "venta-disco",
+                idempotencyKey = "venta-disco", venueId = VENUE))
         }
     }
     companion object {

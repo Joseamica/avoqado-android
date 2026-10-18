@@ -196,6 +196,11 @@ data class CreateOrderRequest(
     /** Links the resulting sale to a class/appointment reservation (walk-in flow).
      *  Null for ordinary sales. */
     val reservationId: String? = null,
+    /**
+     * Epoch ms del aparato al CAPTURAR la venta, una sola vez (`processCashPayment`). Viaja con el pedido de la
+     * reserva a la cola —también si la reserva ya se soltó— y sólo sale por el cable con `isOfflineReplay`.
+     */
+    val createdAtLocal: Long? = null,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */
@@ -257,6 +262,10 @@ data class OrderItemRequest(
     val promotionRef: PromotionRefRequest? = null,
     val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
     val externalId: String? = null,
+    /** Centavos: el `unitPrice` de CATÁLOGO con que se agregó la línea (sin extras; por kg en peso; nunca el manual). */
+    val displayedUnitPrice: Int? = null,
+    /** El `catalogAt` del catálogo con que se agregó ESTA línea. Viaja sólo junto con [displayedUnitPrice]. */
+    val catalogAt: String? = null,
 ) {
     /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
     companion object {
@@ -401,6 +410,11 @@ data class OrderData(
      * no viajaba ninguno (o el servidor es anterior al 26-ago).
      */
     val stampReward: StampRewardOnOrder? = null,
+    /**
+     * 🔴 DINERO. Las líneas que el servidor cobró a un precio distinto del que mostró la caja («se cobra el precio que vio el
+     * cliente», 17-oct): la caja las corrige y lo dice. Ausente = cada línea se cobró como se mostró (o servidor anterior).
+     */
+    val priceChanges: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList(),
 ) {
     /**
      * El total de la orden en CENTAVOS, que es la unidad en la que cobra el POS.

@@ -10,9 +10,11 @@ import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.OrderData
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden
+import com.avoqado.pos.pos.data.model.CambioDePrecio
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -86,8 +88,8 @@ class OrderRepository @Inject constructor(
     /**
      * Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL].
      *
-     * Lo usan [cancelOrder], las ligas de cliente y la consulta del sello —el resto del repositorio arma la URL con la
-     * constante—: son las llamadas cuya LECTURA de la respuesta hay que poder fijar por caso.
+     * Lo usan [cancelOrder], [createOrder], las ligas de cliente y la consulta del sello —el resto del repositorio arma la URL
+     * con la constante—: son las llamadas cuya LECTURA de la respuesta hay que poder fijar por caso.
      */
     @androidx.annotation.VisibleForTesting
     internal var baseUrl: String = ApiConstants.BASE_URL
@@ -111,9 +113,31 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Exception types
 
-    class ServerException(val code: Int, message: String) : Exception(message)
+    /**
+     * @param cambiosDePrecio sólo en el 409 `ORDER_PRICE_CHANGED` al crear una orden («se cobra el precio que vio el cliente»):
+     *   qué líneas cobraría hoy el servidor a otro precio. Vacío en cualquier otro rechazo, que se lee como siempre.
+     */
+    class ServerException(
+        val code: Int,
+        message: String,
+        val cambiosDePrecio: List<CambioDePrecio> = emptyList(),
+    ) : Exception(message)
 
     companion object {
+        private const val CODIGO_PRECIO_CAMBIADO = "ORDER_PRICE_CHANGED"
+
+        /**
+         * Los cambios de precio de un rechazo al crear la orden. PURA. Sólo un 409 ESTRUCTURADO (`code == "ORDER_PRICE_CHANGED"`,
+         * `details.priceChanges`) los trae; otro código, un proxy o basura dan lista vacía y el rechazo se lee como siempre. Un
+         * renglón ilegible (sin producto o sin los dos precios) se salta, igual que iOS.
+         */
+        fun leerCambiosDePrecio(body: String): List<CambioDePrecio> {
+            val raiz = runCatching { errorParserJson.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return emptyList()
+            if ((raiz["code"] as? JsonPrimitive)?.contentOrNull != CODIGO_PRECIO_CAMBIADO) return emptyList()
+            val lista = (raiz["details"] as? JsonObject)?.get("priceChanges") as? JsonArray ?: return emptyList()
+            return lista.mapNotNull { runCatching { errorParserJson.decodeFromJsonElement(CambioDePrecio.serializer(), it) }.getOrNull() }
+        }
+
         private val idExtractorJson = Json { ignoreUnknownKeys = true }
         private val errorParserJson = Json { ignoreUnknownKeys = true }
 
@@ -466,6 +490,10 @@ class OrderRepository @Inject constructor(
             stampRewardId: String? = null,
             /** Cuánto descontó la caja por el premio al cobrar (centavos). Ver `stampRewardExpectedDiscount` en el servidor. */
             stampRewardExpectedDiscount: Int? = null,
+            /** Sólo la cola sin red y la reserva del efectivo: «la venta ya ocurrió», el servidor nunca la rechaza por precio. */
+            isOfflineReplay: Boolean = false,
+            /** Epoch ms del aparato al CAPTURAR la venta (una sola vez). Viaja sólo con [isOfflineReplay]. */
+            createdAtLocal: Long? = null,
         ): String {
             return buildJsonObject {
                 put(
@@ -535,6 +563,13 @@ class OrderRepository @Inject constructor(
                                                 },
                                             )
                                         }
+                                        // El precio de catálogo que vio el cliente y la hora de ese catálogo: sólo juntos.
+                                        val displayed = item.displayedUnitPrice
+                                        val horaDelCatalogo = item.catalogAt
+                                        if (displayed != null && horaDelCatalogo != null) {
+                                            put("displayedUnitPrice", displayed)
+                                            put("catalogAt", horaDelCatalogo)
+                                        }
                                     } else {
                                         // Custom amount line item (e.g. "Otro importe")
                                         put("name", item.name)
@@ -601,6 +636,10 @@ class OrderRepository @Inject constructor(
                 request.splitType?.let { put("splitType", it) }
                 request.note?.trim()?.takeIf { it.isNotEmpty() }?.let { put("note", it) }
                 request.reservationId?.takeIf { it.isNotBlank() }?.let { put("reservationId", it) }
+                if (isOfflineReplay) {
+                    put("isOfflineReplay", true)
+                    createdAtLocal?.let { put("createdAtLocal", it) }
+                }
             }.toString()
         }
 
@@ -685,7 +724,7 @@ class OrderRepository @Inject constructor(
             val body = payload.toRequestBody("application/json".toMediaType())
 
             val httpRequest = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
+                .url("$baseUrl/mobile/venues/$venueId/orders")
                 .header("Authorization", "Bearer $token")
                 .post(body)
                 .build()
@@ -702,7 +741,7 @@ class OrderRepository @Inject constructor(
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")
                 val message = extractErrorMessage(responseBody) ?: "Error al crear orden ($responseCode)"
-                Result.failure(ServerException(responseCode, message))
+                Result.failure(ServerException(responseCode, message, leerCambiosDePrecio(responseBody)))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Order creation error: ${e.message}")
@@ -787,11 +826,15 @@ class OrderRepository @Inject constructor(
     private data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
 
 
-    private suspend fun guardarRespuestaDeCaptura(venueId: String, key: String, channel: CanalDelCobro, body: String) {
+    private suspend fun guardarRespuestaDeCaptura(venueId: String, key: String, channel: CanalDelCobro, body: String, importeAceptadoCents: Int? = null) {
         val dao = capturedPayments ?: return
         val original = dao.findForVenue(venueId, key) ?: return // Unsupported/no-reservation flows keep their existing contract.
         if (original.syncStatus == "SYNCED") return
-        val result = ConciliacionDelCobro.evaluar(original.q15CaptureJson, venueId, key, channel, body)
+        // Se compara contra lo que el cajero aceptó; lo que se guarda sigue siendo la captura original (evidencia Q15).
+        val contraQue = importeAceptadoCents?.let { aceptado ->
+            ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, venueId, key)?.let { ConciliacionDelCobro.guardarCaptura(it.copy(amountCents = aceptado)) }
+        } ?: original.q15CaptureJson
+        val result = ConciliacionDelCobro.evaluar(contraQue, venueId, key, channel, body)
         check(dao.registrarResultadoQ15(venueId, key, result.aplicado, result.motivo, result.resultadoJson, System.currentTimeMillis()) == 1)
         check(result.aplicado) { "El resultado del cobro está por confirmar. Se conservó para revisión; no vuelvas a cobrar." }
     }
@@ -951,6 +994,11 @@ class OrderRepository @Inject constructor(
          */
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
         capturedVenueId: String? = null,
+        /**
+         * El importe que el cajero ya aceptó en pantalla porque el servidor cambió el precio EN LÍNEA (precio que vio el
+         * cliente). Sólo cambia contra qué se compara el resultado; la captura original no se toca. null = como siempre.
+         */
+        importeAceptadoCents: Int? = null,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -990,7 +1038,7 @@ class OrderRepository @Inject constructor(
             }
 
             if (code in 200..299) {
-                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.ORDER, body)
+                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.ORDER, body, importeAceptadoCents)
                 Log.d("💵", "✅ Cash payment recorded for order: $orderId")
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)

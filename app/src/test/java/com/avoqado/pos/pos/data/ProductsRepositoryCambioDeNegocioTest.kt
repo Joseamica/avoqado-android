@@ -108,4 +108,50 @@ class ProductsRepositoryCambioDeNegocioTest {
         assertEquals("nuevo", creado.getOrNull()?.id)
         assertEquals(emptyList<String>(), repo.products.value.map { it.id })
     }
+
+    // MARK: - La ruta de FONDO (RefrescoDelCatalogo): mismas garantías que la carga del usuario
+
+    @Test
+    fun `de fondo - control - sin cambio de negocio la respuesta se publica`() = runTest {
+        val repo = ProductsRepository(almacen, cliente(productosDeA), cache)
+        repo.fetchProducts(enSegundoPlano = true)
+        assertEquals(listOf("pa"), repo.products.value.map { it.id })
+        assertFalse(repo.isLoading.value)
+    }
+
+    @Test
+    fun `de fondo - P1 respuesta del negocio anterior que llega despues del cambio no se publica ni se guarda`() = runTest {
+        val repo = ProductsRepository(almacen, cliente(productosDeA, cambiarA = "venue-b"), cache)
+        repo.fetchProducts(enSegundoPlano = true)
+        assertEquals(emptyList<String>(), repo.products.value.map { it.id })
+        assertEquals(emptyList<String>(), repo.categories.value.map { it.id })
+        assertNull(repo.error.value)
+        coVerify(exactly = 0) { cache.save(any(), any(), any()) }
+        // Con la lista vacía el fondo es visible como la carga normal; la petición del negocio nuevo es la dueña del indicador.
+        assertTrue(repo.isLoading.value)
+    }
+
+    @Test
+    fun `de fondo - P1 con la lista ya pintada la respuesta tardia del negocio anterior tampoco la pisa`() = runTest {
+        coEvery { cache.load(PayloadCache.TYPE_PRODUCTS, "venue-a") } returns
+            PayloadCache.Cached("""[{"id":"viejo","name":"Pan guardado de A"}]""", 0L)
+        val repo = ProductsRepository(almacen, cliente(productosDeA, cambiarA = "venue-b"), cache)
+        repo.fetchProducts(enSegundoPlano = true)
+        // La respuesta de A llegó cuando ya se estaba en B: no se publica ni se guarda, y el fondo no tocó el indicador.
+        assertEquals(listOf("viejo"), repo.products.value.map { it.id })
+        coVerify(exactly = 0) { cache.save(any(), any(), any()) }
+        assertFalse(repo.isLoading.value)
+        assertNull(repo.error.value)
+    }
+
+    @Test
+    fun `de fondo - P1 el cache en disco del negocio anterior tampoco se publica si el cambio llega mientras se lee`() = runTest {
+        coEvery { cache.load(PayloadCache.TYPE_PRODUCTS, "venue-a") } answers {
+            negocioActual = "venue-b"
+            PayloadCache.Cached("""[{"id":"pa","name":"Pan de A"}]""", 0L)
+        }
+        val repo = ProductsRepository(almacen, cliente(productosDeA), cache)
+        repo.fetchProducts(enSegundoPlano = true)
+        assertEquals(emptyList<String>(), repo.products.value.map { it.id })
+    }
 }
