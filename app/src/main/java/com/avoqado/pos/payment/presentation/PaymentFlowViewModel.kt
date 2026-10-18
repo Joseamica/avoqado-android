@@ -10,6 +10,11 @@ import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
+import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.loyalty.data.SaleStampOutcome
+import com.avoqado.pos.loyalty.data.SaleStampReason
+import com.avoqado.pos.loyalty.domain.RenglonDelSello
+import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.CashPaymentResult
 import com.avoqado.pos.payment.data.ContextoDeCobro
@@ -21,6 +26,7 @@ import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.data.model.ColaDelCobro
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.PaymentContext
@@ -28,6 +34,7 @@ import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.data.model.MENSAJE_PREMIO_SIN_RED
 import com.avoqado.pos.payment.data.model.avisoDeEfectivoCortoPorPremio
 import com.avoqado.pos.payment.data.model.cobroConPremio
@@ -53,9 +60,11 @@ import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -232,20 +241,20 @@ class PaymentFlowViewModel @Inject constructor(
             .map { (it as? PaymentFlowState.Success)?.takeIf { exito -> exito.isQueued } }
             .distinctUntilChanged()
             .flatMapLatest { exito ->
-                val cola = exito?.colaDelCobro
-                when {
-                    exito == null -> flowOf(com.avoqado.pos.payment.data.model.SincronizacionDelCobro.NINGUNA)
-                    cola is com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos ->
-                        cashPaymentRepository.observarEstado(cola.id)
-                            .map(com.avoqado.pos.payment.data.model.SincronizacionDelCobro::dePago)
-                    cola is com.avoqado.pos.payment.data.model.ColaDelCobro.Outbox ->
-                        syncOutbox.observarEstado(cola.intentId)
-                            .map(com.avoqado.pos.payment.data.model.SincronizacionDelCobro::deIntent)
-                    // Encolado sin fila que mirar: se queda como hasta hoy, pendiente.
-                    else -> flowOf(com.avoqado.pos.payment.data.model.SincronizacionDelCobro.PENDIENTE)
-                }
+                if (exito == null) flowOf(SincronizacionDelCobro.NINGUNA) else sincronizacionDe(exito.colaDelCobro)
             }
             .stateIn(viewModelScope, SharingStarted.Eagerly, com.avoqado.pos.payment.data.model.SincronizacionDelCobro.NINGUNA)
+
+    /**
+     * El estado de UN cobro encolado según su cola, en vivo. Lo leen el aviso «Venta sincronizada» y el renglón del sello
+     * ([cambiarLaPromesaAlSincronizar]): la MISMA señal, para que la pantalla nunca diga dos cosas distintas.
+     */
+    private fun sincronizacionDe(cola: ColaDelCobro?): Flow<SincronizacionDelCobro> = when (cola) {
+        is ColaDelCobro.Pagos -> cashPaymentRepository.observarEstado(cola.id).map(SincronizacionDelCobro::dePago)
+        is ColaDelCobro.Outbox -> syncOutbox.observarEstado(cola.intentId).map(SincronizacionDelCobro::deIntent)
+        // Encolado sin fila que mirar: se queda como hasta hoy, pendiente.
+        null -> flowOf(SincronizacionDelCobro.PENDIENTE)
+    }
 
     /**
      * 🔴 Un 4xx al crear la orden NO significa "no pasó nada".
@@ -835,18 +844,116 @@ class PaymentFlowViewModel @Inject constructor(
     /** Id del cliente que viaja en `POST /orders`. */
     private var attachedCustomerId: String? = null
 
+    /**
+     * Renglón del sello en «Cobro exitoso» (sellos tardíos, 14-oct): «✓ +1 sello · 3 de 7», el premio, o por qué no
+     * sumó. Es estado APARTE de [customerAttachResult] a propósito: «Imprimir» y «Enviar» borran ese aviso y el cajero
+     * tiene que seguir viendo si la venta sumó. null = no se pinta nada.
+     */
+    private val _renglonDelSello = MutableStateFlow<RenglonDelSello?>(null)
+    val renglonDelSello: StateFlow<RenglonDelSello?> = _renglonDelSello.asStateFlow()
+
+    /**
+     * La venta cuyo renglón del sello ya se decidió. `Success` se vuelve a emitir con `copy(...)` (avisos que se
+     * limpian) y eso no puede volver a preguntar ni pisar lo que dijo la liga.
+     */
+    private var ventaDelSello: String? = null
+    private var consultaDelSello: kotlinx.coroutines.Job? = null
+
+    /**
+     * 🔴 Nunca bloquea ni retrasa «Cobro exitoso»: corre aparte, y cualquier fallo es silencio (el renglón no sale).
+     * - Cuenta dividida con saldo: la venta aún no está saldada; el renglón (o la promesa sin red) lo da la parte que la
+     *   salda. Va ANTES de lo encolado: la parte 1 sin red tampoco puede prometer un sello que sólo llega al saldarse.
+     * - Venta encolada sin red: no hay pago que consultar; si este aparato ya vio que el negocio tiene sellos, dice
+     *   «El sello se suma al sincronizar» — sólo si la cola LLEVA al cliente (ver [laColaLlevaAlCliente]).
+     *   Al sincronizar, la promesa se cambia por el sello real (ver [cambiarLaPromesaAlSincronizar]).
+     * - PENDING: la lealtad aún no termina de procesarse; UN reintento a los [REINTENTO_DEL_SELLO_MS] y luego nada.
+     */
+    private fun alLlegarAExito(exito: PaymentFlowState.Success) {
+        val paymentId = exito.paymentId ?: lastPaymentId
+        val clave = paymentId ?: exito.colaDelCobro?.toString() ?: return
+        if (clave == ventaDelSello) return
+        ventaDelSello = clave
+        consultaDelSello?.cancel()
+        if (attachedCustomerId == null) return
+        if (buildCompletion().remainingBalanceCents > 0) return
+
+        if (exito.isQueued) {
+            val venueId = secureStorage.venueId
+            val cola = exito.colaDelCobro as? ColaDelCobro.Pagos
+            if (cola != null && laColaLlevaAlCliente(exito) && venueId != null && orderRepository.programaDeSellosActivo(venueId) == true) {
+                _renglonDelSello.value = RenglonDelSello.SE_SUMA_AL_SINCRONIZAR
+                cambiarLaPromesaAlSincronizar(cola, clave)
+            }
+            return
+        }
+        if (paymentId == null) return
+
+        consultaDelSello = viewModelScope.launch {
+            val sello = consultarSelloConReintento(paymentId)
+            if (ventaDelSello != clave) return@launch
+            _renglonDelSello.value = RenglonDelSello.desde(sello)
+        }
+    }
+
+    /** La consulta del sello de una venta, con UN reintento a los [REINTENTO_DEL_SELLO_MS] si la lealtad sigue PENDING. */
+    private suspend fun consultarSelloConReintento(paymentId: String): SaleStampOutcome? {
+        var sello = orderRepository.consultarSelloDeLaVenta(paymentId)
+        if (sello != null && sello.stampsEnabled && sello.reasonCode == SaleStampReason.PENDING) {
+            delay(REINTENTO_DEL_SELLO_MS)
+            sello = orderRepository.consultarSelloDeLaVenta(paymentId)
+        }
+        return sello
+    }
+
+    /**
+     * Info-7 (QA en la D3, 15-oct): la venta cobrada sin red decía «El sello se suma al sincronizar» y lo SEGUÍA diciendo
+     * con «Venta sincronizada» arriba, aunque el servidor ya hubiera dado el sello. Ahora, en cuanto la cola confirma ESTA
+     * venta (la misma señal del aviso, [sincronizacionDe]), se pregunta por su sello con el id que le dio el servidor y se
+     * pinta lo que pasó. Si no se puede saber (consulta fallida, PENDING tras el reintento, fila ya limpiada) se QUITA la
+     * promesa: una promesa vieja miente.
+     * 🔴 Vive en [consultaDelSello]: «Venta nueva» la cancela. Y antes de pintar se revisa que la pantalla siga siendo la de
+     * ESTA venta (misma venta, misma generación y el mismo cobro encolado en «Cobro exitoso»); si no, no pinta nada.
+     */
+    private fun cambiarLaPromesaAlSincronizar(cola: ColaDelCobro.Pagos, clave: String) {
+        val generacion = paymentGeneration
+        consultaDelSello = viewModelScope.launch {
+            sincronizacionDe(cola).firstOrNull { it == SincronizacionDelCobro.SINCRONIZADA } ?: return@launch
+            val sello = cashPaymentRepository.pagoDelServidor(cola.id)?.let { consultarSelloConReintento(it) }
+            val sigueEnPantalla = ventaDelSello == clave && generacion == paymentGeneration &&
+                (_state.value as? PaymentFlowState.Success)?.colaDelCobro == cola
+            if (!sigueEnPantalla) return@launch
+            _renglonDelSello.value = RenglonDelSello.desde(sello)
+        }
+    }
+
+    /**
+     * ¿Al sincronizar, la venta llega al servidor CON su cliente? Sólo entonces se puede prometer el sello.
+     * - Cola de pagos (`pending_payments`) de MOSTRADOR: sí — el cobro rápido manda `customerId` en el replay, y la orden
+     *   creada (en línea o al reproducir, con `orderRequestJson`) nació con él.
+     * - Mesa: no se sabe. El `PAY_CASH` de una mesa provisional (outbox) y su `OPEN_TABLE` no llevan cliente, y el pago
+     *   encolado de una mesa existente va a `/orders/:id/pay`, que no lo liga: la orden de la mesa puede no tenerlo.
+     */
+    private fun laColaLlevaAlCliente(exito: PaymentFlowState.Success): Boolean =
+        exito.colaDelCobro is com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos && mesaDelCobro == null
+
     fun clearCustomerAttachResult() {
         _customerAttachResult.value = null
     }
 
     fun attachCustomerToCurrentPayment(customerId: String, customerName: String) {
+        // 🔴 Un doble toque en la fila del cliente llegaba aquí dos veces antes de que la hoja se cerrara: dos POST de
+        // liga. Se marca «enviando» ANTES de lanzar, así el segundo toque ya lo ve.
+        if (_customerAttachSending.value) return
         val paymentId = lastPaymentId
         val amountCents = currentBaseAmount()
         val tipCents = currentTipCents
+        // 🔴 La venta de ESTA liga (auditoría A #4). Si el cajero toca «Venta nueva» con la petición en vuelo, la respuesta
+        // llega a una pantalla que ya es de OTRA venta y no puede escribir nada en ella.
+        val generacion = paymentGeneration
+        _customerAttachSending.value = true
+        _customerAttachResult.value = null
 
         viewModelScope.launch {
-            _customerAttachSending.value = true
-            _customerAttachResult.value = null
             val result = if (!paymentId.isNullOrBlank()) {
                 orderRepository.attachCustomerToPayment(paymentId, customerId)
             } else {
@@ -857,12 +964,21 @@ class PaymentFlowViewModel @Inject constructor(
                     staffId = selectedStaffId(),
                 )
             }
+            if (generacion != paymentGeneration) {
+                // Ni cliente, ni nombre, ni aviso, ni renglón, ni «enviando» (lo reinició `startPaymentFlow` y puede ser ya
+                // el de la liga de la venta nueva). Éxito o error: igual. La liga del servidor quedó en la venta anterior.
+                Log.d("👤", "Respuesta de la liga de una venta anterior: no toca la venta en pantalla")
+                return@launch
+            }
             result
                 .fold(
-                    onSuccess = {
+                    onSuccess = { sello ->
                         attachedCustomerId = customerId
                         _attachedCustomerName.value = customerName
                         _customerAttachResult.value = "Cliente agregado: $customerName"
+                        // Sellos tardíos: el servidor ya sumó (o no) el sello al ligar; aquí sólo se dice.
+                        consultaDelSello?.cancel()
+                        _renglonDelSello.value = RenglonDelSello.desde(sello)
                         // El aviso ya se resolvió: la venta SÍ tiene cliente ahora. Dejarlo
                         // puesto es estado que miente — y era la única divergencia con iOS
                         // en el campo que este cambio introdujo.
@@ -871,7 +987,13 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                     },
                     onFailure = { error ->
-                        _customerAttachResult.value = error.message ?: "No se pudo agregar cliente"
+                        // Agregar cliente después de cobrar es online-only A PROPÓSITO (spec §4): sin red se dice en
+                        // llano y con el plazo, nunca «Unable to resolve host…».
+                        _customerAttachResult.value = if (ServerErrorText.isOffline(error)) {
+                            TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE
+                        } else {
+                            ServerErrorText.humanize(error, fallback = "No se pudo agregar el cliente. Inténtalo de nuevo.")
+                        }
                     },
                 )
             _customerAttachSending.value = false
@@ -1116,6 +1238,11 @@ class PaymentFlowViewModel @Inject constructor(
         _printSending.value = false
         _customerAttachResult.value = null
         _customerAttachSending.value = false
+        _renglonDelSello.value = null
+        // La consulta del sello de la venta ANTERIOR no puede pintar sobre ésta.
+        consultaDelSello?.cancel()
+        consultaDelSello = null
+        ventaDelSello = null
         attachedCustomerId = customerId?.takeIf { it.isNotBlank() }
         _attachedCustomerName.value = customerName?.takeIf { it.isNotBlank() }
         lastReceipt = null
@@ -3943,9 +4070,27 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    // MARK: - Sellos tardíos: el colector de «Cobro exitoso» (va AL FINAL a propósito)
+
+    /**
+     * Sellos tardíos: al llegar a «Cobro exitoso» con el cliente que venía del CARRITO se pregunta si la venta sumó
+     * sello. Un solo punto de entrada para los ~10 caminos que terminan en Success.
+     * 🔴 Este `init` va DESPUÉS de todas las propiedades de la clase (revisión final, Minor #4): Kotlin inicializa en el
+     * orden en que se declara y `viewModelScope` colecta de inmediato (`Main.immediate`); [alLlegarAExito] lee
+     * propiedades que antes se declaraban más abajo (`_splitType`, vía `buildCompletion()`). No lo subas.
+     */
+    init {
+        viewModelScope.launch {
+            _state.collect { estado -> if (estado is PaymentFlowState.Success) alLlegarAExito(estado) }
+        }
+    }
+
     companion object {
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
+
+        /** Sellos tardíos: si la lealtad de la venta aún se procesa (PENDING), se vuelve a preguntar UNA vez, a los 2 s. */
+        internal const val REINTENTO_DEL_SELLO_MS = 2_000L
 
         /**
          * Encabezado de la pantalla de un cobro sin confirmar de OTRA venta, la que abre «Revisar» desde el aviso (25-sep:

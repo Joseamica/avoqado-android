@@ -4,6 +4,7 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.loyalty.data.SaleStampOutcome
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.OrderData
@@ -12,6 +13,7 @@ import com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -84,11 +86,28 @@ class OrderRepository @Inject constructor(
     /**
      * Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL].
      *
-     * Hoy sólo lo usa [cancelOrder] —el resto del repositorio arma la URL con la constante—:
-     * es la única llamada cuya LECTURA de la respuesta hay que poder fijar por caso.
+     * Lo usan [cancelOrder], las ligas de cliente y la consulta del sello —el resto del repositorio arma la URL con la
+     * constante—: son las llamadas cuya LECTURA de la respuesta hay que poder fijar por caso.
      */
     @androidx.annotation.VisibleForTesting
     internal var baseUrl: String = ApiConstants.BASE_URL
+
+    /**
+     * Último `stampsEnabled` que dijo el servidor, POR NEGOCIO (attach o consulta del sello): decide si una venta
+     * encolada sin red puede prometer «El sello se suma al sincronizar». null = no se sabe ⇒ no se promete.
+     * 🔴 También queda en las preferencias del aparato ([SecureStorage.programaDeSellosActivo]) y se lee de ahí si la
+     * memoria no lo tiene: sólo en memoria, tras reiniciar la app SIN red la promesa nunca salía (spec §4.1; revisión
+     * final, Minor #7).
+     */
+    private val programaDeSellosPorNegocio = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    fun programaDeSellosActivo(venueId: String): Boolean? =
+        programaDeSellosPorNegocio[venueId] ?: secureStorage.programaDeSellosActivo(venueId)
+
+    private fun recordarProgramaDeSellos(venueId: String, sello: SaleStampOutcome) {
+        programaDeSellosPorNegocio[venueId] = sello.stampsEnabled
+        secureStorage.setProgramaDeSellosActivo(venueId, sello.stampsEnabled)
+    }
 
     // MARK: - Exception types
 
@@ -97,6 +116,24 @@ class OrderRepository @Inject constructor(
     companion object {
         private val idExtractorJson = Json { ignoreUnknownKeys = true }
         private val errorParserJson = Json { ignoreUnknownKeys = true }
+
+        /**
+         * Mismo molde que el `Json` compartido de la app (`NetworkModule`): SIN `coerceInputValues`, a propósito. Un
+         * número que llega nulo (`"stampsEarned": null`) NO se vuelve 0 — con `stamped: true` eso pintaría «¡Completó
+         * su tarjeta!» sin que fuera cierto—: la lectura entera se descarta y el renglón no sale.
+         */
+        private val selloJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+        /**
+         * El sello de la venta dentro de una respuesta del servidor: `data.loyalty` (attach) o `data` (consulta).
+         * null si no viene (servidor viejo), si viene null, o si no se puede leer: el sello es un aviso y nunca
+         * tumba la liga del cliente (la liga ya quedó en el servidor; decir que falló sería mentir).
+         */
+        internal fun leerSelloDeLaVenta(body: String, dentroDeLoyalty: Boolean): SaleStampOutcome? = runCatching {
+            val data = selloJson.parseToJsonElement(body).jsonObject["data"] as? JsonObject
+            val objeto = if (dentroDeLoyalty) data?.get("loyalty") as? JsonObject else data
+            objeto?.let { selloJson.decodeFromJsonElement(SaleStampOutcome.serializer(), it) }
+        }.getOrNull()
 
         fun isQueueableError(e: Throwable): Boolean {
             return e is java.net.UnknownHostException ||
@@ -990,10 +1027,14 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Attach customer to completed payment
 
+    /**
+     * Liga al cliente con la venta ya cobrada. Sellos tardíos: el éxito trae el sello que el servidor sumó (o por qué no)
+     * — campo `loyalty`, OPCIONAL: null con un servidor viejo o si no se puede leer, y la liga sigue siendo un éxito.
+     */
     suspend fun attachCustomerToPayment(
         paymentId: String?,
         customerId: String,
-    ): Result<Unit> {
+    ): Result<SaleStampOutcome?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
         val normalizedPaymentId = paymentId?.takeIf { it.isNotBlank() }
@@ -1007,7 +1048,7 @@ class OrderRepository @Inject constructor(
             }.toString()
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/$normalizedPaymentId/customer")
+                .url("$baseUrl/mobile/venues/$venueId/payments/$normalizedPaymentId/customer")
                 .header("Authorization", "Bearer $token")
                 .post(bodyJson.toRequestBody("application/json".toMediaType()))
                 .build()
@@ -1019,7 +1060,8 @@ class OrderRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d("👤", "✅ Customer attached to payment: $normalizedPaymentId")
-                Result.success(Unit)
+                // Sellos tardíos: el servidor dice si esta liga sumó sello (campo `loyalty`, opcional).
+                Result.success(leerSelloDeLaVenta(body, dentroDeLoyalty = true)?.also { recordarProgramaDeSellos(venueId, it) })
             } else {
                 Log.e("👤", "❌ Attach customer failed ($code): $body")
                 val message = extractErrorMessage(body) ?: "Error al agregar cliente ($code)"
@@ -1036,7 +1078,7 @@ class OrderRepository @Inject constructor(
         amountCents: Int,
         tipCents: Int,
         staffId: String,
-    ): Result<Unit> {
+    ): Result<SaleStampOutcome?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
         val normalizedCustomerId = customerId.takeIf { it.isNotBlank() }
@@ -1052,7 +1094,7 @@ class OrderRepository @Inject constructor(
             }.toString()
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/customer")
+                .url("$baseUrl/mobile/venues/$venueId/payments/customer")
                 .header("Authorization", "Bearer $token")
                 .post(bodyJson.toRequestBody("application/json".toMediaType()))
                 .build()
@@ -1064,7 +1106,7 @@ class OrderRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d("👤", "✅ Customer attached to latest payment")
-                Result.success(Unit)
+                Result.success(leerSelloDeLaVenta(body, dentroDeLoyalty = true)?.also { recordarProgramaDeSellos(venueId, it) })
             } else {
                 Log.e("👤", "❌ Attach customer to latest payment failed ($code): $body")
                 val message = extractErrorMessage(body) ?: "Error al agregar cliente ($code)"
@@ -1073,6 +1115,44 @@ class OrderRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e("👤", "❌ Attach customer to latest payment error: ${e.message}")
             Result.failure(e)
+        }
+    }
+
+    // MARK: - Sello de la venta (sellos tardíos)
+
+    /** Plazo corto: la consulta corre detrás de «Cobro exitoso» y no tiene por qué colgarse 30 s. */
+    private val selloClient: OkHttpClient by lazy { client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build() }
+
+    /**
+     * `GET /mobile/venues/:venueId/payments/:paymentId/loyalty`: qué pasó con el sello de una venta que se cobró CON
+     * cliente desde el carrito. 🔴 Nunca lanza: sin red, 403 (rol sin `loyalty:read`) o 404 (servidor viejo) son null y la
+     * pantalla de éxito no cambia. Va marcada como tarea de FONDO: un 403 no puede abrir el teclado del PIN encima del
+     * recibo.
+     */
+    suspend fun consultarSelloDeLaVenta(paymentId: String): SaleStampOutcome? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+        if (paymentId.isBlank()) return null
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/loyalty")
+                .header("Authorization", "Bearer $token")
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .get()
+                .build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                selloClient.newCall(request).execute().use { response -> response.code to (response.body?.string() ?: "") }
+            }
+            if (code !in 200..299) {
+                Log.w("🎟️", "Sello de la venta $paymentId: HTTP $code")
+                return null
+            }
+            leerSelloDeLaVenta(body, dentroDeLoyalty = false)?.also { recordarProgramaDeSellos(venueId, it) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("🎟️", "Sello de la venta $paymentId sin respuesta: ${e.message}")
+            null
         }
     }
 

@@ -8,6 +8,9 @@ import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -211,6 +214,23 @@ class CashPaymentRepository @Inject constructor(
 
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
     fun observarEstado(id: String): Flow<String?> = pendingPaymentDao.observarEstado(id)
+
+    /**
+     * El id del pago que el SERVIDOR le dio a un cobro encolado que ya subió (Info-7, QA en la D3, 15-oct): con él
+     * «Cobro exitoso» pregunta por el sello de esa venta y cambia «El sello se suma al sincronizar» por lo que pasó.
+     * La cola lo deja en `q15ResultJson` en la misma escritura que marca la fila SYNCED (`ConciliacionDelCobro.evaluar`).
+     * null si la fila ya no está (la limpieza la borró), es de otro negocio, aún no sube o el servidor no dijo el id.
+     */
+    suspend fun pagoDelServidor(id: String): String? {
+        val venueId = secureStorage.venueId ?: return null
+        val fila = pendingPaymentDao.findForVenue(venueId, id) ?: return null
+        if (fila.syncStatus != PaymentSyncStatus.SYNCED.name) return null
+        val resultado = fila.q15ResultJson ?: return null
+        return runCatching {
+            (Json.parseToJsonElement(resultado).jsonObject["paymentId"] as? JsonPrimitive)
+                ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
 
     private fun construirFila(
         orderRequest: CreateOrderRequest,

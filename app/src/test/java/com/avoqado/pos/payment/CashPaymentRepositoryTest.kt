@@ -3,6 +3,7 @@ package com.avoqado.pos.payment
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.CashPaymentResult
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -375,5 +377,38 @@ class CashPaymentRepositoryTest {
         )
 
         coVerify { dao.insert(match { it.customerId == null }) }
+    }
+
+    // MARK: - Info-7 (QA en la D3, 15-oct): el pago que el servidor le dio a un cobro encolado ya sincronizado
+
+    private fun fila(estado: String = "SYNCED", resultado: String? = """{"paymentId":"pago-servidor-9","orderId":"orden-3","amountCents":10000,"tipCents":0}""") =
+        PendingPaymentEntity(
+            id = "fila-1", venueId = "venue-123", staffId = "user-456", amountCents = 10_000, tipCents = 0,
+            method = "CASH", paymentType = "FAST", syncStatus = estado, q15ResultJson = resultado,
+        )
+
+    @Test
+    fun `de un cobro encolado ya sincronizado se lee el pago que le dio el servidor`() = runTest {
+        coEvery { dao.findForVenue("venue-123", "fila-1") } returns fila()
+
+        assertEquals("pago-servidor-9", repository.pagoDelServidor("fila-1"))
+    }
+
+    @Test
+    fun `sin fila, sin sincronizar o sin el id del servidor no se inventa un pago`() = runTest {
+        coEvery { dao.findForVenue("venue-123", "fila-1") } returns null
+        assertNull("la limpieza ya la borró", repository.pagoDelServidor("fila-1"))
+
+        coEvery { dao.findForVenue("venue-123", "fila-1") } returns fila(estado = "PENDING", resultado = null)
+        assertNull("aún no sube", repository.pagoDelServidor("fila-1"))
+
+        coEvery { dao.findForVenue("venue-123", "fila-1") } returns fila(resultado = null)
+        assertNull("subió sin que el servidor dijera su id", repository.pagoDelServidor("fila-1"))
+
+        coEvery { dao.findForVenue("venue-123", "fila-1") } returns fila(resultado = "no es json")
+        assertNull(repository.pagoDelServidor("fila-1"))
+
+        coEvery { dao.findForVenue("venue-123", "fila-1") } returns fila(resultado = """{"paymentId":""}""")
+        assertNull(repository.pagoDelServidor("fila-1"))
     }
 }
