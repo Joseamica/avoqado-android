@@ -101,11 +101,20 @@ class CashPaymentRepository @Inject constructor(
         tipCents: Int = orderRequest.tip,
         splitType: String = "FULLPAYMENT",
         venueId: String? = null,
+        /**
+         * Cuándo se CAPTURÓ la venta (epoch ms del aparato, una sola vez). Nulo ⇒ la que trae el pedido capturado
+         * ([CreateOrderRequest.createdAtLocal]), la de la reserva en disco con la misma llave o, si no hay, ahora.
+         */
+        capturadaEn: Long? = null,
     ): String {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
+        val venue = venueId ?: secureStorage.venueId.orEmpty()
+        val hora = capturadaEn ?: orderRequest.createdAtLocal
+            ?: idempotencyKey?.takeIf { it.isNotBlank() }?.let { pendingPaymentDao.findForVenue(venue, it)?.createdAt }
+            ?: System.currentTimeMillis()
         val entity = construirFila(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId, orderExternalId,
-            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING, amountCents, tipCents, splitType, venueId ?: secureStorage.venueId.orEmpty(),
+            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING, amountCents, tipCents, splitType, venue, hora,
         )
         // REPLACE: si este cobro se había reservado (`reservarCobro`, misma llave) la reserva se
         // vuelve la fila de la cola, con los datos finales del intento.
@@ -150,11 +159,15 @@ class CashPaymentRepository @Inject constructor(
         tipCents: Int = orderRequest.tip,
         splitType: String = "FULLPAYMENT",
         venueId: String? = null,
+        /** Cuándo se CAPTURÓ la venta. Nulo ⇒ la que trae el pedido capturado o, si no trae, ahora. */
+        capturadaEn: Long? = null,
     ) {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
+        val hora = capturadaEn ?: orderRequest.createdAtLocal ?: System.currentTimeMillis()
         val entity = construirFila(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId, orderExternalId,
             customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.EN_VUELO, amountCents, tipCents, splitType, venueId ?: secureStorage.venueId.orEmpty(),
+            hora,
         )
         // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
         // cobro como «sin confirmar» mientras va en vuelo.
@@ -249,6 +262,8 @@ class CashPaymentRepository @Inject constructor(
         tipCents: Int,
         splitType: String,
         venueId: String,
+        /** La hora de la venta, una sola vez: es la de la fila y la que viaja como `createdAtLocal`. */
+        capturadaEn: Long,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
@@ -287,13 +302,16 @@ class CashPaymentRepository @Inject constructor(
                     staffId = staffId,
                     customerId = customerId,
                     externalId = orderExternalId ?: "offline-order:$localId",
+                    // «La venta ya ocurrió»: el servidor nunca la rechaza por precio (contrato del precio que vio el cliente).
+                    isOfflineReplay = true,
+                    createdAtLocal = capturadaEn,
                 )
             } else {
                 null
             },
             syncStatus = estado.name,
             retryCount = 0,
-            createdAt = System.currentTimeMillis(),
+            createdAt = capturadaEn,
         )
         val capture = CapturaDelCobro(
             venueId = entity.venueId, key = entity.id, orderId = entity.orderId,

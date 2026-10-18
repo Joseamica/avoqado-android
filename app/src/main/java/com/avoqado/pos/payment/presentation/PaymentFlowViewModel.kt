@@ -75,6 +75,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.avoqado.pos.pos.data.model.CambioDePrecio
+import com.avoqado.pos.pos.data.model.MENSAJE_RESERVA_SIN_RETIRAR
+import com.avoqado.pos.pos.data.model.acumularCambiosDePrecio
+import com.avoqado.pos.pos.data.model.avisoDePrecioDeLaCreacion
 import javax.inject.Inject
 
 data class PaymentCompletion(
@@ -96,6 +101,13 @@ data class PaymentCompletion(
     val premioConfirmadoCents: Int? = null,
     val carritoGuardadoDelCobro: String? = null,
     val identidadDeVenta: String? = null,
+    /**
+     * 🔴 Lo que el servidor corrigió en las líneas de ESTA venta (acumulado: un 409 y el 201 del reintento), para que el carrito
+     * de la caja quede con el precio de la orden. Vacío = nada que corregir (el carrito ni el descuento se tocan).
+     */
+    val cambiosDePrecio: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList(),
+    /** El descuento de cuenta que quedó fijo en la orden (sólo tras un 201 con cambios). Ver `CartState.conPreciosDelServidor`. */
+    val descuentoDeCuentaCongelado: com.avoqado.pos.pos.data.model.DescuentoCongelado? = null,
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
@@ -143,6 +155,12 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private val cancelacionDeCobro: com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator,
     private val savedStateHandle: androidx.lifecycle.SavedStateHandle,
+    /**
+     * Tras un 409 de precio se pide el catálogo nuevo (un refresco en vuelo deja UNO más para después). Lleva default por el
+     * mismo patrón que `CartViewModel.serviceCoursesRepository`: las pruebas que construyen el VM a mano no lo conocen; Hilt (y
+     * Guice en Windows) inyecta siempre el singleton real.
+     */
+    private val refrescoDelCatalogo: com.avoqado.pos.pos.data.RefrescoDelCatalogo? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -159,6 +177,34 @@ class PaymentFlowViewModel @Inject constructor(
     fun descartarAvisoDelPremio() {
         _avisoDelPremio.value = null
     }
+
+    /**
+     * 🔴 DINERO. El servidor cobró un precio distinto del que mostró la caja (201 con `priceChanges`) o lo rechazó en línea
+     * (409 `ORDER_PRICE_CHANGED`): se dice con palabras y «Entendido» (no se esfuma solo). null = nada que decir. Espejo de
+     * `avisoDePrecio` de iOS.
+     */
+    private val _avisoDePrecio = MutableStateFlow<String?>(null)
+    val avisoDePrecio: StateFlow<String?> = _avisoDePrecio.asStateFlow()
+
+    fun descartarAvisoDePrecio() {
+        _avisoDePrecio.value = null
+    }
+
+    /** Lo que el servidor corrigió en ESTA venta (un 409 y el 201 del reintento, acumulados). Va al carrito en la completion. */
+    private var cambiosDeEstaVenta: List<CambioDePrecio> = emptyList()
+
+    /** El total que vio el cajero antes del primer 409 de esta venta. null = no hubo 409: no se dice «Total nuevo». */
+    private var totalAntesDelRechazoDePrecio: Int? = null
+
+    /** El último aviso de precio publicado: uno idéntico no reaparece tras «Entendido». */
+    private var ultimoAvisoDePrecio: String? = null
+
+    /**
+     * La reserva de efectivo de un intento que el servidor rechazó por precio y cuyo retiro NO se pudo escribir en el aparato.
+     * Mientras exista, ningún cobro sale: primero se reintenta el retiro (ver [primeroRetirarLaReservaPendiente]). No se limpia al
+     * empezar otra venta: es una fila en disco que diría «sin confirmar» un cobro que nunca pasó.
+     */
+    private var llavePorRetirar: String? = null
 
     /** Lo que el servidor CONFIRMÓ del premio al crear la venta (0 si no lo aplicó). null = aún no se sabe. */
     private var premioConfirmadoCents: Int? = null
@@ -349,6 +395,96 @@ class PaymentFlowViewModel @Inject constructor(
         viewModelScope.launch(kotlinx.coroutines.NonCancellable) { cashPaymentRepository.soltarReserva(llave) }
     }
 
+    // MARK: - Se cobra el precio que vio el cliente (17-oct)
+
+    /**
+     * El carrito del cobro con el precio que decidió el servidor. Con [cambios] vacío no toca nada y devuelve false. Las partes
+     * por artículo o iguales se recalculan; el monto que eligió el cajero se conserva, topado al total nuevo.
+     *
+     * ponytail: el carrito de `CartViewModel` sólo se corrige al confirmar el cobro (la completion). Si el cajero cancela tras un
+     * 409 sin cobrar, conserva el precio viejo; el siguiente cobro vuelve a recibir el 409 y se corrige solo.
+     */
+    private fun corregirPrecios(cambios: List<CambioDePrecio>, congelar: Boolean): Boolean {
+        if (cambios.isEmpty()) return false
+        val corregido = cartState?.conPreciosDelServidor(cambios, congelar) ?: return false
+        cartState = corregido
+        if (splitBaseAmountOverride != null) splitBaseAmountOverride = resolveSplitBaseAmount(corregido)
+        cambiosDeEstaVenta = acumularCambiosDePrecio(cambiosDeEstaVenta, cambios)
+        return true
+    }
+
+    /** El aviso de lo acumulado en esta venta; el «Total nuevo» sólo cuenta si hubo un 409. null limpia uno que ya no aplica. */
+    private fun publicarAvisoDePrecio(totalNuevoCents: Int, cambioDeMasCents: Int = 0) {
+        val aviso = avisoDePrecioDeLaCreacion(cambiosDeEstaVenta, totalNuevoCents, totalAntesDelRechazoDePrecio, cambioDeMasCents)
+        if (aviso == ultimoAvisoDePrecio) return
+        ultimoAvisoDePrecio = aviso
+        _avisoDePrecio.value = aviso
+    }
+
+    /** Escribe en el aparato que la reserva sobra. false = no se pudo (disco), y el cobro no sigue. */
+    private suspend fun retirarReserva(llave: String): Boolean = try {
+        withContext(kotlinx.coroutines.NonCancellable) { cashPaymentRepository.soltarReserva(llave) }
+        true
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e("💵", "No se pudo retirar la reserva $llave: ${e.message}")
+        false
+    }
+
+    /**
+     * 🔴 DINERO. 409 `ORDER_PRICE_CHANGED` al crear la orden: el servidor no creó nada y no se tomó dinero (la cola sin red nunca
+     * lo recibe). Antes de volver a elegir método, la reserva durable del efectivo de ESTE intento se retira EN ESTA corrutina: si
+     * quedara en disco y el proceso muriera, al reabrir diría «sin confirmar» un cobro que no pasó, y «sí se cobró» lo mandaría a
+     * la cola. Si el retiro no se puede escribir: no se estrena llave, no se corrige ni se cobra; el siguiente toque lo reintenta.
+     * Si sale bien: llave nueva, precios corregidos SIN congelar, catálogo nuevo y el total nuevo a la vista.
+     */
+    private suspend fun volverAElegirTrasCambioDePrecio(error: Throwable, cambios: List<CambioDePrecio>, totalAntes: Int, tipCapturado: Int) {
+        val generacion = paymentGeneration
+        reservaDeEfectivo?.let { llave ->
+            reservaDeEfectivo = null // el colector del estado ya no la suelta por su cuenta
+            if (!retirarReserva(llave)) {
+                llavePorRetirar = llave // fila en disco: sobrevive a otra venta
+                if (generacion != paymentGeneration) return
+                isProcessingPayment = false
+                _state.value = PaymentFlowState.Error(MENSAJE_RESERVA_SIN_RETIRAR, PaymentErrorSource.UNKNOWN)
+                return
+            }
+        }
+        // Mientras se escribía el retiro se canceló o empezó otra venta: nada de esto es de ella.
+        if (generacion != paymentGeneration) return
+        estrenarLlaveTrasRechazoDeOrden(error)
+        if (totalAntesDelRechazoDePrecio == null) totalAntesDelRechazoDePrecio = totalAntes
+        corregirPrecios(cambios, congelar = false)
+        val nuevo = currentBaseAmount() + tipCapturado
+        publicarAvisoDePrecio(totalNuevoCents = nuevo)
+        refrescoDelCatalogo?.refrescarAhora()
+        isProcessingPayment = false
+        _state.value = PaymentFlowState.SelectingPaymentMethod(nuevo)
+    }
+
+    /**
+     * Un retiro que no se pudo escribir se reintenta ANTES de cualquier cobro, y sólo si sale bien el cobro sigue ([seguir]) —con
+     * llave nueva si era la de esta venta—. true = hubo retiro pendiente y esta función se encargó.
+     */
+    private fun primeroRetirarLaReservaPendiente(seguir: () -> Unit): Boolean {
+        val llave = llavePorRetirar ?: return false
+        isProcessingPayment = true
+        _state.value = PaymentFlowState.Processing(currentBaseAmount() + currentTipCents)
+        viewModelScope.launch {
+            if (!retirarReserva(llave)) {
+                isProcessingPayment = false
+                _state.value = PaymentFlowState.Error(MENSAJE_RESERVA_SIN_RETIRAR, PaymentErrorSource.UNKNOWN)
+                return@launch
+            }
+            llavePorRetirar = null
+            if (paymentIdempotencyKey == llave) paymentIdempotencyKey = null
+            isProcessingPayment = false
+            seguir()
+        }
+        return true
+    }
+
     /// Invalidates in-flight terminal sends: cancel() bumps it, and a late
     /// result from a cancelled send is ignored instead of overwriting the
     /// screen, marking Success and PRINTING a receipt for a cancelled payment.
@@ -444,6 +580,8 @@ class PaymentFlowViewModel @Inject constructor(
         // La pantalla se fue con un cobro en efectivo en vuelo: el desenlace es incierto, así que se
         // queda guardado y aparece «sin confirmar» en vez de esconderse hasta reiniciar la app.
         reservaDeEfectivo?.let { cashPaymentRepository.olvidarReservaEnMemoria(it) }
+        // Un retiro que no se pudo escribir: que también salga «sin confirmar» en vez de esconderse hasta reiniciar.
+        llavePorRetirar?.let { cashPaymentRepository.olvidarReservaEnMemoria(it) }
         super.onCleared()
     }
 
@@ -1156,6 +1294,11 @@ class PaymentFlowViewModel @Inject constructor(
         serverRemainingBalanceCents = null
         _avisoDelPremio.value = null
         premioConfirmadoCents = null
+        // Las correcciones de precio eran de la venta anterior. `llavePorRetirar` NO: es una fila en disco por retirar.
+        _avisoDePrecio.value = null
+        ultimoAvisoDePrecio = null
+        cambiosDeEstaVenta = emptyList()
+        totalAntesDelRechazoDePrecio = null
         val amount = currentBaseAmount()
 
         // Reset transient state from any previous session.
@@ -1615,6 +1758,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun confirmPayment() {
         if (isProcessingPayment) return
+        if (primeroRetirarLaReservaPendiente { confirmPayment() }) return
         val cart = cartState ?: return
         isProcessingPayment = true
         val venueCapturado = secureStorage.venueId.orEmpty()
@@ -1628,7 +1772,8 @@ class PaymentFlowViewModel @Inject constructor(
         val splitCapturado = _splitType.value
         val llaveCapturada = sessionIdempotencyKey()
         val total = currentBaseAmount() + tipCapturado
-        val pedidoCapturado = buildOrderRequest(cart)
+        // La hora de la venta se captura UNA vez, con el pedido (igual que en `processCashPayment`): la cola la hereda.
+        val pedidoCapturado = buildOrderRequest(cart).copy(createdAtLocal = System.currentTimeMillis())
         val ordenCapturada = createdOrderId
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
@@ -1697,16 +1842,28 @@ class PaymentFlowViewModel @Inject constructor(
                                     cancelarLoCreadoTrasCancelar(orderId)
                                     return@fold
                                 }
+                                // 🔴 El servidor cobró otro precio en algunas líneas: el carrito del cobro se
+                                // corrige (el descuento de cuenta que viajó queda fijo) y el estimado sale de él.
+                                val cambios = response.data?.priceChanges.orEmpty()
+                                val estimado = if (corregirPrecios(cambios, congelar = true)) currentBaseAmount() + tipCapturado else total
                                 // La orden ya existe y todavía no se ha tomado
                                 // dinero: se cobra lo que dice el server, no el
                                 // estimado del carrito. Ver `totalACobrarCents`.
-                                processPaymentMethod(adoptarTotalDelServer(orderRequest, response, total), generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
+                                val adoptado = adoptarTotalDelServer(orderRequest, response, estimado)
+                                if (cambios.isNotEmpty() || totalAntesDelRechazoDePrecio != null) publicarAvisoDePrecio(totalNuevoCents = adoptado)
+                                processPaymentMethod(adoptado, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
                             },
                             onFailure = { error ->
                                 if (generacion != paymentGeneration) {
                                     // Se canceló mientras se creaba y la orden ni siquiera nació:
                                     // no se encola nada ni se pinta un error sobre la cancelación.
                                     cancelarLoCreadoTrasCancelar(orderId = null)
+                                    return@fold
+                                }
+                                // 409 de precio: nada se creó ni se cobró. Antes de mirar si es encolable.
+                                val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
+                                if (cambios.isNotEmpty()) {
+                                    volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
                                     return@fold
                                 }
                                 // For CASH payments: queue offline if network/server error
@@ -2012,6 +2169,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun processCashPayment(cashReceivedCents: Int) {
         if (isProcessingPayment) return
+        if (primeroRetirarLaReservaPendiente { processCashPayment(cashReceivedCents) }) return
         isProcessingPayment = true
         lastCashTenderedCents = cashReceivedCents
         val cart = cartState
@@ -2025,7 +2183,8 @@ class PaymentFlowViewModel @Inject constructor(
         val splitCapturado = _splitType.value
         val llaveCapturada = sessionIdempotencyKey()
         val total = currentBaseAmount() + tipCapturado
-        val pedidoCapturado = cart?.let(::buildOrderRequest)
+        // La hora de la venta se captura UNA vez, con el pedido: la reserva y la cola la heredan (`createdAtLocal`).
+        val pedidoCapturado = cart?.let(::buildOrderRequest)?.copy(createdAtLocal = System.currentTimeMillis())
         val ordenCapturada = createdOrderId
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
@@ -2149,13 +2308,18 @@ class PaymentFlowViewModel @Inject constructor(
                                     // dinero recibido alcanza; si no, se cobra el
                                     // estimado (como hasta hoy) en vez de dejar
                                     // al cajero pidiendo centavos de vuelta.
-                                    val adoptado = adoptarTotalDelServer(orderRequest, orderResponse, total)
+                                    // 🔴 Antes, el precio que decidió el servidor: el estimado sale del carrito corregido.
+                                    val cambios = orderResponse.data?.priceChanges.orEmpty()
+                                    val estimado = if (corregirPrecios(cambios, congelar = true)) currentBaseAmount() + tipCapturado else total
+                                    val hayAvisoDePrecio = cambios.isNotEmpty() || totalAntesDelRechazoDePrecio != null
+                                    val adoptado = adoptarTotalDelServer(orderRequest, orderResponse, estimado)
                                     // 🔴 Con premio no son centavos: el premio no se aplicó (o por menos) y el
                                     // efectivo recibido no cubre el total real. NO se registra un cobro corto
                                     // —dejaría la cuenta debiendo y la caja la daría por liquidada—: se vuelve
                                     // a elegir cómo paga, con el total real y el motivo a la vista. La orden ya
                                     // existe, así que el siguiente intento cobra contra ELLA, sin crear otra.
                                     if (cart.pendingStampRewardId != null && adoptado > cashReceivedCents) {
+                                        if (hayAvisoDePrecio) publicarAvisoDePrecio(totalNuevoCents = adoptado)
                                         _avisoDelPremio.value = avisoDeEfectivoCortoPorPremio(
                                             orderResponse.data?.stampReward,
                                             totalRealCents = adoptado,
@@ -2167,7 +2331,11 @@ class PaymentFlowViewModel @Inject constructor(
                                     }
                                     val totalFinal = adoptado
                                         .takeIf { it <= cashReceivedCents }
-                                        ?: total.also { serverTotalOverrideCents = null }
+                                        ?: estimado.also { serverTotalOverrideCents = null }
+                                    // Con el efectivo ya en la mano, lo que bajó se devuelve: se dice cuánto más de cambio.
+                                    if (hayAvisoDePrecio) {
+                                        publicarAvisoDePrecio(totalNuevoCents = totalFinal, cambioDeMasCents = (total - totalFinal).coerceAtLeast(0))
+                                    }
                                     recordCashPaymentForOrder(
                                         orderId = orderId,
                                         total = totalFinal,
@@ -2191,11 +2359,19 @@ class PaymentFlowViewModel @Inject constructor(
                                         ratingCapturado = ratingCapturado,
                                         provisionalCapturada = provisionalCapturada,
                                         permiteColaCapturada = permiteColaCapturada,
+                                        // Founder 18-oct («A»): con red, el aviso ya se lo dijo al cajero; sin red sí es alerta.
+                                        precioAceptadoEnPantalla = cambios.isNotEmpty() && totalFinal != total,
                                     )
                                 },
                                 onFailure = { error ->
                                     if (generacion != paymentGeneration) {
                                         cancelarLoCreadoTrasCancelar(orderId = null)
+                                        return@fold
+                                    }
+                                    // 409 de precio: nada se creó ni se cobró. Antes de mirar si es encolable.
+                                    val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
+                                    if (cambios.isNotEmpty()) {
+                                        volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
                                         return@fold
                                     }
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
@@ -2384,6 +2560,8 @@ class PaymentFlowViewModel @Inject constructor(
         ratingCapturado: Int?,
         provisionalCapturada: Boolean,
         permiteColaCapturada: Boolean,
+        /** El servidor cambió el precio EN LÍNEA y el cajero ya vio el aviso: ese importe no es alerta para el gerente. */
+        precioAceptadoEnPantalla: Boolean = false,
     ) {
         // Send amount WITHOUT tip, tip separately
         val subtotal = total - tipCapturado
@@ -2438,6 +2616,7 @@ class PaymentFlowViewModel @Inject constructor(
             manualMethod = manualCapturado,
             tenderType = tenderCapturado,
             capturedVenueId = venueCapturado,
+            importeAceptadoCents = subtotal.takeIf { precioAceptadoEnPantalla },
         )
         payResult.fold(
             onSuccess = { result ->
@@ -3800,7 +3979,12 @@ class PaymentFlowViewModel @Inject constructor(
                     premioConfirmadoCents = premioConfirmadoCents,
                 )
             }
-        }.copy(carritoGuardadoDelCobro = cart.carritoGuardadoId, identidadDeVenta = cart.identidadDeVenta)
+        }.copy(
+            carritoGuardadoDelCobro = cart.carritoGuardadoId,
+            identidadDeVenta = cart.identidadDeVenta,
+            cambiosDePrecio = cambiosDeEstaVenta,
+            descuentoDeCuentaCongelado = cart.descuentoDeCuentaCongelado,
+        )
     }
 
     /**

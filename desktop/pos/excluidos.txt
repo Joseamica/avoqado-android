@@ -6,7 +6,7 @@
 # (Windows)») truena y dice cuál. Entonces: lee el cambio (`git log -p -- app/src/main/java/<ruta>`), pon al día el
 # reemplazo (o anota lo que escritorio todavía no tiene) y SÓLO DESPUÉS corre `./gradlew -p desktop :pos:actualizarHuellas`.
 # Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
-com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 211ec7038ac81df0d86049592715f178f88897c58676ab44b4185095d37d551d
+com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 13636ea7b3e52865dc2c57dab08bc6e8141b5de436dd7991f8567d6637e2fd39
 com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 1bc7862586f7baee8df828208026b02fb91870c25e393143fe51b22351aaa38a
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: bfd0eae749c91ef16171f63282092c9fafb081c8a74c53d68bc46527dea15c33
 com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 9d77ee128ab6ce7793b8f3a68b2443d64de86b2b0ae23f20aec63b80d741d72a

@@ -1618,6 +1618,9 @@ fun CheckoutScreen(
                         premioConfirmadoCents = completion.premioConfirmadoCents,
                         carritoGuardadoDelCobro = completion.carritoGuardadoDelCobro,
                         identidadDeVentaDelCobro = completion.identidadDeVenta,
+                        // El carrito de la caja queda con el precio de la orden (y su descuento de cuenta como quedó en ella).
+                        cambiosDePrecio = completion.cambiosDePrecio,
+                        descuentoDeCuentaCongelado = completion.descuentoDeCuentaCongelado,
                     )
                     if (!cobro.aplicadoAlCarritoActual) return@PaymentFlowScreen
                     when (cobro.rama) {
