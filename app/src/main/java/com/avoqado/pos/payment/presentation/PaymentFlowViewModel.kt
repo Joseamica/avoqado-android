@@ -1082,6 +1082,14 @@ class PaymentFlowViewModel @Inject constructor(
         // 🔴 Un doble toque en la fila del cliente llegaba aquí dos veces antes de que la hoja se cerrara: dos POST de
         // liga. Se marca «enviando» ANTES de lanzar, así el segundo toque ya lo ve.
         if (_customerAttachSending.value) return
+        // 🔴 Venta ENCOLADA (cola de pagos): sólo SU pago. «El último pago de $X del mismo empleado en 15 min» puede ser
+        // otra venta igual (dos cafés de $100) y el cliente y su sello caerían ahí. Sin el id del servidor no se llama: se
+        // dice. Espejo de iOS (Codex r1 #1, 18-oct).
+        val cola = (_state.value as? PaymentFlowState.Success)?.takeIf { it.isQueued }?.colaDelCobro as? ColaDelCobro.Pagos
+        if (cola != null) {
+            ligarClienteAVentaEncolada(cola, customerId, customerName)
+            return
+        }
         val paymentId = lastPaymentId
         val amountCents = currentBaseAmount()
         val tipCents = currentTipCents
@@ -1102,40 +1110,67 @@ class PaymentFlowViewModel @Inject constructor(
                     staffId = selectedStaffId(),
                 )
             }
-            if (generacion != paymentGeneration) {
-                // Ni cliente, ni nombre, ni aviso, ni renglón, ni «enviando» (lo reinició `startPaymentFlow` y puede ser ya
-                // el de la liga de la venta nueva). Éxito o error: igual. La liga del servidor quedó en la venta anterior.
-                Log.d("👤", "Respuesta de la liga de una venta anterior: no toca la venta en pantalla")
+            alResponderLaLiga(result, generacion, customerId, customerName)
+        }
+    }
+
+    /** La venta encolada se liga con el id que el servidor le dio a SU fila; sin él, ni se llama al servidor. */
+    private fun ligarClienteAVentaEncolada(cola: ColaDelCobro.Pagos, customerId: String, customerName: String) {
+        val generacion = paymentGeneration
+        _customerAttachSending.value = true
+        _customerAttachResult.value = null
+        viewModelScope.launch {
+            val pagoDelServidor = cashPaymentRepository.pagoDelServidor(cola.id)
+            if (pagoDelServidor == null) {
+                if (generacion == paymentGeneration) {
+                    _customerAttachResult.value = TextosDelSello.VENTA_SIN_SINCRONIZAR
+                    _customerAttachSending.value = false
+                }
                 return@launch
             }
-            result
-                .fold(
-                    onSuccess = { sello ->
-                        attachedCustomerId = customerId
-                        _attachedCustomerName.value = customerName
-                        _customerAttachResult.value = "Cliente agregado: $customerName"
-                        // Sellos tardíos: el servidor ya sumó (o no) el sello al ligar; aquí sólo se dice.
-                        consultaDelSello?.cancel()
-                        _renglonDelSello.value = RenglonDelSello.desde(sello)
-                        // El aviso ya se resolvió: la venta SÍ tiene cliente ahora. Dejarlo
-                        // puesto es estado que miente — y era la única divergencia con iOS
-                        // en el campo que este cambio introdujo.
-                        (_state.value as? PaymentFlowState.Success)?.let { exito ->
-                            _state.value = exito.copy(customerLinkWarning = null)
-                        }
-                    },
-                    onFailure = { error ->
-                        // Agregar cliente después de cobrar es online-only A PROPÓSITO (spec §4): sin red se dice en
-                        // llano y con el plazo, nunca «Unable to resolve host…».
-                        _customerAttachResult.value = if (ServerErrorText.isOffline(error)) {
-                            TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE
-                        } else {
-                            ServerErrorText.humanize(error, fallback = "No se pudo agregar el cliente. Inténtalo de nuevo.")
-                        }
-                    },
-                )
-            _customerAttachSending.value = false
+            alResponderLaLiga(orderRepository.attachCustomerToPayment(pagoDelServidor, customerId), generacion, customerId, customerName)
         }
+    }
+
+    private fun alResponderLaLiga(
+        result: Result<SaleStampOutcome?>,
+        generacion: Int,
+        customerId: String,
+        customerName: String,
+    ) {
+        if (generacion != paymentGeneration) {
+            // Ni cliente, ni nombre, ni aviso, ni renglón, ni «enviando» (lo reinició `startPaymentFlow` y puede ser ya
+            // el de la liga de la venta nueva). Éxito o error: igual. La liga del servidor quedó en la venta anterior.
+            Log.d("👤", "Respuesta de la liga de una venta anterior: no toca la venta en pantalla")
+            return
+        }
+        result
+            .fold(
+                onSuccess = { sello ->
+                    attachedCustomerId = customerId
+                    _attachedCustomerName.value = customerName
+                    _customerAttachResult.value = "Cliente agregado: $customerName"
+                    // Sellos tardíos: el servidor ya sumó (o no) el sello al ligar; aquí sólo se dice.
+                    consultaDelSello?.cancel()
+                    _renglonDelSello.value = RenglonDelSello.desde(sello)
+                    // El aviso ya se resolvió: la venta SÍ tiene cliente ahora. Dejarlo
+                    // puesto es estado que miente — y era la única divergencia con iOS
+                    // en el campo que este cambio introdujo.
+                    (_state.value as? PaymentFlowState.Success)?.let { exito ->
+                        _state.value = exito.copy(customerLinkWarning = null)
+                    }
+                },
+                onFailure = { error ->
+                    // Agregar cliente después de cobrar es online-only A PROPÓSITO (spec §4): sin red se dice en
+                    // llano y con el plazo, nunca «Unable to resolve host…».
+                    _customerAttachResult.value = if (ServerErrorText.isOffline(error)) {
+                        TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE
+                    } else {
+                        ServerErrorText.humanize(error, fallback = "No se pudo agregar el cliente. Inténtalo de nuevo.")
+                    }
+                },
+            )
+        _customerAttachSending.value = false
     }
 
     fun reprintReceipt() {
