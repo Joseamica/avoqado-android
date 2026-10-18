@@ -411,6 +411,101 @@ class DisplayModeRemoteRepositoryTest {
         assertEquals("stop", observed?.message)
     }
 
+    // ── El sobre del poll (F2, Task 1.2): huellas, capacidad y «repórtame» viajan aunque no haya solicitud ──
+
+    @Test
+    fun `sin solicitud conserva huellas capacidad y requested`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"request\":null," +
+                    "\"fingerprints\":{\"customerDisplay\":\"$HUELLA_A\",\"settings\":\"$HUELLA_B\"," +
+                    "\"promotions\":\"$HUELLA_C\"}," +
+                    "\"capabilities\":{\"customerDisplayDesign\":2}," +
+                    "\"capabilityReport\":{\"requested\":true}}}",
+            ),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.NoRequest(
+                "t1",
+                PollSignals(PollFingerprints(HUELLA_A, HUELLA_B), designCapability = 2, capabilityReportRequested = true),
+            ),
+            repository.fetchDisplayModeRequest("venue-1"),
+        )
+    }
+
+    @Test
+    fun `huella omitida queda null y no inventa nada`() = runTest {
+        server.enqueue(
+            MockResponse().setBody("{\"data\":{\"terminalId\":\"t1\",\"request\":null,\"fingerprints\":{}}}"),
+        )
+
+        val result = repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.NoRequest
+
+        assertNull(result.signals.fingerprints.customerDisplay)
+        assertNull(result.signals.fingerprints.settings)
+    }
+
+    @Test
+    fun `huella que no es de 32 hex cuenta como omitida`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"request\":null," +
+                    "\"fingerprints\":{\"customerDisplay\":\"${HUELLA_A.uppercase()}\",\"settings\":\"abc\"}}}",
+            ),
+        )
+
+        val result = repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.NoRequest
+
+        assertEquals(PollFingerprints(), result.signals.fingerprints)
+    }
+
+    @Test
+    fun `servidor viejo sin sobre`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"data\":{\"terminalId\":\"t1\",\"request\":null}}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.NoRequest("t1", PollSignals()),
+            repository.fetchDisplayModeRequest("venue-1"),
+        )
+    }
+
+    @Test
+    fun `bloque de huellas roto no tumba la solicitud`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"fingerprints\":\"basura\"," +
+                    "\"capabilities\":[1],\"capabilityReport\":{\"requested\":\"si\"}," +
+                    "\"request\":{\"requestId\":\"r1\",\"desiredInverted\":true," +
+                    "\"requestedAt\":\"2026-08-29T17:00:00Z\",\"expiresAt\":\"2026-08-29T17:05:00Z\"}}}",
+            ),
+        )
+
+        val result = repository.fetchDisplayModeRequest("venue-1")
+
+        assertTrue(result is DisplayModeRemoteOutcome.Success)
+        val binding = (result as DisplayModeRemoteOutcome.Success).data
+        assertEquals("r1", binding.request.requestId)
+        assertTrue(binding.request.desiredInverted)
+        assertEquals(PollSignals(), binding.signals)
+    }
+
+    @Test
+    fun `con solicitud el sobre tambien llega`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"fingerprints\":{\"settings\":\"$HUELLA_B\"}," +
+                    "\"capabilities\":{\"customerDisplayDesign\":1},\"capabilityReport\":{\"requested\":false}," +
+                    "\"request\":{\"requestId\":\"r1\",\"desiredInverted\":false," +
+                    "\"requestedAt\":\"2026-08-29T17:00:00Z\",\"expiresAt\":\"2026-08-29T17:05:00Z\"}}}",
+            ),
+        )
+
+        val binding = (repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.Success).data
+
+        assertEquals(PollSignals(PollFingerprints(settings = HUELLA_B), designCapability = 1), binding.signals)
+    }
+
     private fun repositoryWith(client: OkHttpClient): DisplayModeRemoteRepository =
         DisplayModeRemoteRepository(client) {
             server.url("/api/v1").toString().removeSuffix("/")
@@ -437,5 +532,11 @@ class DisplayModeRemoteRepositoryTest {
         override fun contentLength(): Long = -1L
 
         override fun source(): BufferedSource = trackedSource
+    }
+
+    private companion object {
+        const val HUELLA_A = "0123456789abcdef0123456789abcdef"
+        const val HUELLA_B = "fedcba9876543210fedcba9876543210"
+        const val HUELLA_C = "00000000000000000000000000000000"
     }
 }

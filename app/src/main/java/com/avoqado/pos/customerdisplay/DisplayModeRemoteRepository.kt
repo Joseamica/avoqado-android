@@ -11,6 +11,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -35,8 +36,14 @@ import kotlin.coroutines.resumeWithException
 sealed interface DisplayModeRemoteOutcome<out T> {
     data class Success<T>(val data: T) : DisplayModeRemoteOutcome<T>
 
-    /** El binding sigue siendo necesario aunque el server no tenga intención activa. */
-    data class NoRequest(val terminalId: String) : DisplayModeRemoteOutcome<Nothing>
+    /**
+     * El binding sigue siendo necesario aunque el server no tenga intención activa; y el sobre del poll (huellas,
+     * capacidad, «repórtame») también, porque la pantalla del cliente lo necesita aunque no haya nada que invertir.
+     */
+    data class NoRequest(
+        val terminalId: String,
+        val signals: PollSignals = PollSignals(),
+    ) : DisplayModeRemoteOutcome<Nothing>
 
     data class Retryable(val status: Int? = null) : DisplayModeRemoteOutcome<Nothing>
 
@@ -53,7 +60,29 @@ sealed interface DisplayModeRemoteOutcome<out T> {
 data class DisplayModeRequestBinding(
     val terminalId: String,
     val request: RemoteDisplayModeRequest,
+    val signals: PollSignals = PollSignals(),
 )
+
+/** Huellas que el poll anuncia (32 hex en minúscula). `null` = el server no la mandó, o no tenía el formato. */
+data class PollFingerprints(
+    val customerDisplay: String? = null,
+    val settings: String? = null,
+)
+
+/**
+ * El resto del sobre del poll. Un servidor viejo no lo manda y todo queda en su default: sin huellas, sin capacidad
+ * de diseño anunciada y sin pedir reporte.
+ */
+data class PollSignals(
+    val fingerprints: PollFingerprints = PollFingerprints(),
+    val designCapability: Int? = null,
+    val capabilityReportRequested: Boolean = false,
+)
+
+private val POLL_FINGERPRINT = Regex("^[0-9a-f]{32}$")
+
+/** La forma de toda huella del server (`canonicalHash.ts`: 32 hex del sha256). */
+internal fun isPollFingerprint(value: String): Boolean = POLL_FINGERPRINT.matches(value)
 
 /** Estado tipado que evita construir un ACK REJECTED sin resultCode. */
 sealed interface DisplayModeAcknowledgement {
@@ -117,8 +146,9 @@ class DisplayModeRemoteRepository @Inject constructor(
             val envelope = json.decodeFromString<PollEnvelope>(body)
             val terminalId = requireBoundedId(envelope.data.terminalId)
             val request = envelope.data.request
+            val signals = pollSignals(envelope.data)
             if (request == null) {
-                DisplayModeRemoteOutcome.NoRequest(terminalId)
+                DisplayModeRemoteOutcome.NoRequest(terminalId, signals)
             } else {
                 val requestId = requireBoundedId(request.requestId)
                 val requestedAt = Instant.parse(request.requestedAt)
@@ -133,6 +163,7 @@ class DisplayModeRemoteRepository @Inject constructor(
                             expiresAt = expiresAt,
                             requestedAt = requestedAt,
                         ),
+                        signals = signals,
                     ),
                 )
             }
@@ -174,6 +205,28 @@ class DisplayModeRemoteRepository @Inject constructor(
         },
         decodeSuccess = { DisplayModeRemoteOutcome.Success(Unit) },
     )
+
+    /**
+     * Cada bloque del sobre se decodifica APARTE: uno roto cae a su default y nunca tumba la entrega de la solicitud
+     * de inversión. `promotions` no se lee todavía (F3).
+     */
+    private fun pollSignals(data: PollData): PollSignals {
+        val fingerprints = data.fingerprints?.let { element ->
+            runCatching { json.decodeFromJsonElement(PollFingerprintsWire.serializer(), element) }.getOrNull()
+        }
+        return PollSignals(
+            fingerprints = PollFingerprints(
+                customerDisplay = fingerprints?.customerDisplay?.takeIf(::isPollFingerprint),
+                settings = fingerprints?.settings?.takeIf(::isPollFingerprint),
+            ),
+            designCapability = data.capabilities?.let { element ->
+                runCatching { json.decodeFromJsonElement(PollCapabilitiesWire.serializer(), element) }.getOrNull()
+            }?.customerDisplayDesign,
+            capabilityReportRequested = data.capabilityReport?.let { element ->
+                runCatching { json.decodeFromJsonElement(PollCapabilityReportWire.serializer(), element) }.getOrNull()
+            }?.requested ?: false,
+        )
+    }
 
     private fun venueUrl(venueId: String): HttpUrl {
         val base = baseUrlProvider().toHttpUrlOrNull()
@@ -351,7 +404,23 @@ class DisplayModeRemoteRepository @Inject constructor(
     private data class PollData(
         val terminalId: String,
         val request: PollRequest?,
+        // Se leen crudos y se decodifican aparte (ver `pollSignals`): un bloque roto no rompe el sobre.
+        val fingerprints: JsonElement? = null,
+        val capabilities: JsonElement? = null,
+        val capabilityReport: JsonElement? = null,
     )
+
+    @Serializable
+    private data class PollFingerprintsWire(
+        val customerDisplay: String? = null,
+        val settings: String? = null,
+    )
+
+    @Serializable
+    private data class PollCapabilitiesWire(val customerDisplayDesign: Int? = null)
+
+    @Serializable
+    private data class PollCapabilityReportWire(val requested: Boolean = false)
 
     @Serializable
     private data class PollRequest(
