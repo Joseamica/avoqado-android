@@ -21,6 +21,7 @@ import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
+import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.pos.presentation.cart.CartState
@@ -74,6 +75,7 @@ fun PaymentFlowScreen(
     val customersViewModel: CustomersViewModel = hiltViewModel()
     val customerAttachSending by viewModel.customerAttachSending.collectAsState()
     val customerAttachResult by viewModel.customerAttachResult.collectAsState()
+    val renglonDelSello by viewModel.renglonDelSello.collectAsState()
     // Una sola fuente para el nombre: la del ViewModel. Antes esta pantalla
     // guardaba el suyo aparte, arrancando siempre en null — de ahí que el
     // cliente del carrito no apareciera al terminar el cobro.
@@ -303,6 +305,7 @@ fun PaymentFlowScreen(
                             viewModel.clearCustomerAttachResult()
                             showCustomersSheet = true
                         },
+                        renglonDelSello = renglonDelSello,
                         onDone = {
                             // También cerrar la carrera de un toque inmediato contra el
                             // LaunchedEffect: exactamente uno de los dos consume el pago.
@@ -495,8 +498,10 @@ fun PaymentFlowScreen(
             if (showCreateCustomer) {
                 CreateCustomerView(
                     viewModel = customersViewModel,
-                    initialPhone = createCustomerSearchText.takeIf { it.all { c -> c.isDigit() || c == '+' } },
-                    initialName = createCustomerSearchText.takeIf { !it.all { c -> c.isDigit() || c == '+' } },
+                    // «81 2944 0042» es un teléfono aunque traiga espacios: antes caía en el NOMBRE y nacía un
+                    // cliente llamado «81 2944 0042» sin teléfono (la clase de dato roto de C3).
+                    initialPhone = createCustomerSearchText.takeIf { esTextoDeTelefono(it) },
+                    initialName = createCustomerSearchText.takeIf { it.isNotBlank() && !esTextoDeTelefono(it) },
                     onCustomerCreated = { customer ->
                         attachCustomer(customer)
                     },
