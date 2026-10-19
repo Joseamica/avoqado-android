@@ -333,9 +333,12 @@ class CustomerDisplaySync internal constructor(
                 val status = images.ensure(ref, origins)
                 // Mientras bajaba pudo cambiar la sesión, desligarse el aparato o llegar otra ficha: se publica lo que
                 // diga el manifiesto AHORA, y `publish`/`write` descartan si la generación o la sucursal ya no son.
+                // Las ofertas se cuentan en Main ANTES de leer el disco: si un poll ofrece otra ficha mientras se lee,
+                // ésta ya no es la más nueva y no la pisa (como `restart`). Ese poll ya pintó el logo: estaba en disco.
+                val offersSeen = withContext(Dispatchers.Main.immediate) { offers.get() }
                 val manifest = store.load().manifests[key] ?: return@launch
                 val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return@launch
-                publish(generation, venueId, applied(ficha))
+                publish(generation, venueId, applied(ficha), onlyIfNoOfferSince = offersSeen)
                 if (ficha.logo != ref) return@launch
                 val counts = imageCounts(status)
                 if (synchronized(lastImagesAck) { lastImagesAck[key] } == (ficha.fingerprint to counts)) return@launch

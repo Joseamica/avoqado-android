@@ -957,6 +957,40 @@ class CustomerDisplaySyncTest {
         assertTrue(acuse.unsupportedSchema)
     }
 
+    @Test
+    fun `una descarga vieja no re-ofrece la ficha anterior`() = runBlocking {
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers { retenida.await(); bajar(firstArg()) }
+        val armada = AtomicBoolean(false)
+        val leido = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        val espia = spyk(store())
+        every { espia.load() } answers {
+            val leidoDelDisco = callOriginal()
+            if (armada.getAndSet(false)) {
+                leido.countDown()
+                soltar.await(5, TimeUnit.SECONDS)
+            }
+            leidoDelDisco
+        }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        val sync = sync(almacen = espia)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        // La descarga termina y su trabajo lee el manifiesto A (y se queda ahí, disco lento)...
+        armada.set(true)
+        retenida.complete(Unit)
+        assertTrue(leido.await(5, TimeUnit.SECONDS))
+        // ...mientras un poll guarda y ofrece B con el MISMO logo (ya en disco: no cancela esa descarga).
+        fichaResponse = { ficha(HUELLA_B, logo = LOGO_ASSET_JSON) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+        assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+
+        soltar.countDown()
+        Thread.sleep(300)
+
+        assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+    }
+
     // ── ayudas ──
 
     private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =
