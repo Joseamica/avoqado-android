@@ -152,10 +152,14 @@ class CustomerDisplaySync internal constructor(
      * manifiestos (con su acuse pendiente) y su última terminal. Así, aunque arranque sin red, no revive ese diseño.
      */
     fun onDeviceUnbound(venueId: String) {
-        generation.incrementAndGet()
-        cancelDownload()
-        // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
-        scope.launch(Dispatchers.Main.immediate + logErrors) { state.clearDesign() }
+        // Lo que se ve y lo que corre es de la sesión ACTUAL: sólo se retira si el desligado es de esa sucursal. El disco
+        // de la sucursal desligada se borra siempre.
+        if (sessionVenue() == venueId) {
+            generation.incrementAndGet()
+            cancelDownload()
+            // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
+            scope.launch(Dispatchers.Main.immediate + logErrors) { state.clearDesign() }
+        }
         val venueKey = store.venueKey(environment(), venueId)
         synchronized(lastImagesAck) { lastImagesAck.keys.removeAll { it.startsWith("$venueKey|") } }
         runCatching {

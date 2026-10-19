@@ -530,6 +530,20 @@ class CustomerDisplaySyncTest {
         assertEquals(HUELLA_B, otroEstado.design.value!!.ficha.fingerprint)
     }
 
+    @Test
+    fun `desligar otra sucursal no borra el diseno de la actual`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        store().update { it.copy(manifests = it.manifests + ("test|otra|t9" to DesignManifest(storedAt = "x"))) }
+
+        sync.onDeviceUnbound("otra")
+        Thread.sleep(100)
+
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+        assertEquals(setOf(LLAVE), store().load().manifests.keys)
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))
