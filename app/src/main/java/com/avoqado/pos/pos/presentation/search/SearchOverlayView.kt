@@ -32,7 +32,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -42,6 +44,10 @@ import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.product.variantes.HojaDeLaFamiliaAbierta
+import com.avoqado.pos.pos.presentation.product.variantes.ResultadoDeBusqueda
+import com.avoqado.pos.pos.presentation.product.variantes.TextosVariantes
+import com.avoqado.pos.pos.presentation.product.variantes.textoDePrecio
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,8 +58,11 @@ fun SearchOverlayView(
     onDismiss: () -> Unit,
 ) {
     val query by viewModel.searchQuery.collectAsState()
-    val results by viewModel.searchResults.collectAsState()
+    // La búsqueda se calcula fuera del hilo principal: puede ir un paso atrás del campo (ver `Busqueda`).
+    val busqueda by viewModel.busqueda.collectAsState()
+    val results = busqueda.resultadosPara(query)
     val focusRequester = remember { FocusRequester() }
+    var abierta by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
@@ -91,7 +100,7 @@ fun SearchOverlayView(
                 textFieldModifier = Modifier.focusRequester(focusRequester),
             )
 
-            if (query.isNotBlank() && results.isEmpty()) {
+            if (busqueda.sinResultadosPara(query)) {
                 // Empty state with create option
                 Box(
                     modifier = Modifier
@@ -129,31 +138,25 @@ fun SearchOverlayView(
                 }
             } else {
                 LazyColumn {
-                    items(results, key = { it.id }) { product ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onProductTap(product) }
-                                .padding(vertical = AvoqadoTheme.spacing.md),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = product.name,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                )
-                                product.sku?.let { sku ->
-                                    Text(
-                                        text = "SKU: $sku",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-                            Text(
-                                text = product.displayPrice,
-                                style = MaterialTheme.typography.bodyMedium,
+                    items(results, key = {
+                        when (it) {
+                            is ResultadoDeBusqueda.DeProducto -> it.producto.id
+                            is ResultadoDeBusqueda.DeFamilia -> "fam_" + it.familia.groupId
+                        }
+                    }) { resultado ->
+                        when (resultado) {
+                            is ResultadoDeBusqueda.DeProducto -> FilaDeResultado(
+                                titulo = resultado.producto.name,
+                                detalle = resultado.producto.sku?.let { "SKU: $it" },
+                                precio = resultado.producto.displayPrice,
+                                onClick = { onProductTap(resultado.producto) },
+                            )
+                            // La familia abre la misma hoja que su botón en la cuadrícula; lo elegido sigue por `onProductTap`.
+                            is ResultadoDeBusqueda.DeFamilia -> FilaDeResultado(
+                                titulo = resultado.familia.nombre,
+                                detalle = TextosVariantes.variantes(resultado.familia.variantes.size),
+                                precio = resultado.familia.textoDePrecio,
+                                onClick = { abierta = resultado.familia.groupId },
                             )
                         }
                         HorizontalDivider()
@@ -161,5 +164,37 @@ fun SearchOverlayView(
                 }
             }
         }
+    }
+
+    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = onProductTap)
+}
+
+@Composable
+private fun FilaDeResultado(titulo: String, detalle: String?, precio: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = AvoqadoTheme.spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = titulo,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            detalle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+        Text(
+            text = precio,
+            style = MaterialTheme.typography.bodyMedium,
+        )
     }
 }
