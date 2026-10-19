@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -98,6 +99,9 @@ sealed interface CustomerContent {
 
 /** Una sugerencia de propina: el porcentaje a mostrar y los centavos que cobra (ya calculados). */
 data class TipOption(val percent: Int, val tipCents: Int)
+
+/** El diseño de la pantalla del cliente ya listo para pintar: la ficha y, si trae logo, el archivo local (ya verificado). */
+data class AppliedDesign(val ficha: Ficha, val logoFile: File?)
 
 /**
  * Canal único hacia la pantalla del cliente. Los ViewModels de pantalla
@@ -239,6 +243,40 @@ class CustomerDisplayState @Inject constructor() {
         _invertUnsupported.value = value
     }
 
+    /**
+     * El diseño que el negocio configuró (F2). 🔴 Un diseño nuevo NUNCA reemplaza al actual delante del cliente a media
+     * venta: [offerDesign] lo aplica ya sólo en reposo (`Idle`); si no, queda pendiente y se promueve en el siguiente paso
+     * a `Idle` (ver [promotePendingDesign]). Mismo criterio que la propina y el upsell: lo que ve el cliente no cambia solo.
+     */
+    private val _design = MutableStateFlow<AppliedDesign?>(null)
+    val design: StateFlow<AppliedDesign?> = _design.asStateFlow()
+
+    // `hasPendingDesign` distingue «nada pendiente» de «pendiente: quitar el diseño» (`offerDesign(null)`).
+    // ponytail: sin candado; se llama desde Main como el resto de este estado. Si algún día se ofrece desde otro hilo, sincronizar.
+    private var pendingDesign: AppliedDesign? = null
+    private var hasPendingDesign = false
+
+    /** Ofrece un diseño: ya si el cliente está en reposo; si no, espera (el último ofrecido gana). */
+    fun offerDesign(next: AppliedDesign?) {
+        pendingDesign = next
+        hasPendingDesign = true
+        if (_content.value is CustomerContent.Idle) promotePendingDesign()
+    }
+
+    /** Quita el diseño YA (también el pendiente): no hay nada que proteger de un diseño que dejó de existir. */
+    fun clearDesign() {
+        pendingDesign = null
+        hasPendingDesign = false
+        _design.value = null
+    }
+
+    private fun promotePendingDesign() {
+        if (!hasPendingDesign) return
+        _design.value = pendingDesign
+        pendingDesign = null
+        hasPendingDesign = false
+    }
+
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */
     var onRatingPicked: ((Int) -> Unit)? = null
     var onTipPicked: ((Int) -> Unit)? = null
@@ -279,6 +317,7 @@ class CustomerDisplayState @Inject constructor() {
 
     fun show(content: CustomerContent) {
         _content.value = content
+        if (content is CustomerContent.Idle) promotePendingDesign()
         // Cualquier cambio cancela el timer previo. Si lo nuevo es "Gracias",
         // se programa el regreso al reposo tras un rato (suficiente para leer el
         // QR del recibo); una nueva venta lo interrumpe antes con su carrito.
@@ -296,6 +335,7 @@ class CustomerDisplayState @Inject constructor() {
         revertJob = timerScope.launch {
             kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
             _content.value = CustomerContent.Idle
+            promotePendingDesign()
         }
     }
 
@@ -326,11 +366,13 @@ class CustomerDisplayState @Inject constructor() {
                 totalCents = state.totalCents,
             )
         }
+        if (_content.value is CustomerContent.Idle) promotePendingDesign()
     }
 
     fun idle() {
         revertJob?.cancel()
         _content.value = CustomerContent.Idle
+        promotePendingDesign()
         onRatingPicked = null
         onTipPicked = null
     }
