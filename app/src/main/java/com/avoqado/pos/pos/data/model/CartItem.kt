@@ -86,6 +86,13 @@ data class CartItem(
      * (half-up, igual que el server). Una línea con peso JAMÁS se fusiona con otra (D9).
      */
     val weightKg: Double? = null,
+    /**
+     * El `catalogAt` del catálogo con que se agregó ESTA línea (sólo las altas desde un `Product`). Con él la
+     * línea manda su precio de catálogo mostrado; sin él (promoción, importe libre, vale, carrito viejo) viaja
+     * como siempre. Dos líneas se fusionan sólo con el mismo precio de catálogo; la fusionada se queda la hora
+     * más nueva (ajuste del controlador, 17-oct).
+     */
+    val catalogAt: String? = null,
 ) {
     val modifiersPrice: Int
         get() = selectedModifiers.sumOf { it.priceInCents } * quantity

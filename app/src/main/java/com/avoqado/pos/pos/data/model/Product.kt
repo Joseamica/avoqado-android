@@ -68,6 +68,12 @@ data class Product(
     val limitingIngredient: IngredientShortage? = null,
     /** Insumos con los que ya no alcanza NI para una porción. */
     val insufficientIngredients: List<IngredientShortage>? = null,
+    /**
+     * La hora (que sella el SERVIDOR) del catálogo con que se mostró este precio. No viene por producto:
+     * la pone `ProductsRepository` desde [ProductsResponse.catalogAt] y viaja al caché. La línea la copia al
+     * agregarse para que el servidor reconozca el precio que vio el cliente.
+     */
+    val catalogAt: String? = null,
 ) {
     val priceInCents: Int get() = priceValue.aCentavos()
 
@@ -190,6 +196,8 @@ data class ProductsResponse(
     val success: Boolean = true,
     val message: String? = null,
     val data: List<Product> = emptyList(),
+    /** ISO 8601 UTC que sella el servidor ANTES de leer los productos. Servidores viejos no lo mandan. */
+    val catalogAt: String? = null,
 )
 
 @Serializable

@@ -23,6 +23,12 @@ class AvoqadoApp : Application() {
     @Inject lateinit var deviceCapabilitySyncCoordinator: DeviceCapabilitySyncCoordinator
 
     /**
+     * «Se cobra el precio que vio el cliente»: la caja baja el catálogo sola (al volver a primer plano, cada 5 min y al
+     * volver la red) para que el precio que muestra no pase de las 72 h que el servidor respeta.
+     */
+    @Inject lateinit var refrescoDelCatalogo: com.avoqado.pos.pos.data.RefrescoDelCatalogo
+
+    /**
      * 🔴 Las cancelaciones de cobro se reproducen desde el ARRANQUE DEL PROCESO, no desde la
      * pantalla de cobro ni desde la sesión: una cancelación que quedó a medias cuando la app murió
      * tiene que seguir su camino aunque nadie vuelva a abrir Cobrar, y sobrevive al logout y al
@@ -44,6 +50,7 @@ class AvoqadoApp : Application() {
         // Lifecycle del PROCESO, una sola vez. MainActivity puede reiniciarse o
         // mudarse de display y no debe multiplicar el scheduler.
         ProcessLifecycleOwner.get().lifecycle.addObserver(deviceCapabilitySyncCoordinator)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(refrescoDelCatalogo)
         // Hydrate the global venue timezone holder so DTO-level formatters
         // (TransactionModel.timeDisplay etc.) work from the very first compose.
         VenueTimeZone.set(secureStorage.venueTimezone)

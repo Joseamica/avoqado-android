@@ -402,8 +402,9 @@ fun PaymentResultScreen(
         )
     }
 
-    // Sin red al agregar cliente: ÁMBAR, no rojo — offline es un estado, no una falla (todo-funciona-sin-red).
-    val esAvisoSinRed = resultMessage == TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE
+    // Sin red (o venta aún sin sincronizar) al agregar cliente: ÁMBAR, no rojo — es un estado, no una falla.
+    val esAvisoSinRed = resultMessage == TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE ||
+        resultMessage == TextosDelSello.VENTA_SIN_SINCRONIZAR
     if (resultMessage != null && esAvisoSinRed) {
         AvoqadoWarningToast(
             message = resultMessage,
