@@ -764,7 +764,7 @@ class CustomerDisplaySyncTest {
         assertNull(store().load().manifests.getValue(LLAVE).pendingAck)
         assertEquals(1, fichaRequests.get())
 
-        // El poll (con su caché de 60 s) sigue anunciando A, pero la ficha vigente ya es C.
+        // El acuse refresca la caché del server; `refetch` sólo cubre una carrera: un poll que aún anuncia A con C vigente.
         fichaResponse = { ficha(HUELLA_C) }
         ackResponse = { aceptado(current = true) }
         sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
@@ -774,6 +774,40 @@ class CustomerDisplaySyncTest {
         assertEquals(HUELLA_C, state.design.value!!.ficha.fingerprint)
         sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_C))
         assertEquals(2, fichaRequests.get())
+    }
+
+    @Test
+    fun `refetch con esquema 2 no acusa la ficha conservada como no soportada`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = false, currentFingerprint = HUELLA_C) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        // Carrera: el poll aún anuncia A, pero lo que baja es C con un esquema que esta versión no entiende.
+        fichaResponse = { ficha(HUELLA_C, schema = 2) }
+        ackResponse = { MockResponse().setResponseCode(503) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        val manifiesto = store().load().manifests.getValue(LLAVE)
+        assertEquals(HUELLA_A, manifiesto.ficha!!.fingerprint)
+        assertNotEquals(HUELLA_A, manifiesto.unsupportedFingerprint)
+        assertEquals(HUELLA_C, manifiesto.unsupportedFingerprint)
+        assertEquals(HUELLA_C, manifiesto.pendingAck!!.fingerprint)
+        assertTrue(manifiesto.pendingAck!!.unsupportedSchema)
+    }
+
+    @Test
+    fun `cambio de sesion mientras viaja el acuse no lo cierra`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = {
+            sesion = "venue-2"
+            aceptado(current = true)
+        }
+
+        sync().afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(listOf(1L), acuses.map { it.seq })
+        assertEquals(1L, store().load().manifests.getValue(LLAVE).pendingAck!!.seq)
     }
 
     @Test

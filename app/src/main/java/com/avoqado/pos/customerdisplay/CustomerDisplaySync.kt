@@ -91,7 +91,8 @@ class CustomerDisplaySync internal constructor(
 
     /**
      * Llaves cuyo acuse respondió «lo vigente es otra ficha» ([AckAction.CloseAndFetch]): el siguiente poll baja la ficha
-     * aunque anuncie la que ya está. En memoria: tras reiniciar, la caché del poll (60 s) ya anuncia la nueva.
+     * aunque anuncie la que ya está. El acuse refresca la caché del server; `refetch` sólo cubre una carrera (un poll que
+     * salió antes del acuse y aún anuncia la vieja). En memoria: tras reiniciar, el poll ya anuncia la nueva.
      */
     private val refetch: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
@@ -226,12 +227,14 @@ class CustomerDisplaySync internal constructor(
         val ficha = dto.toFicha(payload.imageOrigins)
         if (dto.schemaVersion != SUPPORTED_SCHEMA_VERSION || ficha == null) {
             // Esquema que esta versión no entiende (o una ficha v1 sin huella válida, que tampoco se puede pintar): se
-            // conserva el diseño actual, se le dice al server y no se vuelve a pedir esa huella en cada poll.
+            // conserva el diseño actual, se le dice al server y no se vuelve a pedir esa huella en cada poll. La huella es
+            // la de lo que BAJÓ si es válida: con `refetch` el poll aún puede anunciar la ficha que se conserva.
+            val huella = dto.fingerprint.takeIf(::isPollFingerprint) ?: announced
             val saved = write(generation, venueId) { s ->
-                val kept = (s.manifests[key] ?: DesignManifest(storedAt = isoNow())).copy(unsupportedFingerprint = announced)
-                enqueueAck(s, key, kept, announced, unsupported = true, images = NO_IMAGES)
+                val kept = (s.manifests[key] ?: DesignManifest(storedAt = isoNow())).copy(unsupportedFingerprint = huella)
+                enqueueAck(s, key, kept, huella, unsupported = true, images = NO_IMAGES)
             }
-            if (saved) rememberImages(key, announced, NO_IMAGES)
+            if (saved) rememberImages(key, huella, NO_IMAGES)
             return
         }
         val counts = logoCounts(ficha.logo)
@@ -416,7 +419,7 @@ sealed interface AckAction {
     data object Close : AckAction
     /** El server guardó el acuse, pero lo vigente es la ficha que ya está en el manifiesto: se acusa de nuevo. */
     data class CloseAndAckAgain(val fingerprint: String) : AckAction
-    /** Lo vigente es otra ficha: el siguiente poll la baja aunque su caché (60 s) siga anunciando la vieja. */
+    /** Lo vigente es otra ficha: el acuse refresca la caché del server; `refetch` sólo cubre una carrera (el siguiente poll la baja aunque aún anuncie la vieja). */
     data object CloseAndFetch : AckAction
     /** Otra instalación tomó la fila: se marca `otherInstallationPending` y la Task 2.6 vuelve a reportar. */
     data object CloseAndReport : AckAction
