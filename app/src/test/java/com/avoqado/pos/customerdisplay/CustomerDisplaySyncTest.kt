@@ -500,6 +500,36 @@ class CustomerDisplaySyncTest {
         assertTrue(acuse.unsupportedSchema)
     }
 
+    @Test
+    fun `lo guardado del arranque no tapa la ficha del primer poll`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        sync().afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        // El arranque lee A del disco y se queda retenido (disco lento) mientras el primer poll trae B.
+        val leido = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        val primera = AtomicBoolean(true)
+        val espia = spyk(store())
+        every { espia.load() } answers {
+            val leidoDelDisco = callOriginal()
+            if (primera.getAndSet(false)) {
+                leido.countDown()
+                soltar.await(5, TimeUnit.SECONDS)
+            }
+            leidoDelDisco
+        }
+        val otroEstado = CustomerDisplayState()
+        val sync = sync(estado = otroEstado, almacen = espia)
+        assertTrue(leido.await(5, TimeUnit.SECONDS))
+        fichaResponse = { ficha(HUELLA_B) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+        assertEquals(HUELLA_B, otroEstado.design.value!!.ficha.fingerprint)
+
+        soltar.countDown()
+        Thread.sleep(300)
+
+        assertEquals(HUELLA_B, otroEstado.design.value!!.ficha.fingerprint)
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))

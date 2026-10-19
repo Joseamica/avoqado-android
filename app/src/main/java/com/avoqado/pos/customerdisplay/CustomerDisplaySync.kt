@@ -4,6 +4,7 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.kiosk.domain.KioskState
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Named
@@ -85,6 +86,12 @@ class CustomerDisplaySync internal constructor(
      * sale, cuando mucho, uno repetido.
      */
     private val lastImagesAck = HashMap<String, Pair<String, Triple<Int, Int, Int>>>()
+
+    /**
+     * Cuántas veces se ofreció un diseño. Se lee y se suma sólo dentro de bloques de Main; el arranque lo captura al entrar
+     * y publica lo guardado sólo si nadie ofreció nada mientras leía el disco (si no, taparía la ficha del primer poll).
+     */
+    private val offers = AtomicInteger(0)
 
     // Un disco que falla en un trabajo de fondo se registra; nunca tumba la app (excepción sin manejar en la corrutina).
     private val logErrors = CoroutineExceptionHandler { _, error ->
@@ -270,9 +277,10 @@ class CustomerDisplaySync internal constructor(
         // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
         scope.launch(Dispatchers.Main.immediate + logErrors) {
             state.clearDesign()
+            val offersSeen = offers.get()
             val venueId = sessionVenue() ?: return@launch
             val stored = withContext(Dispatchers.IO) { storedDesign(venueId) } ?: return@launch
-            publish(generation, venueId, stored)
+            publish(generation, venueId, stored, onlyIfNoOfferSince = offersSeen)
         }
     }
 
@@ -302,12 +310,15 @@ class CustomerDisplaySync internal constructor(
         return applied
     }
 
-    private suspend fun publish(generation: Long, venueId: String, design: AppliedDesign?) {
+    private suspend fun publish(generation: Long, venueId: String, design: AppliedDesign?, onlyIfNoOfferSince: Int? = null) {
         currentCoroutineContext().ensureActive()
         // Main: regla de CustomerDisplayState (sin candado). La comprobación va en el MISMO bloque de Main que el
         // ofrecimiento, así un clearDesign de otra sesión nunca queda debajo de un diseño viejo.
         withContext(Dispatchers.Main.immediate) {
-            if (current(generation, venueId)) state.offerDesign(design)
+            if (current(generation, venueId) && (onlyIfNoOfferSince == null || offers.get() == onlyIfNoOfferSince)) {
+                state.offerDesign(design)
+                offers.incrementAndGet()
+            }
         }
     }
 
