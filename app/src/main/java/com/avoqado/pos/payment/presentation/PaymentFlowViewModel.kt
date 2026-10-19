@@ -1269,7 +1269,15 @@ class PaymentFlowViewModel @Inject constructor(
         splitCustomAmountCents = customAmountCents
     }
 
-    val settings: TpvSettings get() = tpvSettingsRepository.getCurrentSettings()
+    /**
+     * 🔴 Copia de los ajustes del cobro en curso, tomada al arrancarlo (`startPaymentFlow`). El poll, ON_RESUME y la
+     * reconexión refrescan los ajustes en segundo plano: leídos vivos, un refresco a media venta cambiaba los pasos
+     * (calificación/propina) o los porcentajes con el cliente ya frente a ellos. Un refresco sólo cuenta para el
+     * SIGUIENTE cobro. Es local: sin red funciona igual.
+     */
+    private var flowSettings: TpvSettings? = null
+
+    val settings: TpvSettings get() = flowSettings ?: tpvSettingsRepository.getCurrentSettings()
 
     private fun selectedStaffId(): String {
         return cartState?.selectedStaffId?.takeIf { it.isNotBlank() }
@@ -1305,6 +1313,8 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
         aperturaEnCurso = apertura
+        // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
+        flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null

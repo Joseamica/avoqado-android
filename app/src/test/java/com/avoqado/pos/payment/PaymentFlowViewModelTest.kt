@@ -4133,6 +4133,68 @@ class PaymentFlowViewModelTest {
         assertTrue("otra apertura es otro cobro: $primero → ${viewModel.state.value}", primero != viewModel.state.value)
     }
 
+    // ── Los ajustes de un cobro se copian al empezarlo (pantalla del cliente F2, Task 4.2) ──────
+    //
+    // Desde la 4.1b el poll refresca los ajustes en segundo plano (y también ON_RESUME y la reconexión). Si el cobro los
+    // leyera vivos, un refresco a media venta cambiaría los pasos (calificación/propina) o los porcentajes de la propina
+    // con el cliente ya frente a ellos. Se copian al arrancar el cobro; el refresco sólo cuenta para el SIGUIENTE.
+
+    @Test
+    fun `un refresco a media venta no cambia los pasos`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true)
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        assertTrue("montaje: pide calificación", viewModel.state.value is PaymentFlowState.CollectingRating)
+
+        // Llega el refresco: el negocio apagó las dos pantallas.
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = false)
+        viewModel.submitRating(5)
+
+        val estado = viewModel.state.value
+        assertTrue("este cobro sigue con sus pasos: pide propina, fue $estado", estado is PaymentFlowState.CollectingTip)
+    }
+
+    @Test
+    fun `un refresco a media venta no cambia los porcentajes`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true, tipSuggestions = listOf(10))
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true, tipSuggestions = listOf(5))
+        viewModel.submitRating(5)
+
+        val tip = customerDisplay.content.value as CustomerContent.Tip
+        assertEquals("el cliente ve los porcentajes con que empezó el cobro", listOf(10), tip.options.map { it.percent })
+        assertEquals(tipCentsForPercent(viewModel.currentTipPercentageBaseCents(), 10), tip.options[0].tipCents)
+        // La hoja del cajero (`PaymentFlowScreen`) lee `viewModel.settings.tipSuggestions`: la misma copia.
+        assertEquals(listOf(10), viewModel.settings.tipSuggestions)
+    }
+
+    @Test
+    fun `el siguiente cobro usa lo nuevo`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true, tipSuggestions = listOf(10))
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = true, tipSuggestions = listOf(5))
+
+        // Volver de otra pestaña (misma apertura) es el MISMO cobro: conserva su copia.
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-1")
+        assertTrue(viewModel.state.value is PaymentFlowState.CollectingRating)
+        assertEquals(listOf(10), viewModel.settings.tipSuggestions)
+
+        // Un «Cobrar» nuevo toma copia nueva.
+        viewModel.startPaymentFlow(cartConOtroProducto(), apertura = "apertura-2")
+
+        val estado = viewModel.state.value
+        assertTrue("el cobro nuevo salta la calificación, fue $estado", estado is PaymentFlowState.CollectingTip)
+        val tip = customerDisplay.content.value as CustomerContent.Tip
+        assertEquals(listOf(5), tip.options.map { it.percent })
+        assertEquals(listOf(5), viewModel.settings.tipSuggestions)
+    }
+
     /** Y cuando el aviso tocado ES la libreta, «Ya la canté» la resuelve y cierra sus entregas (venue + orden + plan). */
     @Test
     fun `Ya la cante sobre el aviso de la libreta la resuelve y cierra sus entregas`() = runTest {
