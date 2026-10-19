@@ -456,7 +456,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     /**
      * Espejo del flujo de pago a la pantalla del cliente. Traduce estado →
-     * contenido; NO decide nada ni calcula montos (llegan ya resueltos).
+     * contenido; NO decide nada y los montos llegan ya resueltos (la propina, con la misma cuenta que el cajero).
      */
     private fun mirrorToCustomerDisplay(st: PaymentFlowState) {
         customerDisplay.show(
@@ -467,7 +467,12 @@ class PaymentFlowViewModel @Inject constructor(
                 is PaymentFlowState.CollectingTip ->
                     com.avoqado.pos.customerdisplay.CustomerContent.Tip(
                         amountCents = st.amount,
-                        suggestions = settings.tipSuggestions,
+                        // Montos ya calculados sobre la MISMA base que ve el cajero (sin IVA): ver tipCentsForPercent.
+                        options = currentTipPercentageBaseCents().let { base ->
+                            settings.tipSuggestions.map {
+                                com.avoqado.pos.customerdisplay.TipOption(it, tipCentsForPercent(base, it))
+                            }
+                        },
                         selectedTipCents = null,
                     )
 
@@ -3913,7 +3918,11 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /**
-     * La base del porcentaje de propina va SIEMPRE sin IVA. Decision del founder, 2026-09-18.
+     * La base del porcentaje de propina es el TOTAL de la cuenta, con el IVA que ya trae el precio (founder, 18-oct-2026,
+     * tras comparar con el mercado: en México la propina se calcula sobre el total, y las terminales de cobro —Mercado
+     * Pago, Netpay— sólo ven el total). El 18-sep se había decidido «sin IVA», pero esta función sólo resta el impuesto
+     * cobrado APARTE (`cart.taxCents` = `orderTaxPercent`, que hoy nadie fija): con el precio con IVA incluido nunca lo
+     * quitó. Se conserva esa resta para el impuesto aparte; no extraer el IVA incluido sin una decisión nueva.
      *
      * Antes esto lo decidia el ajuste `includeTaxInTipBase`, que se retiro por dos razones: era
      * una convencion fiscal de EE.UU. —alla el impuesto se suma aparte y el cliente lo ve; aca el

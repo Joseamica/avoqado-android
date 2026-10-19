@@ -58,7 +58,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 // suma aparte y el cliente lo ve; aquí el precio en pantalla ya lo incluye, y Fudo, el POS
 // nativo de LatAm, ni siquiera ofrece esa opción—. Peor: se guardaba sólo en la memoria del
 // aparato, así que dos cajas del mismo negocio podían sugerir propinas distintas y el dashboard
-// no lo veía. La base ahora es fija y sin IVA, con candado en `PaymentFlowViewModelTest`.
+// no lo veía. La base es fija: el TOTAL de la cuenta con IVA, como en el mercado mexicano (founder, 18-oct-2026;
+// precedente en docs/decisiones-de-producto/precedentes.md). Candado en `PaymentFlowViewModelTest`.
 //
 // Lo que sí pertenece aquí es lo que se decide para ESTE aparato.
 
@@ -138,8 +139,8 @@ fun SetupWizardScreen(
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
                     Text(
-                        text = "El porcentaje de propina se calcula sobre el consumo, sin IVA. " +
-                            "En una cuenta de $116 pesos, el 10 % sugerido son $10.",
+                        text = "El porcentaje de propina se calcula sobre el total de la cuenta, con IVA, " +
+                            "como en las terminales de cobro. En una cuenta de $116 pesos, el 10 % sugerido son $11.60.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

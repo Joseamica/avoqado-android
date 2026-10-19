@@ -766,22 +766,21 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
-            c.suggestions.forEach { percent ->
-                val tipCents = c.amountCents * percent / 100
+            c.options.forEach { option ->
                 Card(
                     modifier = Modifier
                         .weight(1f)
                         .height(150.dp)
                         .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-                        .clickable { onTip(tipCents) },
+                        .clickable { onTip(option.tipCents) },
                 ) {
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        Text("$percent%", fontSize = CdActionMain, fontWeight = FontWeight.Bold)
-                        Text(money(tipCents), fontSize = CdActionSub, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${option.percent}%", fontSize = CdActionMain, fontWeight = FontWeight.Bold)
+                        Text(money(option.tipCents), fontSize = CdActionSub, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
