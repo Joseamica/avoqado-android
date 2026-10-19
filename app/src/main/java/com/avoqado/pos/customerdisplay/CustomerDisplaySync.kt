@@ -245,6 +245,7 @@ class CustomerDisplaySync internal constructor(
         // Lo que se ve y lo que corre es de la sesión ACTUAL: sólo se retira si el desligado es de esa sucursal. El disco
         // de la sucursal desligada se borra siempre.
         if (sessionVenue() == venueId) {
+            restartedVenue = null
             generation.incrementAndGet()
             cancelDownload()
             // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
@@ -381,8 +382,24 @@ class CustomerDisplaySync internal constructor(
         }
     }
 
+    /**
+     * La sucursal de la sesión que publicó el último [restart]. Si llega otro cambio de sesión con la MISMA (al arrancar,
+     * `refreshPlanAndSettings → refreshTabs` lo dispara de nuevo), no se pasa por fábrica: sólo se vuelve a publicar lo
+     * último, sin parpadeo ni reinicio del fade.
+     */
+    @Volatile
+    private var restartedVenue: String? = null
+
     /** Retira el diseño al instante y publica lo guardado de la sesión actual (la última terminal de esa sucursal). */
     private fun restart() {
+        val venueNow = sessionVenue()
+        if (venueNow != null && venueNow == restartedVenue) {
+            // Misma sucursal y sesión: la generación, la descarga y lo publicado siguen siendo válidos.
+            val generation = generation.get()
+            scope.launch(Dispatchers.Main.immediate + logErrors) { publishLatest(generation, venueNow) }
+            return
+        }
+        restartedVenue = venueNow
         val generation = generation.incrementAndGet()
         cancelDownload()
         // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.

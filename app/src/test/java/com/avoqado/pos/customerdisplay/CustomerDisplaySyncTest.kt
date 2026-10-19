@@ -1104,6 +1104,23 @@ class CustomerDisplaySyncTest {
         verify(exactly = 0) { images.prune(any()) }
     }
 
+    @Test
+    fun `refrescar la sesion sin cambiar de sucursal no parpadea a fabrica`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        val vistos = Collections.synchronizedList(mutableListOf<AppliedDesign?>())
+        val mirando = scope.launch(Dispatchers.Unconfined) { state.design.collect { vistos += it } }
+        assertEquals(HUELLA_A, vistos.last()!!.ficha.fingerprint)
+
+        sync.onSessionChanged()   // la misma sucursal y sesión (p. ej. al refrescar plan y pestañas)
+        Thread.sleep(300)
+        mirando.cancel()
+
+        assertTrue("pasó por fábrica: $vistos", vistos.none { it == null })
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+    }
+
     // ── ayudas ──
 
     private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =
