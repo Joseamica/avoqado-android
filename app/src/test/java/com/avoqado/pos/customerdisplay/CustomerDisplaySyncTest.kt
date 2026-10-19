@@ -21,6 +21,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +38,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -82,6 +84,9 @@ class CustomerDisplaySyncTest {
 
     @Volatile private var sesion: String? = VENUE
     @Volatile private var reloj = T0
+    // Enganches de UNA vez: corren al leer la sesión (quien pregunta se queda con el valor de ANTES) o el ambiente.
+    private val alLeerSesion = AtomicReference<(() -> Unit)?>(null)
+    private val alLeerAmbiente = AtomicReference<(() -> Unit)?>(null)
     private val state = CustomerDisplayState()
 
     // El caché de mentiras: lo que hay en disco por URL (como el real: el legado guarda una copia por URL) y la versión validada.
@@ -566,8 +571,8 @@ class CustomerDisplaySyncTest {
         val sync = sync(estado = otroEstado, almacen = espia)
         assertTrue(leido.await(5, TimeUnit.SECONDS))
         fichaResponse = { ficha(HUELLA_B) }
+        // Con la fila, el poll espera su turno detrás del arranque (antes guardaba B mientras el arranque tenía A en mano).
         val poll = async(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) }
-        esperar { store().load().manifests[LLAVE]?.ficha?.fingerprint == HUELLA_B }
 
         soltar.countDown()
         poll.await()
@@ -994,10 +999,10 @@ class CustomerDisplaySyncTest {
         armada.set(true)
         retenida.complete(Unit)
         assertTrue(leido.await(5, TimeUnit.SECONDS))
-        // ...mientras un poll guarda y ofrece B con el MISMO logo (ya en disco: no cancela esa descarga).
+        // ...mientras llega un poll con B y el MISMO logo (ya en disco: no cancela esa descarga). Con la fila, B se guarda y
+        // se ofrece DESPUÉS de la publicación de la descarga (antes se guardaba mientras ésta tenía A en mano).
         fichaResponse = { ficha(HUELLA_B, logo = LOGO_ASSET_JSON) }
         val poll = async(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) }
-        esperar { store().load().manifests[LLAVE]?.ficha?.fingerprint == HUELLA_B }
 
         soltar.countDown()
         poll.await()
@@ -1129,7 +1134,125 @@ class CustomerDisplaySyncTest {
         assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
     }
 
+    // ── una sola fila: los cuatro cruces de Codex r5 ──
+
+    @Test
+    fun `r5 H1 - guardar B y cancelar el poll antes de publicarla deja B en pantalla`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val espia = spyk(store())
+        val sync = sync(almacen = espia)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+        // La primera lectura DESPUÉS de guardar B (la de su publicación) se queda retenida...
+        val armada = AtomicBoolean(false)
+        val leido = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        every { espia.update(any()) } answers {
+            callOriginal().also { if (it.manifests[LLAVE]?.ficha?.fingerprint == HUELLA_B) armada.set(true) }
+        }
+        every { espia.load() } answers {
+            callOriginal().also { if (armada.getAndSet(false)) { leido.countDown(); soltar.await(5, TimeUnit.SECONDS) } }
+        }
+        fichaResponse = { ficha(HUELLA_B) }
+        val poll = launch(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) }
+        assertTrue(leido.await(5, TimeUnit.SECONDS))
+
+        // ...y justo ahí se pierde la red: el coordinador cancela el tick.
+        poll.cancel()
+        soltar.countDown()
+        poll.join()
+        vaciarLaFila(sync)
+
+        assertEquals(HUELLA_B, store().load().manifests.getValue(LLAVE).ficha!!.fingerprint)
+        assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+    }
+
+    @Test
+    fun `r5 H2 - la poda usa las referencias del momento en que borra`() = runBlocking {
+        // El logo Y ya está en disco; la ficha A usa X, que todavía se baja.
+        disco[OTRO_LOGO_URL] = carpeta.newFile("y.img")
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers { retenida.await(); bajar(firstArg()) }
+        val podaVieja = AtomicBoolean(false)
+        every { images.prune(any()) } answers {
+            val vigentes = store().load().manifests.values.mapNotNullTo(HashSet()) { it.ficha?.toFicha(it.imageOrigins)?.logo }
+            if (!firstArg<Collection<LogoRef>>().containsAll(vigentes)) podaVieja.set(true)
+        }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        val espia = spyk(store())
+        val sync = sync(almacen = espia)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        // La descarga de X termina y la poda lee sus referencias (sin Y)... y JUSTO ahí un poll intenta guardar B con Y.
+        fichaResponse = { ficha(HUELLA_B, logo = OTRO_LOGO_JSON) }
+        val armada = AtomicBoolean(true)
+        every { espia.load() } answers {
+            callOriginal().also {
+                if (armada.getAndSet(false)) {
+                    // Con la fila, ese poll no entra mientras la descarga poda: se rinde sin escribir nada.
+                    runBlocking { withTimeoutOrNull(1_000) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) } }
+                }
+            }
+        }
+
+        retenida.complete(Unit)
+        verify(timeout = 5_000) { images.prune(any()) }
+        vaciarLaFila(sync)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+
+        assertFalse("se podó con referencias viejas", podaVieja.get())
+        assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+        assertEquals(disco[OTRO_LOGO_URL], state.design.value!!.logoFile)
+    }
+
+    @Test
+    fun `r5 H3 - un desligado de A cruzado con el cambio a B no borra B`() = runBlocking {
+        store().update {
+            it.copy(
+                lastTerminalByVenue = it.lastTerminalByVenue + ("test|venue-2" to TERMINAL),
+                manifests = it.manifests + ("test|venue-2|$TERMINAL" to DesignManifest(ficha = FichaDto(1, HUELLA_C), storedAt = "x")),
+            )
+        }
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+
+        // El desligado de A ya leyó «la sesión es A» y, antes de seguir, el cajero cambia a B.
+        alLeerSesion.set { sesion = "venue-2"; sync.onSessionChanged() }
+        sync.onDeviceUnbound(VENUE)
+        vaciarLaFila(sync)
+
+        assertEquals(HUELLA_C, state.design.value?.ficha?.fingerprint)
+        assertEquals(setOf("test|venue-2|$TERMINAL"), store().load().manifests.keys)
+    }
+
+    @Test
+    fun `r5 H4 - una recarga de la misma sucursal cruzada con el desligado no revive A`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        val vistos = Collections.synchronizedList(mutableListOf<AppliedDesign?>())
+        val mirando = scope.launch(Dispatchers.Unconfined) { state.design.collect { vistos += it } }
+        assertEquals(HUELLA_A, vistos.single()!!.ficha.fingerprint)
+
+        // A media desligada (antes de borrar el manifiesto) llega un cambio de sesión de la MISMA sucursal (refreshTabs).
+        alLeerAmbiente.set { sync.onSessionChanged() }
+        sync.onDeviceUnbound(VENUE)
+        vaciarLaFila(sync)
+        mirando.cancel()
+
+        assertNull(state.design.value)
+        assertTrue(store().load().manifests.isEmpty())
+        assertTrue("revivió A: $vistos", vistos.drop(1).all { it == null })
+    }
+
     // ── ayudas ──
+
+    /**
+     * Una unidad de la fila que no toca nada (una sucursal sin terminal): al volver, ya corrió todo lo que estaba formado
+     * antes (el `Mutex` de corrutinas es justo).
+     */
+    private suspend fun vaciarLaFila(sync: CustomerDisplaySync) = sync.onCapabilitiesReported("ninguna")
 
     private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =
         DisplayModeRemoteOutcome.Success(CustomerDisplayAckResponse(accepted, current, currentFingerprint, reason))
@@ -1147,8 +1270,8 @@ class CustomerDisplaySyncTest {
         images = images,
         state = estado,
         kioskEnabled = MutableStateFlow(false),
-        sessionVenue = { sesion },
-        environment = { "test" },
+        sessionVenue = { sesion.also { alLeerSesion.getAndSet(null)?.invoke() } },
+        environment = { alLeerAmbiente.getAndSet(null)?.invoke(); "test" },
         wallClock = { reloj },
         scope = scope,
     )

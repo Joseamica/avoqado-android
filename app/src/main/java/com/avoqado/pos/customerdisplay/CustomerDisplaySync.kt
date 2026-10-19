@@ -4,18 +4,16 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.kiosk.domain.KioskState
 import java.time.Instant
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -37,9 +35,15 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * 4. Al volver la red, la huella nueva llega en el poll y se aplica en el siguiente `Idle`; lo que llegue de una sesión o
  *    un vínculo viejo (generación distinta, otra sucursal) se descarta sin escribir ni publicar.
  *
- * 🔴 Hilos: `afterPoll` y la descarga corren en IO; [CustomerDisplayState.offerDesign]/[CustomerDisplayState.clearDesign]
- * no tienen candado y suponen Main, así que SIEMPRE se llaman dentro de `Dispatchers.Main.immediate`: la ficha y el logo se
- * resuelven antes en IO y sólo el [AppliedDesign] listo cruza a Main.
+ * 🔴 UNA SOLA FILA ([lane]). Todo cambio del estado del sync —el almacén, la generación, la descarga en curso, la sucursal
+ * publicada, los acuses en memoria, la poda— y la publicación o retirada que le sigue corren como UNA unidad, una detrás de
+ * otra en orden de llegada. La red (ficha, logo, acuse) va FUERA de la fila: su resultado vuelve a entrar en otra unidad y
+ * sólo se aplica si la generación y la sucursal siguen siendo las de antes. Así ningún orden entre poll, descarga, arranque,
+ * cambio de sesión, desligado y acuses puede dejar en pantalla algo distinto de lo último que hay en disco.
+ *
+ * 🔴 Hilos: [CustomerDisplayState.offerDesign]/[CustomerDisplayState.clearDesign] no tienen candado y suponen Main, así que
+ * SIEMPRE se llaman dentro de `Dispatchers.Main.immediate`, desde una unidad de la fila. Main nunca espera a la fila: las
+ * llamadas que no suspenden lanzan su unidad ([launchUnit]); la unidad sí puede saltar a Main para ofrecer o retirar.
  */
 @Singleton
 class CustomerDisplaySync internal constructor(
@@ -75,12 +79,19 @@ class CustomerDisplaySync internal constructor(
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     )
 
-    /** Sube con cada cambio de sesión o desvinculación: todo trabajo que capturó otra generación se descarta. */
-    private val generation = AtomicLong(0)
+    /**
+     * LA fila. Un [Mutex] de corrutinas es justo (primero en llegar, primero en entrar) y se sostiene durante TODA la
+     * unidad, también mientras salta a IO (disco) o a Main (ofrecer/retirar): ninguna otra unidad puede colarse en medio.
+     */
+    private val lane = Mutex()
+
+    // ── Estado del sync: sólo se lee y se escribe DENTRO de la fila (el candado da el orden y la visibilidad). ──
+
+    /** Sube con cada cambio de sesión o desvinculación: lo que la red traiga para otra generación se descarta. */
+    private var generation = 0L
 
     private class Download(val key: String, val ref: LogoRef, val job: Job)
 
-    private val downloadLock = Any()
     private var download: Download? = null
 
     /**
@@ -95,21 +106,38 @@ class CustomerDisplaySync internal constructor(
      * aunque anuncie la que ya está. El acuse refresca la caché del server; `refetch` sólo cubre una carrera (un poll que
      * salió antes del acuse y aún anuncia la vieja). En memoria: tras reiniciar, el poll ya anuncia la nueva.
      */
-    private val refetch: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val refetch = HashSet<String>()
 
     /**
-     * Serializa [publishLatest]: cada publicación lee el disco y ofrece DENTRO del candado, así la última en correr siempre
-     * lee lo más nuevo (manifiesto y logo). El orden entre poll, descarga y arranque deja de importar.
+     * La sucursal de la sesión que publicó el último [restart]. Si llega otro cambio de sesión con la MISMA (al arrancar,
+     * `refreshPlanAndSettings → refreshTabs` lo dispara de nuevo), no se pasa por fábrica: sólo se vuelve a publicar lo
+     * último, sin parpadeo ni reinicio del fade. Un desligado de la sucursal actual la borra.
      */
-    private val publishMutex = Mutex()
+    private var restartedVenue: String? = null
 
     // Un disco que falla en un trabajo de fondo se registra; nunca tumba la app (excepción sin manejar en la corrutina).
     private val logErrors = CoroutineExceptionHandler { _, error ->
         Log.w(TAG, "Falló la sincronización de la pantalla del cliente: ${error.message}")
     }
 
+    // Después de declarar todo el estado: la unidad del arranque empieza aquí mismo.
     init {
         restart()
+    }
+
+    /**
+     * Una unidad de la fila. Esperar turno se puede cancelar; una vez adentro corre COMPLETA ([NonCancellable]): lo que
+     * guardó siempre se publica (Codex r5 H1: guardar B y que la pérdida de red cancele su publicación dejaba A). Las
+     * unidades no esperan red, así que la fila nunca se queda tomada más que unos milisegundos de disco y Main.
+     */
+    private suspend fun <T> inLane(unit: suspend () -> T): T = lane.withLock { withContext(NonCancellable) { unit() } }
+
+    /**
+     * Para las llamadas que no suspenden (sesión, desligado). Empieza en el hilo de quien llama: con la fila libre (lo
+     * normal) retira el diseño ahí mismo; si está ocupada, la corrutina se suspende sin bloquear ese hilo y sigue en IO.
+     */
+    private fun launchUnit(unit: suspend () -> Unit) {
+        scope.launch(logErrors, start = CoroutineStart.UNDISPATCHED) { inLane(unit) }
     }
 
     /**
@@ -117,19 +145,41 @@ class CustomerDisplaySync internal constructor(
      * No espera la descarga del logo: el poll, las solicitudes de inversión y el reporte siguen a su ritmo.
      */
     suspend fun afterPoll(venueId: String, terminalId: String, signals: PollSignals): Boolean = withContext(Dispatchers.IO) {
-        val generation = generation.get()   // (1)
         val env = environment()
         val key = store.manifestKey(env, venueId, terminalId)
-        // (2)
-        if (!write(generation, venueId) { it.copy(lastTerminalByVenue = it.lastTerminalByVenue + (store.venueKey(env, venueId) to terminalId)) }) {
+        val announced = signals.fingerprints.customerDisplay
+        // (1)-(3) En la fila: la generación, la última terminal y si hay que bajar la ficha.
+        val (generation, fetch) = inLane { startPoll(env, venueId, terminalId, key, announced) } ?: return@withContext false
+        // Fuera de la fila: la red.
+        val outcome = if (fetch) remote.fetchCustomerDisplay(venueId) else null
+        if (outcome is DisplayModeRemoteOutcome.Rejected && outcome.status == 404 && outcome.code == DEVICE_NOT_FOUND) {
+            inLane { unbind(venueId) }
             return@withContext false
         }
-        // (3)
-        var retrySoon = false
-        val announced = signals.fingerprints.customerDisplay
+        // (4)-(5) En la fila: guardar lo que llegó, publicar YA lo último (con el logo que haya en disco, o sin él: se ve el
+        // nombre) y decidir el logo.
+        inLane { finishPoll(generation, venueId, key, announced, outcome) }
+        // (6)
+        sendPendingAck(generation, venueId, key)
+        // Sesión inválida (la maneja el coordinador) o NoRequest (no aplica a este GET): no se toca nada.
+        outcome is DisplayModeRemoteOutcome.Retryable
+    }
+
+    /** Unidad (1)-(3) del poll: `null` = la sesión ya no es la de este poll. Devuelve la generación y si hay que bajar. */
+    private suspend fun startPoll(env: String, venueId: String, terminalId: String, key: String, announced: String?): Pair<Long, Boolean>? {
+        val generation = this.generation
+        val venueKey = store.venueKey(env, venueId)
+        var moved = false
+        val written = write(generation, venueId) { s ->
+            if (s.lastTerminalByVenue[venueKey] == terminalId) s
+            else s.copy(lastTerminalByVenue = s.lastTerminalByVenue + (venueKey to terminalId)).also { moved = true }
+        }
+        if (!written) return null
+        // Otra terminal cambia lo que se ve: se publica en esta MISMA unidad.
+        if (moved) publishLatest(generation, venueId)
         val known = store.load().manifests[key]
         val kept = known?.ficha
-        if (announced != null && kept != null && announced == kept.fingerprint && known?.unsupportedFingerprint != null) {
+        if (announced != null && kept != null && announced == kept.fingerprint && known.unsupportedFingerprint != null) {
             // El server regresó a la ficha que se conservó: el aviso de esquema ya no es verdad. Se apaga y se acusa esa
             // ficha (si no, sus acuses quedarían bloqueados y el pendiente seguiría diciendo «unsupportedSchema»).
             val counts = logoCounts(kept.toFicha(known.imageOrigins)?.logo)
@@ -140,28 +190,29 @@ class CustomerDisplaySync internal constructor(
                 else reAck(s, key, current, counts).also { enqueued = true }
             }
             if (enqueued) rememberImages(key, announced, counts)
-        } else if (announced != null &&
-            (key in refetch || announced != known?.ficha?.fingerprint && announced != known?.unsupportedFingerprint)
-        ) {
-            when (val outcome = remote.fetchCustomerDisplay(venueId)) {
-                is DisplayModeRemoteOutcome.Success -> {
-                    refetch.remove(key)
-                    saveFicha(generation, venueId, key, announced, outcome.data)
-                }
-                is DisplayModeRemoteOutcome.Rejected -> if (outcome.status == 404 && outcome.code == DEVICE_NOT_FOUND) {
-                    onDeviceUnbound(venueId)
-                    return@withContext false
-                }
-                is DisplayModeRemoteOutcome.Retryable -> retrySoon = true
-                // Sesión inválida (la maneja el coordinador) o NoRequest (no aplica a este GET): no se toca nada.
-                else -> Unit
-            }
+            return generation to false
         }
-        // (4) YA, con el logo que haya en disco (o sin él: se ve el nombre).
+        val fetch = announced != null &&
+            (key in refetch || announced != known?.ficha?.fingerprint && announced != known?.unsupportedFingerprint)
+        return generation to fetch
+    }
+
+    /** Unidad (4)-(5) del poll: guarda la ficha que bajó (si bajó), publica y decide el logo. */
+    private suspend fun finishPoll(
+        generation: Long,
+        venueId: String,
+        key: String,
+        announced: String?,
+        outcome: DisplayModeRemoteOutcome<CustomerDisplayPayload>?,
+    ) {
+        if (outcome is DisplayModeRemoteOutcome.Success && announced != null) {
+            refetch.remove(key)
+            saveFicha(generation, venueId, key, announced, outcome.data)
+        }
         publishLatest(generation, venueId)
         val manifest = store.load().manifests[key]
         val ficha = manifest?.ficha?.toFicha(manifest.imageOrigins)
-        // (5) Sin logo en disco, o legado que toca revalidar (la copia vigente sigue visible mientras tanto).
+        // Sin logo en disco, o legado que toca revalidar (la copia vigente sigue visible mientras tanto).
         val logo = ficha?.logo
         if (logo != null && (images.cachedFile(logo) == null || images.revalidationDue(logo))) {
             ensureDownload(generation, venueId, key, logo, manifest.imageOrigins)
@@ -170,15 +221,12 @@ class CustomerDisplaySync internal constructor(
             // encola en este tick, sin descargar nada. Si ya está, no hace nada.
             enqueueImagesAck(generation, venueId, key, ficha.fingerprint, imageCounts(ImageStatus.READY))
         }
-        // (6)
-        sendPendingAck(generation, venueId, key)
-        retrySoon
     }
 
     /**
      * Lo que la pantalla del cliente agrega al reporte de capacidades: `null` si el server no anunció la capacidad (servidor
      * viejo: el reporte va como siempre) o si la instalación sólo existe en memoria (reportarla ligaría la terminal a una
-     * instalación que la siguiente lectura ya no tiene; ese tick va sin la parte de diseño).
+     * instalación que la siguiente lectura ya no tiene; ese tick va sin la parte de diseño). Sólo lee: va fuera de la fila.
      */
     fun designReport(announcedCapability: Int?): DesignReport? {
         announcedCapability ?: return null
@@ -189,7 +237,7 @@ class CustomerDisplaySync internal constructor(
 
     /**
      * Otra instalación tomó la fila (`OTHER_INSTALLATION`) y toca volver a reportar: a lo más una vez por hora. Un reloj que
-     * quedó ANTES de la última vez (lo cambiaron a mano) no bloquea el reporte.
+     * quedó ANTES de la última vez (lo cambiaron a mano) no bloquea el reporte. Sólo lee: va fuera de la fila.
      */
     fun otherInstallationReportDue(): Boolean {
         val s = store.load()
@@ -202,57 +250,67 @@ class CustomerDisplaySync internal constructor(
     /**
      * El reporte de capacidades llegó: si iba por `OTHER_INSTALLATION` se guarda la hora y se apaga la marca, y se encola un
      * acuse NUEVO (otro `seq`, armado con [buildAck]) por la ficha del manifiesto vigente de esa sucursal, para que el server
-     * lo ligue a esta instalación. Sale en el siguiente poll.
+     * lo ligue a esta instalación. Sale en el siguiente poll. No cambia lo que se ve: no publica.
      */
     suspend fun onCapabilitiesReported(venueId: String): Unit = withContext(Dispatchers.IO) {
-        val generation = generation.get()
-        val env = environment()
-        val before = store.load()
-        val key = before.lastTerminalByVenue[store.venueKey(env, venueId)]?.let { store.manifestKey(env, venueId, it) }
-        val kept = key?.let { before.manifests[it] }
-        val fingerprint = kept?.ficha?.fingerprint
-        val counts = logoCounts(kept?.ficha?.toFicha(kept.imageOrigins)?.logo)
-        val now = wallClock()
-        var remembered: Pair<String, Triple<Int, Int, Int>>? = null
-        write(generation, venueId) { s ->
-            val marked = if (s.otherInstallationPending) s.copy(otherInstallationPending = false, otherInstallationReportAtMs = now) else s
-            val current = key?.let { marked.manifests[it] }
-            val unsupported = current?.unsupportedFingerprint
-            when {
-                key == null || current == null -> marked
-                // Esquema desconocido: al adoptar la instalación el server borró su acuse; si ya se había entregado (no hay
-                // pendiente) se vuelve a acusar para que el panel no pierda «actualiza la app». Uno pendiente no se toca.
-                unsupported != null -> if (current.pendingAck != null) marked
-                else enqueueAck(marked, key, current, unsupported, unsupported = true, images = NO_IMAGES)
-                    .also { remembered = unsupported to NO_IMAGES }
-                // La MISMA regla que el acuse de imágenes: si entretanto llegó otra ficha, no se acusa la vieja.
-                fingerprint == null || current.ficha?.fingerprint != fingerprint -> marked
-                else -> enqueueAck(marked, key, current, fingerprint, unsupported = false, images = counts)
-                    .also { remembered = fingerprint to counts }
+        inLane {
+            val generation = this@CustomerDisplaySync.generation
+            val env = environment()
+            val before = store.load()
+            val key = before.lastTerminalByVenue[store.venueKey(env, venueId)]?.let { store.manifestKey(env, venueId, it) }
+            val kept = key?.let { before.manifests[it] }
+            val fingerprint = kept?.ficha?.fingerprint
+            val counts = logoCounts(kept?.ficha?.toFicha(kept.imageOrigins)?.logo)
+            val now = wallClock()
+            var remembered: Pair<String, Triple<Int, Int, Int>>? = null
+            write(generation, venueId) { s ->
+                val marked = if (s.otherInstallationPending) s.copy(otherInstallationPending = false, otherInstallationReportAtMs = now) else s
+                val current = key?.let { marked.manifests[it] }
+                val unsupported = current?.unsupportedFingerprint
+                when {
+                    key == null || current == null -> marked
+                    // Esquema desconocido: al adoptar la instalación el server borró su acuse; si ya se había entregado (no
+                    // hay pendiente) se vuelve a acusar para que el panel no pierda «actualiza la app». Uno pendiente no se toca.
+                    unsupported != null -> if (current.pendingAck != null) marked
+                    else enqueueAck(marked, key, current, unsupported, unsupported = true, images = NO_IMAGES)
+                        .also { remembered = unsupported to NO_IMAGES }
+                    // La MISMA regla que el acuse de imágenes: si entretanto llegó otra ficha, no se acusa la vieja.
+                    fingerprint == null || current.ficha?.fingerprint != fingerprint -> marked
+                    else -> enqueueAck(marked, key, current, fingerprint, unsupported = false, images = counts)
+                        .also { remembered = fingerprint to counts }
+                }
             }
+            remembered?.let { (huella, conteo) -> if (key != null) rememberImages(key, huella, conteo) }
         }
-        remembered?.let { (huella, conteo) -> if (key != null) rememberImages(key, huella, conteo) }
     }
 
-    /** Login, logout o cambio de sucursal: retira el diseño AL INSTANTE y publica (sin red) lo guardado de la nueva. */
+    /**
+     * Login, logout o cambio de sucursal: retira el diseño y publica (sin red) lo guardado de la nueva. Con la fila libre
+     * (lo normal) la retirada ocurre en esta misma llamada; si no, en cuanto termina la unidad en curso (milisegundos).
+     */
     fun onSessionChanged() = restart()
 
     /**
-     * El aparato ya no está ligado a esa sucursal (404 `DEVICE_NOT_FOUND`): fábrica al instante y se borran sus
-     * manifiestos (con su acuse pendiente) y su última terminal. Así, aunque arranque sin red, no revive ese diseño.
+     * El aparato ya no está ligado a esa sucursal (404 `DEVICE_NOT_FOUND`): fábrica y se borran sus manifiestos (con su
+     * acuse pendiente) y su última terminal, en UNA unidad. Así, aunque arranque sin red, no revive ese diseño.
      */
-    fun onDeviceUnbound(venueId: String) {
-        // Lo que se ve y lo que corre es de la sesión ACTUAL: sólo se retira si el desligado es de esa sucursal. El disco
-        // de la sucursal desligada se borra siempre.
-        if (sessionVenue() == venueId) {
-            restartedVenue = null
-            generation.incrementAndGet()
-            cancelDownload()
-            // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
-            scope.launch(Dispatchers.Main.immediate + logErrors) { state.clearDesign() }
-        }
+    fun onDeviceUnbound(venueId: String) = launchUnit { unbind(venueId) }
+
+    /**
+     * Unidad del desligado: invalidar, borrar y retirar juntos. Lo que corra después (una recarga, la publicación de otra
+     * sucursal) ya lee el disco sin ese diseño (Codex r5 H4), y nada de aquí puede caer DESPUÉS de una publicación de la
+     * sucursal nueva (H3): se ve y se retira sólo si la desligada es la sucursal de la sesión en ESTE momento.
+     */
+    private suspend fun unbind(venueId: String) {
         val venueKey = store.venueKey(environment(), venueId)
-        synchronized(lastImagesAck) { lastImagesAck.keys.removeAll { it.startsWith("$venueKey|") } }
+        val isCurrentVenue = sessionVenue() == venueId
+        if (isCurrentVenue) {
+            restartedVenue = null
+            generation++
+            cancelDownload()
+        }
+        lastImagesAck.keys.removeAll { it.startsWith("$venueKey|") }
+        // El disco de la sucursal desligada se borra siempre (sin red de por medio: en el hilo de quien llama, que es IO).
         runCatching {
             store.update { s ->
                 s.copy(
@@ -261,6 +319,8 @@ class CustomerDisplaySync internal constructor(
                 )
             }
         }.onFailure { Log.w(TAG, "No se pudo borrar el diseño de la sucursal desligada: ${it.message}") }
+        // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
+        if (isCurrentVenue) withContext(Dispatchers.Main.immediate) { state.clearDesign() }
     }
 
     /**
@@ -287,7 +347,7 @@ class CustomerDisplaySync internal constructor(
         unsupportedSchema = unsupported,
     )
 
-    private suspend fun saveFicha(generation: Long, venueId: String, key: String, announced: String, payload: CustomerDisplayPayload) {
+    private fun saveFicha(generation: Long, venueId: String, key: String, announced: String, payload: CustomerDisplayPayload) {
         val dto = payload.ficha
         val ficha = dto.toFicha(payload.imageOrigins)
         if (dto.schemaVersion != SUPPORTED_SCHEMA_VERSION || ficha == null) {
@@ -327,37 +387,40 @@ class CustomerDisplaySync internal constructor(
     private fun reAck(s: StoredDesignState, key: String, manifest: DesignManifest, images: Triple<Int, Int, Int>): StoredDesignState =
         enqueueAck(s, key, manifest.copy(unsupportedFingerprint = null), manifest.ficha!!.fingerprint, unsupported = false, images = images)
 
-    /** UN trabajo de descarga: el de la misma llave y logo se deja correr; cualquier otro se cancela y se lanza el nuevo. */
+    /**
+     * UN trabajo de descarga (en la fila): el de la misma llave y logo se deja correr; cualquier otro se cancela y se lanza
+     * el nuevo. La red va fuera de la fila; lo que hace con el resultado (podar, publicar, acusar) es otra unidad.
+     */
     private fun ensureDownload(generation: Long, venueId: String, key: String, ref: LogoRef, origins: List<String>) {
-        synchronized(downloadLock) {
-            // Un afterPoll de una sesión vieja no cancela (ni reemplaza) la descarga de la sesión nueva.
-            if (!current(generation, venueId)) return
-            val running = download
-            if (running != null && running.job.isActive && running.key == key && running.ref == ref) return
-            running?.job?.cancel()
-            val job = scope.launch(logErrors) {
-                val status = images.ensure(ref, origins)
-                // La cuota de 100 MB: tras una descarga buena se borra lo que ningún manifiesto guardado usa (en el trabajo,
-                // nunca en el poll).
+        // Un afterPoll de una sesión vieja no cancela (ni reemplaza) la descarga de la sesión nueva.
+        if (!current(generation, venueId)) return
+        val running = download
+        if (running != null && running.job.isActive && running.key == key && running.ref == ref) return
+        running?.job?.cancel()
+        val job = scope.launch(logErrors) {
+            val status = images.ensure(ref, origins)
+            inLane {
+                // La cuota de 100 MB: tras una descarga buena se borra lo que ningún manifiesto guardado usa AHORA (las
+                // referencias se leen dentro de la misma unidad que borra: nada puede referenciar otro logo en medio, r5 H2).
                 if (status == ImageStatus.READY) referencedLogos()?.let(images::prune)
                 // Mientras bajaba pudo cambiar la sesión, desligarse el aparato o llegar otra ficha: se publica lo último
                 // del disco, y `publishLatest`/`write` descartan si la generación o la sucursal ya no son.
                 publishLatest(generation, venueId)
-                val manifest = store.load().manifests[key] ?: return@launch
-                val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return@launch
-                if (ficha.logo != ref) return@launch
+                val manifest = store.load().manifests[key] ?: return@inLane
+                val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return@inLane
+                if (ficha.logo != ref) return@inLane
                 enqueueImagesAck(generation, venueId, key, ficha.fingerprint, imageCounts(status))
             }
-            download = Download(key, ref, job)
         }
+        download = Download(key, ref, job)
     }
 
     /**
      * El acuse con los contadores del logo, si no es el último que ya quedó en disco. `lastImagesAck` sólo se anota tras
      * escribir: si el disco falla, el siguiente poll lo vuelve a encolar (ver el paso 5 de [afterPoll]).
      */
-    private suspend fun enqueueImagesAck(generation: Long, venueId: String, key: String, fingerprint: String, counts: Triple<Int, Int, Int>) {
-        if (synchronized(lastImagesAck) { lastImagesAck[key] } == (fingerprint to counts)) return
+    private fun enqueueImagesAck(generation: Long, venueId: String, key: String, fingerprint: String, counts: Triple<Int, Int, Int>) {
+        if (lastImagesAck[key] == (fingerprint to counts)) return
         var enqueued = false
         write(generation, venueId) { s ->
             val current = s.manifests[key]
@@ -372,62 +435,44 @@ class CustomerDisplaySync internal constructor(
 
     /** Sólo tras escribir: si el disco falló, el siguiente poll vuelve a intentar ese acuse. */
     private fun rememberImages(key: String, fingerprint: String, images: Triple<Int, Int, Int>) {
-        synchronized(lastImagesAck) { lastImagesAck[key] = fingerprint to images }
+        lastImagesAck[key] = fingerprint to images
     }
 
     private fun cancelDownload() {
-        synchronized(downloadLock) {
-            download?.job?.cancel()
-            download = null
-        }
+        download?.job?.cancel()
+        download = null
     }
 
-    /**
-     * La sucursal de la sesión que publicó el último [restart]. Si llega otro cambio de sesión con la MISMA (al arrancar,
-     * `refreshPlanAndSettings → refreshTabs` lo dispara de nuevo), no se pasa por fábrica: sólo se vuelve a publicar lo
-     * último, sin parpadeo ni reinicio del fade.
-     */
-    @Volatile
-    private var restartedVenue: String? = null
-
-    /** Retira el diseño al instante y publica lo guardado de la sesión actual (la última terminal de esa sucursal). */
-    private fun restart() {
+    /** Retira el diseño y publica lo guardado de la sesión actual (la última terminal de esa sucursal), en UNA unidad. */
+    private fun restart() = launchUnit {
         val venueNow = sessionVenue()
         if (venueNow != null && venueNow == restartedVenue) {
             // Misma sucursal y sesión: la generación, la descarga y lo publicado siguen siendo válidos.
-            val generation = generation.get()
-            scope.launch(Dispatchers.Main.immediate + logErrors) { publishLatest(generation, venueNow) }
-            return
+            publishLatest(generation, venueNow)
+            return@launchUnit
         }
         restartedVenue = venueNow
-        val generation = generation.incrementAndGet()
+        val generation = ++this.generation
         cancelDownload()
         // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
-        scope.launch(Dispatchers.Main.immediate + logErrors) {
-            state.clearDesign()
-            val venueId = sessionVenue() ?: return@launch
-            publishLatest(generation, venueId)
-        }
+        withContext(Dispatchers.Main.immediate) { state.clearDesign() }
+        if (venueNow != null) publishLatest(generation, venueNow)
     }
 
     /**
-     * La ÚNICA publicación (paso 4 del poll, fin de la descarga y arranque/cambio de sesión): bajo [publishMutex] lee el
-     * manifiesto VIGENTE de la última terminal de esa sucursal y su logo de disco, y lo ofrece en Main con las guardas de
-     * generación y sucursal. Como siempre muestra «lo último que hay», una publicación tardía nunca deja algo más viejo
-     * que lo que ya está en disco. Si el almacén no se pudo leer (estado sólo en memoria), no publica: no se borra un
-     * diseño bueno por una lectura pasajera.
+     * La ÚNICA publicación (dentro de una unidad: poll, fin de la descarga, arranque/cambio de sesión): lee el manifiesto
+     * VIGENTE de la última terminal de esa sucursal y su logo de disco, y lo ofrece en Main con las guardas de generación y
+     * sucursal. Como la fila ordena todas las escrituras, lo que lee es lo último que hay. Si el almacén no se pudo leer
+     * (estado sólo en memoria), no publica: no se borra un diseño bueno por una lectura pasajera.
      */
     private suspend fun publishLatest(generation: Long, venueId: String) {
-        currentCoroutineContext().ensureActive()
-        publishMutex.withLock {
-            val s = withContext(Dispatchers.IO) { store.load() }
-            if (!s.persisted) return
-            val design = withContext(Dispatchers.IO) { latestDesign(s, venueId) }
-            // Main: regla de CustomerDisplayState (sin candado). La comprobación va en el MISMO bloque de Main que el
-            // ofrecimiento, así un clearDesign de otra sesión nunca queda debajo de un diseño viejo.
-            withContext(Dispatchers.Main.immediate) {
-                if (current(generation, venueId)) state.offerDesign(design)
-            }
+        val s = withContext(Dispatchers.IO) { store.load() }
+        if (!s.persisted) return
+        val design = withContext(Dispatchers.IO) { latestDesign(s, venueId) }
+        // Main: regla de CustomerDisplayState (sin candado). La sesión puede cambiar fuera de la fila (SecureStorage): la
+        // comprobación va en el MISMO bloque de Main que el ofrecimiento.
+        withContext(Dispatchers.Main.immediate) {
+            if (current(generation, venueId)) state.offerDesign(design)
         }
     }
 
@@ -454,12 +499,14 @@ class CustomerDisplaySync internal constructor(
         return AppliedDesign(ficha, logo, logoStamp = logo?.lastModified() ?: 0L)
     }
 
-    /** Sigue siendo la misma sesión y el mismo vínculo que cuando empezó el trabajo. */
-    private fun current(generation: Long, venueId: String) = this.generation.get() == generation && sessionVenue() == venueId
+    /**
+     * Sigue siendo la misma sesión y el mismo vínculo que cuando empezó el trabajo. La generación sólo cambia en la fila;
+     * la sesión puede cambiar en cualquier momento (por eso se vuelve a mirar al escribir y al ofrecer).
+     */
+    private fun current(generation: Long, venueId: String) = this.generation == generation && sessionVenue() == venueId
 
-    /** Escribe sólo si sigue siendo la misma generación y sucursal (comprobado DENTRO del candado del almacén). */
-    private suspend fun write(generation: Long, venueId: String, change: (StoredDesignState) -> StoredDesignState): Boolean {
-        currentCoroutineContext().ensureActive()
+    /** Escribe sólo si sigue siendo la misma generación y sucursal (comprobado DENTRO del candado del almacén). En la fila. */
+    private fun write(generation: Long, venueId: String, change: (StoredDesignState) -> StoredDesignState): Boolean {
         var applied = false
         store.update { s -> if (current(generation, venueId)) change(s).also { applied = true } else s }
         return applied
@@ -467,37 +514,38 @@ class CustomerDisplaySync internal constructor(
 
     /**
      * Manda el acuse pendiente de esa terminal tal como quedó congelado al encolarlo (mismo cuerpo y `seq`, aunque la app
-     * se haya reiniciado) y obedece la respuesta ([ackActionFor]). Lo que escribe pasa por [write]: si cambió la sesión o
-     * la sucursal mientras viajaba, no toca nada.
+     * se haya reiniciado) y obedece la respuesta ([ackActionFor]). El PUT va fuera de la fila; su respuesta se aplica en
+     * otra unidad que pasa por [write]: si cambió la sesión o la sucursal mientras viajaba, no toca nada.
      */
     private suspend fun sendPendingAck(generation: Long, venueId: String, key: String) {
-        if (!current(generation, venueId)) return
-        val sent = store.load().manifests[key]?.pendingAck ?: return
+        val sent = inLane { if (current(generation, venueId)) store.load().manifests[key]?.pendingAck else null } ?: return
         val outcome = remote.acknowledgeCustomerDisplay(venueId, sent)
-        val manifest = store.load().manifests[key]
-        val action = ackActionFor(outcome, manifest?.ficha?.fingerprint)
-        if (action == AckAction.Keep) return
-        val counts = logoCounts(manifest?.ficha?.toFicha(manifest.imageOrigins)?.logo)
-        var reAcked: String? = null
-        val applied = write(generation, venueId) { s ->
-            val m = s.manifests[key]
-            if (m == null || m.pendingAck?.seq != sent.seq) {
-                // Cerrar borra el pendiente SÓLO si sigue siendo el que se mandó: uno más nuevo sale en el siguiente poll.
-                // Que otra instalación tomó la fila es verdad aunque haya otro acuse pendiente.
-                if (action == AckAction.CloseAndReport) s.copy(otherInstallationPending = true) else s
-            } else {
-                val closed = s.copy(manifests = s.manifests + (key to m.copy(pendingAck = null)))
-                when (action) {
-                    is AckAction.CloseAndAckAgain -> if (m.ficha?.fingerprint != action.fingerprint) closed
-                    else reAck(closed, key, m, counts).also { reAcked = action.fingerprint }
-                    AckAction.CloseAndReport -> closed.copy(otherInstallationPending = true)
-                    else -> closed
+        inLane {
+            val manifest = store.load().manifests[key]
+            val action = ackActionFor(outcome, manifest?.ficha?.fingerprint)
+            if (action == AckAction.Keep) return@inLane
+            val counts = logoCounts(manifest?.ficha?.toFicha(manifest.imageOrigins)?.logo)
+            var reAcked: String? = null
+            val applied = write(generation, venueId) { s ->
+                val m = s.manifests[key]
+                if (m == null || m.pendingAck?.seq != sent.seq) {
+                    // Cerrar borra el pendiente SÓLO si sigue siendo el que se mandó: uno más nuevo sale en el siguiente
+                    // poll. Que otra instalación tomó la fila es verdad aunque haya otro acuse pendiente.
+                    if (action == AckAction.CloseAndReport) s.copy(otherInstallationPending = true) else s
+                } else {
+                    val closed = s.copy(manifests = s.manifests + (key to m.copy(pendingAck = null)))
+                    when (action) {
+                        is AckAction.CloseAndAckAgain -> if (m.ficha?.fingerprint != action.fingerprint) closed
+                        else reAck(closed, key, m, counts).also { reAcked = action.fingerprint }
+                        AckAction.CloseAndReport -> closed.copy(otherInstallationPending = true)
+                        else -> closed
+                    }
                 }
             }
+            reAcked?.let { rememberImages(key, it, counts) }
+            // Sin red fuera del poll: la ficha se baja en el siguiente.
+            if (applied && action == AckAction.CloseAndFetch) refetch += key
         }
-        reAcked?.let { rememberImages(key, it, counts) }
-        // Sin red fuera del poll: la ficha se baja en el siguiente.
-        if (applied && action == AckAction.CloseAndFetch) refetch += key
     }
 
     private fun isoNow(): String = Instant.ofEpochMilli(wallClock()).toString()
