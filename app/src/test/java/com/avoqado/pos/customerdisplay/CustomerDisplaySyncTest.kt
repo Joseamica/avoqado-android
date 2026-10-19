@@ -1732,9 +1732,103 @@ class CustomerDisplaySyncTest {
         withTimeout(5_000) { poll.join() }
     }
 
+    // ── acuse «mostrado» reconciliado por ESTADO en cada publicación (Codex bloque 3, #1) ──
+
+    @Test
+    fun `A visible cambia a B y vuelve a A a media venta y el siguiente poll lo vuelve a acusar mostrado`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = true) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+        state.setPresenting(true)
+        esperar { manifiesto().shownAt != null }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))   // entrega el «mostrado» de A
+        state.showCart(CartState(items = listOf(CartItem(id = "p1", type = CartItemType.ProductItem("cafe"), name = "Café", unitPrice = 5000))))
+        // A media venta el dueño cambia a B (queda pendiente, A sigue visible)...
+        fichaResponse = { ficha(HUELLA_B) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+        // ...y vuelve a A: el manifiesto de A nace sin shownAt, pero A NUNCA dejó de verse.
+        fichaResponse = { ficha(HUELLA_A) }
+        reloj = T0 + 10 * MINUTO_MS
+        val antes = acuses.size
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+        assertEquals("2026-10-18T12:10:00Z", manifiesto().shownAt)
+        assertEquals(SURFACE_PRESENTATION, manifiesto().surface)
+        assertEquals("sale UN acuse en ese poll", 1, acuses.size - antes)
+        assertEquals(HUELLA_A, acuses.last().fingerprint)
+        assertEquals("2026-10-18T12:10:00Z", acuses.last().shownAt)
+        assertEquals(SURFACE_PRESENTATION, acuses.last().surface)
+    }
+
+    @Test
+    fun `si marcar mostrado falla una vez el siguiente poll lo marca`() = runBlocking {
+        val espia = spyk(store())
+        val faltan = fallarAlMarcar(espia, veces = 1)
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync(almacen = espia)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+
+        state.setPresenting(true)   // el observador intenta y el disco falla
+        esperar { faltan.get() == 0 }
+        vaciarLaFila(sync)
+        assertNull(manifiesto().shownAt)
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(MOSTRADO, manifiesto().shownAt)
+        assertEquals(SURFACE_PRESENTATION, manifiesto().surface)
+        assertEquals(MOSTRADO, manifiesto().pendingAck!!.shownAt)
+    }
+
+    @Test
+    fun `ya marcado mostrado varios polls no encolan ni mandan acuses de mas`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = true) }
+        kiosco.value = true   // también la variante del kiosco (surface kiosk sin shownAt) cuenta como ya marcada
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        state.setPresenting(true)
+        esperar { manifiesto().surface == SURFACE_KIOSK }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))   // entrega el acuse del kiosco
+        kiosco.value = false
+        esperar { manifiesto().shownAt != null }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))   // entrega el «mostrado»
+        val enviados = acuses.size
+        val seq = store().load().nextSeq
+        assertNull(manifiesto().pendingAck)
+
+        repeat(3) {
+            reloj += MINUTO_MS
+            sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        }
+
+        assertEquals(enviados, acuses.size)
+        assertEquals(seq, store().load().nextSeq)
+        assertNull(manifiesto().pendingAck)
+    }
+
     // ── ayudas ──
 
     private fun manifiesto() = store().load().manifests.getValue(LLAVE)
+
+    /** El almacén `espia` falla las siguientes `veces` que intente marcar «mostrado» el manifiesto de [LLAVE]; cuenta lo que falta. */
+    private fun fallarAlMarcar(espia: CustomerDisplayDesignStore, veces: Int): AtomicInteger {
+        val faltan = AtomicInteger(veces)
+        every { espia.update(any()) } answers {
+            val antes = store().load()
+            val marca = antes.manifests[LLAVE]?.shownAt == null &&
+                firstArg<(StoredDesignState) -> StoredDesignState>()(antes).manifests[LLAVE]?.shownAt != null
+            if (marca && faltan.getAndUpdate { maxOf(it - 1, 0) } > 0) throw IOException("disco lleno un momento")
+            callOriginal()
+        }
+        return faltan
+    }
 
     /**
      * Una unidad de la fila que no toca nada (una sucursal sin terminal): al volver, ya corrió todo lo que estaba formado

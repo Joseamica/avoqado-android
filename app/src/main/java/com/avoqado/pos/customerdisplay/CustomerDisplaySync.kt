@@ -156,7 +156,8 @@ class CustomerDisplaySync internal constructor(
     init {
         restart(lastSessionVenue)
         // Acuse «mostrado»: esto sólo OBSERVA qué ficha está en qué superficie; guardar y encolar es una unidad ([markShown]).
-        // Por huella, no por diseño: el logo que llega cambia el diseño pero no lo que se acusa.
+        // Por huella, no por diseño: el logo que llega cambia el diseño pero no lo que se acusa. Lo que el observador no ve
+        // (lo visible no cambió pero el manifiesto perdió la marca) lo repara [publishLatest].
         scope.launch(logErrors) {
             combine(state.design, state.presentingSurface, kioskEnabled) { design, surface, kiosk ->
                 Triple(design?.ficha?.fingerprint, surface, kiosk)
@@ -393,7 +394,8 @@ class CustomerDisplaySync internal constructor(
     }
 
     /**
-     * Unidad del acuse «mostrado»: la ficha [fingerprint] está en una superficie montada. Si sigue siendo la del manifiesto
+     * Acuse «mostrado», siempre dentro de una unidad: la lanza el observador al CAMBIAR lo visible y la repite [publishLatest] en
+     * cada publicación (reconcilia por estado). La ficha [fingerprint] está en una superficie montada. Si sigue siendo la del manifiesto
      * vigente de la sesión, guarda ahí `shownAt`/`surface` y encola UN acuse ([buildAck]); sale en el siguiente poll (nada de
      * red al dibujar). Con kiosco la ficha no se dibuja: `surface = kiosk`, `shownAt = null`. Lo que el manifiesto ya dice
      * (remontar la ventana, reiniciar la app) no repite acuse. Con un aviso de esquema pendiente se guarda sin acusar: un acuse
@@ -403,13 +405,17 @@ class CustomerDisplaySync internal constructor(
         val venueId = sessionVenue() ?: return
         val generation = this.generation
         val shownSurface = if (kiosk) SURFACE_KIOSK else surface
-        val shownAt = if (kiosk) null else isoNow()
+        // Ya dice esto (o no es esa huella): nada que hacer, ni seq ni escritura. Corre en cada poll (ver [publishLatest]).
+        fun nothingToMark(m: DesignManifest?) = m == null || m.ficha?.fingerprint != fingerprint ||
+            m.surface == shownSurface && (m.shownAt == null) == kiosk
         withContext(Dispatchers.IO) {
             val env = environment()
             val before = store.load()
             val key = before.lastTerminalByVenue[store.venueKey(env, venueId)]?.let { store.manifestKey(env, venueId, it) }
                 ?: return@withContext
             val kept = before.manifests[key]
+            if (nothingToMark(kept)) return@withContext
+            val shownAt = if (kiosk) null else isoNow()
             // Los contadores del último acuse de esa huella: decir «mostrado» no cambia cómo va el logo.
             val counts = lastImagesAck[key]?.takeIf { it.first == fingerprint }?.second
                 ?: logoCounts(kept?.ficha?.toFicha(kept.imageOrigins)?.logo)
@@ -417,8 +423,7 @@ class CustomerDisplaySync internal constructor(
             write(generation, venueId) { s ->
                 val current = s.manifests[key]
                 when {
-                    current == null || current.ficha?.fingerprint != fingerprint -> s
-                    current.surface == shownSurface && (current.shownAt == null) == kiosk -> s
+                    current == null || nothingToMark(current) -> s
                     current.unsupportedFingerprint != null ->
                         s.copy(manifests = s.manifests + (key to current.copy(shownAt = shownAt, surface = shownSurface)))
                     else -> enqueueAck(s, key, current.copy(shownAt = shownAt, surface = shownSurface), fingerprint, unsupported = false, images = counts)
@@ -591,8 +596,19 @@ class CustomerDisplaySync internal constructor(
         val design = if (undeleted) null else withContext(Dispatchers.IO) { latestDesign(s, venueId) }
         // Main: regla de CustomerDisplayState (sin candado). La sesión puede cambiar fuera de la fila (SecureStorage): la
         // comprobación va en el MISMO bloque de Main que el ofrecimiento.
-        withContext(Dispatchers.Main.immediate) {
-            if (current(generation, venueId)) state.offerDesign(design)
+        val visible = withContext(Dispatchers.Main.immediate) {
+            if (!current(generation, venueId)) return@withContext null
+            state.offerDesign(design)
+            // Lo VISIBLE (a media venta lo ofrecido queda pendiente) y dónde está montado, en el mismo bloque de Main.
+            Triple(state.design.value?.ficha?.fingerprint, state.presentingSurface.value, kioskEnabled.value)
+        } ?: return
+        // Acuse «mostrado» reconciliado por ESTADO (Codex bloque 3, #1): el observador sólo ve CAMBIOS de lo visible; si el
+        // manifiesto perdió la marca con lo mismo en pantalla (A → B → A a media venta) o marcarla falló, se repara aquí, en cada
+        // publicación (cada poll). Ya marcado no hace nada. Un disco que falla no tumba la unidad: lo intenta la siguiente.
+        val (fingerprint, surface, kiosk) = visible
+        if (fingerprint != null && surface != null) {
+            runCatching { markShown(fingerprint, surface, kiosk) }
+                .onFailure { Log.w(TAG, "No se pudo marcar «mostrado»; se reintenta en la siguiente publicación: ${it.message}") }
         }
     }
 
