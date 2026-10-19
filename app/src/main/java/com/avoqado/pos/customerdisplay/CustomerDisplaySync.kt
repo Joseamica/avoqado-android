@@ -41,9 +41,17 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * sólo se aplica si la generación y la sucursal siguen siendo las de antes. Así ningún orden entre poll, descarga, arranque,
  * cambio de sesión, desligado y acuses puede dejar en pantalla algo distinto de lo último que hay en disco.
  *
+ * 🔴 La cortina (Codex r6#2). Logout o cambio de sucursal quitan el diseño —el visible y el pendiente— en la MISMA llamada
+ * de [onSessionChanged], en Main, aunque la fila esté ocupada: eso es «al instante». Lo demás (generación, cancelar la
+ * descarga, publicar lo guardado de la sucursal nueva) lo hace su unidad cuando le toca turno. Nada de la sucursal anterior
+ * puede volver en medio: toda oferta revisa la sesión en Main ([publishLatest]). Con la MISMA sucursal no se toca nada (sin
+ * parpadeo). Un desligado ([onDeviceUnbound]) no lleva cortina: retira en su unidad.
+ *
  * 🔴 Hilos: [CustomerDisplayState.offerDesign]/[CustomerDisplayState.clearDesign] no tienen candado y suponen Main, así que
- * SIEMPRE se llaman dentro de `Dispatchers.Main.immediate`, desde una unidad de la fila. Main nunca espera a la fila: las
- * llamadas que no suspenden lanzan su unidad ([launchUnit]); la unidad sí puede saltar a Main para ofrecer o retirar.
+ * SIEMPRE se llaman en Main: dentro de `withContext(Dispatchers.Main.immediate)` desde una unidad, o en la cortina. Main nunca
+ * espera a la fila: las llamadas que no suspenden lanzan su unidad ([launchUnit]). Todo disco de una unidad va en
+ * `withContext(Dispatchers.IO)`. Las unidades lanzadas corren con un despachador que no es ni IO ni Main, así que esos dos
+ * saltos siempre cambian de hilo cuando hace falta, empiece donde empiece la unidad (Codex r6#1).
  */
 @Singleton
 class CustomerDisplaySync internal constructor(
@@ -115,6 +123,21 @@ class CustomerDisplaySync internal constructor(
      */
     private var restartedVenue: String? = null
 
+    /**
+     * Sucursales desligadas cuyo diseño guardado no se pudo borrar (falló el disco, Codex r6#3). Mientras estén aquí,
+     * [publishLatest] publica fábrica y la siguiente unidad que toque la sucursal reintenta el borrado ([retryForget]); un
+     * 200 con ficha de esa sucursal (se volvió a ligar) la quita.
+     * ponytail: sólo en memoria; si además la app se reinicia sin red antes de poder borrar, ese diseño puede revivir.
+     * Mejora: persistir la marca en el almacén.
+     */
+    private val unboundUndeleted = HashSet<String>()
+
+    /**
+     * La sucursal del último diseño ofrecido (visible o pendiente); `null` al retirar. NO es de la fila: vive SÓLO en Main,
+     * como el diseño mismo, y la lee la cortina de [onSessionChanged].
+     */
+    private var offeredVenue: String? = null
+
     // Un disco que falla en un trabajo de fondo se registra; nunca tumba la app (excepción sin manejar en la corrutina).
     private val logErrors = CoroutineExceptionHandler { _, error ->
         Log.w(TAG, "Falló la sincronización de la pantalla del cliente: ${error.message}")
@@ -122,23 +145,26 @@ class CustomerDisplaySync internal constructor(
 
     // Después de declarar todo el estado: la unidad del arranque empieza aquí mismo.
     init {
-        restart()
+        restart(sessionVenue())
     }
 
     /**
      * Una unidad de la fila. Esperar turno se puede cancelar; una vez adentro corre COMPLETA ([NonCancellable]): lo que
      * guardó siempre se publica (Codex r5 H1: guardar B y que la pérdida de red cancele su publicación dejaba A). Las
-     * unidades no esperan red, así que la fila nunca se queda tomada más que unos milisegundos de disco y Main.
+     * unidades no esperan red: la fila sólo queda tomada lo que tarden su disco y su paso por Main.
      */
     private suspend fun <T> inLane(unit: suspend () -> T): T = lane.withLock { withContext(NonCancellable) { unit() } }
 
     /**
-     * Para las llamadas que no suspenden (sesión, desligado). Empieza en el hilo de quien llama: con la fila libre (lo
-     * normal) retira el diseño ahí mismo; si está ocupada, la corrutina se suspende sin bloquear ese hilo y sigue en IO.
+     * Para las llamadas que no suspenden (sesión, desligado). Empieza en el hilo de quien llama (`UNDISPATCHED`): toma su
+     * lugar en la fila en esta misma llamada, en el orden de las llamadas. Su despachador es `Default`, ni IO ni Main, para que
+     * `withContext(IO)` y `withContext(Main.immediate)` sí cambien de hilo empiece donde empiece (Codex r6#1): con IO, el salto
+     * a IO no ocurría al empezar en Main (el disco corría en Main); con Main, el salto a Main no ocurría al empezar en otro
+     * hilo (se retiraba fuera de Main). Con la fila ocupada se suspende sin bloquear ese hilo. La unidad vive en [scope], no en
+     * quien la lanzó: cancelarlo no la pierde.
      */
-    private fun launchUnit(unit: suspend () -> Unit) {
-        scope.launch(logErrors, start = CoroutineStart.UNDISPATCHED) { inLane(unit) }
-    }
+    private fun launchUnit(unit: suspend () -> Unit): Job =
+        scope.launch(Dispatchers.Default + logErrors, start = CoroutineStart.UNDISPATCHED) { inLane(unit) }
 
     /**
      * Después de cada poll. Devuelve `true` = «reintenta pronto» (la ficha no se pudo bajar por algo pasajero).
@@ -153,7 +179,9 @@ class CustomerDisplaySync internal constructor(
         // Fuera de la fila: la red.
         val outcome = if (fetch) remote.fetchCustomerDisplay(venueId) else null
         if (outcome is DisplayModeRemoteOutcome.Rejected && outcome.status == 404 && outcome.code == DEVICE_NOT_FOUND) {
-            inLane { unbind(venueId) }
+            // Unidad lanzada, no atada al tick: si lo cancelan mientras espera turno, el desligado igual ocurre (toma su
+            // lugar en la fila en esta misma llamada). Se espera para que el poll regrese con el desligado ya aplicado.
+            launchUnit { unbind(venueId) }.join()
             return@withContext false
         }
         // (4)-(5) En la fila: guardar lo que llegó, publicar YA lo último (con el logo que haya en disco, o sin él: se ve el
@@ -169,6 +197,7 @@ class CustomerDisplaySync internal constructor(
     private suspend fun startPoll(env: String, venueId: String, terminalId: String, key: String, announced: String?): Pair<Long, Boolean>? {
         val generation = this.generation
         val venueKey = store.venueKey(env, venueId)
+        retryForget(venueKey)   // desligada con el borrado pendiente: se borra ANTES de leer o escribir nada de ella
         var moved = false
         val written = write(generation, venueId) { s ->
             if (s.lastTerminalByVenue[venueKey] == terminalId) s
@@ -207,7 +236,8 @@ class CustomerDisplaySync internal constructor(
     ) {
         if (outcome is DisplayModeRemoteOutcome.Success && announced != null) {
             refetch.remove(key)
-            saveFicha(generation, venueId, key, announced, outcome.data)
+            // Un 200 guardado = el aparato está ligado a esta sucursal: ya no hay desligado pendiente que borrar.
+            if (saveFicha(generation, venueId, key, announced, outcome.data)) unboundUndeleted -= store.venueKey(environment(), venueId)
         }
         publishLatest(generation, venueId)
         val manifest = store.load().manifests[key]
@@ -285,16 +315,23 @@ class CustomerDisplaySync internal constructor(
     }
 
     /**
-     * Login, logout o cambio de sucursal: retira el diseño y publica (sin red) lo guardado de la nueva. Con la fila libre
-     * (lo normal) la retirada ocurre en esta misma llamada; si no, en cuanto termina la unidad en curso (milisegundos).
+     * Login, logout o cambio de sucursal. Se llama en Main (AppState). Primero la cortina: si la sucursal de la sesión no es
+     * la del diseño ofrecido, o no hay sesión, el diseño (visible y pendiente) se quita AQUÍ, sin esperar a la fila. Después
+     * la unidad, con la sesión de ESTE momento, hace el resto en su turno ([restart]).
      */
-    fun onSessionChanged() = restart()
+    fun onSessionChanged() {
+        val venue = sessionVenue()
+        if (venue == null || venue != offeredVenue) retire()
+        restart(venue)
+    }
 
     /**
      * El aparato ya no está ligado a esa sucursal (404 `DEVICE_NOT_FOUND`): fábrica y se borran sus manifiestos (con su
      * acuse pendiente) y su última terminal, en UNA unidad. Así, aunque arranque sin red, no revive ese diseño.
      */
-    fun onDeviceUnbound(venueId: String) = launchUnit { unbind(venueId) }
+    fun onDeviceUnbound(venueId: String) {
+        launchUnit { unbind(venueId) }
+    }
 
     /**
      * Unidad del desligado: invalidar, borrar y retirar juntos. Lo que corra después (una recarga, la publicación de otra
@@ -310,17 +347,33 @@ class CustomerDisplaySync internal constructor(
             cancelDownload()
         }
         lastImagesAck.keys.removeAll { it.startsWith("$venueKey|") }
-        // El disco de la sucursal desligada se borra siempre (sin red de por medio: en el hilo de quien llama, que es IO).
-        runCatching {
-            store.update { s ->
-                s.copy(
-                    manifests = s.manifests.filterKeys { !it.startsWith("$venueKey|") },
-                    lastTerminalByVenue = s.lastTerminalByVenue - venueKey,
-                )
-            }
-        }.onFailure { Log.w(TAG, "No se pudo borrar el diseño de la sucursal desligada: ${it.message}") }
-        // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
-        if (isCurrentVenue) withContext(Dispatchers.Main.immediate) { state.clearDesign() }
+        // El disco de la sucursal desligada se borra siempre. Si falla, queda marcada: nada vuelve a ofrecer ese diseño y la
+        // siguiente unidad que toque la sucursal reintenta (Codex r6#3).
+        if (withContext(Dispatchers.IO) { forgetVenue(venueKey) }) unboundUndeleted -= venueKey else unboundUndeleted += venueKey
+        // Main: regla de CustomerDisplayState (sin candado).
+        if (isCurrentVenue) withContext(Dispatchers.Main.immediate) { retire() }
+    }
+
+    /** Borra el diseño guardado de esa sucursal (manifiestos con su acuse y la última terminal). `false` si falló el disco. En IO. */
+    private fun forgetVenue(venueKey: String): Boolean = runCatching {
+        store.update { s ->
+            s.copy(
+                manifests = s.manifests.filterKeys { !it.startsWith("$venueKey|") },
+                lastTerminalByVenue = s.lastTerminalByVenue - venueKey,
+            )
+        }
+    }.onFailure { Log.w(TAG, "No se pudo borrar el diseño de la sucursal desligada: ${it.message}") }.isSuccess
+
+    /** Si esa sucursal quedó desligada sin poder borrar su diseño, lo reintenta. `true` = sigue pendiente. En la fila y en IO. */
+    private fun retryForget(venueKey: String): Boolean {
+        if (venueKey in unboundUndeleted && forgetVenue(venueKey)) unboundUndeleted -= venueKey
+        return venueKey in unboundUndeleted
+    }
+
+    /** Quita el diseño visible y el pendiente. SÓLO en Main (regla de [CustomerDisplayState]). */
+    private fun retire() {
+        offeredVenue = null
+        state.clearDesign()
     }
 
     /**
@@ -347,7 +400,8 @@ class CustomerDisplaySync internal constructor(
         unsupportedSchema = unsupported,
     )
 
-    private fun saveFicha(generation: Long, venueId: String, key: String, announced: String, payload: CustomerDisplayPayload) {
+    /** `true` = quedó guardada (la de esquema desconocido también). */
+    private fun saveFicha(generation: Long, venueId: String, key: String, announced: String, payload: CustomerDisplayPayload): Boolean {
         val dto = payload.ficha
         val ficha = dto.toFicha(payload.imageOrigins)
         if (dto.schemaVersion != SUPPORTED_SCHEMA_VERSION || ficha == null) {
@@ -360,7 +414,7 @@ class CustomerDisplaySync internal constructor(
                 enqueueAck(s, key, kept, huella, unsupported = true, images = NO_IMAGES)
             }
             if (saved) rememberImages(key, huella, NO_IMAGES)
-            return
+            return saved
         }
         val counts = logoCounts(ficha.logo)
         val saved = write(generation, venueId) { s ->
@@ -368,6 +422,7 @@ class CustomerDisplaySync internal constructor(
             enqueueAck(s, key, manifest, ficha.fingerprint, unsupported = false, images = counts)
         }
         if (saved) rememberImages(key, ficha.fingerprint, counts)
+        return saved
     }
 
     /** Encolar = reservar `seq` y congelar el cuerpo en el mismo `update`, ANTES de mandarlo. Reemplaza al pendiente viejo. */
@@ -443,9 +498,12 @@ class CustomerDisplaySync internal constructor(
         download = null
     }
 
-    /** Retira el diseño y publica lo guardado de la sesión actual (la última terminal de esa sucursal), en UNA unidad. */
-    private fun restart() = launchUnit {
-        val venueNow = sessionVenue()
+    /**
+     * Retira el diseño y publica lo guardado de [venueNow] (la última terminal de esa sucursal), en UNA unidad. [venueNow] es
+     * la sesión que vio quien llamó, no la de cuando le toque turno: con la fila ocupada, A → logout → A es un logout
+     * (generación nueva, se cancela la descarga, se retira) y luego otra sucursal, nunca dos recargas de A (Codex r6#2).
+     */
+    private fun restart(venueNow: String?) = launchUnit {
         if (venueNow != null && venueNow == restartedVenue) {
             // Misma sucursal y sesión: la generación, la descarga y lo publicado siguen siendo válidos.
             publishLatest(generation, venueNow)
@@ -454,8 +512,8 @@ class CustomerDisplaySync internal constructor(
         restartedVenue = venueNow
         val generation = ++this.generation
         cancelDownload()
-        // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
-        withContext(Dispatchers.Main.immediate) { state.clearDesign() }
+        // Main: regla de CustomerDisplayState (sin candado).
+        withContext(Dispatchers.Main.immediate) { retire() }
         if (venueNow != null) publishLatest(generation, venueNow)
     }
 
@@ -463,16 +521,23 @@ class CustomerDisplaySync internal constructor(
      * La ÚNICA publicación (dentro de una unidad: poll, fin de la descarga, arranque/cambio de sesión): lee el manifiesto
      * VIGENTE de la última terminal de esa sucursal y su logo de disco, y lo ofrece en Main con las guardas de generación y
      * sucursal. Como la fila ordena todas las escrituras, lo que lee es lo último que hay. Si el almacén no se pudo leer
-     * (estado sólo en memoria), no publica: no se borra un diseño bueno por una lectura pasajera.
+     * (estado sólo en memoria), no publica: no se borra un diseño bueno por una lectura pasajera. Una sucursal desligada
+     * con el borrado pendiente publica fábrica (Codex r6#3).
      */
     private suspend fun publishLatest(generation: Long, venueId: String) {
-        val s = withContext(Dispatchers.IO) { store.load() }
+        val (s, undeleted) = withContext(Dispatchers.IO) {
+            val undeleted = retryForget(store.venueKey(environment(), venueId))
+            store.load() to undeleted
+        }
         if (!s.persisted) return
-        val design = withContext(Dispatchers.IO) { latestDesign(s, venueId) }
+        val design = if (undeleted) null else withContext(Dispatchers.IO) { latestDesign(s, venueId) }
         // Main: regla de CustomerDisplayState (sin candado). La sesión puede cambiar fuera de la fila (SecureStorage): la
         // comprobación va en el MISMO bloque de Main que el ofrecimiento.
         withContext(Dispatchers.Main.immediate) {
-            if (current(generation, venueId)) state.offerDesign(design)
+            if (current(generation, venueId)) {
+                offeredVenue = venueId
+                state.offerDesign(design)
+            }
         }
     }
 
