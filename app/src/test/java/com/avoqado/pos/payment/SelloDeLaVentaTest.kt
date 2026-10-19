@@ -587,6 +587,20 @@ class SelloDeLaVentaTest {
     }
 
     @Test
+    fun `P1 si la venta encolada termina rechazada se quita la promesa del sello`() = runTest {
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+        assertEquals("premisa: sin red se promete", RenglonDelSello.SE_SUMA_AL_SINCRONIZAR, viewModel.renglonDelSello.value)
+
+        estadoDeLaFila.value = "FAILED" // el servidor la rechazó: queda en «Pendientes»
+        advanceUntilIdle()
+
+        assertEquals("premisa: arriba dice rechazada", SincronizacionDelCobro.RECHAZADA, viewModel.sincronizacionDelCobro.value)
+        assertNull("la venta no subió: prometer el sello miente", viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
     fun `P1 si se empezo otra venta antes de sincronizar, el sello de la anterior no se pinta en ella`() = runTest {
         coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
         coEvery { orderRepository.consultarSelloDeLaVenta("pago-servidor-9") } returns sello(stamped = true, earned = 2)

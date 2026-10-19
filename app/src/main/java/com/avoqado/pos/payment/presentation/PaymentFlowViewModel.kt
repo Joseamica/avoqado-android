@@ -1047,16 +1047,21 @@ class PaymentFlowViewModel @Inject constructor(
      * Info-7 (QA en la D3, 15-oct): la venta cobrada sin red decía «El sello se suma al sincronizar» y lo SEGUÍA diciendo
      * con «Venta sincronizada» arriba, aunque el servidor ya hubiera dado el sello. Ahora, en cuanto la cola confirma ESTA
      * venta (la misma señal del aviso, [sincronizacionDe]), se pregunta por su sello con el id que le dio el servidor y se
-     * pinta lo que pasó. Si no se puede saber (consulta fallida, PENDING tras el reintento, fila ya limpiada) se QUITA la
-     * promesa: una promesa vieja miente.
+     * pinta lo que pasó. Si no se puede saber (consulta fallida, PENDING tras el reintento, fila ya limpiada) o la cola la
+     * RECHAZA, se QUITA la promesa: una promesa vieja miente.
      * 🔴 Vive en [consultaDelSello]: «Venta nueva» la cancela. Y antes de pintar se revisa que la pantalla siga siendo la de
      * ESTA venta (misma venta, misma generación y el mismo cobro encolado en «Cobro exitoso»); si no, no pinta nada.
      */
     private fun cambiarLaPromesaAlSincronizar(cola: ColaDelCobro.Pagos, clave: String) {
         val generacion = paymentGeneration
         consultaDelSello = viewModelScope.launch {
-            sincronizacionDe(cola).firstOrNull { it == SincronizacionDelCobro.SINCRONIZADA } ?: return@launch
-            val sello = cashPaymentRepository.pagoDelServidor(cola.id)?.let { consultarSelloConReintento(it) }
+            // El primer desenlace: sincronizada o RECHAZADA. Rechazada, la venta no subió y la promesa se quita.
+            val desenlace = sincronizacionDe(cola).firstOrNull { it != SincronizacionDelCobro.PENDIENTE } ?: return@launch
+            val sello = if (desenlace == SincronizacionDelCobro.SINCRONIZADA) {
+                cashPaymentRepository.pagoDelServidor(cola.id)?.let { consultarSelloConReintento(it) }
+            } else {
+                null
+            }
             val sigueEnPantalla = ventaDelSello == clave && generacion == paymentGeneration &&
                 (_state.value as? PaymentFlowState.Success)?.colaDelCobro == cola
             if (!sigueEnPantalla) return@launch
