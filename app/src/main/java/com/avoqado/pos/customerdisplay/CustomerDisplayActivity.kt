@@ -148,7 +148,7 @@ class CustomerDisplayActivity : ComponentActivity() {
         // calificación (ver CustomerDisplayState) — una señal optimista manda
         // el upsell a una pantalla que nadie ve.
         reportedPresence = true
-        state.setPresenting(true)
+        state.setPresenting(true, SURFACE_ACTIVITY)
         // Este es el momento en que la ventana del cliente ya está de verdad en
         // pantalla — y por tanto el momento en que la caja se quedó sin foco de
         // teclado (fue la última pantalla en activarse). El manager decide si hay

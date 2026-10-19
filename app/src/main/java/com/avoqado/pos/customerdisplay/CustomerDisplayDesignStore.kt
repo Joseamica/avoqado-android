@@ -16,9 +16,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
- * Lo último que el server mandó para UNA terminal. `ficha == null` = fábrica. `shownAt`/`surface` = la última vez que
- * ESTA ficha se dibujó; se borran al guardar otra huella. Todo acuse se arma desde aquí, así que uno nuevo nunca
- * regresa «Mostrado» a «Guardado».
+ * Lo último que el server mandó para UNA terminal. `ficha == null` = fábrica. `shownAt`/`surface` = cuándo y dónde se
+ * dibujó ESTA ficha por primera vez en esa superficie (`kiosk` va sin hora: ahí no se dibuja); se borran al guardar otra
+ * huella. Todo acuse se arma desde aquí, así que uno nuevo nunca regresa «Mostrado» a «Guardado».
  */
 @Serializable
 data class DesignManifest(

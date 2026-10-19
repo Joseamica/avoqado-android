@@ -76,6 +76,7 @@ class CustomerDisplayManagerDeEscritorioTest {
         val letrero = fabrica.abiertos.single()
         assertEquals(segundo.limites, letrero.limites)
         assertTrue(estado.isPresenting.value)
+        assertEquals(SURFACE_WINDOW, estado.presentingSurface.value, "el acuse «mostrado» dice que se vio en la ventana de Windows")
         assertTrue(manager.isActive)
         assertTrue(estado.customerCapturesInput.value, "monitor físico ⇒ el cliente toca su pantalla (como Android)")
         assertEquals(DisplayCapabilitySnapshot(present = true, invertible = true), estado.capabilities.value)
@@ -91,6 +92,7 @@ class CustomerDisplayManagerDeEscritorioTest {
         pasan(2_100)
         assertTrue(fabrica.abiertos.single().cerrado)
         assertFalse(estado.isPresenting.value)
+        assertNull(estado.presentingSurface.value)
         assertFalse(estado.customerCapturesInput.value)
         assertFalse(manager.isActive)
     }

@@ -87,6 +87,7 @@ class CustomerDisplaySyncTest {
     // Enganche de UNA vez: corre al leer la sesión (quien pregunta se queda con el valor de ANTES).
     private val alLeerSesion = AtomicReference<(() -> Unit)?>(null)
     private val state = CustomerDisplayState()
+    private val kiosco = MutableStateFlow(false)
 
     // El caché de mentiras: lo que hay en disco por URL (como el real: el legado guarda una copia por URL) y la versión validada.
     private val images = mockk<CustomerDisplayImageCache>()
@@ -1512,7 +1513,173 @@ class CustomerDisplaySyncTest {
         assertTrue("se perdió el desligado", store().load().manifests.isEmpty())
     }
 
+    // ── acuse «mostrado»: en qué superficie se dibujó la ficha (Task 3.2) ──
+
+    @Test
+    fun `presentation montada acusa shownAt y surface y los guarda en el manifiesto`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertNull(manifiesto().shownAt)
+        reloj = T0 + 5 * MINUTO_MS
+
+        state.setPresenting(true)
+
+        esperar { manifiesto().pendingAck!!.seq == 2L }
+        val guardado = manifiesto()
+        assertEquals(MOSTRADO, guardado.shownAt)
+        assertEquals(SURFACE_PRESENTATION, guardado.surface)
+        val acuse = guardado.pendingAck!!
+        assertEquals(HUELLA_A, acuse.fingerprint)
+        assertEquals("2026-10-18T12:00:00Z", acuse.storedAt)
+        assertEquals(MOSTRADO, acuse.shownAt)
+        assertEquals(SURFACE_PRESENTATION, acuse.surface)
+        assertFalse(acuse.unsupportedSchema)
+        // Sale en el siguiente poll, como cualquier acuse (nada de red al dibujar).
+        assertEquals(listOf(1L), acuses.map { it.seq })
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertEquals(2L, acuses.last().seq)
+        assertEquals(MOSTRADO, acuses.last().shownAt)
+        assertEquals(SURFACE_PRESENTATION, acuses.last().surface)
+    }
+
+    @Test
+    fun `logo listo despues de mostrado no regresa a guardado`() = runBlocking {
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers { retenida.await(); bajar(firstArg()) }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+        state.setPresenting(true)
+        esperar { manifiesto().pendingAck!!.seq == 2L }
+        assertEquals(1, manifiesto().pendingAck!!.imagesPending)
+        reloj = T0 + 10 * MINUTO_MS
+
+        retenida.complete(Unit)
+
+        esperar { manifiesto().pendingAck!!.imagesReady == 1 }
+        val acuse = manifiesto().pendingAck!!
+        assertEquals(3L, acuse.seq)
+        assertEquals(MOSTRADO, acuse.shownAt)   // la hora en que se dibujó, no la del logo
+        assertEquals(SURFACE_PRESENTATION, acuse.surface)
+        // El logo cambió lo que se ve (otro diseño con archivo) pero no la combinación: ningún acuse «mostrado» de más.
+        Thread.sleep(300)
+        vaciarLaFila(sync)
+        assertEquals(4L, store().load().nextSeq)
+    }
+
+    @Test
+    fun `activity invertida acusa activity`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+
+        state.setPresenting(true, SURFACE_ACTIVITY)
+
+        esperar { manifiesto().pendingAck!!.seq == 2L }
+        assertEquals(SURFACE_ACTIVITY, manifiesto().surface)
+        assertEquals(SURFACE_ACTIVITY, manifiesto().pendingAck!!.surface)
+        assertEquals(MOSTRADO, manifiesto().pendingAck!!.shownAt)
+    }
+
+    @Test
+    fun `kiosco acusa kiosk sin shownAt`() = runBlocking {
+        kiosco.value = true
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+
+        state.setPresenting(true)
+
+        esperar { manifiesto().pendingAck!!.seq == 2L }
+        val acuse = manifiesto().pendingAck!!
+        assertEquals(SURFACE_KIOSK, acuse.surface)
+        assertNull("la ficha no se dibuja en el kiosco", acuse.shownAt)
+        assertEquals(SURFACE_KIOSK, manifiesto().surface)
+        assertNull(manifiesto().shownAt)
+        // Se apaga el kiosco con la pantalla montada: ahora sí se dibuja.
+        kiosco.value = false
+        esperar { manifiesto().pendingAck!!.seq == 3L }
+        assertEquals(MOSTRADO, manifiesto().pendingAck!!.shownAt)
+        assertEquals(SURFACE_PRESENTATION, manifiesto().pendingAck!!.surface)
+    }
+
+    @Test
+    fun `sin pantalla montada no acusa mostrado`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))   // diseño A en el estado, ninguna superficie montada
+
+        Thread.sleep(300)
+        vaciarLaFila(sync)
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+        assertNull(manifiesto().shownAt)
+        assertNull(manifiesto().surface)
+        assertEquals(1L, manifiesto().pendingAck!!.seq)
+        // Control: al montarla, sí (la espera de arriba no era vacía).
+        state.setPresenting(true)
+        esperar { manifiesto().shownAt != null }
+    }
+
+    @Test
+    fun `la misma combinacion no repite acuse`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+        state.setPresenting(true)
+        esperar { manifiesto().pendingAck!!.seq == 2L }
+        reloj = T0 + 10 * MINUTO_MS
+
+        // La ventana se remonta (bloqueo de pantalla) y la misma sucursal vuelve a publicar lo último...
+        state.setPresenting(false)
+        state.setPresenting(true)
+        sync.onSessionChanged()
+        // ...y la app se reinicia con la pantalla ya montada.
+        val otroEstado = CustomerDisplayState().apply { setPresenting(true) }
+        val otro = sync(estado = otroEstado)
+        esperar { otroEstado.design.value != null }
+        Thread.sleep(300)
+        vaciarLaFila(sync)
+        vaciarLaFila(otro)
+
+        val guardado = store().load()
+        assertEquals(3L, guardado.nextSeq)
+        assertEquals(2L, guardado.manifests.getValue(LLAVE).pendingAck!!.seq)
+        assertEquals(MOSTRADO, guardado.manifests.getValue(LLAVE).shownAt)
+    }
+
+    @Test
+    fun `volver a bajar la misma huella conserva shownAt y surface`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        reloj = T0 + 5 * MINUTO_MS
+        state.setPresenting(true)
+        esperar { manifiesto().pendingAck!!.seq == 2L }
+        // current:false con otra huella ⇒ el siguiente poll vuelve a pedir la ficha... y llega LA MISMA (la que se ve).
+        ackResponse = { aceptado(current = false, currentFingerprint = HUELLA_B) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        ackResponse = { MockResponse().setResponseCode(503) }
+        reloj = T0 + 10 * MINUTO_MS
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(2, fichaRequests.get())
+        val guardado = manifiesto()
+        assertEquals(MOSTRADO, guardado.shownAt)
+        assertEquals(SURFACE_PRESENTATION, guardado.surface)
+        assertEquals(MOSTRADO, guardado.pendingAck!!.shownAt)
+        assertEquals(SURFACE_PRESENTATION, guardado.pendingAck!!.surface)
+    }
+
     // ── ayudas ──
+
+    private fun manifiesto() = store().load().manifests.getValue(LLAVE)
 
     /**
      * Una unidad de la fila que no toca nada (una sucursal sin terminal): al volver, ya corrió todo lo que estaba formado
@@ -1563,7 +1730,7 @@ class CustomerDisplaySyncTest {
         store = almacen,
         images = images,
         state = estado,
-        kioskEnabled = MutableStateFlow(false),
+        kioskEnabled = kiosco,
         sessionVenue = { sesion.also { alLeerSesion.getAndSet(null)?.invoke() } },
         environment = { "test" },
         wallClock = { reloj },
@@ -1619,6 +1786,7 @@ class CustomerDisplaySyncTest {
         val T0 = Instant.parse("2026-10-18T12:00:00Z").toEpochMilli()
         val DIA_MS = TimeUnit.HOURS.toMillis(24)
         val HORA_MS = TimeUnit.HOURS.toMillis(1)
+        val MINUTO_MS = TimeUnit.MINUTES.toMillis(1)
         const val MOSTRADO = "2026-10-18T12:05:00Z"
     }
 }

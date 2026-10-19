@@ -15,6 +15,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -61,7 +63,7 @@ class CustomerDisplaySync internal constructor(
     private val store: CustomerDisplayDesignStore,
     private val images: CustomerDisplayImageCache,
     private val state: CustomerDisplayState,
-    @Suppress("unused") private val kioskEnabled: StateFlow<Boolean>,   // lo usa el acuse «mostrado» (Task 3.2)
+    private val kioskEnabled: StateFlow<Boolean>,
     private val sessionVenue: () -> String?,
     private val environment: () -> String,
     private val wallClock: () -> Long,
@@ -148,6 +150,15 @@ class CustomerDisplaySync internal constructor(
     // Después de declarar todo el estado: la unidad del arranque empieza aquí mismo.
     init {
         restart(lastSessionVenue)
+        // Acuse «mostrado»: esto sólo OBSERVA qué ficha está en qué superficie; guardar y encolar es una unidad ([markShown]).
+        // Por huella, no por diseño: el logo que llega cambia el diseño pero no lo que se acusa.
+        scope.launch(logErrors) {
+            combine(state.design, state.presentingSurface, kioskEnabled) { design, surface, kiosk ->
+                Triple(design?.ficha?.fingerprint, surface, kiosk)
+            }.distinctUntilChanged().collect { (fingerprint, surface, kiosk) ->
+                if (fingerprint != null && surface != null) launchUnit { markShown(fingerprint, surface, kiosk) }
+            }
+        }
     }
 
     /**
@@ -374,6 +385,43 @@ class CustomerDisplaySync internal constructor(
     }
 
     /**
+     * Unidad del acuse «mostrado»: la ficha [fingerprint] está en una superficie montada. Si sigue siendo la del manifiesto
+     * vigente de la sesión, guarda ahí `shownAt`/`surface` y encola UN acuse ([buildAck]); sale en el siguiente poll (nada de
+     * red al dibujar). Con kiosco la ficha no se dibuja: `surface = kiosk`, `shownAt = null`. Lo que el manifiesto ya dice
+     * (remontar la ventana, reiniciar la app) no repite acuse. Con un aviso de esquema pendiente se guarda sin acusar: un acuse
+     * de la ficha conservada lo taparía (la misma regla que [enqueueImagesAck]).
+     */
+    private suspend fun markShown(fingerprint: String, surface: String, kiosk: Boolean) {
+        val venueId = sessionVenue() ?: return
+        val generation = this.generation
+        val shownSurface = if (kiosk) SURFACE_KIOSK else surface
+        val shownAt = if (kiosk) null else isoNow()
+        withContext(Dispatchers.IO) {
+            val env = environment()
+            val before = store.load()
+            val key = before.lastTerminalByVenue[store.venueKey(env, venueId)]?.let { store.manifestKey(env, venueId, it) }
+                ?: return@withContext
+            val kept = before.manifests[key]
+            // Los contadores del último acuse de esa huella: decir «mostrado» no cambia cómo va el logo.
+            val counts = lastImagesAck[key]?.takeIf { it.first == fingerprint }?.second
+                ?: logoCounts(kept?.ficha?.toFicha(kept.imageOrigins)?.logo)
+            var enqueued = false
+            write(generation, venueId) { s ->
+                val current = s.manifests[key]
+                when {
+                    current == null || current.ficha?.fingerprint != fingerprint -> s
+                    current.surface == shownSurface && (current.shownAt == null) == kiosk -> s
+                    current.unsupportedFingerprint != null ->
+                        s.copy(manifests = s.manifests + (key to current.copy(shownAt = shownAt, surface = shownSurface)))
+                    else -> enqueueAck(s, key, current.copy(shownAt = shownAt, surface = shownSurface), fingerprint, unsupported = false, images = counts)
+                        .also { enqueued = true }
+                }
+            }
+            if (enqueued) rememberImages(key, fingerprint, counts)
+        }
+    }
+
+    /**
      * El ÚNICO que arma acuses. Copia `storedAt`, `shownAt` y `surface` del manifiesto: un acuse nuevo de la misma huella
      * nunca regresa «Mostrado» a «Guardado». El `seq` real lo asigna [enqueueAck] dentro del mismo `update` que lo reserva;
      * `installationId` llega del estado en curso (sin releer el disco dentro del `update`).
@@ -415,7 +463,12 @@ class CustomerDisplaySync internal constructor(
         }
         val counts = logoCounts(ficha.logo)
         val saved = write(generation, venueId) { s ->
-            val manifest = DesignManifest(ficha = dto, imageOrigins = payload.imageOrigins, storedAt = isoNow())
+            // `shownAt`/`surface` se borran sólo con OTRA huella: volver a bajar la que ya se ve (current:false) no la regresa a
+            // «Guardado» (nada la vuelve a acusar: el diseño en pantalla no cambia).
+            val shown = s.manifests[key]?.takeIf { it.ficha?.fingerprint == ficha.fingerprint }
+            val manifest = DesignManifest(
+                ficha = dto, imageOrigins = payload.imageOrigins, storedAt = isoNow(), shownAt = shown?.shownAt, surface = shown?.surface,
+            )
             enqueueAck(s, key, manifest, ficha.fingerprint, unsupported = false, images = counts)
         }
         if (saved) rememberImages(key, ficha.fingerprint, counts)

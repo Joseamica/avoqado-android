@@ -97,6 +97,15 @@ sealed interface CustomerContent {
     data class Done(val totalCents: Int, val receiptUrl: String?) : CustomerContent
 }
 
+/** Dónde se dibuja la pantalla del cliente; viaja en el acuse (`surface`) con estos mismos valores que acepta el server. */
+const val SURFACE_PRESENTATION = "presentation"
+/** Pantallas invertidas: la ventana del cliente es una Activity en la otra pantalla. */
+const val SURFACE_ACTIVITY = "activity"
+/** El segundo monitor del POS de Windows. */
+const val SURFACE_WINDOW = "window"
+/** La cara del cliente es el kiosco: la ficha no se dibuja (el acuse va sin `shownAt`). */
+const val SURFACE_KIOSK = "kiosk"
+
 /** Una sugerencia de propina: el porcentaje a mostrar y los centavos que cobra (ya calculados). */
 data class TipOption(val percent: Int, val tipCents: Int)
 
@@ -166,9 +175,17 @@ class CustomerDisplayState @Inject constructor() {
     private val _customerCapturesInput = MutableStateFlow(false)
     val customerCapturesInput: StateFlow<Boolean> = _customerCapturesInput.asStateFlow()
 
-    fun setPresenting(value: Boolean) {
+    /**
+     * La superficie montada AHORA ([SURFACE_PRESENTATION], [SURFACE_ACTIVITY] o [SURFACE_WINDOW]); `null` = ninguna. La
+     * observa el acuse «mostrado» de [CustomerDisplaySync]: dice en qué superficie se dibujó el diseño.
+     */
+    private val _presentingSurface = MutableStateFlow<String?>(null)
+    val presentingSurface: StateFlow<String?> = _presentingSurface.asStateFlow()
+
+    fun setPresenting(value: Boolean, surface: String = SURFACE_PRESENTATION) {
         presenting = value
         _isPresenting.value = value
+        _presentingSurface.value = if (value) surface else null
         recompute()
     }
 
