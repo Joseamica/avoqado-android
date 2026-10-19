@@ -51,6 +51,11 @@ class F04SyncSequenceSqlTest {
         private fun scalar(sql: String): Long? = db.createStatement().use { statement ->
             statement.executeQuery(sql).use { if (it.next()) it.getLong(1) else null }
         }
+        override suspend fun findForVenue(venueId: String, id: String): SyncIntentEntity? =
+            db.prepareStatement(FIND_SYNC_INTENT_FOR_VENUE_SQL.replace(":venueId", "?").replace(":id", "?")).use {
+                it.setString(1, venueId); it.setString(2, id)
+                it.executeQuery().use { row -> if (row.next()) row.getString("id") else null }
+            }?.let { findById(it) }
         override suspend fun findById(id: String): SyncIntentEntity? = db.prepareStatement(FIND_SYNC_INTENT_SQL.replace(":id", "?")).use {
             it.setString(1, id)
             it.executeQuery().use { row ->
@@ -149,6 +154,15 @@ class F04SyncSequenceSqlTest {
             assertEquals(42L, f.dao.sequenceState())
             assertEquals(intent("high", venue = "v2", seq = 42, status = "REJECTED"), f.dao.findById("high"))
             assertEquals(43L, f.write { f.dao.insertWithNextSeq(intent("next")) })
+        }
+    }
+
+    @Test fun findForVenueOnlyReturnsTheRowOfThatVenue() = runBlocking {
+        Fixture().use { f ->
+            f.write { f.dao.insertWithNextSeq(intent("cash-v2", venue = "v2")) }
+            assertEquals("cash-v2", f.dao.findForVenue("v2", "cash-v2")?.id)
+            assertNull(f.dao.findForVenue("v1", "cash-v2"))
+            assertNull(f.dao.findForVenue("v2", "otro"))
         }
     }
 

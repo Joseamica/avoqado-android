@@ -99,6 +99,7 @@ internal const val SEED_SYNC_SEQUENCE_SQL = "INSERT OR IGNORE INTO pos_sync_sequ
 internal const val READ_SYNC_SEQUENCE_SQL = "SELECT last_seq FROM pos_sync_sequence_state WHERE id = 1"
 internal const val ADVANCE_SYNC_SEQUENCE_SQL = "UPDATE pos_sync_sequence_state SET last_seq = MAX(last_seq, :floor) WHERE id = 1"
 internal const val FIND_SYNC_INTENT_SQL = "SELECT * FROM pos_sync_intents WHERE id = :id"
+internal const val FIND_SYNC_INTENT_FOR_VENUE_SQL = "SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND id = :id"
 internal const val MAX_SYNC_INTENT_SQL = "SELECT COALESCE(MAX(seq), 0) FROM pos_sync_intents"
 internal const val RESOLVE_SYNC_INTENT_SQL = "UPDATE pos_sync_intents SET status = :status, error_code = :errorCode, message = :message, result_json = :resultJson WHERE id = :id"
 
@@ -129,6 +130,9 @@ interface SyncIntentDao {
 
     @Query(FIND_SYNC_INTENT_SQL)
     suspend fun findById(id: String): SyncIntentEntity?
+
+    @Query(FIND_SYNC_INTENT_FOR_VENUE_SQL)
+    suspend fun findForVenue(venueId: String, id: String): SyncIntentEntity?
 
     /** Debe resolver y conservar el piso en el mismo commit; el replay notifica después. */
     @androidx.room.Transaction
