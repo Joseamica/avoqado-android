@@ -655,6 +655,30 @@ class DisplayModeRemoteRepositoryTest {
     }
 
     @Test
+    fun `ficha con otra forma y schema 2 llega con su esquema y su huella`() = runTest {
+        // Un esquema futuro puede cambiar el TIPO de un campo (aquí `theme` deja de ser texto): decodificarla directo en
+        // FichaDto tumbaba el 2xx a Retryable para siempre y el sync nunca podía acusar `unsupportedSchema`.
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"imageOrigins\":[\"https://storage.googleapis.com\"]," +
+                    "\"ficha\":{\"schemaVersion\":2,\"fingerprint\":\"$HUELLA_A\",\"theme\":{\"mode\":\"DARK\"}," +
+                    "\"welcomeText\":[\"Hola\"]}}}",
+            ),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(
+                CustomerDisplayPayload(
+                    terminalId = "t1",
+                    ficha = FichaDto(schemaVersion = 2, fingerprint = HUELLA_A),
+                    imageOrigins = listOf("https://storage.googleapis.com"),
+                ),
+            ),
+            repository.fetchCustomerDisplay("venue-1"),
+        )
+    }
+
+    @Test
     fun `404 DEVICE_NOT_FOUND llega como Rejected 404`() = runTest {
         server.enqueue(
             MockResponse().setResponseCode(404)

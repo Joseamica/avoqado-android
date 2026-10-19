@@ -13,7 +13,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
@@ -248,10 +250,25 @@ class DisplayModeRemoteRepository @Inject constructor(
                 .get()
                 .build()
         },
-        decodeSuccess = { body ->
-            DisplayModeRemoteOutcome.Success(json.decodeFromString<CustomerDisplayEnvelope>(body).data)
-        },
+        decodeSuccess = { body -> DisplayModeRemoteOutcome.Success(customerDisplayPayload(body)) },
     )
+
+    /**
+     * El esquema se lee ANTES que el DTO: una ficha de otra versión puede cambiar el TIPO de un campo y, decodificada
+     * directo, tumbaría el 2xx (Retryable para siempre). Así llega con sólo su esquema y su huella, y el sync la acusa
+     * `unsupportedSchema`. Sin `schemaVersion` entero, sí es una respuesta rota (Retryable).
+     */
+    private fun customerDisplayPayload(body: String): CustomerDisplayPayload {
+        val data = json.decodeFromString<CustomerDisplayRawEnvelope>(body).data
+        val raw = data.ficha as JsonObject
+        val schemaVersion = (raw["schemaVersion"] as JsonPrimitive).intOrNull ?: error("schemaVersion no es entero")
+        val ficha = if (schemaVersion == SUPPORTED_SCHEMA_VERSION) {
+            json.decodeFromJsonElement(FichaDto.serializer(), raw)
+        } else {
+            FichaDto(schemaVersion = schemaVersion, fingerprint = (raw["fingerprint"] as? JsonPrimitive)?.contentOrNull.orEmpty())
+        }
+        return CustomerDisplayPayload(terminalId = data.terminalId, ficha = ficha, imageOrigins = data.imageOrigins)
+    }
 
     /** El acuse: lo que la tablet DICE tener guardado y mostrar (`PUT …/customer-display/ack`). */
     suspend fun acknowledgeCustomerDisplay(
@@ -510,7 +527,14 @@ class DisplayModeRemoteRepository @Inject constructor(
     private data class CustomerDisplayAckEnvelope(val data: CustomerDisplayAckResponse)
 
     @Serializable
-    private data class CustomerDisplayEnvelope(val data: CustomerDisplayPayload)
+    private data class CustomerDisplayRawEnvelope(val data: CustomerDisplayRawPayload)
+
+    @Serializable
+    private data class CustomerDisplayRawPayload(
+        val terminalId: String,
+        val ficha: JsonElement,
+        val imageOrigins: List<String> = emptyList(),
+    )
 
     @Serializable
     private data class PollEnvelope(val data: PollData)

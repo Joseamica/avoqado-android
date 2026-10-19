@@ -53,7 +53,7 @@ data class Ficha(
     val thanksText: String?,
 )
 
-private const val SUPPORTED_SCHEMA_VERSION = 1
+internal const val SUPPORTED_SCHEMA_VERSION = 1
 private const val MAX_TEXT_CODE_POINTS = 40   // el mismo tope que `MAX_TEXT_CODE_POINTS` del server
 private val HEX_COLOR = Regex("^#[0-9A-Fa-f]{6}$")
 private val SHA256_HEX = Regex("^[0-9a-f]{64}$")

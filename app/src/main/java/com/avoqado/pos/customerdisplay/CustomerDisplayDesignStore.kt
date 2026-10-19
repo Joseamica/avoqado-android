@@ -4,6 +4,7 @@ import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
@@ -53,9 +54,20 @@ class CustomerDisplayDesignStore internal constructor(private val dir: File) {
     private val state get() = File(dir, "state.json")
 
     /** Nunca lanza: sin archivo (o ilegible) nace una instalación nueva y se persiste en ese momento. */
-    fun load(): StoredDesignState = synchronized(diskLock) { read() }
+    fun load(): StoredDesignState = synchronized(diskLock) {
+        try {
+            read()
+        } catch (_: IOException) {
+            // ponytail: una falla PASAJERA al leer no es un archivo corrupto: se sigue con una instalación en memoria SIN
+            // tocar el disco, y el archivo bueno (instalación, seq, acuse pendiente) se vuelve a leer la próxima vez.
+            StoredDesignState(installationId = UUID.randomUUID().toString())
+        }
+    }
 
-    /** Lee, aplica `change`, escribe y devuelve lo escrito. Si no se pudo escribir, lanza: nada quedó a medias. */
+    /**
+     * Lee, aplica `change`, escribe y devuelve lo escrito. Si no se pudo leer o escribir, lanza: nada quedó a medias (y
+     * nunca se escribe encima de un archivo que no se pudo leer).
+     */
     fun update(change: (StoredDesignState) -> StoredDesignState): StoredDesignState = synchronized(diskLock) {
         change(read()).also(::write)
     }
@@ -66,7 +78,12 @@ class CustomerDisplayDesignStore internal constructor(private val dir: File) {
     private fun read(): StoredDesignState {
         dir.listFiles { file -> file.name.endsWith(".tmp") }?.forEach { it.delete() }
         if (state.exists()) {
-            runCatching { return json.decodeFromString(StoredDesignState.serializer(), state.readText()) }
+            val text = state.readText()   // una IOException sube: no se pudo LEER, no está corrupto
+            try {
+                return json.decodeFromString(StoredDesignState.serializer(), text)
+            } catch (_: IllegalArgumentException) {
+                // SerializationException es una IllegalArgumentException: el contenido no se entiende.
+            }
             // Ilegible: se aparta (para poder investigarlo) y se arranca de cero.
             runCatching {
                 Files.move(state.toPath(), File(dir, "state.corrupt").toPath(), StandardCopyOption.REPLACE_EXISTING)

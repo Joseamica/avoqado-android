@@ -1,8 +1,11 @@
 package com.avoqado.pos.customerdisplay
 
 import java.io.File
+import java.io.IOException
+import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -66,6 +69,39 @@ class CustomerDisplayDesignStoreTest {
         assertTrue(estado.installationId.isNotBlank())
         assertEquals("{esto no es json", File(dir(), "state.corrupt").readText())
         assertEquals(estado.installationId, store().load().installationId)
+    }
+
+    @Test
+    fun `una lectura que falla por IO no aparta el archivo ni pierde la instalacion`() {
+        val guardado = store().update { it.copy(nextSeq = 5) }
+        val real = File(dir(), "state.json")
+        val aparte = File(carpeta.root, "aparte.json")
+        assertTrue(real.renameTo(aparte))
+        // Una carpeta en lugar del archivo: leerla lanza IOException, como un disco que falla un momento.
+        assertTrue(real.mkdir())
+
+        val enMemoria = store().load()
+
+        assertTrue(enMemoria.installationId.isNotBlank())
+        assertFalse(File(dir(), "state.corrupt").exists())
+        assertTrue(real.isDirectory)
+        // Escribir sobre lo que no se pudo leer perdería la instalación: lanza y no toca nada.
+        assertThrows(IOException::class.java) { store().update { it.copy(nextSeq = 99) } }
+        assertTrue(real.isDirectory)
+
+        assertTrue(real.delete())
+        assertTrue(aparte.renameTo(real))
+        assertEquals(guardado, store().load())
+    }
+
+    @Test
+    fun `update concurrente desde varias instancias no pierde ningun seq`() {
+        store().load()
+        val hilos = 16
+
+        (1..hilos).map { thread { store().update { it.copy(nextSeq = it.nextSeq + 1) } } }.forEach { it.join() }
+
+        assertEquals(1L + hilos, store().load().nextSeq)
     }
 
     @Test
