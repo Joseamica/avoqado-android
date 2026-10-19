@@ -11,6 +11,7 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -39,7 +40,16 @@ data class StoredDesignState(
     val otherInstallationReportAtMs: Long? = null,
     val lastTerminalByVenue: Map<String, String> = emptyMap(),
     val manifests: Map<String, DesignManifest> = emptyMap(),
-)
+) {
+    /**
+     * `false` = esta instalación sólo existe en memoria (el disco no se pudo leer, o no dejó guardarla): la siguiente
+     * lectura nacería otra, así que no se le reporta al server. No viaja al JSON ni cuenta en `equals`; `copy` lo regresa a
+     * `true` y sólo [CustomerDisplayDesignStore] lo apaga.
+     */
+    @Transient
+    var persisted: Boolean = true
+        internal set
+}
 
 /**
  * Un solo archivo JSON (`state.json`) escrito de forma atómica: temporal en la misma carpeta → `fd.sync()` →
@@ -60,7 +70,7 @@ class CustomerDisplayDesignStore internal constructor(private val dir: File) {
         } catch (_: IOException) {
             // ponytail: una falla PASAJERA al leer no es un archivo corrupto: se sigue con una instalación en memoria SIN
             // tocar el disco, y el archivo bueno (instalación, seq, acuse pendiente) se vuelve a leer la próxima vez.
-            StoredDesignState(installationId = UUID.randomUUID().toString())
+            StoredDesignState(installationId = UUID.randomUUID().toString()).apply { persisted = false }
         }
     }
 
@@ -93,7 +103,7 @@ class CustomerDisplayDesignStore internal constructor(private val dir: File) {
         }
         val fresh = StoredDesignState(installationId = UUID.randomUUID().toString())
         // ponytail: si el disco no deja escribir, se sigue con la instalación en memoria (la próxima lectura nace otra).
-        runCatching { write(fresh) }
+        if (runCatching { write(fresh) }.isFailure) fresh.persisted = false
         return fresh
     }
 

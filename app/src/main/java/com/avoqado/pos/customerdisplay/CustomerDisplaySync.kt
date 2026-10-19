@@ -170,6 +170,60 @@ class CustomerDisplaySync internal constructor(
         retrySoon
     }
 
+    /**
+     * Lo que la pantalla del cliente agrega al reporte de capacidades: `null` si el server no anunció la capacidad (servidor
+     * viejo: el reporte va como siempre) o si la instalación sólo existe en memoria (reportarla ligaría la terminal a una
+     * instalación que la siguiente lectura ya no tiene; ese tick va sin la parte de diseño).
+     */
+    fun designReport(announcedCapability: Int?): DesignReport? {
+        announcedCapability ?: return null
+        val s = store.load()
+        if (!s.persisted) return null
+        return DesignReport(minOf(DESIGN_VERSION, announcedCapability), s.installationId)
+    }
+
+    /**
+     * Otra instalación tomó la fila (`OTHER_INSTALLATION`) y toca volver a reportar: a lo más una vez por hora. Un reloj que
+     * quedó ANTES de la última vez (lo cambiaron a mano) no bloquea el reporte.
+     */
+    fun otherInstallationReportDue(): Boolean {
+        val s = store.load()
+        if (!s.otherInstallationPending) return false
+        val at = s.otherInstallationReportAtMs ?: return true
+        val now = wallClock()
+        return now < at || now - at >= OTHER_INSTALLATION_REPORT_INTERVAL_MS
+    }
+
+    /**
+     * El reporte de capacidades llegó: si iba por `OTHER_INSTALLATION` se guarda la hora y se apaga la marca, y se encola un
+     * acuse NUEVO (otro `seq`, armado con [buildAck]) por la ficha del manifiesto vigente de esa sucursal, para que el server
+     * lo ligue a esta instalación. Sale en el siguiente poll.
+     */
+    suspend fun onCapabilitiesReported(venueId: String): Unit = withContext(Dispatchers.IO) {
+        val generation = generation.get()
+        val env = environment()
+        val before = store.load()
+        val key = before.lastTerminalByVenue[store.venueKey(env, venueId)]?.let { store.manifestKey(env, venueId, it) }
+        val kept = key?.let { before.manifests[it] }
+        val fingerprint = kept?.ficha?.fingerprint
+        val counts = logoCounts(kept?.ficha?.toFicha(kept.imageOrigins)?.logo)
+        val now = wallClock()
+        var enqueued = false
+        write(generation, venueId) { s ->
+            val marked = if (s.otherInstallationPending) s.copy(otherInstallationPending = false, otherInstallationReportAtMs = now) else s
+            val current = key?.let { marked.manifests[it] }
+            // La MISMA regla que el acuse de imágenes: otra ficha entretanto, o un esquema desconocido pendiente (su acuse
+            // «unsupportedSchema» quedaría tapado por uno de seq mayor y el panel perdería «actualiza la app»).
+            if (
+                key == null || fingerprint == null || current?.ficha?.fingerprint != fingerprint ||
+                current?.unsupportedFingerprint != null
+            ) marked
+            else enqueueAck(marked, key, current, fingerprint, unsupported = false, images = counts).also { enqueued = true }
+        }
+        if (enqueued && key != null && fingerprint != null) rememberImages(key, fingerprint, counts)
+    }
+
+
     /** Login, logout o cambio de sucursal: retira el diseño AL INSTANTE y publica (sin red) lo guardado de la nueva. */
     fun onSessionChanged() = restart()
 
@@ -285,7 +339,7 @@ class CustomerDisplaySync internal constructor(
                     val current = s.manifests[key]
                     // Otra ficha entretanto, o un esquema desconocido pendiente: el acuse de imágenes de la ficha que se
                     // conserva taparía (con un seq mayor) el «unsupportedSchema» y el panel perdería «actualiza la app».
-                    // 🔴 La Task 2.6 (`onCapabilitiesReported`) debe respetar la MISMA regla al encolar su acuse nuevo.
+                    // [onCapabilitiesReported] respeta la MISMA regla al encolar su acuse nuevo.
                     if (current?.ficha?.fingerprint != ficha.fingerprint || current?.unsupportedFingerprint != null) s
                     else enqueueAck(s, key, current, ficha.fingerprint, unsupported = false, images = counts).also { enqueued = true }
                 }
@@ -411,6 +465,9 @@ class CustomerDisplaySync internal constructor(
         const val TAG = "CustomerDisplaySync"
         const val DEVICE_NOT_FOUND = "DEVICE_NOT_FOUND"
         val NO_IMAGES = Triple(0, 0, 0)
+        /** La versión de diseño que entiende esta app (la del contrato v1). */
+        const val DESIGN_VERSION = 1
+        const val OTHER_INSTALLATION_REPORT_INTERVAL_MS = 60L * 60L * 1_000L
     }
 }
 
@@ -421,7 +478,7 @@ sealed interface AckAction {
     data class CloseAndAckAgain(val fingerprint: String) : AckAction
     /** Lo vigente es otra ficha: el acuse refresca la caché del server; `refetch` sólo cubre una carrera (el siguiente poll la baja aunque aún anuncie la vieja). */
     data object CloseAndFetch : AckAction
-    /** Otra instalación tomó la fila: se marca `otherInstallationPending` y la Task 2.6 vuelve a reportar. */
+    /** Otra instalación tomó la fila: se marca `otherInstallationPending` y el coordinador vuelve a reportar (a lo más una vez por hora). */
     data object CloseAndReport : AckAction
     /** Sin red, 408, 429, 5xx (`ACK_BUSY`) o sesión inválida: el mismo acuse (mismo `seq`) sale en el siguiente poll. */
     data object Keep : AckAction

@@ -822,6 +822,122 @@ class CustomerDisplaySyncTest {
         assertTrue(guardado.otherInstallationPending)
     }
 
+    // ── el reporte de capacidades (Task 2.6) ──
+
+    @Test
+    fun `sin capacidad anunciada no hay diseno en el reporte y con ella va la version 1 e instalacion`() {
+        val sync = sync()
+
+        assertNull(sync.designReport(null))
+        val instalacion = store().load().installationId
+        assertEquals(DesignReport(1, instalacion), sync.designReport(1))
+        assertEquals(DesignReport(1, instalacion), sync.designReport(3))
+    }
+
+    @Test
+    fun `una instalacion que solo existe en memoria no se reporta`() {
+        // El archivo no se puede leer (IOException pasajera): load() sigue con una instalación inventada en memoria.
+        val noSeLee = File(carpeta.root, "no-se-lee").also { File(it, "state.json").mkdirs() }
+        assertNull(sync(almacen = CustomerDisplayDesignStore(noSeLee)).designReport(1))
+        // El disco no deja guardar la instalación nueva: la siguiente lectura nacería otra.
+        val noSeGuarda = File(carpeta.root, "no-se-guarda").also { it.writeText("") }
+        assertNull(sync(almacen = CustomerDisplayDesignStore(noSeGuarda)).designReport(1))
+    }
+
+    @Test
+    fun `OTHER_INSTALLATION reporta a lo mas una vez por hora`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { MockResponse().setBody("{\"data\":{\"accepted\":false,\"reason\":\"OTHER_INSTALLATION\"}}") }
+        val sync = sync()
+        assertFalse(sync.otherInstallationReportDue())
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertTrue(sync.otherInstallationReportDue())
+
+        sync.onCapabilitiesReported(VENUE)
+
+        val guardado = store().load()
+        assertFalse(guardado.otherInstallationPending)
+        assertEquals(T0, guardado.otherInstallationReportAtMs)
+        assertFalse(sync.otherInstallationReportDue())
+        // El acuse nuevo vuelve a chocar con la otra instalación: dentro de la hora no se reporta otra vez.
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertTrue(store().load().otherInstallationPending)
+        reloj = T0 + HORA_MS - 1
+        assertFalse(sync.otherInstallationReportDue())
+        reloj = T0 + HORA_MS
+        assertTrue(sync.otherInstallationReportDue())
+    }
+
+    @Test
+    fun `reloj hacia atras no bloquea el reporte por otra instalacion`() {
+        val sync = sync()
+        store().update { it.copy(otherInstallationPending = true, otherInstallationReportAtMs = T0) }
+
+        reloj = T0 + 1
+        assertFalse(sync.otherInstallationReportDue())
+        reloj = T0 - 1
+        assertTrue(sync.otherInstallationReportDue())
+    }
+
+    @Test
+    fun `tras reportar manda un acuse nuevo con otro seq`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = true) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertNull(store().load().manifests.getValue(LLAVE).pendingAck)
+
+        sync.onCapabilitiesReported(VENUE)
+
+        val guardado = store().load()
+        val acuse = guardado.manifests.getValue(LLAVE).pendingAck!!
+        assertEquals(2L, acuse.seq)
+        assertEquals(HUELLA_A, acuse.fingerprint)
+        assertEquals(guardado.installationId, acuse.installationId)
+        assertFalse(acuse.unsupportedSchema)
+        // Sin otra instalación de por medio, no se guarda la hora.
+        assertNull(guardado.otherInstallationReportAtMs)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertEquals(listOf(1L, 2L), acuses.map { it.seq })
+        assertNull(store().load().manifests.getValue(LLAVE).pendingAck)
+    }
+
+    @Test
+    fun `el acuse tras reportar conserva shownAt y surface`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = true) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        store().update { s ->
+            s.copy(manifests = s.manifests + (LLAVE to s.manifests.getValue(LLAVE).copy(shownAt = MOSTRADO, surface = "presentation")))
+        }
+
+        sync.onCapabilitiesReported(VENUE)
+
+        val acuse = store().load().manifests.getValue(LLAVE).pendingAck!!
+        assertEquals("2026-10-18T12:00:00Z", acuse.storedAt)
+        assertEquals(MOSTRADO, acuse.shownAt)
+        assertEquals("presentation", acuse.surface)
+    }
+
+    @Test
+    fun `reportar no tapa el acuse unsupportedSchema`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        fichaResponse = { ficha(HUELLA_B, schema = 2) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+
+        sync.onCapabilitiesReported(VENUE)
+
+        val guardado = store().load()
+        val acuse = guardado.manifests.getValue(LLAVE).pendingAck!!
+        assertEquals(HUELLA_B, acuse.fingerprint)
+        assertTrue(acuse.unsupportedSchema)
+        assertEquals(2L, acuse.seq)
+        assertEquals(3L, guardado.nextSeq)
+    }
+
     // ── ayudas ──
 
     private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =
@@ -894,5 +1010,7 @@ class CustomerDisplaySyncTest {
             "{\"source\":\"asset\",\"url\":\"$LOGO_URL\",\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}"
         val T0 = Instant.parse("2026-10-18T12:00:00Z").toEpochMilli()
         val DIA_MS = TimeUnit.HOURS.toMillis(24)
+        val HORA_MS = TimeUnit.HOURS.toMillis(1)
+        const val MOSTRADO = "2026-10-18T12:05:00Z"
     }
 }

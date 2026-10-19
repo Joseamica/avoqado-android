@@ -49,6 +49,7 @@ internal interface DeviceCapabilityRemote {
     suspend fun reportCapabilities(
         venueId: String,
         snapshot: DisplayCapabilitySnapshot,
+        design: DesignReport?,
     ): DisplayModeRemoteOutcome<Unit>
 
     suspend fun fetchDisplayModeRequest(
@@ -474,13 +475,14 @@ open class DisplayModeRequestProcessor internal constructor(
     }
 }
 
-private class RepositoryDeviceCapabilityRemote(
+internal class RepositoryDeviceCapabilityRemote(
     private val repository: DisplayModeRemoteRepository,
 ) : DeviceCapabilityRemote {
     override suspend fun reportCapabilities(
         venueId: String,
         snapshot: DisplayCapabilitySnapshot,
-    ): DisplayModeRemoteOutcome<Unit> = repository.reportCapabilities(venueId, snapshot)
+        design: DesignReport?,
+    ): DisplayModeRemoteOutcome<Unit> = repository.reportCapabilities(venueId, snapshot, design)
 
     override suspend fun fetchDisplayModeRequest(
         venueId: String,
@@ -516,6 +518,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
     private val scope: CoroutineScope,
     private val clock: CoordinatorClock,
     private val jitter: PollJitter,
+    private val customerDisplaySync: CustomerDisplaySync? = null,
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -525,6 +528,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         customerDisplayState: CustomerDisplayState,
         secureStorage: SecureStorage,
         connectivityMonitor: ConnectivityMonitor,
+        customerDisplaySync: CustomerDisplaySync,
     ) : this(
         remote = RepositoryDeviceCapabilityRemote(repository),
         processor = processor,
@@ -537,6 +541,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         jitter = PollJitter { baseMs, maximumMs ->
             Random.Default.nextLong(from = baseMs, until = maximumMs + 1L)
         },
+        customerDisplaySync = customerDisplaySync,
     )
 
     private val wakeups = Channel<Unit>(Channel.CONFLATED)
@@ -551,6 +556,12 @@ class DeviceCapabilitySyncCoordinator internal constructor(
 
     /** Sólo el loop escribe esto; no necesita otra fuente observable. */
     private var lastReported: ReportedCapabilities? = null
+
+    /**
+     * La capacidad de diseño del último poll que SÍ respondió (sólo el loop la escribe). Un poll fallido no la borra: si
+     * no, el reporte de ese tick saldría sin diseño y el siguiente volvería a mandarlo.
+     */
+    private var lastDesignCapability: Int? = null
 
     init {
         // También se consume el valor inicial. Un StateFlow puede cambiar entre
@@ -596,6 +607,8 @@ class DeviceCapabilitySyncCoordinator internal constructor(
      */
     fun onSessionChanged() {
         invalidSessionVenue.set(null)
+        // Antes del wakeup: el tick nuevo ya corre con la generación nueva del sync.
+        customerDisplaySync?.onSessionChanged()
         signalWakeup()
     }
 
@@ -665,6 +678,8 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         // podría impedir leer/aplicar una intención ya creada.
         val pollOutcome = remote.fetchDisplayModeRequest(session.venueId)
         currentCoroutineContext().ensureActive()
+        // La terminal y el sobre del poll (huellas, capacidad, «repórtame») cuando el poll sí respondió.
+        var polled: Pair<String, PollSignals>? = null
         when (pollOutcome) {
             is DisplayModeRemoteOutcome.Success,
             is DisplayModeRemoteOutcome.NoRequest,
@@ -676,6 +691,11 @@ class DeviceCapabilitySyncCoordinator internal constructor(
                 } catch (_: Exception) {
                     shouldRetrySoon = true
                 }
+                polled = when (pollOutcome) {
+                    is DisplayModeRemoteOutcome.Success -> pollOutcome.data.terminalId to pollOutcome.data.signals
+                    is DisplayModeRemoteOutcome.NoRequest -> pollOutcome.terminalId to pollOutcome.signals
+                    else -> null
+                }
             }
 
             DisplayModeRemoteOutcome.SessionInvalid -> {
@@ -683,23 +703,55 @@ class DeviceCapabilitySyncCoordinator internal constructor(
                 return TickResult.Ineligible
             }
 
-            is DisplayModeRemoteOutcome.Rejected,
-            is DisplayModeRemoteOutcome.Retryable,
-            -> shouldRetrySoon = true
+            is DisplayModeRemoteOutcome.Rejected -> {
+                // El aparato ya no es de esta sucursal: la pantalla del cliente vuelve a fábrica y borra su diseño.
+                if (pollOutcome.status == 404 && pollOutcome.code == DEVICE_NOT_FOUND) {
+                    customerDisplaySync?.onDeviceUnbound(session.venueId)
+                }
+                shouldRetrySoon = true
+            }
+
+            is DisplayModeRemoteOutcome.Retryable -> shouldRetrySoon = true
+        }
+
+        // La pantalla del cliente va DESPUÉS del procesador (la inversión no espera la ficha) y en su propio try: una
+        // falla suya sólo pide reintento; nunca tumba el poll, el procesador ni el reporte.
+        polled?.let { (terminalId, signals) ->
+            lastDesignCapability = signals.designCapability
+            val sync = customerDisplaySync ?: return@let
+            try {
+                if (sync.afterPoll(session.venueId, terminalId, signals)) shouldRetrySoon = true
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                shouldRetrySoon = true
+            }
         }
 
         // El reporte sigue siendo independiente y retryable, pero nunca está
         // delante del camino de control GET → processor.
         currentCoroutineContext().ensureActive()
-        if (capabilityReportIsDue(session, snapshot)) {
-            when (remote.reportCapabilities(session.venueId, snapshot)) {
+        val design = customerDisplaySync?.designReport(lastDesignCapability)
+        val requested = polled?.second?.capabilityReportRequested == true
+        if (capabilityReportIsDue(session, snapshot, design, requested)) {
+            when (remote.reportCapabilities(session.venueId, snapshot, design)) {
                 is DisplayModeRemoteOutcome.Success -> {
                     currentCoroutineContext().ensureActive()
                     lastReported = ReportedCapabilities(
                         venueId = session.venueId,
                         snapshot = snapshot,
+                        designVersion = design?.designVersion,
                         atMs = clock.nowMillis(),
                     )
+                    customerDisplaySync?.let { sync ->
+                        try {
+                            sync.onCapabilitiesReported(session.venueId)
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: Exception) {
+                            shouldRetrySoon = true
+                        }
+                    }
                 }
 
                 DisplayModeRemoteOutcome.SessionInvalid -> {
@@ -720,11 +772,15 @@ class DeviceCapabilitySyncCoordinator internal constructor(
     private fun capabilityReportIsDue(
         session: DeviceSession,
         snapshot: DisplayCapabilitySnapshot,
+        design: DesignReport?,
+        requested: Boolean,
     ): Boolean {
+        if (requested || customerDisplaySync?.otherInstallationReportDue() == true) return true
         val previous = lastReported ?: return true
         val now = clock.nowMillis()
         return previous.venueId != session.venueId ||
             previous.snapshot != snapshot ||
+            previous.designVersion != design?.designVersion ||
             now < previous.atMs ||
             now - previous.atMs >= CAPABILITY_REPORT_INTERVAL_MS
     }
@@ -754,6 +810,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
     private data class ReportedCapabilities(
         val venueId: String,
         val snapshot: DisplayCapabilitySnapshot,
+        val designVersion: Int?,
         val atMs: Long,
     )
 
@@ -764,6 +821,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         private const val BASE_FOREGROUND_WAIT_MS = 15_000L
         private const val MAX_FOREGROUND_WAIT_MS = 20_000L
         private const val INITIAL_BACKOFF_MS = 1_000L
+        private const val DEVICE_NOT_FOUND = "DEVICE_NOT_FOUND"
 
         internal fun offlineBackoffMs(attempt: Int): Long {
             val shift = attempt.coerceIn(0, 20)
