@@ -2,6 +2,7 @@ package com.avoqado.pos.designsystem.components
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -31,6 +32,8 @@ fun PrimaryButton(
     isLoading: Boolean = false,
     fullWidth: Boolean = false,
     destructive: Boolean = false,
+    /** Atajo de teclado del POS de Windows, en chiquito a la derecha del texto (en Android no se ve). */
+    tecla: String? = null,
 ) {
     val adaptive = AvoqadoTheme.adaptive
     val container = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -59,6 +62,9 @@ fun PrimaryButton(
                 text = text,
                 style = MaterialTheme.typography.titleMedium,
             )
+            if (tecla != null) {
+                TeclaDeAtajo(tecla, Modifier.padding(start = AvoqadoTheme.spacing.sm), color = content.copy(alpha = 0.8f))
+            }
         }
     }
 }

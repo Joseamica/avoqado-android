@@ -49,6 +49,7 @@ fun AvoqadoFullScreenModal(
     val headerActionContainer = MaterialTheme.colorScheme.onSurface
     val headerActionContent = MaterialTheme.colorScheme.surface
 
+    BarreraDeAtajos()
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(

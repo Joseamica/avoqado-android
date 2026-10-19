@@ -1,5 +1,6 @@
 package com.avoqado.pos.customers.presentation
 
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import androidx.compose.foundation.background
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
@@ -196,6 +197,7 @@ private fun SellPackDialog(
 
     LaunchedEffect(Unit) { viewModel.loadPacks() }
 
+    BarreraDeAtajos()   // POS de Windows: con el diálogo encima, F12/F3 esperan
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Vender a ${customer.fullName}") },
@@ -254,6 +256,7 @@ private fun SellPackDialog(
 
     // Confirm before granting — a stray tap would otherwise sell a paid pack.
     pendingPack?.let { pack ->
+        BarreraDeAtajos()
         AlertDialog(
             onDismissRequest = { pendingPack = null },
             title = { Text("Vender paquete") },

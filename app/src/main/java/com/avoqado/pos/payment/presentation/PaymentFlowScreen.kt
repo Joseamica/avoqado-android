@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
 import com.avoqado.pos.core.util.formatMoneyFromCents
 import com.avoqado.pos.customers.data.model.Customer
@@ -496,6 +497,7 @@ fun PaymentFlowScreen(
     }
 
     if (showCustomersSheet) {
+        BarreraDeAtajos()   // panel de pantalla completa propio: Esc no es «Venta nueva» mientras se elige cliente
         Box(
             modifier = androidx.compose.ui.Modifier
                 .fillMaxSize()

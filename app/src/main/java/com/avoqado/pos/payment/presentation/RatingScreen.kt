@@ -29,7 +29,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.key.Key
+import com.avoqado.pos.designsystem.components.AtajoDeTeclado
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.TeclaDeAtajo
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Warning
 
@@ -47,24 +50,34 @@ fun RatingScreen(
     onCancel: (() -> Unit)? = null,
 ) {
     var rating by remember { mutableIntStateOf(0) }
+    // POS de Windows (founder, 19-oct): F12 = Omitir (sigue el cobro, como F12 = Cobrar en la venta) y Esc = la X.
+    // La propina sigue con el mouse: un F12 de más no debe saltarla sin preguntarle al cliente.
+    AtajoDeTeclado(Key.F12) { onSkip() }
+    AtajoDeTeclado(Key.Escape, activo = onCancel != null) { onCancel?.invoke() }
 
     Box(modifier = Modifier.fillMaxSize()) {
     if (onCancel != null) {
-        Box(
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(AvoqadoTheme.spacing.lg)
-                .size(32.dp)
-                .clip(RoundedCornerShape(50))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable(onClick = onCancel),
-            contentAlignment = Alignment.Center,
+                .padding(AvoqadoTheme.spacing.lg),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.Filled.Close,
-                contentDescription = "Cerrar",
-                modifier = Modifier.size(18.dp),
-            )
+            TeclaDeAtajo("Esc", Modifier.padding(end = AvoqadoTheme.spacing.sm))
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable(onClick = onCancel),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Cerrar",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
     }
     Column(
@@ -106,6 +119,7 @@ fun RatingScreen(
 
         TextButton(onClick = onSkip) {
             Text("Omitir")
+            TeclaDeAtajo("F12", Modifier.padding(start = AvoqadoTheme.spacing.sm))
         }
     }
     }
