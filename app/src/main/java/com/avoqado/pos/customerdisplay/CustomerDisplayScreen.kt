@@ -42,7 +42,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -56,6 +58,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -69,6 +72,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoLoaderGreen
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import androidx.compose.foundation.border
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.layout.ContentScale
@@ -97,8 +101,15 @@ fun CustomerDisplayScreen(
     val receiptSend by state.receiptSend.collectAsState()
     // 🔴 En la MISMA composición que `content`: el paso a reposo y el cambio de diseño caen en el mismo cuadro.
     val design by state.design.collectAsState()
+    // Las superficies crean estas lambdas en cada recomposición; el contenido movible de abajo se crea una vez y lee la última.
+    val alCalificar by rememberUpdatedState(onRating)
+    val alDejarPropina by rememberUpdatedState(onTip)
+    val alPedirWhatsApp by rememberUpdatedState(onWhatsApp)
+    val alPedirCorreo by rememberUpdatedState(onEmail)
 
-    val pantalla: @Composable () -> Unit = { Box(
+    // 🔴 UN solo contenido que se MUEVE entre «sin ficha» y «con ficha»: un `clearDesign` a media captura de WhatsApp
+    // (logout, desligado) cambia el tema sin recrear lo que el cliente ya tecleó.
+    val pantalla = remember(state) { movableContentOf { Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
@@ -114,13 +125,14 @@ fun CustomerDisplayScreen(
                     onConfirm = { state.onUpsellConfirmed?.invoke() },
                     onDismiss = { state.onUpsellDismissed?.invoke() },
                 )
-            is CustomerContent.Rating -> RatingPrompt(c, onRating)
-            is CustomerContent.Tip -> TipPrompt(c, onTip)
+            is CustomerContent.Rating -> RatingPrompt(c) { alCalificar(it) }
+            is CustomerContent.Tip -> TipPrompt(c) { alDejarPropina(it) }
             is CustomerContent.Total -> TotalOnly(c)
             is CustomerContent.Charging -> ChargingPrompt(c)
-            is CustomerContent.Done -> DonePrompt(c, canInteract, receiptSend, onWhatsApp, onEmail) { state.keepAlive() }
+            is CustomerContent.Done ->
+                DonePrompt(c, canInteract, receiptSend, { alPedirWhatsApp(it) }, { alPedirCorreo(it) }) { state.keepAlive() }
         }
-    } }
+    } } }
 
     // Sin ficha: exactamente lo de hoy (el tema lo pone la superficie por fuera).
     val d = design ?: return pantalla()
@@ -129,8 +141,11 @@ fun CustomerDisplayScreen(
         val onAccent = d.ficha.onAccentArgb
         CompositionLocalProvider(LocalFicha provides d.ficha) {
             if (accent != null && onAccent != null) {
-                MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(accent), onPrimary = Color(onAccent))) {
-                    pantalla()
+                // Los botones que se LLENAN de primary toman el acento; la salida («No, gracias») conserva el de hoy.
+                CompositionLocalProvider(LocalPrimarioSinAcento provides MaterialTheme.colorScheme.primary) {
+                    MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(accent), onPrimary = Color(onAccent))) {
+                        pantalla()
+                    }
                 }
             } else {
                 pantalla()
@@ -141,6 +156,9 @@ fun CustomerDisplayScreen(
 
 /** La ficha que dibuja la pantalla; `null` = sin diseño (lo de hoy). */
 private val LocalFicha = staticCompositionLocalOf<Ficha?> { null }
+
+/** El primary del tema ANTES del acento; `Unspecified` = no hay acento (el primary del tema ya es el de hoy). */
+private val LocalPrimarioSinAcento = staticCompositionLocalOf { Color.Unspecified }
 
 /** El acento del negocio, sólo si eligió uno (`custom:false` ⇒ `null` y cada lugar conserva su color de hoy). */
 @Composable
@@ -357,9 +375,23 @@ private fun VenueIdleBranding(venueName: String?, logoUrl: String?, design: Appl
 private fun LogoDeLaFicha(file: java.io.File?, stamp: Long): ImageBitmap? =
     produceState<ImageBitmap?>(null, file?.path, stamp) {
         value = file?.let {
-            withContext(Dispatchers.IO) { runCatching { BitmapFactory.decodeFile(it.path)?.asImageBitmap() }.getOrNull() }
+            withContext(Dispatchers.IO) { runCatching { decodificarLogo(it.path)?.asImageBitmap() }.getOrNull() }
         }
     }.value
+
+/**
+ * El logo a unos 720 px de lado (entre 720 y 1439 si es más grande; chico, tal cual): ocupa la mitad del ancho de una
+ * pantalla de 1280, y decodificar completo un PNG de 4000 px son ~64 MB de memoria en una tablet.
+ */
+internal fun decodificarLogo(path: String): android.graphics.Bitmap? {
+    val lados = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, lados)
+    var muestra = 1
+    while (maxOf(lados.outWidth, lados.outHeight) / (muestra * 2) >= LADO_DEL_LOGO) muestra *= 2
+    return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = muestra })
+}
+
+private const val LADO_DEL_LOGO = 720
 
 /**
  * "Powered by Avoqado", muy chico y hasta abajo (founder, 2026-09-01). Sólo en
@@ -661,6 +693,9 @@ private fun UpsellPrompt(
                 onClick = onDismiss,
                 modifier = Modifier.fillMaxWidth().height(74.dp),
                 shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = LocalPrimarioSinAcento.current.takeOrElse { MaterialTheme.colorScheme.primary },
+                ),
             ) {
                 Text("No, gracias", fontSize = CdBody, fontWeight = FontWeight.Bold)
             }

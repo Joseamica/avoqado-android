@@ -8,14 +8,17 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.ComposeUiTest
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import com.avoqado.escritorio.ContextoDeEscritorio
 import com.avoqado.pos.customerdisplay.AppliedDesign
@@ -24,6 +27,9 @@ import com.avoqado.pos.customerdisplay.CustomerDisplayScreen
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.Ficha
 import com.avoqado.pos.customerdisplay.LogoRef
+import com.avoqado.pos.customerdisplay.decodificarLogo
+import com.avoqado.pos.customerdisplay.money
+import com.avoqado.pos.pos.data.model.UpsellCard
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import java.awt.image.BufferedImage
 import java.io.File
@@ -31,7 +37,9 @@ import java.nio.file.Files
 import javax.imageio.ImageIO
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -71,9 +79,20 @@ class PantallaDelClienteEnLaEscenaTest {
             LocalView provides View(context)) { AvoqadoTheme(darkTheme = false, content = content) }
     }
 
-    private fun ficha(dark: Boolean = false, welcome: String? = null, thanks: String? = null, logo: LogoRef? = null) =
-        Ficha(fingerprint = "huella", dark = dark, accentArgb = 0xFFE4572EL, onAccentArgb = 0xFFFFFFFFL, logo = logo,
-            welcomeText = welcome, thanksText = thanks)
+    private fun ficha(dark: Boolean = false, welcome: String? = null, thanks: String? = null, logo: LogoRef? = null, acento: Boolean = true) =
+        Ficha(fingerprint = "huella", dark = dark, accentArgb = if (acento) 0xFFE4572EL else null,
+            onAccentArgb = if (acento) 0xFFFFFFFFL else null, logo = logo, welcomeText = welcome, thanksText = thanks)
+
+    /** Pantalla FÍSICA táctil con la captura del cliente prendida: el cliente teclea su WhatsApp y ve «No, gracias». */
+    private fun CustomerDisplayState.tactil() = apply { setPresenting(true); setCustomerCaptureEnabled(true); setTouchCapable(true) }
+
+    /** Los pixeles de un nodo, para comparar dos dibujos del mismo lugar. */
+    private fun imagen(nodo: SemanticsNodeInteraction): IntArray {
+        val img = nodo.captureToImage().toAwtImage()
+        return img.getRGB(0, 0, img.width, img.height, null, 0, img.width)
+    }
+
+    private fun ComposeUiTest.esquina(): Int = onRoot().captureToImage().toAwtImage().getRGB(2, 2)
 
     private fun conMarca() = CustomerDisplayState().apply { setVenueBranding("Taquería Lupe", null) }
 
@@ -158,5 +177,102 @@ class PantallaDelClienteEnLaEscenaTest {
         avanzar()
         onNodeWithText("¡Hola, vecino!").assertIsDisplayed()
         assertEquals(0xFF1C1C1E.toInt(), pixel(0.1f))
+    }
+
+    // ── Arrastres de la revisión de la 3.1 ──
+
+    @Test fun `No gracias no toma el acento`() = runComposeUiTest {
+        // Sólo los botones que se LLENAN de primary (Agregar, Enviar) toman el acento; la salida conserva su color de hoy.
+        val state = conMarca().tactil()
+        val upsell = CustomerContent.Upsell(cards = emptyList(), cartTotalCents = 10_000)
+        state.show(upsell)
+        pantalla(state)
+        val hoy = imagen(onNodeWithText("No, gracias"))
+
+        state.idle()
+        state.offerDesign(AppliedDesign(ficha(), logoFile = null))
+        state.show(upsell)
+        avanzar()
+
+        assertContentEquals(hoy, imagen(onNodeWithText("No, gracias")), "«No, gracias» se pintó del acento")
+    }
+
+    @Test fun `quitar el diseno a media captura de WhatsApp no borra lo tecleado`() = runComposeUiTest {
+        val state = conMarca().apply { offerDesign(AppliedDesign(ficha(dark = true), logoFile = null)) }.tactil()
+        state.show(CustomerContent.Done(totalCents = 12_345, receiptUrl = "https://x"))
+        pantalla(state)
+        onNodeWithText("WhatsApp").performClick()
+        avanzar()
+        listOf("9", "8", "7", "6").forEach { onNodeWithText(it).performClick(); avanzar() }
+        onNodeWithText("9876").assertIsDisplayed()
+        assertEquals(0xFF1C1C1E.toInt(), esquina())
+
+        state.clearDesign()   // logout, cambio de sucursal o desligado a media venta
+        avanzar()
+
+        onNodeWithText("9876").assertIsDisplayed()
+        assertEquals(0xFFFFFFFF.toInt(), esquina(), "sin ficha vuelve el tema de hoy")
+    }
+
+    @Test fun `el monto destacado se pinta del acento`() = runComposeUiTest {
+        val state = conMarca().apply { offerDesign(AppliedDesign(ficha(), logoFile = null)) }
+        state.show(CustomerContent.Total(totalCents = 12_345))
+        pantalla(state)
+        assertTrue(imagen(onNodeWithText(money(12_345))).any { it == 0xFFE4572E.toInt() }, "ningún pixel del monto es del acento")
+    }
+
+    @Test fun `sin acento las estrellas y el upsell se ven como hoy`() = runComposeUiTest {
+        val state = conMarca().tactil()
+        val tarjeta = UpsellCard(ruleId = "r1", productId = "p1", name = "Galleta", displayPriceCents = 2_500, imageUrl = null,
+            headline = null, badge = "-20%")
+        pantalla(state)
+        fun foto(): List<IntArray> {
+            state.show(CustomerContent.Rating(amountCents = 10_000))
+            avanzar()
+            val estrellas = imagen(onRoot())
+            state.show(CustomerContent.Upsell(cards = listOf(tarjeta), cartTotalCents = 10_000, selectedRuleIds = setOf("r1")))
+            avanzar()
+            val upsell = imagen(onRoot())
+            state.idle()
+            avanzar()
+            return listOf(estrellas, upsell)
+        }
+        val hoy = foto()
+        onNodeWithText("Bienvenido").assertIsDisplayed()
+
+        state.offerDesign(AppliedDesign(ficha(acento = false), logoFile = null))
+        avanzar()
+        val sinAcento = foto()
+
+        assertContentEquals(hoy[0], sinAcento[0], "las estrellas cambiaron sin acento")
+        assertContentEquals(hoy[1], sinAcento[1], "el upsell cambió sin acento")
+    }
+
+    @Test fun `el gracias propio sale en las opciones del recibo y al enviarlo`() = runComposeUiTest {
+        val state = conMarca().apply { offerDesign(AppliedDesign(ficha(thanks = "¡Vuelve pronto!"), logoFile = null)) }.tactil()
+        state.show(CustomerContent.Done(totalCents = 12_345, receiptUrl = "https://x"))
+        pantalla(state)
+        onNodeWithText("¿Cómo quieres tu recibo?").assertIsDisplayed()
+        onNodeWithText("¡Vuelve pronto!").assertIsDisplayed()
+        onAllNodesWithText("¡Gracias por tu compra!").assertCountEquals(0)
+
+        state.setReceiptSend(CustomerDisplayState.ReceiptSend.Sent)
+        avanzar()
+
+        onNodeWithText("¡Recibo enviado!").assertIsDisplayed()
+        onNodeWithText("¡Vuelve pronto!").assertIsDisplayed()
+        onAllNodesWithText("Gracias por tu compra").assertCountEquals(0)
+    }
+
+    @Test fun `un logo grande se decodifica a unos 720 px de lado y uno chico queda igual`() {
+        fun png(nombre: String, ancho: Int, alto: Int) = File(folder.toFile(), nombre).also {
+            ImageIO.write(BufferedImage(ancho, alto, BufferedImage.TYPE_INT_ARGB), "png", it)
+        }
+        val ancho = decodificarLogo(png("ancho.png", 3_000, 1_500).path)!!
+        assertTrue(maxOf(ancho.width, ancho.height) in 720 until 1_440, "${ancho.width}×${ancho.height}")
+        val alto = decodificarLogo(png("alto.png", 500, 2_000).path)!!
+        assertTrue(maxOf(alto.width, alto.height) in 720 until 1_440, "${alto.width}×${alto.height}")
+        val chico = decodificarLogo(png("chico.png", 40, 20).path)!!
+        assertEquals(40 to 20, chico.width to chico.height)
     }
 }

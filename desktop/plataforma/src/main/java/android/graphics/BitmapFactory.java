@@ -20,9 +20,14 @@ import javax.imageio.stream.ImageInputStream;
  * Skia: el mismo decodificador que ya usa CacheDeImagenes. Como en Android, lo que no se puede leer devuelve null.
  */
 public class BitmapFactory {
-    /** Como en Android: con {@code inJustDecodeBounds} sólo se leen los lados (del encabezado) y se devuelve null. */
+    /**
+     * Como en Android: con {@code inJustDecodeBounds} sólo se leen los lados (del encabezado) y se devuelve null; con
+     * {@code inSampleSize} > 1 sale cada lado entre esa muestra (Android la redondea a potencia de 2 y la aplica al decodificar;
+     * aquí se decodifica completo y se escala: misma salida, sin el ahorro de memoria, que una PC no necesita).
+     */
     public static class Options {
         public boolean inJustDecodeBounds;
+        public int inSampleSize;
         public int outWidth;
         public int outHeight;
     }
@@ -53,6 +58,10 @@ public class BitmapFactory {
             return null;
         }
         Bitmap bitmap = decodeByteArray(data, offset, length);
+        int muestra = Integer.highestOneBit(Math.max(1, opts.inSampleSize));
+        if (bitmap != null && muestra > 1) {
+            bitmap = Bitmap.createScaledBitmap(bitmap, Math.max(1, bitmap.getWidth() / muestra), Math.max(1, bitmap.getHeight() / muestra), true);
+        }
         if (bitmap != null) { opts.outWidth = bitmap.getWidth(); opts.outHeight = bitmap.getHeight(); }
         return bitmap;
     }
