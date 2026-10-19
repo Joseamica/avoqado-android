@@ -194,6 +194,57 @@ class AppStateVenueRecoveryTest {
         assertEquals("El contador debe capturar la identidad vigente tras PIN", true, contextsAtStart.drop(previousStarts).all { it })
     }
 
+    /**
+     * Task 4.1: un refresco de ajustes que sigue en vuelo cuando cambia la sesión. El login lanza el suyo (la respuesta
+     * vieja ya no puede escribir: la descarta el boleto del repositorio) y el logout suelta los ajustes y cancela.
+     */
+    private class RefrescoQueNoTermina {
+        val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var lanzados = 0
+        var cancelados = 0
+        val repo = mockk<TpvSettingsRepository>(relaxed = true) {
+            every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
+            coEvery { refreshSettings() } coAnswers {
+                lanzados++
+                try {
+                    soltar.await()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    cancelados++
+                    throw e
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `onLoginSuccess con un refresco en vuelo lanza uno nuevo`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo)
+        runCurrent()
+        assertEquals("el arranque ya dejó uno en vuelo", 1, refresco.lanzados)
+
+        appState.onLoginSuccess()
+        runCurrent()
+
+        assertEquals("el login no puede quedarse con los ajustes de la sesión anterior", 2, refresco.lanzados)
+        assertEquals(1, refresco.cancelados)
+        refresco.soltar.complete(Unit)
+    }
+
+    @Test
+    fun `onLogout limpia los ajustes y cancela el refresco`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo)
+        runCurrent()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        io.mockk.verify(exactly = 1) { refresco.repo.clearCache() }
+        assertEquals(1, refresco.cancelados)
+        refresco.soltar.complete(Unit)
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
@@ -204,6 +255,7 @@ class AppStateVenueRecoveryTest {
         onTableStart: () -> Unit = {},
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
+        tpvSettingsRepository: TpvSettingsRepository? = null,
         printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
             mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
@@ -237,7 +289,7 @@ class AppStateVenueRecoveryTest {
         val posModeManager = mockk<PosModeManager>(relaxed = true) {
             every { currentMode } returns MutableStateFlow(PosMode.RETAIL)
         }
-        val tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true) {
+        val tpvSettingsRepository = tpvSettingsRepository ?: mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
             coEvery { refreshSettings() } coAnswers { onSettingsRefresh() }
         }

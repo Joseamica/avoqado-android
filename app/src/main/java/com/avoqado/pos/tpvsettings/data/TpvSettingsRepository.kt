@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -201,7 +202,7 @@ sealed interface AjusteGuardado {
     /** No hubo red. El ajuste NO cambió: este carril es online-only a propósito. */
     data object SinConexion : AjusteGuardado
 
-    /** El servidor rechazó por permisos (403). Hoy, por defecto, sólo el dueño puede. */
+    /** El servidor rechazó por permisos (403). El servidor decide quién puede (`tpv-settings:update`). */
     data object SinPermiso : AjusteGuardado
 
     /** Nunca hemos sincronizado: no sabemos qué ficha es este aparato, así que no se escribe nada. */
@@ -397,9 +398,44 @@ class TpvSettingsRepository internal constructor(
      */
     val managerPinOverrideEnabled: StateFlow<Boolean> = _managerPinOverrideEnabled.asStateFlow()
 
-    private var loadedVenueId: String? = null
+    /** La sucursal cuyos ajustes hay en memoria. `@Volatile`: el poll refresca desde otro hilo (Task 4.1). */
+    @Volatile private var loadedVenueId: String? = null
+
+    /**
+     * 🔴 BOLETO POR PETICIÓN (Task 4.1). Cada [refreshSettingsForVenue] toma el suyo al entrar y sólo escribe mientras siga
+     * siendo el último Y la sesión siga en su sucursal. Lo suben también [clearCache] (logout, cambio de sucursal), la rama
+     * sin sucursal de [refreshSettings] y un PATCH confirmado de [guardarPantallasDelCobro]: todo lo que volaba antes queda
+     * vencido. Así ninguna respuesta de otra sesión, de otra sucursal o más vieja que la vigente pisa lo que lee el cobro
+     * (en iOS esta familia costó tres rondas de Codex: `docs/audit/2026-10-18-pantalla-cliente-f2/codex-bloque-5-r3.md`).
+     *
+     * Las escrituras en memoria se comprueban y se hacen bajo [ticketLock] (el poll refresca desde otro hilo): ningún boleto
+     * puede subir entre la comprobación y la escritura. Las de disco suspenden y no caben en el candado: se comprueban justo
+     * antes y van a la llave de SU sucursal. El ticket impreso no usa este boleto: trae el suyo por sucursal ([receiptRequests]).
+     */
+    private val refreshTicket = AtomicLong(0)
+    private val ticketLock = Any()
+
+    /** La huella de ajustes de la última respuesta aplicada sin componentes fallidos, por sucursal y SÓLO en memoria. */
+    private val appliedFingerprints = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val fingerprintRefresh = Mutex()
 
     fun getCurrentSettings(): TpvSettings = _settings.value
+
+    /**
+     * El poll anunció [fingerprint] como la huella de ajustes de [venueId]: si no es la de la última respuesta aplicada
+     * completa, se refresca. Sólo en memoria (el arranque ya refresca). Con un refresco por huella en vuelo no se lanza otro:
+     * el que vuela trae su propia huella y, si ya quedó vieja, el siguiente poll lo vuelve a pedir.
+     * Sin red el refresco falla y se conserva el caché, como cualquier refresco; lo dispara el poll, nunca un cobro.
+     */
+    suspend fun refreshIfFingerprintChanged(venueId: String, fingerprint: String) {
+        if (appliedFingerprints[venueId] == fingerprint) return
+        if (!fingerprintRefresh.tryLock()) return
+        try {
+            refreshSettingsForVenue(venueId)
+        } finally {
+            fingerprintRefresh.unlock()
+        }
+    }
 
     suspend fun refreshSettings() {
         val venueId = secureStorage.venueId
@@ -407,29 +443,43 @@ class TpvSettingsRepository internal constructor(
             refreshSettingsForVenue(venueId)
         } else {
             Log.d("📦", "No venue ID available, using defaults")
-            _settings.value = TpvSettings.DEFAULT
-            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+            synchronized(ticketLock) {
+                refreshTicket.incrementAndGet()
+                _settings.value = TpvSettings.DEFAULT
+                _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                _isLoading.value = false
+            }
         }
     }
 
     suspend fun refreshSettingsForVenue(venueId: String) {
+        // Un poll que salió con la sesión anterior no toma boleto: vencería el refresco de la sucursal vigente.
+        if (secureStorage.venueId != venueId) return
+        val mine = refreshTicket.incrementAndGet()
+        fun stillCurrent() = mine == refreshTicket.get() && secureStorage.venueId == venueId
+        fun whileCurrent(write: () -> Unit): Boolean = synchronized(ticketLock) { stillCurrent().also { if (it) write() } }
+
         // El número de ESTA petición: el ticket sólo acepta de ella lo que ninguna más nueva ya escribió.
         val receiptSeq = receiptRequests.incrementAndGet()
         _isLoading.value = true
         Log.d("📦", "Fetching settings for venue: $venueId")
-        val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
-
-        if (loadedVenueId != venueId) {
-            loadedVenueId = venueId
-            _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
-            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
-            hydrateLastKnownSettings(venueId, localIncludeTaxOverride)
-        }
 
         try {
+            val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
+
+            if (loadedVenueId != venueId) {
+                val selected = whileCurrent {
+                    loadedVenueId = venueId
+                    _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
+                    _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                }
+                if (!selected) return
+                hydrateLastKnownSettings(venueId, localIncludeTaxOverride, ::whileCurrent)
+            }
+
             val token = secureStorage.accessToken
             if (token == null) {
-                _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                whileCurrent { _terminalNavigation.value = TerminalNavigationSettings.DEFAULT }
                 return
             }
             val request = Request.Builder()
@@ -445,24 +495,52 @@ class TpvSettingsRepository internal constructor(
                 // 408 (timeout) y 429 (límite de peticiones) son de la RED, no del permiso: borrar
                 // lo guardado ahí deja al siguiente arranque sin red sin receta y sin RFC.
                 if (response.code in 400..499 && response.code != 408 && response.code != 429) {
-                    _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
-                    _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
-                    clearPersistedSettings(venueId)
-                    invalidateReceiptTicket(venueId, receiptSeq)
+                    // Una negación VIEJA (otra petición ya contestó después) no borra lo bueno ni pone fábrica.
+                    val denied = whileCurrent {
+                        _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
+                        _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                        appliedFingerprints.remove(venueId)
+                    }
+                    if (denied) clearPersistedSettings(venueId)
+                    invalidateReceiptTicket(venueId, receiptSeq) // con su propio boleto por sucursal
                 }
                 return
             }
 
             val body = response.body?.string() ?: return
             val result = json.decodeFromString<VenueSettingsResponse>(body)
+            // `"failed"` = «no pude leerlo, conserva lo que tenías» (spec §5.7.4). Sin el bloque (servidor viejo): como hoy.
+            val status = result.data?.componentsStatus
+            val panelFailed = status?.promotionsPanel == ComponentsStatusDto.FAILED
+
+            // Encabezado y receta del ticket: SÓLO en el camino exitoso y sólo lo que vino. Un campo ausente (el servidor no
+            // pudo resolverlo) conserva lo guardado; con `receipt` fallido no se escribe nada (puede traer media pareja), pero
+            // la respuesta sigue contando como prueba de acceso frente a un 403 más viejo. Va antes de la guarda del boleto
+            // porque trae el suyo por sucursal: lo de A se guarda en A aunque la sesión ya esté en B.
+            val receiptFailed = status?.receipt == ComponentsStatusDto.FAILED
+            val receiptInfo = result.data?.receiptInfo?.takeUnless { receiptFailed }
+            val infoApplied = applyReceiptResponse(
+                venueId,
+                receiptSeq,
+                receiptInfo,
+                result.data?.receiptLayout?.takeUnless { receiptFailed },
+            )
+            // El logo se baja aparte y en segundo plano, y sólo si este encabezado es el vigente.
+            if (infoApplied && receiptInfo != null) {
+                receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, receiptInfo.logoUrl) } }
+            }
+
             val terminalNavigation = result.data.toTerminalNavigationSettings()
-            _terminalNavigation.value = terminalNavigation
+            if (!whileCurrent { _terminalNavigation.value = terminalNavigation }) return
             persistTerminalNavigation(venueId, terminalNavigation)
+            if (!stillCurrent()) return
 
             // Un journal legible O ilegible es una barrera: el settings legacy
             // no adopta ni empuja mientras la intención tipada puede estar
             // cruzando journal → preferencia → mudanza física → ACK.
             displayModeAuthorityGate.withAuthority {
+                // El candado pudo esperar (y el empuje es HTTP): una respuesta vencida no adopta ni empuja.
+                if (!stillCurrent()) return@withAuthority
                 val hasRemoteDisplayBarrier = runCatching {
                     displayModeJournal.hasInFlight(venueId, deviceIdProvider.currentDeviceId())
                 }.getOrDefault(true)
@@ -487,54 +565,56 @@ class TpvSettingsRepository internal constructor(
                 }
             }
 
-            // Missing/unsupported/stale responses preserve the last complete snapshot.
-            secureStorage.storePlanSnapshot(venueId, result.data?.plan)
-            Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
+            var resolvedSettings = TpvSettings.DEFAULT
+            val applied = whileCurrent {
+                // Missing/unsupported/stale responses preserve the last complete snapshot.
+                if (status?.plan != ComponentsStatusDto.FAILED) secureStorage.storePlanSnapshot(venueId, result.data?.plan)
+                Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
 
-            // PIN de autorización de gerente. Igual que el plan: SÓLO en el
-            // camino exitoso. El `catch` de red no lo toca — un bache de WiFi no
-            // puede borrar lo bueno y dejar al piso sin la puerta del candado.
-            val overrideEnabled = result.data?.managerPinOverrideEnabled ?: false
-            _managerPinOverrideEnabled.value = overrideEnabled
-            secureStorage.managerPinOverrideEnabled = overrideEnabled
+                // PIN de autorización de gerente. Igual que el plan: SÓLO en el camino exitoso. El `catch` de red no lo
+                // toca — un bache de WiFi no puede borrar lo bueno y dejar al piso sin la puerta del candado. Viaja en la
+                // misma fila que el panel: si su lectura falló, el servidor manda `false` de relleno y se conserva el previo.
+                if (!panelFailed) {
+                    val overrideEnabled = result.data?.managerPinOverrideEnabled ?: false
+                    _managerPinOverrideEnabled.value = overrideEnabled
+                    secureStorage.managerPinOverrideEnabled = overrideEnabled
+                }
 
-            // Encabezado y receta del ticket: SÓLO en el camino exitoso y sólo lo que vino. Un campo
-            // ausente (el servidor no pudo resolverlo) conserva lo guardado.
-            val receiptInfo = result.data?.receiptInfo
-            val infoApplied = applyReceiptResponse(venueId, receiptSeq, receiptInfo, result.data?.receiptLayout)
-            // El logo se baja aparte y en segundo plano, y sólo si este encabezado es el vigente.
-            if (infoApplied && receiptInfo != null) {
-                receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, receiptInfo.logoUrl) } }
-            }
-
-            // Panel de promociones: es de VENUE, así que aplica HAYA o NO una
-            // terminal activa — por eso se resuelve fuera del `if` de abajo.
-            val promotionsPanel = result.data?.promotions ?: PromotionsPanelSettings()
-
-            if (result.data?.settings != null) {
-                val resolvedSettings = applyIncludeTaxOverride(
-                    base = result.data.settings.copy(promotions = promotionsPanel),
+                // Panel de promociones: es de VENUE, así que aplica HAYA o NO una terminal activa. Fallido ⇒ el previo
+                // (el servidor manda los defaults de relleno, que no son la verdad).
+                val promotionsPanel = if (panelFailed) {
+                    _settings.value.promotions
+                } else {
+                    result.data?.promotions ?: PromotionsPanelSettings()
+                }
+                if (result.data?.settings == null) Log.d("📦", "No active terminal, using defaults")
+                resolvedSettings = applyIncludeTaxOverride(
+                    base = (result.data?.settings ?: TpvSettings.DEFAULT).copy(promotions = promotionsPanel),
                     localOverride = localIncludeTaxOverride,
                 )
                 _settings.value = resolvedSettings
-                persistTpvSettings(venueId, resolvedSettings)
-                Log.d("📦", "✅ Settings loaded (terminal: ${result.data.activeTerminalId})")
-            } else {
-                Log.d("📦", "No active terminal, using defaults")
-                val resolvedSettings = applyIncludeTaxOverride(
-                    base = TpvSettings.DEFAULT.copy(promotions = promotionsPanel),
-                    localOverride = localIncludeTaxOverride,
-                )
-                _settings.value = resolvedSettings
-                persistTpvSettings(venueId, resolvedSettings)
+
+                // La huella sólo cuenta como aplicada si NINGÚN componente falló: si no, el siguiente poll reintenta.
+                val fingerprint = result.data?.fingerprints?.settings
+                if (fingerprint == null || status?.anyFailed == true) {
+                    appliedFingerprints.remove(venueId)
+                } else {
+                    appliedFingerprints[venueId] = fingerprint
+                }
             }
+            if (!applied) return
+            persistTpvSettings(venueId, resolvedSettings)
+            Log.d("📦", "✅ Settings loaded (terminal: ${result.data?.activeTerminalId})")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(
                 "📦",
                 "⚠️ Settings sin servidor (${e.message}) — conservo la última configuración del local",
             )
         } finally {
-            _isLoading.value = false
+            // El `finally` de una petición vencida no baja la bandera de la vigente.
+            synchronized(ticketLock) { if (mine == refreshTicket.get()) _isLoading.value = false }
         }
     }
 
@@ -636,35 +716,54 @@ class TpvSettingsRepository internal constructor(
             }
         }
 
-        // Sólo ahora: lo que se ve en pantalla es lo que el servidor ya guardó.
-        _settings.update { actuales ->
-            actuales.copy(
-                showReviewScreen = showReviewScreen ?: actuales.showReviewScreen,
-                showTipScreen = showTipScreen ?: actuales.showTipScreen,
-                tipSuggestions = tipSuggestions ?: actuales.tipSuggestions,
-            )
+        // Sólo ahora: lo que se ve en pantalla es lo que el servidor ya guardó. El PATCH confirmado vence todo GET que
+        // volaba (su respuesta puede ser de antes del cambio y lo revertiría); y si la sesión ya cambió de sucursal, la
+        // memoria es de la otra: no se mezcla ni se guarda con la llave de ésta.
+        var guardados: TpvSettings? = null
+        synchronized(ticketLock) {
+            refreshTicket.incrementAndGet()
+            _isLoading.value = false
+            if (secureStorage.venueId == venueId) {
+                guardados = _settings.updateAndGet { actuales ->
+                    actuales.copy(
+                        showReviewScreen = showReviewScreen ?: actuales.showReviewScreen,
+                        showTipScreen = showTipScreen ?: actuales.showTipScreen,
+                        tipSuggestions = tipSuggestions ?: actuales.tipSuggestions,
+                    )
+                }
+                // Lo que hay en memoria ya no es la huella anterior: el siguiente poll con huella refresca.
+                appliedFingerprints.remove(venueId)
+            }
         }
-        persistTpvSettings(venueId, _settings.value)
+        guardados?.let { persistTpvSettings(venueId, it) }
         return AjusteGuardado.Ok
     }
 
     fun clearCache() {
-        loadedVenueId = null
-        _settings.value = TpvSettings.DEFAULT
-        _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
-        // El switch es por venue: al soltar el cache no puede quedarse encendido
-        // el de la sucursal anterior.
-        _managerPinOverrideEnabled.value = false
+        synchronized(ticketLock) {
+            // Vence todo refresco en vuelo: su respuesta es de la sesión que se está soltando.
+            refreshTicket.incrementAndGet()
+            _isLoading.value = false
+            loadedVenueId = null
+            appliedFingerprints.clear()
+            _settings.value = TpvSettings.DEFAULT
+            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+            // El switch es por venue: al soltar el cache no puede quedarse encendido el de la sucursal anterior. Tampoco
+            // el GUARDADO, que es una sola llave para todo el aparato: la siguiente sucursal sin red lo heredaría.
+            _managerPinOverrideEnabled.value = false
+            secureStorage.managerPinOverrideEnabled = false
+        }
     }
 
     private suspend fun hydrateLastKnownSettings(
         venueId: String,
         localIncludeTaxOverride: Boolean?,
+        whileCurrent: (() -> Unit) -> Boolean,
     ) {
         preferencesDataStore.getString(tpvSettingsKey(venueId)).first()?.let { cached ->
             runCatching { json.decodeFromString<TpvSettings>(cached) }
                 .onSuccess {
-                    _settings.value = applyIncludeTaxOverride(it, localIncludeTaxOverride)
+                    whileCurrent { _settings.value = applyIncludeTaxOverride(it, localIncludeTaxOverride) }
                     Log.d("📦", "🗂️ TPV settings hidratados del cache para $venueId")
                 }
                 .onFailure { Log.w("📦", "Cache de TPV settings inválido: ${it.message}") }
@@ -673,7 +772,7 @@ class TpvSettingsRepository internal constructor(
         preferencesDataStore.getString(terminalNavigationKey(venueId)).first()?.let { cached ->
             runCatching { json.decodeFromString<TerminalNavigationSettings>(cached) }
                 .onSuccess {
-                    _terminalNavigation.value = it
+                    whileCurrent { _terminalNavigation.value = it }
                     Log.d("📦", "🗂️ Perfil de terminal hidratado del cache para $venueId")
                 }
                 .onFailure { Log.w("📦", "Cache de terminal inválido: ${it.message}") }
@@ -772,7 +871,31 @@ internal data class VenueSettingsData(
     val receiptInfo: ReceiptInfo? = null,
     /** La receta del ticket. Ausente (server viejo o fallo al resolverla) ⇒ se conserva la guardada. */
     val receiptLayout: ReceiptLayoutPayload? = null,
+    /** Qué componente no se pudo LEER (`"failed"`: conserva lo que tenías). Ausente (server viejo) ⇒ todo como hoy. */
+    val componentsStatus: ComponentsStatusDto? = null,
+    /** La huella de estos ajustes, leída por el servidor ANTES del cuerpo; la compara la del poll. */
+    val fingerprints: SettingsFingerprintsDto? = null,
 )
+
+/** Espejo de `componentsStatus` del servidor (spec §5.7.4): `"ok"`, `"failed"` o `"not_applicable"` por componente. */
+@Serializable
+internal data class ComponentsStatusDto(
+    val receipt: String? = null,
+    val plan: String? = null,
+    /** Cubre la fila entera de `VenueSettings`: el panel de promociones Y `managerPinOverrideEnabled`. */
+    val promotionsPanel: String? = null,
+    val customerDisplay: String? = null,
+) {
+    val anyFailed: Boolean
+        get() = listOf(receipt, plan, promotionsPanel, customerDisplay).any { it == FAILED }
+
+    companion object {
+        const val FAILED = "failed"
+    }
+}
+
+@Serializable
+internal data class SettingsFingerprintsDto(val settings: String? = null)
 
 @Serializable
 internal data class DeviceTerminalSettingsDto(

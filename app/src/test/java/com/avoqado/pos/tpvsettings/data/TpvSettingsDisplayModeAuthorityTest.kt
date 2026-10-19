@@ -168,6 +168,7 @@ class TpvSettingsDisplayModeAuthorityTest {
     ) = TpvSettingsRepository(
         secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { accessToken } returns "token"
+            every { venueId } returns VENUE_ID
         },
         client = recordingClient.client,
         preferencesDataStore = mockk<PreferencesDataStore>(relaxed = true) {
