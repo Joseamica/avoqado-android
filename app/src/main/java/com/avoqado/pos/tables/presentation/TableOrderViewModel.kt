@@ -59,6 +59,23 @@ internal fun payableCents(fromCheckCents: Int, queuedCents: Int, sessionTotalCen
     (fromCheckCents + queuedCents).takeIf { it > 0 } ?: sessionTotalCents
 
 
+/** Renglones de la pre-cuenta, igual desde la cuenta y desde el plano. Lleva la nota del artículo como el ticket del cobro:
+ *  en la D3 (19-oct) la pre-cuenta salía sin «Nota: sin aceite» porque los dos caminos la olvidaban. */
+internal fun renglonesDePreCuenta(items: List<OrderDetailItem>): List<ReceiptItem> = items.map {
+    fun cents(v: Double) = round(v * 100).toInt()
+    ReceiptItem(
+        name = it.productName ?: "Artículo",
+        quantity = it.quantity,
+        unitPrice = cents(it.unitPrice),
+        totalPrice = cents(it.total),
+        modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
+        note = it.notes?.takeIf { nota -> nota.isNotBlank() },
+        // I4 (revisión de conjunto): sin esto, un artículo de cortesía imprimía su precio en la pre-cuenta de Android
+        // mientras iOS ya imprimía «CORTESÍA» para la MISMA cuenta.
+        isCortesia = it.isCortesia,
+    )
+}
+
 /** Cuenta de esta orden, sin escrituras en vuelo ni trabajo local por resolver. */
 internal fun motivoParaNoImprimirPreCuenta(hayImpresora: Boolean, cheque: OrderDetail?, orderId: String,
     chequeAlDia: Boolean, enVuelo: Boolean, trabajo: TrabajoSinResolver?): String? = when {
@@ -1844,19 +1861,7 @@ class TableOrderViewModel @Inject constructor(
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
                     orderType = "Mesa ${session.tableNumber} - PRE-CUENTA",
-                    items = order.items.map {
-                        ReceiptItem(
-                            name = it.productName ?: "Artículo",
-                            quantity = it.quantity,
-                            unitPrice = cents(it.unitPrice),
-                            totalPrice = cents(it.total),
-                            modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
-                            // I4 (revisión de conjunto): sin esto, un artículo de cortesía
-                            // imprimía su precio en la pre-cuenta de Android mientras iOS ya
-                            // imprimía «CORTESÍA» para la MISMA cuenta.
-                            isCortesia = it.isCortesia,
-                        )
-                    },
+                    items = renglonesDePreCuenta(order.items),
                     subtotal = subtotal,
                     taxAmount = cents(order.addedTaxAmount),
                     discountAmount = cents(order.discountAmount).coerceIn(0, subtotal.coerceAtLeast(0)).takeIf { it > 0 },

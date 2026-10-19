@@ -6,7 +6,6 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.ReceiptData
-import com.avoqado.pos.printing.data.model.ReceiptItem
 import com.avoqado.pos.tables.data.ApiFuenteDeVersiones
 import com.avoqado.pos.tables.data.DiningTable
 import com.avoqado.pos.tables.data.FloorPlanRepository
@@ -754,16 +753,7 @@ class TablesViewModel @Inject constructor(
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
                     orderType = "Mesa ${table.number} - PRE-CUENTA",
-                    items = order.items.map {
-                        ReceiptItem(
-                            name = it.productName ?: "Artículo",
-                            quantity = it.quantity,
-                            unitPrice = cents(it.unitPrice),
-                            totalPrice = cents(it.total),
-                            modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
-                            isCortesia = it.isCortesia,
-                        )
-                    },
+                    items = renglonesDePreCuenta(order.items),
                     subtotal = subtotal,
                     taxAmount = cents(order.addedTaxAmount),
                     discountAmount = cents(order.discountAmount).coerceIn(0, subtotal.coerceAtLeast(0)).takeIf { it > 0 },
