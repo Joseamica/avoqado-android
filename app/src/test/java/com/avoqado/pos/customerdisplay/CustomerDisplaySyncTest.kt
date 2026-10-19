@@ -7,8 +7,11 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.Runs
 import io.mockk.spyk
+import io.mockk.verify
 import java.io.File
 import java.io.IOException
 import java.time.Instant
@@ -105,6 +108,7 @@ class CustomerDisplaySyncTest {
             ref is LogoRef.Venue && versionValidada[ref.url].let { it == null || it.first != ref.version || reloj - it.second >= DIA_MS }
         }
         coEvery { images.ensure(any(), any()) } coAnswers { bajar(firstArg()) }
+        every { images.prune(any()) } just Runs
     }
 
     @After
@@ -1018,6 +1022,28 @@ class CustomerDisplaySyncTest {
         assertEquals(1, acuse.imagesReady)
         assertEquals(0, acuse.imagesPending)
         assertEquals(HUELLA_A, acuse.fingerprint)
+    }
+
+    @Test
+    fun `tras una descarga lista se poda el cache con los logos vigentes`() = runBlocking {
+        val otro = LogoRef.Asset(OTRO_LOGO_URL, SHA_OTRO)
+        store().update {
+            it.copy(
+                manifests = it.manifests + (
+                    "test|otra|t9" to DesignManifest(
+                        ficha = FichaDto(schemaVersion = 1, fingerprint = HUELLA_C, logo = LogoDto("asset", OTRO_LOGO_URL, SHA_OTRO)),
+                        imageOrigins = listOf("https://storage.googleapis.com"),
+                        storedAt = "x",
+                    )
+                ),
+            )
+        }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+
+        sync().afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        val propio = LogoRef.Asset(LOGO_URL, LOGO_ASSET_JSON.substringAfter("sha256\":\"").substringBefore("\""))
+        verify(timeout = 5_000) { images.prune(match { it.toSet() == setOf(propio, otro) }) }
     }
 
     // ── ayudas ──

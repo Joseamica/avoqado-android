@@ -335,6 +335,9 @@ class CustomerDisplaySync internal constructor(
             running?.job?.cancel()
             val job = scope.launch(logErrors) {
                 val status = images.ensure(ref, origins)
+                // La cuota de 100 MB: tras una descarga buena se borra lo que ningún manifiesto guardado usa (en el trabajo,
+                // nunca en el poll).
+                if (status == ImageStatus.READY) images.prune(referencedLogos())
                 // Mientras bajaba pudo cambiar la sesión, desligarse el aparato o llegar otra ficha: se publica lo que
                 // diga el manifiesto AHORA, y `publish`/`write` descartan si la generación o la sucursal ya no son.
                 // Las ofertas se cuentan en Main ANTES de leer el disco: si un poll ofrece otra ficha mientras se lee,
@@ -402,6 +405,10 @@ class CustomerDisplaySync internal constructor(
         val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return null
         return applied(ficha)
     }
+
+    /** Los logos de TODOS los manifiestos guardados (cualquier sucursal o terminal): lo que la poda no puede borrar. */
+    private fun referencedLogos(): Set<LogoRef> =
+        store.load().manifests.values.mapNotNullTo(HashSet()) { it.ficha?.toFicha(it.imageOrigins)?.logo }
 
     /** El ÚNICO que arma el diseño: el logo de disco (sólo disco, nunca red) con su marca de `lastModified`. */
     private fun applied(ficha: Ficha): AppliedDesign {
