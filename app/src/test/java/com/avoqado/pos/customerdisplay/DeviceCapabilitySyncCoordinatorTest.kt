@@ -494,7 +494,8 @@ class DeviceCapabilitySyncCoordinatorTest {
 
     @Test
     fun `servidor viejo sin capacidad reporta como hoy`() = runTest {
-        val fixture = fixture(sync = syncDoble())
+        val sync = syncDoble()
+        val fixture = fixture(sync = sync)
 
         fixture.coordinator.onStart(lifecycleOwner)
         runCurrent()
@@ -503,6 +504,8 @@ class DeviceCapabilitySyncCoordinatorTest {
 
         assertEquals(2, fixture.remote.fetchCalls)
         assertEquals(listOf<DesignReport?>(null), fixture.remote.reportedDesigns)
+        // Un reporte sin diseño no liga ninguna instalación: no hay acuse nuevo que encolar.
+        coVerify(exactly = 0) { sync.onCapabilitiesReported(any()) }
     }
 
     @Test
@@ -535,9 +538,9 @@ class DeviceCapabilitySyncCoordinatorTest {
             sync = syncDoble(),
             fetchOutcomes = ArrayDeque(
                 listOf(
-                    DisplayModeRemoteOutcome.NoRequest("terminal-a"),
-                    DisplayModeRemoteOutcome.NoRequest("terminal-a", PollSignals(capabilityReportRequested = true)),
-                    DisplayModeRemoteOutcome.NoRequest("terminal-a"),
+                    DisplayModeRemoteOutcome.NoRequest("terminal-a", CON_CAPACIDAD),
+                    DisplayModeRemoteOutcome.NoRequest("terminal-a", CON_CAPACIDAD.copy(capabilityReportRequested = true)),
+                    DisplayModeRemoteOutcome.NoRequest("terminal-a", CON_CAPACIDAD),
                 ),
             ),
         )
@@ -559,7 +562,7 @@ class DeviceCapabilitySyncCoordinatorTest {
         var pendiente = false
         val sync = syncDoble()
         every { sync.otherInstallationReportDue() } answers { pendiente }
-        val fixture = fixture(sync = sync)
+        val fixture = fixture(sync = sync, defaultSignals = CON_CAPACIDAD)
 
         fixture.coordinator.onStart(lifecycleOwner)
         runCurrent()
@@ -580,6 +583,7 @@ class DeviceCapabilitySyncCoordinatorTest {
         val fixture = fixture(
             sync = sync,
             reportOutcomes = ArrayDeque(listOf(DisplayModeRemoteOutcome.Retryable(503), DisplayModeRemoteOutcome.Success(Unit))),
+            defaultSignals = CON_CAPACIDAD,
         )
 
         fixture.coordinator.onStart(lifecycleOwner)
@@ -611,6 +615,98 @@ class DeviceCapabilitySyncCoordinatorTest {
         runCurrent()
         assertEquals(2, fixture.remote.fetchCalls)
         verify(exactly = 1) { sync.onDeviceUnbound(any()) }
+    }
+
+    // ── Fix round 1: en el server un PUT sin diseño pone la versión en null y BORRA el acuse ──
+
+    @Test
+    fun `requested sin diseno posible no reporta en cada tick`() = runTest {
+        // El server anunció la capacidad y pide reporte, pero el sync no puede dar instalación (sólo en memoria): el PUT
+        // saldría sin diseño y borraría versión y acuse. Regla: ese tick NO se reporta (0, no 1): ni requested, ni las
+        // reglas de hoy (sin reporte previo) mandan un PUT sin diseño mientras el server anuncie la capacidad.
+        val sync = syncDoble()
+        every { sync.designReport(any()) } returns null
+        val fixture = fixture(sync = sync, defaultSignals = CON_CAPACIDAD.copy(capabilityReportRequested = true))
+
+        fixture.coordinator.onStart(lifecycleOwner)
+        runCurrent()
+        advanceTimeBy(15_000L)
+        runCurrent()
+        advanceTimeBy(15_000L)
+        runCurrent()
+
+        assertEquals(3, fixture.remote.fetchCalls)
+        assertEquals(0, fixture.remote.reportCalls)
+    }
+
+    @Test
+    fun `instalacion en memoria no manda un reporte sin diseno`() = runTest {
+        val sync = syncDoble()
+        every { sync.designReport(any()) } returns null
+        val fixture = fixture(sync = sync, defaultSignals = CON_CAPACIDAD)
+
+        fixture.coordinator.onStart(lifecycleOwner)
+        runCurrent()
+
+        assertEquals(1, fixture.remote.fetchCalls)
+        assertEquals(0, fixture.remote.reportCalls)
+        coVerify(exactly = 0) { sync.onCapabilitiesReported(any()) }
+        // Cuando el almacén vuelve, sale el reporte CON diseño.
+        every { sync.designReport(any()) } returns DesignReport(1, INSTALACION)
+        advanceTimeBy(15_000L)
+        runCurrent()
+        assertEquals(listOf<DesignReport?>(DesignReport(1, INSTALACION)), fixture.remote.reportedDesigns)
+    }
+
+    @Test
+    fun `arranque con el primer poll fallido no manda un reporte sin diseno`() = runTest {
+        val fixture = fixture(
+            sync = syncDoble(),
+            fetchOutcomes = ArrayDeque(listOf(DisplayModeRemoteOutcome.Retryable(503))),
+            defaultSignals = CON_CAPACIDAD,
+        )
+
+        fixture.coordinator.onStart(lifecycleOwner)
+        runCurrent()
+        // Sin un poll que haya respondido no se sabe si el server anuncia la capacidad: no se reporta todavía.
+        assertEquals(0, fixture.remote.reportCalls)
+
+        advanceTimeBy(1_000L)
+        runCurrent()
+        assertEquals(listOf<DesignReport?>(DesignReport(1, INSTALACION)), fixture.remote.reportedDesigns)
+    }
+
+    @Test
+    fun `una falla de onDeviceUnbound no tumba el poll`() = runTest {
+        val sync = syncDoble()
+        every { sync.onDeviceUnbound(any()) } throws IllegalStateException("disco")
+        val fixture = fixture(
+            sync = sync,
+            fetchOutcomes = ArrayDeque(listOf(DisplayModeRemoteOutcome.Rejected(404, "DEVICE_NOT_FOUND", null))),
+        )
+
+        fixture.coordinator.onStart(lifecycleOwner)
+        runCurrent()
+        advanceTimeBy(1_000L)
+        runCurrent()
+
+        assertEquals(2, fixture.remote.fetchCalls)
+        assertEquals(1, fixture.processor.outcomes.size)
+    }
+
+    @Test
+    fun `una falla de designReport u otherInstallationReportDue no tumba el poll`() = runTest {
+        val sync = syncDoble()
+        every { sync.designReport(any()) } throws IllegalStateException("disco")
+        every { sync.otherInstallationReportDue() } throws IllegalStateException("disco")
+        val fixture = fixture(sync = sync)
+
+        fixture.coordinator.onStart(lifecycleOwner)
+        runCurrent()
+        advanceTimeBy(15_000L)
+        runCurrent()
+
+        assertEquals(2, fixture.remote.fetchCalls)
     }
 
     @Test
@@ -682,6 +778,7 @@ class DeviceCapabilitySyncCoordinatorTest {
         reportSideEffect: ((MutableStateFlow<Boolean>) -> Unit)? = null,
         yieldAfterReportSideEffect: Boolean = false,
         sync: CustomerDisplaySync? = null,
+        defaultSignals: PollSignals = PollSignals(),
     ): Fixture {
         val snapshots = MutableStateFlow(snapshot)
         val connectedFlow = MutableStateFlow(connected)
@@ -696,6 +793,7 @@ class DeviceCapabilitySyncCoordinatorTest {
             requestAvailabilityMs = requestAvailabilityMs,
             onReport = { reportSideEffect?.invoke(reachableFlow) },
             yieldAfterReportSideEffect = yieldAfterReportSideEffect,
+            defaultSignals = defaultSignals,
         )
         val processor = RecordingProcessor { testScheduler.currentTime }
         val coordinator = DeviceCapabilitySyncCoordinator(
@@ -751,6 +849,7 @@ class DeviceCapabilitySyncCoordinatorTest {
         requestAvailabilityMs: List<Long>,
         private val onReport: (() -> Unit)? = null,
         private val yieldAfterReportSideEffect: Boolean = false,
+        private val defaultSignals: PollSignals = PollSignals(),
     ) : DeviceCapabilityRemote {
         private val pendingAvailability = ArrayDeque(requestAvailabilityMs)
         var reportCalls = 0
@@ -785,7 +884,7 @@ class DeviceCapabilitySyncCoordinatorTest {
                     pendingAvailability.removeFirst()
                     successRequest("terminal-a", "request-$availableAt")
                 }
-                ?: DisplayModeRemoteOutcome.NoRequest("terminal-a")
+                ?: DisplayModeRemoteOutcome.NoRequest("terminal-a", defaultSignals)
         }
 
         private suspend fun <T> networkCall(block: suspend () -> T): T {
@@ -893,6 +992,7 @@ class DeviceCapabilitySyncCoordinatorTest {
     private companion object {
         const val INSTALACION = "instalacion-1"
         const val HUELLA = "0123456789abcdef0123456789abcdef"
+        val CON_CAPACIDAD = PollSignals(designCapability = 1)
 
         fun successRequest(
             terminalId: String,

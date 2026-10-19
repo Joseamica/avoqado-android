@@ -938,6 +938,25 @@ class CustomerDisplaySyncTest {
         assertEquals(3L, guardado.nextSeq)
     }
 
+    @Test
+    fun `tras reportar vuelve a acusar el esquema no soportado ya entregado`() = runBlocking {
+        // El server borra el acuse al adoptar una instalación nueva (reinstalar): «actualiza la app» se tiene que repetir.
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = true) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        fichaResponse = { ficha(HUELLA_B, schema = 2) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+        assertNull(store().load().manifests.getValue(LLAVE).pendingAck)   // el «unsupportedSchema» ya se entregó y se cerró
+
+        sync.onCapabilitiesReported(VENUE)
+
+        val acuse = store().load().manifests.getValue(LLAVE).pendingAck!!
+        assertEquals(3L, acuse.seq)
+        assertEquals(HUELLA_B, acuse.fingerprint)
+        assertTrue(acuse.unsupportedSchema)
+    }
+
     // ── ayudas ──
 
     private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =

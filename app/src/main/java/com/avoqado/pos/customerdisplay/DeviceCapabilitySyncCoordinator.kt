@@ -563,6 +563,12 @@ class DeviceCapabilitySyncCoordinator internal constructor(
      */
     private var lastDesignCapability: Int? = null
 
+    /** Algún poll ya respondió: se sabe si el server anuncia la capacidad de diseño (sólo el loop la escribe). */
+    private var designCapabilityKnown = false
+
+    /** El último tick se guardó el reporte por falta de diseño: la espera es la del poll, no «reporta ya» (0 ms en bucle). */
+    private var reportWithheld = false
+
     init {
         // También se consume el valor inicial. Un StateFlow puede cambiar entre
         // construir el singleton y arrancar esta coroutine; hacer drop(1)
@@ -706,7 +712,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
             is DisplayModeRemoteOutcome.Rejected -> {
                 // El aparato ya no es de esta sucursal: la pantalla del cliente vuelve a fábrica y borra su diseño.
                 if (pollOutcome.status == 404 && pollOutcome.code == DEVICE_NOT_FOUND) {
-                    customerDisplaySync?.onDeviceUnbound(session.venueId)
+                    fromSync(Unit) { customerDisplaySync?.onDeviceUnbound(session.venueId) }
                 }
                 shouldRetrySoon = true
             }
@@ -718,6 +724,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         // falla suya sólo pide reintento; nunca tumba el poll, el procesador ni el reporte.
         polled?.let { (terminalId, signals) ->
             lastDesignCapability = signals.designCapability
+            designCapabilityKnown = true
             val sync = customerDisplaySync ?: return@let
             try {
                 if (sync.afterPoll(session.venueId, terminalId, signals)) shouldRetrySoon = true
@@ -731,9 +738,15 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         // El reporte sigue siendo independiente y retryable, pero nunca está
         // delante del camino de control GET → processor.
         currentCoroutineContext().ensureActive()
-        val design = customerDisplaySync?.designReport(lastDesignCapability)
+        val design = fromSync(null) { customerDisplaySync?.designReport(lastDesignCapability) }
+        // 🔴 En el server, un PUT SIN diseño pone la versión en null y BORRA el acuse. Con el sync conectado no sale uno
+        // mientras el server anuncie la capacidad (o mientras no se sepa: ningún poll ha respondido) y el sync no pueda
+        // dar instalación (sólo en memoria, disco pasajero): ese tick no se reporta y el siguiente lo vuelve a intentar.
+        val designWithheld = customerDisplaySync != null && design == null &&
+            (!designCapabilityKnown || lastDesignCapability != null)
+        reportWithheld = designWithheld
         val requested = polled?.second?.capabilityReportRequested == true
-        if (capabilityReportIsDue(session, snapshot, design, requested)) {
+        if (!designWithheld && capabilityReportIsDue(session, snapshot, design, requested)) {
             when (remote.reportCapabilities(session.venueId, snapshot, design)) {
                 is DisplayModeRemoteOutcome.Success -> {
                     currentCoroutineContext().ensureActive()
@@ -743,7 +756,8 @@ class DeviceCapabilitySyncCoordinator internal constructor(
                         designVersion = design?.designVersion,
                         atMs = clock.nowMillis(),
                     )
-                    customerDisplaySync?.let { sync ->
+                    // Sin diseño no se ligó ninguna instalación: no hay acuse nuevo que encolar.
+                    if (design != null) customerDisplaySync?.let { sync ->
                         try {
                             sync.onCapabilitiesReported(session.venueId)
                         } catch (cancellation: CancellationException) {
@@ -775,14 +789,26 @@ class DeviceCapabilitySyncCoordinator internal constructor(
         design: DesignReport?,
         requested: Boolean,
     ): Boolean {
-        if (requested || customerDisplaySync?.otherInstallationReportDue() == true) return true
+        // Lo que agrega la pantalla del cliente sólo cuenta si el reporte lleva diseño; sin él, sólo las reglas de hoy.
+        if (design != null) {
+            if (requested || fromSync(false) { customerDisplaySync?.otherInstallationReportDue() == true }) return true
+        }
         val previous = lastReported ?: return true
         val now = clock.nowMillis()
         return previous.venueId != session.venueId ||
             previous.snapshot != snapshot ||
-            previous.designVersion != design?.designVersion ||
+            design != null && previous.designVersion != design.designVersion ||
             now < previous.atMs ||
             now - previous.atMs >= CAPABILITY_REPORT_INTERVAL_MS
+    }
+
+    /** Una falla de la pantalla del cliente nunca sube al loop (sin manejador, tumbaría la app): se sigue con [fallback]. */
+    private inline fun <T> fromSync(fallback: T, block: () -> T): T = try {
+        block()
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Exception) {
+        fallback
     }
 
     private fun parkInvalidSession(session: DeviceSession) {
@@ -798,6 +824,7 @@ class DeviceCapabilitySyncCoordinator internal constructor(
 
     /** No deja que el jitter empuje el refresh periódico más allá de 24 h. */
     private fun capabilityReportDelayMs(): Long {
+        if (reportWithheld) return MAX_FOREGROUND_WAIT_MS
         val previous = lastReported ?: return 0L
         val session = sessionProvider.currentSession() ?: return MAX_FOREGROUND_WAIT_MS
         val snapshot = snapshots.value ?: return MAX_FOREGROUND_WAIT_MS

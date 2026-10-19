@@ -208,21 +208,26 @@ class CustomerDisplaySync internal constructor(
         val fingerprint = kept?.ficha?.fingerprint
         val counts = logoCounts(kept?.ficha?.toFicha(kept.imageOrigins)?.logo)
         val now = wallClock()
-        var enqueued = false
+        var remembered: Pair<String, Triple<Int, Int, Int>>? = null
         write(generation, venueId) { s ->
             val marked = if (s.otherInstallationPending) s.copy(otherInstallationPending = false, otherInstallationReportAtMs = now) else s
             val current = key?.let { marked.manifests[it] }
-            // La MISMA regla que el acuse de imágenes: otra ficha entretanto, o un esquema desconocido pendiente (su acuse
-            // «unsupportedSchema» quedaría tapado por uno de seq mayor y el panel perdería «actualiza la app»).
-            if (
-                key == null || fingerprint == null || current?.ficha?.fingerprint != fingerprint ||
-                current?.unsupportedFingerprint != null
-            ) marked
-            else enqueueAck(marked, key, current, fingerprint, unsupported = false, images = counts).also { enqueued = true }
+            val unsupported = current?.unsupportedFingerprint
+            when {
+                key == null || current == null -> marked
+                // Esquema desconocido: al adoptar la instalación el server borró su acuse; si ya se había entregado (no hay
+                // pendiente) se vuelve a acusar para que el panel no pierda «actualiza la app». Uno pendiente no se toca.
+                unsupported != null -> if (current.pendingAck != null) marked
+                else enqueueAck(marked, key, current, unsupported, unsupported = true, images = NO_IMAGES)
+                    .also { remembered = unsupported to NO_IMAGES }
+                // La MISMA regla que el acuse de imágenes: si entretanto llegó otra ficha, no se acusa la vieja.
+                fingerprint == null || current.ficha?.fingerprint != fingerprint -> marked
+                else -> enqueueAck(marked, key, current, fingerprint, unsupported = false, images = counts)
+                    .also { remembered = fingerprint to counts }
+            }
         }
-        if (enqueued && key != null && fingerprint != null) rememberImages(key, fingerprint, counts)
+        remembered?.let { (huella, conteo) -> if (key != null) rememberImages(key, huella, conteo) }
     }
-
 
     /** Login, logout o cambio de sucursal: retira el diseño AL INSTANTE y publica (sin red) lo guardado de la nueva. */
     fun onSessionChanged() = restart()
