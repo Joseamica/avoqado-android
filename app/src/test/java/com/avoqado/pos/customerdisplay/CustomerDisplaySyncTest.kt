@@ -32,6 +32,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
@@ -557,10 +558,11 @@ class CustomerDisplaySyncTest {
         val sync = sync(estado = otroEstado, almacen = espia)
         assertTrue(leido.await(5, TimeUnit.SECONDS))
         fichaResponse = { ficha(HUELLA_B) }
-        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
-        assertEquals(HUELLA_B, otroEstado.design.value!!.ficha.fingerprint)
+        val poll = async(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) }
+        esperar { store().load().manifests[LLAVE]?.ficha?.fingerprint == HUELLA_B }
 
         soltar.countDown()
+        poll.await()
         Thread.sleep(300)
 
         assertEquals(HUELLA_B, otroEstado.design.value!!.ficha.fingerprint)
@@ -969,31 +971,32 @@ class CustomerDisplaySyncTest {
         val armada = AtomicBoolean(false)
         val leido = CountDownLatch(1)
         val soltar = CountDownLatch(1)
-        val espia = spyk(store())
-        every { espia.load() } answers {
-            val leidoDelDisco = callOriginal()
+        every { images.cachedFile(any()) } answers {
+            val enDisco = disco[url(firstArg())]
             if (armada.getAndSet(false)) {
                 leido.countDown()
                 soltar.await(5, TimeUnit.SECONDS)
             }
-            leidoDelDisco
+            enDisco
         }
         fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
-        val sync = sync(almacen = espia)
+        val sync = sync()
         sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
-        // La descarga termina y su trabajo lee el manifiesto A (y se queda ahí, disco lento)...
+        // La descarga termina y su trabajo, con el manifiesto A ya leído, se queda leyendo el logo (disco lento)...
         armada.set(true)
         retenida.complete(Unit)
         assertTrue(leido.await(5, TimeUnit.SECONDS))
         // ...mientras un poll guarda y ofrece B con el MISMO logo (ya en disco: no cancela esa descarga).
         fichaResponse = { ficha(HUELLA_B, logo = LOGO_ASSET_JSON) }
-        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
-        assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+        val poll = async(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) }
+        esperar { store().load().manifests[LLAVE]?.ficha?.fingerprint == HUELLA_B }
 
         soltar.countDown()
+        poll.await()
         Thread.sleep(300)
 
         assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+        assertEquals(disco[LOGO_URL], state.design.value!!.logoFile)
     }
 
     @Test
@@ -1044,6 +1047,42 @@ class CustomerDisplaySyncTest {
 
         val propio = LogoRef.Asset(LOGO_URL, LOGO_ASSET_JSON.substringAfter("sha256\":\"").substringBefore("\""))
         verify(timeout = 5_000) { images.prune(match { it.toSet() == setOf(propio, otro) }) }
+    }
+
+    @Test
+    fun `un poll que publica sin logo despues de que termina la descarga no borra el logo`() = runBlocking {
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers { retenida.await(); bajar(firstArg()) }
+        val armada = AtomicBoolean(false)
+        val leido = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        every { images.cachedFile(any()) } answers {
+            val enDisco = disco[url(firstArg())]
+            if (armada.getAndSet(false)) {
+                leido.countDown()
+                soltar.await(5, TimeUnit.SECONDS)
+            }
+            enDisco
+        }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        // Un poll arma su diseño cuando el logo todavía no está (y se queda ahí antes de publicarlo)...
+        armada.set(true)
+        val poll = async(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A)) }
+        assertTrue(leido.await(5, TimeUnit.SECONDS))
+        // ...la descarga termina y deja el logo en disco...
+        retenida.complete(Unit)
+        esperar { disco[LOGO_URL] != null }
+        Thread.sleep(300)
+
+        // ...y el poll publica DESPUÉS lo que había armado sin logo.
+        soltar.countDown()
+        poll.await()
+
+        esperar { state.design.value?.logoFile == disco[LOGO_URL] }
+        Thread.sleep(300)
+        assertEquals(disco[LOGO_URL], state.design.value!!.logoFile)
     }
 
     // ── ayudas ──

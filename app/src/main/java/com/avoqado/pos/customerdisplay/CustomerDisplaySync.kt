@@ -5,7 +5,6 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.kiosk.domain.KioskState
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Named
@@ -19,6 +18,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
@@ -97,10 +98,10 @@ class CustomerDisplaySync internal constructor(
     private val refetch: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
-     * Cuántas veces se ofreció un diseño. Se lee y se suma sólo dentro de bloques de Main; el arranque lo captura al entrar
-     * y publica lo guardado sólo si nadie ofreció nada mientras leía el disco (si no, taparía la ficha del primer poll).
+     * Serializa [publishLatest]: cada publicación lee el disco y ofrece DENTRO del candado, así la última en correr siempre
+     * lee lo más nuevo (manifiesto y logo). El orden entre poll, descarga y arranque deja de importar.
      */
-    private val offers = AtomicInteger(0)
+    private val publishMutex = Mutex()
 
     // Un disco que falla en un trabajo de fondo se registra; nunca tumba la app (excepción sin manejar en la corrutina).
     private val logErrors = CoroutineExceptionHandler { _, error ->
@@ -157,9 +158,9 @@ class CustomerDisplaySync internal constructor(
             }
         }
         // (4) YA, con el logo que haya en disco (o sin él: se ve el nombre).
+        publishLatest(generation, venueId)
         val manifest = store.load().manifests[key]
         val ficha = manifest?.ficha?.toFicha(manifest.imageOrigins)
-        publish(generation, venueId, ficha?.let(::applied))
         // (5) Sin logo en disco, o legado que toca revalidar (la copia vigente sigue visible mientras tanto).
         val logo = ficha?.logo
         if (logo != null && (images.cachedFile(logo) == null || images.revalidationDue(logo))) {
@@ -338,14 +339,11 @@ class CustomerDisplaySync internal constructor(
                 // La cuota de 100 MB: tras una descarga buena se borra lo que ningún manifiesto guardado usa (en el trabajo,
                 // nunca en el poll).
                 if (status == ImageStatus.READY) images.prune(referencedLogos())
-                // Mientras bajaba pudo cambiar la sesión, desligarse el aparato o llegar otra ficha: se publica lo que
-                // diga el manifiesto AHORA, y `publish`/`write` descartan si la generación o la sucursal ya no son.
-                // Las ofertas se cuentan en Main ANTES de leer el disco: si un poll ofrece otra ficha mientras se lee,
-                // ésta ya no es la más nueva y no la pisa (como `restart`). Ese poll ya pintó el logo: estaba en disco.
-                val offersSeen = withContext(Dispatchers.Main.immediate) { offers.get() }
+                // Mientras bajaba pudo cambiar la sesión, desligarse el aparato o llegar otra ficha: se publica lo último
+                // del disco, y `publishLatest`/`write` descartan si la generación o la sucursal ya no son.
+                publishLatest(generation, venueId)
                 val manifest = store.load().manifests[key] ?: return@launch
                 val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return@launch
-                publish(generation, venueId, applied(ficha), onlyIfNoOfferSince = offersSeen)
                 if (ficha.logo != ref) return@launch
                 enqueueImagesAck(generation, venueId, key, ficha.fingerprint, imageCounts(status))
             }
@@ -390,20 +388,37 @@ class CustomerDisplaySync internal constructor(
         // Main: regla de CustomerDisplayState (sin candado). Inmediato si quien llama ya está en Main.
         scope.launch(Dispatchers.Main.immediate + logErrors) {
             state.clearDesign()
-            val offersSeen = offers.get()
             val venueId = sessionVenue() ?: return@launch
-            val stored = withContext(Dispatchers.IO) { storedDesign(venueId) } ?: return@launch
-            publish(generation, venueId, stored, onlyIfNoOfferSince = offersSeen)
+            publishLatest(generation, venueId)
         }
     }
 
-    private fun storedDesign(venueId: String): AppliedDesign? {
+    /**
+     * La ÚNICA publicación (paso 4 del poll, fin de la descarga y arranque/cambio de sesión): bajo [publishMutex] lee el
+     * manifiesto VIGENTE de la última terminal de esa sucursal y su logo de disco, y lo ofrece en Main con las guardas de
+     * generación y sucursal. Como siempre muestra «lo último que hay», una publicación tardía nunca deja algo más viejo
+     * que lo que ya está en disco. Si el almacén no se pudo leer (estado sólo en memoria), no publica: no se borra un
+     * diseño bueno por una lectura pasajera.
+     */
+    private suspend fun publishLatest(generation: Long, venueId: String) {
+        currentCoroutineContext().ensureActive()
+        publishMutex.withLock {
+            val s = withContext(Dispatchers.IO) { store.load() }
+            if (!s.persisted) return
+            val design = withContext(Dispatchers.IO) { latestDesign(s, venueId) }
+            // Main: regla de CustomerDisplayState (sin candado). La comprobación va en el MISMO bloque de Main que el
+            // ofrecimiento, así un clearDesign de otra sesión nunca queda debajo de un diseño viejo.
+            withContext(Dispatchers.Main.immediate) {
+                if (current(generation, venueId)) state.offerDesign(design)
+            }
+        }
+    }
+
+    private fun latestDesign(s: StoredDesignState, venueId: String): AppliedDesign? {
         val env = environment()
-        val s = store.load()
         val terminalId = s.lastTerminalByVenue[store.venueKey(env, venueId)] ?: return null
         val manifest = s.manifests[store.manifestKey(env, venueId, terminalId)] ?: return null
-        val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return null
-        return applied(ficha)
+        return manifest.ficha?.toFicha(manifest.imageOrigins)?.let(::applied)
     }
 
     /** Los logos de TODOS los manifiestos guardados (cualquier sucursal o terminal): lo que la poda no puede borrar. */
@@ -425,18 +440,6 @@ class CustomerDisplaySync internal constructor(
         var applied = false
         store.update { s -> if (current(generation, venueId)) change(s).also { applied = true } else s }
         return applied
-    }
-
-    private suspend fun publish(generation: Long, venueId: String, design: AppliedDesign?, onlyIfNoOfferSince: Int? = null) {
-        currentCoroutineContext().ensureActive()
-        // Main: regla de CustomerDisplayState (sin candado). La comprobación va en el MISMO bloque de Main que el
-        // ofrecimiento, así un clearDesign de otra sesión nunca queda debajo de un diseño viejo.
-        withContext(Dispatchers.Main.immediate) {
-            if (current(generation, venueId) && (onlyIfNoOfferSince == null || offers.get() == onlyIfNoOfferSince)) {
-                state.offerDesign(design)
-                offers.incrementAndGet()
-            }
-        }
     }
 
     /**
