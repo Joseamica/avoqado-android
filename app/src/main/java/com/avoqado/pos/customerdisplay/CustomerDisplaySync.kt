@@ -41,11 +41,13 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * sólo se aplica si la generación y la sucursal siguen siendo las de antes. Así ningún orden entre poll, descarga, arranque,
  * cambio de sesión, desligado y acuses puede dejar en pantalla algo distinto de lo último que hay en disco.
  *
- * 🔴 La cortina (Codex r6#2). Logout o cambio de sucursal quitan el diseño —el visible y el pendiente— en la MISMA llamada
- * de [onSessionChanged], en Main, aunque la fila esté ocupada: eso es «al instante». Lo demás (generación, cancelar la
- * descarga, publicar lo guardado de la sucursal nueva) lo hace su unidad cuando le toca turno. Nada de la sucursal anterior
- * puede volver en medio: toda oferta revisa la sesión en Main ([publishLatest]). Con la MISMA sucursal no se toca nada (sin
- * parpadeo). Un desligado ([onDeviceUnbound]) no lleva cortina: retira en su unidad.
+ * 🔴 La cortina (Codex r6#2, r7). Logout o cambio de sucursal quitan el diseño —el visible y el pendiente— en la MISMA
+ * llamada de [onSessionChanged], en Main, aunque la fila esté ocupada: eso es «al instante». Se decide comparando la sesión
+ * con la ÚLTIMA que vio [onSessionChanged], no con lo ofrecido (un poll de la sucursal nueva puede dejar su diseño pendiente
+ * con el anterior todavía visible). Lo demás (generación, cancelar la descarga, publicar lo guardado de la sucursal nueva)
+ * lo hace su unidad cuando le toca turno. Nada de la sucursal anterior puede volver en medio: toda oferta revisa la sesión
+ * en Main ([publishLatest]). Con la MISMA sucursal no se toca nada (sin parpadeo). Un desligado ([onDeviceUnbound]) no lleva
+ * cortina: retira en su unidad.
  *
  * 🔴 Hilos: [CustomerDisplayState.offerDesign]/[CustomerDisplayState.clearDesign] no tienen candado y suponen Main, así que
  * SIEMPRE se llaman en Main: dentro de `withContext(Dispatchers.Main.immediate)` desde una unidad, o en la cortina. Main nunca
@@ -133,10 +135,10 @@ class CustomerDisplaySync internal constructor(
     private val unboundUndeleted = HashSet<String>()
 
     /**
-     * La sucursal del último diseño ofrecido (visible o pendiente); `null` al retirar. NO es de la fila: vive SÓLO en Main,
-     * como el diseño mismo, y la lee la cortina de [onSessionChanged].
+     * La última sesión (sucursal) que vio [onSessionChanged]; nace con la del arranque. NO es de la fila: vive en Main (y en el
+     * constructor) y la usa la cortina.
      */
-    private var offeredVenue: String? = null
+    private var lastSessionVenue: String? = sessionVenue()
 
     // Un disco que falla en un trabajo de fondo se registra; nunca tumba la app (excepción sin manejar en la corrutina).
     private val logErrors = CoroutineExceptionHandler { _, error ->
@@ -145,7 +147,7 @@ class CustomerDisplaySync internal constructor(
 
     // Después de declarar todo el estado: la unidad del arranque empieza aquí mismo.
     init {
-        restart(sessionVenue())
+        restart(lastSessionVenue)
     }
 
     /**
@@ -315,13 +317,14 @@ class CustomerDisplaySync internal constructor(
     }
 
     /**
-     * Login, logout o cambio de sucursal. Se llama en Main (AppState). Primero la cortina: si la sucursal de la sesión no es
-     * la del diseño ofrecido, o no hay sesión, el diseño (visible y pendiente) se quita AQUÍ, sin esperar a la fila. Después
-     * la unidad, con la sesión de ESTE momento, hace el resto en su turno ([restart]).
+     * Login, logout o cambio de sucursal. Se llama en Main (AppState). Primero la cortina: si no hay sesión o la sucursal no es
+     * la de la última sesión que se vio aquí, el diseño (visible y pendiente) se quita AQUÍ, sin esperar a la fila. Después la
+     * unidad, con la sesión de ESTE momento, hace el resto en su turno ([restart]).
      */
     fun onSessionChanged() {
         val venue = sessionVenue()
-        if (venue == null || venue != offeredVenue) retire()
+        if (venue == null || venue != lastSessionVenue) state.clearDesign()
+        lastSessionVenue = venue
         restart(venue)
     }
 
@@ -351,7 +354,7 @@ class CustomerDisplaySync internal constructor(
         // siguiente unidad que toque la sucursal reintenta (Codex r6#3).
         if (withContext(Dispatchers.IO) { forgetVenue(venueKey) }) unboundUndeleted -= venueKey else unboundUndeleted += venueKey
         // Main: regla de CustomerDisplayState (sin candado).
-        if (isCurrentVenue) withContext(Dispatchers.Main.immediate) { retire() }
+        if (isCurrentVenue) withContext(Dispatchers.Main.immediate) { state.clearDesign() }
     }
 
     /** Borra el diseño guardado de esa sucursal (manifiestos con su acuse y la última terminal). `false` si falló el disco. En IO. */
@@ -368,12 +371,6 @@ class CustomerDisplaySync internal constructor(
     private fun retryForget(venueKey: String): Boolean {
         if (venueKey in unboundUndeleted && forgetVenue(venueKey)) unboundUndeleted -= venueKey
         return venueKey in unboundUndeleted
-    }
-
-    /** Quita el diseño visible y el pendiente. SÓLO en Main (regla de [CustomerDisplayState]). */
-    private fun retire() {
-        offeredVenue = null
-        state.clearDesign()
     }
 
     /**
@@ -513,7 +510,7 @@ class CustomerDisplaySync internal constructor(
         val generation = ++this.generation
         cancelDownload()
         // Main: regla de CustomerDisplayState (sin candado).
-        withContext(Dispatchers.Main.immediate) { retire() }
+        withContext(Dispatchers.Main.immediate) { state.clearDesign() }
         if (venueNow != null) publishLatest(generation, venueNow)
     }
 
@@ -534,10 +531,7 @@ class CustomerDisplaySync internal constructor(
         // Main: regla de CustomerDisplayState (sin candado). La sesión puede cambiar fuera de la fila (SecureStorage): la
         // comprobación va en el MISMO bloque de Main que el ofrecimiento.
         withContext(Dispatchers.Main.immediate) {
-            if (current(generation, venueId)) {
-                offeredVenue = venueId
-                state.offerDesign(design)
-            }
+            if (current(generation, venueId)) state.offerDesign(design)
         }
     }
 

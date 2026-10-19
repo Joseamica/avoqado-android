@@ -1394,6 +1394,32 @@ class CustomerDisplaySyncTest {
     }
 
     @Test
+    fun `r7 - con A visible y la ficha de B ya pendiente, cambiar a B retira A en esa misma llamada`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val espia = spyk(store())
+        val sync = sync(almacen = espia)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        state.showCart(CartState(items = listOf(CartItem(id = "p1", type = CartItemType.ProductItem("cafe"), name = "Café", unitPrice = 5000))))
+        // La sesión ya dice B (AuthRepository la cambia antes de varias esperas de red), el sync todavía no se entera, y un
+        // poll de B publica primero: su ficha queda PENDIENTE (hay venta) y A sigue visible.
+        sesion = "venue-2"
+        fichaResponse = { ficha(HUELLA_C) }
+        sync.afterPoll("venue-2", TERMINAL, senales(HUELLA_C))
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+        // Con la fila ocupada llega la notificación de B.
+        val soltar = retenerLaFila(sync, espia)
+
+        sync.onSessionChanged()
+
+        assertNull("A siguió visible tras cambiar a B", state.design.value)
+        state.idle()   // y el pendiente también se fue: al pasar a reposo no aparece nada
+        assertNull("quedó un pendiente de antes de la cortina", state.design.value)
+        soltar.countDown()
+        vaciarLaFila(sync)
+        assertEquals(HUELLA_C, state.design.value!!.ficha.fingerprint)   // lo de B llega con su unidad
+    }
+
+    @Test
     fun `r6 2 - refrescar la misma sucursal con la fila ocupada no parpadea`() = runBlocking {
         fichaResponse = { ficha(HUELLA_A) }
         val espia = spyk(store())
