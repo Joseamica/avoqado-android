@@ -35,6 +35,10 @@ import com.avoqado.pos.pos.data.model.SavedCartItem
 import com.avoqado.pos.pos.data.model.SavedModifier
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.data.model.buildOrderItemRequests
+import com.avoqado.pos.pos.presentation.product.variantes.Familia
+import com.avoqado.pos.pos.presentation.product.variantes.ResultadoDeBusqueda
+import com.avoqado.pos.pos.presentation.product.variantes.buscarEnCatalogo
+import com.avoqado.pos.pos.presentation.product.variantes.familiasDe
 import com.avoqado.pos.pos.presentation.promotions.opcionesElegidas
 import com.avoqado.pos.pos.presentation.promotions.preciosUnitariosDePromocion
 import com.avoqado.pos.referrals.domain.model.ValidationResult as ReferralValidationResult
@@ -43,7 +47,11 @@ import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import com.avoqado.pos.referrals.presentation.ReferralCaptureUiState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,6 +78,17 @@ sealed interface ScannedBarcodeResult {
     data class CustomerCardFound(val card: com.avoqado.pos.loyalty.data.WalletScanResponse) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
     data class Error(val message: String) : ScannedBarcodeResult
+}
+
+/**
+ * Lo que encontró la búsqueda Y el texto que lo produjo. Se calcula fuera del hilo principal, así que puede ir un paso atrás del
+ * campo: ni «Sin resultados» (y «Crear producto») ni la lista se enseñan salvo que estos resultados sean de lo escrito ahora. Sin
+ * lo primero salía un destello de «Sin resultados» en la primera tecla (ronda de arreglo 1 de T4, #2); sin lo segundo quedaban
+ * visibles y TOCABLES los de la consulta anterior (Codex P2-3: se vendía «Gorra» con «AG-1» escrito).
+ */
+data class Busqueda(val texto: String = "", val resultados: List<ResultadoDeBusqueda> = emptyList()) {
+    fun resultadosPara(query: String): List<ResultadoDeBusqueda> = if (query.isBlank() || texto != query) emptyList() else resultados
+    fun sinResultadosPara(query: String): Boolean = query.isNotBlank() && texto == query && resultados.isEmpty()
 }
 
 data class CartState(
@@ -613,19 +632,35 @@ class CartViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    val searchResults: StateFlow<List<Product>> = combine(
+    /** Seam de pruebas: dónde se calculan las familias y la búsqueda. En producción, fuera del hilo principal. Molde: `TerminalPaymentService.io`. */
+    @androidx.annotation.VisibleForTesting
+    internal var calculoDeCatalogo: CoroutineDispatcher = Dispatchers.Default
+
+    /**
+     * Variantes (spec 2026-10-14 §11): las familias VÁLIDAS del catálogo completo, una vez por cambio del catálogo y fuera del hilo
+     * principal (Codex 6, meta 5,000 variantes). La cuadrícula y la búsqueda las colocan en O(n); el catálogo sigue PLANO (el
+     * escáner, promociones y merma buscan por id ahí).
+     */
+    val familias: StateFlow<Map<String, Familia>> = productsRepository.products
+        .map { withContext(calculoDeCatalogo) { familiasDe(it) } }
+        // Valor inicial = lo ya cargado: cada mesa y el cobro crean un ViewModel nuevo y el primer cuadro no puede pintar las variantes sueltas.
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), familiasDe(productsRepository.products.value))
+
+    /**
+     * Q6: por nombre sale la familia (una vez); sólo por código (SKU, barcode, GTIN), la variante. La lógica vive en `Familias.kt`.
+     * Se calcula fuera del hilo principal (5,000 variantes por tecla) y por eso lleva el texto que la produjo: la vista decide
+     * «Sin resultados» sólo con los resultados de lo que está escrito AHORA (ver [Busqueda]).
+     */
+    val busqueda: StateFlow<Busqueda> = combine(
         productsRepository.products,
+        familias,
         _searchQuery,
-    ) { products, query ->
-        if (query.isBlank()) emptyList()
-        else {
-            val lower = query.lowercase()
-            products.filter {
-                it.name.lowercase().contains(lower) ||
-                    it.sku?.lowercase()?.contains(lower) == true
-            }
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    ) { ps, fs, q -> Busqueda(q, withContext(calculoDeCatalogo) { buscarEnCatalogo(ps, fs, q) }) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), Busqueda())
+
+    val searchResults: StateFlow<List<ResultadoDeBusqueda>> = busqueda
+        .map { it.resultados }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         loadData()
