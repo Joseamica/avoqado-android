@@ -338,7 +338,7 @@ class CustomerDisplaySync internal constructor(
                 val status = images.ensure(ref, origins)
                 // La cuota de 100 MB: tras una descarga buena se borra lo que ningún manifiesto guardado usa (en el trabajo,
                 // nunca en el poll).
-                if (status == ImageStatus.READY) images.prune(referencedLogos())
+                if (status == ImageStatus.READY) referencedLogos()?.let(images::prune)
                 // Mientras bajaba pudo cambiar la sesión, desligarse el aparato o llegar otra ficha: se publica lo último
                 // del disco, y `publishLatest`/`write` descartan si la generación o la sucursal ya no son.
                 publishLatest(generation, venueId)
@@ -421,9 +421,15 @@ class CustomerDisplaySync internal constructor(
         return manifest.ficha?.toFicha(manifest.imageOrigins)?.let(::applied)
     }
 
-    /** Los logos de TODOS los manifiestos guardados (cualquier sucursal o terminal): lo que la poda no puede borrar. */
-    private fun referencedLogos(): Set<LogoRef> =
-        store.load().manifests.values.mapNotNullTo(HashSet()) { it.ficha?.toFicha(it.imageOrigins)?.logo }
+    /**
+     * Los logos de TODOS los manifiestos guardados (cualquier sucursal o terminal): lo que la poda no puede borrar. `null`
+     * si el almacén no se pudo leer: un estado vacío en memoria no significa «nada referenciado» y la poda se salta.
+     */
+    private fun referencedLogos(): Set<LogoRef>? {
+        val s = store.load()
+        if (!s.persisted) return null
+        return s.manifests.values.mapNotNullTo(HashSet()) { it.ficha?.toFicha(it.imageOrigins)?.logo }
+    }
 
     /** El ÚNICO que arma el diseño: el logo de disco (sólo disco, nunca red) con su marca de `lastModified`. */
     private fun applied(ficha: Ficha): AppliedDesign {

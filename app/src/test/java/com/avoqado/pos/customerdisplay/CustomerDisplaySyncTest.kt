@@ -1085,6 +1085,25 @@ class CustomerDisplaySyncTest {
         assertEquals(disco[LOGO_URL], state.design.value!!.logoFile)
     }
 
+    @Test
+    fun `si no se pudo leer el almacen no se poda`() = runBlocking {
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers { retenida.await(); bajar(firstArg()) }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        sync().afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        // Una lectura pasajera fallida justo al podar: state.json se vuelve ilegible (una carpeta en su lugar).
+        val real = File(carpeta.root, "customer-display/state.json")
+        val aparte = File(carpeta.root, "aparte.json")
+        assertTrue(real.renameTo(aparte))
+        assertTrue(real.mkdir())
+
+        retenida.complete(Unit)
+        coVerify(timeout = 5_000, exactly = 1) { images.ensure(any(), any()) }
+        Thread.sleep(300)
+
+        verify(exactly = 0) { images.prune(any()) }
+    }
+
     // ── ayudas ──
 
     private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =
