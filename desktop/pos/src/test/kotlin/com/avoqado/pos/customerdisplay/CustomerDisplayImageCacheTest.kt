@@ -13,6 +13,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.jetbrains.skia.EncodedImageFormat
@@ -305,6 +307,63 @@ class CustomerDisplayImageCacheTest {
         ahora += TimeUnit.MINUTES.toMillis(61)
         assertEquals(ImageStatus.READY, cache.ensure(ref, origins()))
         assertNotNull(cache.cachedFile(ref))
+    }
+
+    @Test fun `legado con copia - permanente en la version 2 no bloquea la version 3`() = runBlocking<Unit> {
+        val vieja = imagen(64, 64)
+        val nueva = imagen(48, 48)
+        sirve("/venue.png", vieja, etag = "\"v1\"")
+        val cache = cache()
+        assertEquals(ImageStatus.READY, cache.ensure(LogoRef.Venue("$base/venue.png", "1"), origins()))
+
+        handlers["/venue.png"] = { exchange ->
+            exchange.responseHeaders.add("Location", "$base/otra.png")
+            exchange.sendResponseHeaders(302, -1)
+        }
+        val v2 = LogoRef.Venue("$base/venue.png", "2")
+        assertEquals(ImageStatus.READY, cache.ensure(v2, origins()))   // se sigue pintando la copia
+        assertEquals(2, hitsDe("/venue.png"))
+        // Con el permanente vigente para ESA versión no se relanza en cada poll.
+        assertFalse(cache.revalidationDue(v2))
+        assertEquals(ImageStatus.READY, cache.ensure(v2, origins()))
+        assertEquals(2, hitsDe("/venue.png"))
+
+        sirve("/venue.png", nueva, etag = "\"v3\"")
+        val v3 = LogoRef.Venue("$base/venue.png", "3")
+        assertTrue(cache.revalidationDue(v3))
+        assertEquals(ImageStatus.READY, cache.ensure(v3, origins()))
+        assertEquals(3, hitsDe("/venue.png"))
+        assertContentEquals(nueva, cache.cachedFile(v3)!!.readBytes())
+        assertFalse(cache.revalidationDue(v3))
+    }
+
+    @Test fun `dos ensure simultaneos del mismo asset piden una sola vez`() = runBlocking<Unit> {
+        val png = imagen(64, 64)
+        handlers["/logo.png"] = { exchange ->
+            Thread.sleep(300)   // que la segunda llamada llegue mientras la primera sigue bajando
+            exchange.sendResponseHeaders(200, png.size.toLong())
+            exchange.responseBody.use { it.write(png) }
+        }
+        val ref = LogoRef.Asset("$base/logo.png", sha256(png))
+        val cache = cache()
+
+        val estados = List(2) { async { cache.ensure(ref, origins()) } }.awaitAll()
+
+        assertEquals(listOf(ImageStatus.READY, ImageStatus.READY), estados)
+        assertEquals(1, hitsDe("/logo.png"))
+    }
+
+    @Test fun `prune no borra un temporal reciente`() = runBlocking<Unit> {
+        val cache = cache()
+        val viejo = disperso(File(dir, "assets/img-1.tmp"), modificado = ahora - TimeUnit.HOURS.toMillis(2))
+        val reciente1 = disperso(File(dir, "assets/img-2.tmp"), modificado = ahora - TimeUnit.MINUTES.toMillis(1))
+        val reciente2 = disperso(File(dir, "venue/img-3.tmp"), modificado = ahora - TimeUnit.MINUTES.toMillis(59))
+
+        cache.prune(emptyList())
+
+        assertFalse(viejo.exists())
+        assertTrue(reciente1.exists())   // una descarga en curso: borrarla la volvería «no es imagen» permanente
+        assertTrue(reciente2.exists())
     }
 
     @Test fun `prune respeta lo referenciado`() = runBlocking<Unit> {

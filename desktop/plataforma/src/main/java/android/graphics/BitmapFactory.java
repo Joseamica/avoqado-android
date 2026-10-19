@@ -91,7 +91,8 @@ public class BitmapFactory {
             org.jetbrains.skia.Image imagen = org.jetbrains.skia.Image.Companion.makeFromEncoded(exactos(data, offset, length));
             try {
                 org.jetbrains.skia.Data png = imagen.encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG, 100);
-                return png == null ? null : envolver(ImageIO.read(new ByteArrayInputStream(png.getBytes())));
+                if (png == null) return null;
+                try { return envolver(ImageIO.read(new ByteArrayInputStream(png.getBytes()))); } finally { png.close(); }
             } finally {
                 imagen.close();
             }

@@ -65,6 +65,8 @@ class CustomerDisplayImageCache internal constructor(
         val attempts: Int = 0,
         val nextAttemptAtMs: Long? = null,
         val permanent: Boolean = false,
+        // La versión que falló para siempre (legado): el corte es por identidad + versión; otra versión vuelve a pedirse.
+        val failedVersion: String? = null,
     )
 
     private sealed interface Outcome {
@@ -84,9 +86,13 @@ class CustomerDisplayImageCache internal constructor(
     fun revalidationDue(ref: LogoRef): Boolean {
         if (ref !is LogoRef.Venue) return false
         val meta = imageFile(ref)?.let(::readMeta)
+        if (meta != null && blocks(meta, ref)) return false   // permanente para ESTA versión: no relanzar en cada poll
         val validatedAt = meta?.validatedAtMs ?: return true
         return meta.version != ref.version || wallClock() - validatedAt >= DAY_MS
     }
+
+    /** Un fallo permanente corta sólo esa misma referencia: un asset (por hash) o un legado en la versión que falló. */
+    private fun blocks(meta: Meta, ref: LogoRef) = meta.permanent && (ref !is LogoRef.Venue || meta.failedVersion == ref.version)
 
     suspend fun ensure(ref: LogoRef, origins: List<String>): ImageStatus = withContext(Dispatchers.IO) {
         mutex.withLock { ensureLocked(ref, origins) }
@@ -102,9 +108,13 @@ class CustomerDisplayImageCache internal constructor(
 
         val stored = readMeta(image)
         // Sin copia, el estado de fallos es de la versión que se intentó: otra versión es otra referencia y empieza de cero.
-        val meta = if (!hasCopy && ref is LogoRef.Venue && stored?.version != ref.version) null else stored
+        val meta = when {
+            !hasCopy && ref is LogoRef.Venue && stored?.version != ref.version -> null
+            stored != null && stored.permanent && !blocks(stored, ref) -> stored.copy(permanent = false, failedVersion = null)
+            else -> stored
+        }
         val now = wallClock()
-        if (meta?.permanent == true) return failed
+        if (meta != null && blocks(meta, ref)) return failed
         if ((meta?.nextAttemptAtMs ?: 0L) > now) return if (hasCopy) ImageStatus.READY else pendingOrFailed(meta!!.attempts)
 
         val outcome = try {
@@ -122,15 +132,15 @@ class CustomerDisplayImageCache internal constructor(
                 outcome.tmp.delete()
                 transient(image, meta, version, now, hasCopy, e.message ?: "no se pudo guardar")
             }
-            // ponytail: con copia, el permanente/los intentos son de la URL (la llave del archivo), no de cada versión:
-            // una URL que ya redirige o creció deja de pedirse; si cambia la URL, es otro archivo y empieza de cero.
+            // ponytail: con copia, los intentos transitorios (la espera) son de la URL, no de cada versión: una versión nueva
+            // que llega a media espera aguarda a lo mucho 60 min. El permanente sí es por versión (failedVersion).
             Outcome.NotModified -> {
-                writeMeta(image, (stored ?: Meta()).copy(version = version, validatedAtMs = now, attempts = 0, nextAttemptAtMs = null))
+                writeMeta(image, (meta ?: Meta()).copy(version = version, validatedAtMs = now, attempts = 0, nextAttemptAtMs = null))
                 ImageStatus.READY
             }
             is Outcome.Permanent -> {
                 Log.w(TAG, "Logo descartado sin reintento (${outcome.reason}): ${ref.url.substringBefore('?')}")   // sin el token
-                writeMeta(image, (meta ?: Meta(version = version)).copy(permanent = true))
+                writeMeta(image, (meta ?: Meta(version = version)).copy(permanent = true, failedVersion = version))
                 failed
             }
             is Outcome.Transient -> transient(image, meta, version, now, hasCopy, outcome.reason)
@@ -196,13 +206,20 @@ class CustomerDisplayImageCache internal constructor(
         BitmapFactory.decodeFile(file.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return "no es imagen"
         if (bounds.outWidth > MAX_SIDE || bounds.outHeight > MAX_SIDE) return "lados ${bounds.outWidth}×${bounds.outHeight}"
-        val bitmap = BitmapFactory.decodeFile(file.path) ?: return "no es imagen"
+        // Sin memoria para decodificarla AHORA no dice nada de la imagen: transitorio (IOException ⇒ se escribe el
+        // `.json` con su espera), nunca permanente ni un Error que tumbe la corrutina.
+        val bitmap = try {
+            BitmapFactory.decodeFile(file.path)
+        } catch (e: OutOfMemoryError) {
+            throw IOException("sin memoria para decodificar el logo", e)
+        } ?: return "no es imagen"
         bitmap.recycle()
         return null
     }
 
     /**
-     * Si la carpeta pasa de 100 MB, borra lo NO referenciado, lo más viejo primero. Cada `.img` se va con su `.json`.
+     * Si la carpeta pasa de 100 MB, borra lo NO referenciado, lo más viejo primero. Cada `.img` se va con su `.json`; los
+     * `.tmp` de menos de 1 h se respetan.
      */
     fun prune(referenced: Collection<LogoRef>) {
         val keep = referenced.mapNotNull(::imageFile).map { it.absolutePath.removeSuffix(".img") }.toSet()
@@ -211,7 +228,11 @@ class CustomerDisplayImageCache internal constructor(
             .groupBy { File(it.parentFile, it.nameWithoutExtension).absolutePath }
         var total = groups.values.sumOf { files -> files.sumOf(File::length) }
         if (total <= MAX_DIR_BYTES) return
-        val candidates = groups.filterKeys { it !in keep }.values.sortedBy { files -> files.maxOf(File::lastModified) }
+        // Un `.tmp` de menos de 1 h puede ser una descarga en curso: borrarlo la volvería «no es imagen» permanente.
+        val recentTmp = wallClock() - TMP_GRACE_MS
+        val candidates = groups.filterKeys { it !in keep }.values
+            .filterNot { files -> files.any { it.name.endsWith(".tmp") && it.lastModified() > recentTmp } }
+            .sortedBy { files -> files.maxOf(File::lastModified) }
         for (files in candidates) {
             if (total <= MAX_DIR_BYTES) break
             files.forEach { file ->
@@ -264,6 +285,7 @@ class CustomerDisplayImageCache internal constructor(
         const val FAILED_AFTER_ATTEMPTS = 5
         const val MAX_WAIT_MINUTES = 60L
         val DAY_MS = TimeUnit.HOURS.toMillis(24)
+        val TMP_GRACE_MS = TimeUnit.HOURS.toMillis(1)
         val SHA256_HEX = Regex("^[0-9a-f]{64}$")
 
         fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
