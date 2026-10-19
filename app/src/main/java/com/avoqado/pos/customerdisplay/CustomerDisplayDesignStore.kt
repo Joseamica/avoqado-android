@@ -69,7 +69,9 @@ class CustomerDisplayDesignStore internal constructor(private val dir: File) {
      * nunca se escribe encima de un archivo que no se pudo leer).
      */
     fun update(change: (StoredDesignState) -> StoredDesignState): StoredDesignState = synchronized(diskLock) {
-        change(read()).also(::write)
+        val before = read()
+        // Sin cambios no se escribe: el poll pasa por aquí cada 15-20 s y casi nunca cambia nada.
+        change(before).also { if (it != before) write(it) }
     }
 
     internal fun venueKey(env: String, venueId: String) = "$env|$venueId"

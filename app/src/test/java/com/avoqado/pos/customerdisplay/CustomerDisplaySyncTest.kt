@@ -588,6 +588,19 @@ class CustomerDisplaySyncTest {
         assertEquals(HUELLA_C, state.design.value!!.ficha.fingerprint)
     }
 
+    @Test
+    fun `un poll sin cambios no reescribe state json`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        val archivo = File(carpeta.root, "customer-display/state.json")
+        assertTrue(archivo.setLastModified(1_000_000L))
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(1_000_000L, archivo.lastModified())
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))
