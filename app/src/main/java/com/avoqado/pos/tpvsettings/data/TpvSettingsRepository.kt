@@ -455,26 +455,31 @@ class TpvSettingsRepository internal constructor(
     suspend fun refreshSettingsForVenue(venueId: String) {
         // Un poll que salió con la sesión anterior no toma boleto: vencería el refresco de la sucursal vigente.
         if (secureStorage.venueId != venueId) return
-        val mine = refreshTicket.incrementAndGet()
+        val mine = synchronized(ticketLock) {
+            _isLoading.value = true
+            refreshTicket.incrementAndGet()
+        }
         fun stillCurrent() = mine == refreshTicket.get() && secureStorage.venueId == venueId
         fun whileCurrent(write: () -> Unit): Boolean = synchronized(ticketLock) { stillCurrent().also { if (it) write() } }
 
         // El número de ESTA petición: el ticket sólo acepta de ella lo que ninguna más nueva ya escribió.
         val receiptSeq = receiptRequests.incrementAndGet()
-        _isLoading.value = true
         Log.d("📦", "Fetching settings for venue: $venueId")
 
         try {
             val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
 
             if (loadedVenueId != venueId) {
+                // El disco se lee ANTES de seleccionar, y selección e hidratación son UNA escritura: una petición vencida a
+                // medio leer no puede dejar la sucursal marcada como cargada y en fábrica (la siguiente se saltaría la
+                // hidratación y, sin red, el cobro saldría con DEFAULT; lección iOS #2).
+                val (cachedSettings, cachedNavigation) = readLastKnownSettings(venueId)
                 val selected = whileCurrent {
                     loadedVenueId = venueId
-                    _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
-                    _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                    _settings.value = applyIncludeTaxOverride(cachedSettings ?: TpvSettings.DEFAULT, localIncludeTaxOverride)
+                    _terminalNavigation.value = cachedNavigation ?: TerminalNavigationSettings.DEFAULT
                 }
                 if (!selected) return
-                hydrateLastKnownSettings(venueId, localIncludeTaxOverride, ::whileCurrent)
             }
 
             val token = secureStorage.accessToken
@@ -721,9 +726,10 @@ class TpvSettingsRepository internal constructor(
         // memoria es de la otra: no se mezcla ni se guarda con la llave de ésta.
         var guardados: TpvSettings? = null
         synchronized(ticketLock) {
-            refreshTicket.incrementAndGet()
-            _isLoading.value = false
+            // Sólo si la sesión sigue en esta sucursal: un PATCH de A que termina tras cambiar a B no vence el refresco de B.
             if (secureStorage.venueId == venueId) {
+                refreshTicket.incrementAndGet()
+                _isLoading.value = false
                 guardados = _settings.updateAndGet { actuales ->
                     actuales.copy(
                         showReviewScreen = showReviewScreen ?: actuales.showReviewScreen,
@@ -755,28 +761,21 @@ class TpvSettingsRepository internal constructor(
         }
     }
 
-    private suspend fun hydrateLastKnownSettings(
-        venueId: String,
-        localIncludeTaxOverride: Boolean?,
-        whileCurrent: (() -> Unit) -> Boolean,
-    ) {
-        preferencesDataStore.getString(tpvSettingsKey(venueId)).first()?.let { cached ->
+    /** Lo último guardado de [venueId] (ajustes, navegación); `null` = no hay o es ilegible. Sólo lee: no escribe nada. */
+    private suspend fun readLastKnownSettings(venueId: String): Pair<TpvSettings?, TerminalNavigationSettings?> {
+        val settings = preferencesDataStore.getString(tpvSettingsKey(venueId)).first()?.let { cached ->
             runCatching { json.decodeFromString<TpvSettings>(cached) }
-                .onSuccess {
-                    whileCurrent { _settings.value = applyIncludeTaxOverride(it, localIncludeTaxOverride) }
-                    Log.d("📦", "🗂️ TPV settings hidratados del cache para $venueId")
-                }
+                .onSuccess { Log.d("📦", "🗂️ TPV settings del cache para $venueId") }
                 .onFailure { Log.w("📦", "Cache de TPV settings inválido: ${it.message}") }
+                .getOrNull()
         }
-
-        preferencesDataStore.getString(terminalNavigationKey(venueId)).first()?.let { cached ->
+        val navigation = preferencesDataStore.getString(terminalNavigationKey(venueId)).first()?.let { cached ->
             runCatching { json.decodeFromString<TerminalNavigationSettings>(cached) }
-                .onSuccess {
-                    whileCurrent { _terminalNavigation.value = it }
-                    Log.d("📦", "🗂️ Perfil de terminal hidratado del cache para $venueId")
-                }
+                .onSuccess { Log.d("📦", "🗂️ Perfil de terminal del cache para $venueId") }
                 .onFailure { Log.w("📦", "Cache de terminal inválido: ${it.message}") }
+                .getOrNull()
         }
+        return settings to navigation
     }
 
     private suspend fun persistTpvSettings(venueId: String, settings: TpvSettings) {

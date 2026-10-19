@@ -184,6 +184,48 @@ class TpvSettingsRepositoryHuellaTest {
     }
 
     @Test
+    fun `una peticion vencida a mitad de la hidratacion no deja la sucursal en fabrica`() = runTest {
+        // Lección iOS #2: R1 selecciona A y se queda leyendo el disco; R2 (poll, ON_RESUME o login de la MISMA sucursal) la
+        // vence y falla por red. Sin red, A tiene que quedarse con lo de su disco, no con los valores de fábrica.
+        val disco = mutableMapOf<String, String>()
+        repositorio(Guion(Paso(respuesta(terminal = "terminal-cache", verCalificacion = false))), preferencias = preferenciasEn(disco))
+            .refreshSettingsForVenue(A)
+        val lectura = Retencion()
+        val repo = repositorio(
+            Guion(Paso(error = IOException("offline")), Paso(error = IOException("offline"))),
+            preferencias = preferenciasEn(disco, retenerLecturaDe = "tpv_settings_$A", retencionLectura = lectura),
+        )
+
+        val r1 = async(Dispatchers.Default) { repo.refreshSettingsForVenue(A) }
+        lectura.esperarQueEntre()
+        repo.refreshSettingsForVenue(A)
+        lectura.soltar()
+        terminar(r1)
+
+        assertEquals("terminal-cache", repo.terminalNavigation.value.terminalId)
+        assertEquals(false, repo.settings.value.showReviewScreen)
+    }
+
+    @Test
+    fun `un PATCH de A que termina tras cambiar a B no vence el refresco de B`() = runTest {
+        val patch = Paso("{}").retenido()
+        val deB = Paso(respuesta(terminal = "terminal-b", verCalificacion = true, pin = false, plan = "PRO")).retenido()
+        val repo = repositorio(Guion(Paso(respuesta(terminal = "terminal-a", verCalificacion = false)), patch, deB))
+        repo.refreshSettingsForVenue(A)
+
+        val guardado = async(Dispatchers.Default) { repo.guardarPantallasDelCobro(showReviewScreen = false) }
+        patch.esperarQueSalga()
+        repo.clearCache()
+        sesion.venue = B
+        val b = enVuelo(repo, B, deB)
+        patch.soltar()
+        withContext(Dispatchers.Default) { withTimeout(30_000) { guardado.await() } }
+        soltar(b, deB)
+
+        quedanLosDeB(repo)
+    }
+
+    @Test
     fun `clearCache baja el PIN de gerente guardado`() = runTest {
         sesion.pin = true
         val repo = repositorio(Guion())
@@ -401,8 +443,22 @@ class TpvSettingsRepositoryHuellaTest {
         disco: MutableMap<String, String>,
         retenerEscrituraDe: String? = null,
         retencion: Retencion? = null,
+        retenerLecturaDe: String? = null,
+        retencionLectura: Retencion? = null,
     ): PreferencesDataStore = mockk<PreferencesDataStore>(relaxed = true).also { p ->
-        every { p.getString(any()) } answers { flowOf(synchronized(disco) { disco[firstArg()] }) }
+        val primeraLectura = java.util.concurrent.atomic.AtomicBoolean(true)
+        every { p.getString(any()) } answers {
+            val llave = firstArg<String>()
+            if (llave == retenerLecturaDe && primeraLectura.getAndSet(false)) {
+                // Sólo la PRIMERA lectura de esa llave se queda a medias; las demás contestan al instante.
+                kotlinx.coroutines.flow.flow {
+                    retencionLectura?.bloquear()
+                    emit(synchronized(disco) { disco[llave] })
+                }
+            } else {
+                flowOf(synchronized(disco) { disco[llave] })
+            }
+        }
         every { p.getBooleanOrNull(any()) } returns flowOf(null)
         coEvery { p.setString(any(), any()) } answers {
             if (firstArg<String>() == retenerEscrituraDe) retencion?.bloquear()

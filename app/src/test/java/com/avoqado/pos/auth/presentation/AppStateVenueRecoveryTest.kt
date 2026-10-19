@@ -245,6 +245,21 @@ class AppStateVenueRecoveryTest {
         refresco.soltar.complete(Unit)
     }
 
+    @Test
+    fun `sesion expirada limpia los ajustes y cancela el refresco`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val invalidada = MutableSharedFlow<Unit>()
+        createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo, sessionInvalidated = invalidada)
+        runCurrent()
+
+        invalidada.emit(Unit) // TokenRefreshAuthenticator: el refresco del token fue rechazado de verdad
+        runCurrent()
+
+        io.mockk.verify(exactly = 1) { refresco.repo.clearCache() }
+        assertEquals(1, refresco.cancelados)
+        refresco.soltar.complete(Unit)
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
@@ -256,6 +271,7 @@ class AppStateVenueRecoveryTest {
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
         tpvSettingsRepository: TpvSettingsRepository? = null,
+        sessionInvalidated: MutableSharedFlow<Unit> = MutableSharedFlow(),
         printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
             mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
@@ -265,7 +281,7 @@ class AppStateVenueRecoveryTest {
             every { isLoggedIn } returns true
             every { venueId } returns "venue-atole"
             every { reservationsEnabled } returns false
-            every { sessionInvalidated } returns MutableSharedFlow()
+            every { this@mockk.sessionInvalidated } returns sessionInvalidated
         }
         val authRepository = mockk<AuthRepository>(relaxed = true) {
             coEvery { repairCurrentVenueBinding() } coAnswers {
