@@ -47,9 +47,12 @@ val versionAndroid = Regex("""versionName\s*=\s*"([^"]+)"""")
     .find(appAndroid.resolve("build.gradle.kts").readText())?.groupValues?.get(1) ?: "0.0.0"
 // El número de compilación de Android (`x-app-version-code`). Sin él, el build truena: un 0 inventado haría que el server
 // creyera que este POS no entiende la pantalla del cliente.
-val versionCodeAndroid = Regex("""versionCode\s*=\s*(\d+)""")
-    .find(appAndroid.resolve("build.gradle.kts").readText())?.groupValues?.get(1)?.toInt()
-    ?: throw GradleException("No encontré `versionCode = N` en app/build.gradle.kts de Android")
+// Anclado a la línea entera: un `// versionCode = 54` comentado no cuenta. Cero o más de uno = el build truena (no adivina).
+// BuildConfigDeEscritorioTest lee ESTE patrón del archivo: no le cambies el nombre ni lo partas en varias líneas.
+val patronVersionCode = Regex("""^\s*versionCode\s*=\s*(\d+)\s*$""", RegexOption.MULTILINE)
+val versionCodeAndroid = patronVersionCode.findAll(appAndroid.resolve("build.gradle.kts").readText()).toList()
+    .singleOrNull()?.groupValues?.get(1)?.toInt()
+    ?: throw GradleException("Esperaba exactamente una línea `versionCode = N` en app/build.gradle.kts de Android")
 // -Pavoqado.produccion=true: build de PRODUCCIÓN (DEBUG=false, hosts fijos de avoqado.io, carpeta de datos segura). Por defecto, PRUEBA.
 val produccion = providers.gradleProperty("avoqado.produccion").map {
     when (it) {

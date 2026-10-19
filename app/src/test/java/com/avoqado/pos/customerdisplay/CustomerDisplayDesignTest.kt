@@ -70,6 +70,15 @@ class CustomerDisplayDesignTest {
     }
 
     @Test
+    fun `contraste que no es blanco ni negro deja sin acento`() {
+        val result = ficha(accent = AccentDto(custom = true, color = "#1A7F5A", on = "#123456")).toFicha(origins)!!
+
+        assertNull(result.accentArgb)
+        assertNull(result.onAccentArgb)
+        assertEquals(0xFF000000L, ficha(accent = AccentDto(custom = true, color = "#1A7F5A", on = "#000000")).toFicha(origins)!!.onAccentArgb)
+    }
+
+    @Test
     fun `texto de 40 emojis cabe y de 41 no`() {
         val emoji = "😀" // 😀: un code point, dos chars
         assertEquals(emoji.repeat(40), ficha(welcomeText = emoji.repeat(40)).toFicha(origins)!!.welcomeText)

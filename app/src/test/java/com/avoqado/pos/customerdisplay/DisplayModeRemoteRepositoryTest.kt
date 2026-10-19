@@ -506,6 +506,23 @@ class DisplayModeRemoteRepositoryTest {
         assertEquals(PollSignals(PollFingerprints(settings = HUELLA_B), designCapability = 1), binding.signals)
     }
 
+    @Test
+    fun `capacidad de diseno cero o negativa cuenta como no anunciada`() = runTest {
+        for (capacidad in listOf(0, -1)) {
+            server.enqueue(
+                MockResponse().setBody(
+                    "{\"data\":{\"terminalId\":\"t1\",\"capabilities\":{\"customerDisplayDesign\":$capacidad}," +
+                        "\"request\":{\"requestId\":\"r1\",\"desiredInverted\":false," +
+                        "\"requestedAt\":\"2026-08-29T17:00:00Z\",\"expiresAt\":\"2026-08-29T17:05:00Z\"}}}",
+                ),
+            )
+
+            val binding = (repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.Success).data
+
+            assertNull(binding.signals.designCapability)
+        }
+    }
+
     // ── Reporte de capacidades v1 (F2, Task 1.3): versión de diseño e instalación, sólo cuando se mandan ──
 
     @Test

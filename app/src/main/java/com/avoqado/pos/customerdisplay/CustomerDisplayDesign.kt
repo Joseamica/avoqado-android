@@ -63,7 +63,8 @@ internal fun FichaDto.toFicha(imageOrigins: List<String>): Ficha? {
     if (schemaVersion != SUPPORTED_SCHEMA_VERSION || !isPollFingerprint(fingerprint)) return null
     // El acento va en pareja: un color sin su contraste (o al revés) no se pinta.
     val accentColor = accent?.takeIf { it.custom }?.color?.let(::hexToArgb)
-    val onAccentColor = accent?.takeIf { it.custom }?.on?.let(::hexToArgb)
+    // El contraste sólo es blanco o negro (lo que calcula el server); otro valor = sin acento, igual que un color inválido.
+    val onAccentColor = accent?.takeIf { it.custom }?.on?.takeIf { it == "#FFFFFF" || it == "#000000" }?.let(::hexToArgb)
     val accentValid = accentColor != null && onAccentColor != null
     return Ficha(
         fingerprint = fingerprint,

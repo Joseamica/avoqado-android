@@ -321,7 +321,7 @@ class DisplayModeRemoteRepository @Inject constructor(
             ),
             designCapability = data.capabilities?.let { element ->
                 runCatching { json.decodeFromJsonElement(PollCapabilitiesWire.serializer(), element) }.getOrNull()
-            }?.customerDisplayDesign,
+            }?.customerDisplayDesign?.takeIf { it > 0 },   // ≤ 0 = no anunciada
             capabilityReportRequested = data.capabilityReport?.let { element ->
                 runCatching { json.decodeFromJsonElement(PollCapabilityReportWire.serializer(), element) }.getOrNull()
             }?.requested ?: false,
