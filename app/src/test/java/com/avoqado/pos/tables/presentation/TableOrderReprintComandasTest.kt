@@ -458,6 +458,20 @@ class TableOrderReprintComandasTest {
         assertNull(impreso.captured.discountAmount)
     }
 
+    // D3, 19-oct: la pre-cuenta salía sin «Nota: sin aceite» aunque la cuenta la mostraba y el ticket del cobro la imprime.
+    @Test
+    fun `precuenta lleva la nota del articulo como el ticket del cobro`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(impreso), any()) } returns Unit
+        val cuenta = cuentaConCargoYExtra()
+        val conNota = cuenta.copy(items = listOf(cuenta.items[0].copy(notes = "sin aceite"), cuenta.items[1].copy(notes = "  ")))
+
+        buildVm(order = conNota).printPreBill()
+
+        assertEquals(listOf("sin aceite", null), impreso.captured.items.map { it.note })
+    }
+
     @Test
     fun `precuenta entrega el cargo separado al impresor`() = runTest {
         every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
