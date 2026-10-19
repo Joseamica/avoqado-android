@@ -544,6 +544,50 @@ class CustomerDisplaySyncTest {
         assertEquals(setOf(LLAVE), store().load().manifests.keys)
     }
 
+    @Test
+    fun `un poll viejo no cancela la descarga de la sesion nueva`() = runBlocking {
+        // venue-1 ya tiene una ficha con logo que no está en disco.
+        coEvery { images.ensure(any(), any()) } returns ImageStatus.PENDING
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        coVerify(timeout = 5_000, exactly = 1) { images.ensure(any(), any()) }
+        Thread.sleep(150)
+        val retenida = CompletableDeferred<Unit>()
+        val cancelada = AtomicBoolean(false)
+        coEvery { images.ensure(LogoRef.Asset(OTRO_LOGO_URL, SHA_OTRO), any()) } coAnswers {
+            try {
+                retenida.await()
+            } catch (e: CancellationException) {
+                cancelada.set(true)
+                throw e
+            }
+            bajar(firstArg())
+        }
+        val soltarViejo = CountDownLatch(1)
+        fichaResponse = { pedido ->
+            if (pedido.path!!.contains("/venue-2/")) ficha(HUELLA_C, logo = OTRO_LOGO_JSON)
+            else { soltarViejo.await(5, TimeUnit.SECONDS); ficha(HUELLA_B, logo = LOGO_ASSET_JSON) }
+        }
+        // Un poll de venue-1 se queda esperando su ficha...
+        val viejo = async(Dispatchers.IO) { sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B)) }
+        esperar { fichaRequests.get() == 2 }
+        // ...cambia la sesión y el poll de venue-2 lanza la descarga de SU logo.
+        sesion = "venue-2"
+        sync.onSessionChanged()
+        sync.afterPoll("venue-2", TERMINAL, senales(HUELLA_C))
+        coVerify(timeout = 5_000, exactly = 1) { images.ensure(LogoRef.Asset(OTRO_LOGO_URL, SHA_OTRO), any()) }
+
+        soltarViejo.countDown()
+        viejo.await()
+        Thread.sleep(200)
+
+        assertFalse(cancelada.get())
+        retenida.complete(Unit)
+        esperar { state.design.value?.logoFile != null }
+        assertEquals(HUELLA_C, state.design.value!!.ficha.fingerprint)
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))

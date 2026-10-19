@@ -234,6 +234,8 @@ class CustomerDisplaySync internal constructor(
     /** UN trabajo de descarga: el de la misma llave y logo se deja correr; cualquier otro se cancela y se lanza el nuevo. */
     private fun ensureDownload(generation: Long, venueId: String, key: String, ref: LogoRef, origins: List<String>) {
         synchronized(downloadLock) {
+            // Un afterPoll de una sesión vieja no cancela (ni reemplaza) la descarga de la sesión nueva.
+            if (!current(generation, venueId)) return
             val running = download
             if (running != null && running.job.isActive && running.key == key && running.ref == ref) return
             running?.job?.cancel()
