@@ -4,6 +4,7 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.kiosk.domain.KioskState
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -30,7 +31,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  *    de sesión se publica lo guardado SIN red ([restart]).
  * 2. En la tablet no se edita nada; manifiesto y acuse se escriben atómicos ([CustomerDisplayDesignStore.update]) ANTES de
  *    cualquier POST.
- * 3. Sólo existe el acuse: uno pendiente por terminal, `seq` monótono, el nuevo reemplaza al viejo.
+ * 3. Sólo existe el acuse: uno pendiente por terminal, `seq` monótono, el nuevo reemplaza al viejo. Sale en cada poll con
+ *    el mismo cuerpo y `seq` hasta que el server responda algo que lo cierre ([ackActionFor]).
  * 4. Al volver la red, la huella nueva llega en el poll y se aplica en el siguiente `Idle`; lo que llegue de una sesión o
  *    un vínculo viejo (generación distinta, otra sucursal) se descarta sin escribir ni publicar.
  *
@@ -88,6 +90,12 @@ class CustomerDisplaySync internal constructor(
     private val lastImagesAck = HashMap<String, Pair<String, Triple<Int, Int, Int>>>()
 
     /**
+     * Llaves cuyo acuse respondió «lo vigente es otra ficha» ([AckAction.CloseAndFetch]): el siguiente poll baja la ficha
+     * aunque anuncie la que ya está. En memoria: tras reiniciar, la caché del poll (60 s) ya anuncia la nueva.
+     */
+    private val refetch: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
      * Cuántas veces se ofreció un diseño. Se lee y se suma sólo dentro de bloques de Main; el arranque lo captura al entrar
      * y publica lo guardado sólo si nadie ofreció nada mientras leía el disco (si no, taparía la ficha del primer poll).
      */
@@ -130,9 +138,14 @@ class CustomerDisplaySync internal constructor(
                 else reAck(s, key, current, counts).also { enqueued = true }
             }
             if (enqueued) rememberImages(key, announced, counts)
-        } else if (announced != null && announced != known?.ficha?.fingerprint && announced != known?.unsupportedFingerprint) {
+        } else if (announced != null &&
+            (key in refetch || announced != known?.ficha?.fingerprint && announced != known?.unsupportedFingerprint)
+        ) {
             when (val outcome = remote.fetchCustomerDisplay(venueId)) {
-                is DisplayModeRemoteOutcome.Success -> saveFicha(generation, venueId, key, announced, outcome.data)
+                is DisplayModeRemoteOutcome.Success -> {
+                    refetch.remove(key)
+                    saveFicha(generation, venueId, key, announced, outcome.data)
+                }
                 is DisplayModeRemoteOutcome.Rejected -> if (outcome.status == 404 && outcome.code == DEVICE_NOT_FOUND) {
                     onDeviceUnbound(venueId)
                     return@withContext false
@@ -152,7 +165,7 @@ class CustomerDisplaySync internal constructor(
             ensureDownload(generation, venueId, key, logo, manifest.imageOrigins)
         }
         // (6)
-        sendPendingAck(venueId, key)
+        sendPendingAck(generation, venueId, key)
         retrySoon
     }
 
@@ -343,9 +356,40 @@ class CustomerDisplaySync internal constructor(
         }
     }
 
-    /** Task 2.5: manda el acuse pendiente de esa terminal y obedece la respuesta (tabla de `ackActionFor`). */
-    @Suppress("UNUSED_PARAMETER", "RedundantSuspendModifier")
-    private suspend fun sendPendingAck(venueId: String, key: String) = Unit
+    /**
+     * Manda el acuse pendiente de esa terminal tal como quedó congelado al encolarlo (mismo cuerpo y `seq`, aunque la app
+     * se haya reiniciado) y obedece la respuesta ([ackActionFor]). Lo que escribe pasa por [write]: si cambió la sesión o
+     * la sucursal mientras viajaba, no toca nada.
+     */
+    private suspend fun sendPendingAck(generation: Long, venueId: String, key: String) {
+        if (!current(generation, venueId)) return
+        val sent = store.load().manifests[key]?.pendingAck ?: return
+        val outcome = remote.acknowledgeCustomerDisplay(venueId, sent)
+        val manifest = store.load().manifests[key]
+        val action = ackActionFor(outcome, manifest?.ficha?.fingerprint)
+        if (action == AckAction.Keep) return
+        val counts = logoCounts(manifest?.ficha?.toFicha(manifest.imageOrigins)?.logo)
+        var reAcked: String? = null
+        val applied = write(generation, venueId) { s ->
+            val m = s.manifests[key]
+            if (m == null || m.pendingAck?.seq != sent.seq) {
+                // Cerrar borra el pendiente SÓLO si sigue siendo el que se mandó: uno más nuevo sale en el siguiente poll.
+                // Que otra instalación tomó la fila es verdad aunque haya otro acuse pendiente.
+                if (action == AckAction.CloseAndReport) s.copy(otherInstallationPending = true) else s
+            } else {
+                val closed = s.copy(manifests = s.manifests + (key to m.copy(pendingAck = null)))
+                when (action) {
+                    is AckAction.CloseAndAckAgain -> if (m.ficha?.fingerprint != action.fingerprint) closed
+                    else reAck(closed, key, m, counts).also { reAcked = action.fingerprint }
+                    AckAction.CloseAndReport -> closed.copy(otherInstallationPending = true)
+                    else -> closed
+                }
+            }
+        }
+        reAcked?.let { rememberImages(key, it, counts) }
+        // Sin red fuera del poll: la ficha se baja en el siguiente.
+        if (applied && action == AckAction.CloseAndFetch) refetch += key
+    }
 
     private fun isoNow(): String = Instant.ofEpochMilli(wallClock()).toString()
 
@@ -366,3 +410,38 @@ class CustomerDisplaySync internal constructor(
         val NO_IMAGES = Triple(0, 0, 0)
     }
 }
+
+/** Qué hacer con el acuse pendiente según la respuesta del server (spec §5.7.2). «Cerrar» = borrar el pendiente. */
+sealed interface AckAction {
+    data object Close : AckAction
+    /** El server guardó el acuse, pero lo vigente es la ficha que ya está en el manifiesto: se acusa de nuevo. */
+    data class CloseAndAckAgain(val fingerprint: String) : AckAction
+    /** Lo vigente es otra ficha: el siguiente poll la baja aunque su caché (60 s) siga anunciando la vieja. */
+    data object CloseAndFetch : AckAction
+    /** Otra instalación tomó la fila: se marca `otherInstallationPending` y la Task 2.6 vuelve a reportar. */
+    data object CloseAndReport : AckAction
+    /** Sin red, 408, 429, 5xx (`ACK_BUSY`) o sesión inválida: el mismo acuse (mismo `seq`) sale en el siguiente poll. */
+    data object Keep : AckAction
+}
+
+internal fun ackActionFor(
+    outcome: DisplayModeRemoteOutcome<CustomerDisplayAckResponse>,
+    manifestFingerprint: String?,
+): AckAction = when (outcome) {
+    is DisplayModeRemoteOutcome.Success -> {
+        val response = outcome.data
+        when {
+            // STALE_SEQ (ya hay uno más nuevo guardado) o un motivo que esta versión no conoce: reenviarlo no cambia nada.
+            !response.accepted -> if (response.reason == OTHER_INSTALLATION) AckAction.CloseAndReport else AckAction.Close
+            response.current != false -> AckAction.Close
+            response.currentFingerprint != null && response.currentFingerprint == manifestFingerprint ->
+                AckAction.CloseAndAckAgain(response.currentFingerprint)
+            else -> AckAction.CloseAndFetch
+        }
+    }
+    // 404 (el aparato ya no es de esta sucursal; el poll lo desliga) u otro 4xx: el server no lo va a aceptar nunca.
+    is DisplayModeRemoteOutcome.Rejected -> AckAction.Close
+    is DisplayModeRemoteOutcome.Retryable, DisplayModeRemoteOutcome.SessionInvalid, is DisplayModeRemoteOutcome.NoRequest -> AckAction.Keep
+}
+
+private const val OTHER_INSTALLATION = "OTHER_INSTALLATION"

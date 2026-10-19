@@ -32,6 +32,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -68,6 +70,9 @@ class CustomerDisplaySyncTest {
     private lateinit var server: MockWebServer
     private val fichaRequests = AtomicInteger()
     @Volatile private var fichaResponse: (RecordedRequest) -> MockResponse = { MockResponse().setResponseCode(500) }
+    // Sin decir otra cosa, el acuse no llega (503): se conserva y las pruebas de la Task 2.4 ven su pendiente intacto.
+    @Volatile private var ackResponse: (RecordedRequest) -> MockResponse = { MockResponse().setResponseCode(503) }
+    private val acuses = Collections.synchronizedList(mutableListOf<CustomerDisplayAckBody>())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var sesion: String? = VENUE
@@ -87,6 +92,9 @@ class CustomerDisplaySyncTest {
                 if (request.path!!.endsWith("/customer-display")) {
                     fichaRequests.incrementAndGet()
                     fichaResponse(request)
+                } else if (request.path!!.endsWith("/customer-display/ack")) {
+                    acuses += Json.decodeFromString<CustomerDisplayAckBody>(request.body.readUtf8())
+                    ackResponse(request)
                 } else MockResponse().setResponseCode(404)
         }
         server.start()
@@ -638,7 +646,157 @@ class CustomerDisplaySyncTest {
         assertNull(state.design.value)
     }
 
+    // ── el acuse: tabla de respuestas ──
+
+    @Test
+    fun `aceptado vigente, sin current, STALE_SEQ, 404 y otro 4xx cierran el acuse`() {
+        assertEquals(AckAction.Close, ackActionFor(respuesta(accepted = true, current = true), HUELLA_A))
+        assertEquals(AckAction.Close, ackActionFor(respuesta(accepted = true), HUELLA_A))
+        assertEquals(AckAction.Close, ackActionFor(respuesta(accepted = false, reason = "STALE_SEQ"), HUELLA_A))
+        assertEquals(AckAction.Close, ackActionFor(DisplayModeRemoteOutcome.Rejected(404, "DEVICE_NOT_FOUND", null), HUELLA_A))
+        assertEquals(AckAction.Close, ackActionFor(DisplayModeRemoteOutcome.Rejected(400, "VALIDATION", null), HUELLA_A))
+        assertEquals(AckAction.Close, ackActionFor(DisplayModeRemoteOutcome.Rejected(409, null, null), null))
+    }
+
+    @Test
+    fun `aceptado no vigente con la huella del manifiesto se acusa otra vez`() {
+        assertEquals(
+            AckAction.CloseAndAckAgain(HUELLA_A),
+            ackActionFor(respuesta(accepted = true, current = false, currentFingerprint = HUELLA_A), HUELLA_A),
+        )
+    }
+
+    @Test
+    fun `aceptado no vigente con otra huella pide la ficha`() {
+        assertEquals(AckAction.CloseAndFetch, ackActionFor(respuesta(accepted = true, current = false, currentFingerprint = HUELLA_B), HUELLA_A))
+        assertEquals(AckAction.CloseAndFetch, ackActionFor(respuesta(accepted = true, current = false, currentFingerprint = HUELLA_B), null))
+        assertEquals(AckAction.CloseAndFetch, ackActionFor(respuesta(accepted = true, current = false), null))
+    }
+
+    @Test
+    fun `OTHER_INSTALLATION cierra y pide reportar`() {
+        assertEquals(AckAction.CloseAndReport, ackActionFor(respuesta(accepted = false, reason = "OTHER_INSTALLATION"), HUELLA_A))
+    }
+
+    @Test
+    fun `sin red, 408, 429, 5xx, ACK_BUSY y sesion invalida conservan el acuse`() {
+        listOf(null, 408, 429, 500, 503).forEach { status ->
+            assertEquals(AckAction.Keep, ackActionFor(DisplayModeRemoteOutcome.Retryable(status), HUELLA_A))
+        }
+        assertEquals(AckAction.Keep, ackActionFor(DisplayModeRemoteOutcome.SessionInvalid, HUELLA_A))
+    }
+
+    // ── el acuse: mandar y obedecer ──
+
+    @Test
+    fun `acuse pendiente sobrevive a reiniciar y se manda con el mismo seq`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        sync().afterPoll(VENUE, TERMINAL, senales(HUELLA_A))   // sin red para el acuse (503)
+        assertEquals(1L, store().load().manifests.getValue(LLAVE).pendingAck!!.seq)
+
+        ackResponse = { aceptado(current = true) }
+        sync(estado = CustomerDisplayState()).afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(listOf(1L, 1L), acuses.map { it.seq })
+        assertEquals(acuses[0], acuses[1])
+        val guardado = store().load()
+        assertNull(guardado.manifests.getValue(LLAVE).pendingAck)
+        assertEquals(2L, guardado.nextSeq)
+    }
+
+    @Test
+    fun `cerrar no borra un acuse mas nuevo`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = {
+            // Mientras el acuse 1 viaja, se encola el 2 (p. ej. el logo terminó de bajar).
+            store().update { s ->
+                val m = s.manifests.getValue(LLAVE)
+                s.copy(nextSeq = s.nextSeq + 1, manifests = s.manifests + (LLAVE to m.copy(pendingAck = m.pendingAck!!.copy(seq = s.nextSeq, imagesReady = 1))))
+            }
+            aceptado(current = true)
+        }
+        val sync = sync()
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(listOf(1L), acuses.map { it.seq })
+        assertEquals(2L, store().load().manifests.getValue(LLAVE).pendingAck!!.seq)
+    }
+
+    @Test
+    fun `Keep conserva el pendiente para el siguiente poll`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        val pendiente = store().load().manifests.getValue(LLAVE).pendingAck!!
+
+        assertEquals(1, acuses.size)
+        assertEquals(pendiente, store().load().manifests.getValue(LLAVE).pendingAck)
+
+        ackResponse = { aceptado(current = true) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(listOf(pendiente, pendiente), acuses.toList())
+        assertNull(store().load().manifests.getValue(LLAVE).pendingAck)
+    }
+
+    @Test
+    fun `aceptado no vigente con la misma huella encola un acuse nuevo`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = false, currentFingerprint = HUELLA_A) }
+        val sync = sync()
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        val guardado = store().load()
+        val acuse = guardado.manifests.getValue(LLAVE).pendingAck!!
+        assertEquals(HUELLA_A, acuse.fingerprint)
+        assertEquals(2L, acuse.seq)
+        assertEquals(3L, guardado.nextSeq)
+    }
+
+    @Test
+    fun `aceptado no vigente con otra huella baja la ficha en el siguiente poll`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { aceptado(current = false, currentFingerprint = HUELLA_C) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertNull(store().load().manifests.getValue(LLAVE).pendingAck)
+        assertEquals(1, fichaRequests.get())
+
+        // El poll (con su caché de 60 s) sigue anunciando A, pero la ficha vigente ya es C.
+        fichaResponse = { ficha(HUELLA_C) }
+        ackResponse = { aceptado(current = true) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(2, fichaRequests.get())
+        assertEquals(HUELLA_C, store().load().manifests.getValue(LLAVE).ficha!!.fingerprint)
+        assertEquals(HUELLA_C, state.design.value!!.ficha.fingerprint)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_C))
+        assertEquals(2, fichaRequests.get())
+    }
+
+    @Test
+    fun `OTHER_INSTALLATION cierra el acuse y marca el reporte pendiente`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        ackResponse = { MockResponse().setBody("{\"data\":{\"accepted\":false,\"reason\":\"OTHER_INSTALLATION\"}}") }
+
+        sync().afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        val guardado = store().load()
+        assertNull(guardado.manifests.getValue(LLAVE).pendingAck)
+        assertTrue(guardado.otherInstallationPending)
+    }
+
     // ── ayudas ──
+
+    private fun respuesta(accepted: Boolean, current: Boolean? = null, currentFingerprint: String? = null, reason: String? = null) =
+        DisplayModeRemoteOutcome.Success(CustomerDisplayAckResponse(accepted, current, currentFingerprint, reason))
+
+    private fun aceptado(current: Boolean, currentFingerprint: String? = null) = MockResponse().setBody(
+        "{\"data\":{\"accepted\":true,\"current\":$current" +
+            (currentFingerprint?.let { ",\"currentFingerprint\":\"$it\"" } ?: "") + "}}",
+    )
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))
 
