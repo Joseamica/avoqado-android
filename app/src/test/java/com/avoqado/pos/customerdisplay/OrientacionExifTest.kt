@@ -3,7 +3,9 @@ package com.avoqado.pos.customerdisplay
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /**
  * El lector de la orientación EXIF del logo (Codex bloque 3 #2): el logo heredado del negocio no pasa por el panel, y Coil (lo de
@@ -11,29 +13,47 @@ import org.junit.Test
  */
 class OrientacionExifTest {
 
+    @get:Rule val carpeta = TemporaryFolder()
+
+    /** El lector recorre el ARCHIVO (como el decodificador del logo): los bytes van a un archivo temporal. */
+    private fun leer(bytes: ByteArray): Int = orientacionExif(carpeta.newFile().apply { writeBytes(bytes) })
+
     @Test
     fun `orientacion 6 en Intel tras un APP0 JFIF`() {
-        assertEquals(6, orientacionExif(jpeg(app0Jfif(), app1Exif(6, motorola = false))))
+        assertEquals(6, leer(jpeg(app0Jfif(), app1Exif(6, motorola = false))))
     }
 
     @Test
     fun `orientacion 3 en Motorola`() {
-        assertEquals(3, orientacionExif(jpeg(app1Exif(3, motorola = true))))
+        assertEquals(3, leer(jpeg(app1Exif(3, motorola = true))))
     }
 
     @Test
     fun `orientacion 2 espejo`() {
-        assertEquals(2, orientacionExif(jpeg(app1Exif(2, motorola = false))))
+        assertEquals(2, leer(jpeg(app1Exif(2, motorola = false))))
+    }
+
+    @Test
+    fun `el EXIF despues de un XMP y 240 KB de comentarios se encuentra`() {
+        // Un segmento mide a lo más 64 KB (largo de 16 bits), pero varios antes del Exif lo empujan más allá: se recorren.
+        val comentarios = Array(4) { segmento(0xFE, ByteArray(60_000) { 'x'.code.toByte() }) }
+        assertEquals(6, leer(jpeg(app0Jfif(), app1Xmp(), *comentarios, app1Exif(6, motorola = false))))
+    }
+
+    @Test
+    fun `largo invalido o archivo que se acaba a media cabecera es 1`() {
+        assertEquals(1, leer(jpeg(byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 0, 1), app1Exif(6, motorola = false))))
+        assertEquals(1, leer(jpeg(app0Jfif()).copyOf(5)))
     }
 
     @Test
     fun `sin EXIF, PNG, recortado o basura es 1`() {
-        assertEquals(1, orientacionExif(jpeg(app0Jfif())))
-        assertEquals(1, orientacionExif(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10)))
-        assertEquals(1, orientacionExif(jpeg(app1Exif(6, motorola = false)).copyOf(20)))
-        assertEquals(1, orientacionExif(ByteArray(0)))
-        assertEquals(1, orientacionExif("no es imagen".toByteArray()))
-        assertEquals(1, orientacionExif(jpeg(app1Exif(9, motorola = false))))   // fuera de 1-8
+        assertEquals(1, leer(jpeg(app0Jfif())))
+        assertEquals(1, leer(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10)))
+        assertEquals(1, leer(jpeg(app1Exif(6, motorola = false)).copyOf(20)))
+        assertEquals(1, leer(ByteArray(0)))
+        assertEquals(1, leer("no es imagen".toByteArray()))
+        assertEquals(1, leer(jpeg(app1Exif(9, motorola = false))))   // fuera de 1-8
     }
 
     private fun jpeg(vararg segmentos: ByteArray): ByteArray =
@@ -43,6 +63,8 @@ class OrientacionExifTest {
         val largo = cuerpo.size + 2
         return byteArrayOf(0xFF.toByte(), marca.toByte(), (largo shr 8).toByte(), largo.toByte()) + cuerpo
     }
+
+    private fun app1Xmp() = segmento(0xE1, "http://ns.adobe.com/xap/1.0/\u0000<x:xmpmeta/>".toByteArray(Charsets.ISO_8859_1))
 
     private fun app0Jfif() = segmento(0xE0, "JFIF\u0000".toByteArray(Charsets.ISO_8859_1) + byteArrayOf(1, 1, 0, 0, 1, 0, 1, 0, 0))
 

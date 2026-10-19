@@ -391,45 +391,46 @@ internal fun decodificarLogo(path: String): android.graphics.Bitmap? {
     val bitmap = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = muestra }) ?: return null
     // Como Coil (lo de hoy con la URL): la orientación EXIF de la foto, aplicada a los PIXELES (un giro de 90° cambia ancho y
     // alto, y así el `ContentScale` acomoda bien). Le toca a todo logo: el heredado del negocio no pasa por el panel.
-    return orientar(bitmap, orientacionExif(inicioDelArchivo(path)))
+    return orientar(bitmap, orientacionExif(java.io.File(path)))
 }
 
 private const val LADO_DEL_LOGO = 720
 
-/** Los primeros 64 KB: el segmento EXIF va al principio del JPEG y no puede medir más. */
-private fun inicioDelArchivo(path: String): ByteArray = java.io.FileInputStream(path).use { flujo ->
-    val buffer = ByteArray(64 * 1024)
-    var leidos = 0
-    while (leidos < buffer.size) {
-        val n = flujo.read(buffer, leidos, buffer.size - leidos)
-        if (n < 0) break
-        leidos += n
-    }
-    buffer.copyOf(leidos)
-}
-
 /**
- * La orientación EXIF (1-8) de un JPEG: segmento APP1 «Exif», cabecera TIFF (II o MM), IFD0, etiqueta 0x0112. Sin EXIF, otro
- * formato (PNG) o algo ilegible ⇒ 1: nunca truena. Kotlin puro, para que Android y Windows lean igual.
+ * La orientación EXIF (1-8) de un JPEG: recorre los segmentos desde SOI leyendo sólo su cabecera de 4 bytes y saltando por su
+ * largo (otros metadatos o comentarios pueden empujar el EXIF más allá de 64 KB, Codex bloque 3 r2); lee entero sólo el APP1
+ * «Exif» (≤64 KB; un APP1 de XMP se salta) y busca en su IFD0 la etiqueta 0x0112. Termina en SOS/EOI, con una marca o un largo
+ * inválidos o al acabarse el archivo: nunca lee todo. Sin EXIF, otro formato (PNG) o algo ilegible ⇒ 1, nunca truena. Kotlin
+ * puro, para que Android y Windows lean igual (el mismo criterio que `enderezarLogo.ts` del panel).
  * ponytail: sólo JPEG; un WebP con EXIF (raro en un logo) sale tal cual. Agregar su fragmento «EXIF» de RIFF si aparece.
  */
-internal fun orientacionExif(bytes: ByteArray): Int = runCatching {
-    fun u8(i: Int) = bytes[i].toInt() and 0xFF
-    if (bytes.size < 4 || u8(0) != 0xFF || u8(1) != 0xD8) return 1
-    var i = 2
-    while (i + 4 <= bytes.size) {
-        if (u8(i) != 0xFF) return 1
-        val marca = u8(i + 1)
-        if (marca == 0xFF) { i++; continue }               // relleno entre segmentos
-        if (marca == 0xDA || marca == 0xD9) return 1         // empiezan los datos de la imagen: ya no hay EXIF
-        val largo = (u8(i + 2) shl 8) or u8(i + 3)
-        val cuerpo = i + 4
-        if (marca == 0xE1 && largo >= 8 && String(bytes, cuerpo, 6, Charsets.ISO_8859_1) == "Exif\u0000\u0000") {
-            return orientacionTiff(bytes, tiff = cuerpo + 6)
+internal fun orientacionExif(archivo: java.io.File): Int = runCatching {
+    java.io.RandomAccessFile(archivo, "r").use { f ->
+        val cabecera = ByteArray(4)
+        fun u8(i: Int) = cabecera[i].toInt() and 0xFF
+        f.readFully(cabecera, 0, 2)
+        if (u8(0) != 0xFF || u8(1) != 0xD8) return 1
+        val total = f.length()
+        var pos = 2L
+        while (pos + 4 <= total) {
+            f.seek(pos)
+            f.readFully(cabecera)
+            if (u8(0) != 0xFF) return 1
+            val marca = u8(1)
+            if (marca == 0xFF) { pos++; continue }               // relleno entre segmentos
+            if (marca == 0xDA || marca == 0xD9) return 1         // empiezan los datos de la imagen: ya no hay EXIF
+            val largo = (u8(2) shl 8) or u8(3)
+            if (largo < 2) return 1
+            if (marca == 0xE1 && largo >= 8) {
+                val id = ByteArray(6).also { f.readFully(it) }
+                if (String(id, Charsets.ISO_8859_1) == "Exif\u0000\u0000") {
+                    return orientacionTiff(ByteArray(largo - 8).also { f.readFully(it) }, tiff = 0)
+                }
+            }
+            pos += 2 + largo
         }
-        i += 2 + largo
+        1
     }
-    1
 }.getOrDefault(1)
 
 private fun orientacionTiff(b: ByteArray, tiff: Int): Int {
