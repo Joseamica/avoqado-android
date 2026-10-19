@@ -3,6 +3,7 @@ package com.avoqado.pos.customerdisplay
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.kiosk.domain.KioskState
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Named
@@ -41,7 +42,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * publicada, los acuses en memoria, la poda— y la publicación o retirada que le sigue corren como UNA unidad, una detrás de
  * otra en orden de llegada. La red (ficha, logo, acuse) va FUERA de la fila: su resultado vuelve a entrar en otra unidad y
  * sólo se aplica si la generación y la sucursal siguen siendo las de antes. Así ningún orden entre poll, descarga, arranque,
- * cambio de sesión, desligado y acuses puede dejar en pantalla algo distinto de lo último que hay en disco.
+ * cambio de sesión, desligado y acuses puede dejar en pantalla algo distinto de lo último que hay en disco. El refresco de
+ * ajustes por huella no es estado de este sync: se lanza en [scope] fuera de la fila y nadie lo espera ([afterPoll]).
  *
  * 🔴 La cortina (Codex r6#2, r7). Logout o cambio de sucursal quitan el diseño —el visible y el pendiente— en la MISMA
  * llamada de [onSessionChanged], en Main, aunque la fila esté ocupada: eso es «al instante». Se decide comparando la sesión
@@ -68,7 +70,8 @@ class CustomerDisplaySync internal constructor(
     private val environment: () -> String,
     private val wallClock: () -> Long,
     private val scope: CoroutineScope,
-    @Suppress("unused") private val refreshSettingsIfChanged: suspend (venueId: String, fingerprint: String) -> Unit = { _, _ -> },   // Bloque 4
+    /** Ajustes por huella ([TpvSettingsRepository.refreshIfFingerprintChanged]). Es red: va fuera de la fila ([afterPoll]). */
+    private val refreshSettingsIfChanged: suspend (venueId: String, fingerprint: String) -> Unit = { _, _ -> },
 ) {
     @Inject constructor(
         remote: DisplayModeRemoteRepository,
@@ -78,6 +81,7 @@ class CustomerDisplaySync internal constructor(
         kioskState: KioskState,
         secureStorage: SecureStorage,
         @Named("apiBaseUrl") baseUrlProvider: () -> String,
+        tpvSettingsRepository: TpvSettingsRepository,
     ) : this(
         remote = remote,
         store = store,
@@ -89,6 +93,7 @@ class CustomerDisplaySync internal constructor(
         environment = { baseUrlProvider().toHttpUrlOrNull()?.host ?: baseUrlProvider() },
         wallClock = System::currentTimeMillis,
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        refreshSettingsIfChanged = tpvSettingsRepository::refreshIfFingerprintChanged,
     )
 
     /**
@@ -181,9 +186,12 @@ class CustomerDisplaySync internal constructor(
 
     /**
      * Después de cada poll. Devuelve `true` = «reintenta pronto» (la ficha no se pudo bajar por algo pasajero).
-     * No espera la descarga del logo: el poll, las solicitudes de inversión y el reporte siguen a su ritmo.
+     * No espera la descarga del logo ni el refresco de ajustes: el poll, las solicitudes de inversión y el reporte siguen a su ritmo.
      */
     suspend fun afterPoll(venueId: String, terminalId: String, signals: PollSignals): Boolean = withContext(Dispatchers.IO) {
+        // Ajustes por huella: es red, así que va ANTES y FUERA de la fila, en `scope` (no en este bloque: el tick no lo
+        // espera). Con la sucursal de la sesión con la que salió el poll: si ya cambió, el repositorio no hace nada.
+        signals.fingerprints.settings?.let { huella -> scope.launch(logErrors) { refreshSettingsIfChanged(venueId, huella) } }
         val env = environment()
         val key = store.manifestKey(env, venueId, terminalId)
         val announced = signals.fingerprints.customerDisplay

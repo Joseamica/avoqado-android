@@ -50,6 +50,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -1677,6 +1678,60 @@ class CustomerDisplaySyncTest {
         assertEquals(SURFACE_PRESENTATION, guardado.pendingAck!!.surface)
     }
 
+    // ── ajustes por huella (Bloque 4): red, fuera de la fila y sin que el tick espere ──
+
+    @Test
+    fun `huella de ajustes llama al refresco y la omitida no`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val llamadas = Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+        val sync = sync(ajustes = { venue, huella -> llamadas += venue to huella })
+
+        // Sin huella de ajustes (servidor viejo, o sólo anuncia la ficha): no se refresca nada.
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        sync.afterPoll(VENUE, TERMINAL, PollSignals(fingerprints = PollFingerprints(customerDisplay = HUELLA_A, settings = HUELLA_AJUSTES)))
+
+        esperar { llamadas.isNotEmpty() }
+        // La de ajustes (no la de la ficha), con la sucursal de la sesión con la que salió el poll; una sola vez.
+        assertEquals(listOf(VENUE to HUELLA_AJUSTES), llamadas.toList())
+    }
+
+    @Test
+    fun `el tick no espera al refresco de ajustes`() = runBlocking {
+        val empezo = CompletableDeferred<Unit>()
+        val retenido = CompletableDeferred<Unit>()
+        val sync = sync(ajustes = { _, _ -> empezo.complete(Unit); retenido.await() })
+
+        val regreso = withTimeoutOrNull(5_000) { sync.afterPoll(VENUE, TERMINAL, senalesDeAjustes()) }
+
+        try {
+            assertNotNull("el refresco no arrancó", withTimeoutOrNull(5_000) { empezo.await() })
+            assertNotNull("el poll esperó al refresco de ajustes", regreso)
+        } finally {
+            retenido.complete(Unit)
+        }
+    }
+
+    @Test
+    fun `el refresco de ajustes no corre dentro de la fila`() = runBlocking {
+        val espia = spyk(store())
+        val empezo = CompletableDeferred<Unit>()
+        val sync = sync(almacen = espia, ajustes = { _, _ -> empezo.complete(Unit) })
+        vaciarLaFila(sync)   // el arranque ya salió de la fila
+        // Una unidad se queda con la fila (disco lento) y llega un poll con huella de ajustes.
+        val soltar = retenerLaFila(sync, espia)
+
+        val poll = scope.launch { sync.afterPoll(VENUE, TERMINAL, senalesDeAjustes()) }
+
+        try {
+            // Antes de que se suelte la fila (que se suelta sola a los 5 s).
+            assertNotNull("el refresco de ajustes esperó a la fila", withTimeoutOrNull(2_000) { empezo.await() })
+            assertTrue("la fila no estaba ocupada", poll.isActive)
+        } finally {
+            soltar.countDown()
+        }
+        withTimeout(5_000) { poll.join() }
+    }
+
     // ── ayudas ──
 
     private fun manifiesto() = store().load().manifests.getValue(LLAVE)
@@ -1725,7 +1780,11 @@ class CustomerDisplaySyncTest {
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))
 
-    private fun sync(estado: CustomerDisplayState = state, almacen: CustomerDisplayDesignStore = store()) = CustomerDisplaySync(
+    private fun sync(
+        estado: CustomerDisplayState = state,
+        almacen: CustomerDisplayDesignStore = store(),
+        ajustes: suspend (String, String) -> Unit = { _, _ -> },
+    ) = CustomerDisplaySync(
         remote = DisplayModeRemoteRepository(OkHttpClient()) { server.url("/api/v1").toString().removeSuffix("/") },
         store = almacen,
         images = images,
@@ -1735,9 +1794,13 @@ class CustomerDisplaySyncTest {
         environment = { "test" },
         wallClock = { reloj },
         scope = scope,
+        refreshSettingsIfChanged = ajustes,
     )
 
     private fun senales(huella: String) = PollSignals(fingerprints = PollFingerprints(customerDisplay = huella))
+
+    /** Sólo la huella de ajustes: el poll no baja ficha. */
+    private fun senalesDeAjustes() = PollSignals(fingerprints = PollFingerprints(settings = HUELLA_AJUSTES))
 
     private fun ficha(huella: String, schema: Int = 1, logo: String = "null") = MockResponse().setBody(
         "{\"data\":{\"terminalId\":\"$TERMINAL\",\"imageOrigins\":[\"https://storage.googleapis.com\"]," +
@@ -1781,6 +1844,7 @@ class CustomerDisplaySyncTest {
         const val SHA_OTRO = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
         const val OTRO_LOGO_JSON = "{\"source\":\"asset\",\"url\":\"$OTRO_LOGO_URL\",\"sha256\":\"$SHA_OTRO\"}"
         const val HUELLA_C = "00112233445566778899aabbccddeeff"
+        const val HUELLA_AJUSTES = "aaaabbbbccccddddeeeeffff00001111"
         const val LOGO_ASSET_JSON =
             "{\"source\":\"asset\",\"url\":\"$LOGO_URL\",\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}"
         val T0 = Instant.parse("2026-10-18T12:00:00Z").toEpochMilli()
