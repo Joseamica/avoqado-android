@@ -28,10 +28,13 @@ import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.Ficha
 import com.avoqado.pos.customerdisplay.LogoRef
 import com.avoqado.pos.customerdisplay.decodificarLogo
+import com.avoqado.pos.customerdisplay.orientar
 import com.avoqado.pos.customerdisplay.money
 import com.avoqado.pos.pos.data.model.UpsellCard
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 import java.io.File
 import java.nio.file.Files
 import javax.imageio.ImageIO
@@ -39,6 +42,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -274,5 +278,63 @@ class PantallaDelClienteEnLaEscenaTest {
         assertTrue(maxOf(alto.width, alto.height) in 720 until 1_440, "${alto.width}×${alto.height}")
         val chico = decodificarLogo(png("chico.png", 40, 20).path)!!
         assertEquals(40 to 20, chico.width to chico.height)
+    }
+
+    // ── La orientación EXIF del logo (Codex bloque 3 #2): el logo heredado no pasa por el panel; Coil la aplicaba ──
+
+    @Test fun `orientar aplica las 8 orientaciones EXIF a los pixeles`() {
+        // a b c
+        // d e f
+        val (a, b, c, d, e, f) = listOf(1, 2, 3, 4, 5, 6).map { 0xFF000000.toInt() or it }
+        val original = android.graphics.Bitmap.createBitmap(3, 2, android.graphics.Bitmap.Config.ARGB_8888)
+            .apply { setPixels(intArrayOf(a, b, c, d, e, f), 0, 3, 0, 0, 3, 2) }
+        fun pixeles(o: Int): Triple<Int, Int, List<Int>> {
+            val r = orientar(original, o)
+            val px = IntArray(r.width * r.height).also { r.getPixels(it, 0, r.width, 0, 0, r.width, r.height) }
+            return Triple(r.width, r.height, px.toList())
+        }
+        assertSame(original, orientar(original, 1), "sin girar: el mismo bitmap, sin copia")
+        assertSame(original, orientar(original, 0), "orientación inválida: tal cual")
+        assertEquals(Triple(3, 2, listOf(c, b, a, f, e, d)), pixeles(2), "2 espejo horizontal")
+        assertEquals(Triple(3, 2, listOf(f, e, d, c, b, a)), pixeles(3), "3 giro de 180")
+        assertEquals(Triple(3, 2, listOf(d, e, f, a, b, c)), pixeles(4), "4 espejo vertical")
+        assertEquals(Triple(2, 3, listOf(a, d, b, e, c, f)), pixeles(5), "5 transpuesta")
+        assertEquals(Triple(2, 3, listOf(d, a, e, b, f, c)), pixeles(6), "6 giro de 90 a la derecha")
+        assertEquals(Triple(2, 3, listOf(f, c, e, b, d, a)), pixeles(7), "7 transversa")
+        assertEquals(Triple(2, 3, listOf(c, f, b, e, a, d)), pixeles(8), "8 giro de 90 a la izquierda")
+    }
+
+    @Test fun `un JPEG de 40x20 con orientacion 6 se decodifica derecho de 20x40`() {
+        // Arriba a la izquierda rojo, lo demás azul. Girado 90° a la derecha, el rojo queda arriba a la DERECHA.
+        val imagen = BufferedImage(40, 20, BufferedImage.TYPE_INT_RGB).apply {
+            for (y in 0 until 20) for (x in 0 until 40) setRGB(x, y, if (x < 20 && y < 10) 0xFF0000 else 0x0000FF)
+        }
+        val jfif = ByteArrayOutputStream().also { ImageIO.write(imagen, "jpg", it) }.toByteArray()
+        assertEquals(0xE0.toByte(), jfif[3], "ImageIO empieza con APP0 JFIF")
+        val finDelApp0 = 4 + ((jfif[4].toInt() and 0xFF) shl 8 or (jfif[5].toInt() and 0xFF))
+        val archivo = File(folder.toFile(), "girado.jpg")
+        archivo.writeBytes(jfif.copyOfRange(0, finDelApp0) + app1Exif(6) + jfif.copyOfRange(finDelApp0, jfif.size))
+
+        val logo = decodificarLogo(archivo.path)!!
+
+        assertEquals(20 to 40, logo.width to logo.height)
+        fun color(x: Int, y: Int) = IntArray(1).also { logo.getPixels(it, 0, 1, x, y, 1, 1) }[0]
+        fun rojo(p: Int) = (p shr 16 and 0xFF) > 180 && (p and 0xFF) < 100
+        fun azul(p: Int) = (p and 0xFF) > 180 && (p shr 16 and 0xFF) < 100
+        assertTrue(rojo(color(15, 8)), "arriba a la derecha debe ser rojo: ${Integer.toHexString(color(15, 8))}")
+        assertTrue(azul(color(4, 8)), "arriba a la izquierda debe ser azul: ${Integer.toHexString(color(4, 8))}")
+        assertTrue(azul(color(10, 32)), "abajo debe ser azul: ${Integer.toHexString(color(10, 32))}")
+    }
+
+    private operator fun <T> List<T>.component6() = this[5]
+
+    /** APP1 «Exif» mínimo (Motorola) con la orientación en IFD0. */
+    private fun app1Exif(orientacion: Int): ByteArray {
+        val tiff = ByteBuffer.allocate(8 + 2 + 12 + 4)
+        tiff.put("MM".toByteArray(Charsets.ISO_8859_1)).putShort(42).putInt(8).putShort(1)
+        tiff.putShort(0x0112).putShort(3).putInt(1).putShort(orientacion.toShort()).putShort(0).putInt(0)
+        val cuerpo = "Exif\u0000\u0000".toByteArray(Charsets.ISO_8859_1) + tiff.array()
+        val largo = cuerpo.size + 2
+        return byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (largo shr 8).toByte(), largo.toByte()) + cuerpo
     }
 }

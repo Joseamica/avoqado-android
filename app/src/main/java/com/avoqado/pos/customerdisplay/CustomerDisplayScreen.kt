@@ -388,10 +388,101 @@ internal fun decodificarLogo(path: String): android.graphics.Bitmap? {
     BitmapFactory.decodeFile(path, lados)
     var muestra = 1
     while (maxOf(lados.outWidth, lados.outHeight) / (muestra * 2) >= LADO_DEL_LOGO) muestra *= 2
-    return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = muestra })
+    val bitmap = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = muestra }) ?: return null
+    // Como Coil (lo de hoy con la URL): la orientación EXIF de la foto, aplicada a los PIXELES (un giro de 90° cambia ancho y
+    // alto, y así el `ContentScale` acomoda bien). Le toca a todo logo: el heredado del negocio no pasa por el panel.
+    return orientar(bitmap, orientacionExif(inicioDelArchivo(path)))
 }
 
 private const val LADO_DEL_LOGO = 720
+
+/** Los primeros 64 KB: el segmento EXIF va al principio del JPEG y no puede medir más. */
+private fun inicioDelArchivo(path: String): ByteArray = java.io.FileInputStream(path).use { flujo ->
+    val buffer = ByteArray(64 * 1024)
+    var leidos = 0
+    while (leidos < buffer.size) {
+        val n = flujo.read(buffer, leidos, buffer.size - leidos)
+        if (n < 0) break
+        leidos += n
+    }
+    buffer.copyOf(leidos)
+}
+
+/**
+ * La orientación EXIF (1-8) de un JPEG: segmento APP1 «Exif», cabecera TIFF (II o MM), IFD0, etiqueta 0x0112. Sin EXIF, otro
+ * formato (PNG) o algo ilegible ⇒ 1: nunca truena. Kotlin puro, para que Android y Windows lean igual.
+ * ponytail: sólo JPEG; un WebP con EXIF (raro en un logo) sale tal cual. Agregar su fragmento «EXIF» de RIFF si aparece.
+ */
+internal fun orientacionExif(bytes: ByteArray): Int = runCatching {
+    fun u8(i: Int) = bytes[i].toInt() and 0xFF
+    if (bytes.size < 4 || u8(0) != 0xFF || u8(1) != 0xD8) return 1
+    var i = 2
+    while (i + 4 <= bytes.size) {
+        if (u8(i) != 0xFF) return 1
+        val marca = u8(i + 1)
+        if (marca == 0xFF) { i++; continue }               // relleno entre segmentos
+        if (marca == 0xDA || marca == 0xD9) return 1         // empiezan los datos de la imagen: ya no hay EXIF
+        val largo = (u8(i + 2) shl 8) or u8(i + 3)
+        val cuerpo = i + 4
+        if (marca == 0xE1 && largo >= 8 && String(bytes, cuerpo, 6, Charsets.ISO_8859_1) == "Exif\u0000\u0000") {
+            return orientacionTiff(bytes, tiff = cuerpo + 6)
+        }
+        i += 2 + largo
+    }
+    1
+}.getOrDefault(1)
+
+private fun orientacionTiff(b: ByteArray, tiff: Int): Int {
+    val intel = when (String(b, tiff, 2, Charsets.ISO_8859_1)) {
+        "II" -> true
+        "MM" -> false
+        else -> return 1
+    }
+    fun u16(i: Int): Int {
+        val p = b[i].toInt() and 0xFF
+        val s = b[i + 1].toInt() and 0xFF
+        return if (intel) p or (s shl 8) else (p shl 8) or s
+    }
+    fun u32(i: Int): Long = if (intel) u16(i).toLong() or (u16(i + 2).toLong() shl 16) else (u16(i).toLong() shl 16) or u16(i + 2).toLong()
+    if (u16(tiff + 2) != 42) return 1
+    val ifd0 = Math.toIntExact(tiff + u32(tiff + 4))
+    repeat(u16(ifd0)) { k ->
+        val entrada = ifd0 + 2 + 12 * k
+        // Orientation es SHORT (tipo 3): el valor va en los primeros 2 bytes del campo de valor.
+        if (u16(entrada) == 0x0112) return if (u16(entrada + 2) == 3) u16(entrada + 8).takeIf { it in 1..8 } ?: 1 else 1
+    }
+    return 1
+}
+
+/**
+ * Aplica la orientación EXIF girando/reflejando los PIXELES. 1 (o algo fuera de 2-8) ⇒ el mismo bitmap, sin copia. Con
+ * `getPixels`/`setPixels`, que Android y el sustituto de Windows ya tienen: un solo camino para los dos.
+ */
+internal fun orientar(bitmap: android.graphics.Bitmap, orientacion: Int): android.graphics.Bitmap {
+    if (orientacion !in 2..8) return bitmap
+    val w = bitmap.width
+    val h = bitmap.height
+    val origen = IntArray(w * h).also { bitmap.getPixels(it, 0, w, 0, 0, w, h) }
+    // 5-8 cambian ancho por alto.
+    val nw = if (orientacion >= 5) h else w
+    val nh = if (orientacion >= 5) w else h
+    val destino = IntArray(nw * nh)
+    for (y in 0 until h) for (x in 0 until w) {
+        // A dónde va el pixel (x, y): índice = fila destino * nw + columna destino.
+        val i = when (orientacion) {
+            2 -> y * nw + (w - 1 - x)                // espejo horizontal
+            3 -> (h - 1 - y) * nw + (w - 1 - x)      // 180°
+            4 -> (h - 1 - y) * nw + x                // espejo vertical
+            5 -> x * nw + y                          // transpuesta
+            6 -> x * nw + (h - 1 - y)                // 90° a la derecha
+            7 -> (w - 1 - x) * nw + (h - 1 - y)      // transversa
+            else -> (w - 1 - x) * nw + y             // 8: 90° a la izquierda
+        }
+        destino[i] = origen[y * w + x]
+    }
+    return android.graphics.Bitmap.createBitmap(nw, nh, android.graphics.Bitmap.Config.ARGB_8888)
+        .apply { setPixels(destino, 0, nw, 0, 0, nw, nh) }
+}
 
 /**
  * "Powered by Avoqado", muy chico y hasta abajo (founder, 2026-09-01). Sólo en
