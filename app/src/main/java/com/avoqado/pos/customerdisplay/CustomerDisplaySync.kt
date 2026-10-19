@@ -174,15 +174,17 @@ class CustomerDisplaySync internal constructor(
 
     /**
      * El ÚNICO que arma acuses. Copia `storedAt`, `shownAt` y `surface` del manifiesto: un acuse nuevo de la misma huella
-     * nunca regresa «Mostrado» a «Guardado». El `seq` real lo asigna [enqueueAck] dentro del mismo `update` que lo reserva.
+     * nunca regresa «Mostrado» a «Guardado». El `seq` real lo asigna [enqueueAck] dentro del mismo `update` que lo reserva;
+     * `installationId` llega del estado en curso (sin releer el disco dentro del `update`).
      */
     internal fun buildAck(
         manifest: DesignManifest,
         fingerprint: String,
         unsupported: Boolean,
         images: Triple<Int, Int, Int>,
+        installationId: String,
     ): CustomerDisplayAckBody = CustomerDisplayAckBody(
-        installationId = store.load().installationId,
+        installationId = installationId,
         fingerprint = fingerprint,
         seq = 0,
         storedAt = manifest.storedAt,
@@ -227,7 +229,7 @@ class CustomerDisplaySync internal constructor(
         unsupported: Boolean,
         images: Triple<Int, Int, Int>,
     ): StoredDesignState {
-        val body = buildAck(manifest, fingerprint, unsupported, images).copy(installationId = s.installationId, seq = s.nextSeq)
+        val body = buildAck(manifest, fingerprint, unsupported, images, s.installationId).copy(seq = s.nextSeq)
         return s.copy(nextSeq = s.nextSeq + 1, manifests = s.manifests + (key to manifest.copy(pendingAck = body)))
     }
 

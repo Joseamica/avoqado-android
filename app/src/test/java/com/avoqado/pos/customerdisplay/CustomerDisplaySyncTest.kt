@@ -421,13 +421,13 @@ class CustomerDisplaySyncTest {
     fun `el acuse copia storedAt shownAt y surface del manifiesto`() {
         val manifiesto = DesignManifest(storedAt = "2026-10-18T12:00:00Z", shownAt = "2026-10-18T12:05:00Z", surface = "presentation")
 
-        val acuse = sync().buildAck(manifiesto, HUELLA_A, unsupported = false, images = Triple(1, 0, 0))
+        val acuse = sync().buildAck(manifiesto, HUELLA_A, unsupported = false, images = Triple(1, 0, 0), installationId = "inst-1")
 
         assertEquals("2026-10-18T12:00:00Z", acuse.storedAt)
         assertEquals("2026-10-18T12:05:00Z", acuse.shownAt)
         assertEquals("presentation", acuse.surface)
         assertEquals(1, acuse.imagesReady)
-        assertEquals(store().load().installationId, acuse.installationId)
+        assertEquals("inst-1", acuse.installationId)
     }
 
     @Test
