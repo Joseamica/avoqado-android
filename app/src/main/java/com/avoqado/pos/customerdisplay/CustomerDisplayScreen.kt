@@ -41,6 +41,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,14 +95,16 @@ fun CustomerDisplayScreen(
     // táctiles queda el QR (lo hace en su teléfono).
     val canInteract by state.customerCapturesInput.collectAsState()
     val receiptSend by state.receiptSend.collectAsState()
+    // 🔴 En la MISMA composición que `content`: el paso a reposo y el cambio de diseño caen en el mismo cuadro.
+    val design by state.design.collectAsState()
 
-    Box(
+    val pantalla: @Composable () -> Unit = { Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
         when (val c = content) {
-            is CustomerContent.Idle -> IdleBranding(venueName, venueLogoUrl)
+            is CustomerContent.Idle -> IdleBranding(venueName, venueLogoUrl, design)
             is CustomerContent.Cart -> CartMirror(c)
             is CustomerContent.Upsell ->
                 UpsellPrompt(
@@ -110,8 +120,35 @@ fun CustomerDisplayScreen(
             is CustomerContent.Charging -> ChargingPrompt(c)
             is CustomerContent.Done -> DonePrompt(c, canInteract, receiptSend, onWhatsApp, onEmail) { state.keepAlive() }
         }
+    } }
+
+    // Sin ficha: exactamente lo de hoy (el tema lo pone la superficie por fuera).
+    val d = design ?: return pantalla()
+    AvoqadoTheme(darkTheme = d.ficha.dark) {
+        val accent = d.ficha.accentArgb
+        val onAccent = d.ficha.onAccentArgb
+        CompositionLocalProvider(LocalFicha provides d.ficha) {
+            if (accent != null && onAccent != null) {
+                MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = Color(accent), onPrimary = Color(onAccent))) {
+                    pantalla()
+                }
+            } else {
+                pantalla()
+            }
+        }
     }
 }
+
+/** La ficha que dibuja la pantalla; `null` = sin diseño (lo de hoy). */
+private val LocalFicha = staticCompositionLocalOf<Ficha?> { null }
+
+/** El acento del negocio, sólo si eligió uno (`custom:false` ⇒ `null` y cada lugar conserva su color de hoy). */
+@Composable
+private fun acento(): Color? = LocalFicha.current?.accentArgb?.let { Color(it) }
+
+/** El agradecimiento propio del negocio o, si no tiene, el texto de hoy de ESE lugar. */
+@Composable
+private fun gracias(deHoy: String): String = LocalFicha.current?.thanksText ?: deHoy
 
 
 /**
@@ -140,12 +177,12 @@ internal fun idleShowsAvoqadoBrand(venueName: String?, logoUrl: String?): Boolea
     venueName.isNullOrBlank() && logoUrl.isNullOrBlank()
 
 @Composable
-private fun IdleBranding(venueName: String?, logoUrl: String?) {
+private fun IdleBranding(venueName: String?, logoUrl: String?, design: AppliedDesign?) {
     if (idleShowsAvoqadoBrand(venueName, logoUrl)) {
         AvoqadoIdleBranding()
         return
     }
-    VenueIdleBranding(venueName, logoUrl)
+    VenueIdleBranding(venueName, logoUrl, design)
 }
 
 /**
@@ -234,7 +271,7 @@ private fun AvoqadoIdleBranding() {
 }
 
 @Composable
-private fun VenueIdleBranding(venueName: String?, logoUrl: String?) {
+private fun VenueIdleBranding(venueName: String?, logoUrl: String?, design: AppliedDesign?) {
     // Screensaver del negocio: entra con un fade + leve zoom, y luego "respira"
     // muy despacio (escala sutil) para que la pantalla no se vea muerta ni queme
     // pixeles. Nada llamativo — es un letrero en reposo, no una animación.
@@ -263,8 +300,21 @@ private fun VenueIdleBranding(venueName: String?, logoUrl: String?) {
         ) {
             // 🔴 La marca del NEGOCIO, no la nuestra. El cliente está en la taquería,
             // no en Avoqado. Logo Y nombre juntos: el logo manda, el nombre lo ancla.
+            if (design != null) {
+                // Con ficha, el logo es el archivo que ya bajó la sincronización (nunca la red desde aquí). Pendiente o
+                // ilegible ⇒ sólo el nombre: nunca un hueco en blanco.
+                LogoDeLaFicha(design.logoFile, design.logoStamp)?.let { logo ->
+                    Image(
+                        bitmap = logo,
+                        contentDescription = name,
+                        modifier = Modifier.fillMaxWidth(0.5f).heightIn(max = 360.dp),
+                        contentScale = ContentScale.Fit,
+                    )
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                }
+            }
             var logoFailed by remember(logoUrl) { mutableStateOf(false) }
-            if (!logoUrl.isNullOrBlank() && !logoFailed) {
+            if (design == null && !logoUrl.isNullOrBlank() && !logoFailed) {
                 coil.compose.AsyncImage(
                     model = logoUrl,
                     contentDescription = name,
@@ -284,7 +334,7 @@ private fun VenueIdleBranding(venueName: String?, logoUrl: String?) {
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             Text(
-                text = "Bienvenido",
+                text = design?.ficha?.welcomeText ?: "Bienvenido",
                 fontSize = CdBody,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -298,6 +348,18 @@ private fun VenueIdleBranding(venueName: String?, logoUrl: String?) {
         )
     }
 }
+
+/**
+ * Decodifica el logo de la ficha fuera del hilo de la UI. La llave incluye `logoStamp`: un logo que se volvió a bajar a
+ * la MISMA ruta se repinta. `null` mientras decodifica, si no hay archivo o si no se puede leer.
+ */
+@Composable
+private fun LogoDeLaFicha(file: java.io.File?, stamp: Long): ImageBitmap? =
+    produceState<ImageBitmap?>(null, file?.path, stamp) {
+        value = file?.let {
+            withContext(Dispatchers.IO) { runCatching { BitmapFactory.decodeFile(it.path)?.asImageBitmap() }.getOrNull() }
+        }
+    }.value
 
 /**
  * "Powered by Avoqado", muy chico y hasta abajo (founder, 2026-09-01). Sólo en
@@ -528,6 +590,7 @@ private fun UpsellPrompt(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val upsellAccent = acento() ?: UpsellAccent
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
     ) {
@@ -535,14 +598,14 @@ private fun UpsellPrompt(
         Row(verticalAlignment = Alignment.Bottom) {
             Text("Tu total", fontSize = CdBody, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(AvoqadoTheme.spacing.md))
-            Text(money(c.cartTotalCents), fontSize = CdAmount, lineHeight = CdAmount * 1.1f, fontWeight = FontWeight.Bold)
+            Text(money(c.cartTotalCents), fontSize = CdAmount, lineHeight = CdAmount * 1.1f, fontWeight = FontWeight.Bold, color = acento() ?: Color.Unspecified)
             Spacer(Modifier.weight(1f))
             if (c.selectedDeltaCents > 0) {
                 Text(
                     "+ ${money(c.selectedDeltaCents)}",
                     fontSize = CdBody,
                     fontWeight = FontWeight.Bold,
-                    color = UpsellAccent,
+                    color = upsellAccent,
                 )
             }
         }
@@ -632,6 +695,7 @@ private fun UpsellCardView(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    val upsellAccent = acento() ?: UpsellAccent
     Card(
         modifier = modifier
             .height(190.dp)
@@ -639,7 +703,7 @@ private fun UpsellCardView(
             .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
             .then(
                 if (selected) {
-                    Modifier.border(4.dp, UpsellAccent, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                    Modifier.border(4.dp, upsellAccent, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
                 } else {
                     Modifier
                 },
@@ -683,7 +747,7 @@ private fun UpsellCardView(
                     )
                     card.badge?.let {
                         Spacer(Modifier.width(AvoqadoTheme.spacing.sm))
-                        Text(it, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = UpsellAccent)
+                        Text(it, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = upsellAccent)
                     }
                 }
                 card.headline?.let {
@@ -723,7 +787,7 @@ private fun RatingPrompt(c: CustomerContent.Rating, onRating: (Int) -> Unit) {
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = "$star estrellas",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = acento() ?: MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .size(104.dp)
                         .clip(RoundedCornerShape(16.dp))
@@ -757,6 +821,7 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
             fontSize = CdAmount,
             lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
+            color = acento() ?: Color.Unspecified,
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
         // Los botones ocupan el ANCHO de la pantalla. Antes medían ~115px en
@@ -772,6 +837,7 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
                         .weight(1f)
                         .height(150.dp)
                         .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                        .then(acento()?.let { Modifier.border(3.dp, it, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg)) } ?: Modifier)
                         .clickable { onTip(option.tipCents) },
                 ) {
                     Column(
@@ -835,6 +901,7 @@ private fun TotalOnly(c: CustomerContent.Total) {
             fontSize = CdAmount,
             lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
+            color = acento() ?: Color.Unspecified,
         )
     }
 }
@@ -853,6 +920,7 @@ private fun ChargingPrompt(c: CustomerContent.Charging) {
             fontSize = CdAmount,
             lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
+            color = acento() ?: Color.Unspecified,
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
         Text(
@@ -896,7 +964,7 @@ private fun DoneQrOnly(c: CustomerContent.Done) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "¡Gracias por tu compra!",
+            text = gracias("¡Gracias por tu compra!"),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
@@ -907,6 +975,7 @@ private fun DoneQrOnly(c: CustomerContent.Done) {
             fontSize = if (url != null) 52.sp else CdAmount,
             lineHeight = (if (url != null) 52.sp else CdAmount) * 1.1f,
             fontWeight = FontWeight.Bold,
+            color = acento() ?: Color.Unspecified,
         )
         url?.let { link ->
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
@@ -1027,7 +1096,7 @@ private fun SentConfirmation() {
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         Text(
-            text = "Gracias por tu compra",
+            text = gracias("Gracias por tu compra"),
             fontSize = CdBody,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1047,7 +1116,7 @@ private fun DoneOptions(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "¡Gracias por tu compra!",
+            text = gracias("¡Gracias por tu compra!"),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
