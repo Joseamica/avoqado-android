@@ -118,7 +118,19 @@ class CustomerDisplaySync internal constructor(
         var retrySoon = false
         val announced = signals.fingerprints.customerDisplay
         val known = store.load().manifests[key]
-        if (announced != null && announced != known?.ficha?.fingerprint && announced != known?.unsupportedFingerprint) {
+        val kept = known?.ficha
+        if (announced != null && kept != null && announced == kept.fingerprint && known?.unsupportedFingerprint != null) {
+            // El server regresó a la ficha que se conservó: el aviso de esquema ya no es verdad. Se apaga y se acusa esa
+            // ficha (si no, sus acuses quedarían bloqueados y el pendiente seguiría diciendo «unsupportedSchema»).
+            val counts = logoCounts(kept.toFicha(known.imageOrigins)?.logo)
+            var enqueued = false
+            write(generation, venueId) { s ->
+                val current = s.manifests[key]
+                if (current?.ficha?.fingerprint != announced || current.unsupportedFingerprint == null) s
+                else reAck(s, key, current, counts).also { enqueued = true }
+            }
+            if (enqueued) rememberImages(key, announced, counts)
+        } else if (announced != null && announced != known?.ficha?.fingerprint && announced != known?.unsupportedFingerprint) {
             when (val outcome = remote.fetchCustomerDisplay(venueId)) {
                 is DisplayModeRemoteOutcome.Success -> saveFicha(generation, venueId, key, announced, outcome.data)
                 is DisplayModeRemoteOutcome.Rejected -> if (outcome.status == 404 && outcome.code == DEVICE_NOT_FOUND) {
@@ -209,7 +221,7 @@ class CustomerDisplaySync internal constructor(
             if (saved) rememberImages(key, announced, NO_IMAGES)
             return
         }
-        val counts = imageCounts(ficha.logo?.let { if (images.cachedFile(it) != null) ImageStatus.READY else ImageStatus.PENDING })
+        val counts = logoCounts(ficha.logo)
         val saved = write(generation, venueId) { s ->
             val manifest = DesignManifest(ficha = dto, imageOrigins = payload.imageOrigins, storedAt = isoNow())
             enqueueAck(s, key, manifest, ficha.fingerprint, unsupported = false, images = counts)
@@ -229,6 +241,10 @@ class CustomerDisplaySync internal constructor(
         val body = buildAck(manifest, fingerprint, unsupported, images, s.installationId).copy(seq = s.nextSeq)
         return s.copy(nextSeq = s.nextSeq + 1, manifests = s.manifests + (key to manifest.copy(pendingAck = body)))
     }
+
+    /** Un acuse nuevo por la ficha que se conserva (la vigente según el server), con el aviso de esquema apagado. */
+    private fun reAck(s: StoredDesignState, key: String, manifest: DesignManifest, images: Triple<Int, Int, Int>): StoredDesignState =
+        enqueueAck(s, key, manifest.copy(unsupportedFingerprint = null), manifest.ficha!!.fingerprint, unsupported = false, images = images)
 
     /** UN trabajo de descarga: el de la misma llave y logo se deja correr; cualquier otro se cancela y se lanza el nuevo. */
     private fun ensureDownload(generation: Long, venueId: String, key: String, ref: LogoRef, origins: List<String>) {
@@ -332,6 +348,10 @@ class CustomerDisplaySync internal constructor(
     private suspend fun sendPendingAck(venueId: String, key: String) = Unit
 
     private fun isoNow(): String = Instant.ofEpochMilli(wallClock()).toString()
+
+    /** Lo que dice el disco del logo ahora mismo (sin red): listo si ya está, pendiente si no. */
+    private fun logoCounts(logo: LogoRef?): Triple<Int, Int, Int> =
+        imageCounts(logo?.let { if (images.cachedFile(it) != null) ImageStatus.READY else ImageStatus.PENDING })
 
     private fun imageCounts(status: ImageStatus?): Triple<Int, Int, Int> = when (status) {
         null -> NO_IMAGES

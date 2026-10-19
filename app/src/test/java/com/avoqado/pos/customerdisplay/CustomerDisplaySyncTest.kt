@@ -335,6 +335,29 @@ class CustomerDisplaySyncTest {
     }
 
     @Test
+    fun `volver a la ficha anterior limpia el aviso de esquema`() = runBlocking {
+        fichaResponse = { ficha(HUELLA_A) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        fichaResponse = { ficha(HUELLA_B, schema = 2) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+
+        // El server regresa a A (la ficha que se conservó): no hay nada que bajar, pero el aviso de B ya no es verdad.
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(2, fichaRequests.get())
+        val guardado = store().load()
+        val manifiesto = guardado.manifests.getValue(LLAVE)
+        assertNull(manifiesto.unsupportedFingerprint)
+        assertEquals(HUELLA_A, manifiesto.ficha!!.fingerprint)
+        assertEquals(HUELLA_A, manifiesto.pendingAck!!.fingerprint)
+        assertFalse(manifiesto.pendingAck!!.unsupportedSchema)
+        assertEquals(3L, manifiesto.pendingAck!!.seq)
+        assertEquals(4L, guardado.nextSeq)
+        assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)
+    }
+
+    @Test
     fun `ficha con otra forma y schema 2 se acusa unsupportedSchema, no se reintenta para siempre`() = runBlocking {
         fichaResponse = {
             MockResponse().setBody(
