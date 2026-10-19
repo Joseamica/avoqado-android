@@ -126,7 +126,7 @@ class CustomerDisplaySync internal constructor(
         // (4) YA, con el logo que haya en disco (o sin él: se ve el nombre).
         val manifest = store.load().manifests[key]
         val ficha = manifest?.ficha?.toFicha(manifest.imageOrigins)
-        publish(generation, venueId, ficha?.let { AppliedDesign(it, it.logo?.let(images::cachedFile)) })
+        publish(generation, venueId, ficha?.let(::applied))
         // (5) Sin logo en disco, o legado que toca revalidar (la copia vigente sigue visible mientras tanto).
         val logo = ficha?.logo
         if (logo != null && (images.cachedFile(logo) == null || images.revalidationDue(logo))) {
@@ -232,7 +232,7 @@ class CustomerDisplaySync internal constructor(
                 // diga el manifiesto AHORA, y `publish`/`write` descartan si la generación o la sucursal ya no son.
                 val manifest = store.load().manifests[key] ?: return@launch
                 val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return@launch
-                publish(generation, venueId, AppliedDesign(ficha, ficha.logo?.let(images::cachedFile)))
+                publish(generation, venueId, applied(ficha))
                 if (ficha.logo != ref) return@launch
                 val counts = imageCounts(status)
                 if (synchronized(lastImagesAck) { lastImagesAck[key] } == (ficha.fingerprint to counts)) return@launch
@@ -279,7 +279,13 @@ class CustomerDisplaySync internal constructor(
         val terminalId = s.lastTerminalByVenue[store.venueKey(env, venueId)] ?: return null
         val manifest = s.manifests[store.manifestKey(env, venueId, terminalId)] ?: return null
         val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return null
-        return AppliedDesign(ficha, ficha.logo?.let(images::cachedFile))
+        return applied(ficha)
+    }
+
+    /** El ÚNICO que arma el diseño: el logo de disco (sólo disco, nunca red) con su marca de `lastModified`. */
+    private fun applied(ficha: Ficha): AppliedDesign {
+        val logo = ficha.logo?.let(images::cachedFile)
+        return AppliedDesign(ficha, logo, logoStamp = logo?.lastModified() ?: 0L)
     }
 
     /** Sigue siendo la misma sesión y el mismo vínculo que cuando empezó el trabajo. */

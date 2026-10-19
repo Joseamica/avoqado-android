@@ -15,7 +15,9 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +40,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -64,7 +67,7 @@ class CustomerDisplaySyncTest {
 
     private lateinit var server: MockWebServer
     private val fichaRequests = AtomicInteger()
-    @Volatile private var fichaResponse: () -> MockResponse = { MockResponse().setResponseCode(500) }
+    @Volatile private var fichaResponse: (RecordedRequest) -> MockResponse = { MockResponse().setResponseCode(500) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var sesion: String? = VENUE
@@ -83,7 +86,7 @@ class CustomerDisplaySyncTest {
             override fun dispatch(request: RecordedRequest): MockResponse =
                 if (request.path!!.endsWith("/customer-display")) {
                     fichaRequests.incrementAndGet()
-                    fichaResponse()
+                    fichaResponse(request)
                 } else MockResponse().setResponseCode(404)
         }
         server.start()
@@ -449,13 +452,41 @@ class CustomerDisplaySyncTest {
         }
     }
 
+    @Test
+    fun `logo revalidado con 200 en la misma ruta se vuelve a ofrecer`() = runBlocking {
+        // Como el caché real: la copia del legado vive en UNA ruta por URL y un 200 la reescribe en el mismo lugar.
+        val misma = carpeta.newFile("legado.img").apply { writeBytes(byteArrayOf(1)); setLastModified(T0) }
+        disco[LEGADO_URL] = misma
+        versionValidada[LEGADO_URL] = "v1" to T0
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers {
+            retenida.await()
+            val ref = firstArg<LogoRef.Venue>()
+            misma.writeBytes(byteArrayOf(2))
+            misma.setLastModified(T0 + 60_000)
+            versionValidada[ref.url] = ref.version to reloj
+            ImageStatus.READY
+        }
+        fichaResponse = { ficha(HUELLA_A, logo = legadoJson("v2")) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        val antes = state.design.value!!
+        assertEquals(misma, antes.logoFile)
+
+        retenida.complete(Unit)
+
+        esperar { state.design.value !== antes }
+        assertNotEquals(antes, state.design.value)
+        assertEquals(misma, state.design.value!!.logoFile)
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))
 
-    private fun sync(estado: CustomerDisplayState = state) = CustomerDisplaySync(
+    private fun sync(estado: CustomerDisplayState = state, almacen: CustomerDisplayDesignStore = store()) = CustomerDisplaySync(
         remote = DisplayModeRemoteRepository(OkHttpClient()) { server.url("/api/v1").toString().removeSuffix("/") },
-        store = store(),
+        store = almacen,
         images = images,
         state = estado,
         kioskEnabled = MutableStateFlow(false),
@@ -505,6 +536,10 @@ class CustomerDisplaySyncTest {
         const val HUELLA_B = "fedcba9876543210fedcba9876543210"
         const val LOGO_URL = "https://storage.googleapis.com/b/logo.png"
         const val LEGADO_URL = "https://storage.googleapis.com/b/legado.png"
+        const val OTRO_LOGO_URL = "https://storage.googleapis.com/b/otro.png"
+        const val SHA_OTRO = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        const val OTRO_LOGO_JSON = "{\"source\":\"asset\",\"url\":\"$OTRO_LOGO_URL\",\"sha256\":\"$SHA_OTRO\"}"
+        const val HUELLA_C = "00112233445566778899aabbccddeeff"
         const val LOGO_ASSET_JSON =
             "{\"source\":\"asset\",\"url\":\"$LOGO_URL\",\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}"
         val T0 = Instant.parse("2026-10-18T12:00:00Z").toEpochMilli()

@@ -100,8 +100,13 @@ sealed interface CustomerContent {
 /** Una sugerencia de propina: el porcentaje a mostrar y los centavos que cobra (ya calculados). */
 data class TipOption(val percent: Int, val tipCents: Int)
 
-/** El diseño de la pantalla del cliente ya listo para pintar: la ficha y, si trae logo, el archivo local (ya verificado). */
-data class AppliedDesign(val ficha: Ficha, val logoFile: File?)
+/**
+ * El diseño de la pantalla del cliente ya listo para pintar: la ficha y, si trae logo, el archivo local (ya verificado).
+ * `logoStamp` = `lastModified` del archivo: un logo legado revalidado con 200 se reescribe en la MISMA ruta, y sin la marca el
+ * diseño nuevo sería igual al viejo (el StateFlow no emitiría y se seguiría pintando el bitmap anterior). Un 304 no toca el
+ * archivo: misma marca, sin emisión de sobra.
+ */
+data class AppliedDesign(val ficha: Ficha, val logoFile: File?, val logoStamp: Long = 0L)
 
 /**
  * Canal único hacia la pantalla del cliente. Los ViewModels de pantalla
