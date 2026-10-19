@@ -59,6 +59,11 @@ import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.checkout.CheckoutLayoutPrefs
 import com.avoqado.pos.pos.presentation.checkout.TileSize
+import com.avoqado.pos.pos.presentation.product.variantes.EntradaDeCatalogo
+import com.avoqado.pos.pos.presentation.product.variantes.Familia
+import com.avoqado.pos.pos.presentation.product.variantes.HojaDeLaFamiliaAbierta
+import com.avoqado.pos.pos.presentation.product.variantes.TileDeFamilia
+import com.avoqado.pos.pos.presentation.product.variantes.agruparCatalogo
 
 /**
  * Product grid with categories-first navigation matching iOS.
@@ -96,6 +101,10 @@ fun ProductGridView(
         else categoriesUnfiltered.filter { it.id in menuCategoryIds }
     }
     val isLoading by viewModel.isLoading.collectAsState()
+    // Variantes: la familia ocupa el lugar de su primera variante; sin familias, la cuadrícula de hoy (mismas llaves y orden).
+    val familias by viewModel.familias.collectAsState()
+    // La hoja abierta guarda sólo el groupId y lee la familia VIGENTE (Codex 7).
+    var abierta by remember { mutableStateOf<String?>(null) }
 
     // Prepaid credit packs (membresías), shown as tiles when onPackTap is set.
     val creditsVM: com.avoqado.pos.customers.presentation.CustomerCreditsViewModel =
@@ -141,7 +150,8 @@ fun ProductGridView(
             }
             selectedCategory == null -> {
                 // Categories + uncategorized products grid
-                val uncategorized = allProducts.filter { it.categoryId == null && it.category == null }
+                val uncategorized = remember(allProducts) { allProducts.filter { it.categoryId == null && it.category == null } }
+                val sueltos = remember(uncategorized, familias) { agruparCatalogo(uncategorized, familias) }
 
                 if (categories.isEmpty() && uncategorized.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -154,9 +164,10 @@ fun ProductGridView(
                 } else {
                     CategoriesGrid(
                         categories = categories,
-                        uncategorizedProducts = uncategorized,
+                        uncategorized = sueltos,
                         onCategoryTap = { selectedCategory = it },
                         onProductTap = tapOrInfo,
+                        onFamiliaTap = { abierta = it.groupId },
                         packs = if (onPackTap != null) packs else emptyList(),
                         onPackTap = onPackTap,
                         tileSize = tileSize,
@@ -165,8 +176,8 @@ fun ProductGridView(
             }
             else -> {
                 // Products in selected category
-                val categoryProducts = allProducts.filter {
-                    it.categoryId == selectedCategory?.id || it.category?.id == selectedCategory?.id
+                val categoryProducts = remember(allProducts, selectedCategory) {
+                    allProducts.filter { it.categoryId == selectedCategory?.id || it.category?.id == selectedCategory?.id }
                 }
 
                 if (categoryProducts.isEmpty()) {
@@ -186,14 +197,18 @@ fun ProductGridView(
                     }
                 } else {
                     ProductsGrid(
-                        products = categoryProducts,
+                        entradas = remember(categoryProducts, familias) { agruparCatalogo(categoryProducts, familias) },
                         onProductTap = tapOrInfo,
+                        onFamiliaTap = { abierta = it.groupId },
                         tileSize = tileSize,
                     )
                 }
             }
         }
     }
+
+    // La variante elegida sigue el MISMO camino que tocar un producto suelto en esta pantalla (R1).
+    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = tapOrInfo)
 }
 
 // MARK: - Breadcrumb Navigation
@@ -255,9 +270,10 @@ private fun BreadcrumbNavigation(
 @Composable
 private fun CategoriesGrid(
     categories: List<ProductCategory>,
-    uncategorizedProducts: List<Product>,
+    uncategorized: List<EntradaDeCatalogo>,
     onCategoryTap: (ProductCategory) -> Unit,
     onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia) -> Unit,
     packs: List<com.avoqado.pos.articles.data.model.CreditPack> = emptyList(),
     onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)? = null,
     tileSize: TileSize,
@@ -280,13 +296,9 @@ private fun CategoriesGrid(
             )
         }
 
-        // Uncategorized products after categories
-        items(uncategorizedProducts, key = { "prod_${it.id}" }) { product ->
-            ProductTile(
-                product = product,
-                onClick = { onProductTap(product) },
-                tileSize = tileSize,
-            )
+        // Uncategorized products after categories (las llaves de hoy: `prod_<id>`)
+        items(uncategorized, key = { llaveDe(it, prefijo = "prod_") }) { entrada ->
+            TileDeEntrada(entrada, onProductTap, onFamiliaTap, tileSize)
         }
 
         // Prepaid credit packs (membresías) — sellable straight from the grid
@@ -302,8 +314,9 @@ private fun CategoriesGrid(
 
 @Composable
 private fun ProductsGrid(
-    products: List<Product>,
+    entradas: List<EntradaDeCatalogo>,
     onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia) -> Unit,
     tileSize: TileSize,
 ) {
     LazyVerticalGrid(
@@ -312,13 +325,33 @@ private fun ProductsGrid(
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
-        items(products, key = { it.id }) { product ->
-            ProductTile(
-                product = product,
-                onClick = { onProductTap(product) },
-                tileSize = tileSize,
-            )
+        // Dentro de una categoría la llave de hoy es el id pelón (Codex 8).
+        items(entradas, key = { llaveDe(it, prefijo = "") }) { entrada ->
+            TileDeEntrada(entrada, onProductTap, onFamiliaTap, tileSize)
         }
+    }
+}
+
+/** La llave de HOY para un producto suelto (`prefijo` + id) y `fam_<groupId>` para una familia. */
+private fun llaveDe(entrada: EntradaDeCatalogo, prefijo: String): String = when (entrada) {
+    is EntradaDeCatalogo.Suelto -> prefijo + entrada.producto.id
+    is EntradaDeCatalogo.DeFamilia -> "fam_${entrada.familia.groupId}"
+}
+
+@Composable
+private fun TileDeEntrada(
+    entrada: EntradaDeCatalogo,
+    onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia) -> Unit,
+    tileSize: TileSize,
+) {
+    when (entrada) {
+        is EntradaDeCatalogo.Suelto -> ProductTile(
+            product = entrada.producto,
+            onClick = { onProductTap(entrada.producto) },
+            tileSize = tileSize,
+        )
+        is EntradaDeCatalogo.DeFamilia -> TileDeFamilia(entrada.familia, tileSize, onTap = { onFamiliaTap(entrada.familia) })
     }
 }
 
@@ -432,8 +465,7 @@ private fun ProductTile(
     onClick: () -> Unit,
     tileSize: TileSize,
 ) {
-    val bgColor = product.color?.let { parseHexColor(it) }
-        ?: MaterialTheme.colorScheme.surfaceVariant
+    val (bgColor, colorDeIniciales) = coloresDeTile(product.color)
 
     Surface(
         modifier = Modifier
@@ -474,7 +506,7 @@ private fun ProductTile(
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Bold,
                         ),
-                        color = if (product.color != null) Color.White else MaterialTheme.colorScheme.onSurface,
+                        color = colorDeIniciales,
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(AvoqadoTheme.spacing.sm),
@@ -482,41 +514,16 @@ private fun ProductTile(
                 }
 
                 if (product.isOutOfStock) {
-                    // Chip en la esquina, no badge central: informa sin estorbar
-                    // el tap — el producto SIGUE vendible y el stock quedará en
-                    // negativo como señal (mockup aprobado 2026-08-12).
                     val existencia = product.availableQuantityExact ?: product.availableQuantity?.toDouble()
-                    Text(
-                        text = if (existencia != null && existencia < 0) "Agotado · ${formatChipQty(existencia)}" else "Agotado · 0",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(AvoqadoTheme.spacing.xs)
-                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(50))
-                            .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = 2.dp),
+                    ChipDeAgotado(
+                        texto = if (existencia != null && existencia < 0) "Agotado · ${formatChipQty(existencia)}" else "Agotado · 0",
+                        modifier = Modifier.align(Alignment.TopEnd),
                     )
                 }
 
                 // Variants badge (top-left)
                 if (!product.variants.isNullOrEmpty() && product.variants.size > 1) {
-                    Text(
-                        text = "${product.variants.size} variantes",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(AvoqadoTheme.spacing.sm)
-                            .background(
-                                Color.Black.copy(alpha = 0.6f),
-                                RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
-                            )
-                            .padding(
-                                horizontal = AvoqadoTheme.spacing.xs,
-                                vertical = AvoqadoTheme.spacing.xxs,
-                            ),
-                    )
+                    InsigniaDeTile(texto = "${product.variants.size} variantes", modifier = Modifier.align(Alignment.TopStart))
                 }
 
                 // Modifier indicator (top-right)
@@ -562,6 +569,47 @@ private fun ProductTile(
             }
         }
     }
+}
+
+// MARK: - Piezas del tile que comparte el botón de una familia (`TileDeFamilia`): mismo aspecto que `ProductTile`
+
+/** Fondo de la imagen y color de las iniciales: el color propio del producto si lo trae; si no, los del tema. */
+@Composable
+internal fun coloresDeTile(hexColor: String?): Pair<Color, Color> = Pair(
+    hexColor?.let { parseHexColor(it) } ?: MaterialTheme.colorScheme.surfaceVariant,
+    if (hexColor != null) Color.White else MaterialTheme.colorScheme.onSurface,
+)
+
+/** Insignia de arriba a la izquierda («N variantes»): oscura sobre la foto o el color del tile, en cualquier tema. */
+@Composable
+internal fun InsigniaDeTile(texto: String, modifier: Modifier) {
+    Text(
+        text = texto,
+        style = MaterialTheme.typography.labelSmall,
+        color = Color.White,
+        modifier = modifier
+            .padding(AvoqadoTheme.spacing.sm)
+            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
+            .padding(horizontal = AvoqadoTheme.spacing.xs, vertical = AvoqadoTheme.spacing.xxs),
+    )
+}
+
+/**
+ * Chip «Agotado» de la esquina, no badge central: informa sin estorbar el tap — el producto SIGUE vendible y el stock quedará en
+ * negativo como señal (mockup aprobado 2026-08-12).
+ */
+@Composable
+internal fun ChipDeAgotado(texto: String, modifier: Modifier) {
+    Text(
+        text = texto,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = Color.White,
+        modifier = modifier
+            .padding(AvoqadoTheme.spacing.xs)
+            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(50))
+            .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = 2.dp),
+    )
 }
 
 // MARK: - Helpers
