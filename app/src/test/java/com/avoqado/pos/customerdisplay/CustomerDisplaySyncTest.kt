@@ -474,7 +474,10 @@ class CustomerDisplaySyncTest {
         try {
             val hilos = Collections.synchronizedList(mutableListOf<String>())
             val espia = spyk(CustomerDisplayState())
-            every { espia.offerDesign(any()) } answers { hilos += "offer@" + hilo(); callOriginal() }
+            every { espia.offerDesign(any()) } answers {
+                hilos += (if (firstArg<AppliedDesign?>() == null) "offer(null)@" else "offer@") + hilo()
+                callOriginal()
+            }
             every { espia.clearDesign() } answers { hilos += "clear@" + hilo(); callOriginal() }
             fichaResponse = { ficha(HUELLA_A) }
             val sync = sync(estado = espia)
@@ -482,8 +485,13 @@ class CustomerDisplaySyncTest {
             sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
             sync.onDeviceUnbound(VENUE)
 
-            esperar { hilos.size >= 3 }
-            assertEquals(listOf("clear@main-de-prueba", "offer@main-de-prueba", "clear@main-de-prueba"), hilos.toList())
+            esperar { hilos.lastOrNull() == "clear@main-de-prueba" && "offer@main-de-prueba" in hilos }
+            // El arranque retira y vuelve a publicar lo último (aquí, nada: `offer(null)`); el poll ofrece A; el desligado
+            // retira. Lo que se protege: TODO toque al estado corre en Main.
+            val vistos = hilos.toList()
+            assertTrue("fuera de Main: $vistos", vistos.all { it.endsWith("@main-de-prueba") })
+            assertEquals("clear@main-de-prueba", vistos.first())
+            assertEquals("clear@main-de-prueba", vistos.last())
         } finally {
             principal.shutdownNow()
         }
