@@ -601,6 +601,20 @@ class CustomerDisplaySyncTest {
         assertEquals(1_000_000L, archivo.lastModified())
     }
 
+    @Test
+    fun `ficha schema 1 con huella invalida no se pide en cada poll`() = runBlocking {
+        fichaResponse = { ficha("no-es-una-huella") }
+        val sync = sync()
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        assertEquals(1, fichaRequests.get())
+        val manifiesto = store().load().manifests.getValue(LLAVE)
+        assertEquals(HUELLA_A, manifiesto.unsupportedFingerprint)
+        assertNull(state.design.value)
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))

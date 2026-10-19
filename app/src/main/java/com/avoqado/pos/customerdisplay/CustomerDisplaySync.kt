@@ -198,18 +198,15 @@ class CustomerDisplaySync internal constructor(
 
     private suspend fun saveFicha(generation: Long, venueId: String, key: String, announced: String, payload: CustomerDisplayPayload) {
         val dto = payload.ficha
-        if (dto.schemaVersion != SUPPORTED_SCHEMA_VERSION) {
-            // Esquema que esta versión no entiende: se conserva el diseño actual y se le dice al server.
+        val ficha = dto.toFicha(payload.imageOrigins)
+        if (dto.schemaVersion != SUPPORTED_SCHEMA_VERSION || ficha == null) {
+            // Esquema que esta versión no entiende (o una ficha v1 sin huella válida, que tampoco se puede pintar): se
+            // conserva el diseño actual, se le dice al server y no se vuelve a pedir esa huella en cada poll.
             val saved = write(generation, venueId) { s ->
                 val kept = (s.manifests[key] ?: DesignManifest(storedAt = isoNow())).copy(unsupportedFingerprint = announced)
                 enqueueAck(s, key, kept, announced, unsupported = true, images = NO_IMAGES)
             }
             if (saved) rememberImages(key, announced, NO_IMAGES)
-            return
-        }
-        val ficha = dto.toFicha(payload.imageOrigins)
-        if (ficha == null) {
-            Log.w(TAG, "Ficha de la pantalla del cliente sin huella válida; se ignora")
             return
         }
         val counts = imageCounts(ficha.logo?.let { if (images.cachedFile(it) != null) ImageStatus.READY else ImageStatus.PENDING })
