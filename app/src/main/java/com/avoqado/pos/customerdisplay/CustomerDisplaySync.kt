@@ -164,6 +164,10 @@ class CustomerDisplaySync internal constructor(
         val logo = ficha?.logo
         if (logo != null && (images.cachedFile(logo) == null || images.revalidationDue(logo))) {
             ensureDownload(generation, venueId, key, logo, manifest.imageOrigins)
+        } else if (logo != null) {
+            // Logo listo en disco: si su acuse «listo» no quedó guardado (el disco falló al encolarlo en la descarga), se
+            // encola en este tick, sin descargar nada. Si ya está, no hace nada.
+            enqueueImagesAck(generation, venueId, key, ficha.fingerprint, imageCounts(ImageStatus.READY))
         }
         // (6)
         sendPendingAck(generation, venueId, key)
@@ -340,21 +344,28 @@ class CustomerDisplaySync internal constructor(
                 val ficha = manifest.ficha?.toFicha(manifest.imageOrigins) ?: return@launch
                 publish(generation, venueId, applied(ficha), onlyIfNoOfferSince = offersSeen)
                 if (ficha.logo != ref) return@launch
-                val counts = imageCounts(status)
-                if (synchronized(lastImagesAck) { lastImagesAck[key] } == (ficha.fingerprint to counts)) return@launch
-                var enqueued = false
-                write(generation, venueId) { s ->
-                    val current = s.manifests[key]
-                    // Otra ficha entretanto, o un esquema desconocido pendiente: el acuse de imágenes de la ficha que se
-                    // conserva taparía (con un seq mayor) el «unsupportedSchema» y el panel perdería «actualiza la app».
-                    // [onCapabilitiesReported] respeta la MISMA regla al encolar su acuse nuevo.
-                    if (current?.ficha?.fingerprint != ficha.fingerprint || current?.unsupportedFingerprint != null) s
-                    else enqueueAck(s, key, current, ficha.fingerprint, unsupported = false, images = counts).also { enqueued = true }
-                }
-                if (enqueued) rememberImages(key, ficha.fingerprint, counts)
+                enqueueImagesAck(generation, venueId, key, ficha.fingerprint, imageCounts(status))
             }
             download = Download(key, ref, job)
         }
+    }
+
+    /**
+     * El acuse con los contadores del logo, si no es el último que ya quedó en disco. `lastImagesAck` sólo se anota tras
+     * escribir: si el disco falla, el siguiente poll lo vuelve a encolar (ver el paso 5 de [afterPoll]).
+     */
+    private suspend fun enqueueImagesAck(generation: Long, venueId: String, key: String, fingerprint: String, counts: Triple<Int, Int, Int>) {
+        if (synchronized(lastImagesAck) { lastImagesAck[key] } == (fingerprint to counts)) return
+        var enqueued = false
+        write(generation, venueId) { s ->
+            val current = s.manifests[key]
+            // Otra ficha entretanto, o un esquema desconocido pendiente: el acuse de imágenes de la ficha que se
+            // conserva taparía (con un seq mayor) el «unsupportedSchema» y el panel perdería «actualiza la app».
+            // [onCapabilitiesReported] respeta la MISMA regla al encolar su acuse nuevo.
+            if (current?.ficha?.fingerprint != fingerprint || current?.unsupportedFingerprint != null) s
+            else enqueueAck(s, key, current, fingerprint, unsupported = false, images = counts).also { enqueued = true }
+        }
+        if (enqueued) rememberImages(key, fingerprint, counts)
     }
 
     /** Sólo tras escribir: si el disco falló, el siguiente poll vuelve a intentar ese acuse. */

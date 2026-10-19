@@ -10,6 +10,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
 import java.io.File
+import java.io.IOException
 import java.time.Instant
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -989,6 +990,34 @@ class CustomerDisplaySyncTest {
         Thread.sleep(300)
 
         assertEquals(HUELLA_B, state.design.value!!.ficha.fingerprint)
+    }
+
+    @Test
+    fun `si falla guardar el acuse del logo el siguiente poll lo encola`() = runBlocking {
+        val retenida = CompletableDeferred<Unit>()
+        coEvery { images.ensure(any(), any()) } coAnswers { retenida.await(); bajar(firstArg()) }
+        val falla = AtomicBoolean(false)
+        val espia = spyk(store())
+        every { espia.update(any()) } answers {
+            if (falla.getAndSet(false)) throw IOException("disco lleno un momento") else callOriginal()
+        }
+        fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
+        val sync = sync(almacen = espia)
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        assertEquals(1, store().load().manifests.getValue(LLAVE).pendingAck!!.imagesPending)
+        falla.set(true)   // la escritura del acuse «listo» del trabajo de descarga falla una vez
+
+        retenida.complete(Unit)
+        esperar { !falla.get() }
+        Thread.sleep(200)
+        assertEquals(1, store().load().manifests.getValue(LLAVE).pendingAck!!.imagesPending)
+
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+
+        val acuse = store().load().manifests.getValue(LLAVE).pendingAck!!
+        assertEquals(1, acuse.imagesReady)
+        assertEquals(0, acuse.imagesPending)
+        assertEquals(HUELLA_A, acuse.fingerprint)
     }
 
     // ── ayudas ──
