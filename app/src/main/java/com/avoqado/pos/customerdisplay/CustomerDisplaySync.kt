@@ -239,7 +239,10 @@ class CustomerDisplaySync internal constructor(
                 var enqueued = false
                 write(generation, venueId) { s ->
                     val current = s.manifests[key]
-                    if (current?.ficha?.fingerprint != ficha.fingerprint) s   // otra ficha entretanto: ese acuse ya no es
+                    // Otra ficha entretanto, o un esquema desconocido pendiente: el acuse de imágenes de la ficha que se
+                    // conserva taparía (con un seq mayor) el «unsupportedSchema» y el panel perdería «actualiza la app».
+                    // 🔴 La Task 2.6 (`onCapabilitiesReported`) debe respetar la MISMA regla al encolar su acuse nuevo.
+                    if (current?.ficha?.fingerprint != ficha.fingerprint || current?.unsupportedFingerprint != null) s
                     else enqueueAck(s, key, current, ficha.fingerprint, unsupported = false, images = counts).also { enqueued = true }
                 }
                 if (enqueued) rememberImages(key, ficha.fingerprint, counts)

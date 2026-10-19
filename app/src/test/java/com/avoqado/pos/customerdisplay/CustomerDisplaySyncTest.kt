@@ -480,6 +480,26 @@ class CustomerDisplaySyncTest {
         assertEquals(misma, state.design.value!!.logoFile)
     }
 
+    @Test
+    fun `revalidar el logo no tapa el acuse unsupportedSchema`() = runBlocking {
+        disco[LEGADO_URL] = carpeta.newFile("copia.img")
+        versionValidada[LEGADO_URL] = "v1" to T0
+        fichaResponse = { ficha(HUELLA_A, logo = legadoJson("v1")) }
+        val sync = sync()
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
+        fichaResponse = { ficha(HUELLA_B, schema = 2) }
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+
+        reloj = T0 + DIA_MS   // toca revalidar el logo de la ficha que se conserva
+        sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_B))
+
+        coVerify(timeout = 5_000, exactly = 1) { images.ensure(any(), any()) }
+        Thread.sleep(300)
+        val acuse = store().load().manifests.getValue(LLAVE).pendingAck!!
+        assertEquals(HUELLA_B, acuse.fingerprint)
+        assertTrue(acuse.unsupportedSchema)
+    }
+
     // ── ayudas ──
 
     private fun store() = CustomerDisplayDesignStore(File(carpeta.root, "customer-display"))
