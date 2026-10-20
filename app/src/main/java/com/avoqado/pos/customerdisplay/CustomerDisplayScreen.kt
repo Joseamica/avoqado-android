@@ -957,20 +957,24 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
         // Los botones ocupan el ANCHO de la pantalla. Antes medían ~115px en
         // una pantalla de 1280 y quedaban pegados entre sí: un blanco difícil
         // para alguien que toca de paso, y errarle cuesta dinero al mesero.
-        // Hasta 6 porcentajes: una fila (≤ 4) o dos filas parejas, con tarjetas más bajas (120 dp en vez de 150).
+        // Hasta 6 porcentajes: una fila (≤ 4, de 150 dp) o dos filas parejas. Con dos filas las tarjetas toman el alto que
+        // quede en la pantalla (hasta 120 dp): en la 2.ª pantalla de la D3 (853×533 dp) con 120 fijos «Sin propina» salía cortado.
         val filas = tipRows(c.options)
-        val alto = if (filas.size > 1) 120.dp else 150.dp
-        Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
+        val dosFilas = filas.size > 1
+        Column(
+            modifier = if (dosFilas) Modifier.weight(1f, fill = false) else Modifier,
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+        ) {
             filas.forEach { fila ->
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().then(if (dosFilas) Modifier.weight(1f, fill = false).heightIn(max = 120.dp) else Modifier),
                     horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
                 ) {
                     fila.forEach { option ->
                         Card(
                             modifier = Modifier
                                 .weight(1f)
-                                .height(alto)
+                                .then(if (dosFilas) Modifier.fillMaxHeight() else Modifier.height(150.dp))
                                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
                                 .then(acento()?.let { Modifier.border(3.dp, it, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg)) } ?: Modifier)
                                 .clickable { onTip(option.tipCents) },

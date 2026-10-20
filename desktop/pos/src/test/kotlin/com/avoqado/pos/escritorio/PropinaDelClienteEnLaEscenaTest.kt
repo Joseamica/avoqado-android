@@ -5,24 +5,30 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.SkikoComposeUiTest
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.test.runDesktopComposeUiTest
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import com.avoqado.escritorio.ContextoDeEscritorio
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.customerdisplay.CustomerContent
 import com.avoqado.pos.customerdisplay.CustomerDisplayScreen
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.TipOption
+import com.avoqado.pos.customerdisplay.money
 import com.avoqado.pos.payment.presentation.TipSelectionSheet
 import com.avoqado.pos.payment.presentation.tipCentsForPercent
 import java.nio.file.Files
@@ -171,4 +177,53 @@ class PropinaDelClienteEnLaEscenaTest {
         waitForIdle()
         assertEquals(tipCentsForPercent(total, 25), entregado)
     }
+
+    // ── F2-2 (QA en la D3 real): con dos filas «Sin propina» salía cortado a la mitad en la 2.ª pantalla ──
+    // Esa pantalla es de 1280×800 px a densidad 1.5 = 853×533 dp (las tarjetas de 120 dp miden 180 px en la captura v2-61-d1).
+
+    private fun enLaD3(bloque: SkikoComposeUiTest.() -> Unit) =
+        SkikoComposeUiTest(1280, 800, density = Density(1.5f)).runTest { bloque() }
+
+    private fun SkikoComposeUiTest.dibujoDe(texto: String): TextLayoutResult {
+        val resultados = mutableListOf<TextLayoutResult>()
+        onNodeWithText(texto, useUnmergedTree = true).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action!!.invoke(resultados)
+        return resultados.single()
+    }
+
+    /** El texto sale COMPLETO: su alto no se recortó, no se partió en dos renglones y cae dentro de la ventana. */
+    private fun SkikoComposeUiTest.completo(texto: String) {
+        val dibujo = dibujoDe(texto)
+        assertTrue(!dibujo.didOverflowHeight && dibujo.lineCount == 1,
+            "«$texto» se recortó (alto=${dibujo.didOverflowHeight}, renglones=${dibujo.lineCount}, caja=${dibujo.size}, texto=${dibujo.multiParagraph.height})")
+        val caja = onNodeWithText(texto, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val raiz = onRoot().fetchSemanticsNode().boundsInRoot
+        assertTrue(caja.top >= raiz.top - 0.5f && caja.bottom <= raiz.bottom + 0.5f, "«$texto» no cabe en la ventana: ${caja.top}..${caja.bottom} de ${raiz.bottom}")
+    }
+
+    private fun SkikoComposeUiTest.todoCabeEnLaD3(porcentajes: List<Int>) {
+        val state = CustomerDisplayState()
+        state.show(CustomerContent.Tip(total, porcentajes.map { TipOption(it, tipCentsForPercent(total, it)) }, selectedTipCents = null))
+        var densidad = 0f
+        setContent { densidad = LocalDensity.current.density; MaterialTheme { CustomerDisplayScreen(state = state, onRating = {}, onTip = {}) } }
+
+        val raiz = onRoot().fetchSemanticsNode().boundsInRoot
+        assertEquals(1.5f, densidad, 0.001f, "montaje: densidad de la D3")
+        assertEquals(1280f, raiz.right - raiz.left, 0.5f, "montaje: ancho de la D3 en px")
+        assertEquals(800f, raiz.bottom - raiz.top, 0.5f, "montaje: alto de la D3 en px")
+
+        completo("¿Deseas dejar propina?")
+        completo(money(total))
+        porcentajes.forEach { completo("$it%"); completo(money(tipCentsForPercent(total, it))) }
+        // «Sin propina» es un botón: el texto y su relleno de 16 dp arriba y abajo caben enteros, debajo de las tarjetas.
+        completo("Sin propina")
+        val boton = onNodeWithText("Sin propina").fetchSemanticsNode()
+        val necesario = dibujoDe("Sin propina").multiParagraph.height + 2 * with(density) { 16.dp.toPx() }
+        assertTrue(boton.size.height >= necesario - 1f, "«Sin propina» quedó de ${boton.size.height} px y pide $necesario")
+        val abajoDeLasTarjetas = porcentajes.maxOf { onNodeWithText("$it%").fetchSemanticsNode().boundsInRoot.bottom }
+        assertTrue(boton.boundsInRoot.top >= abajoDeLasTarjetas - 0.5f, "«Sin propina» se encima con las tarjetas")
+    }
+
+    @Test fun `con seis porcentajes todo cabe en la segunda pantalla de la D3`() = enLaD3 { todoCabeEnLaD3(seis) }
+
+    @Test fun `con cinco porcentajes todo cabe en la segunda pantalla de la D3`() = enLaD3 { todoCabeEnLaD3(cinco) }
 }
