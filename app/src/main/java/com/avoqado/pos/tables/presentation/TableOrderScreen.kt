@@ -429,7 +429,7 @@ fun TableOrderScreen(
                                 onCourseMenu = { c, label -> courseMenuTarget = c to label },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
-                                payableTotalCents = viewModel.payableTotalCents,
+                                saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
@@ -542,7 +542,10 @@ fun TableOrderScreen(
                     }
                 }
                 // Phone bottom bar → full-screen check
-                val totalCents = viewModel.payableTotalCents
+                // 19-oct: sin lo sin mandar marcaba $0.00. Se lee `pendingLines` (estado observado), no un getter del VM, para que
+                // la barra se repinte al agregar un producto.
+                val saldoBarra = viewModel.saldoDeMesa.conSinMandar(pendingLines.sumOf { it.item.totalPrice })
+                val totalCents = saldoBarra.porPagarCents
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -558,7 +561,7 @@ fun TableOrderScreen(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = if (viewModel.saldoDeMesaConocido) centsDisplay(totalCents) else "Saldo por confirmar",
+                        text = if (viewModel.saldoDeMesaConocido && saldoBarra.confirmado) centsDisplay(totalCents) else "Saldo por confirmar",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.inverseOnSurface,
                     )
@@ -603,7 +606,7 @@ fun TableOrderScreen(
                                 onCourseMenu = { c, label -> courseMenuTarget = c to label },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
-                                payableTotalCents = viewModel.payableTotalCents,
+                                saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
@@ -1438,7 +1441,7 @@ internal fun TableCheckPanel(
     onCourseMenu: (String?, String) -> Unit = { _, _ -> },
     pendingCount: Int,
     pendingTotalCents: Int,
-    payableTotalCents: Int,
+    saldo: TableOrderViewModel.SaldoDeMesa,
     saldoDeMesaConocido: Boolean,
     onEnviar: () -> Unit,
     /**
@@ -1458,8 +1461,8 @@ internal fun TableCheckPanel(
 ) {
     val sentItems = check?.items.orEmpty()
     val hasPending = pendingLines.isNotEmpty()
-    // Borrador en su tarjeta; Total/Pagar muestran sólo el saldo preparado por el VM.
-    val subtotalCents = payableTotalCents
+    // Pagar e imprimir usan lo que se cobra (el saldo del VM); las filas de arriba explican de dónde sale.
+    val subtotalCents = saldo.porPagarCents
     val itemCount = sentItems.sumOf { it.quantity } + pendingCount + queuedLines.sumOf { it.item.quantity }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1529,6 +1532,8 @@ internal fun TableCheckPanel(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+            // 19-oct (founder): lo sin mandar no está en el saldo del servidor; sin esta fila la mesa marcaba $0.00.
+            if (hasPending) FilaDeSaldo("Sin mandar ($pendingCount)", "+" + centsDisplay(pendingTotalCents))
             check?.takeIf { it.discountAmount > 0 }?.let { c ->
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
@@ -1563,19 +1568,15 @@ internal fun TableCheckPanel(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
-                Text(
-                    text = "Total",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = if (saldoDeMesaConocido) centsDisplay(subtotalCents) else "Saldo por confirmar",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
+            // 19-oct (founder «si asi»): «Total» es la cuenta completa; con abonos, «Ya pagado»/«Por pagar» con los mismos números
+            // del servidor que imprime la pre-cuenta (decisión del 12-oct). Antes «Total» era el saldo: «Total $137» sin decir de qué.
+            val conocido = saldoDeMesaConocido && saldo.confirmado
+            val mostrado = saldo.conSinMandar(pendingTotalCents)
+            val conAbonos = conocido && saldo.pagadoCents > 0
+            FilaDeSaldo("Total", if (conocido) centsDisplay(mostrado.totalCents) else "Saldo por confirmar", fuerte = !conAbonos)
+            if (conAbonos) {
+                FilaDeSaldo("Ya pagado", "-" + centsDisplay(mostrado.pagadoCents), color = Success)
+                FilaDeSaldo("Por pagar", centsDisplay(mostrado.porPagarCents), fuerte = true)
             }
         }
 
@@ -3535,3 +3536,15 @@ internal fun textoSubtotalDeMesa(check:OrderDetail?):String {
 }
 internal fun motivoPreCuentaEnPanel(hasSent:Boolean,motivoCuenta:String?):String? =
     motivoCuenta ?: if(hasSent) null else "Todavía no hay nada enviado a cocina, así que no hay cuenta que imprimir."
+
+/** Una fila del resumen de la cuenta: etiqueta a la izquierda, importe a la derecha. */
+@Composable
+private fun FilaDeSaldo(etiqueta: String, valor: String, fuerte: Boolean = false, color: Color = Color.Unspecified) {
+    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
+        val estilo = if (fuerte) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyMedium
+        val peso = if (fuerte) FontWeight.SemiBold else null
+        Text(text = etiqueta, style = estilo, fontWeight = peso, color = color, modifier = Modifier.weight(1f))
+        Text(text = valor, style = estilo, fontWeight = peso, color = color)
+    }
+}
