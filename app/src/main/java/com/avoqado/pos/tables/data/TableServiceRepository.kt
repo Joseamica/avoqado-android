@@ -12,8 +12,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "TableServiceRepository"
-/** Espejo de `ESTADOS_FUERA_DE_LA_MESA` (avoqado-server `services/shared/cuentaEnLaMesa.ts`): la cuenta ya no vuelve a la mesa. */
-private val CUENTA_CERRADA = setOf("COMPLETED", "CANCELLED", "DELETED")
+/**
+ * Cobrada en el servidor: no se reabre (otro cobro es venta nueva). Cancelada o borrada NO cuentan: un abono cobrado sin red
+ * que llega tarde la reabre (avoqado-server `estadoAlRecibirDinero`, `services/shared/orderBalance.ts`; Codex r7).
+ */
+private const val CUENTA_COBRADA = "COMPLETED"
 
 /**
  * TABLE_SERVICE (PRO) — floor-plan state + table lifecycle for the restaurant
@@ -202,11 +205,11 @@ class TableServiceRepository @Inject constructor(
     } catch (_: Exception) { false }
 
     /**
-     * El servidor dice que la cuenta real está CERRADA (cobrada, cancelada o borrada; no se reabre). Que falte en /tables no
-     * lo prueba: una mesa archivada no viene, ni una cuenta movida a ella (Codex r5 #2, r6). Sin respuesta, retiene.
+     * El servidor dice que la cuenta real ya está COBRADA (no se reabre). Que falte en /tables no lo prueba: una mesa
+     * archivada no viene, ni una cuenta movida a ella (Codex r5 #2, r6). Sin respuesta, retiene.
      */
     private suspend fun cerradaEnServidor(venueId: String, checkId: String): Boolean = try {
-        apiService.getOrderDetail(venueId, draftStore.loadResolved(venueId, checkId).first).order?.status in CUENTA_CERRADA
+        apiService.getOrderDetailEnSegundoPlano(venueId, draftStore.loadResolved(venueId, checkId).first).order?.status == CUENTA_COBRADA
     } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { false }
 
     /** Provisionales que ya no retenían nada ANTES del GET: sólo a éstas las puede soltar su respuesta (una respuesta vieja no). */

@@ -42,7 +42,7 @@ class MesaFantasmaTest {
         coEvery { dao.upsert(any()) } answers { val row = firstArg<CachedPayloadEntity>(); rows[row.cacheKey] = row }
         coEvery { api.getTables(venue) } returns TablesResponse(data = listOf(mesa))
         // El servidor ya la cobró y cerró; las pruebas de una cuenta viva lo cambian.
-        coEvery { api.getOrderDetail(venue, "real") } returns cuenta("COMPLETED")
+        coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } returns cuenta("COMPLETED")
         val repository = TableServiceRepository(api, PayloadCache(dao), outbox, session, mockk(relaxed = true), drafts)
         repository.refresh(venue).getOrThrow()
         session.start(TableSession.Active(tableId = "t11", tableNumber = "M11", areaName = null, orderId = "local", orderNumber = "LOCAL",
@@ -193,7 +193,7 @@ class MesaFantasmaTest {
         // Codex r5 #2: /tables omite las mesas archivadas; que falte la mesa no dice que su cuenta se cerró.
         val repository = escenario(drafts, outbox("ACKED") { 0 })
         coEvery { api.getTables(venue) } returns TablesResponse(data = emptyList())
-        coEvery { api.getOrderDetail(venue, "real") } returns cuenta("PENDING")
+        coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } returns cuenta("PENDING")
         repository.refresh(venue).getOrThrow()
         assertTrue("La cuenta viva sigue en el plano", repository.tables.value.single().primaryCheck!!.isProvisional)
     }
@@ -202,14 +202,22 @@ class MesaFantasmaTest {
         // Codex r6: sin red se movió de M11 a una mesa que después archivaron; /tables trae M11 libre y omite la otra.
         // Sólo se suelta lo que el servidor dice CERRADO, no lo que falta en /tables.
         val repository = escenario(drafts, outbox("ACKED") { 0 })
-        coEvery { api.getOrderDetail(venue, "real") } returns cuenta("PENDING")
+        coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } returns cuenta("PENDING")
+        repository.refresh(venue).getOrThrow()
+        assertTrue(repository.tables.value.single().primaryCheck!!.isProvisional)
+    }
+
+    @Test fun `una cuenta cancelada en el servidor no se suelta - un abono sin red que llega tarde la reabre`() = conDrafts { drafts ->
+        // Codex r7 #1: sólo COBRADA es definitiva; cancelada o borrada se reabren si reciben dinero ya cobrado.
+        val repository = escenario(drafts, outbox("ACKED") { 0 })
+        coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } returns cuenta("CANCELLED")
         repository.refresh(venue).getOrThrow()
         assertTrue(repository.tables.value.single().primaryCheck!!.isProvisional)
     }
 
     @Test fun `si no se puede preguntar al servidor por la cuenta se conserva`() = conDrafts { drafts ->
         val repository = escenario(drafts, outbox("ACKED") { 0 })
-        coEvery { api.getOrderDetail(venue, "real") } throws java.io.IOException("sin red")
+        coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } throws java.io.IOException("sin red")
         repository.refresh(venue).getOrThrow()
         assertTrue(repository.tables.value.single().primaryCheck!!.isProvisional)
     }
