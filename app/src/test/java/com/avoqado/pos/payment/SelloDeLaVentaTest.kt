@@ -76,6 +76,7 @@ class SelloDeLaVentaTest {
     private val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
     private val tableSession = TableSession()
+    private val syncOutbox = mockk<com.avoqado.pos.core.data.sync.SyncOutbox>(relaxed = true)
 
     private lateinit var viewModel: PaymentFlowViewModel
 
@@ -137,7 +138,7 @@ class SelloDeLaVentaTest {
                 printerService,
             ),
             tableSession = tableSession,
-            syncOutbox = mockk(relaxed = true),
+            syncOutbox = syncOutbox,
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = mockk(relaxed = true),
@@ -586,6 +587,20 @@ class SelloDeLaVentaTest {
     }
 
     @Test
+    fun `P1 si la venta encolada termina rechazada se quita la promesa del sello`() = runTest {
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+        assertEquals("premisa: sin red se promete", RenglonDelSello.SE_SUMA_AL_SINCRONIZAR, viewModel.renglonDelSello.value)
+
+        estadoDeLaFila.value = "FAILED" // el servidor la rechazó: queda en «Pendientes»
+        advanceUntilIdle()
+
+        assertEquals("premisa: arriba dice rechazada", SincronizacionDelCobro.RECHAZADA, viewModel.sincronizacionDelCobro.value)
+        assertNull("la venta no subió: prometer el sello miente", viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
     fun `P1 si se empezo otra venta antes de sincronizar, el sello de la anterior no se pinta en ella`() = runTest {
         coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
         coEvery { orderRepository.consultarSelloDeLaVenta("pago-servidor-9") } returns sello(stamped = true, earned = 2)
@@ -667,5 +682,71 @@ class SelloDeLaVentaTest {
         assertEquals(TextosDelSello.VENTA_SIN_SINCRONIZAR, viewModel.customerAttachResult.value)
         assertFalse(viewModel.customerAttachSending.value)
         assertNull(viewModel.attachedCustomerName.value)
+    }
+
+    // MARK: - Agregar el cliente a una venta de MESA encolada sin red, o encolada sin fila (18-oct)
+    // Antes caían en «el último pago de $X del mismo empleado en 15 min». Ahora: el id del intent PAY_CASH ACKED, o nada.
+
+    /** Mesa abierta SIN red (sesión provisional): el cobro va como intent PAY_CASH «intent-1» al outbox. */
+    private fun cobrarMesaSinRed() {
+        coEvery { syncOutbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns "intent-1"
+        tableSession.start(
+            TableSession.Active("mesa-5", "5", null, "local-5", "LOCAL-5", 0, 10_000, TableSession.Mode.PAYING, isProvisional = true),
+        )
+        cobrar()
+    }
+
+    @Test
+    fun `P1 agregar el cliente a una mesa cobrada sin red ya sincronizada liga el pago de SU intent`() = runTest {
+        coEvery { syncOutbox.pagoDelServidor("intent-1") } returns "pago-mesa-9"
+        coEvery { orderRepository.attachCustomerToPayment("pago-mesa-9", "cm-dany") } returns
+            Result.success(sello(stamped = true, earned = 3))
+        cobrarMesaSinRed()
+        advanceUntilIdle()
+        assertEquals("premisa", ColaDelCobro.Outbox("intent-1"), (viewModel.state.value as PaymentFlowState.Success).colaDelCobro)
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { orderRepository.attachCustomerToPayment("pago-mesa-9", "cm-dany") }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals("Dany", viewModel.attachedCustomerName.value)
+    }
+
+    @Test
+    fun `P1 una mesa cobrada sin red que aun no sincroniza no llama al servidor y lo dice`() = runTest {
+        coEvery { syncOutbox.pagoDelServidor("intent-1") } returns null
+        cobrarMesaSinRed()
+        advanceUntilIdle()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.attachCustomerToPayment(any(), any()) }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals(TextosDelSello.VENTA_SIN_SINCRONIZAR, viewModel.customerAttachResult.value)
+        assertFalse(viewModel.customerAttachSending.value)
+        assertNull(viewModel.attachedCustomerName.value)
+    }
+
+    @Test
+    fun `P1 una venta encolada sin fila de cola no llama al servidor y lo dice`() = runTest {
+        // Cobro rápido sin carrito (`cartState` nulo): se encola sin id de fila, así que no hay pago que ligar.
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+        viewModel.confirmCashCustom(10_000)
+        advanceUntilIdle()
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertTrue("premisa: encolada", exito.isQueued)
+        assertNull("premisa: sin fila", exito.colaDelCobro)
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.attachCustomerToPayment(any(), any()) }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals(TextosDelSello.VENTA_SIN_SINCRONIZAR, viewModel.customerAttachResult.value)
+        assertFalse(viewModel.customerAttachSending.value)
     }
 }

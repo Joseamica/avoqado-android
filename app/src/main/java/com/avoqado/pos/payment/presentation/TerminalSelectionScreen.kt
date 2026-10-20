@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PointOfSale
@@ -31,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -38,6 +39,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.components.AtajoDeTeclado
+import com.avoqado.pos.designsystem.components.TeclaDeAtajo
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import com.avoqado.pos.designsystem.components.sinTeclasDeClic
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.Success
@@ -59,6 +64,13 @@ fun TerminalSelectionScreen(
     sinLista: String? = null,
     onReintentar: () -> Unit = {},
 ) {
+    // Teclas del POS de Windows (founder, 19-oct): F4 otra vez = la PRIMERA terminal de la lista (F4, F4 cobra en la
+    // terminal); Esc = Cancelar. Lo mismo que el clic. Números no: la pistola puede soltar un «1» suelto de un código
+    // cortado y eso mandaría un cobro (Codex r1 #2); una tecla F nunca la manda una pistola.
+    val primera = terminals.firstOrNull()?.takeIf { sinLista == null }
+    AtajoDeTeclado(Key.F4, activo = primera != null) { primera?.let { onTerminalSelected(it.terminalId) } }
+    AtajoDeTeclado(Key.Escape) { onCancel() }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -138,10 +150,11 @@ fun TerminalSelectionScreen(
                     .widthIn(max = 400.dp),
                 verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
             ) {
-                items(terminals) { terminal ->
+                itemsIndexed(terminals) { i, terminal ->
                     TerminalCard(
                         terminal = terminal,
                         onClick = { onTerminalSelected(terminal.terminalId) },
+                        tecla = if (i == 0) "F4" else null,
                     )
                 }
             }
@@ -151,6 +164,7 @@ fun TerminalSelectionScreen(
 
         TextButton(onClick = onCancel) {
             Text("Cancelar")
+            TeclaDeAtajo("Esc", Modifier.padding(start = AvoqadoTheme.spacing.sm))
         }
     }
 }
@@ -200,6 +214,7 @@ private fun AvisoDeOtroCobroLinea(aviso: AvisoDeOtroCobro, onClick: () -> Unit) 
 private fun TerminalCard(
     terminal: OnlineTerminal,
     onClick: () -> Unit,
+    tecla: String? = null,
 ) {
     Row(
         modifier = Modifier
@@ -210,6 +225,7 @@ private fun TerminalCard(
                 color = MaterialTheme.colorScheme.outline,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
             )
+            .sinTeclasDeClic(LocalEsEscritorio.current)
             .clickable(onClick = onClick)
             .padding(AvoqadoTheme.spacing.lg),
         verticalAlignment = Alignment.CenterVertically,
@@ -234,6 +250,7 @@ private fun TerminalCard(
             )
         }
 
+        if (tecla != null) TeclaDeAtajo(tecla)
         Icon(
             Icons.Filled.Wifi,
             contentDescription = "Conectada",

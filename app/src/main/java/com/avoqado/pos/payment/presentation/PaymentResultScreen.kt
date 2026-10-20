@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.painterResource
@@ -54,7 +55,11 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.R
 import com.avoqado.pos.core.util.formatMoney
 
+import com.avoqado.pos.designsystem.components.AtajoDeTeclado
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.TeclaDeAtajo
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import com.avoqado.pos.designsystem.components.sinTeclasDeClic
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
@@ -142,6 +147,9 @@ fun PaymentResultScreen(
         }
     }
 
+    // POS de Windows (founder, 19-oct): Esc = «Venta nueva». Con un diálogo de recibo abierto, Esc es del diálogo.
+    AtajoDeTeclado(Key.Escape) { onDone() }
+
     androidx.compose.material3.Scaffold(
         topBar = {
             Row(
@@ -155,15 +163,18 @@ fun PaymentResultScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "Venta nueva",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textDecoration = TextDecoration.Underline,
-                    modifier = Modifier
-                        .clickable(onClick = onDone)
-                        .padding(vertical = AvoqadoTheme.spacing.xs),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Venta nueva",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textDecoration = TextDecoration.Underline,
+                        modifier = Modifier
+                            .clickable(onClick = onDone)
+                            .padding(vertical = AvoqadoTheme.spacing.xs),
+                    )
+                    TeclaDeAtajo("Esc", Modifier.padding(start = AvoqadoTheme.spacing.sm))
+                }
                 if (onAddCustomer != null) {
                     // Con cliente ya puesto esto es una ETIQUETA, no un botón:
                     // subrayarlo e invitar al toque hacía pensar que faltaba
@@ -707,6 +718,7 @@ fun PaymentErrorView(
         PrimaryButton(
             text = "Reintentar",
             onClick = onRetry,
+            modifier = Modifier.sinTeclasDeClic(LocalEsEscritorio.current),
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))

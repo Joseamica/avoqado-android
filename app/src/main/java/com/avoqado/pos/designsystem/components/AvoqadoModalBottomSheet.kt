@@ -45,6 +45,7 @@ fun AvoqadoModalBottomSheet(
     dragHandle: @Composable (() -> Unit)? = { BottomSheetDefaults.DragHandle() },
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    BarreraDeAtajos()
     if (!LocalEsEscritorio.current) {
         ModalBottomSheet(
             onDismissRequest = onDismissRequest,

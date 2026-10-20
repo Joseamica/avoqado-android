@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.cart
 
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -133,6 +134,8 @@ fun CartPanelView(
     primaryActionLabel: String? = null,
     /** false mientras se emite un vale (Codex final #3): el botón dice «Emitiendo vale…» y no se toca. */
     primaryActionEnabled: Boolean = true,
+    /** Atajo de teclado de Cobrar en el POS de Windows («F12»); null = sin etiqueta. */
+    teclaCobrar: String? = null,
 ) {
     val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
     val sectionOuterPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
@@ -254,6 +257,7 @@ fun CartPanelView(
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                                if (showFulfillmentMenu) BarreraDeAtajos()   // menú abierto: F12 espera
                                 DropdownMenu(
                                     expanded = showFulfillmentMenu,
                                     onDismissRequest = { showFulfillmentMenu = false },
@@ -283,6 +287,7 @@ fun CartPanelView(
                                         .size(20.dp)
                                         .clickable { showSectionMenu = true },
                                 )
+                                if (showSectionMenu) BarreraDeAtajos()   // menú abierto: F12 espera
                                 DropdownMenu(
                                     expanded = showSectionMenu,
                                     onDismissRequest = { showSectionMenu = false },
@@ -437,6 +442,7 @@ fun CartPanelView(
                         onClick = onCharge,
                         modifier = Modifier.weight(1f),
                         enabled = primaryActionEnabled,
+                        tecla = teclaCobrar,
                     )
                 }
             }

@@ -81,6 +81,16 @@ class TablesCobroDelPlanoTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // D3, 19-oct: la pre-cuenta salía sin la nota del artículo (el plano y la cuenta la olvidaban por igual).
+    @Test fun `precuenta del plano lleva la nota del articulo`() = runTest {
+        val cuenta = cuentaConCargoYExtra()
+        val (subject, receipt) = impresorDePlano(cuenta.copy(items = listOf(cuenta.items[0].copy(notes = "sin aceite"), cuenta.items[1])))
+        try {
+            subject.printPreBill(table); advanceUntilIdle()
+            assertEquals(listOf("sin aceite", null), receipt.captured.items.map { it.note })
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `precuenta del plano conserva extra sin sumarlo dos veces`() = runTest {
         val (subject, receipt) = impresorDePlano(cuentaConCargoYExtra())
         try {

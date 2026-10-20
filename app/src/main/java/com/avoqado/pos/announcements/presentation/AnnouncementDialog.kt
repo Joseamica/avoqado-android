@@ -1,5 +1,6 @@
 package com.avoqado.pos.announcements.presentation
 
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -44,6 +45,7 @@ fun AnnouncementDialog(
 
     LaunchedEffect(announcementId) { viewModel.abrir(announcementId) }
 
+    BarreraDeAtajos()   // POS de Windows: con el anuncio encima, las teclas de atajo esperan
     Dialog(
         onDismissRequest = {
             viewModel.limpiar()

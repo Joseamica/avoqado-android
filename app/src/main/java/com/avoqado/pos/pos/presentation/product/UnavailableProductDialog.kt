@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.product
 
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -31,6 +32,7 @@ fun UnavailableProductDialog(
     val shortages = product.insufficientIngredients.orEmpty()
         .ifEmpty { product.limitingIngredient?.let { listOf(it) }.orEmpty() }
 
+    BarreraDeAtajos()   // POS de Windows: con el diálogo encima, F12/F3 esperan
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {

@@ -541,9 +541,10 @@ class TableOrderCuentaGarantizadaTest {
     @Test fun `ambos paneles reales muestran el saldo de VM y llaman al handler probado`() {
         val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt"
         val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
-        assertEquals(2, source.componentsCount("payableTotalCents = viewModel.payableTotalCents"))
+        // 19-oct: el panel recibe el saldo completo del VM (Total/Ya pagado/Por pagar); Pagar sigue con lo que se cobra.
+        assertEquals(2, source.componentsCount("saldo = viewModel.saldoDeMesa,"))
         assertTrue(source.contains("prepararPagoDeMesa(viewModel, onReady)"))
-        assertTrue(source.contains("val subtotalCents = payableTotalCents"))
+        assertTrue(source.contains("val subtotalCents = saldo.porPagarCents"))
         assertFalse(source.contains("checkTotalCents(check) + pendingTotalCents + queuedCents"))
     }
 
