@@ -70,6 +70,7 @@ import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.theme.AvoqadoLoaderGreen
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.payment.presentation.tipRows
 import androidx.compose.foundation.border
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -954,26 +955,33 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
         // Los botones ocupan el ANCHO de la pantalla. Antes medían ~115px en
         // una pantalla de 1280 y quedaban pegados entre sí: un blanco difícil
         // para alguien que toca de paso, y errarle cuesta dinero al mesero.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
-        ) {
-            c.options.forEach { option ->
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(150.dp)
-                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-                        .then(acento()?.let { Modifier.border(3.dp, it, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg)) } ?: Modifier)
-                        .clickable { onTip(option.tipCents) },
+        // Hasta 6 porcentajes: una fila (≤ 4) o dos filas parejas, con tarjetas más bajas (120 dp en vez de 150).
+        val filas = tipRows(c.options)
+        val alto = if (filas.size > 1) 120.dp else 150.dp
+        Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
+            filas.forEach { fila ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
                 ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text("${option.percent}%", fontSize = CdActionMain, fontWeight = FontWeight.Bold)
-                        Text(money(option.tipCents), fontSize = CdActionSub, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    fila.forEach { option ->
+                        Card(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(alto)
+                                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                                .then(acento()?.let { Modifier.border(3.dp, it, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg)) } ?: Modifier)
+                                .clickable { onTip(option.tipCents) },
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text("${option.percent}%", fontSize = CdActionMain, fontWeight = FontWeight.Bold)
+                                Text(money(option.tipCents), fontSize = CdActionSub, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
             }
