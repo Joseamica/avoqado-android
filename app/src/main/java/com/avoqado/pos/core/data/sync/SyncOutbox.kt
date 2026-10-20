@@ -32,6 +32,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -263,6 +264,24 @@ class SyncOutbox @Inject constructor(
      */
     /** El estado en vivo de un intent (lo mira la pantalla de resultado de un cobro encolado). */
     fun observarEstado(id: String): kotlinx.coroutines.flow.Flow<String?> = dao.observarEstado(id)
+
+    /**
+     * El id que el servidor le dio al pago de un `PAY_CASH` ya confirmado (ACKED) de ESTA sucursal: con él se liga el
+     * cliente a SU venta. Sin él (no ha subido, rechazado, otra sucursal) es null y no se liga. Calca
+     * `CashPaymentRepository.pagoDelServidor`; el ack trae `result.paymentId` y la conciliación Q15 lo repite.
+     */
+    suspend fun pagoDelServidor(intentId: String): String? {
+        val venueId = secureStorage.venueId ?: return null
+        val fila = dao.findForVenue(venueId, intentId) ?: return null
+        if (fila.status != SyncIntentEntity.STATUS_ACKED) return null
+        fun paymentIdDe(resultado: String?): String? = resultado?.let {
+            runCatching {
+                (json.parseToJsonElement(it).jsonObject["paymentId"] as? JsonPrimitive)
+                    ?.takeIf { p -> p.isString }?.content?.takeIf { id -> id.isNotBlank() }
+            }.getOrNull()
+        }
+        return paymentIdDe(fila.resultJson) ?: paymentIdDe(fila.q15ResultJson)
+    }
 
     suspend fun enqueue(
         venueId: String,
