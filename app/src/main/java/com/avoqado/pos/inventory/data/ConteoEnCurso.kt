@@ -199,11 +199,16 @@ object ConteoEnCurso {
 
     fun avanceTexto(contadas: Int, total: Int): String = "$contadas de $total contados"
 
-    /** Segunda línea de la fila de la lista. Con resumen del servidor y en progreso: cuántas van. */
+    /**
+     * Segunda línea de la fila de la lista. Con resumen del servidor y en progreso: cuántas van. Si el servidor dejó
+     * líneas sin aplicar por Shopify (C12), se dice aquí también: «Completado» a secas se leería como todo aplicado.
+     */
     fun lineaDeEstado(count: StockCount): String {
         val s = count.summary
-        return if (count.status == "IN_PROGRESS" && s != null) "${count.statusDisplay} · ${avanceTexto(s.countedCount, s.itemCount)}"
+        val base = if (count.status == "IN_PROGRESS" && s != null) "${count.statusDisplay} · ${avanceTexto(s.countedCount, s.itemCount)}"
         else "${count.statusDisplay} - ${Plurales.articulos(count.itemCount)}"
+        val noAplicadas = count.items.count { it.noSeAplico }
+        return if (noAplicadas > 0) "$base · ${ConteoNoAplicado.enLaLista(noAplicadas)}" else base
     }
 
     /**

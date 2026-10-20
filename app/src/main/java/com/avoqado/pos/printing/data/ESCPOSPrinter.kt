@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.data
 
+import com.avoqado.pos.inventory.data.ConteoNoAplicado
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.MonoRaster
@@ -971,11 +972,15 @@ class ESCPOSPrinter(
         for (r in c.renglones) {
             printTwoColumns(r.nombre, r.diferencia)
             printLine("  Esperado ${r.esperado} · Contado ${r.contado}")
+            // C12: la diferencia de esta línea NO movió el stock (Shopify). Quien firma tiene que saberlo.
+            if (r.noAplicado) printLine("  ${ConteoNoAplicado.ETIQUETA}")
         }
         printDivider()
         printLine("Contados: ${c.renglones.size} de ${c.total}")
         printLine("Con diferencia: ${c.renglones.count { !it.cuadra }}")
         if (c.sinContar > 0) printLine("Sin contar: ${c.sinContar}")
+        val noAplicadas = c.renglones.count { it.noAplicado }
+        if (noAplicadas > 0) printLine("No se aplicaron: $noAplicadas")
         printDoubleDivider()
         feedLines(2)
         printLine("Contó: ______________________")
