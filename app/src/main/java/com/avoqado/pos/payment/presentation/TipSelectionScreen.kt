@@ -155,8 +155,9 @@ fun TipSelectionSheet(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
             // Hasta 6 porcentajes: una fila (≤ 4) o dos filas parejas
+            val filas = tipRows(tipSuggestions)
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                tipRows(tipSuggestions).forEach { fila ->
+                filas.forEach { fila ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
@@ -200,6 +201,8 @@ fun TipSelectionSheet(
                                 }
                             }
                         }
+                        // Con 5, la fila corta se completa con huecos: todas las tarjetas miden lo mismo.
+                        repeat(filas[0].size - fila.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }

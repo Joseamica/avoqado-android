@@ -69,6 +69,42 @@ class PropinaDelClienteEnLaEscenaTest {
     /** Alto de la tarjeta de cada porcentaje, en dp. */
     private fun ComposeUiTest.alto(p: Int) = onNodeWithText("$p%").getBoundsInRoot().let { it.bottom.value - it.top.value }
 
+    /** Ancho e izquierda de la tarjeta de cada porcentaje, en dp. */
+    private fun ComposeUiTest.ancho(p: Int) = onNodeWithText("$p%").getBoundsInRoot().let { it.right.value - it.left.value }
+    private fun ComposeUiTest.izquierda(p: Int) = onNodeWithText("$p%").getBoundsInRoot().left.value
+
+    /** Con 5 la fila de abajo lleva 2: miden lo mismo que las 3 de arriba y quedan bajo las dos primeras. */
+    private fun ComposeUiTest.cincoDelMismoAncho() {
+        assertTrue(arriba(25) > arriba(10), "montaje: dos filas")
+        listOf(15, 20, 25, 30).forEach { assertEquals(ancho(10), ancho(it), 0.5f, "ancho de $it% contra 10%") }
+        assertEquals(izquierda(10), izquierda(25), 0.5f, "25% bajo 10%")
+        assertEquals(izquierda(15), izquierda(30), 0.5f, "30% bajo 15%")
+    }
+
+    private val cinco = listOf(10, 15, 20, 25, 30)
+
+    @Test fun `con cinco porcentajes las tarjetas del cliente miden lo mismo`() = runDesktopComposeUiTest(1280, 800) {
+        val state = CustomerDisplayState()
+        state.show(CustomerContent.Tip(total, cinco.map { TipOption(it, tipCentsForPercent(total, it)) }, selectedTipCents = null))
+        setContent { MaterialTheme { CustomerDisplayScreen(state = state, onRating = {}, onTip = {}) } }
+        cincoDelMismoAncho()
+    }
+
+    @Test fun `con cinco porcentajes las tarjetas del cajero miden lo mismo`() = runDesktopComposeUiTest(360, 640) {
+        setContent {
+            CompositionLocalProvider(LocalContext provides contexto, LocalConfiguration provides contexto.resources.configuration,
+                LocalView provides View(contexto)) {
+                MaterialTheme {
+                    TipSelectionSheet(
+                        amountCents = total, tipBaseCents = total, tipSuggestions = cinco,
+                        onTipSelected = {}, onSkip = {}, onDismiss = {},
+                    )
+                }
+            }
+        }
+        cincoDelMismoAncho()
+    }
+
     private fun SemanticsNodeInteraction.lineas(): Int {
         val resultados = mutableListOf<TextLayoutResult>()
         fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action!!.invoke(resultados)

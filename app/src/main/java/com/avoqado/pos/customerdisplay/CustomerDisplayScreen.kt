@@ -983,6 +983,8 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
                             }
                         }
                     }
+                    // Con 5, la fila corta se completa con huecos: todas las tarjetas miden lo mismo.
+                    repeat(filas[0].size - fila.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
