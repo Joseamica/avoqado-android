@@ -480,6 +480,9 @@ class CartViewModel @Inject constructor(
             itemIds = cart.items.map { it.id }.toSet(),
             totalCents = cart.totalCents,
         )
+        // Si es la orden de la sesión de vales, ya tiene un abono aunque su copia no lo diga: que no vuelva a proyectarse
+        // aunque luego se vacíe el carrito (D3, Codex r1).
+        areaTicketRepository.session.marcarConAbono(id)
         Log.d("🛒", "Split de mostrador a medias: la venta sigue contra la orden $id")
     }
 
@@ -1641,6 +1644,15 @@ class CartViewModel @Inject constructor(
     }
 
     private fun replaceAreaTicketLines(checkout: AreaTicketCheckout) {
+        // 🔴 DINERO. Una sesión con abonos ya no se proyecta al carrito. Tras el primer abono el carrito quedó en «Saldo
+        // pendiente» (`aplicarCobroConfirmado`), y la sesión sigue viva porque el servidor no deja cancelar una venta con
+        // abono (409). Restaurarla al volver a la pantalla metía todos los vales encima del saldo y el total se inflaba
+        // (D3, Codex r7). La copia del aparato puede no saber del abono si su relectura falló: por eso también cuenta que el
+        // carrito continúe ESA orden y que el carrito ya la haya anotado (`marcarConAbono`). iOS no lo necesita: conserva
+        // los vales y cobra el saldo del servidor.
+        val conAbonos = checkout.status == "PARTIALLY_PAID" || (checkout.order?.paidAmount?.moneyToCents() ?: 0) > 0
+        val continuaEsaOrden = checkout.order?.id?.let { it == _pendingSplitOrder.value?.orderId } == true
+        if (conAbonos || continuaEsaOrden) return
         val ticketRows = checkout.tickets.flatMap { ticket ->
             ticket.lines.map { line ->
                 val detail = buildList {
