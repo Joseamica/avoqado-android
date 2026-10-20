@@ -18,12 +18,14 @@ class Q15HistorialViewModelTest {
     private val dao=mockk<PendingPaymentDao>(relaxed=true)
     private val storage=mockk<SecureStorage>(relaxed=true)
     private val session=mockk<TableSession>(relaxed=true)
+    private val staff=mockk<com.avoqado.pos.pos.data.StaffRepository>(relaxed=true)
+    @Before fun personalPorDefecto() { coEvery { staff.getActiveStaff(any()) } returns Result.success(emptyList()) }
     private var venue="FULLTEST-A";private var role="MANAGER";private var epoch=1L
     private fun row(id:String,reason:String="DIFERENCIA_DE_COBRO",state:String="SYNCED")=RevisionDelCobroRecord("PAYMENT",id,"FULLTEST-A",state,"capture",null,null,reason,10,null,null,null,"o1")
     private fun vm():HistorialDelCobroViewModel {
         every { storage.venueId } answers { venue };every { storage.userId } returns "staff";every { storage.userRole } answers { role }
         every { session.contextoActual() } answers { epoch }
-        return HistorialDelCobroViewModel(dao,storage,RoleManager(storage),session)
+        return HistorialDelCobroViewModel(dao,storage,RoleManager(storage),session,staff)
     }
     @Test fun pagina_y_cursor_conservan_total_y_no_cargan_todo()=runTest {
         coEvery { dao.contarRevisionesQ15("FULLTEST-A",false,"") } returns 121
@@ -88,11 +90,75 @@ class Q15HistorialViewModelTest {
         val igual=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15ResultJson="""{"paymentId":"sp1","amountCents":10000,"tipCents":500}"""))
         assertFalse(igual.any { it.startsWith("Total al cobrar") })
     }
+    // Mesa sin red (19-oct, Codex r2): el gerente ve el saldo esperado contra el del servidor y cuánto se cobró de más (igual iOS).
+    @Test fun detalle_muestra_saldo_de_la_mesa_y_lo_cobrado_de_mas() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro("FULLTEST-A","p1",null,10000,0,localOrderId="L",restanteEsperadoCents=0))
+        val resultado="""{"paymentId":"sp1","orderId":"o1","amountCents":10000,"tipCents":0,"camposDiferentes":["saldoDeLaMesa"],"camposNoComprobados":[],"saldoEsperadoCents":0,"saldoEnElServidorCents":0,"cobradoDeMasCents":2000}"""
+        val detail=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15InitialResultJson=resultado,q15ResultJson=resultado))
+        assertTrue(detail.toString(),detail.contains("Saldo esperado $0.00 · saldo en el servidor $0.00"))
+        assertTrue(detail.toString(),detail.contains("Se cobró de más: $20.00"))
+        assertTrue(detail.toString(),detail.contains("Campos distintos: saldo de la mesa"))
+    }
     @Test fun detalle_legacy_o_campo_ausente_nunca_muestra_cero_como_prueba() {
         val r=row("p1").copy(q15CaptureJson=null,q15ResultJson="""{"paymentId":"sp1"}""")
         val detail=vm().detalle(r)
         assertTrue(detail.any {it.contains("Captura original: sin evidencia")})
         assertTrue(detail.any {it.contains("Sin confirmar")})
         assertFalse(detail.any {it.contains("$0.00")})
+    }
+    // 16-oct (guías): el gerente veía «Método original: CASH · reparto FULLPAYMENT · tipo Sin confirmar · versión Sin confirmar»,
+    // «Revisado por cmv5dvge…» y el folio en UUID. Mismos textos que iOS.
+    @Test fun detalle_dice_metodo_y_reparto_en_espanol_sin_relleno() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro(
+            "FULLTEST-A","p1","o1",10000,0,splitType="FULLPAYMENT",method="CASH"))
+        val r=row("p1").copy(q15CaptureJson=capture,q15ResultJson="""{"paymentId":"sp1","amountCents":10000,"tipCents":0,"method":"CREDIT_CARD","splitType":"EQUALPARTS","tenderTypeId":"tt-1"}""")
+        val detail=vm().detalle(r)
+        assertTrue(detail.toString(),detail.contains("Método original: Efectivo · cuenta completa"))
+        assertTrue(detail.toString(),detail.contains("Método registrado: Tarjeta de crédito · partes iguales · tipo de pago personalizado"))
+        assertFalse(detail.toString(),detail.any { it.contains("CASH") || it.contains("FULLPAYMENT") || it.contains("EQUALPARTS") || it.contains("tt-1") })
+        assertFalse(detail.toString(),detail.any { it.startsWith("Método") && it.contains("Sin confirmar") })
+    }
+    @Test fun revisado_por_dice_el_nombre_y_nunca_el_id()=runTest {
+        coEvery { staff.getActiveStaff(any()) } returns Result.success(listOf(com.avoqado.pos.pos.data.StaffMember("staff-9","Ana","López")))
+        val subject=vm();subject.cargar();advanceUntilIdle()
+        assertEquals("Ana López",subject.revisor(row("p1").copy(q15ReviewedBy="staff-9")))
+        assertEquals("otro usuario",subject.revisor(row("p1").copy(q15ReviewedBy="cmv5dvge6000ewah0la9zdplv")))
+        // Codex r1: la lista se pide de fondo (sin aviso de permisos) y una sola vez, no en cada letra de la búsqueda.
+        subject.cambiarFiltro(false,"a");subject.cambiarFiltro(false,"ab");subject.cambiarFiltro(true,"ab");advanceUntilIdle()
+        coVerify(exactly=1) { staff.getActiveStaff(true) }
+    }
+    @Test fun nombres_del_negocio_anterior_no_se_publican_ni_se_quedan()=runTest {
+        val tarde=CompletableDeferred<Result<List<com.avoqado.pos.pos.data.StaffMember>>>()
+        coEvery { staff.getActiveStaff(any()) } coAnswers { tarde.await() }
+        val subject=vm();subject.cargar();runCurrent()
+        venue="FULLTEST-B";epoch=2
+        tarde.complete(Result.success(listOf(com.avoqado.pos.pos.data.StaffMember("staff-9","Ana","López"))));advanceUntilIdle()
+        assertTrue(subject.nombres.value.isEmpty())
+        subject.cargar();advanceUntilIdle()
+        coVerify(exactly=2) { staff.getActiveStaff(true) } // el negocio nuevo pide SU lista
+    }
+    @Test fun tipo_de_pago_personalizado_sin_metodo_no_dice_sin_confirmar() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro(
+            "FULLTEST-A","p1","o1",10000,0,splitType="FULLPAYMENT",tenderTypeId="tt-1",tenderRevision=1))
+        val detail=vm().detalle(row("p1").copy(q15CaptureJson=capture))
+        assertTrue(detail.toString(),detail.contains("Método original: Tipo de pago personalizado · cuenta completa"))
+    }
+    @Test fun sin_lista_de_personal_no_muestra_el_id()=runTest {
+        coEvery { staff.getActiveStaff(any()) } returns Result.failure(java.io.IOException("sin red"))
+        val subject=vm();subject.cargar();advanceUntilIdle()
+        assertEquals("otro usuario",subject.revisor(row("p1").copy(q15ReviewedBy="staff-9")))
+    }
+    @Test fun folio_corto_sigue_encontrandose_con_la_busqueda() {
+        val id="a1b2c3d4-e5f6-7890-abcd-ef0123456789"
+        val folio=vm().folio(row(id))
+        assertEquals("a1b2c3d4",folio)
+        assertTrue(id.contains(folio)) // la búsqueda es instr(id, texto): lo que se ve, se encuentra
+    }
+    // Recorrido en la D3 (19-oct): «Folio caf6c0a3 · cuenta caf6c0a3-ecd5-…» repetía el código largo en mostrador.
+    @Test fun referencia_no_repite_el_folio_y_la_cuenta_va_corta() {
+        val id="caf6c0a3-ecd5-44c9-8fcd-60f32bb83abb"
+        assertEquals("Folio caf6c0a3",vm().referencia(row(id).copy(capturedOrderRef=id)))
+        assertEquals("Folio caf6c0a3",vm().referencia(row(id).copy(capturedOrderRef=null)))
+        assertEquals("Folio caf6c0a3 · cuenta cmvffzy9",vm().referencia(row(id).copy(capturedOrderRef="cmvffzy9b00djwa3zmbgnnfkp")))
     }
 }

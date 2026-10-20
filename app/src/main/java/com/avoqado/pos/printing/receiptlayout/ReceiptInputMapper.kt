@@ -31,7 +31,9 @@ object ReceiptInputMapper {
                 unitPriceCents = it.unitPrice.toLong(),
                 totalPriceCents = it.totalPrice.toLong(),
                 modifiers = it.modifiers,
-                note = it.note,
+                // Una nota de varias líneas imprimía «sin salsin aceite»: el saneado del papel BORRA los saltos (igual que el
+                // servidor). Aquí los saltos y tabuladores se vuelven UN espacio, antes de llegar al papel. Igual que iOS.
+                note = it.note?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { nota -> nota.isNotEmpty() },
                 isCortesia = it.isCortesia,
                 weightSummary = it.weightSummary,
                 areaSourceLabel = it.areaSourceLabel,

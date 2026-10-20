@@ -99,6 +99,7 @@ internal const val SEED_SYNC_SEQUENCE_SQL = "INSERT OR IGNORE INTO pos_sync_sequ
 internal const val READ_SYNC_SEQUENCE_SQL = "SELECT last_seq FROM pos_sync_sequence_state WHERE id = 1"
 internal const val ADVANCE_SYNC_SEQUENCE_SQL = "UPDATE pos_sync_sequence_state SET last_seq = MAX(last_seq, :floor) WHERE id = 1"
 internal const val FIND_SYNC_INTENT_SQL = "SELECT * FROM pos_sync_intents WHERE id = :id"
+internal const val FIND_SYNC_INTENT_FOR_VENUE_SQL = "SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND id = :id"
 internal const val MAX_SYNC_INTENT_SQL = "SELECT COALESCE(MAX(seq), 0) FROM pos_sync_intents"
 internal const val RESOLVE_SYNC_INTENT_SQL = "UPDATE pos_sync_intents SET status = :status, error_code = :errorCode, message = :message, result_json = :resultJson WHERE id = :id"
 
@@ -108,7 +109,14 @@ data class SyncSequenceStateEntity(
     @ColumnInfo(name = "last_seq") val lastSeq: Long,
 )
 
-internal const val Q16_CAPTURED_UNRESOLVED_REFS_SQL = "SELECT capturedOrderRef FROM pending_payments WHERE venueId=:venueId AND capturedOrderRef IN (:refs) AND syncStatus!='SYNCED' UNION SELECT capturedOrderRef FROM pos_sync_intents WHERE venue_id=:venueId AND capturedOrderRef IN (:refs) AND type='PAY_CASH' AND status!='ACKED' LIMIT 100"
+/**
+ * 19-oct (mesa sin red retenida): un PAY_CASH de ESTA cola, en espera normal (PENDING) y con su captura, ya no retiene a su
+ * OPEN/ADD: va detrás por FIFO y la mesa se esperaba a sí misma para siempre. Siguen reteniendo el rechazado, el que está en
+ * vuelo (HELD) y el historial sin captura (dudoso). La diferencia de precio se ve al confirmar el cobro (`ConciliacionDelCobro`).
+ */
+internal const val Q16_COBRO_QUE_RETIENE = "status!='ACKED' AND NOT (status='PENDING' AND q15CaptureJson IS NOT NULL)"
+
+internal const val Q16_CAPTURED_UNRESOLVED_REFS_SQL = "SELECT capturedOrderRef FROM pending_payments WHERE venueId=:venueId AND capturedOrderRef IN (:refs) AND syncStatus!='SYNCED' UNION SELECT capturedOrderRef FROM pos_sync_intents WHERE venue_id=:venueId AND capturedOrderRef IN (:refs) AND type='PAY_CASH' AND $Q16_COBRO_QUE_RETIENE LIMIT 100"
 
 @Dao
 interface SyncIntentDao {
@@ -129,6 +137,9 @@ interface SyncIntentDao {
 
     @Query(FIND_SYNC_INTENT_SQL)
     suspend fun findById(id: String): SyncIntentEntity?
+
+    @Query(FIND_SYNC_INTENT_FOR_VENUE_SQL)
+    suspend fun findForVenue(venueId: String, id: String): SyncIntentEntity?
 
     /** Debe resolver y conservar el piso en el mismo commit; el replay notifica después. */
     @androidx.room.Transaction
@@ -168,6 +179,12 @@ interface SyncIntentDao {
     suspend fun registrarResultadoQ15(venueId: String, id: String, motivo: String?, resultadoJson: String?, ahora: Long): Int
     @Query(Q15_INTENT_HOLD_SQL)
     suspend fun retenerIntentQ15(venueId: String, id: String, motivo: String, ahora: Long): Int
+
+    @Query(Q16_INTENT_RELEASE_SQL)
+    suspend fun soltarRetenidoSqlQ16(venueId: String, id: String): Int
+    /** Bajo el mismo candado que las capturas (como `soltarVentaSinRedQ16` de mostrador). */
+    suspend fun soltarRetenidoQ16(venueId: String, id: String): Int =
+        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(venueId) { soltarRetenidoSqlQ16(venueId, id) }
 
     @Query(INTENTS_SIN_RESOLVER_SQL)
     suspend fun sinResolver(venueId: String): List<IntentSinResolver>
@@ -309,4 +326,4 @@ interface SyncIntentDao {
     suspend fun deleteOldAcked(olderThan: Long)
 }
 
-internal const val Q16_VENUE_CAPTURE_UNRESOLVED_SQL = "SELECT (EXISTS(SELECT 1 FROM pending_payments WHERE venueId=:venueId AND syncStatus!='SYNCED' LIMIT 1) OR EXISTS(SELECT 1 FROM pos_sync_intents WHERE venue_id=:venueId AND type='PAY_CASH' AND status!='ACKED' LIMIT 1))"
+internal const val Q16_VENUE_CAPTURE_UNRESOLVED_SQL = "SELECT (EXISTS(SELECT 1 FROM pending_payments WHERE venueId=:venueId AND syncStatus!='SYNCED' LIMIT 1) OR EXISTS(SELECT 1 FROM pos_sync_intents WHERE venue_id=:venueId AND type='PAY_CASH' AND $Q16_COBRO_QUE_RETIENE LIMIT 1))"

@@ -32,7 +32,7 @@ class Q15HistorialContextoTest {
         every { storage.userId } answers { staff }
         every { storage.userRole } answers { role }
         every { session.contextoActual() } answers { epoch }
-        return HistorialDelCobroViewModel(dao,storage,RoleManager(storage),session)
+        return HistorialDelCobroViewModel(dao,storage,RoleManager(storage),session,mockk<com.avoqado.pos.pos.data.StaffRepository>(relaxed=true).also { coEvery { it.getActiveStaff(any()) } returns Result.success(emptyList()) })
     }
     private fun abrirB() { venue="FULLTEST-B";staff="gerente-B";epoch=2 }
     private fun responder(tenant:String,id:String) {

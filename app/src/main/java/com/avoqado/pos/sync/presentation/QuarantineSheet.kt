@@ -57,6 +57,7 @@ fun QuarantineSheet(
     val revisadas by historial.revisadas.collectAsState()
     val busqueda by historial.busqueda.collectAsState()
     val leyendoHistorial by historial.cargando.collectAsState()
+    val nombres by historial.nombres.collectAsState() // se LEE en «Revisado por»: así repinta al llegar los nombres
     val mensajeHistorial by historial.mensaje.collectAsState()
     val items by viewModel.items.collectAsState()
     val failedPayments by viewModel.failedPayments.collectAsState()
@@ -101,8 +102,9 @@ fun QuarantineSheet(
 
             if(historial.canRead) {
                 Row(horizontalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                    com.avoqado.pos.designsystem.components.PrimaryButton(text="Por revisar",onClick={historial.cambiarFiltro(false,busqueda)},enabled=revisadas)
-                    com.avoqado.pos.designsystem.components.PrimaryButton(text="Historial",onClick={historial.cambiarFiltro(true,busqueda)},enabled=!revisadas)
+                    // La pestaña abierta se ve SELECCIONADA (antes era un botón deshabilitado: parecía activa la otra).
+                    androidx.compose.material3.FilterChip(selected=!revisadas,onClick={historial.cambiarFiltro(false,busqueda)},label={Text("Por revisar")})
+                    androidx.compose.material3.FilterChip(selected=revisadas,onClick={historial.cambiarFiltro(true,busqueda)},label={Text("Historial")})
                 }
                 Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
                 com.avoqado.pos.designsystem.components.SearchPillField(query=busqueda,onQueryChange={historial.cambiarFiltro(revisadas,it)},placeholder="Buscar folio o cuenta")
@@ -112,7 +114,7 @@ fun QuarantineSheet(
 
             if(historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty()))) {
                 Text(
-                    "No hay operaciones pendientes de revisión.",
+                    if(revisadas) "No hay cobros revisados." else "No hay operaciones pendientes de revisión.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.lg),
@@ -124,10 +126,10 @@ fun QuarantineSheet(
                             .background(MaterialTheme.colorScheme.surfaceVariant).padding(AvoqadoTheme.spacing.md),
                             verticalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.xs)) {
                             Text(historial.motivo(row),style=MaterialTheme.typography.titleSmall,fontWeight=FontWeight.SemiBold)
-                            Text("Folio ${row.id} · cuenta ${row.capturedOrderRef ?: "Sin confirmar"}",style=MaterialTheme.typography.labelSmall)
+                            Text(historial.referencia(row),style=MaterialTheme.typography.labelSmall)
                             historial.detalle(row).forEach {Text(it,style=MaterialTheme.typography.bodySmall)}
                             Text("Detectado ${formatTime(row.q15DetectedAt)}",style=MaterialTheme.typography.labelSmall)
-                            row.q15ReviewedAt?.let {Text("Revisado por ${row.q15ReviewedBy ?: "Sin confirmar"} · ${formatTime(it)}",style=MaterialTheme.typography.labelSmall)}
+                            row.q15ReviewedAt?.let {Text("Revisado por ${historial.revisor(row,nombres)} · ${formatTime(it)}",style=MaterialTheme.typography.labelSmall)}
                             if(historial.puedeMarcar(row)) {
                                 com.avoqado.pos.designsystem.components.PrimaryButton(text="Marcar revisado",onClick={historial.marcarRevisado(row)})
                             } else if(row.q15ReviewedAt==null) {Text("El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar.",style=MaterialTheme.typography.bodySmall)}

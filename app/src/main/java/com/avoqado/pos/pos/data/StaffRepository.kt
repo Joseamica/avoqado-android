@@ -71,13 +71,18 @@ class StaffRepository @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
-    suspend fun getActiveStaff(): Result<List<StaffMember>> {
+    /**
+     * @param deFondo la lista es un dato auxiliar (p. ej. el nombre de quien revisó un cobro): un 403 no saca el aviso
+     * de permisos ni pide PIN, y cualquier «no» del servidor cae a la copia guardada, igual que sin red.
+     */
+    suspend fun getActiveStaff(deFondo: Boolean = false): Result<List<StaffMember>> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
 
         return try {
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/staff?active=true")
                 .get()
+                .apply { if (deFondo) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1") }
                 .build()
 
             val (code, body) = withContext(Dispatchers.IO) {
@@ -92,6 +97,7 @@ class StaffRepository @Inject constructor(
                 Result.success(decoded.data.filter { it.active })
             } else {
                 Log.e("👥", "Fetch staff failed: $code - $body")
+                if (deFondo) throw java.io.IOException("staff $code") // al catch: misma copia guardada que sin red
                 Result.failure(Exception("Error al cargar staff ($code)"))
             }
         } catch (e: Exception) {
