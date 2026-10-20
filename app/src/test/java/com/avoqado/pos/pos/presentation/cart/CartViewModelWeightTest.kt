@@ -235,8 +235,11 @@ class CartViewModelWeightTest {
         verify(exactly = 0) { checkout.tickets }
     }
 
+    // Codex r5: agregar un vale CAMBIA el servidor. Si la pantalla se va (cambiar de pestaña, girar la tablet) cuando el
+    // vale ya se pidió, el carrito lo termina igual —si no, el servidor quedaba con A+B y el carrito con A—, y el cobro
+    // espera hasta entonces.
     @Test
-    fun `P1 mientras se consulta un codigo el carrito lo sabe, y al terminar o cancelarse lo suelta`() = runTest {
+    fun `P1 si la pantalla se va con el vale ya pedido, el carrito lo recibe igual y el cobro espera hasta entonces`() = runTest {
         coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
         val respuesta = kotlinx.coroutines.CompletableDeferred<AreaTicketCheckout>()
         coEvery { areaTicketRepository.addTicket("9470000015") } coAnswers { respuesta.await() }
@@ -247,8 +250,27 @@ class CartViewModelWeightTest {
         assertTrue(vm.hayConsultasDeCodigo)
         consulta.cancel()
         runCurrent()
-        // Una cancelación (la pantalla se fue) no se traga como «Error»: el contador vuelve a cero.
-        assertTrue(consulta.isCancelled)
+        assertTrue("el servidor todavía no contesta: el cobro debe esperar", vm.hayConsultasDeCodigo)
+
+        val checkout = mockk<AreaTicketCheckout>(relaxed = true)
+        respuesta.complete(checkout)
+        runCurrent()
+        verify { checkout.tickets }
         assertFalse(vm.hayConsultasDeCodigo)
+    }
+
+    @Test
+    fun `si la pantalla se va antes de pedir el vale, no se pide y el cobro no espera`() = runTest {
+        val nuncaContesta = kotlinx.coroutines.CompletableDeferred<AreaTicketScanData>()
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } coAnswers { nuncaContesta.await() }
+        val vm = createViewModel()
+
+        val consulta = launch { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+        consulta.cancel()
+        runCurrent()
+
+        assertFalse(vm.hayConsultasDeCodigo)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
     }
 }

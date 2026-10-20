@@ -1605,7 +1605,12 @@ class CartViewModel @Inject constructor(
                     } else if (cobroAbierto) {
                         ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                     } else {
-                        val checkout = areaTicketRepository.addTicket(code)
+                        // Pedir el vale CAMBIA el servidor: una vez pedido se termina aunque la pantalla se vaya (cambiar
+                        // de pestaña, girar la tablet). Si no, el servidor quedaba con el vale y el carrito sin él, y el
+                        // cobro podía congelar un importe menor (Codex r5). Mientras, el contador sigue y el cobro espera.
+                        val checkout = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                            areaTicketRepository.addTicket(code)
+                        }
                         if (cobroAbierto) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                         replaceAreaTicketLines(checkout)
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
