@@ -365,6 +365,8 @@ fun CheckoutScreen(
     var createProductInitialName by remember { mutableStateOf("") }
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
+    // Un código leído se está consultando (catálogo, vale, tarjeta de cliente): el cobro espera (ver `proceedToPayment`).
+    var consultandoCodigo by remember { mutableStateOf(false) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
@@ -485,6 +487,10 @@ fun CheckoutScreen(
      * lo borraría después — el negocio regala el producto y la orden ni lo registra.
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
+        // Mientras se consulta un código leído, el cobro no se abre: lo leído entra ANTES de fotografiar el carrito, y un
+        // vale no queda en la sesión de vales sin cobrarse (pendientes, Codex r2 #1). Es una fracción de segundo; el
+        // siguiente «Cobrar» ya abre. Todos los caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
+        if (consultandoCodigo) return
         if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
             savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
             return
@@ -1200,9 +1206,14 @@ fun CheckoutScreen(
     val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
         if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
+        consultandoCodigo = true
         checkoutScope.launch {
             val entra = { codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing) }
-            val result = cartViewModel.resolveScannedBarcode(barcode, puedeTocarElCarrito = entra)
+            val result = try {
+                cartViewModel.resolveScannedBarcode(barcode, puedeTocarElCarrito = entra)
+            } finally {
+                consultandoCodigo = false
+            }
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra()) return@launch
             when (result) {

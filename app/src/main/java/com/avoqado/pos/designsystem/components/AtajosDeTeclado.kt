@@ -12,6 +12,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.unit.dp
@@ -71,17 +73,18 @@ fun Modifier.sinTeclasDeClic(enWindows: Boolean): Modifier =
     if (!enWindows) this else onPreviewKeyEvent { it.key == Key.Enter || it.key == Key.NumPadEnter || it.key == Key.Spacebar }
 
 /**
- * Mientras [cobroAbierto], lo de atrás (la venta) no recibe teclas: un producto que quedó con el foco se «picaba» con
- * Enter o Espacio —la pistola termina cada código con Enter— y entraba al carrito sin cobrarse (pendientes, Codex r1 #1).
- * Las teclas de atajo (F1–F12, Esc) pasan: las atiende la ventana para el cobro. Va en la raíz de la venta, que es
- * hermana del cobro (en iOS el cobro es otra pantalla y no hace falta).
+ * Mientras [cobroAbierto], lo de atrás (la venta) no recibe teclas que aprieten o escriban: un producto que quedó con el
+ * foco se «picaba» con Enter o Espacio —la pistola termina cada código con Enter— y entraba al carrito sin cobrarse
+ * (pendientes, Codex r1 #1). Pasan las que mueven el foco (Tab, flechas: para llegar con teclado al cobro, Codex r2 #2) y
+ * las de atajo (F1–F12, Esc), que atiende la ventana. Va en la raíz de la venta, hermana del cobro (en iOS el cobro es
+ * otra pantalla y no hace falta).
  */
 fun Modifier.sinTeclasDetrasDelCobro(cobroAbierto: () -> Boolean): Modifier =
-    onPreviewKeyEvent { cobroAbierto() && it.key !in TECLAS_DE_LA_VENTANA }
+    onPreviewKeyEvent { cobroAbierto() && apretaOEscribe(it) }
 
-private val TECLAS_DE_LA_VENTANA = setOf(
-    Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12, Key.Escape,
-)
+private fun apretaOEscribe(e: KeyEvent): Boolean =
+    e.key == Key.Enter || e.key == Key.NumPadEnter || e.key == Key.Spacebar || e.key == Key.Backspace ||
+        e.key == Key.Delete || (e.utf16CodePoint > 0 && !e.utf16CodePoint.toChar().isISOControl())
 
 /** La tecla en chiquito a la derecha de su botón. Sólo en Windows. */
 @Composable

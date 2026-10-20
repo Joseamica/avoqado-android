@@ -5,6 +5,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.foundation.layout.Column
 import com.avoqado.pos.designsystem.components.sinTeclasDetrasDelCobro
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onKeyEvent
@@ -400,6 +402,21 @@ class AtajosDelCobroEnLaEscenaTest {
         cobroAbierto = false
         onNodeWithText("Café").performKeyInput { pressKey(Key.Enter) }
         runOnIdle { assertEquals(1, clics) }
+    }
+
+    // Codex r2 #2: el candado no atrapa el foco. Tab y las flechas pasan, para llegar con teclado a los botones del cobro.
+    @Test fun `con el cobro abierto Tab si mueve el foco fuera de la venta de atras`() = runComposeUiTest {
+        setContent {
+            EnWindows {
+                Column {
+                    Box(Modifier.sinTeclasDetrasDelCobro { true }) { Button(onClick = {}) { Text("Café") } }
+                    Button(onClick = {}) { Text("Pagar") }
+                }
+            }
+        }
+        onNodeWithText("Café").performSemanticsAction(SemanticsActions.RequestFocus)
+        onNodeWithText("Café").performKeyInput { pressKey(Key.Tab) }
+        onNodeWithText("Pagar").assertIsFocused()
     }
 
     // Al registrar un efectivo no se espera a ninguna terminal (iOS dice «Procesando…»).
