@@ -74,6 +74,7 @@ fun UnassociatedRefundSheet(
     val refundState by viewModel.refundState.collectAsState()
 
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = {
             if (refundState !is RefundUiState.Loading) {
                 viewModel.resetRefundState()

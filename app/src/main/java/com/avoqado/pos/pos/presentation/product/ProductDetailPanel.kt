@@ -141,6 +141,8 @@ fun ProductDetailPanel(
                 discounts = discounts,
                 onAddToCart = onAddToCart,
                 onDismiss = onDismiss,
+                // En Windows la hoja ya trae su X, que sigue a la vista en Nota, Cortesía, Precio y Descuentos (Codex r1 #3).
+                conX = !com.avoqado.pos.designsystem.components.LocalEsEscritorio.current,
             )
         }
     }
@@ -160,6 +162,7 @@ private fun ProductDetailContent(
     discounts: List<Discount>,
     onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?) -> Unit,
     onDismiss: () -> Unit,
+    conX: Boolean = true,
 ) {
     val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
@@ -209,6 +212,7 @@ private fun ProductDetailContent(
                         canAddToCart = canAddToCart,
                         missingRequiredGroups = missingRequiredGroups,
                         onDismiss = onDismiss,
+                        conX = conX,
                         onQuantityChange = { quantity = it.coerceAtLeast(1) },
                         onModifierToggled = { modifier, isSelected, group ->
                             if (isSelected) {
@@ -331,6 +335,7 @@ private fun MainDetailView(
     /** Nombres de los grupos obligatorios que faltan — para decirlo, no callarlo. */
     missingRequiredGroups: List<String> = emptyList(),
     onDismiss: () -> Unit,
+    conX: Boolean = true,
     onQuantityChange: (Int) -> Unit,
     onModifierToggled: (com.avoqado.pos.pos.data.model.Modifier, Boolean, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
@@ -398,7 +403,7 @@ private fun MainDetailView(
                 }
 
                 // Close button (circle with gray bg)
-                IconButton(
+                if (conX) IconButton(
                     onClick = onDismiss,
                     modifier = Modifier
                         .size(36.dp)
