@@ -43,6 +43,11 @@ fun AvoqadoModalBottomSheet(
     sheetState: SheetState = rememberModalBottomSheetState(),
     containerColor: Color = BottomSheetDefaults.ContainerColor,
     dragHandle: @Composable (() -> Unit)? = { BottomSheetDefaults.DragHandle() },
+    /**
+     * La hoja ya trae su propia X en la cabecera: en Windows no se le agrega otra (salían dos, 19-oct). En Android no
+     * cambia nada.
+     */
+    conXPropia: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     BarreraDeAtajos()
@@ -63,7 +68,7 @@ fun AvoqadoModalBottomSheet(
         modifier = modifier,
         sheetState = sheetState,
         containerColor = containerColor,
-        dragHandle = {
+        dragHandle = if (conXPropia) null else ({
             Box(Modifier.fillMaxWidth().padding(top = 8.dp, end = 8.dp), contentAlignment = Alignment.CenterEnd) {
                 IconButton(
                     onClick = { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismissRequest() } },
@@ -76,7 +81,7 @@ fun AvoqadoModalBottomSheet(
                     )
                 }
             }
-        },
+        }),
         content = content,
     )
 }

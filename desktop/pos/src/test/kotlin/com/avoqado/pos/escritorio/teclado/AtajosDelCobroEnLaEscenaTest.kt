@@ -1,12 +1,15 @@
 package com.avoqado.pos.escritorio.teclado
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -19,6 +22,7 @@ import com.avoqado.escritorio.ActividadDeEscritorio
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.Escritorio
 import com.avoqado.pos.designsystem.components.AtajosDeTeclado
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 import com.avoqado.pos.escritorio.Inyector
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -27,6 +31,7 @@ import com.avoqado.pos.payment.data.model.PaymentContext
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.presentation.PaymentMethodSelectionScreen
 import com.avoqado.pos.payment.presentation.PaymentErrorView
+import com.avoqado.pos.payment.presentation.PaymentProcessingView
 import com.avoqado.pos.payment.presentation.PaymentResultScreen
 import com.avoqado.pos.payment.presentation.RatingScreen
 import com.avoqado.pos.payment.presentation.TerminalSelectionScreen
@@ -43,7 +48,7 @@ import kotlin.test.assertTrue
  * Las teclas del cobro en el POS de Windows (founder, 19-oct): F5 efectivo, F4 terminal, Esc regresa, 1-9 elige
  * terminal y Esc en «Venta terminada» es «Venta nueva». Cada tecla hace lo MISMO que el clic en su botón.
  */
-@OptIn(ExperimentalTestApi::class)
+@OptIn(ExperimentalTestApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 class AtajosDelCobroEnLaEscenaTest {
     /** Las hojas de propina y «Ya pagó de otra forma» piden el contexto de escritorio (`ImmersiveWindow`), como en Main. */
     @BeforeTest fun contextoDeEscritorio() {
@@ -334,6 +339,44 @@ class AtajosDelCobroEnLaEscenaTest {
         onNodeWithText("Esc").assertExists()
         runOnIdle { assertTrue(AtajosDeTeclado.atender(Key.Escape)) }
         assertEquals(1, listas)
+    }
+
+    // Pendientes del 19-oct: en Windows cada hoja lleva UNA X (la suya o la de AvoqadoModalBottomSheet, nunca las dos).
+    @Test fun `en Windows la hoja de propina lleva una sola X`() = runComposeUiTest {
+        setContent {
+            EnWindows {
+                TipSelectionSheet(amountCents = 13_700, tipBaseCents = 13_700, tipSuggestions = listOf(10, 15, 20),
+                    onTipSelected = {}, onSkip = {}, onDismiss = {})
+            }
+        }
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(1)
+    }
+
+    @Test fun `en Windows Monto recibido lleva una sola X`() = runComposeUiTest {
+        val cobro = Cobro()
+        setContent { EnWindows { Selector(cobro) } }
+        runOnIdle { AtajosDeTeclado.atender(Key.F5) }
+        onNodeWithText("Monto recibido").assertExists()
+        // La X de «¿Cómo paga?», detrás, y la de la hoja. Antes eran 3: la hoja traía dos.
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(2)
+    }
+
+    @Test fun `en Windows una hoja sin X propia recibe la de Windows`() = runComposeUiTest {
+        setContent { EnWindows { AvoqadoModalBottomSheet(onDismissRequest = {}) { Text("Contenido de la hoja") } } }
+        onNodeWithText("Contenido de la hoja").assertExists()
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(1)
+    }
+
+    // Al registrar un efectivo no se espera a ninguna terminal (iOS dice «Procesando…»).
+    @Test fun `la espera de un efectivo no menciona la terminal`() = runComposeUiTest {
+        setContent { EnWindows { PaymentProcessingView(esperandoTerminal = false) } }
+        onNodeWithText("Procesando pago...").assertExists()
+        onNodeWithText("Esperando respuesta de la terminal").assertDoesNotExist()
+    }
+
+    @Test fun `la espera de la terminal si la menciona`() = runComposeUiTest {
+        setContent { EnWindows { PaymentProcessingView(esperandoTerminal = true) } }
+        onNodeWithText("Esperando respuesta de la terminal").assertExists()
     }
 
     @Test fun `la tecla sale en chiquito dentro del boton Cobrar en Windows`() = runComposeUiTest {

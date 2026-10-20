@@ -533,6 +533,7 @@ private fun CustomCashSheet(
     LaunchedEffect(Unit) { runCatching { foco.requestFocus() } }
 
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
@@ -845,6 +846,7 @@ private fun PaymentItemsSheet(
     onDismiss: () -> Unit,
 ) {
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

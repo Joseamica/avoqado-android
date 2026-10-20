@@ -376,6 +376,7 @@ private fun PickerSheet(
     }
 
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         dragHandle = null,

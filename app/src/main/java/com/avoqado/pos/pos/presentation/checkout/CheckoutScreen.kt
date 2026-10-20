@@ -1197,8 +1197,7 @@ fun CheckoutScreen(
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
     val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
-        // Codex final #3: mientras se emite un vale, lo escaneado no entra; al terminar se vacía el carrito y se perdería.
-        if (areaOperationsState.issuing) return@manejar
+        if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
         checkoutScope.launch {
             when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
@@ -2720,3 +2719,10 @@ private fun IPhoneCartBar(
         )
     }
 }
+
+/**
+ * Lo que lee la pistola o la cámara sólo entra a la venta con el cobro CERRADO. Con el cobro abierto, el carrito se vacía
+ * al confirmarlo y lo escaneado se perdía sin cobrarse (pendiente del 19-oct); iOS ya lo ignora así (`CheckoutView`,
+ * `guard !showPaymentFlow`). Mientras se emite un vale, tampoco: al terminar se vacía el carrito (Codex final #3).
+ */
+internal fun codigoEntraALaVenta(cobroAbierto: Boolean, emitiendoVale: Boolean): Boolean = !cobroAbierto && !emitiendoVale

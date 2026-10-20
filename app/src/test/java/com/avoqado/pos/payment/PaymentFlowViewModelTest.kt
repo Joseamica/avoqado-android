@@ -938,6 +938,24 @@ class PaymentFlowViewModelTest {
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
     }
 
+    /** El efectivo que no alcanza soltaba el cobro a medias: el siguiente intento se ignoraba en silencio (atajos, Codex r4 #3). */
+    @Test
+    fun `P2 un efectivo que no alcanza no atora el siguiente intento`() = runTest {
+        val cart = CartState(
+            items = listOf(CartItem(id = "custom-1", type = CartItemType.CustomAmount, name = "Importe", unitPrice = 1000)),
+        )
+        every { cashPaymentRepository.processCashPayment(1000, 500) } returns CashPaymentResult.InsufficientFunds(shortfall = 500)
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(500)
+        advanceUntilIdle()
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        verify(exactly = 1) { cashPaymentRepository.processCashPayment(1000, 1000) }
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
     @Test
     fun `area checkout propagates delivery code to paid receipt`() = runTest {
         val openCheckout = AreaTicketCheckout(

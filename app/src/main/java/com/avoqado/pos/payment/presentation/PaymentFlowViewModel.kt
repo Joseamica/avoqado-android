@@ -2574,7 +2574,10 @@ class PaymentFlowViewModel @Inject constructor(
                 }
             }
             is CashPaymentResult.InsufficientFunds -> {
-                // Stay on cash screen — insufficient funds handled in UI
+                // Se queda en el cobro para volver a capturar lo recibido. Hay que soltarlo: si no, el siguiente
+                // intento de efectivo se ignoraba en silencio y el cobro quedaba atorado (pendiente del 19-oct).
+                // iOS hace lo mismo: regresa a pedir el efectivo (`confirmCashPayment`).
+                isProcessingPayment = false
             }
         }
     }

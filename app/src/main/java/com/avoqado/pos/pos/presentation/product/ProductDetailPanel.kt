@@ -132,6 +132,7 @@ fun ProductDetailPanel(
         // iPhone-style: bottom sheet
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         AvoqadoModalBottomSheet(
+            conXPropia = true,
             onDismissRequest = onDismiss,
             sheetState = sheetState,
         ) {

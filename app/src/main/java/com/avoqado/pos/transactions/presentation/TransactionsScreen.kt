@@ -763,6 +763,7 @@ private fun FilterSheets(
     when (activeFilter) {
         TransactionActiveFilter.METHOD -> {
             AvoqadoModalBottomSheet(
+                conXPropia = true,
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -778,6 +779,7 @@ private fun FilterSheets(
         }
         TransactionActiveFilter.STAFF -> {
             AvoqadoModalBottomSheet(
+                conXPropia = true,
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -793,6 +795,7 @@ private fun FilterSheets(
         }
         TransactionActiveFilter.SUBTOTAL -> {
             AvoqadoModalBottomSheet(
+                conXPropia = true,
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -819,6 +822,7 @@ private fun FilterSheets(
         }
         TransactionActiveFilter.TIP -> {
             AvoqadoModalBottomSheet(
+                conXPropia = true,
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -845,6 +849,7 @@ private fun FilterSheets(
         }
         TransactionActiveFilter.TOTAL -> {
             AvoqadoModalBottomSheet(
+                conXPropia = true,
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
