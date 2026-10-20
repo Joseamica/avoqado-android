@@ -46,8 +46,10 @@ import com.avoqado.pos.designsystem.theme.Success
 /**
  * Los centavos de propina de un porcentaje sobre la base SIN IVA. Una sola cuenta para el cajero (este archivo)
  * y para la pantalla del cliente (la manda el ViewModel ya calculada): trunca, como siempre.
+ * 🔴 `baseCents * percent` se multiplica en Long: en Int se desbordaba desde ~$214,748 al 100 % (una venta de $500,000 al
+ * 90 % daba $20,503.27 en vez de $450,000.00). Lo que aun así no quepa en Int topa en Int.MAX_VALUE, no se envuelve.
  */
-internal fun tipCentsForPercent(baseCents: Int, percent: Int): Int = (baseCents * percent / 100.0).toInt()
+internal fun tipCentsForPercent(baseCents: Int, percent: Int): Int = (baseCents.toLong() * percent / 100.0).toInt()
 
 /** Lo más que cabe en pantalla (el servidor y el editor del panel topan en 6): lo que sobre no se pinta. */
 private const val MAX_TIP_PERCENTS = 6

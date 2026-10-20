@@ -2306,6 +2306,33 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
+    fun `tipCentsForPercent no se desborda en una venta grande`() {
+        // Valores escritos a mano. Antes: 50,000,000 × 90 se desbordaba en Int y daba 2,050,327 ($20,503.27).
+        assertEquals(45_000_000, tipCentsForPercent(50_000_000, 90)) // $500,000.00 × 90 % = $450,000.00
+        // Primer monto (en centavos) cuyo × 100 ya no cabe en Int: antes daba una propina NEGATIVA.
+        assertEquals(21_474_837, tipCentsForPercent(21_474_837, 100))
+        assertEquals(21_474_836, tipCentsForPercent(21_474_836, 100)) // el último que sí cabía: sigue igual
+    }
+
+    @Test
+    fun `tipCentsForPercent cerca del maximo de Int trunca y nunca da negativo`() {
+        val max = Int.MAX_VALUE // 2,147,483,647
+        assertEquals(1_932_735_282, tipCentsForPercent(max, 90)) // 1,932,735,282.3 → trunca
+        assertEquals(1_073_741_823, tipCentsForPercent(max, 50)) // 1,073,741,823.5 → trunca
+        assertEquals(max, tipCentsForPercent(max, 100))
+        // El editor del cajero deja capturar hasta 999 %: lo que ya no cabe topa en Int.MAX_VALUE, no se envuelve.
+        assertEquals(max, tipCentsForPercent(max, 999))
+    }
+
+    @Test
+    fun `tipCentsForPercent en montos normales da lo mismo que siempre`() {
+        assertEquals(1851, tipCentsForPercent(12_345, 15)) // $123.45 × 15 % = $18.5175 → $18.51
+        assertEquals(1234, tipCentsForPercent(12_345, 10)) // 1234.5 → 1234
+        assertEquals(0, tipCentsForPercent(1, 10)) // 0.1 → 0
+        assertEquals(10_000_000, tipCentsForPercent(100_000_000, 10)) // $1,000,000 × 10 %
+    }
+
+    @Test
     fun `tip percentage base removes proportional tax for equal parts split when disabled`() {
         every {
             tpvSettingsRepository.getCurrentSettings()
