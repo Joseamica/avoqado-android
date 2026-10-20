@@ -362,6 +362,19 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    @Test fun `con el cobro abierto lo escaneado no entra a la cuenta`() = runTest {
+        val subject = vm()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            subject.addProduct(Product(id = "p", name = "Artículo", priceValue = 50.0))
+            subject.addProductWithModifiers(Product(id = "p", name = "Artículo", priceValue = 50.0), 1, emptyList(), null)
+            assertTrue("El importe del cobro ya se congeló", subject.pending.value.isEmpty())
+            session.start(session.current()!!.copy(mode = TableSession.Mode.ORDERING))
+            subject.addProduct(Product(id = "p", name = "Artículo", priceValue = 50.0))
+            assertEquals(1, subject.pending.value.size)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `provisional suma total real con modificadores y conserva valor al recrear VM`() = runTest {
         val subject = vm(provisional = true)
         try {

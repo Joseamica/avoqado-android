@@ -553,7 +553,11 @@ class TableOrderViewModel @Inject constructor(
 
     /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
      *  two courses must stay two lines (they fire at different moments). */
+    /** Con el cobro abierto (sesión PAYING) el importe ya se congeló: lo leído por la cámara o la pistola debajo del cobro no entra. */
+    private fun cobrando() = tableSession.current()?.mode == TableSession.Mode.PAYING
+
     fun addProduct(product: Product) {
+        if (cobrando()) return
         invalidateBlockedNotice()
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el stock
         // queda en negativo como señal de descuadre.
@@ -597,6 +601,7 @@ class TableOrderViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
     ) {
+        if (cobrando()) return
         // Ver addProduct: agotado avisa, nunca bloquea.
         if (product.isOutOfStock) {
             _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
