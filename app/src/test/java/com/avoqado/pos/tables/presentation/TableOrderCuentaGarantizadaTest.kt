@@ -219,7 +219,7 @@ class TableOrderCuentaGarantizadaTest {
             advanceUntilIdle()
             assertFalse(subject.chequeAlDia.value); assertTrue(subject.vioCambios)
             assertFalse(subject.preparePagar())
-            assertEquals("La cuenta cambió y no se pudo actualizar: cóbrala cuando vuelva la conexión.", subject.blockedNotice.value)
+            assertEquals("No se pudo confirmar el saldo actual de esta cuenta: cóbrala cuando vuelva la conexión.", subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 
@@ -399,7 +399,7 @@ class TableOrderCuentaGarantizadaTest {
             subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
             every { storage.venueId } returns "otra-sucursal"
             assertFalse(subject.preparePagar())
-            assertEquals("La cuenta cambió y no se pudo actualizar: cóbrala cuando vuelva la conexión.", subject.blockedNotice.value)
+            assertEquals("Esta cuenta ya no es la que está abierta en este aparato: vuelve a abrir la mesa para cobrarla.", subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 

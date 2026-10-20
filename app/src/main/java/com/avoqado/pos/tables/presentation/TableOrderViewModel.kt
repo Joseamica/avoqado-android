@@ -99,7 +99,8 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
     provisional -> if (trabajo.rechazados == 0 && trabajo.tipos.all { it in setOf("OPEN_TABLE", "ADD_ITEMS", "PAY_CASH") }) null
         else "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
     trabajo.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
-    !chequeAlDia && (cheque?.id == orderId || vioCambios) -> "La cuenta cambió y no se pudo actualizar: cóbrala cuando vuelva la conexión."
+    // Sin lectura fresca del servidor no se sabe si cambió: se dice lo cierto (no se pudo confirmar), no «cambió».
+    !chequeAlDia && (cheque?.id == orderId || vioCambios) -> "No se pudo confirmar el saldo actual de esta cuenta: cóbrala cuando vuelva la conexión."
     else -> null
 }
 
@@ -1954,7 +1955,7 @@ class TableOrderViewModel @Inject constructor(
     suspend fun preparePagar(): Boolean {
         val session = tableSession.current() ?: return false
         if (tableSession.contextoActual() != contextoDeSesion || venueId != venueDeSesion) {
-            showBlockedReason("La cuenta cambió y no se pudo actualizar: cóbrala cuando vuelva la conexión.")
+            showBlockedReason("Esta cuenta ya no es la que está abierta en este aparato: vuelve a abrir la mesa para cobrarla.")
             return false
         }
         if (draftRecoveryFailed || (session.isProvisional && !session.saldoSinRedConocido)) {
