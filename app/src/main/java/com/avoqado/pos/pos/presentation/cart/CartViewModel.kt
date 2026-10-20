@@ -49,6 +49,7 @@ import com.avoqado.pos.referrals.presentation.ReferralCaptureUiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -1522,6 +1523,15 @@ class CartViewModel @Inject constructor(
     }
 
     /**
+     * 🔴 DINERO. Un cobro de vales se detuvo porque este carrito no traía los vales de la sesión del servidor
+     * (`PaymentFlowViewModel.valesNoCoincidian`): el carrito toma los de la sesión, que el cobro acaba de releer. Sin red.
+     * Esa parada sólo ocurre sin abonos en la orden, así que nunca regresa al carrito algo ya pagado.
+     */
+    fun traerValesDeLaSesion() {
+        areaTicketRepository.session.current()?.let(::replaceAreaTicketLines)
+    }
+
+    /**
      * Renueva la sesión de cobro de vales para que no venza mientras el cajero
      * trabaja. Espejo de `maintainAreaTicketCheckout` en iOS.
      *
@@ -1608,6 +1618,9 @@ class CartViewModel @Inject constructor(
                         // Pedir el vale CAMBIA el servidor: una vez pedido se termina aunque la pantalla se vaya (cambiar
                         // de pestaña, girar la tablet). Si no, el servidor quedaba con el vale y el carrito sin él, y el
                         // cobro podía congelar un importe menor (Codex r5). Mientras, el contador sigue y el cobro espera.
+                        // Si la pantalla se fue ANTES de pedirlo, no se pide: un paso anterior pudo tragarse la cancelación
+                        // (guardar la configuración en disco) y `NonCancellable` la ignoraría (Codex r6).
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         val checkout = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
                             areaTicketRepository.addTicket(code)
                         }

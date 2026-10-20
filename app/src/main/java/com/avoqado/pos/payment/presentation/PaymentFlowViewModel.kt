@@ -5,8 +5,10 @@ import com.avoqado.pos.payment.domain.CajonDeDinero
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.areatickets.data.AreaTicketCheckout
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.NormalCheckoutItem
+import com.avoqado.pos.areatickets.data.moneyToCents
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
@@ -41,6 +43,7 @@ import com.avoqado.pos.payment.data.model.cobroConPremio
 import com.avoqado.pos.payment.data.model.totalACobrarCents
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
+import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.buildOrderItemRequests
 import com.avoqado.pos.pos.presentation.cart.CartState
@@ -111,6 +114,14 @@ data class PaymentCompletion(
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
+
+/**
+ * 🔴 DINERO. ¿El carrito trae exactamente los vales de la sesión del servidor? Renglón por renglón y en centavos, como los pone
+ * `CartViewModel.replaceAreaTicketLines`. Lo usa `PaymentFlowViewModel.valesNoCoinciden` antes de cobrar.
+ */
+internal fun cobraLosValesDeLaSesion(items: List<CartItem>, checkout: AreaTicketCheckout): Boolean =
+    items.mapNotNull { item -> item.areaTicketLineId?.let { it to item.unitPrice * item.quantity } }.sortedBy { it.first } ==
+        checkout.tickets.flatMap { it.lines }.map { it.id to it.total.moneyToCents() }.sortedBy { it.first }
 
 /**
  * El aviso de un cobro con tarjeta de OTRA venta que quedó sin confirmar, o que SÍ pasó. 🔴 Founder, 25-sep: esa duda ya no
@@ -809,6 +820,15 @@ class PaymentFlowViewModel @Inject constructor(
     val previousChargeResolved: StateFlow<String?> = _previousChargeResolved.asStateFlow()
 
     fun clearPreviousChargeResolved() { _previousChargeResolved.value = null }
+
+    /**
+     * 🔴 DINERO. Un cobro de vales se detuvo sin cobrar porque el carrito no traía los vales de la sesión del servidor
+     * ([valesNoCoinciden]). Lo pinta el carrito, que es quien se queda, y al verlo toma los vales de la sesión.
+     */
+    private val _valesNoCoincidian = MutableStateFlow(false)
+    val valesNoCoincidian: StateFlow<Boolean> = _valesNoCoincidian.asStateFlow()
+
+    fun reconocerValesNoCoincidian() { _valesNoCoincidian.value = false }
 
     /**
      * H2 (26-sep): el cobro que SÍ pasó del que habla el mensaje de [previousChargeResolved]. Sigue en la lista durable,
@@ -4194,6 +4214,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private suspend fun materializeAreaTicketCheckout(cart: CartState): Boolean {
+        // Una parte ya cobrada (split que continúa): lo que falta lo dice el servidor y el carrito ya no lleva los vales.
+        val continuaUnaVentaAbonada = createdOrderId != null
         return try {
             val normalItems = cart.items
                 .filter { !it.locked }
@@ -4227,6 +4249,13 @@ class PaymentFlowViewModel @Inject constructor(
                     source = PaymentErrorSource.SERVER,
                 )
                 false
+            } else if (!continuaUnaVentaAbonada && valesNoCoinciden(cart, checkout)) {
+                // Nada que cancelar: la sesión sigue viva con los vales del servidor y el carrito los toma al volver.
+                paymentGeneration++
+                isProcessingPayment = false
+                _valesNoCoincidian.value = true
+                salirDelFlujo()
+                false
             } else {
                 createdOrderId = order.id
                 createdOrderNumber = order.orderNumber
@@ -4247,6 +4276,20 @@ class PaymentFlowViewModel @Inject constructor(
             )
             false
         }
+    }
+
+    /**
+     * 🔴 DINERO. El importe de este cobro salió del carrito; la orden, de la sesión de vales del servidor. Si no traen los
+     * mismos vales (una respuesta perdida al escanear, o la pantalla que se fue a media consulta), se cobraría otra cosa, y en
+     * pago completo el resto ni se pediría (pendientes del 19-oct, Codex r5 y r6). iOS no lo necesita: allá el importe sale de
+     * la orden materializada. Antes de detener se relee la sesión: la copia del aparato puede ser vieja, y con un abono ya
+     * hecho la venta sigue por el saldo del servidor, como siempre (el carrito ya no lleva todos los vales).
+     */
+    private suspend fun valesNoCoinciden(cart: CartState, checkout: AreaTicketCheckout): Boolean {
+        if (cobraLosValesDeLaSesion(cart.items, checkout)) return false
+        val alDia = areaTicketRepository.refresh() ?: return true
+        if ((alDia.order?.paidAmount?.moneyToCents() ?: 0) > 0) return false
+        return !cobraLosValesDeLaSesion(cart.items, alDia)
     }
 
     private fun finishAreaTicketPayment() {

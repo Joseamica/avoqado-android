@@ -1455,6 +1455,25 @@ fun CheckoutScreen(
         ) {}
     }
 
+    // 🔴 DINERO. El cobro de vales se detuvo sin cobrar: el carrito no traía los vales del servidor. El carrito toma los de la
+    // sesión y se le dice al cajero que revise el total (ver `PaymentFlowViewModel.valesNoCoinciden`).
+    val valesNoCoincidian by paymentFlowViewModel.valesNoCoincidian.collectAsState()
+    if (valesNoCoincidian) {
+        LaunchedEffect(Unit) { cartViewModel.traerValesDeLaSesion() }
+        AvoqadoDialog(
+            title = "Los vales cambiaron",
+            description = "No se cobró nada: el carrito no traía los mismos vales que el servidor. Ya se actualizó; revisa el total y vuelve a cobrar.",
+            onDismiss = { paymentFlowViewModel.reconocerValesNoCoincidian() },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { paymentFlowViewModel.reconocerValesNoCoincidian() },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
     // 🔴 LA COMANDA QUE NO SALIÓ, fuera del cobro.
     //
     // El aviso vivía SÓLO dentro de `PaymentFlowScreen`, y el cajero cierra esa pantalla en

@@ -31,7 +31,11 @@ import kotlinx.coroutines.launch
 import org.junit.Assert.assertTrue
 import io.mockk.verify
 import io.mockk.coVerify
+import com.avoqado.pos.areatickets.data.AreaTicket
+import com.avoqado.pos.areatickets.data.AreaTicketArea
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
+import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
+import com.avoqado.pos.areatickets.data.AreaTicketLine
 import com.avoqado.pos.areatickets.data.AreaTicketScanData
 import io.mockk.every
 import io.mockk.mockk
@@ -273,4 +277,59 @@ class CartViewModelWeightTest {
         assertFalse(vm.hayConsultasDeCodigo)
         coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
     }
+
+    // Codex r6 #2: un paso intermedio (guardar la configuración en disco) se traga la cancelación y regresa normal. Aun así,
+    // si la pantalla ya se fue, el vale NO se pide: la cancelación se revisa justo antes de pedirlo.
+    @Test
+    fun `si la pantalla se va mientras se guarda la configuracion, el vale no se pide`() = runTest {
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        var consulta: kotlinx.coroutines.Job? = null
+        val ajustes = areaTicketRepository.settings()
+        coEvery { areaTicketRepository.settings() } coAnswers { consulta?.cancel(); ajustes }
+        val vm = createViewModel()
+
+        consulta = launch { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
+        assertFalse(vm.hayConsultasDeCodigo)
+    }
+
+    // Codex r6 #1: el cobro de vales se detuvo sin cobrar porque el carrito no traía los vales del servidor. El carrito toma los
+    // de la sesión (que el cobro acaba de releer), sin red, para que el siguiente cobro sea por lo que el servidor tiene.
+    @Test
+    fun `tras un cobro detenido por vales que no coincidian, el carrito toma los de la sesion`() {
+        every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "10.00", "linea-b" to "25.50")
+        val vm = createViewModel()
+
+        vm.traerValesDeLaSesion()
+
+        assertEquals(
+            listOf("linea-a" to 1000, "linea-b" to 2550),
+            vm.cartState.value.items.map { it.areaTicketLineId to it.unitPrice },
+        )
+    }
+
+    private fun checkoutConVales(vararg lineas: Pair<String, String>) = AreaTicketCheckout(
+        id = "checkout-1",
+        status = "MATERIALIZED",
+        version = 2,
+        expiresAt = "2026-10-21T00:00:00.000Z",
+        createdAt = "2026-10-20T00:00:00.000Z",
+        tickets = lineas.map { (id, total) ->
+            AreaTicket(
+                id = "vale-$id",
+                code = "947$id",
+                status = "CLAIMED",
+                fulfillmentArea = AreaTicketArea(id = "cocina", name = "Cocina", fulfillmentMode = "PICKUP"),
+                subtotal = total,
+                total = total,
+                issuedAt = "2026-10-20T00:00:00.000Z",
+                lines = listOf(
+                    AreaTicketLine(id = id, clientLineId = "c-$id", productNameSnapshot = "Torta", quantity = "1", unitPrice = total, total = total),
+                ),
+            )
+        },
+        totals = AreaTicketCheckoutTotals(subtotal = "0.00", discountAmount = "0.00", total = "0.00"),
+    )
 }
