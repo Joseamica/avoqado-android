@@ -67,7 +67,10 @@ class ConteoNoAplicadoTest {
         )
         assertEquals("1 producto no se aplicó", ConteoNoAplicado.titulo(1))
         assertEquals("3 productos no se aplicaron", ConteoNoAplicado.titulo(3))
-        assertEquals("El resto del conteo sí se aplicó.", ConteoNoAplicado.RESTO_APLICADO)
+        // El papel lleva el motivo en corto y cabe en 32 columnas (58 mm) con su sangría de 2.
+        assertEquals("No se aplicó (envío en camino)", ConteoNoAplicado.enElComprobante(MotivoNoAplicado.ENVIO_EN_CAMINO))
+        assertEquals("No se aplicó (por revisar)", ConteoNoAplicado.enElComprobante(MotivoNoAplicado.DUDA_POR_REVISAR))
+        MotivoNoAplicado.entries.forEach { assertTrue(2 + ConteoNoAplicado.enElComprobante(it).length <= 32) }
     }
 
     @Test
@@ -169,7 +172,7 @@ class ConteoNoAplicadoTest {
     // MARK: - El estado de la pantalla de resultado
 
     @Test
-    fun `del confirm - nombra cada producto con la linea local y dice que lo demas si se aplico`() {
+    fun `del confirm - nombra cada producto con la linea local`() {
         val locales = listOf(linea("a", "p1", "Café de olla"), linea("b", "p2", "Té"), linea("c", "p3", "Agua"))
         val r = ConteoNoAplicado.desdeConfirm(
             venueId = "v",
@@ -180,7 +183,6 @@ class ConteoNoAplicadoTest {
         assertEquals("1 producto no se aplicó", r.titulo)
         assertEquals(listOf("Café de olla"), r.lineas.map { it.nombre })
         assertEquals(MotivoNoAplicado.ENVIO_EN_CAMINO, r.lineas.single().motivo)
-        assertTrue(r.hayRestoAplicado)
     }
 
     @Test
@@ -203,12 +205,6 @@ class ConteoNoAplicadoTest {
     }
 
     @Test
-    fun `si TODO lo contado quedo retenido no se dice que el resto se aplico`() {
-        val r = ConteoNoAplicado.desdeConfirm("v", "c1", listOf(NoAplicadoDelConfirm("p-a", MotivoNoAplicado.ENVIO_EN_CAMINO)), listOf(linea("a"), linea("b", contada = false)))!!
-        assertFalse(r.hayRestoAplicado)
-    }
-
-    @Test
     fun `del GET - las lineas con shopifyHeld forman el resultado, es la verdad tras un reintento`() {
         val conteo = StockCount(
             id = "c1",
@@ -221,7 +217,6 @@ class ConteoNoAplicadoTest {
         val r = ConteoNoAplicado.desdeConteo("v", conteo)!!
         assertEquals(listOf("Café"), r.lineas.map { it.nombre })
         assertEquals(MotivoNoAplicado.DUDA_POR_REVISAR, r.lineas.single().motivo)
-        assertTrue(r.hayRestoAplicado)
         assertNull(ConteoNoAplicado.desdeConteo("v", conteo.copy(items = listOf(linea("b")))))
     }
 
@@ -267,6 +262,10 @@ class ConteoNoAplicadoTest {
         val dos = completo.copy(items = listOf(retenida, retenida.copy(id = "i2")))
         assertEquals("Completado - 5 artículos · 2 no se aplicaron", ConteoEnCurso.lineaDeEstado(dos))
         assertEquals("Completado - 5 artículos", ConteoEnCurso.lineaDeEstado(completo.copy(items = listOf(linea("b")))))
+        // La fila pinta el aviso aparte (en ámbar): la base es la línea de siempre y el aviso, sólo con retenidas.
+        assertEquals("Completado - 5 artículos", ConteoEnCurso.lineaDeEstadoBase(completo))
+        assertEquals("1 no se aplicó", ConteoEnCurso.avisoNoAplicadas(completo))
+        assertNull(ConteoEnCurso.avisoNoAplicadas(completo.copy(items = listOf(linea("b")))))
     }
 
     @Test
@@ -275,9 +274,15 @@ class ConteoNoAplicadoTest {
         val conteo = StockCount(id = "cmtabc12345678xyz", status = "COMPLETED", items = listOf(retenida, linea("b", nombre = "Te")))
         val c = ComprobanteDeConteo.desde(conteo, negocio = "Testarudo", fecha = "09/10/2026 09:30")
         assertEquals(listOf(true, false), c.renglones.map { it.noAplicado })
+        assertEquals(listOf(MotivoNoAplicado.ENVIO_EN_CAMINO, null), c.renglones.map { it.motivoNoAplicado })
         val t = ESCPOSPrinter(PaperWidth.MM58).generateCountReceipt(c).toString(Charsets.ISO_8859_1)
         assertTrue(t.contains("No se aplic"))
+        // El motivo va en el papel (Codex 19-oct): quien firma sabe si recontar o pedir que se resuelva.
+        assertTrue(t.contains("en camino)"))
         assertTrue(t.contains("No se aplicaron: 1"))
+        val duda = item("""{"id":"i1","productId":"p1","productName":"Cafe","expected":10,"counted":8,"countedAt":"t","shopifyHeld":{"motivo":"DUDA_POR_REVISAR"}}""")
+        val conDuda = ComprobanteDeConteo.desde(conteo.copy(items = listOf(duda)), negocio = null, fecha = "x")
+        assertTrue(ESCPOSPrinter(PaperWidth.MM58).generateCountReceipt(conDuda).toString(Charsets.ISO_8859_1).contains("(por revisar)"))
         // Sin retenidas el papel es el de siempre.
         val limpio = ComprobanteDeConteo.desde(conteo.copy(items = listOf(linea("b"))), negocio = null, fecha = "x")
         assertFalse(ESCPOSPrinter(PaperWidth.MM58).generateCountReceipt(limpio).toString(Charsets.ISO_8859_1).contains("No se aplic"))

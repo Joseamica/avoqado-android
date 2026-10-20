@@ -2039,7 +2039,6 @@ class InventoryViewModelConteoTest {
         assertEquals("full-1", r.countId)
         assertEquals(listOf("Prod b"), r.lineas.map { it.nombre })
         assertEquals(com.avoqado.pos.inventory.data.MotivoNoAplicado.ENVIO_EN_CAMINO, r.lineas.single().motivo)
-        assertTrue(r.hayRestoAplicado)
         // El conteo se cerró como siempre: un resultado así NO es un error.
         assertFalse(vm.showReview.value)
         assertNull(vm.errorMessage.value)

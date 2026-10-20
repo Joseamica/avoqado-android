@@ -58,13 +58,6 @@ fun ResultadoNoAplicadoCard(
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    if (resultado.hayRestoAplicado) {
-                        Text(
-                            text = ConteoNoAplicado.RESTO_APLICADO,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
                 TextButton(onClick = onEntendido) { Text(ConteoNoAplicado.ENTENDIDO) }
             }

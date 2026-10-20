@@ -52,21 +52,16 @@ data class NoAplicadoDelConfirm(val productId: String, val motivo: MotivoNoAplic
 data class LineaNoAplicada(val productId: String, val nombre: String, val motivo: MotivoNoAplicado)
 
 /**
- * Lo que se le dice al cajero al cerrar un conteo con líneas que no se aplicaron. NO es un error: el conteo se
- * cerró y lo demás sí movió el stock.
- *
- * @param contadas cuántas líneas se contaron en total (para decir, o no, «el resto sí se aplicó»).
+ * Lo que se le dice al cajero al cerrar un conteo con líneas que no se aplicaron. NO es un error: el conteo se cerró.
+ * 🔴 No dice «el resto sí se aplicó» (Codex 19-oct): el servidor también salta en silencio una línea que ya no lleva
+ * inventario por cantidad, y eso no viaja en `noAplicados`; afirmarlo sería decir algo que el contrato no acredita.
  */
 data class ResultadoNoAplicado(
     val venueId: String,
     val countId: String,
     val lineas: List<LineaNoAplicada>,
-    val contadas: Int,
 ) {
     val titulo: String get() = ConteoNoAplicado.titulo(lineas.size)
-
-    /** Hubo líneas contadas que SÍ se aplicaron. Si todo lo contado quedó retenido, no se dice. */
-    val hayRestoAplicado: Boolean get() = contadas > lineas.size
 }
 
 /**
@@ -107,9 +102,17 @@ object ConteoNoAplicado {
     const val TEXTO_DUDA_POR_REVISAR =
         "Hay una diferencia con Shopify por revisar: pídele al dueño que la resuelva en el dashboard " +
             "(Integraciones → Shopify → Por revisar)."
-    const val RESTO_APLICADO = "El resto del conteo sí se aplicó."
     const val PRODUCTO_SIN_NOMBRE = "Producto"
     const val ENTENDIDO = "Entendido"
+
+    /**
+     * La marca del renglón en el comprobante impreso, con su motivo en corto (cabe en 32 columnas, rollo de 58 mm):
+     * quien firma sabe si toca recontar o pedir que se resuelva la duda.
+     */
+    fun enElComprobante(motivo: MotivoNoAplicado): String = when (motivo) {
+        MotivoNoAplicado.ENVIO_EN_CAMINO -> "$ETIQUETA (envío en camino)"
+        MotivoNoAplicado.DUDA_POR_REVISAR -> "$ETIQUETA (por revisar)"
+    }
 
     /** «1 producto no se aplicó» · «3 productos no se aplicaron». */
     fun titulo(cantidad: Int): String =
@@ -155,7 +158,7 @@ object ConteoNoAplicado {
                 )
             },
         )
-        return ResultadoNoAplicado(venueId, countId, lineas, contadas = lineasLocales.count { it.yaSeConto })
+        return ResultadoNoAplicado(venueId, countId, lineas)
     }
 
     /** Lo que guardó el servidor en cada línea (`shopifyHeld`): la verdad tras un reintento o al releer. */
@@ -167,7 +170,7 @@ object ConteoNoAplicado {
             },
         )
         if (lineas.isEmpty()) return null
-        return ResultadoNoAplicado(venueId, conteo.id, lineas, contadas = conteo.items.count { it.yaSeConto })
+        return ResultadoNoAplicado(venueId, conteo.id, lineas)
     }
 
     /**
@@ -180,7 +183,6 @@ object ConteoNoAplicado {
         val delGet = delServidor.lineas.map { it.productId }.toSet()
         return delServidor.copy(
             lineas = delServidor.lineas + delConfirm.lineas.filter { it.productId.isBlank() || it.productId !in delGet },
-            contadas = maxOf(delServidor.contadas, delConfirm.contadas),
         )
     }
 

@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.data
 
+import com.avoqado.pos.inventory.data.MotivoNoAplicado
 import com.avoqado.pos.inventory.data.model.StockCount
 import com.avoqado.pos.inventory.data.model.formatInvQty
 import com.avoqado.pos.inventory.data.model.unitSuffixOf
@@ -27,10 +28,11 @@ data class ComprobanteDeConteo(
         val esperado: String,
         val contado: String,
         val diferencia: String,
-        /** El servidor NO aplicó esta línea por Shopify (C12): su diferencia no movió el stock. */
-        val noAplicado: Boolean = false,
+        /** Por qué el servidor NO aplicó esta línea por Shopify (C12): su diferencia no movió el stock. null = sí. */
+        val motivoNoAplicado: MotivoNoAplicado? = null,
     ) {
         val cuadra: Boolean get() = diferencia == "0"
+        val noAplicado: Boolean get() = motivoNoAplicado != null
     }
 
     companion object {
@@ -42,7 +44,7 @@ data class ComprobanteDeConteo(
                     esperado = item.expectedDisplay,
                     contado = item.countedDisplay,
                     diferencia = conSigno(item.counted - item.expected, item.unit),
-                    noAplicado = item.noSeAplico,
+                    motivoNoAplicado = item.motivoNoAplicado,
                 )
             }.sortedBy { it.cuadra } // estable: las diferencias primero, en su orden original
             return ComprobanteDeConteo(

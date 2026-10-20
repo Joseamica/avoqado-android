@@ -972,8 +972,8 @@ class ESCPOSPrinter(
         for (r in c.renglones) {
             printTwoColumns(r.nombre, r.diferencia)
             printLine("  Esperado ${r.esperado} · Contado ${r.contado}")
-            // C12: la diferencia de esta línea NO movió el stock (Shopify). Quien firma tiene que saberlo.
-            if (r.noAplicado) printLine("  ${ConteoNoAplicado.ETIQUETA}")
+            // C12: la diferencia de esta línea NO movió el stock (Shopify). Quien firma tiene que saberlo, y por qué.
+            r.motivoNoAplicado?.let { printLine("  ${ConteoNoAplicado.enElComprobante(it)}") }
         }
         printDivider()
         printLine("Contados: ${c.renglones.size} de ${c.total}")

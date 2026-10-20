@@ -203,12 +203,20 @@ object ConteoEnCurso {
      * Segunda línea de la fila de la lista. Con resumen del servidor y en progreso: cuántas van. Si el servidor dejó
      * líneas sin aplicar por Shopify (C12), se dice aquí también: «Completado» a secas se leería como todo aplicado.
      */
-    fun lineaDeEstado(count: StockCount): String {
+    fun lineaDeEstado(count: StockCount): String =
+        avisoNoAplicadas(count)?.let { "${lineaDeEstadoBase(count)} · $it" } ?: lineaDeEstadoBase(count)
+
+    /** La línea de estado sin el aviso del C12. */
+    fun lineaDeEstadoBase(count: StockCount): String {
         val s = count.summary
-        val base = if (count.status == "IN_PROGRESS" && s != null) "${count.statusDisplay} · ${avanceTexto(s.countedCount, s.itemCount)}"
+        return if (count.status == "IN_PROGRESS" && s != null) "${count.statusDisplay} · ${avanceTexto(s.countedCount, s.itemCount)}"
         else "${count.statusDisplay} - ${Plurales.articulos(count.itemCount)}"
+    }
+
+    /** «1 no se aplicó» si el servidor dejó líneas sin aplicar por Shopify (C12); la fila lo pinta en ámbar. */
+    fun avisoNoAplicadas(count: StockCount): String? {
         val noAplicadas = count.items.count { it.noSeAplico }
-        return if (noAplicadas > 0) "$base · ${ConteoNoAplicado.enLaLista(noAplicadas)}" else base
+        return if (noAplicadas > 0) ConteoNoAplicado.enLaLista(noAplicadas) else null
     }
 
     /**
