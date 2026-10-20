@@ -689,7 +689,7 @@ class SelloDeLaVentaTest {
 
     /** Mesa abierta SIN red (sesión provisional): el cobro va como intent PAY_CASH «intent-1» al outbox. */
     private fun cobrarMesaSinRed() {
-        coEvery { syncOutbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns "intent-1"
+        coEvery { syncOutbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns "intent-1"
         tableSession.start(
             TableSession.Active("mesa-5", "5", null, "local-5", "LOCAL-5", 0, 10_000, TableSession.Mode.PAYING, isProvisional = true),
         )
