@@ -551,11 +551,11 @@ class TableOrderViewModel @Inject constructor(
         showMessage("Configura los tiempos de esta sucursal en el dashboard, en Configuración › Tiempos de servicio.")
     }
 
-    /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
-     *  two courses must stay two lines (they fire at different moments). */
     /** Con el cobro abierto (sesión PAYING) el importe ya se congeló: lo leído por la cámara o la pistola debajo del cobro no entra. */
     private fun cobrando() = tableSession.current()?.mode == TableSession.Mode.PAYING
 
+    /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
+     *  two courses must stay two lines (they fire at different moments). */
     fun addProduct(product: Product) {
         if (cobrando()) return
         invalidateBlockedNotice()
