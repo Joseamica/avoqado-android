@@ -13,6 +13,10 @@ data class CapturaDelCobro(
     val cashTenderedCents: Int? = null, val changeCents: Int? = null,
     val customerId: String? = null, val localOrderId: String? = null, val version: Int = 1,
     val orderRequestJson: String? = null, val intentoPayloadJson: String? = null,
+    /** Mesa cobrada sin red (19-oct): el saldo que el aparato esperaba DESPUÉS de este cobro. Null en capturas viejas. */
+    val restanteEsperadoCents: Int? = null,
+    /** Codex r2/r3 (19-oct): 1¢ por componente de combo de las rondas sin red de la mesa (un combo redondea distinto); 0 lo demás. */
+    val toleranciaCents: Int? = null,
 )
 
 data class EvaluacionDelCobro(
@@ -31,6 +35,8 @@ object ConciliacionDelCobro {
         require(c.amountCents >= 0 && c.tipCents >= 0 && c.amountCents.toLong() + c.tipCents <= Int.MAX_VALUE) { "Importe del cobro fuera de rango" }
         require(c.cashTenderedCents == null || c.cashTenderedCents >= 0) { "Efectivo recibido fuera de rango" }
         require(c.changeCents == null || c.changeCents >= 0) { "Cambio fuera de rango" }
+        require(c.restanteEsperadoCents == null || c.restanteEsperadoCents >= 0) { "Saldo esperado fuera de rango" }
+        require(c.toleranciaCents == null || c.toleranciaCents >= 0) { "Tolerancia fuera de rango" }
         require(c.tenderTypeId == null || c.tenderTypeId.isNotBlank() && c.tenderRevision != null && c.tenderRevision >= 0) { "Tipo de cobro sin revisión" }
         return buildJsonObject {
             put("version", c.version); put("venueId", c.venueId); put("key", c.key)
@@ -41,11 +47,13 @@ object ConciliacionDelCobro {
             c.cashTenderedCents?.let { put("cashTenderedCents", it) }; c.changeCents?.let { put("changeCents", it) }
             c.customerId?.let { put("customerId", it) }
             c.orderRequestJson?.let { put("orderRequestJson", it) }; c.intentoPayloadJson?.let { put("intentoPayloadJson", it) }
+            c.restanteEsperadoCents?.let { put("restanteEsperadoCents", it) }; c.toleranciaCents?.let { put("toleranciaCents", it) }
         }.toString()
     }
 
     fun capturarIntent(venueId: String, key: String, payloadJson: String,
-        cashTenderedCents: Int? = null, changeCents: Int? = null, splitType: String? = null): String? {
+        cashTenderedCents: Int? = null, changeCents: Int? = null, splitType: String? = null, restanteEsperadoCents: Int? = null,
+        toleranciaCents: Int? = null): String? {
         val p = runCatching { Json.parseToJsonElement(payloadJson).jsonObject }.getOrNull() ?: return null
         val local = text(p["localOrderId"])?.takeIf { it.isNotBlank() }
         val order = text(p["orderId"])?.takeIf { it.isNotBlank() }
@@ -56,7 +64,8 @@ object ConciliacionDelCobro {
         return guardarCaptura(CapturaDelCobro(venueId, key, order, amount, tip, splitType,
             if (tender == null) text(p["method"]) ?: "CASH" else null,
             tender, integer(p["tenderRevision"]), cashTenderedCents, changeCents,
-            text(p["customerId"]), local, intentoPayloadJson = payloadJson))
+            text(p["customerId"]), local, intentoPayloadJson = payloadJson, restanteEsperadoCents = restanteEsperadoCents,
+            toleranciaCents = toleranciaCents))
     }
 
     fun leerCaptura(json: String?, venueId: String, key: String): CapturaDelCobro? = runCatching {
@@ -66,7 +75,8 @@ object ConciliacionDelCobro {
             integer(o["tipCents"]) ?: return null, text(o["splitType"]), text(o["method"]),
             text(o["tenderTypeId"]), integer(o["tenderRevision"]), integer(o["cashTenderedCents"]),
             integer(o["changeCents"]), text(o["customerId"]), text(o["localOrderId"]),
-            orderRequestJson = text(o["orderRequestJson"]), intentoPayloadJson = text(o["intentoPayloadJson"]))
+            orderRequestJson = text(o["orderRequestJson"]), intentoPayloadJson = text(o["intentoPayloadJson"]),
+            restanteEsperadoCents = integer(o["restanteEsperadoCents"]), toleranciaCents = integer(o["toleranciaCents"]))
             .also { guardarCaptura(it) }
     }.getOrNull()
 
@@ -115,6 +125,23 @@ object ConciliacionDelCobro {
                 kotlin.math.abs(alCobrar.toLong() - enServidor) > toleranciaCents(pedido)) alCobrar to enServidor else null
         } else null
         if (totalDeLaOrden != null) different.add("totalDeLaOrden")
+        // 19-oct (mesa sin red retenida, founder «a»): la mesa cobrada sin red ya no espera a comprobar el precio; el servidor la
+        // valora con el de HOY. Si el saldo que dejó no es el que el aparato esperaba, o el cobro sobró (pagado > total: el saldo
+        // queda en 0 en los dos lados), el gerente lo ve. Propinas fuera: se cancelan entre total y pagado (`orderBalance.ts`).
+        val saldoDeLaMesa = if (canal == CanalDelCobro.ACK && (c.localOrderId != null || c.orderId != null)) {
+            val enServidor = integer(payment["remainingBalanceCents"])
+            val tolerancia = (c.toleranciaCents ?: 0).toLong()
+            val deMas = integer(payment["totalPaidCents"])?.let { pagado -> integer(payment["orderTotalCents"])?.let { pagado.toLong() - it } }
+                ?.takeIf { it > tolerancia }
+            when {
+                enServidor == null -> { missing.add("saldoDeLaMesa"); null }
+                c.restanteEsperadoCents == null -> { missing.add("saldoDeLaMesa"); null }
+                kotlin.math.abs(enServidor.toLong() - c.restanteEsperadoCents) > tolerancia || deMas != null -> {
+                    different.add("saldoDeLaMesa"); Triple(c.restanteEsperadoCents, enServidor, deMas)
+                }
+                else -> null
+            }
+        } else null
         val result = buildJsonObject {
             put("paymentId", paymentId); put("orderId", orderId)
             amount?.let { put("amountCents", it) }; tip?.let { put("tipCents", it) }
@@ -123,12 +150,17 @@ object ConciliacionDelCobro {
             put("camposDiferentes", JsonArray(different.map(::JsonPrimitive)))
             put("camposNoComprobados", JsonArray(missing.map(::JsonPrimitive)))
             totalDeLaOrden?.let { (alCobrar, enServidor) -> put("totalAlCobrarCents", alCobrar); put("totalEnElServidorCents", enServidor) }
+            saldoDeLaMesa?.let { (esperado, enServidor, deMas) ->
+                put("saldoEsperadoCents", esperado); put("saldoEnElServidorCents", enServidor); deMas?.let { put("cobradoDeMasCents", it) }
+            }
         }.toString()
         // Sólo importe/propina son obligatorios en el contrato económico común.
         // Los campos opcionales ausentes quedan explícitos; jamás se certifica su igualdad.
         val motivo = when {
             amount == null || tip == null || amount.toLong() + tip > Int.MAX_VALUE -> RESULTADO_NO_COMPROBADO
             different.isNotEmpty() -> DIFERENCIA
+            // Captura vieja de una mesa (sin el saldo esperado) y el servidor sí dio su saldo: no se certifica que cuadra.
+            "saldoDeLaMesa" in missing && integer(payment["remainingBalanceCents"]) != null -> RESULTADO_NO_COMPROBADO
             else -> null
         }
         return EvaluacionDelCobro(true, motivo, result, different, missing)

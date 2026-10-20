@@ -2628,6 +2628,9 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                     },
                     cashTenderedCents = cashReceivedCents, changeCents = changeCents, splitType = splitCapturado,
+                    // 19-oct (mesa sin red retenida): lo que la mesa debía al empezar el cobro, menos lo cobrado. Al confirmarse, si
+                    // el servidor (que valora con el precio de HOY) deja otro saldo, el gerente ve DIFERENCIA.
+                    restanteEsperadoCents = mesaDelCobro?.takeIf { it.orderId == orderId }?.let { (it.totalCents - subtotal).coerceAtLeast(0) },
                 )
                 recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(

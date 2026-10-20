@@ -152,7 +152,7 @@ class HistorialDelCobroViewModel @Inject constructor(
             text("paymentId")?.let {lines.add("Folio del servidor: $it")}
             if(obj!=null) {
                 lines.add("Método registrado: ${metodoLegible(text("method"),text("splitType"),text("tenderTypeId"))}")
-                val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto","tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden")
+                val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto","tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden","saldoDeLaMesa" to "saldo de la mesa")
                 for((key,title) in listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar")) {
                     val fields=(obj[key] as? JsonArray)?.mapNotNull {(it as? JsonPrimitive)?.content?.let(labels::get)} ?: emptyList()
                     if(fields.isNotEmpty()) lines.add("$title: ${fields.joinToString()}")
@@ -160,6 +160,10 @@ class HistorialDelCobroViewModel @Inject constructor(
                 // Q16: la venta sin red cuyo precio cambió en el servidor (mismo texto en iOS).
                 val alCobrar=cents("totalAlCobrarCents");val enServidor=cents("totalEnElServidorCents")
                 if(alCobrar!=null && enServidor!=null) lines.add("Total al cobrar ${money(alCobrar)} · total en el servidor ${money(enServidor)}")
+                // Mesa cobrada sin red (19-oct): el servidor la valoró con su precio de hoy (mismo texto en iOS).
+                val saldoEsperado=cents("saldoEsperadoCents");val saldoServidor=cents("saldoEnElServidorCents")
+                if(saldoEsperado!=null && saldoServidor!=null) lines.add("Saldo esperado ${money(saldoEsperado)} · saldo en el servidor ${money(saldoServidor)}")
+                cents("cobradoDeMasCents")?.let { lines.add("Se cobró de más: ${money(it)}") }
             }
         }
         result("Primer resultado",row.q15InitialResultJson)

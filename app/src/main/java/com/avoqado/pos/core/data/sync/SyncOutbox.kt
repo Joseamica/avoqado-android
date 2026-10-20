@@ -274,6 +274,8 @@ class SyncOutbox @Inject constructor(
         preparationSnapshots: List<com.avoqado.pos.core.data.local.database.CachedPayloadEntity>? = null,
         expectedActorStaffId: String? = null,
         cashTenderedCents: Int? = null, changeCents: Int? = null, splitType: String? = null,
+        /** Mesa cobrada sin red: el saldo que el aparato espera tras este cobro (`ConciliacionDelCobro`). */
+        restanteEsperadoCents: Int? = null,
     ): String {
         val actor = secureStorage.userId
         if (type == SyncIntentTypes.KDS_ITEM_PROGRESS) {
@@ -284,7 +286,8 @@ class SyncOutbox @Inject constructor(
         } else require(preparationSnapshots == null)
         val originalPayload = json.encodeToString(JsonObject.serializer(), payload)
         val capture = if(type == SyncIntentTypes.PAY_CASH) com.avoqado.pos.payment.data.ConciliacionDelCobro.capturarIntent(
-            venueId,id,originalPayload,cashTenderedCents,changeCents,splitType) else null
+            venueId,id,originalPayload,cashTenderedCents,changeCents,splitType,restanteEsperadoCents,
+            restanteEsperadoCents?.let { toleranciaSinRedQ16(venueId, payload) }) else null
         require(type != SyncIntentTypes.PAY_CASH || capture != null) { "No se pudo guardar el importe original del cobro" }
         // seq assigned atomically with the original proof, before any replay.
         val entity = SyncIntentEntity(
@@ -372,39 +375,65 @@ class SyncOutbox @Inject constructor(
     }
 
     /** Recover only an already stored ACK. Missing/ambiguous/processing/rejected stay held. */
-    private suspend fun recuperarRetenidoQ16(row: SyncIntentEntity, venueId: String, epoch: Long) {
-        if (row.venueId != venueId || row.type !in setOf(SyncIntentTypes.OPEN_TABLE, SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH)) return
-        val savedDevice = prefs.getString(KEY_DEVICE_ID, null)?.takeIf { it.isNotBlank() } ?: return
+    private suspend fun recuperarRetenidoQ16(row: SyncIntentEntity, venueId: String, epoch: Long): Boolean {
+        if (row.venueId != venueId || row.type !in setOf(SyncIntentTypes.OPEN_TABLE, SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH)) return false
+        val savedDevice = prefs.getString(KEY_DEVICE_ID, null)?.takeIf { it.isNotBlank() } ?: return false
         try {
             val payload = json.decodeFromString(JsonObject.serializer(), row.payloadJson)
             val local = payload["localOrderId"]
-            if (local != null && (local !is JsonPrimitive || !local.isString || local.content.isBlank())) return
+            if (local != null && (local !is JsonPrimitive || !local.isString || local.content.isBlank())) return false
             val response = apiService.recoverSyncQ16(venueId, kotlinx.serialization.json.buildJsonObject {
                 put("deviceId", JsonPrimitive(savedDevice))
                 put("intentIds", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive(row.id))))
             })
-            val data = response["data"] as? JsonObject ?: return
-            val records = data["intents"] as? kotlinx.serialization.json.JsonArray ?: return
-            if (records.size != 1 || (data["orders"] as? kotlinx.serialization.json.JsonArray)?.isEmpty() != true) return
-            val raw = records.single() as? JsonObject ?: return
+            val data = response["data"] as? JsonObject ?: return false
+            val records = data["intents"] as? kotlinx.serialization.json.JsonArray ?: return false
+            val orders = data["orders"] as? kotlinx.serialization.json.JsonArray
+            // 19-oct (mesa sin red retenida, como mostrador en 2.25.0): vacío ESTRICTO = el servidor no tiene este intent (reserva
+            // antes del efecto, así que mandarlo es idempotente). Se quita SÓLO la espera de precio de una apertura/ronda y la
+            // admisión vuelve a decidir con la regla vigente; si todavía la retiene, la vuelve a marcar antes de mandar nada.
+            if (records.isEmpty()) return orders?.isEmpty() == true && row.q15Reason == com.avoqado.pos.payment.data.ConciliacionDelCobro.PRICE_PROOF_PENDING &&
+                row.type in setOf(SyncIntentTypes.OPEN_TABLE, SyncIntentTypes.ADD_ITEMS) && dao.soltarRetenidoQ16(venueId, row.id) == 1
+            if (records.size != 1 || orders?.isEmpty() != true) return false
+            val raw = records.single() as? JsonObject ?: return false
             fun string(key: String) = (raw[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
-            val seq = raw["seq"] as? JsonPrimitive ?: return
+            val seq = raw["seq"] as? JsonPrimitive ?: return false
             if (seq.isString || seq.content.toLongOrNull() != row.seq || string("id") != row.id ||
                 string("type") != row.type || string("deviceId") != savedDevice ||
                 !raw.containsKey("localRef") || raw["localRef"] != (local ?: kotlinx.serialization.json.JsonNull) ||
                 string("status") != "ACKED" || raw["errorCode"] != kotlinx.serialization.json.JsonNull ||
-                prefs.getString(KEY_DEVICE_ID, null) != savedDevice) return
-            val result = raw["result"] as? JsonObject ?: return
+                prefs.getString(KEY_DEVICE_ID, null) != savedDevice) return false
+            val result = raw["result"] as? JsonObject ?: return false
             val ack = SyncAck(id = row.id, status = "ACKED", result = result)
             if (row.type == SyncIntentTypes.OPEN_TABLE && local != null) {
-                val resolved = (result["orderId"] as? JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() }?.content ?: return
-                if (result["localOrderId"] != local) return
+                val resolved = (result["orderId"] as? JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() }?.content ?: return false
+                if (result["localOrderId"] != local) return false
                 tableDrafts.promote(venueId, (local as JsonPrimitive).content, resolved)
             }
             conservarAck(ack, row, venueId, savedDevice, savedDevice)
             if (activeVenueId == venueId) _acks.emit(ack.copy(contextoDeSesion = epoch))
+            return false
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (error: Exception) { Log.w(TAG, "La recuperación sigue esperando: ${error.message}") }
+        catch (error: Exception) { Log.w(TAG, "La recuperación sigue esperando: ${error.message}"); return false }
+    }
+
+    /**
+     * Codex r2/r3 (19-oct): tolerancia de redondeo de las rondas sin red de ESTA mesa: 1¢ por componente de COMBO (el carrito
+     * reparte el precio del paquete y redondea distinto que el servidor: 3×2 de $50 = $99.99 aquí, $100 allá). Una pieza de
+     * precio normal no redondea: 0¢, para no tapar un cambio real chico en una mesa grande.
+     * ponytail: 1¢ por OPCIÓN; una opción con varias unidades (6 piezas por $99.99) redondea hasta 1¢ por unidad y avisa de más
+     * (falso positivo para el gerente; nunca esconde dinero). Salida: que la ronda lleve las unidades de cada opción (Codex r4).
+     */
+    private suspend fun toleranciaSinRedQ16(venueId: String, payload: JsonObject): Int {
+        val ref = (payload["localOrderId"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return 0
+        return dao.pendingFifo(venueId, 1000).filter { it.type == SyncIntentTypes.OPEN_TABLE || it.type == SyncIntentTypes.ADD_ITEMS }
+            .sumOf { row -> runCatching {
+                val p = json.decodeFromString(JsonObject.serializer(), row.payloadJson)
+                if ((p["localOrderId"] as? JsonPrimitive)?.content != ref) 0
+                else (p["items"] as? kotlinx.serialization.json.JsonArray)?.sumOf { item ->
+                    val combo = (item as? JsonObject)?.get("promotionRef") as? JsonObject ?: return@sumOf 0
+                    ((combo["selections"] as? kotlinx.serialization.json.JsonArray)?.size ?: 1).coerceAtLeast(1) } ?: 0
+            }.getOrDefault(0) }
     }
 
     internal suspend fun aliasDurableQ16(venueId: String, original: String): String? =
@@ -446,6 +475,7 @@ class SyncOutbox @Inject constructor(
             .onFailure { Log.e(TAG, "❌ No se pudo sincronizar el cajón antes del outbox: ${it.message}") }
             .getOrDefault(true)
         replayMutex.withLock {
+            val soltadasEnEsteCiclo = mutableSetOf<String>()
             val lanes: List<Boolean?> = if (preparationLanesNegotiated(venueId)) listOf(false, true) else listOf(null)
             for (lane in lanes) {
                 while (true) {
@@ -456,7 +486,8 @@ class SyncOutbox @Inject constructor(
                         else dao.pendingFifoLane(venueId, lane, BATCH_SIZE)
                     if (leidos.isEmpty()) break
                     if (leidos.first().q15Reason != null) {
-                        recuperarRetenidoQ16(leidos.first(), venueId, contextoDeSesion)
+                        // Soltada (19-oct): vuelve a pasar por la admisión de precio UNA vez por ciclo; nunca un bucle caliente.
+                        if (recuperarRetenidoQ16(leidos.first(), venueId, contextoDeSesion) && soltadasEnEsteCiclo.add(leidos.first().id)) continue
                         break // no same-cycle re-price or hot loop after recovery
                     }
 
