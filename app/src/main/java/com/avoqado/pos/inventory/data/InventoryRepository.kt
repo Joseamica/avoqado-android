@@ -158,6 +158,15 @@ data class RespuestaHttp(val code: Int, val body: String) {
 
     /** Detalle estructurado del 409 de revisión; null para cualquier otro error. */
     val conflictoRevision: ConflictoRevision? get() = metadatos.conflictoRevision
+
+    /**
+     * Las líneas que el confirm NO aplicó por Shopify (C12). Vacía si el campo no vino — y no viene en un servidor
+     * viejo, cuando todo se aplicó, ni en el reintento `alreadyCompleted`: por eso quien cierra el conteo relee el
+     * GET (`shopifyHeld`) antes de concluir que todo se aplicó.
+     */
+    val noAplicados: List<NoAplicadoDelConfirm> by lazy(LazyThreadSafetyMode.NONE) {
+        ConteoNoAplicado.decodificarNoAplicados(body)
+    }
 }
 
 private data class MetadatosDeRespuesta(
