@@ -85,6 +85,7 @@ fun SplitPaymentSheet(
     var selectedOption by remember { mutableStateOf<SplitType?>(null) }
 
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

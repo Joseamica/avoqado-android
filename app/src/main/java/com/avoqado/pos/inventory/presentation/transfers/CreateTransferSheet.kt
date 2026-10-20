@@ -400,6 +400,7 @@ private fun ItemPickerSheet(
     }
 
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,

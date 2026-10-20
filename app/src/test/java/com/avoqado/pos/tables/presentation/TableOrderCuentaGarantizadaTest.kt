@@ -219,7 +219,27 @@ class TableOrderCuentaGarantizadaTest {
             advanceUntilIdle()
             assertFalse(subject.chequeAlDia.value); assertTrue(subject.vioCambios)
             assertFalse(subject.preparePagar())
-            assertEquals("La cuenta cambió y no se pudo actualizar: cóbrala cuando vuelva la conexión.", subject.blockedNotice.value)
+            assertEquals("No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento.", subject.blockedNotice.value)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // D3 (20-oct): volvió la red con la mesa abierta y Pagar seguía bloqueado — nada volvía a pedir la cuenta. El aviso dice
+    // «intenta de nuevo en un momento»: el toque bloqueado la vuelve a pedir, y el siguiente toque ya cobra.
+    @Test fun `sin saldo fresco tocar Pagar vuelve a pedir la cuenta y el siguiente toque cobra`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
+        try {
+            // Como en la D3: la cuenta ya se leyó una vez y al reabrirla sin red la lectura falla.
+            subject.loadCheck(); advanceUntilIdle()
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+            subject.loadCheck(); advanceUntilIdle()
+            assertFalse(subject.chequeAlDia.value)
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
+            assertFalse(subject.preparePagar())
+            assertEquals("No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento.", subject.blockedNotice.value)
+            advanceUntilIdle()
+            assertTrue("El toque bloqueado volvió a pedir la cuenta", subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
         } finally { subject.viewModelScope.cancel() }
     }
 
@@ -362,6 +382,18 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // Codex r1 (texto-cuenta-y-camara): cancelar «Dividir importe» o girar el aparato deja la sesión en PAYING con el cobro
+    // ya cerrado. La guarda de la cámara vive en la pantalla (cobro visible), no aquí: la cuenta no puede tragarse productos en silencio.
+    @Test fun `con la sesion colgada en PAYING y el cobro cerrado los productos si entran`() = runTest {
+        val subject = vm()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            subject.addProduct(Product(id = "p", name = "Artículo", priceValue = 50.0))
+            subject.addProductWithModifiers(Product(id = "q", name = "Otro", priceValue = 20.0), 1, emptyList(), null)
+            assertEquals(2, subject.pending.value.size)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `provisional suma total real con modificadores y conserva valor al recrear VM`() = runTest {
         val subject = vm(provisional = true)
         try {
@@ -399,7 +431,7 @@ class TableOrderCuentaGarantizadaTest {
             subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
             every { storage.venueId } returns "otra-sucursal"
             assertFalse(subject.preparePagar())
-            assertEquals("La cuenta cambió y no se pudo actualizar: cóbrala cuando vuelva la conexión.", subject.blockedNotice.value)
+            assertEquals("Esta cuenta ya no es la que está abierta en este aparato: vuelve a abrir la mesa para cobrarla.", subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 

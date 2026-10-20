@@ -237,6 +237,7 @@ fun PaymentFlowScreen(
             }
             is PaymentFlowState.Processing, is PaymentFlowState.SentToTerminal -> {
                 PaymentProcessingView(
+                    esperandoTerminal = currentState is PaymentFlowState.SentToTerminal,
                     // 🔴 Ya NO se cierra la pantalla aquí: la cancelación tiene que esperar el
                     // desenlace del cobro antes de cancelar la venta. El flujo se cierra cuando el
                     // coordinador dice que terminó (ver `debeSalir`).
