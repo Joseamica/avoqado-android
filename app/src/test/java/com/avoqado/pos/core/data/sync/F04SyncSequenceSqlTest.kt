@@ -96,6 +96,7 @@ class F04SyncSequenceSqlTest {
         override suspend fun hayCapturaSinResolverQ16(venueId: String): Boolean = error("Q16 price reads are outside the F04 sequence fixture")
         override fun observarRevisionesQ15(venueId: String, revisadas: Boolean, busqueda: String): kotlinx.coroutines.flow.Flow<Int> = error("Q15 history observations are outside the F04 sequence fixture")
         override suspend fun retenerIntentQ15(venueId: String, id: String, motivo: String, ahora: Long): Int = error("Q15 holds are outside the F04 sequence fixture")
+        override suspend fun soltarRetenidoSqlQ16(venueId: String, id: String): Int = error("Q16 releases are outside the F04 sequence fixture")
         override suspend fun preparationBefore(venueId: String, keys: List<String>): List<CachedPayloadEntity> = error("No delivery predecessor in this fixture")
         override suspend fun preparationStatuses(venueId: String, ids: List<String>): List<SyncIntentEntity> = error("Not used")
         override suspend fun pendingFifoLane(venueId: String, preparationLane: Boolean, limit: Int): List<SyncIntentEntity> = error("Not used")
