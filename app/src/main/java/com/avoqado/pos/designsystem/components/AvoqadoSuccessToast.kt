@@ -73,6 +73,7 @@ fun AvoqadoSuccessToast(
         label = "successScale",
     )
 
+    BarreraDeAtajos()   // POS de Windows: mientras el aviso está encima, F12/F3/F5… esperan
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(

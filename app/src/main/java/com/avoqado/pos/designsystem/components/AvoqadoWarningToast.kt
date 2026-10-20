@@ -111,6 +111,8 @@ fun AvoqadoWarningToast(
         label = "warningScale",
     )
 
+    // Un aviso ámbar se lee antes de seguir: con él encima, las teclas de la pantalla esperan (Windows).
+    BarreraDeAtajos()
     Dialog(
         onDismissRequest = { (onCerrarSinResolver ?: onDismiss)() },
         properties = DialogProperties(

@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,6 +47,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.designsystem.components.AtajoDeTeclado
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import com.avoqado.pos.designsystem.components.TeclaDeAtajo
+import com.avoqado.pos.designsystem.components.sinTeclasDeClic
 
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -60,6 +65,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.utf16CodePoint
@@ -87,8 +96,24 @@ fun PaymentMethodSelectionScreen(
     val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
     var showCustomCashSheet by remember { mutableStateOf(false) }
+    // F5 abre «Monto recibido» con el total ya puesto; el clic en «Personalizado», en cero como siempre.
+    var efectivoConTotal by remember { mutableStateOf(false) }
     var showItemsSheet by remember { mutableStateOf(false) }
     var showManualMethodSheet by remember { mutableStateOf(false) }
+
+    // Teclas del POS de Windows (founder, 19-oct): hacen lo mismo que el clic en su botón. Con cualquiera de las
+    // hojas de abajo abierta no responden (la hoja es barrera).
+    AtajoDeTeclado(Key.F5) {
+        if (onCashCustomSelected != null) {
+            efectivoConTotal = true
+            showCustomCashSheet = true
+        } else {
+            onMethodSelected(PaymentMethod.CASH)
+        }
+    }
+    AtajoDeTeclado(Key.F4, activo = !terminalsUnavailable) { onMethodSelected(PaymentMethod.CARD) }
+    AtajoDeTeclado(Key.Escape) { onCancel() }
+    val enWindows = LocalEsEscritorio.current
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -113,19 +138,22 @@ fun PaymentMethodSelectionScreen(
             } else {
                 Spacer(modifier = Modifier.size(1.dp))
             }
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable(onClick = onCancel),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "Cerrar",
-                    modifier = Modifier.size(18.dp),
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TeclaDeAtajo("Esc", Modifier.padding(end = AvoqadoTheme.spacing.sm))
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(onClick = onCancel),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Cerrar",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
 
@@ -197,6 +225,7 @@ fun PaymentMethodSelectionScreen(
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                                .sinTeclasDeClic(enWindows)
                                 .clickable {
                                     if (onCashPresetSelected != null) {
                                         onCashPresetSelected(amountSuggestion)
@@ -219,6 +248,7 @@ fun PaymentMethodSelectionScreen(
                             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                             .clickable {
                                 if (onCashCustomSelected != null) {
+                                    efectivoConTotal = false
                                     showCustomCashSheet = true
                                 } else {
                                     onMethodSelected(PaymentMethod.CASH)
@@ -229,6 +259,7 @@ fun PaymentMethodSelectionScreen(
                                 vertical = AvoqadoTheme.spacing.xs,
                             ),
                     )
+                    TeclaDeAtajo("F5")
                 }
             }
 
@@ -273,7 +304,11 @@ fun PaymentMethodSelectionScreen(
                     }
                 }
 
-
+                TeclaDeAtajo(
+                    "F4",
+                    Modifier.padding(end = AvoqadoTheme.spacing.sm),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (terminalsUnavailable) 0.4f else 1f),
+                )
                 Icon(
                     Icons.Filled.ChevronRight,
                     contentDescription = null,
@@ -335,6 +370,7 @@ fun PaymentMethodSelectionScreen(
     if (showCustomCashSheet) {
         CustomCashSheet(
             totalCents = amountCents,
+            conTotal = efectivoConTotal,
             onConfirm = { amount ->
                 showCustomCashSheet = false
                 onCashCustomSelected?.invoke(amount)
@@ -368,6 +404,7 @@ private fun ManualMethodSheet(
     onSelect: (com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val enWindows = LocalEsEscritorio.current
     AvoqadoModalBottomSheet(onDismissRequest = onDismiss) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
@@ -398,6 +435,7 @@ private fun ManualMethodSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
+                            .sinTeclasDeClic(enWindows)
                             .clickable { onSelect(com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender(tender)) }
                             .padding(AvoqadoTheme.spacing.md),
                         verticalAlignment = Alignment.CenterVertically,
@@ -422,6 +460,7 @@ private fun ManualMethodSheet(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
+                        .sinTeclasDeClic(enWindows)
                         .clickable { onSelect(com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed(method)) }
                         .padding(AvoqadoTheme.spacing.md),
                     verticalAlignment = Alignment.CenterVertically,
@@ -465,11 +504,23 @@ internal fun montoConTecla(cents: Int, caracter: Char?, borrar: Boolean): Int? =
 @Composable
 private fun CustomCashSheet(
     totalCents: Int,
+    /**
+     * F5 en Windows: abre con el total ya puesto, F5 otra vez cobra exacto y la primera tecla lo reemplaza. En Windows
+     * sólo F5 cobra, nunca Enter: la pistola termina cada código con Enter y un escaneo corto o partido cobraría sin que
+     * nadie lo pidiera (Codex r1-r4; founder, 19-oct). Una tecla F nunca la manda una pistola.
+     */
+    conTotal: Boolean = false,
     onConfirm: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var inputCents by remember { mutableIntStateOf(0) }
+    var inputCents by remember { mutableIntStateOf(if (conTotal) totalCents else 0) }
+    var totalSugerido by remember { mutableStateOf(conTotal) }
+    fun teclear(caracter: Char?, borrar: Boolean): Boolean {
+        inputCents = montoConTecla(if (totalSugerido) 0 else inputCents, caracter, borrar) ?: return false
+        totalSugerido = false
+        return true
+    }
     val isValid = inputCents >= totalCents
     val changeCents = if (isValid) inputCents - totalCents else 0
 
@@ -478,6 +529,7 @@ private fun CustomCashSheet(
     // Un clic en un botón de la pantalla se lleva el foco, pero sigue DENTRO de esta columna, así que
     // `onPreviewKeyEvent` (de padre a hijo) sigue viendo las teclas.
     val foco = remember { androidx.compose.ui.focus.FocusRequester() }
+    val enWindows = LocalEsEscritorio.current
     LaunchedEffect(Unit) { runCatching { foco.requestFocus() } }
 
     AvoqadoModalBottomSheet(
@@ -489,19 +541,31 @@ private fun CustomCashSheet(
                 .fillMaxWidth()
                 .focusRequester(foco)
                 .focusable()
+                .sinTeclasDeClic(enWindows)
                 .onPreviewKeyEvent { e ->
-                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    // Enter es SÓLO de esta hoja, también al soltarlo: si no, el botón del teclado que quedó con el
+                    // foco tras un clic se «pica» con el Enter y teclea un dígito de más (prueba de escena, 19-oct).
+                    // El monto se mide al momento, no con `isValid`: una cifra y la tecla que cobra pueden llegar en el
+                    // mismo despacho, antes de recomponer (Codex r4 #3).
+                    val alcanza = inputCents >= totalCents
+                    val conModificador = e.isCtrlPressed || e.isAltPressed || e.isMetaPressed || e.isShiftPressed
+                    // Fuera de Windows (tableta con teclado); en Windows Enter ni llega aquí.
                     if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
-                        if (isValid) onConfirm(inputCents)
+                        if (e.type == KeyEventType.KeyDown && alcanza && !totalSugerido) onConfirm(inputCents)
                         return@onPreviewKeyEvent true
                     }
-                    val nuevo = montoConTecla(
-                        inputCents,
+                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    if (enWindows && e.key == Key.F5 && !conModificador) {
+                        when {
+                            totalSugerido -> onConfirm(totalCents)
+                            alcanza -> onConfirm(inputCents)
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                    teclear(
                         caracter = e.utf16CodePoint.takeIf { it > 0 }?.toChar(),
                         borrar = e.key == Key.Backspace,
-                    ) ?: return@onPreviewKeyEvent false
-                    inputCents = nuevo
-                    true
+                    )
                 }
                 .padding(horizontal = AvoqadoTheme.spacing.lg)
                 .padding(bottom = AvoqadoTheme.spacing.xxl),
@@ -555,6 +619,13 @@ private fun CustomCashSheet(
                     color = Success,
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
+            } else if (totalSugerido) {
+                Text(
+                    text = "F5 otra vez: exacto · o teclea lo que te dieron",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
             } else {
                 Text(
                     text = "Mínimo ${formatMoney(totalCents / 100.0)}",
@@ -599,11 +670,7 @@ private fun CustomCashSheet(
                                     .background(MaterialTheme.colorScheme.surface)
                                     .clickable {
                                         // "." no hace nada: los dígitos ya entran como centavos.
-                                        montoConTecla(
-                                            inputCents,
-                                            caracter = label.singleOrNull(),
-                                            borrar = label == "\u232B",
-                                        )?.let { inputCents = it }
+                                        teclear(caracter = label.singleOrNull(), borrar = label == "\u232B")
                                     },
                                 contentAlignment = Alignment.Center,
                             ) {
@@ -621,7 +688,8 @@ private fun CustomCashSheet(
 
             // Confirmar button
             androidx.compose.material3.Button(
-                onClick = { onConfirm(inputCents) },
+                // Se vuelve a medir: `enabled` puede venir de antes de la última cifra (Codex r5 #1).
+                onClick = { if (inputCents >= totalCents) onConfirm(inputCents) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
@@ -639,6 +707,7 @@ private fun CustomCashSheet(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
+                TeclaDeAtajo("F5", Modifier.padding(start = AvoqadoTheme.spacing.sm), color = LocalContentColor.current.copy(alpha = 0.8f))
             }
         }
     }

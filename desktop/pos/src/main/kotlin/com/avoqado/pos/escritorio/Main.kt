@@ -31,7 +31,9 @@ import com.avoqado.pos.customerdisplay.monitoresDivididos
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
+import com.avoqado.pos.designsystem.components.AtajosDeTeclado
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import com.avoqado.pos.escritorio.teclado.AtajosDeLaVentana
 import com.avoqado.pos.escritorio.teclado.emisorDelBus
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import com.avoqado.pos.kiosk.domain.KioskState
@@ -89,11 +91,15 @@ fun main() {
         application {
             // LocalEsEscritorio: las hojas modales llevan una X (con mouse no hay gesto ni botón de atrás).
             CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides alTronar, LocalEsEscritorio provides true) {
+                // Atajos de teclado del cobro (F12, F5, F4, Esc…): sólo lo que la pantalla no usó, una vez por apretón.
+                val atajos = remember { AtajosDeLaVentana(AtajosDeTeclado::atender) }
                 Window(
                     onCloseRequest = ::exitApplication,
                     title = "Avoqado POS",
                     icon = remember { iconoDeLaVentana() },
                     state = rememberWindowState(placement = WindowPlacement.Maximized, size = Arranque.TAMANO_INICIAL),
+                    onPreviewKeyEvent = atajos::antes,
+                    onKeyEvent = atajos::despues,
                 ) {
                     LaunchedEffect(Unit) {
                         withFrameNanos { }   // el primer cuadro se compone…

@@ -1,5 +1,6 @@
 package com.avoqado.pos.announcements.presentation
 
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,6 +46,7 @@ fun AnnouncementGate(viewModel: AnnouncementGateViewModel = hiltViewModel()) {
         return
     }
 
+    BarreraDeAtajos()   // POS de Windows: con el anuncio encima, las teclas de atajo esperan
     AlertDialog(
         onDismissRequest = { viewModel.cerrar(ventana.id) },
         title = { Text(ventana.titulo) },

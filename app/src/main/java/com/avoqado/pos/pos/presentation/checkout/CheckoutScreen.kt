@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -66,7 +67,10 @@ import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
+import com.avoqado.pos.designsystem.components.AtajoDeTeclado
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.TeclaDeAtajo
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
@@ -579,6 +583,20 @@ fun CheckoutScreen(
         proceedToPayment()
     }
 
+    // Teclas del POS de Windows (founder, 19-oct): F12 = el botón Cobrar (como Eleventa) y F3 = Buscar (la tecla de
+    // buscar de Windows; F10 no, Windows la usa para el menú de la ventana). Con el cobro, la búsqueda o cualquier
+    // hoja o diálogo abiertos no responden.
+    AtajoDeTeclado(
+        Key.F12,
+        // El botón Cobrar sólo existe con artículos en el carrito (CartPanelView): sin ellos, F12 tampoco.
+        activo = !cartState.isEmpty && !showPaymentFlow && !showSearch && upsellMoment == null && !areaOperationsState.issuing,
+    ) {
+        runPrimaryAction(closePhoneCart = true)
+    }
+    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch) { showSearch = true }
+    // Esc regresa, como en el cobro: cierra la búsqueda que abrió F3 (prueba en Windows real, 19-oct).
+    AtajoDeTeclado(Key.Escape, activo = showSearch && !showPaymentFlow) { showSearch = false }
+
     if (isTablet) {
         // iPad-style: 50/50 split con entrada + carrito — o 50/25/25 cuando el
         // panel de promociones entra como TERCERA columna.
@@ -810,6 +828,7 @@ fun CheckoutScreen(
                         referralPlanAllowed = cartViewModel.referralPlanAllowed,
                         primaryActionLabel = etiquetaDelVale,
                         primaryActionEnabled = !areaOperationsState.issuing,
+                        teclaCobrar = "F12",
                     )
                 }
             }
@@ -951,6 +970,7 @@ fun CheckoutScreen(
 
     // Product detail panel overlay
     selectedProduct?.let { product ->
+        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
         val discounts by cartViewModel.discountsRepository.discounts.collectAsState()
         ProductDetailPanel(
             product = product,
@@ -979,6 +999,7 @@ fun CheckoutScreen(
 
     // Venta por peso: panel de captura de peso (báscula/manual) para productos soldByWeight.
     weightProduct?.let { product ->
+        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
         LaunchedEffect(product.id, areaOperationsState.settings?.scaleIntegration) {
             scaleCaptureViewModel.start(areaOperationsState.settings?.scaleIntegration)
         }
@@ -1056,6 +1077,7 @@ fun CheckoutScreen(
 
     // Cart item detail overlay (matching iOS: side panel on tablet, sheet on phone)
     selectedCartItem?.let { item ->
+        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
         CartItemDetailPanel(
             item = item,
             isTablet = isTablet,
@@ -1222,6 +1244,7 @@ fun CheckoutScreen(
 
     // Barcode scanner overlay
     if (showBarcodeScanner) {
+        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1236,6 +1259,7 @@ fun CheckoutScreen(
 
     // Create product overlay
     if (showCreateProduct) {
+        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1847,6 +1871,7 @@ fun CheckoutScreen(
 
     // Customers sheet (full screen overlay matching iOS)
     if (showCustomersSheet) {
+        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -2022,6 +2047,7 @@ fun CheckoutScreen(
     // carrito del toque y al terminar `finalizarVenta()` lo vacía: lo agregado a media emisión se perdería sin aviso.
     // Va AL FINAL para quedar encima de todo lo de esta pantalla; los diálogos son ventanas y siguen por encima.
     if (areaOperationsState.issuing) {
+        BarreraDeAtajos()   // «Emitiendo vale…» bloquea los clics: también F12/F3 (Codex r2 #4)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -2545,7 +2571,9 @@ private fun SearchBarView(
                 text = "Buscar",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
             )
+            TeclaDeAtajo("F3")
         }
 
         // Refresh button

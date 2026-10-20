@@ -59,8 +59,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.PlanGate
@@ -957,6 +960,8 @@ private fun StockCountsContent(
     viewModel: InventoryViewModel,
 ) {
     val borrador by viewModel.borradorLocal.collectAsState()
+    val resultadoNoAplicado by viewModel.resultadoNoAplicado.collectAsState()
+    val conteoSinComprobar by viewModel.conteoSinComprobar.collectAsState()
     // Se relee al volver a la lista: el borrador pudo nacer o morir en la pantalla
     // de conteo, y el StateFlow no se entera de un cambio hecho en disco.
     LaunchedEffect(Unit) { viewModel.refrescarBorradorLocal() }
@@ -966,6 +971,14 @@ private fun StockCountsContent(
     // esto el aparato diria «No hay conteos» encima del trabajo del cajero.
     Column(modifier = Modifier.fillMaxSize()) {
         borrador?.let { BorradorPendienteCard(it) { viewModel.continuarBorrador() } }
+        // C12: lo que el último conteo NO aplicó por Shopify. Informativo (ámbar), nunca un error.
+        resultadoNoAplicado?.takeIf { viewModel.esResultadoDeEstaSucursal(it) }?.let {
+            ResultadoNoAplicadoCard(it, onEntendido = viewModel::resultadoNoAplicadoVisto)
+        }
+        // M1: sin `noAplicados` y sin poder releer el conteo, no se sabe si todo se aplicó: se dice.
+        conteoSinComprobar?.takeIf { viewModel.esDeEstaSucursal(it.venueId) }?.let {
+            SinComprobarCard(onEntendido = viewModel::conteoSinComprobarVisto)
+        }
 
         // `weight(1f)` y no `fillMaxSize()`: deja explicito quien absorbe el alto
         // sobrante, y sigue siendo correcto si manana alguien mete otro hermano debajo
@@ -1134,15 +1147,20 @@ private fun StockCountRow(
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
             )
+            // C12: «N no se aplicó» va en ámbar (Shopify retuvo líneas); el resto de la línea, como siempre.
+            val avisoNoAplicadas = ConteoEnCurso.avisoNoAplicadas(count)
             Text(
                 // Con la fecha: sin ella la lista eran siete entradas idénticas
                 // ("Conteo cíclico · Completado · 1 artículos") y no había forma
                 // de saber cuál era el de hoy y cuál el del mes pasado — que es
                 // justo lo que se necesita para auditar existencias.
-                text = listOfNotNull(
-                    fechaCortaInv(count.createdAt),
-                    ConteoEnCurso.lineaDeEstado(count),
-                ).joinToString(" · "),
+                text = buildAnnotatedString {
+                    append(listOfNotNull(fechaCortaInv(count.createdAt), ConteoEnCurso.lineaDeEstadoBase(count)).joinToString(" · "))
+                    if (avisoNoAplicadas != null) {
+                        append(" · ")
+                        withStyle(SpanStyle(color = Warning, fontWeight = FontWeight.SemiBold)) { append(avisoNoAplicadas) }
+                    }
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

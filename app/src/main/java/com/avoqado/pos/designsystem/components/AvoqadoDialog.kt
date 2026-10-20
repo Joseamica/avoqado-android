@@ -57,6 +57,7 @@ fun AvoqadoDialog(
     centerTitle: Boolean = false,
     content: @Composable () -> Unit,
 ) {
+    BarreraDeAtajos()
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
