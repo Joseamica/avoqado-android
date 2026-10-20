@@ -642,6 +642,8 @@ class PaymentFlowViewModel @Inject constructor(
                             st.receiptUrl,
                             st.receiptAccessKey,
                         ),
+                        // «Ofrecer recibo» de la copia del cobro (`settings` = `flowSettings`), igual que la caja.
+                        offerReceipt = settings.showReceiptScreen,
                     )
 
                 // Le toca al cajero: el cliente ve su total, sin nada tocable.

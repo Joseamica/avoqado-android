@@ -112,6 +112,11 @@ fun PaymentResultScreen(
     onAddCustomer: (() -> Unit)? = null,
     /** Sellos tardíos: qué pasó con el sello de esta venta. null = nada que decir. */
     renglonDelSello: RenglonDelSello? = null,
+    /**
+     * «Ofrecer recibo» (`showReceiptScreen`) de la copia del cobro. Apagado no se componen «Enviar por correo» ni «Enviar
+     * por WhatsApp»; «Imprimir recibo» y «Venta nueva» no cambian, ni el ticket impreso. Igual que iOS (`PaymentSuccessView`).
+     */
+    offerReceipt: Boolean = true,
     onDone: () -> Unit,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
@@ -323,33 +328,36 @@ fun PaymentResultScreen(
                 )
                 HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
-                ReceiptOptionRow(
-                    icon = rememberVectorPainter(Icons.Filled.Email),
-                    title = "Enviar por correo",
-                    enabled = canSendReceipt && onSendEmail != null,
-                    onClick = {
-                        onClearCustomerResult?.invoke()
-                        onClearEmailResult?.invoke()
-                        onClearWhatsAppResult?.invoke()
-                        emailAddress = ""
-                        showEmailInput = true
-                    },
-                )
-                HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
+                // «Ofrecer recibo» apagado: sin envío. Imprimir y «Venta nueva» siguen (igual que iOS).
+                if (offerReceipt) {
+                    ReceiptOptionRow(
+                        icon = rememberVectorPainter(Icons.Filled.Email),
+                        title = "Enviar por correo",
+                        enabled = canSendReceipt && onSendEmail != null,
+                        onClick = {
+                            onClearCustomerResult?.invoke()
+                            onClearEmailResult?.invoke()
+                            onClearWhatsAppResult?.invoke()
+                            emailAddress = ""
+                            showEmailInput = true
+                        },
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
-                ReceiptOptionRow(
-                    icon = painterResource(R.drawable.ic_whatsapp),
-                    title = "Enviar por WhatsApp",
-                    enabled = canSendReceipt && onSendWhatsApp != null,
-                    onClick = {
-                        onClearCustomerResult?.invoke()
-                        onClearWhatsAppResult?.invoke()
-                        onClearEmailResult?.invoke()
-                        whatsAppPhoneDigits = ""
-                        showWhatsAppInput = true
-                    },
-                )
-                HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
+                    ReceiptOptionRow(
+                        icon = painterResource(R.drawable.ic_whatsapp),
+                        title = "Enviar por WhatsApp",
+                        enabled = canSendReceipt && onSendWhatsApp != null,
+                        onClick = {
+                            onClearCustomerResult?.invoke()
+                            onClearWhatsAppResult?.invoke()
+                            onClearEmailResult?.invoke()
+                            whatsAppPhoneDigits = ""
+                            showWhatsAppInput = true
+                        },
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
+                }
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))

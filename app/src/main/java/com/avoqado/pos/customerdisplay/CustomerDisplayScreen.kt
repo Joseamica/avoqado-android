@@ -1078,7 +1078,8 @@ private fun DonePrompt(
     onEmail: (String) -> Unit,
     onKeepAlive: () -> Unit,
 ) {
-    val url = c.receiptUrl
+    // «Ofrecer recibo» apagado: sin QR ni envío, sólo el gracias y el total.
+    val url = c.receiptUrl?.takeIf { c.offerReceipt }
     // Pantalla TÁCTIL + hay recibo → el cliente elige y TECLEA aquí mismo su
     // WhatsApp/correo (teclado propio). Si no es táctil (o no hay recibo), queda
     // el QR: el cliente lo hace en su teléfono. La detección de táctil es por
@@ -1086,13 +1087,12 @@ private fun DonePrompt(
     if (canInteract && url != null) {
         DoneInteractive(c.totalCents, url, receiptSend, onWhatsApp, onEmail, onKeepAlive)
     } else {
-        DoneQrOnly(c)
+        DoneQrOnly(c.totalCents, url)
     }
 }
 
 @Composable
-private fun DoneQrOnly(c: CustomerContent.Done) {
-    val url: String? = c.receiptUrl
+private fun DoneQrOnly(totalCents: Int, url: String?) {
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1106,7 +1106,7 @@ private fun DoneQrOnly(c: CustomerContent.Done) {
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         Text(
-            text = money(c.totalCents),
+            text = money(totalCents),
             fontSize = if (url != null) 52.sp else CdAmount,
             lineHeight = (if (url != null) 52.sp else CdAmount) * 1.1f,
             fontWeight = FontWeight.Bold,

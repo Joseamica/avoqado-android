@@ -71,6 +71,7 @@ import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -4193,6 +4194,43 @@ class PaymentFlowViewModelTest {
         val tip = customerDisplay.content.value as CustomerContent.Tip
         assertEquals(listOf(5), tip.options.map { it.percent })
         assertEquals(listOf(5), viewModel.settings.tipSuggestions)
+    }
+
+    // ── «Ofrecer recibo» sale de la copia del cobro (pantalla del cliente F2, Task 4.4) ──────
+
+    @Test
+    fun `el gracias lleva offerReceipt de la copia del cobro`() = runTest {
+        // El «Gracias» vuelve solo al reposo a los 30 s y `advanceUntilIdle` se los salta: se guarda lo que vio el cliente.
+        val vistos = mutableListOf<CustomerContent>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            customerDisplay.content.collect { vistos += it }
+        }
+        fun ultimoGracias() = vistos.filterIsInstance<CustomerContent.Done>().last()
+
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = false, showReceiptScreen = false)
+        viewModel.startPaymentFlow(cartConImporteTecleado(), apertura = "apertura-1")
+
+        // Llega el refresco a media venta: el negocio prende «Ofrecer recibo». Sólo cuenta para el SIGUIENTE cobro.
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = false, showReceiptScreen = true)
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertTrue("montaje: el cobro terminó", viewModel.state.value is PaymentFlowState.Success)
+        assertFalse("el cliente no ve el envío: la copia del cobro lo traía apagado", ultimoGracias().offerReceipt)
+        // La caja (`PaymentFlowScreen`) pasa `viewModel.settings.showReceiptScreen`: la misma copia.
+        assertFalse(viewModel.settings.showReceiptScreen)
+
+        // Un «Cobrar» nuevo toma lo nuevo.
+        val antes = vistos.filterIsInstance<CustomerContent.Done>().size
+        viewModel.startPaymentFlow(cartConImporteTecleado(), apertura = "apertura-2")
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertEquals("montaje: un gracias más", antes + 1, vistos.filterIsInstance<CustomerContent.Done>().size)
+        assertTrue(ultimoGracias().offerReceipt)
+        assertTrue(viewModel.settings.showReceiptScreen)
     }
 
     /** Y cuando el aviso tocado ES la libreta, «Ya la canté» la resuelve y cierra sus entregas (venue + orden + plan). */

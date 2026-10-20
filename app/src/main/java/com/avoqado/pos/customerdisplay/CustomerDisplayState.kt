@@ -93,8 +93,11 @@ sealed interface CustomerContent {
         val etiqueta: String = "Total",
     ) : CustomerContent
 
-    /** Gracias + QR del recibo digital. */
-    data class Done(val totalCents: Int, val receiptUrl: String?) : CustomerContent
+    /**
+     * Gracias + QR del recibo digital. [offerReceipt] = «Ofrecer recibo» de la copia del cobro: apagado, sólo el gracias y
+     * el total (sin QR ni envío).
+     */
+    data class Done(val totalCents: Int, val receiptUrl: String?, val offerReceipt: Boolean = true) : CustomerContent
 }
 
 /** Dónde se dibuja la pantalla del cliente; viaja en el acuse (`surface`) con estos mismos valores que acepta el server. */
