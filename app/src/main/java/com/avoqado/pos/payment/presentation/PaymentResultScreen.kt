@@ -624,6 +624,8 @@ private fun ReceiptOptionRow(
 
 @Composable
 fun PaymentProcessingView(
+    /** Sólo con el cobro ya en la terminal. Un efectivo o una orden que se registra no espera a ninguna (iOS: «Procesando…»). */
+    esperandoTerminal: Boolean,
     onCancel: (() -> Unit)? = null,
 ) {
     Column(
@@ -644,11 +646,13 @@ fun PaymentProcessingView(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-        Text(
-            text = "Esperando respuesta de la terminal",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (esperandoTerminal) {
+            Text(
+                text = "Esperando respuesta de la terminal",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         if (onCancel != null) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))

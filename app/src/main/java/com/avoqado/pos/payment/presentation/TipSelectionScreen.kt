@@ -97,6 +97,7 @@ fun TipSelectionSheet(
     val hasSelection = selectedTipPercent > 0 || (showCustomInput && customTipCents > 0)
 
     AvoqadoModalBottomSheet(
+        conXPropia = true,
         onDismissRequest = { /* explicit choice required — see confirmValueChange */ },
         sheetState = sheetState,
     ) {

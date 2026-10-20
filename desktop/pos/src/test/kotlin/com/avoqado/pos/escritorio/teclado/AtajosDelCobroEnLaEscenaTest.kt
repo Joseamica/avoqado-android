@@ -1,12 +1,28 @@
 package com.avoqado.pos.escritorio.teclado
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.foundation.layout.Column
+import com.avoqado.pos.designsystem.components.sinTeclasDetrasDelCobro
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.Modifier
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -19,6 +35,7 @@ import com.avoqado.escritorio.ActividadDeEscritorio
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.Escritorio
 import com.avoqado.pos.designsystem.components.AtajosDeTeclado
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 import com.avoqado.pos.escritorio.Inyector
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -27,6 +44,7 @@ import com.avoqado.pos.payment.data.model.PaymentContext
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.presentation.PaymentMethodSelectionScreen
 import com.avoqado.pos.payment.presentation.PaymentErrorView
+import com.avoqado.pos.payment.presentation.PaymentProcessingView
 import com.avoqado.pos.payment.presentation.PaymentResultScreen
 import com.avoqado.pos.payment.presentation.RatingScreen
 import com.avoqado.pos.payment.presentation.TerminalSelectionScreen
@@ -43,7 +61,7 @@ import kotlin.test.assertTrue
  * Las teclas del cobro en el POS de Windows (founder, 19-oct): F5 efectivo, F4 terminal, Esc regresa, 1-9 elige
  * terminal y Esc en «Venta terminada» es «Venta nueva». Cada tecla hace lo MISMO que el clic en su botón.
  */
-@OptIn(ExperimentalTestApi::class)
+@OptIn(ExperimentalTestApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 class AtajosDelCobroEnLaEscenaTest {
     /** Las hojas de propina y «Ya pagó de otra forma» piden el contexto de escritorio (`ImmersiveWindow`), como en Main. */
     @BeforeTest fun contextoDeEscritorio() {
@@ -334,6 +352,83 @@ class AtajosDelCobroEnLaEscenaTest {
         onNodeWithText("Esc").assertExists()
         runOnIdle { assertTrue(AtajosDeTeclado.atender(Key.Escape)) }
         assertEquals(1, listas)
+    }
+
+    // Pendientes del 19-oct: en Windows cada hoja lleva UNA X (la suya o la de AvoqadoModalBottomSheet, nunca las dos).
+    @Test fun `en Windows la hoja de propina lleva una sola X`() = runComposeUiTest {
+        setContent {
+            EnWindows {
+                TipSelectionSheet(amountCents = 13_700, tipBaseCents = 13_700, tipSuggestions = listOf(10, 15, 20),
+                    onTipSelected = {}, onSkip = {}, onDismiss = {})
+            }
+        }
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(1)
+    }
+
+    @Test fun `en Windows Monto recibido lleva una sola X`() = runComposeUiTest {
+        val cobro = Cobro()
+        setContent { EnWindows { Selector(cobro) } }
+        runOnIdle { AtajosDeTeclado.atender(Key.F5) }
+        onNodeWithText("Monto recibido").assertExists()
+        // La X de «¿Cómo paga?», detrás, y la de la hoja. Antes eran 3: la hoja traía dos.
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(2)
+    }
+
+    @Test fun `en Windows una hoja sin X propia recibe la de Windows`() = runComposeUiTest {
+        setContent { EnWindows { AvoqadoModalBottomSheet(onDismissRequest = {}) { Text("Contenido de la hoja") } } }
+        onNodeWithText("Contenido de la hoja").assertExists()
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(1)
+    }
+
+    // Pendientes del 19-oct (Codex r1 #1): con el cobro abierto, el producto de atrás que quedó con el foco no se «pica»
+    // con Enter ni Espacio (la pistola manda Enter). Las teclas de atajo sí pasan: las atiende la ventana para el cobro.
+    @Test fun `P1 con el cobro abierto la venta de atras no recibe Enter, y las teclas F si pasan`() = runComposeUiTest {
+        var clics = 0
+        var efes = 0
+        var cobroAbierto by mutableStateOf(true)
+        setContent {
+            EnWindows {
+                Box(Modifier.sinTeclasDetrasDelCobro { cobroAbierto }) {
+                    Button(
+                        onClick = { clics++ },
+                        modifier = Modifier.onKeyEvent { e -> if (e.key == Key.F5 && e.type == KeyEventType.KeyDown) efes++; false },
+                    ) { Text("Café") }
+                }
+            }
+        }
+        onNodeWithText("Café").performSemanticsAction(SemanticsActions.RequestFocus)
+        onNodeWithText("Café").performKeyInput { pressKey(Key.Enter); pressKey(Key.Spacebar); pressKey(Key.F5) }
+        runOnIdle { assertEquals(0, clics); assertEquals(1, efes) }
+        cobroAbierto = false
+        onNodeWithText("Café").performKeyInput { pressKey(Key.Enter) }
+        runOnIdle { assertEquals(1, clics) }
+    }
+
+    // Codex r2 #2: el candado no atrapa el foco. Tab y las flechas pasan, para llegar con teclado a los botones del cobro.
+    @Test fun `con el cobro abierto Tab si mueve el foco fuera de la venta de atras`() = runComposeUiTest {
+        setContent {
+            EnWindows {
+                Column {
+                    Box(Modifier.sinTeclasDetrasDelCobro { true }) { Button(onClick = {}) { Text("Café") } }
+                    Button(onClick = {}) { Text("Pagar") }
+                }
+            }
+        }
+        onNodeWithText("Café").performSemanticsAction(SemanticsActions.RequestFocus)
+        onNodeWithText("Café").performKeyInput { pressKey(Key.Tab) }
+        onNodeWithText("Pagar").assertIsFocused()
+    }
+
+    // Al registrar un efectivo no se espera a ninguna terminal (iOS dice «Procesando…»).
+    @Test fun `la espera de un efectivo no menciona la terminal`() = runComposeUiTest {
+        setContent { EnWindows { PaymentProcessingView(esperandoTerminal = false) } }
+        onNodeWithText("Procesando pago...").assertExists()
+        onNodeWithText("Esperando respuesta de la terminal").assertDoesNotExist()
+    }
+
+    @Test fun `la espera de la terminal si la menciona`() = runComposeUiTest {
+        setContent { EnWindows { PaymentProcessingView(esperandoTerminal = true) } }
+        onNodeWithText("Esperando respuesta de la terminal").assertExists()
     }
 
     @Test fun `la tecla sale en chiquito dentro del boton Cobrar en Windows`() = runComposeUiTest {

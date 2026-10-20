@@ -3,6 +3,7 @@ package com.avoqado.pos.tables.data
 import android.util.Log
 import com.avoqado.pos.core.data.network.ApiService
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -11,6 +12,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "TableServiceRepository"
+/**
+ * Cobrada en el servidor: no se reabre (otro cobro es venta nueva). Cancelada o borrada NO cuentan: un abono cobrado sin red
+ * que llega tarde la reabre (avoqado-server `estadoAlRecibirDinero`, `services/shared/orderBalance.ts`; Codex r7).
+ */
+private const val CUENTA_COBRADA = "COMPLETED"
 
 /**
  * TABLE_SERVICE (PRO) — floor-plan state + table lifecycle for the restaurant
@@ -87,7 +93,10 @@ class TableServiceRepository @Inject constructor(
     )
 
     private val floorWrites = Mutex()
-    private var loadedVenueId: String? = null
+    @Volatile private var loadedVenueId: String? = null
+    // Un GET /tables a la vez: dos en el aire pueden llegar al revés y la foto vieja pisar a la nueva.
+    // ponytail: si un GET se cuelga, los demás esperan su timeout; cola por sucursal si algún día estorba.
+    private val refrescos = Mutex()
 
     private val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
@@ -168,14 +177,57 @@ class TableServiceRepository @Inject constructor(
         return cacheJson.decodeFromString(TablesCacheBlob.serializer(), cached.json)
     }
 
+    /**
+     * La cuenta provisional ya no retiene nada en este aparato: ascendida a la real, sin productos sin mandar, CADA ronda del
+     * borrador confirmada por la cola (una ronda sin intent —la app murió antes de encolarla— retiene: sólo se vuelve a
+     * encolar al abrir la cuenta) y la cola sin nada de ella. Devuelve las rondas que vio (para `sigueSuelta`) o null si
+     * retiene. Las rondas sólo las poda la pantalla de la mesa; antes, la mesa cobrada sin red quedaba «Por sincronizar»
+     * hasta abrirla. Si algo no se puede leer, retiene.
+     * ponytail: el ACKED se purga a los 7 días (`ACKED_TTL_MS`); una ronda purgada antes de un refresco vuelve a retener, como antes.
+     */
+    private suspend fun rondasSiYaNoRetiene(venueId: String, checkId: String): Set<String>? = try {
+        val (id, snapshot) = draftStore.loadResolved(venueId, checkId)
+        snapshot.rounds.keys.takeIf {
+            id != checkId && snapshot.pending.isEmpty() &&
+                snapshot.rounds.keys.all { syncOutbox.observarEstado(it).first() == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_ACKED } &&
+                syncOutbox.trabajoSinResolverDeLaOrden(venueId, setOf(checkId, id)).intents == 0
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+
+    /**
+     * Sin esperas, justo antes de guardar el plano: el borrador sigue como se revisó y nadie tiene la cuenta abierta en el
+     * aparato (sólo la pantalla abierta le agrega productos). Entre esto y guardar no hay más esperas que la propia escritura.
+     */
+    private fun sigueSuelta(venueId: String, checkId: String, rondas: Set<String>): Boolean = try {
+        val (id, snapshot) = draftStore.loadResolved(venueId, checkId)
+        snapshot.pending.isEmpty() && snapshot.rounds.keys == rondas &&
+            tableSession.current()?.idsDeLaOrden?.let { checkId in it || id in it } != true
+    } catch (_: Exception) { false }
+
+    /**
+     * El servidor dice que la cuenta real ya está COBRADA (no se reabre). Que falte en /tables no lo prueba: una mesa
+     * archivada no viene, ni una cuenta movida a ella (Codex r5 #2, r6). Sin respuesta, retiene.
+     */
+    private suspend fun cerradaEnServidor(venueId: String, checkId: String): Boolean = try {
+        apiService.getOrderDetailEnSegundoPlano(venueId, draftStore.loadResolved(venueId, checkId).first).order?.status == CUENTA_COBRADA
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { false }
+
+    /** Provisionales que ya no retenían nada ANTES del GET: sólo a éstas las puede soltar su respuesta (una respuesta vieja no). */
+    private suspend fun sueltasAntesDelGet(venueId: String): Set<String> =
+        (cachedFloor(venueId)?.tables ?: _tables.value).flatMap { it.openOrders }.filter { it.isProvisional }
+            .map { it.id }.filterTo(mutableSetOf()) { rondasSiYaNoRetiene(venueId, it) != null }
+
     /** An early GET cannot erase an OPEN_TABLE or its unsent products. */
-    private fun preserveLocalChecks(venueId: String, fresh: List<DiningTable>, cached: List<DiningTable>): List<DiningTable> {
+    private suspend fun preserveLocalChecks(venueId: String, fresh: List<DiningTable>, cached: List<DiningTable>, sueltas: Set<String>): List<DiningTable> {
         val serverIds = fresh.flatMap { it.openOrders.map { check -> check.id } + listOfNotNull(it.currentOrder?.id) }.toSet()
+        // Primero todo lo que espera (la cola); después, sin esperas hasta guardar, la última revisión de cada una.
+        val candidatas = cached.flatMap { it.openOrders }.filter { it.isProvisional && it.id in sueltas }
+            .mapNotNull { check -> rondasSiYaNoRetiene(venueId, check.id)?.let { check.id to it } }.toMap()
         val locals = cached.mapNotNull { table ->
             val checks = table.openOrders.filter { check ->
                 if (!check.isProvisional) false else {
-                    val (id, snapshot) = draftStore.loadResolved(venueId, check.id)
-                    id !in serverIds && (id == check.id || snapshot.pending.isNotEmpty() || snapshot.rounds.isNotEmpty())
+                    draftStore.loadResolved(venueId, check.id).first !in serverIds &&
+                        candidatas[check.id]?.let { sigueSuelta(venueId, check.id, it) } != true
                 }
             }
             if (checks.isEmpty()) null else table.id to table.copy(openOrders = checks, currentOrder = null)
@@ -188,14 +240,23 @@ class TableServiceRepository @Inject constructor(
         return merged + locals.values.filter { it.id !in freshIds }
     }
 
-    suspend fun refresh(venueId: String): Result<List<DiningTable>> = runCatching {
-        floorWrites.withLock { mirarA(venueId) }
+    suspend fun refresh(venueId: String): Result<List<DiningTable>> {
+        // Se anota al pedirlo, sin esperar candados: tras esperar, ya puede estar activa otra sucursal (Codex r5 #1).
+        val alPedirlo = loadedVenueId
+        return refrescos.withLock { runCatching {
+        val sueltas = floorWrites.withLock {
+            // Si mientras esperaba su turno el plano cambió a otra sucursal, este refresco ya no aplica: no la vuelve a activar.
+            check(loadedVenueId == alPedirlo || loadedVenueId == venueId) { "La sucursal cambió" }
+            mirarA(venueId); sueltasAntesDelGet(venueId)
+        }
         _isLoading.value = true
         try {
             val response = apiService.getTables(venueId)
+            // Fuera del candado del plano: es una consulta de red por cuenta suelta (casi siempre ninguna).
+            val cerradas = sueltas.filterTo(mutableSetOf()) { cerradaEnServidor(venueId, it) }
             floorWrites.withLock {
                 check(loadedVenueId == venueId) { "La sucursal cambió" }
-                val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value)
+                val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value, cerradas)
                 val ownership = TableOwnership(response.settings?.enforceTableOwnership == true,
                     response.viewer?.staffId, response.viewer?.canManageAllTables ?: true, roleManager.canSettleAnyTable)
                 // Con cuentas provisionales la lista no está reconciliada: sin versión, la siguiente vuelta vuelve a pedir
@@ -218,6 +279,7 @@ class TableServiceRepository @Inject constructor(
     }.onFailure {
         Log.e(TAG, "❌ refresh failed: ${it.message}")
         floorWrites.withLock { if (loadedVenueId == venueId) hydrateFromCache(venueId) }
+    } }
     }
 
     /** Persist the check pointer before ordering; status alone cannot reopen a table after restart. */

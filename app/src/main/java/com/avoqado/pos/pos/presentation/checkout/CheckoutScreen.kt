@@ -74,6 +74,7 @@ import com.avoqado.pos.designsystem.components.TeclaDeAtajo
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
+import com.avoqado.pos.designsystem.components.sinTeclasDetrasDelCobro
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
@@ -484,6 +485,11 @@ fun CheckoutScreen(
      * lo borraría después — el negocio regala el producto y la orden ni lo registra.
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
+        // Mientras se consulta un código leído, el cobro no se abre: lo leído entra ANTES de fotografiar el carrito, y un
+        // vale no queda en la sesión de vales sin cobrarse. Lo cuenta el CARRITO, que sobrevive a que esta pantalla se
+        // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
+        // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
+        if (cartViewModel.hayConsultasDeCodigo) return
         if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
             savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
             return
@@ -504,6 +510,7 @@ fun CheckoutScreen(
         // no en un `remember` de esta pantalla: así sobrevive a que se recree la
         // Activity —girar la tablet— que antes borraba el vínculo y revivía el bug.
         if (isTablePaying) cartViewModel.releaseChargingOrder() else cartViewModel.resolvePendingSplitOrderForCharge()
+        cartViewModel.abrirCobro()
         showPaymentFlow = true
     }
 
@@ -600,7 +607,7 @@ fun CheckoutScreen(
     if (isTablet) {
         // iPad-style: 50/50 split con entrada + carrito — o 50/25/25 cuando el
         // panel de promociones entra como TERCERA columna.
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
             // 🔴 Manda el ancho REAL de esta superficie, no el booleano `isTablet`:
             // ese colapsa "tablet chica" y "tablet grande" en el mismo valor, y aquí
             // hay que decidir si cabe una tercera columna. Además `maxWidth` ya viene
@@ -835,7 +842,7 @@ fun CheckoutScreen(
         }
     } else {
         // iPhone-style: full-screen with bottom cart bar
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
             // Un teléfono es siempre Compact (<600dp), o sea que el lateral SIEMPRE
             // cae a pestaña aquí. Se calcula con el ancho real igual, para no tener
             // dos reglas; y la pestaña se muestra con cualquier modo que no sea
@@ -1197,11 +1204,16 @@ fun CheckoutScreen(
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
     val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
-        // Codex final #3: mientras se emite un vale, lo escaneado no entra; al terminar se vacía el carrito y se perdería.
-        if (areaOperationsState.issuing) return@manejar
+        if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
         checkoutScope.launch {
-            when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
+            val entra = {
+                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)
+            }
+            val result = cartViewModel.resolveScannedBarcode(barcode)
+            // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
+            if (!entra()) return@launch
+            when (result) {
                 is ScannedBarcodeResult.ProductFound ->
                     handleProductTap(
                         result.product,
@@ -1241,6 +1253,9 @@ fun CheckoutScreen(
     LaunchedEffect(Unit) {
         cartViewModel.codigosEscaneados.collect { manejarCodigo(it) }
     }
+    // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
+    // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
+    LaunchedEffect(showPaymentFlow) { if (showPaymentFlow) cartViewModel.abrirCobro() else cartViewModel.cerrarCobro() }
 
     // Barcode scanner overlay
     if (showBarcodeScanner) {
@@ -1434,6 +1449,25 @@ fun CheckoutScreen(
                         previousChargeNotice = null
                         paymentFlowViewModel.reconocerCobroAnteriorResuelto()
                     },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
+    // 🔴 DINERO. El cobro de vales se detuvo sin cobrar: el carrito no traía los vales del servidor. El carrito toma los de la
+    // sesión y se le dice al cajero que revise el total (ver `PaymentFlowViewModel.valesNoCoinciden`).
+    val valesNoCoincidian by paymentFlowViewModel.valesNoCoincidian.collectAsState()
+    if (valesNoCoincidian) {
+        LaunchedEffect(Unit) { cartViewModel.traerValesDeLaSesion() }
+        AvoqadoDialog(
+            title = "Los vales cambiaron",
+            description = "No se cobró nada: el carrito no traía los mismos vales que el servidor. Ya se actualizó; revisa el total y vuelve a cobrar.",
+            onDismiss = { paymentFlowViewModel.reconocerValesNoCoincidian() },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { paymentFlowViewModel.reconocerValesNoCoincidian() },
                     fullWidth = true,
                 )
             },
@@ -1735,6 +1769,7 @@ fun CheckoutScreen(
                 },
                 onDone = {
                     showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
                     // Se congela al abrir el cobro y se suelta al cerrarlo: el
                     // próximo lo vuelve a resolver contra el carrito de entonces,
@@ -1747,6 +1782,7 @@ fun CheckoutScreen(
                 },
                 onCancel = {
                     showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
                     // Se congela al abrir el cobro y se suelta al cerrarlo: el
                     // próximo lo vuelve a resolver contra el carrito de entonces,
@@ -1765,6 +1801,7 @@ fun CheckoutScreen(
                 // mientras ya le pedían la calificación de la venta siguiente.
                 onPreviousChargeResolved = { message ->
                     showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
                     // Se congela al abrir el cobro y se suelta al cerrarlo: el
                     // próximo lo vuelve a resolver contra el carrito de entonces,
@@ -2720,3 +2757,10 @@ private fun IPhoneCartBar(
         )
     }
 }
+
+/**
+ * Lo que lee la pistola o la cámara sólo entra a la venta con el cobro CERRADO. Con el cobro abierto, el carrito se vacía
+ * al confirmarlo y lo escaneado se perdía sin cobrarse (pendiente del 19-oct); iOS ya lo ignora así (`CheckoutView`,
+ * `guard !showPaymentFlow`). Mientras se emite un vale, tampoco: al terminar se vacía el carrito (Codex final #3).
+ */
+internal fun codigoEntraALaVenta(cobroAbierto: Boolean, emitiendoVale: Boolean): Boolean = !cobroAbierto && !emitiendoVale

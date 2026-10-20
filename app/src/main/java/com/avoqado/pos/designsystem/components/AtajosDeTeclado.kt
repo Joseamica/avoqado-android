@@ -12,6 +12,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.unit.dp
@@ -69,6 +70,29 @@ fun BarreraDeAtajos() = AtajosDeTeclado.Registrar(tecla = null, activo = true) {
  */
 fun Modifier.sinTeclasDeClic(enWindows: Boolean): Modifier =
     if (!enWindows) this else onPreviewKeyEvent { it.key == Key.Enter || it.key == Key.NumPadEnter || it.key == Key.Spacebar }
+
+/**
+ * Mientras [cobroAbierto], lo de atrás (la venta) sólo recibe las teclas de [pasaDetrasDelCobro]: un producto que quedó con
+ * el foco se «picaba» con Enter —la pistola termina cada código con Enter— y entraba al carrito sin cobrarse (pendientes,
+ * Codex r1 #1). Va en la raíz de la venta, hermana del cobro (en iOS el cobro es otra pantalla y no hace falta).
+ */
+fun Modifier.sinTeclasDetrasDelCobro(cobroAbierto: () -> Boolean): Modifier =
+    onPreviewKeyEvent { cobroAbierto() && !pasaDetrasDelCobro(it) }
+
+/**
+ * Lista corta de lo que pasa: atajos (F1–F12, Esc: los atiende la ventana), las que mueven el foco hacia el cobro (Tab,
+ * flechas, Inicio/Fin, Re/Av Pág) y las del sistema (volumen, atrás). Todo lo demás se frena. Adivinar «qué escribe» por
+ * el carácter falló dos veces: en Windows las F y las flechas traen `CHAR_UNDEFINED` y en Android el centro del D-pad
+ * trae 0, y las dos «picaban» o se perdían (pendientes, prueba en Windows real y Codex r3).
+ */
+internal fun pasaDetrasDelCobro(e: KeyEvent): Boolean = e.key in TECLAS_QUE_PASAN_DETRAS_DEL_COBRO
+
+private val TECLAS_QUE_PASAN_DETRAS_DEL_COBRO = setOf(
+    Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12, Key.Escape,
+    Key.Tab, Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight,
+    Key.MoveHome, Key.MoveEnd, Key.PageUp, Key.PageDown,
+    Key.VolumeUp, Key.VolumeDown, Key.VolumeMute, Key.Back,
+)
 
 /** La tecla en chiquito a la derecha de su botón. Sólo en Windows. */
 @Composable

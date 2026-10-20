@@ -300,6 +300,14 @@ interface ApiService {
         @Path("orderId") orderId: String,
     ): com.avoqado.pos.tables.data.OrderDetailResponse
 
+    // La misma cuenta, pedida sola por el plano (¿ya se cobró?): nadie la pidió, así que un 403 no abre el PIN de gerente.
+    @Headers("X-Avoqado-Background: 1")
+    @GET("mobile/venues/{venueId}/orders/{orderId}")
+    suspend fun getOrderDetailEnSegundoPlano(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+    ): com.avoqado.pos.tables.data.OrderDetailResponse
+
     @POST("mobile/venues/{venueId}/orders/{orderId}/items")
     suspend fun addOrderItems(
         @Path("venueId") venueId: String,
