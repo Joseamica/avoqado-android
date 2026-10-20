@@ -365,9 +365,6 @@ fun CheckoutScreen(
     var createProductInitialName by remember { mutableStateOf("") }
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
-    // Códigos leídos que se están consultando (catálogo, vale, tarjeta de cliente): el cobro espera a que no quede ninguno
-    // (ver `proceedToPayment`). Es un contador: con un booleano, la segunda lectura que terminaba soltaba a la primera (Codex r3 #1).
-    var consultasDeCodigo by remember { mutableIntStateOf(0) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
@@ -489,9 +486,10 @@ fun CheckoutScreen(
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
         // Mientras se consulta un código leído, el cobro no se abre: lo leído entra ANTES de fotografiar el carrito, y un
-        // vale no queda en la sesión de vales sin cobrarse (pendientes, Codex r2 #1). Es una fracción de segundo; el
-        // siguiente «Cobrar» ya abre. Todos los caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
-        if (consultasDeCodigo > 0) return
+        // vale no queda en la sesión de vales sin cobrarse. Lo cuenta el CARRITO, que sobrevive a que esta pantalla se
+        // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
+        // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
+        if (cartViewModel.hayConsultasDeCodigo) return
         if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
             savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
             return
@@ -512,6 +510,7 @@ fun CheckoutScreen(
         // no en un `remember` de esta pantalla: así sobrevive a que se recree la
         // Activity —girar la tablet— que antes borraba el vínculo y revivía el bug.
         if (isTablePaying) cartViewModel.releaseChargingOrder() else cartViewModel.resolvePendingSplitOrderForCharge()
+        cartViewModel.abrirCobro()
         showPaymentFlow = true
     }
 
@@ -1205,16 +1204,13 @@ fun CheckoutScreen(
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
     val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
-        if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing)) return@manejar
+        if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
-        consultasDeCodigo++
         checkoutScope.launch {
-            val entra = { codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing) }
-            val result = try {
-                cartViewModel.resolveScannedBarcode(barcode, puedeTocarElCarrito = entra)
-            } finally {
-                consultasDeCodigo--
+            val entra = {
+                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)
             }
+            val result = cartViewModel.resolveScannedBarcode(barcode)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra()) return@launch
             when (result) {
@@ -1257,6 +1253,9 @@ fun CheckoutScreen(
     LaunchedEffect(Unit) {
         cartViewModel.codigosEscaneados.collect { manejarCodigo(it) }
     }
+    // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
+    // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
+    LaunchedEffect(showPaymentFlow) { if (showPaymentFlow) cartViewModel.abrirCobro() else cartViewModel.cerrarCobro() }
 
     // Barcode scanner overlay
     if (showBarcodeScanner) {
@@ -1751,6 +1750,7 @@ fun CheckoutScreen(
                 },
                 onDone = {
                     showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
                     // Se congela al abrir el cobro y se suelta al cerrarlo: el
                     // próximo lo vuelve a resolver contra el carrito de entonces,
@@ -1763,6 +1763,7 @@ fun CheckoutScreen(
                 },
                 onCancel = {
                     showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
                     // Se congela al abrir el cobro y se suelta al cerrarlo: el
                     // próximo lo vuelve a resolver contra el carrito de entonces,
@@ -1781,6 +1782,7 @@ fun CheckoutScreen(
                 // mientras ya le pedían la calificación de la venta siguiente.
                 onPreviousChargeResolved = { message ->
                     showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
                     // Se congela al abrir el cobro y se suelta al cerrarlo: el
                     // próximo lo vuelve a resolver contra el carrito de entonces,

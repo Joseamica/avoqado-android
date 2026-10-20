@@ -297,6 +297,19 @@ class CartViewModel @Inject constructor(
     val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
         get() = lectorHidBus.codigos
 
+    /**
+     * 🔴 DINERO. El CARRITO —no la pantalla— sabe si hay un cobro abierto y cuántos códigos leídos se están consultando.
+     * Vive aquí porque la pantalla se recrea (cambiar de pestaña) y con ella se perdía: un vale lento podía entrar después
+     * de abrir el cobro, sin cobrarse (pendientes del 19-oct, Codex r1 #2 a r4 #1). Con el cobro abierto, lo leído no toca
+     * el carrito ([resolveScannedBarcode]); mientras haya consultas, el cobro no se abre (`CheckoutScreen.proceedToPayment`).
+     */
+    @Volatile var cobroAbierto: Boolean = false
+        private set
+    fun abrirCobro() { cobroAbierto = true }
+    fun cerrarCobro() { cobroAbierto = false }
+    private val consultasDeCodigo = java.util.concurrent.atomic.AtomicInteger(0)
+    val hayConsultasDeCodigo: Boolean get() = consultasDeCodigo.get() > 0
+
     private val _staffOptions = MutableStateFlow<List<StaffMember>>(emptyList())
     val staffOptions: StateFlow<List<StaffMember>> = _staffOptions.asStateFlow()
 
@@ -1519,11 +1532,18 @@ class CartViewModel @Inject constructor(
         areaTicketRepository.heartbeat()?.let(::replaceAreaTicketLines)
     }
 
-    suspend fun resolveScannedBarcode(
-        rawCode: String,
-        /** Falso en cuanto se abre el cobro: un vale leído justo antes no cambia la venta que ya se cobra (pendientes, Codex r1 #2). */
-        puedeTocarElCarrito: () -> Boolean = { true },
-    ): ScannedBarcodeResult {
+    suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+        // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
+        if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
+        consultasDeCodigo.incrementAndGet()
+        try {
+            return resolverCodigo(rawCode)
+        } finally {
+            consultasDeCodigo.decrementAndGet()
+        }
+    }
+
+    private suspend fun resolverCodigo(rawCode: String): ScannedBarcodeResult {
         val code = rawCode.trim()
         val localProduct = products.value.firstOrNull {
             it.sku == code || it.barcode == code || it.gtin == code
@@ -1582,11 +1602,11 @@ class CartViewModel @Inject constructor(
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
                     if (!settings.areaTickets.allowMixedCart && hasNormalItems) {
                         ScannedBarcodeResult.Error("Este local cobra los vales en un carrito separado.")
-                    } else if (!puedeTocarElCarrito()) {
+                    } else if (cobroAbierto) {
                         ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                     } else {
                         val checkout = areaTicketRepository.addTicket(code)
-                        if (!puedeTocarElCarrito()) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
+                        if (cobroAbierto) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                         replaceAreaTicketLines(checkout)
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }
@@ -1596,6 +1616,8 @@ class CartViewModel @Inject constructor(
                 else -> ScannedBarcodeResult.Error("Vale no encontrado en este local.")
             }
         }.getOrElse { error ->
+            // Una cancelación (la pantalla se fue) no es un «Error» del vale: se deja pasar para que nada siga después.
+            if (error is kotlinx.coroutines.CancellationException) throw error
             ScannedBarcodeResult.Error(error.message ?: "No se pudo consultar el vale. Revisa la conexión.")
         }
     }

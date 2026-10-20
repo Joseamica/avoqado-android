@@ -25,6 +25,9 @@ import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import io.mockk.coEvery
+import org.junit.Assert.assertFalse
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertTrue
 import io.mockk.verify
 import io.mockk.coVerify
@@ -203,14 +206,17 @@ class CartViewModelWeightTest {
         assertEquals(0.435, result.weightKg, 0.0)
     }
 
-    // Pendientes del 19-oct (Codex r1 #2): un vale leído justo antes de abrir el cobro no puede cambiar la venta que ya se
-    // está cobrando. El escaneo vive en este archivo porque aquí está el arnés del carrito con vales.
+    // Pendientes del 19-oct, de raíz (Codex r1 #2 a r4 #1): el CARRITO —no la pantalla, que se recrea al cambiar de
+    // pestaña— sabe si hay un cobro abierto y cuántos códigos se están consultando. Con el cobro abierto, un vale no se
+    // pide ni toca el carrito; mientras haya consultas, el cobro espera. El escaneo vive en este archivo porque aquí está
+    // el arnés del carrito con vales.
     @Test
-    fun `P1 con el cobro ya abierto el vale no se agrega ni se le pide al servidor`() = runTest {
+    fun `P1 con el cobro abierto en el carrito el vale no se pide ni lo toca`() = runTest {
         coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
         val vm = createViewModel()
+        vm.abrirCobro()
 
-        val result = vm.resolveScannedBarcode("9470000015", puedeTocarElCarrito = { false })
+        val result = vm.resolveScannedBarcode("9470000015")
 
         assertTrue(result is ScannedBarcodeResult.Error)
         coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
@@ -220,13 +226,29 @@ class CartViewModelWeightTest {
     fun `P1 si el cobro se abre mientras responde el servidor, el vale no toca el carrito`() = runTest {
         coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
         val checkout = mockk<AreaTicketCheckout>(relaxed = true)
-        coEvery { areaTicketRepository.addTicket("9470000015") } returns checkout
-        var consultas = 0
         val vm = createViewModel()
+        coEvery { areaTicketRepository.addTicket("9470000015") } coAnswers { vm.abrirCobro(); checkout }
 
-        val result = vm.resolveScannedBarcode("9470000015", puedeTocarElCarrito = { consultas++ == 0 })
+        val result = vm.resolveScannedBarcode("9470000015")
 
         assertTrue(result is ScannedBarcodeResult.Error)
         verify(exactly = 0) { checkout.tickets }
+    }
+
+    @Test
+    fun `P1 mientras se consulta un codigo el carrito lo sabe, y al terminar o cancelarse lo suelta`() = runTest {
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val respuesta = kotlinx.coroutines.CompletableDeferred<AreaTicketCheckout>()
+        coEvery { areaTicketRepository.addTicket("9470000015") } coAnswers { respuesta.await() }
+        val vm = createViewModel()
+
+        val consulta = launch { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+        assertTrue(vm.hayConsultasDeCodigo)
+        consulta.cancel()
+        runCurrent()
+        // Una cancelación (la pantalla se fue) no se traga como «Error»: el contador vuelve a cero.
+        assertTrue(consulta.isCancelled)
+        assertFalse(vm.hayConsultasDeCodigo)
     }
 }
