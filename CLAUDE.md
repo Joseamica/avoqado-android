@@ -15,8 +15,8 @@ Esto **no** cambia la regla de "un compile de un solo proyecto se corre siempre,
 esté saturada": eso decide **si** compilas (siempre sí), esto decide **cómo** — esperando turno en
 vez de encimarte. Van a pelo: lint, formato, un test suelto, `--version`.
 
-En ESTE repo el trabajo NO se manda al Alienware (no tiene Java ni Xcode): el script sólo hace la
-fila local, que es justo lo que hace falta aquí. Detalle: `Avoqado/CLAUDE.md` → "Verificación repartida".
+En ESTE repo avq-verify puede correr en el Alienware (Java 21 y SDK en `~/avq-toolchain`) o en la Mac: va a la fila
+con menos gente, y 1 de cada 3 corridas se compara en las dos (periodo de prueba; ver la raíz). Detalle: `Avoqado/CLAUDE.md` → "Verificación repartida".
 
 🔴 **Excepción medida (2026-08-31): `assembleRelease` / `bundleRelease` NO pueden ir por
 avq-verify** — el snapshot excluye `avoqado-release.keystore` (secreto fuera de git, como los
@@ -32,7 +32,6 @@ Sin el `-Dkotlin.daemon.jvmargs` el daemon de Kotlin arranca con su default de *
 (`gradle.properties` solo sube el heap del daemon de GRADLE, no el de Kotlin) y
 `compileReleaseKotlin` muere por memoria al final — costó un build de 32 minutos. Con el heap en
 4 GB y 2 workers: 4 minutos.
-
 
 This file provides guidance to Claude Code when working with this repository.
 
@@ -70,12 +69,12 @@ behind a paywall.
 
 - **Backend (authoritative):** `avoqado-server/src/services/access/basePlan.service.ts` +
   `avoqado-server/src/middlewares/checkFeatureAccess.middleware.ts`. Obligatory gating questions:
-  `avoqado-server/.claude/rules/feature-gating.md`. PREMIUM-only codes today: `CFDI`, `INVENTORY_TRACKING`.
+  `avoqado-server/.claude/rules/feature-gating.md`. PREMIUM-only codes: read `PREMIUM_ONLY_CODES` in `basePlan.service.ts` — never trust a copy in a doc.
 - **Dashboard display/CTA map:** `avoqado-web-dashboard/src/config/plan-catalog.ts`
   (`TierId`, `PLAN_TIERS`, `getTierForFeature()` → FeatureGate upsell).
-- **Enforcement status:** ✅ only **avoqado-web-dashboard** enforces tiers today.
-  ⚠️ **avoqado-android** (THIS repo) and **avoqado-ios** have NO tier gating yet — **start adding it
-  now**, mirroring the backend feature codes by exact name. Treat tier codes like permissions:
+- **Enforcement status (verified 9-oct-2026):** this app ALREADY has plan gating — `core/domain/PlanManager.kt` +
+  `designsystem/components/PlanGate.kt` (iOS mirrors it in `Services/PlanManager.swift`). Coverage is partial: reuse and
+  extend them, never build a second system, mirroring the backend feature codes by exact name. Treat tier codes like permissions:
   mirrored across backend + every client by exact name — a mismatch fails silently.
 - **Activación (regla completa en `../CLAUDE.md`):** esta app **lee** el estado del switch; solo se
   construye aquí si se toca durante el turno desde el piso, y entonces va en Android **e** iOS en el mismo
@@ -452,41 +451,5 @@ For Android-only features, the references in priority order are: (1) internal `d
 - [ ] Dark mode testing across all screens
 - [ ] Edge-to-edge display verification on all screens
 
-## 🔴 CRITICAL — Keep the Avoqado MCP in sync
-
-The Avoqado MCP (`avoqado-server/scripts/mcp/`) is a **first-class interface**: it exposes
-the platform's data and actions to AI agents (internal ops today, customer-facing tomorrow).
-It must never fall behind the platform.
-
-**Whenever you add or change a feature, Prisma model, service, endpoint, permission, or any
-capability the MCP should expose, you MUST add or update the matching MCP tool in
-`avoqado-server/scripts/mcp/` as part of the SAME change — never "later".** A capability that
-exists but isn't reachable through the MCP is unfinished. Treat the MCP like permissions: kept
-in lockstep, never an afterthought.
-
-## 🔴 CRITICAL — Keep the sales presentation in sync
-
-The partner sales presentation (`~/Documents/Programming/Avoqado-HQ/operations/marketing/platform-presentation/`)
-is the canonical "what Avoqado does" document — third parties sell from it. It must never fall
-behind the platform.
-
-**Whenever you add, change, or remove a customer-visible capability (feature, module, product,
-payment method, supported sector, tier packaging), you MUST update BOTH deliverables as part of
-the SAME change — never "later":** the full deck (`avoqado-presentacion.html`) AND the one-pager
-(`avoqado-one-pager.html`), then regenerate both PDFs following that folder's `README.md`.
-Updating only one of the two is an incomplete change. Internal refactors and bugfixes with no
-customer-visible impact are exempt.
-
----
-
-## Fetching Asana task attachments / screenshots
-
-When given an Asana task URL, you **can** see its screenshots and attachments — don't claim you can't.
-
-- `mcp__asana__*` reads task text/comments but **not** files; the `mcp__claude_ai_Asana__` connector is often unauthorized. Don't stop there — use the Asana Personal Access Token directly (it's what powers the `asana` MCP server):
-  1. Read the token (use it, **never print or commit the value**): key `ASANA_ACCESS_TOKEN` under `mcpServers.asana.env` in `~/.claude.json`. Example:
-     `TOKEN=$(python3 -c "import json,os; print(json.load(open(os.path.expanduser('~/.claude.json')))['mcpServers']['asana']['env']['ASANA_ACCESS_TOKEN'])")`
-  2. List attachments + signed URLs (task GID = the long number after `/task/` in the URL):
-     `curl -s -H "Authorization: Bearer $TOKEN" "https://app.asana.com/api/1.0/tasks/<GID>/attachments?opt_fields=name,download_url,created_at"`
-  3. `curl` each `download_url` (pre-signed, needs no auth) to a temp file in the scratchpad, then Read the image. Inline description images are attachments too, so this returns all of them — not just the ones embedded in the text.
-- If slide/screenshot text is unreadable after Read downscales a large image, crop it into regions with PIL and upscale (LANCZOS) before re-reading.
+> Reglas del workspace que aplican aquí también (MCP en sync, presentación de ventas, adjuntos de Asana, tier, sin red…):
+> `../AGENTS.md` y `../CLAUDE.md`, que cargan siempre al abrir desde `Avoqado/`. Copias quitadas el 9-oct-2026 (fase 2b).
