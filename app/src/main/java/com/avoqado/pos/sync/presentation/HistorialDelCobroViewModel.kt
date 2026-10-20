@@ -20,7 +20,20 @@ import kotlinx.serialization.json.*
 class HistorialDelCobroViewModel @Inject constructor(
     private val dao: PendingPaymentDao,private val storage: SecureStorage,
     private val roles: RoleManager,private val session: TableSession,
+    private val staff: com.avoqado.pos.pos.data.StaffRepository,
 ):ViewModel() {
+    // «Revisado por» guarda el id; aquí se pinta el nombre (lista de personal, con su copia sin red). Nunca el id.
+    private val _nombres=MutableStateFlow<Map<String,String>>(emptyMap());val nombres=_nombres.asStateFlow()
+    private var nombresPedidosPara:Contexto?=null;private var nombresPedidosEn=0L
+    fun revisor(row:RevisionDelCobroRecord,nombres:Map<String,String> = _nombres.value):String = row.q15ReviewedBy?.let { nombres[it] } ?: "otro usuario"
+    /** Los primeros 8 caracteres tal cual: la búsqueda es `instr(id, texto)`, así que lo que se ve se encuentra. */
+    // ponytail: 8 caracteres de un UUID v4 = 32 bits al azar; con N filas en revisión la probabilidad de que dos coincidan
+    // es ~N²/2³³ (100 filas ≈ 1 en 860 mil). Si pasa, la búsqueda trae las dos y la cuenta y el importe las distinguen.
+    fun folio(row:RevisionDelCobroRecord):String = row.id.take(8)
+    /** Recorrido en la D3 (19-oct): en mostrador la cuenta ES el folio y salía otra vez el código largo. La cuenta va sólo si
+     *  es otra cosa, y corta igual que el folio (la búsqueda `instr` también la encuentra). Igual que iOS. */
+    fun referencia(row:RevisionDelCobroRecord):String =
+        "Folio ${folio(row)}" + (row.capturedOrderRef?.takeIf { it!=row.id }?.let { " · cuenta ${it.take(8)}" } ?: "")
     private data class Contexto(val venue:String?,val staff:String?,val epoch:Long)
     private fun contextoActual()=Contexto(storage.venueId,storage.userId,session.contextoActual())
     private var contexto=contextoActual()
@@ -44,7 +57,20 @@ class HistorialDelCobroViewModel @Inject constructor(
         val actual=contextoActual()
         if(actual!=contexto) {
             contexto=actual;limpiar();_mensaje.value=null;_cargando.value=false
-            _revisadas.value=false;_busqueda.value=""
+            _revisadas.value=false;_busqueda.value="";_nombres.value=emptyMap()
+        }
+        // Una vez por negocio/sesión (no en cada letra de la búsqueda); sin nombres, a lo más un reintento por minuto.
+        // Sólo se publica si sigue siendo el mismo contexto.
+        val ahora=System.currentTimeMillis()
+        if(canRead && (nombresPedidosPara!=contexto || (_nombres.value.isEmpty() && ahora-nombresPedidosEn>60_000))) {
+            val snapshot=contexto;nombresPedidosPara=snapshot;nombresPedidosEn=ahora
+            viewModelScope.launch {
+                try {
+                    val lista=staff.getActiveStaff(deFondo=true).getOrNull() ?: return@launch
+                    if(vigente(snapshot)) _nombres.value=lista.associate { it.id to it.fullName }
+                } catch(e:kotlinx.coroutines.CancellationException) { throw e }
+                catch(e:Exception) { /* sin lista: «otro usuario»; nunca tumba la pantalla de revisión */ }
+            }
         }
         pagina(false)
     }
@@ -91,6 +117,21 @@ class HistorialDelCobroViewModel @Inject constructor(
             catch(e:Exception) { if(continuar(snapshot,version)) _mensaje.value="No se pudo guardar la revisión. El pago sigue conservado." }
         }
     }
+    /** «Efectivo · cuenta completa»: el método con la traducción oficial (igual que iOS) y sólo los datos que existen. */
+    // Un tipo de pago personalizado viaja SIN método a propósito: ahí el tipo es el método, no un «Sin confirmar».
+    private fun metodoLegible(method:String?,splitType:String?,tenderTypeId:String?):String = listOfNotNull(
+        method?.let { com.avoqado.pos.transactions.data.model.PaymentMethodDisplay.label(it) }
+            ?: if(tenderTypeId!=null) "Tipo de pago personalizado" else "Sin confirmar",
+        when(splitType) {
+            null->null
+            "FULLPAYMENT"->"cuenta completa"
+            "PERPRODUCT"->"por producto"
+            "EQUALPARTS"->"partes iguales"
+            "CUSTOMAMOUNT"->"monto personalizado"
+            else->splitType.lowercase().replace('_',' ')
+        },
+        tenderTypeId?.takeIf { method!=null }?.let { "tipo de pago personalizado" },
+    ).joinToString(" · ")
     fun motivo(row:RevisionDelCobroRecord)=when(row.q15Reason) {
         ConciliacionDelCobro.DIFERENCIA->"El registro del pago cambió al sincronizar."
         ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA->"Falta la evidencia original de este pago."
@@ -102,7 +143,7 @@ class HistorialDelCobroViewModel @Inject constructor(
         fun money(value:Int?)=value?.let {java.lang.String.format(java.util.Locale.US,"$%.2f",it/100.0)} ?: "Sin confirmar"
         val lines=mutableListOf(if(capture==null) "Captura original: sin evidencia" else
             "Captura original: importe ${money(capture.amountCents)} · propina ${money(capture.tipCents)}")
-        capture?.let { c -> lines.add("Método original: ${c.method ?: "Sin confirmar"} · reparto ${c.splitType ?: "Sin confirmar"} · tipo ${c.tenderTypeId ?: "Sin confirmar"} · versión ${c.tenderRevision ?: "Sin confirmar"}") }
+        capture?.let { c -> lines.add("Método original: ${metodoLegible(c.method,c.splitType,c.tenderTypeId)}") }
         fun result(label:String,raw:String?) {
             val obj=raw?.let {runCatching {Json.parseToJsonElement(it) as? JsonObject}.getOrNull()}
             fun cents(key:String)=(obj?.get(key) as? JsonPrimitive)?.takeUnless {it.isString}?.intOrNull?.takeIf {it>=0}
@@ -110,8 +151,8 @@ class HistorialDelCobroViewModel @Inject constructor(
             lines.add("$label: importe ${money(cents("amountCents"))} · propina ${money(cents("tipCents"))}")
             text("paymentId")?.let {lines.add("Folio del servidor: $it")}
             if(obj!=null) {
-                lines.add("Método registrado: ${text("method") ?: "Sin confirmar"} · reparto ${text("splitType") ?: "Sin confirmar"} · tipo ${text("tenderTypeId") ?: "Sin confirmar"}")
-                val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto","tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden")
+                lines.add("Método registrado: ${metodoLegible(text("method"),text("splitType"),text("tenderTypeId"))}")
+                val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto","tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden","saldoDeLaMesa" to "saldo de la mesa")
                 for((key,title) in listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar")) {
                     val fields=(obj[key] as? JsonArray)?.mapNotNull {(it as? JsonPrimitive)?.content?.let(labels::get)} ?: emptyList()
                     if(fields.isNotEmpty()) lines.add("$title: ${fields.joinToString()}")
@@ -119,6 +160,10 @@ class HistorialDelCobroViewModel @Inject constructor(
                 // Q16: la venta sin red cuyo precio cambió en el servidor (mismo texto en iOS).
                 val alCobrar=cents("totalAlCobrarCents");val enServidor=cents("totalEnElServidorCents")
                 if(alCobrar!=null && enServidor!=null) lines.add("Total al cobrar ${money(alCobrar)} · total en el servidor ${money(enServidor)}")
+                // Mesa cobrada sin red (19-oct): el servidor la valoró con su precio de hoy (mismo texto en iOS).
+                val saldoEsperado=cents("saldoEsperadoCents");val saldoServidor=cents("saldoEnElServidorCents")
+                if(saldoEsperado!=null && saldoServidor!=null) lines.add("Saldo esperado ${money(saldoEsperado)} · saldo en el servidor ${money(saldoServidor)}")
+                cents("cobradoDeMasCents")?.let { lines.add("Se cobró de más: ${money(it)}") }
             }
         }
         result("Primer resultado",row.q15InitialResultJson)

@@ -64,6 +64,9 @@ class Q16OutboxPrecioTest {
             coEvery { dao.retenerIntentQ15(any(),any(),any(),any()) } answers {
                 disk.sql(Q15_INTENT_HOLD_SQL,mapOf("venueId" to firstArg<String>(),"id" to secondArg<String>(),"motivo" to arg<String>(2),"ahora" to arg<Long>(3)))
             }
+            coEvery { dao.soltarRetenidoQ16(any(),any()) } answers {
+                disk.sql(Q16_INTENT_RELEASE_SQL,mapOf("venueId" to firstArg<String>(),"id" to secondArg<String>()))
+            }
             val api=Retrofit.Builder().baseUrl(disk.server.url("/"))
                 .client(okhttp3.OkHttpClient.Builder().addNetworkInterceptor(InterceptorDePrecioQ16).build())
                 .addConverterFactory(Json { ignoreUnknownKeys=true }.asConverterFactory("application/json".toMediaType())).build().create(ApiService::class.java)
@@ -335,6 +338,73 @@ class Q16OutboxPrecioTest {
             coEvery { f.dao.hayCapturaSinResolverQ16(any()) } throws java.io.IOException("owned read failure")
             f.drain();assertEquals(1,f.disk.server.requestCount)
             assertEquals(ConciliacionDelCobro.PRICE_PROOF_PENDING,f.row("unpaid")["q15Reason"])
+        }
+    }
+
+    // 19-oct (mesa sin red retenida, D3 2/2): la mesa abierta y cobrada sin red esperaba a su PROPIO cobro, que va detrás en la
+    // cola: OPEN_TABLE retenido por PRICE_PROOF_PENDING para siempre. Un PAY_CASH de la misma cola, en espera normal y con su
+    // captura, ya no retiene: sale después de OPEN/ADD por FIFO, y la diferencia de precio se ve al confirmar el cobro.
+    private suspend fun Fixture.pagarSinRed(id:String="pay",ref:String="L") {
+        outbox.enqueue(VENUE,SyncIntentTypes.PAY_CASH,Json.parseToJsonElement("""{"localOrderId":"$ref","amountCents":3000,"tipCents":0}""").jsonObject,id=id)
+    }
+    private fun Fixture.mandado():List<String> {
+        val sent=disk.server.takeRequest(1,java.util.concurrent.TimeUnit.SECONDS) ?: return emptyList()
+        if (sent.path!!.endsWith("/sync/recovery")) return mandado()
+        val wire=JSONObject(sent.body.readUtf8()).getJSONArray("intents")
+        return (0 until wire.length()).map { wire.getJSONObject(it).getString("id") }
+    }
+    @Test fun `mesa sin red con su cobro en la misma cola sale en orden y no se espera a si misma`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.add("add",2);f.pagarSinRed();f.add("clear",4,type="CLEAR_TABLE")
+            assertEquals("PENDING",f.row("pay")["status"]);assertNotNull(f.row("pay")["q15CaptureJson"])
+            f.drain()
+            assertNull(f.row("open")["q15Reason"])
+            assertEquals(listOf("open","add"),f.mandado().take(2))
+        }
+    }
+    @Test fun `cobro viejo sin captura en la cola sigue reteniendo su mesa`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.add("pay",2,type=SyncIntentTypes.PAY_CASH)
+            f.disk.sql("UPDATE pos_sync_intents SET capturedOrderRef='L' WHERE id='pay'");f.drain()
+            assertEquals(0,f.disk.server.requestCount);assertEquals(ConciliacionDelCobro.PRICE_PROOF_PENDING,f.row("open")["q15Reason"])
+        }
+    }
+    @Test fun `cobro rechazado de la misma mesa sigue reteniendo`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.pagarSinRed()
+            f.disk.sql("UPDATE pos_sync_intents SET status='REJECTED' WHERE id='pay'");f.drain()
+            assertEquals(0,f.disk.server.requestCount);assertEquals(ConciliacionDelCobro.PRICE_PROOF_PENDING,f.row("open")["q15Reason"])
+        }
+    }
+    // Los aparatos que YA tienen la mesa atorada (2.25.3/2.25.4): sin esto, A no suelta nada (la marca ya está puesta). Como
+    // mostrador en 2.25.0: si el servidor dice que no tiene ese intent (vacío estricto), se quita la marca y la admisión de
+    // precio vuelve a decidir con la regla nueva.
+    private fun Fixture.vacio() { disk.code=200;disk.response="""{"data":{"intents":[],"orders":[]}}""" }
+    @Test fun `mesa ya atorada se suelta sola si el servidor no tiene la ronda y sale en su turno`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.add("add",2);f.pagarSinRed();f.hold("open");f.vacio();f.drain()
+            assertNull(f.row("open")["q15Reason"])
+            assertEquals(listOf("open","add"),f.mandado().take(2))
+        }
+    }
+    @Test fun `atorada con historial dudoso vuelve a quedar retenida aunque la recuperacion venga vacia`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.add("pay",2,type=SyncIntentTypes.PAY_CASH)
+            f.disk.sql("UPDATE pos_sync_intents SET capturedOrderRef='L' WHERE id='pay'");f.hold("open");f.vacio();f.drain()
+            assertEquals(ConciliacionDelCobro.PRICE_PROOF_PENDING,f.row("open")["q15Reason"])
+            assertTrue(f.mandado().isEmpty())
+        }
+    }
+    @Test fun `recuperacion con ordenes o intents no vacios no suelta nada`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.pagarSinRed();f.hold("open")
+            f.disk.code=200;f.disk.response="""{"data":{"intents":[],"orders":[{"id":"R"}]}}""";f.drain()
+            assertEquals(ConciliacionDelCobro.PRICE_PROOF_PENDING,f.row("open")["q15Reason"]);assertEquals(1,f.disk.server.requestCount)
+        }
+    }
+    // Codex r3 (19-oct): la tolerancia de redondeo sale SÓLO de los combos de esta mesa (1¢ por componente). Las piezas de precio
+    // normal no dan margen: en una mesa grande, un cambio real chico sí avisa.
+    @Test fun `la tolerancia del cobro sin red sale solo de los combos de la mesa`() = runTest {
+        Fixture().use { f -> f.add("open",1,type=SyncIntentTypes.OPEN_TABLE);f.add("add",2);f.add("otra",3,ref="otra-mesa")
+            f.disk.sql("INSERT INTO pos_sync_intents(id,venue_id,status,created_at,type,seq,payload_json) VALUES('combo',:v,'PENDING',1,'ADD_ITEMS',4,:p)",
+                mapOf("v" to VENUE,"p" to """{"localOrderId":"L","items":[{"quantity":1,"promotionRef":{"selections":[{},{},{}]}}]}"""))
+            f.outbox.enqueue(VENUE,SyncIntentTypes.PAY_CASH,Json.parseToJsonElement("""{"localOrderId":"L","amountCents":3000,"tipCents":0}""").jsonObject,
+                id="pay",retenido=true,restanteEsperadoCents=0)
+            assertEquals(3,ConciliacionDelCobro.leerCaptura(f.row("pay")["q15CaptureJson"] as String,VENUE,"pay")!!.toleranciaCents)
         }
     }
     companion object { const val VENUE=Q16PrecioCapturadoTest.VENUE }

@@ -163,4 +163,14 @@ class ReceiptInputMapperTest {
         assertEquals("REFUND", ReceiptInputMapper.map(receipt().copy(isRefund = true), null, false, "America/Mexico_City", null).sale.kind)
         assertEquals("SALE", ReceiptInputMapper.map(receipt(), null, false, "America/Mexico_City", null).sale.kind)
     }
+
+    // Codex r3 (19-oct): una nota de varias líneas salía «sin salsin aceite» en el ticket y en la pre-cuenta.
+    @Test
+    fun `la nota de varias lineas llega al papel con espacios y una nota en blanco no llega`() {
+        fun nota(n: String?) = ReceiptInputMapper.map(receipt().copy(items = listOf(ReceiptItem(name = "Ensalada", quantity = 1, unitPrice = 100, totalPrice = 100, note = n))), null, false, "America/Mexico_City", null).sale.items[0].note
+        assertEquals("sin sal sin aceite", nota("sin sal\nsin aceite"))
+        assertEquals("sin sal sin aceite", nota(" sin sal\r\n\tsin aceite \n"))
+        assertNull(nota(" \n "))
+        assertNull(nota(null))
+    }
 }

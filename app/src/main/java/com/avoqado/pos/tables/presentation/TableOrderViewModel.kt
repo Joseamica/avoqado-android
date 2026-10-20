@@ -59,6 +59,23 @@ internal fun payableCents(fromCheckCents: Int, queuedCents: Int, sessionTotalCen
     (fromCheckCents + queuedCents).takeIf { it > 0 } ?: sessionTotalCents
 
 
+/** Renglones de la pre-cuenta, igual desde la cuenta y desde el plano. Lleva la nota del artículo como el ticket del cobro:
+ *  en la D3 (19-oct) la pre-cuenta salía sin «Nota: sin aceite» porque los dos caminos la olvidaban. */
+internal fun renglonesDePreCuenta(items: List<OrderDetailItem>): List<ReceiptItem> = items.map {
+    fun cents(v: Double) = round(v * 100).toInt()
+    ReceiptItem(
+        name = it.productName ?: "Artículo",
+        quantity = it.quantity,
+        unitPrice = cents(it.unitPrice),
+        totalPrice = cents(it.total),
+        modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
+        note = it.notes?.takeIf { nota -> nota.isNotBlank() },
+        // I4 (revisión de conjunto): sin esto, un artículo de cortesía imprimía su precio en la pre-cuenta de Android
+        // mientras iOS ya imprimía «CORTESÍA» para la MISMA cuenta.
+        isCortesia = it.isCortesia,
+    )
+}
+
 /** Cuenta de esta orden, sin escrituras en vuelo ni trabajo local por resolver. */
 internal fun motivoParaNoImprimirPreCuenta(hayImpresora: Boolean, cheque: OrderDetail?, orderId: String,
     chequeAlDia: Boolean, enVuelo: Boolean, trabajo: TrabajoSinResolver?): String? = when {
@@ -812,6 +829,7 @@ class TableOrderViewModel @Inject constructor(
                 is RondaConLlave.Desenlace.Enviada -> {
                     // Saved — hand control back IMMEDIATELY; printing and the floor refresh are slow network hops.
                     tableSession.updateVersion(desenlace.valor.version)
+                    rondasConfirmadas += roundKey
                     _queued.value += com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
                     pendingLines = emptyList()
                     _isSending.value = false
@@ -1844,19 +1862,7 @@ class TableOrderViewModel @Inject constructor(
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
                     orderType = "Mesa ${session.tableNumber} - PRE-CUENTA",
-                    items = order.items.map {
-                        ReceiptItem(
-                            name = it.productName ?: "Artículo",
-                            quantity = it.quantity,
-                            unitPrice = cents(it.unitPrice),
-                            totalPrice = cents(it.total),
-                            modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
-                            // I4 (revisión de conjunto): sin esto, un artículo de cortesía
-                            // imprimía su precio en la pre-cuenta de Android mientras iOS ya
-                            // imprimía «CORTESÍA» para la MISMA cuenta.
-                            isCortesia = it.isCortesia,
-                        )
-                    },
+                    items = renglonesDePreCuenta(order.items),
                     subtotal = subtotal,
                     taxAmount = cents(order.addedTaxAmount),
                     discountAmount = cents(order.discountAmount).coerceIn(0, subtotal.coerceAtLeast(0)).takeIf { it > 0 },
@@ -1894,10 +1900,12 @@ class TableOrderViewModel @Inject constructor(
      * el mesero tocaba y NO PASABA NADA — sin red no se podía cobrar una mesa.
      * Encontrado en la Sunmi T3 Pro el 2026-07-28.
      */
+    // Codex r3 del total de la mesa (19-oct, raíz de la familia): con rondas pintadas que la cuenta todavía no muestra, el número sólo
+    // se afirma tras una lectura al día (`loadCheck` la baja al empezar). Y una ronda enviada EN LÍNEA cuenta como confirmada (como iOS).
     // Una ronda guardada sin red en una mesa del servidor todavía no está en su saldo: «Pagar $0.00» mentía (QA 2.24, 14-oct).
     // Cuenta que el servidor la haya CONFIRMADO, no que siga pintada: un renglón separado a otra cuenta deja la tarjeta
     // (la ronda sólo se retira cuando todos sus renglones están en ESTA cuenta) sin ocultar el saldo (auditoría Codex).
-    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && !hayRondaSinConfirmar() } == true
+    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && !hayRondaSinConfirmar() && (_queued.value.isEmpty() || cuentaAlDiaAqui) } == true
 
     /** Llaves de ronda (ADD_ITEMS) que el servidor ya confirmó en esta vida del VM o al reabrir. Estado observable (como
      *  trabajoParaSaldo): la confirmación al reabrir llega DESPUÉS de pintar y la pantalla tiene que enterarse sola. */
@@ -1905,23 +1913,43 @@ class TableOrderViewModel @Inject constructor(
     private fun hayRondaSinConfirmar(): Boolean =
         _queued.value.any { linea -> rondasConfirmadas.none { llave -> linea.externalId?.startsWith("sync:$llave:") == true } }
 
-    val payableTotalCents: Int
+    /** Lo que la pantalla dibuja: la cuenta, lo ya pagado y lo que falta (founder, 19-oct: como «Ya pagado»/«Por pagar» de la
+     *  pre-cuenta en papel). `porPagarCents` ES el saldo que se cobra: `payableTotalCents` lo lee de aquí, por las mismas ramas. */
+    data class SaldoDeMesa(val totalCents: Int, val pagadoCents: Int, val porPagarCents: Int, val confirmado: Boolean = true) {
+        /** Lo que se dibuja con lo sin mandar encima. Un sobrepago cubre primero lo sin mandar: el servidor deja el restante en 0
+         *  y sumarle lo sin mandar haría que Total − Ya pagado ≠ Por pagar (Codex r1, 19-oct). */
+        fun conSinMandar(sinMandarCents: Int) = copy(
+            totalCents = totalCents + sinMandarCents,
+            porPagarCents = (porPagarCents + sinMandarCents - (pagadoCents - totalCents).coerceAtLeast(0)).coerceAtLeast(0),
+        )
+        companion object { fun soloSaldo(cents: Int) = SaldoDeMesa(cents, 0, cents) }
+    }
+
+    val saldoDeMesa: SaldoDeMesa
         get() {
             val session = tableSession.current()
             val fromCheck = _check.value?.takeIf { it.id == session?.orderId }?.let { check ->
-                check.preBillBalance?.remainingBalanceCents ?: run {
+                check.preBillBalance?.let { SaldoDeMesa(it.orderTotalCents, it.totalPaidCents, it.remainingBalanceCents) } ?: run {
                     val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount + it.tipAmount }
-                    round((check.total - paid) * 100).toInt()
+                    // Sin el saldo del servidor, con abonos la cuenta a mano se equivoca (resta la propina, cuenta devoluciones):
+                    // la pantalla dice «Saldo por confirmar» en vez de un número (Codex r1). El cobro no cambia.
+                    SaldoDeMesa(round(check.total * 100).toInt(), round(paid * 100).toInt(), round((check.total - paid) * 100).toInt(),
+                        confirmado = check.payments.none { it.status == "COMPLETED" })
                 }
-            } ?: 0
+            } ?: SaldoDeMesa.soloSaldo(0)
             if (session?.isProvisional == true) {
-                if (!session.saldoSinRedConocido) return 0
+                if (!session.saldoSinRedConocido) return SaldoDeMesa.soloSaldo(0)
                 val work = trabajoParaSaldo?.takeIf { it.first == venueId && it.second == session.idsDeLaOrden }?.third
                 // Antes de leer disco se conserva el último saldo conocido; el toque siempre vuelve a consultar.
-                return work?.let { Math.subtractExact(session.valorRondasSinRedCents, it.cobradoEnColaCents).coerceAtLeast(0) } ?: session.totalCents
+                return work?.let {
+                    SaldoDeMesa(session.valorRondasSinRedCents, it.cobradoEnColaCents,
+                        Math.subtractExact(session.valorRondasSinRedCents, it.cobradoEnColaCents).coerceAtLeast(0))
+                } ?: SaldoDeMesa.soloSaldo(session.totalCents)
             }
-            return if (_check.value?.id == session?.orderId) fromCheck else if (!vioCambios) session?.totalCents ?: 0 else 0
+            return if (_check.value?.id == session?.orderId) fromCheck else SaldoDeMesa.soloSaldo(if (!vioCambios) session?.totalCents ?: 0 else 0)
         }
+
+    val payableTotalCents: Int get() = saldoDeMesa.porPagarCents
 
     suspend fun preparePagar(): Boolean {
         val session = tableSession.current() ?: return false
