@@ -90,6 +90,15 @@ class Q15HistorialViewModelTest {
         val igual=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15ResultJson="""{"paymentId":"sp1","amountCents":10000,"tipCents":500}"""))
         assertFalse(igual.any { it.startsWith("Total al cobrar") })
     }
+    // Mesa sin red (19-oct, Codex r2): el gerente ve el saldo esperado contra el del servidor y cuánto se cobró de más (igual iOS).
+    @Test fun detalle_muestra_saldo_de_la_mesa_y_lo_cobrado_de_mas() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro("FULLTEST-A","p1",null,10000,0,localOrderId="L",restanteEsperadoCents=0))
+        val resultado="""{"paymentId":"sp1","orderId":"o1","amountCents":10000,"tipCents":0,"camposDiferentes":["saldoDeLaMesa"],"camposNoComprobados":[],"saldoEsperadoCents":0,"saldoEnElServidorCents":0,"cobradoDeMasCents":2000}"""
+        val detail=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15InitialResultJson=resultado,q15ResultJson=resultado))
+        assertTrue(detail.toString(),detail.contains("Saldo esperado $0.00 · saldo en el servidor $0.00"))
+        assertTrue(detail.toString(),detail.contains("Se cobró de más: $20.00"))
+        assertTrue(detail.toString(),detail.contains("Campos distintos: saldo de la mesa"))
+    }
     @Test fun detalle_legacy_o_campo_ausente_nunca_muestra_cero_como_prueba() {
         val r=row("p1").copy(q15CaptureJson=null,q15ResultJson="""{"paymentId":"sp1"}""")
         val detail=vm().detalle(r)

@@ -606,6 +606,40 @@ class TableOrderReprintComandasTest {
 
     }
 
+    // 19-oct (founder «si asi»): la pantalla decía «Total $137» con un abono sin decir cuánto se pagó. Muestra los mismos números
+    // que la pre-cuenta en papel: Total, Ya pagado y Por pagar, y Por pagar sigue siendo exactamente `payableTotalCents`.
+    @Test fun `saldo en pantalla con abono y propina = total197 pagado60 porpagar137, igual que el papel`() = runTest {
+        val (panel, _) = product4Panel("partialTip")
+        assertEquals(TableOrderViewModel.SaldoDeMesa(totalCents = 19700, pagadoCents = 6000, porPagarCents = 13700), panel.saldoDeMesa)
+        assertEquals(panel.saldoDeMesa.porPagarCents, panel.payableTotalCents)
+    }
+
+    @Test fun `saldo en pantalla sin abonos = total sin Ya pagado`() = runTest {
+        val (panel, _) = product4Panel("base")
+        assertEquals(TableOrderViewModel.SaldoDeMesa(totalCents = 18700, pagadoCents = 0, porPagarCents = 18700), panel.saldoDeMesa)
+    }
+
+    // Codex r1: sin el saldo del servidor la cuenta a mano resta la propina (127 en vez de 137). La pantalla no lo afirma.
+    @Test fun `saldo en pantalla sin snapshot del servidor con abonos queda por confirmar y el cobro no cambia`() = runTest {
+        val (panel, _) = product4Panel("noSnapshot")
+        assertFalse(panel.saldoDeMesa.confirmado)
+        assertEquals(panel.payableTotalCents, panel.saldoDeMesa.porPagarCents)
+    }
+
+    // Codex r1: con sobrepago el servidor deja el restante en 0; lo sin mandar lo cubre el excedente y las filas cuadran.
+    @Test fun `con sobrepago lo sin mandar no aparece como deuda y las filas cuadran`() {
+        val sobrepago = TableOrderViewModel.SaldoDeMesa(totalCents = 10000, pagadoCents = 15000, porPagarCents = 0)
+        assertEquals(TableOrderViewModel.SaldoDeMesa(15000, 15000, 0), sobrepago.conSinMandar(5000))
+        assertEquals(TableOrderViewModel.SaldoDeMesa(18000, 15000, 3000), sobrepago.conSinMandar(8000))
+        val normal = TableOrderViewModel.SaldoDeMesa(totalCents = 19700, pagadoCents = 6000, porPagarCents = 13700)
+        assertEquals(TableOrderViewModel.SaldoDeMesa(24700, 6000, 18700), normal.conSinMandar(5000))
+    }
+
+    @Test fun `saldo en pantalla tras devolucion completa no inventa deuda`() = runTest {
+        val (panel, _) = product4Panel("refundZero")
+        assertEquals(0, panel.saldoDeMesa.porPagarCents)
+    }
+
     @Test fun `P4 detalle getter usa restante137 del snapshot legacy y no127`() = runTest {
         val (panel, _) = product4Panel("partialTip")
         assertEquals(13700, panel.payableTotalCents)

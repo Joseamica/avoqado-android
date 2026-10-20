@@ -1047,16 +1047,21 @@ class PaymentFlowViewModel @Inject constructor(
      * Info-7 (QA en la D3, 15-oct): la venta cobrada sin red decía «El sello se suma al sincronizar» y lo SEGUÍA diciendo
      * con «Venta sincronizada» arriba, aunque el servidor ya hubiera dado el sello. Ahora, en cuanto la cola confirma ESTA
      * venta (la misma señal del aviso, [sincronizacionDe]), se pregunta por su sello con el id que le dio el servidor y se
-     * pinta lo que pasó. Si no se puede saber (consulta fallida, PENDING tras el reintento, fila ya limpiada) se QUITA la
-     * promesa: una promesa vieja miente.
+     * pinta lo que pasó. Si no se puede saber (consulta fallida, PENDING tras el reintento, fila ya limpiada) o la cola la
+     * RECHAZA, se QUITA la promesa: una promesa vieja miente.
      * 🔴 Vive en [consultaDelSello]: «Venta nueva» la cancela. Y antes de pintar se revisa que la pantalla siga siendo la de
      * ESTA venta (misma venta, misma generación y el mismo cobro encolado en «Cobro exitoso»); si no, no pinta nada.
      */
     private fun cambiarLaPromesaAlSincronizar(cola: ColaDelCobro.Pagos, clave: String) {
         val generacion = paymentGeneration
         consultaDelSello = viewModelScope.launch {
-            sincronizacionDe(cola).firstOrNull { it == SincronizacionDelCobro.SINCRONIZADA } ?: return@launch
-            val sello = cashPaymentRepository.pagoDelServidor(cola.id)?.let { consultarSelloConReintento(it) }
+            // El primer desenlace: sincronizada o RECHAZADA. Rechazada, la venta no subió y la promesa se quita.
+            val desenlace = sincronizacionDe(cola).firstOrNull { it != SincronizacionDelCobro.PENDIENTE } ?: return@launch
+            val sello = if (desenlace == SincronizacionDelCobro.SINCRONIZADA) {
+                cashPaymentRepository.pagoDelServidor(cola.id)?.let { consultarSelloConReintento(it) }
+            } else {
+                null
+            }
             val sigueEnPantalla = ventaDelSello == clave && generacion == paymentGeneration &&
                 (_state.value as? PaymentFlowState.Success)?.colaDelCobro == cola
             if (!sigueEnPantalla) return@launch
@@ -1082,12 +1087,12 @@ class PaymentFlowViewModel @Inject constructor(
         // 🔴 Un doble toque en la fila del cliente llegaba aquí dos veces antes de que la hoja se cerrara: dos POST de
         // liga. Se marca «enviando» ANTES de lanzar, así el segundo toque ya lo ve.
         if (_customerAttachSending.value) return
-        // 🔴 Venta ENCOLADA (cola de pagos): sólo SU pago. «El último pago de $X del mismo empleado en 15 min» puede ser
-        // otra venta igual (dos cafés de $100) y el cliente y su sello caerían ahí. Sin el id del servidor no se llama: se
-        // dice. Espejo de iOS (Codex r1 #1, 18-oct).
-        val cola = (_state.value as? PaymentFlowState.Success)?.takeIf { it.isQueued }?.colaDelCobro as? ColaDelCobro.Pagos
-        if (cola != null) {
-            ligarClienteAVentaEncolada(cola, customerId, customerName)
+        // 🔴 Venta ENCOLADA (cola de pagos, outbox de una mesa, o sin fila): sólo SU pago. «El último pago de $X del mismo
+        // empleado en 15 min» puede ser otra venta igual (dos cafés de $100) y el cliente y su sello caerían ahí. Sin el id
+        // del servidor no se llama: se dice. Espejo de iOS (Codex r1 #1, 18-oct; mesa y sin fila, 18-oct).
+        val encolada = (_state.value as? PaymentFlowState.Success)?.takeIf { it.isQueued }
+        if (encolada != null) {
+            ligarClienteAVentaEncolada(encolada.colaDelCobro, customerId, customerName)
             return
         }
         val paymentId = lastPaymentId
@@ -1114,13 +1119,20 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    /** La venta encolada se liga con el id que el servidor le dio a SU fila; sin él, ni se llama al servidor. */
-    private fun ligarClienteAVentaEncolada(cola: ColaDelCobro.Pagos, customerId: String, customerName: String) {
+    /**
+     * La venta encolada se liga con el id que el servidor le dio a SU fila (cola de pagos) o a SU intent `PAY_CASH` (mesa
+     * abierta sin red); sin él, o sin fila, ni se llama al servidor.
+     */
+    private fun ligarClienteAVentaEncolada(cola: ColaDelCobro?, customerId: String, customerName: String) {
         val generacion = paymentGeneration
         _customerAttachSending.value = true
         _customerAttachResult.value = null
         viewModelScope.launch {
-            val pagoDelServidor = cashPaymentRepository.pagoDelServidor(cola.id)
+            val pagoDelServidor = when (cola) {
+                is ColaDelCobro.Pagos -> cashPaymentRepository.pagoDelServidor(cola.id)
+                is ColaDelCobro.Outbox -> syncOutbox.pagoDelServidor(cola.intentId)
+                null -> null
+            }
             if (pagoDelServidor == null) {
                 if (generacion == paymentGeneration) {
                     _customerAttachResult.value = TextosDelSello.VENTA_SIN_SINCRONIZAR
@@ -2628,6 +2640,9 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                     },
                     cashTenderedCents = cashReceivedCents, changeCents = changeCents, splitType = splitCapturado,
+                    // 19-oct (mesa sin red retenida): lo que la mesa debía al empezar el cobro, menos lo cobrado. Al confirmarse, si
+                    // el servidor (que valora con el precio de HOY) deja otro saldo, el gerente ve DIFERENCIA.
+                    restanteEsperadoCents = mesaDelCobro?.takeIf { it.orderId == orderId }?.let { (it.totalCents - subtotal).coerceAtLeast(0) },
                 )
                 recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(
