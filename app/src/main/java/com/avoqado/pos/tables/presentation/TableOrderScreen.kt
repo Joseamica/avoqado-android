@@ -295,6 +295,8 @@ fun TableOrderScreen(
     }
 
     fun handleProductTap(product: Product) {
+        // Mientras el cobro se prepara o está abierto, lo leído (cámara o pistola) no entra: el importe ya se está congelando.
+        if (preparandoPago || showPayment || showSplitImporte) return
         if (blockIfReadOnly()) return
         if (product.hasModifiers) selectedProduct = product else viewModel.addProduct(product)
     }
@@ -322,6 +324,8 @@ fun TableOrderScreen(
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
             committedPaymentCompletion = null
+            // Al abrirse el cobro la cámara se cierra: no queda leyendo debajo del importe congelado.
+            showBarcodeScanner = false
             showPayment = true
         }
         // El motivo lo pone `preparePagar()`, que es quien SABE por qué no se
@@ -1131,6 +1135,7 @@ fun TableOrderScreen(
                 prepararPago {
                     paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
                     if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
+                    showBarcodeScanner = false
                     showSplitImporte = true
                 }
             },
