@@ -197,7 +197,9 @@ internal fun idleShowsAvoqadoBrand(venueName: String?, logoUrl: String?): Boolea
 
 @Composable
 private fun IdleBranding(venueName: String?, logoUrl: String?, design: AppliedDesign?) {
-    if (idleShowsAvoqadoBrand(venueName, logoUrl)) {
+    // Con diseño se dibuja el diseño aunque la marca del negocio aún no llegue (QA F2-1): «hay diseño en el estado» ⇒ «se
+    // ve», que es lo que el acuse «mostrado» afirma.
+    if (design == null && idleShowsAvoqadoBrand(venueName, logoUrl)) {
         AvoqadoIdleBranding()
         return
     }

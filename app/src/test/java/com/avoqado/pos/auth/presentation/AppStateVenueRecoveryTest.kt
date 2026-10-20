@@ -88,6 +88,44 @@ class AppStateVenueRecoveryTest {
         assertEquals(false, appState.visibleTabs.value.isEmpty())
     }
 
+    // ── La marca del negocio en la pantalla del cliente sigue a la sesión (QA F2-1) ──
+
+    @Test
+    fun `iniciar sesion pone la marca del negocio en la pantalla del cliente sin pasar por onResume`() = runTest {
+        val pantalla = com.avoqado.pos.customerdisplay.CustomerDisplayState()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, configurarSesion = {
+            every { venueDisplayName } returns "Taquería Lupe"
+            every { venueLogo } returns "https://storage.googleapis.com/b/lupe.png"
+        })
+        appState.customerDisplayState = pantalla
+        advanceUntilIdle()
+
+        appState.onLoginSuccess()
+
+        assertEquals("Taquería Lupe", pantalla.venueName.value)
+        assertEquals("https://storage.googleapis.com/b/lupe.png", pantalla.venueLogoUrl.value)
+    }
+
+    @Test
+    fun `cerrar sesion deja la pantalla del cliente sin la marca del negocio`() = runTest {
+        var conSesion = true
+        val pantalla = com.avoqado.pos.customerdisplay.CustomerDisplayState()
+            .apply { setVenueBranding("Taquería Lupe", "https://storage.googleapis.com/b/lupe.png") }
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, configurarSesion = {
+            every { venueDisplayName } answers { if (conSesion) "Taquería Lupe" else null }
+            every { venueLogo } answers { if (conSesion) "https://storage.googleapis.com/b/lupe.png" else null }
+            every { clearSession() } answers { conSesion = false }
+        })
+        appState.customerDisplayState = pantalla
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        assertEquals(null, pantalla.venueName.value)
+        assertEquals(null, pantalla.venueLogoUrl.value)
+    }
+
     @Test
     fun `logout detiene inventory sync sin bloquear por trabajo durable separado`() = runTest {
         val events = mutableListOf<String>()
@@ -276,12 +314,14 @@ class AppStateVenueRecoveryTest {
             mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
             },
+        configurarSesion: SecureStorage.() -> Unit = {},
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
             every { venueId } returns "venue-atole"
             every { reservationsEnabled } returns false
             every { this@mockk.sessionInvalidated } returns sessionInvalidated
+            configurarSesion()
         }
         val authRepository = mockk<AuthRepository>(relaxed = true) {
             coEvery { repairCurrentVenueBinding() } coAnswers {

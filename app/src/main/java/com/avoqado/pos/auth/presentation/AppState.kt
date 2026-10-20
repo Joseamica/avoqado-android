@@ -89,6 +89,13 @@ class AppState @Inject constructor(
     @Inject
     lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
 
+    /**
+     * La marca del negocio en la pantalla del cliente (nombre y logo en reposo). Por miembro, como las de arriba; en Windows
+     * Guice la inyecta igual. Se pone al día en cada cambio de sesión ([notifyDeviceSessionChanged]).
+     */
+    @Inject
+    lateinit var customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState
+
     private fun detenerRedLocal() {
         if (::preparationDelivery.isInitialized) preparationDelivery.stop()
         if (::lanHubService.isInitialized) lanHubService.stop()
@@ -97,6 +104,11 @@ class AppState @Inject constructor(
     }
 
     private fun notifyDeviceSessionChanged() {
+        // La marca del negocio en la pantalla del cliente (QA F2-1): antes sólo se ponía al volver la app al frente, así que
+        // tras iniciar sesión el reposo seguía con la de Avoqado. Sin sesión queda vacía ⇒ la de Avoqado, a propósito.
+        if (::customerDisplayState.isInitialized) {
+            customerDisplayState.setVenueBranding(secureStorage.venueDisplayName, secureStorage.venueLogo)
+        }
         tableSyncCoordinator.onSessionChanged()
         syncOutbox.refreshQ15Observation()
         if (::deviceCapabilitySyncCoordinator.isInitialized) {

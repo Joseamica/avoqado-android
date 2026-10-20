@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -37,13 +38,14 @@ class CustomerDisplayManagerDeEscritorioTest {
     private lateinit var preferenciasDelCliente: CustomerDisplayPrefs
     private lateinit var modo: DisplayModePrefs
     private lateinit var almacen: SecureStorage
+    private lateinit var inyector: com.google.inject.Injector
     private var monitores = listOf(principal)
     private val caja = CajaFalsa(Rectangle(0, 0, 1920, 1040))
     private val fabrica = FabricaFalsa()
 
     @BeforeTest fun armar() {
         Dispatchers.setMain(UnconfinedTestDispatcher(reloj))
-        val inyector = Inyector.crear(ActividadDeEscritorio(Files.createTempDirectory("Avoqado POS cliente")))
+        inyector = Inyector.crear(ActividadDeEscritorio(Files.createTempDirectory("Avoqado POS cliente")))
         manager = inyector.getInstance(CustomerDisplayManager::class.java)
         estado = inyector.getInstance(CustomerDisplayState::class.java)
         preferenciasDelCliente = inyector.getInstance(CustomerDisplayPrefs::class.java)
@@ -169,6 +171,12 @@ class CustomerDisplayManagerDeEscritorioTest {
         almacen.venueName = "Testarudo Cafe"
         pasan(2_100)
         assertEquals("Testarudo Cafe", estado.venueName.value)
+    }
+
+    @Test fun `el AppState de Windows recibe la pantalla del cliente para ponerle la marca al cambiar de sesion`() {
+        // QA F2-1: la marca se pone al día desde AppState (código compartido); en Windows la inyecta Guice por miembro.
+        val appState = inyector.getInstance(com.avoqado.pos.auth.presentation.AppState::class.java)
+        assertSame(estado, appState.customerDisplayState)
     }
 
     @Test fun `al cerrar la app se libera la ventana reutilizable`() {

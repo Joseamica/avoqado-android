@@ -120,6 +120,15 @@ class PantallaDelClienteEnLaEscenaTest {
         capturar("01-sin-diseno")
     }
 
+    @Test fun `con diseno y sin marca del negocio el reposo dibuja el diseno y no la de Avoqado`() = runComposeUiTest {
+        // QA F2-1: recién iniciada la sesión la marca del negocio aún no llega. Con diseño, el reposo es el diseño: el acuse
+        // «mostrado» (diseño en el estado + superficie montada) dice la verdad por construcción.
+        val state = CustomerDisplayState().apply { offerDesign(AppliedDesign(ficha(dark = true, welcome = "Pásale"), logoFile = null)) }
+        pantalla(state)
+        onNodeWithText("Pásale").assertIsDisplayed()
+        assertEquals(0xFF1C1C1E.toInt(), pixel(0.1f))
+    }
+
     @Test fun `bienvenida propia`() = runComposeUiTest {
         val state = conMarca().apply { offerDesign(AppliedDesign(ficha(welcome = "¡Hola, vecino!"), logoFile = null)) }
         pantalla(state)
