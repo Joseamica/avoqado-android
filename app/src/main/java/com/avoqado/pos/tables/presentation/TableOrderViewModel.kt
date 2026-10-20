@@ -100,7 +100,7 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
         else "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
     trabajo.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
     // Sin lectura fresca del servidor no se sabe si cambió: se dice lo cierto (no se pudo confirmar), no «cambió».
-    !chequeAlDia && (cheque?.id == orderId || vioCambios) -> "No se pudo confirmar el saldo actual de esta cuenta: cóbrala cuando vuelva la conexión."
+    !chequeAlDia && (cheque?.id == orderId || vioCambios) -> "No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento."
     else -> null
 }
 
@@ -551,13 +551,9 @@ class TableOrderViewModel @Inject constructor(
         showMessage("Configura los tiempos de esta sucursal en el dashboard, en Configuración › Tiempos de servicio.")
     }
 
-    /** Con el cobro abierto (sesión PAYING) el importe ya se congeló: lo leído por la cámara o la pistola debajo del cobro no entra. */
-    private fun cobrando() = tableSession.current()?.mode == TableSession.Mode.PAYING
-
     /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
      *  two courses must stay two lines (they fire at different moments). */
     fun addProduct(product: Product) {
-        if (cobrando()) return
         invalidateBlockedNotice()
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el stock
         // queda en negativo como señal de descuadre.
@@ -601,7 +597,6 @@ class TableOrderViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
     ) {
-        if (cobrando()) return
         // Ver addProduct: agotado avisa, nunca bloquea.
         if (product.isOutOfStock) {
             _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"

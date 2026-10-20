@@ -219,7 +219,7 @@ class TableOrderCuentaGarantizadaTest {
             advanceUntilIdle()
             assertFalse(subject.chequeAlDia.value); assertTrue(subject.vioCambios)
             assertFalse(subject.preparePagar())
-            assertEquals("No se pudo confirmar el saldo actual de esta cuenta: cóbrala cuando vuelva la conexión.", subject.blockedNotice.value)
+            assertEquals("No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento.", subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 
@@ -362,16 +362,15 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
-    @Test fun `con el cobro abierto lo escaneado no entra a la cuenta`() = runTest {
+    // Codex r1 (texto-cuenta-y-camara): cancelar «Dividir importe» o girar el aparato deja la sesión en PAYING con el cobro
+    // ya cerrado. La guarda de la cámara vive en la pantalla (cobro visible), no aquí: la cuenta no puede tragarse productos en silencio.
+    @Test fun `con la sesion colgada en PAYING y el cobro cerrado los productos si entran`() = runTest {
         val subject = vm()
         try {
             session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
             subject.addProduct(Product(id = "p", name = "Artículo", priceValue = 50.0))
-            subject.addProductWithModifiers(Product(id = "p", name = "Artículo", priceValue = 50.0), 1, emptyList(), null)
-            assertTrue("El importe del cobro ya se congeló", subject.pending.value.isEmpty())
-            session.start(session.current()!!.copy(mode = TableSession.Mode.ORDERING))
-            subject.addProduct(Product(id = "p", name = "Artículo", priceValue = 50.0))
-            assertEquals(1, subject.pending.value.size)
+            subject.addProductWithModifiers(Product(id = "q", name = "Otro", priceValue = 20.0), 1, emptyList(), null)
+            assertEquals(2, subject.pending.value.size)
         } finally { subject.viewModelScope.cancel() }
     }
 
