@@ -862,7 +862,10 @@ private fun PaymentItemsSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs),
+                ) {
                     Text(
                         text = "Productos",
                         style = MaterialTheme.typography.headlineSmall,

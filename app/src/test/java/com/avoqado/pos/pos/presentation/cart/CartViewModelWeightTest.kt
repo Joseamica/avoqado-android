@@ -25,6 +25,11 @@ import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import io.mockk.coEvery
+import org.junit.Assert.assertTrue
+import io.mockk.verify
+import io.mockk.coVerify
+import com.avoqado.pos.areatickets.data.AreaTicketCheckout
+import com.avoqado.pos.areatickets.data.AreaTicketScanData
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -196,5 +201,32 @@ class CartViewModelWeightTest {
         result as ScannedBarcodeResult.WeightedProductFound
         assertEquals("jamon", result.product.id)
         assertEquals(0.435, result.weightKg, 0.0)
+    }
+
+    // Pendientes del 19-oct (Codex r1 #2): un vale leído justo antes de abrir el cobro no puede cambiar la venta que ya se
+    // está cobrando. El escaneo vive en este archivo porque aquí está el arnés del carrito con vales.
+    @Test
+    fun `P1 con el cobro ya abierto el vale no se agrega ni se le pide al servidor`() = runTest {
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val vm = createViewModel()
+
+        val result = vm.resolveScannedBarcode("9470000015", puedeTocarElCarrito = { false })
+
+        assertTrue(result is ScannedBarcodeResult.Error)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
+    }
+
+    @Test
+    fun `P1 si el cobro se abre mientras responde el servidor, el vale no toca el carrito`() = runTest {
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val checkout = mockk<AreaTicketCheckout>(relaxed = true)
+        coEvery { areaTicketRepository.addTicket("9470000015") } returns checkout
+        var consultas = 0
+        val vm = createViewModel()
+
+        val result = vm.resolveScannedBarcode("9470000015", puedeTocarElCarrito = { consultas++ == 0 })
+
+        assertTrue(result is ScannedBarcodeResult.Error)
+        verify(exactly = 0) { checkout.tickets }
     }
 }

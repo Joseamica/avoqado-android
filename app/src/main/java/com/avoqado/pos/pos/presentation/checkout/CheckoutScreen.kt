@@ -74,6 +74,7 @@ import com.avoqado.pos.designsystem.components.TeclaDeAtajo
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
+import com.avoqado.pos.designsystem.components.sinTeclasDetrasDelCobro
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
@@ -600,7 +601,7 @@ fun CheckoutScreen(
     if (isTablet) {
         // iPad-style: 50/50 split con entrada + carrito — o 50/25/25 cuando el
         // panel de promociones entra como TERCERA columna.
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
             // 🔴 Manda el ancho REAL de esta superficie, no el booleano `isTablet`:
             // ese colapsa "tablet chica" y "tablet grande" en el mismo valor, y aquí
             // hay que decidir si cabe una tercera columna. Además `maxWidth` ya viene
@@ -835,7 +836,7 @@ fun CheckoutScreen(
         }
     } else {
         // iPhone-style: full-screen with bottom cart bar
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
             // Un teléfono es siempre Compact (<600dp), o sea que el lateral SIEMPRE
             // cae a pestaña aquí. Se calcula con el ancho real igual, para no tener
             // dos reglas; y la pestaña se muestra con cualquier modo que no sea
@@ -1200,7 +1201,11 @@ fun CheckoutScreen(
         if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
         checkoutScope.launch {
-            when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
+            val entra = { codigoEntraALaVenta(cobroAbierto = showPaymentFlow, emitiendoVale = areaOperationsState.issuing) }
+            val result = cartViewModel.resolveScannedBarcode(barcode, puedeTocarElCarrito = entra)
+            // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
+            if (!entra()) return@launch
+            when (result) {
                 is ScannedBarcodeResult.ProductFound ->
                     handleProductTap(
                         result.product,

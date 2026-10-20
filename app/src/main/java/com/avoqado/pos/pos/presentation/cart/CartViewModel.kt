@@ -1519,7 +1519,11 @@ class CartViewModel @Inject constructor(
         areaTicketRepository.heartbeat()?.let(::replaceAreaTicketLines)
     }
 
-    suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+    suspend fun resolveScannedBarcode(
+        rawCode: String,
+        /** Falso en cuanto se abre el cobro: un vale leído justo antes no cambia la venta que ya se cobra (pendientes, Codex r1 #2). */
+        puedeTocarElCarrito: () -> Boolean = { true },
+    ): ScannedBarcodeResult {
         val code = rawCode.trim()
         val localProduct = products.value.firstOrNull {
             it.sku == code || it.barcode == code || it.gtin == code
@@ -1578,8 +1582,11 @@ class CartViewModel @Inject constructor(
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
                     if (!settings.areaTickets.allowMixedCart && hasNormalItems) {
                         ScannedBarcodeResult.Error("Este local cobra los vales en un carrito separado.")
+                    } else if (!puedeTocarElCarrito()) {
+                        ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                     } else {
                         val checkout = areaTicketRepository.addTicket(code)
+                        if (!puedeTocarElCarrito()) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                         replaceAreaTicketLines(checkout)
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }

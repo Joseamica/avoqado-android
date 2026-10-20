@@ -5,6 +5,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
+import com.avoqado.pos.designsystem.components.sinTeclasDetrasDelCobro
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.Modifier
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertCountEquals
@@ -365,6 +376,30 @@ class AtajosDelCobroEnLaEscenaTest {
         setContent { EnWindows { AvoqadoModalBottomSheet(onDismissRequest = {}) { Text("Contenido de la hoja") } } }
         onNodeWithText("Contenido de la hoja").assertExists()
         onAllNodesWithContentDescription("Cerrar").assertCountEquals(1)
+    }
+
+    // Pendientes del 19-oct (Codex r1 #1): con el cobro abierto, el producto de atrás que quedó con el foco no se «pica»
+    // con Enter ni Espacio (la pistola manda Enter). Las teclas de atajo sí pasan: las atiende la ventana para el cobro.
+    @Test fun `P1 con el cobro abierto la venta de atras no recibe Enter, y las teclas F si pasan`() = runComposeUiTest {
+        var clics = 0
+        var efes = 0
+        var cobroAbierto by mutableStateOf(true)
+        setContent {
+            EnWindows {
+                Box(Modifier.sinTeclasDetrasDelCobro { cobroAbierto }) {
+                    Button(
+                        onClick = { clics++ },
+                        modifier = Modifier.onKeyEvent { e -> if (e.key == Key.F5 && e.type == KeyEventType.KeyDown) efes++; false },
+                    ) { Text("Café") }
+                }
+            }
+        }
+        onNodeWithText("Café").performSemanticsAction(SemanticsActions.RequestFocus)
+        onNodeWithText("Café").performKeyInput { pressKey(Key.Enter); pressKey(Key.Spacebar); pressKey(Key.F5) }
+        runOnIdle { assertEquals(0, clics); assertEquals(1, efes) }
+        cobroAbierto = false
+        onNodeWithText("Café").performKeyInput { pressKey(Key.Enter) }
+        runOnIdle { assertEquals(1, clics) }
     }
 
     // Al registrar un efectivo no se espera a ninguna terminal (iOS dice «Procesando…»).

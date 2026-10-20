@@ -202,6 +202,7 @@ fun CreateClassSessionScreen(
     if (showCreateProduct) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         AvoqadoModalBottomSheet(
+            conXPropia = true,
             onDismissRequest = { showCreateProduct = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {

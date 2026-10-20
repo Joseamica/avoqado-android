@@ -70,6 +70,19 @@ fun BarreraDeAtajos() = AtajosDeTeclado.Registrar(tecla = null, activo = true) {
 fun Modifier.sinTeclasDeClic(enWindows: Boolean): Modifier =
     if (!enWindows) this else onPreviewKeyEvent { it.key == Key.Enter || it.key == Key.NumPadEnter || it.key == Key.Spacebar }
 
+/**
+ * Mientras [cobroAbierto], lo de atrás (la venta) no recibe teclas: un producto que quedó con el foco se «picaba» con
+ * Enter o Espacio —la pistola termina cada código con Enter— y entraba al carrito sin cobrarse (pendientes, Codex r1 #1).
+ * Las teclas de atajo (F1–F12, Esc) pasan: las atiende la ventana para el cobro. Va en la raíz de la venta, que es
+ * hermana del cobro (en iOS el cobro es otra pantalla y no hace falta).
+ */
+fun Modifier.sinTeclasDetrasDelCobro(cobroAbierto: () -> Boolean): Modifier =
+    onPreviewKeyEvent { cobroAbierto() && it.key !in TECLAS_DE_LA_VENTANA }
+
+private val TECLAS_DE_LA_VENTANA = setOf(
+    Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12, Key.Escape,
+)
+
 /** La tecla en chiquito a la derecha de su botón. Sólo en Windows. */
 @Composable
 fun TeclaDeAtajo(
