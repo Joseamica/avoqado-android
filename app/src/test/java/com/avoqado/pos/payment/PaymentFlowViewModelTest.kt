@@ -1153,6 +1153,28 @@ class PaymentFlowViewModelTest {
         assertFalse(viewModel.valesNoCoincidian.value)
     }
 
+    // Codex r7 #1: una venta dividida por productos SIN vales deja un producto pendiente en su orden; luego se escanea un vale y
+    // su respuesta se pierde. El cobro siguiente continúa esa orden, pero materializar arma OTRA (producto + vale). Antes se
+    // saltaba la comparación por «continuar» y cobraba el carrito contra la orden nueva: sólo se salta si es la MISMA orden.
+    @Test
+    fun `P1 continuar una orden distinta de la que arman los vales no salta la comparacion`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "0.50"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh() } returns sesion
+        cobroDeEfectivoRegistrado()
+        val pendiente = CartItem(id = "taco-2", type = CartItemType.ProductItem("taco"), name = "Taco", unitPrice = 100)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(pendiente)), resumeOrderId = "orden-anterior")
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        }
+        assertTrue(viewModel.valesNoCoincidian.value)
+    }
+
     // La copia del aparato decía «nada cobrado» pero ya hubo un abono (su relectura falló tras el pago anterior): se relee
     // antes de detener, y con el abono la venta sigue por el saldo del servidor, como siempre.
     @Test

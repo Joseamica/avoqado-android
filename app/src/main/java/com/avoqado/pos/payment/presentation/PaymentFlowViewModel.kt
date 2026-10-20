@@ -4214,8 +4214,9 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private suspend fun materializeAreaTicketCheckout(cart: CartState): Boolean {
-        // Una parte ya cobrada (split que continúa): lo que falta lo dice el servidor y el carrito ya no lleva los vales.
-        val continuaUnaVentaAbonada = createdOrderId != null
+        // La orden que este cobro continúa (ya se cobró una parte). Si es la MISMA que arman los vales, lo que falta lo dice el
+        // servidor y el carrito ya no lleva todos los vales; si es otra, se compara como cualquier cobro (Codex r7).
+        val ordenQueContinua = createdOrderId
         return try {
             val normalItems = cart.items
                 .filter { !it.locked }
@@ -4249,7 +4250,7 @@ class PaymentFlowViewModel @Inject constructor(
                     source = PaymentErrorSource.SERVER,
                 )
                 false
-            } else if (!continuaUnaVentaAbonada && valesNoCoinciden(cart, checkout)) {
+            } else if (order.id != ordenQueContinua && valesNoCoinciden(cart, checkout)) {
                 // Nada que cancelar: la sesión sigue viva con los vales del servidor y el carrito los toma al volver.
                 paymentGeneration++
                 isProcessingPayment = false
