@@ -1971,7 +1971,12 @@ class TableOrderViewModel @Inject constructor(
             return false
         }
         motivoParaNoCobrarLaMesa(session.isProvisional, _check.value, session.orderId, cuentaAlDiaAqui,
-            hayMutacionEnVuelo, vioCambios, trabajo)?.let { showBlockedReason(it); return false }
+            hayMutacionEnVuelo, vioCambios, trabajo)?.let {
+            showBlockedReason(it)
+            // «Intenta de nuevo en un momento» tiene que ser cierto: sin saldo fresco, el toque vuelve a pedir la cuenta.
+            if (!session.isProvisional && !cuentaAlDiaAqui && !hayMutacionEnVuelo) loadCheck()
+            return false
+        }
         if (session.isProvisional && session.valorRondasSinRedCents < 0) {
             showBlockedReason(IMPORTE_RONDA_FUERA_DE_LIMITE)
             return false

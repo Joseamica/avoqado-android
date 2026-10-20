@@ -223,6 +223,26 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // D3 (20-oct): volvió la red con la mesa abierta y Pagar seguía bloqueado — nada volvía a pedir la cuenta. El aviso dice
+    // «intenta de nuevo en un momento»: el toque bloqueado la vuelve a pedir, y el siguiente toque ya cobra.
+    @Test fun `sin saldo fresco tocar Pagar vuelve a pedir la cuenta y el siguiente toque cobra`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
+        try {
+            // Como en la D3: la cuenta ya se leyó una vez y al reabrirla sin red la lectura falla.
+            subject.loadCheck(); advanceUntilIdle()
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+            subject.loadCheck(); advanceUntilIdle()
+            assertFalse(subject.chequeAlDia.value)
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
+            assertFalse(subject.preparePagar())
+            assertEquals("No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento.", subject.blockedNotice.value)
+            advanceUntilIdle()
+            assertTrue("El toque bloqueado volvió a pedir la cuenta", subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `ACK de otra orden no invalida esta cuenta`() = runTest {
         val subject = vm()
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
