@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.repeatOnLifecycle
 import com.avoqado.pos.areatickets.data.AreaTicketLine
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
@@ -173,15 +174,24 @@ fun AreaTicketDeliveryScreen(
         }
 
         if (scanning && state.canScanDeliveryReceipt) {
-            val alEscanear: (String) -> Unit = { code ->
+            val alEscanear: (String) -> Unit = escanear@{ code ->
+                // Cámara y pistola pueden leer el mismo comprobante casi a la vez: sólo el primero entrega.
+                if (!scanning) return@escanear
                 scanning = false
                 viewModel.deliverByReceiptCode(code)
             }
             // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
-            // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba).
-            LaunchedEffect(Unit) { viewModel.codigosEscaneados.collect { alEscanear(it) } }
+            // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba). Sólo con
+            // esta pantalla RESUMED: al cambiar de pestaña conviviría ~700 ms con Cobrar (Codex d2 #1).
+            val ciclo = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            LaunchedEffect(ciclo) {
+                ciclo.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+                    viewModel.codigosEscaneados.collect { alEscanear(it) }
+                }
+            }
             BarcodeScannerView(
                 onBarcodeScanned = alEscanear,
+                lectorIntegrado = remember { com.avoqado.pos.pos.data.LectorIntegradoSunmi.hay() },
                 onDismiss = { scanning = false },
                 cameraHint = "Apunta la cámara al código del comprobante pagado",
                 manualTitle = "Escanea o escribe el comprobante pagado",
