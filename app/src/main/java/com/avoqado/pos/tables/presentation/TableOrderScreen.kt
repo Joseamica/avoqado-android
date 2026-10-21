@@ -813,19 +813,23 @@ fun TableOrderScreen(
                 .fillMaxSize()
                 .background(Color.Black),
         ) {
+            val alEscanear: (String) -> Unit = { barcode ->
+                showBarcodeScanner = false
+                val matched = catalogViewModel.products.value.find { product ->
+                    product.sku == barcode || product.barcode == barcode || product.gtin == barcode
+                }
+                if (matched != null) {
+                    handleProductTap(matched)
+                    panelTab = PanelTab.CUENTA
+                } else {
+                    unknownBarcode = barcode
+                }
+            }
+            // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
+            // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba).
+            LaunchedEffect(Unit) { catalogViewModel.codigosEscaneados.collect { alEscanear(it) } }
             com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView(
-                onBarcodeScanned = { barcode ->
-                    showBarcodeScanner = false
-                    val matched = catalogViewModel.products.value.find { product ->
-                        product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                    }
-                    if (matched != null) {
-                        handleProductTap(matched)
-                        panelTab = PanelTab.CUENTA
-                    } else {
-                        unknownBarcode = barcode
-                    }
-                },
+                onBarcodeScanned = alEscanear,
                 onDismiss = { showBarcodeScanner = false },
             )
         }

@@ -173,11 +173,15 @@ fun AreaTicketDeliveryScreen(
         }
 
         if (scanning && state.canScanDeliveryReceipt) {
+            val alEscanear: (String) -> Unit = { code ->
+                scanning = false
+                viewModel.deliverByReceiptCode(code)
+            }
+            // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
+            // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba).
+            LaunchedEffect(Unit) { viewModel.codigosEscaneados.collect { alEscanear(it) } }
             BarcodeScannerView(
-                onBarcodeScanned = { code ->
-                    scanning = false
-                    viewModel.deliverByReceiptCode(code)
-                },
+                onBarcodeScanned = alEscanear,
                 onDismiss = { scanning = false },
                 cameraHint = "Apunta la cámara al código del comprobante pagado",
                 manualTitle = "Escanea o escribe el comprobante pagado",
