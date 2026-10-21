@@ -1,8 +1,12 @@
 package com.avoqado.pos.loyalty
 
+import com.avoqado.pos.loyalty.data.SaleStampCard
 import com.avoqado.pos.loyalty.data.SaleStampOutcome
 import com.avoqado.pos.loyalty.data.SaleStampReason
 import com.avoqado.pos.loyalty.domain.RenglonDelSello
+import com.avoqado.pos.loyalty.domain.TarjetaDelSello
+import com.avoqado.pos.loyalty.domain.tamanoDeSello
+import com.avoqado.pos.loyalty.domain.tarjetaDelSello
 import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.loyalty.domain.textoDelSello
 import com.avoqado.pos.payment.data.OrderRepository
@@ -23,6 +27,7 @@ class TextoDelSelloTest {
         required: Int = 7,
         reward: Boolean = false,
         enabled: Boolean = true,
+        cartilla: SaleStampCard? = null,
     ) = SaleStampOutcome(
         stampsEnabled = enabled,
         stamped = stamped,
@@ -30,6 +35,7 @@ class TextoDelSelloTest {
         stampsEarned = earned,
         stampsRequired = required,
         rewardReady = reward,
+        saleCard = cartilla,
     )
 
     @Test
@@ -124,6 +130,10 @@ class TextoDelSelloTest {
             RenglonDelSello.desde(sello(stamped = true, earned = 3)),
         )
         assertEquals(
+            RenglonDelSello("✓ +1 sello · 3 de 7", positivo = true, tarjeta = TarjetaDelSello(3, 7, completa = false, premio = "Café")),
+            RenglonDelSello.desde(sello(stamped = true, earned = 3, cartilla = SaleStampCard(3, 7, rewardLabel = "Café"))),
+        )
+        assertEquals(
             RenglonDelSello("Ya recibió su sello de hoy", positivo = false),
             RenglonDelSello.desde(sello(reason = "DAILY_LIMIT")),
         )
@@ -140,5 +150,74 @@ class TextoDelSelloTest {
             "Sin conexión: agrégalo cuando vuelva la red. Tienes 24 h para que sume el sello.",
             TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE,
         )
+    }
+
+    // MARK: - Tarjetita de sellos (21-oct). Mismos textos que iOS, letra por letra.
+
+    @Test
+    fun `la tarjetita dice cuantos lleva, cuantos faltan y el premio`() {
+        val t = tarjetaDelSello(sello(stamped = true, earned = 1, cartilla = SaleStampCard(1, 7, rewardLabel = "Un café gratis")))!!
+        assertEquals(TarjetaDelSello(1, 7, completa = false, premio = "Un café gratis"), t)
+        assertEquals("+1 sello", t.titulo)
+        assertEquals("1 de 7", t.cuenta)
+        assertEquals("Faltan 6 para: Un café gratis", t.pie)
+        assertEquals("+1 sello. 1 de 7 sellos. Faltan 6 para: Un café gratis", t.descripcion)
+    }
+
+    @Test
+    fun `su cartilla de 7 esta llena aunque hoy se piden 10 - dice 7 de 7 y el premio ganado`() {
+        val ganada = SaleStampCard(7, 7, completed = true, rewardLabel = "Café gratis", rewardPending = true)
+        val t = tarjetaDelSello(sello(stamped = true, earned = 0, required = 10, reward = true, cartilla = ganada))!!
+        assertEquals(TarjetaDelSello(7, 7, completa = true, premio = "Café gratis", porCobrar = true), t)
+        assertEquals("¡Completó su tarjeta!", t.titulo)
+        assertEquals("7 de 7", t.cuenta)
+        assertEquals("Tiene un premio por cobrar: Café gratis", t.pie)
+    }
+
+    @Test
+    fun `completo pero el premio ya se cobro en otro aparato - no promete por cobrar`() {
+        val cobrada = SaleStampCard(7, 7, completed = true, rewardLabel = "Café gratis", rewardPending = false)
+        assertEquals("Ganó: Café gratis", tarjetaDelSello(sello(stamped = true, cartilla = cobrada))!!.pie)
+    }
+
+    @Test
+    fun `sin premio no inventa uno`() {
+        assertEquals("Faltan 4 para el premio", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(3, 7)))!!.pie)
+        assertEquals("Faltan 4 para el premio", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(3, 7, rewardLabel = "  ")))!!.pie)
+        assertEquals(
+            "Tiene un premio por cobrar",
+            tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(7, 7, completed = true, rewardPending = true)))!!.pie,
+        )
+    }
+
+    @Test
+    fun `sin la cartilla de la venta no hay tarjetita - nunca se deduce de la cartilla abierta hoy`() {
+        assertNull(tarjetaDelSello(null))
+        assertNull(tarjetaDelSello(sello(stamped = true, earned = 0, reward = true))) // servidor viejo: el «0» no prueba nada
+        assertNull(tarjetaDelSello(sello(reason = "DAILY_LIMIT", cartilla = SaleStampCard(3, 7))))
+        assertNull(tarjetaDelSello(sello(stamped = true, enabled = false, cartilla = SaleStampCard(3, 7))))
+        assertNull(tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(0, 0))))
+    }
+
+    @Test
+    fun `cero sellos sin premio pendiente no promete premio - otra venta lleno la cartilla y ya se cobro`() {
+        assertEquals("✓ +1 sello", textoDelSello(sello(stamped = true, earned = 0, reward = false)))
+        assertEquals("🎁 ¡Completó su tarjeta! Tiene un premio por cobrar", textoDelSello(sello(stamped = true, earned = 0, reward = true)))
+    }
+
+    @Test
+    fun `nunca pinta mas sellos llenos que la meta`() {
+        assertEquals(5, tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(8, 5)))!!.llenos)
+    }
+
+    @Test
+    fun `los circulos caben o va la barra`() {
+        // Teléfono de 320: 320 − 48 de margen − 32 de relleno = 240.
+        assertEquals(26.5f, tamanoDeSello(240f, 7)!!, 0.01f)
+        assertEquals(30f, tamanoDeSello(400f, 7)!!, 0.01f) // tablet: tope de 30
+        assertNull(tamanoDeSello(240f, 12)) // 12 en 240 no caben: barra
+        assertEquals(27.08f, tamanoDeSello(400f, 12)!!, 0.01f)
+        assertNull(tamanoDeSello(1000f, 13)) // más de 12: siempre barra
+        assertNull(tamanoDeSello(240f, 0))
     }
 }
