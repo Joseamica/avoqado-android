@@ -34,6 +34,17 @@ class LectorHidBus @Inject constructor() {
      */
     private val consumidas = mutableSetOf<Int>()
 
+    /**
+     * El lector INTEGRADO de las Sunmi (OrderPAD y similares) no entra por teclas: su modo
+     * "teclado" teclea como teclado VIRTUAL, que [LectorHid] descarta a propósito, y el código
+     * caía al buscador. Se usa su aviso ([LectorIntegradoSunmi.ACCION]), que ya trae el código
+     * entero; lo escucha `MainActivity`.
+     */
+    fun recibirDelLectorIntegrado(texto: String?) {
+        val codigo = texto?.trim().orEmpty()
+        if (codigo.isNotEmpty()) _codigos.tryEmit(codigo)
+    }
+
     /** @return `true` si la tecla NO debe llegar a la UI. */
     fun procesar(event: KeyEvent): Boolean = procesar(
         accion = event.action,
