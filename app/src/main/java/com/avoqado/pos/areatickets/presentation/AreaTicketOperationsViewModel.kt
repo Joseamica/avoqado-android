@@ -110,7 +110,13 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private val pdfGenerator: AreaTicketPdfGenerator,
     private val secureStorage: SecureStorage,
     private val comandaDispatcher: ComandaDispatcher,
+    /** Pistola y lector integrado. Default para las pruebas que lo construyen a mano; Hilt inyecta el singleton real. */
+    private val lectorHidBus: com.avoqado.pos.pos.data.LectorHidBus = com.avoqado.pos.pos.data.LectorHidBus(),
 ) : ViewModel() {
+    /** Códigos de la pistola o del lector integrado: la entrega los escucha con su escáner abierto. */
+    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
+        get() = lectorHidBus.codigos
+
     /**
      * Codex (5-oct): la comanda no muere si se cierra la pantalla de vales a media impresión o reintento.
      * ponytail: si la app muere en ese lapso la comanda se pierde (los vales no tienen la libreta del mostrador);

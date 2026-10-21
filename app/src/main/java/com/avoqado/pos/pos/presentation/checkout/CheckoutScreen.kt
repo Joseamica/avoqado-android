@@ -1286,6 +1286,9 @@ fun CheckoutScreen(
             BarcodeScannerView(
                 onBarcodeScanned = manejarCodigo,
                 onDismiss = { showBarcodeScanner = false },
+                // Aquí sí se escuchan los códigos del lector (`codigosEscaneados`, arriba): con
+                // lector integrado se abre con la cámara apagada para que el botón naranja lea.
+                lectorIntegrado = remember { com.avoqado.pos.pos.data.LectorIntegradoSunmi.hay() },
             )
         }
     }

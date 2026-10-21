@@ -60,6 +60,7 @@ class MainActivity : FragmentActivity() {
         super.onStart()
         innerPrinter.bind()
         customerDisplay.attach(this)
+        AvisoDelLectorIntegrado.escuchar(applicationContext, lectorHid)
     }
 
     override fun onResume() {
@@ -106,6 +107,7 @@ class MainActivity : FragmentActivity() {
         // ciegas mataría aquí la pantalla del cliente que la nueva acaba de
         // montar. Ver CustomerDisplayManager.shouldTearDownOnDetach.
         customerDisplay.detach(this)
+        AvisoDelLectorIntegrado.soltar(applicationContext)
         super.onStop()
     }
 
@@ -234,5 +236,42 @@ class MainActivity : FragmentActivity() {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
         }
+    }
+}
+
+/**
+ * UN solo receptor del aviso del lector integrado de Sunmi para toda la app
+ * ([com.avoqado.pos.pos.data.LectorIntegradoSunmi]).
+ *
+ * 🔴 No uno por Activity: al mudar la caja de pantalla (CashierDisplayGuard) se enciman dos
+ * instancias —la nueva arranca antes de que pare la vieja, y con dos pantallas las dos pueden
+ * estar al frente— y con dos receptores un escaneo entraba dos veces al carrito (Codex r1 #2).
+ * Se escucha mientras haya al menos una caja arrancada; sin ninguna, un escaneo hecho en otra
+ * app no llega a la venta. Sólo se toca desde onStart/onStop (hilo principal).
+ */
+private object AvisoDelLectorIntegrado {
+    private var cajasArrancadas = 0
+    private var bus: com.avoqado.pos.pos.data.LectorHidBus? = null
+    private val receptor = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            bus?.recibirDelLectorIntegrado(intent?.getStringExtra(com.avoqado.pos.pos.data.LectorIntegradoSunmi.EXTRA_CODIGO))
+        }
+    }
+
+    fun escuchar(app: android.content.Context, lector: com.avoqado.pos.pos.data.LectorHidBus) {
+        bus = lector
+        if (cajasArrancadas++ == 0) {
+            // EXPORTED: el aviso viene de otra app (com.sunmi.scanner).
+            androidx.core.content.ContextCompat.registerReceiver(
+                app,
+                receptor,
+                android.content.IntentFilter(com.avoqado.pos.pos.data.LectorIntegradoSunmi.ACCION),
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+            )
+        }
+    }
+
+    fun soltar(app: android.content.Context) {
+        if (cajasArrancadas > 0 && --cajasArrancadas == 0) app.unregisterReceiver(receptor)
     }
 }
