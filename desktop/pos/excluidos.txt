@@ -7,7 +7,7 @@
 # reemplazo (o anota lo que escritorio todavía no tiene) y SÓLO DESPUÉS corre `./gradlew -p desktop :pos:actualizarHuellas`.
 # Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
 com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 13636ea7b3e52865dc2c57dab08bc6e8141b5de436dd7991f8567d6637e2fd39
-com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 1bc7862586f7baee8df828208026b02fb91870c25e393143fe51b22351aaa38a
+com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 58bea02fbd39aaa815d6d6e484956aeffe6a4e6d62b4e027f1c66979b81eb3b1
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: bfd0eae749c91ef16171f63282092c9fafb081c8a74c53d68bc46527dea15c33
 com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 9d77ee128ab6ce7793b8f3a68b2443d64de86b2b0ae23f20aec63b80d741d72a
 com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: de75c3d40a887602e2162cc4f3e751693fbe2b0741feda3fd7ffed67078a0a4f
@@ -23,7 +23,7 @@ com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: imp
 com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android | huella: a91806bea6913f760a45292b9688addfe140c9fa03bac212e1c20b49de1320ca
 com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf | huella: 935f87860dde7da3bb81d337d84f4c9293870f0ac995cc46e5208ee9be3aaeee
 com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por un puerto COM de Windows (escritorio/bascula/), misma lógica de tramas | huella: cabd0b26eccb941d6a13653e652af981e1f7328627a2ebe20f9a8e447cc1bc63
-com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit | huella: 41a8e5a7bc5ec6b01c2c0f1b07654392c492cc39469a9d25f4bfb78ed19f4abf
+com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit | huella: 03b1fe072482244d049eabbc8e931535f277b14a5f44861916eda0b67708aea1
 com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fijar pantalla (modo kiosco) de Android | huella: d23efb3da30e0a9846ac6f9183d9b6504d24ed380120d25a604d577a8e240228
 #
 # No se excluye de nada: sólo se vigila. Lo que Android declara aquí (servicios, receptores de arranque, permisos) lo da el
