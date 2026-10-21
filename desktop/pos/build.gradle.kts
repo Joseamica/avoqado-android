@@ -280,10 +280,13 @@ tasks.matching { it.name == "kspKotlin" }.configureEach {
     enabled = !providers.gradleProperty("sinKsp").isPresent
 }
 
-// --- Los 2 recursos de Android que la app pinta (R.drawable.*); el video del login se sustituye por un fondo fijo ---
+// --- Los recursos de Android que la app pinta (R.drawable.*); el video del login se sustituye por un fondo fijo ---
 tasks.processResources {
     from(appAndroid.resolve("src/main/res")) {
-        include("drawable-nodpi/avoqado_logo_mark.png", "drawable/ic_whatsapp.xml")
+        include(
+            "drawable-nodpi/avoqado_logo_mark.png", "drawable/ic_whatsapp.xml",
+            "drawable-nodpi/avoqado_logo_inline_black.png", "drawable-nodpi/avoqado_logo_inline_white.png",
+        )
         into("android-res")
     }
 }

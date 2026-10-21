@@ -58,6 +58,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -505,16 +506,17 @@ private fun PoweredByAvoqado(modifier: Modifier = Modifier) {
             fontSize = 15.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
         )
+        // Logo horizontal (founder, 21-oct): letras negras sobre fondo claro, blancas sobre oscuro. Se decide por el
+        // fondo que de verdad se pinta, así sigue al tema de la ficha y al de fábrica sin preguntar de dónde vino.
+        val fondoOscuro = MaterialTheme.colorScheme.background.luminance() < 0.5f
         Image(
-            painter = painterResource(id = com.avoqado.pos.R.drawable.avoqado_logo_mark),
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Text(
-            text = "Avoqado",
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            painter = painterResource(
+                id = if (fondoOscuro) com.avoqado.pos.R.drawable.avoqado_logo_inline_white
+                     else com.avoqado.pos.R.drawable.avoqado_logo_inline_black,
+            ),
+            contentDescription = "Avoqado",
+            modifier = Modifier.height(20.dp),
+            contentScale = ContentScale.FillHeight,
         )
     }
 }
