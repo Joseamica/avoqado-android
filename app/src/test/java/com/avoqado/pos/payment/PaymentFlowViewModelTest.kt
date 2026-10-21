@@ -991,7 +991,7 @@ class PaymentFlowViewModelTest {
         )
         every { areaTicketRepository.session.current() } returns openCheckout
         coEvery {
-            areaTicketRepository.materialize(any(), any(), any())
+            areaTicketRepository.materialize(any(), any(), any(), any())
         } returns materializedCheckout
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
@@ -1092,13 +1092,227 @@ class PaymentFlowViewModelTest {
         assertFalse("el mismo vale dos veces", cobraLosValesDeLaSesion(listOf(lineaDeVale("a", 100), lineaDeVale("a", 100)), sesion))
     }
 
+    // D1 (20-oct, pendientes de atajos, Codex r7 AJENO 2): el apartado de los vales ya no existe (venció, o un «Cancelar» lo
+    // soltó) pero el carrito conserva sus renglones. Antes el cobro los vendía como importe libre: entraba el dinero y el vale
+    // quedaba sin pagar, así que el área no lo entregaba. Ahora el cobro se detiene sin tocar la caja ni el servidor.
+    @Test
+    fun `P1 un vale sin apartado no se cobra en efectivo como venta normal`() = runTest {
+        every { areaTicketRepository.session.current() } returns null
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { cashPaymentRepository.processCashPayment(any(), any()) }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        }
+        val estado = viewModel.state.value
+        assertTrue("$estado", estado is PaymentFlowState.Error && "vuelve a escanear" in estado.message)
+    }
+
+    @Test
+    fun `P1 un vale sin apartado no se cobra con terminal como venta normal`() = runTest {
+        every { areaTicketRepository.session.current() } returns null
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
+        val estado = viewModel.state.value
+        assertTrue("$estado", estado is PaymentFlowState.Error && "vuelve a escanear" in estado.message)
+    }
+
+    // Codex r1 #1/#2 (20-oct): «Cancelar» tras un cobro de vales que falló SUELTA su apartado (y la orden armada). Conservarlo
+    // dejaba la orden congelada: lo que se agregaba después no entraba al cobro. Cuando el servidor confirma, el carrito saca
+    // los vales (lo prueba CartViewModelWeightTest); sin red el cancel falla y todo se queda para reintentar.
+    @Test
+    fun `cancelar un cobro de vales que fallo suelta su apartado`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+            com.avoqado.pos.areatickets.data.AreaTicketException("AREA_TICKETS_REQUIRE_CONNECTION", "Sin conexión", true)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { areaTicketRepository.cancel(any()) }
+        assertTrue("regresa al carrito", viewModel.debeSalir.value)
+    }
+
+    // Codex r1 #3 (20-oct): el servidor dice «la sesión cambió o venció» con el mismo código. Si sólo CAMBIÓ (un latido a la
+    // vez), sigue viva con sus vales apartados: no se olvida. Antes se olvidaba siempre y el vale quedaba apartado a ciegas.
+    @Test
+    fun `una sesion de vales que solo cambio no se olvida`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+            com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "La sesión cambió o venció.", false)
+        coEvery { areaTicketRepository.refresh() } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2099-01-01T00:00:00.000Z")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+        val apartadoLocal = areaTicketRepository.session
+        verify(exactly = 0) { apartadoLocal.clear() }
+    }
+
+    @Test
+    fun `una sesion de vales que de verdad vencio si se olvida`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+            com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "La sesión cambió o venció.", false)
+        coEvery { areaTicketRepository.refresh() } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2020-01-01T00:00:00.000Z")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        // Quién la olvida (o la suelta, si tenía la cuenta armada) es `restore`, con la regla 2: lo prueba
+        // `AreaTicketVidaDelApartadoTest`. Aquí sólo que se le pide tras releer.
+        coVerify(exactly = 1) { areaTicketRepository.refresh() }
+        coVerify(exactly = 1) { areaTicketRepository.restore() }
+    }
+
+    // Codex r4 #7 (founder: «arréglalo de una vez»): un importe tecleado junto con los vales viaja en la orden de los vales,
+    // con su nombre y su precio en centavos. Antes se quedaba fuera y se perdía al cobrar.
+    @Test
+    fun `P1 un importe libre junto con vales entra en la orden de los vales`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        val enviados = slot<List<com.avoqado.pos.areatickets.data.NormalCheckoutItem>>()
+        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any()) } returns sesion
+        cobroDeEfectivoRegistrado()
+        val bolsa = CartItem(id = "bolsa", type = CartItemType.CustomAmount, name = "Bolsa", unitPrice = 2000)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100), bolsa)))
+        viewModel.confirmCashCustom(2100)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(com.avoqado.pos.areatickets.data.NormalCheckoutItem(productId = null, name = "Bolsa", unitPrice = 2000, quantity = 1)),
+            enviados.captured,
+        )
+    }
+
+    @Test
+    fun `P1 un importe libre de cortesia junto con vales viaja en cero`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        val enviados = slot<List<com.avoqado.pos.areatickets.data.NormalCheckoutItem>>()
+        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any()) } returns sesion
+        cobroDeEfectivoRegistrado()
+        val regalo = CartItem(id = "regalo", type = CartItemType.CustomAmount, name = "Regalo", unitPrice = 2000, isCortesia = true)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100), regalo)))
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        assertEquals(0, enviados.captured.single().unitPrice)
+    }
+
+    // D2 (20-oct, Codex r7 AJENO 4): el cajero confirma efectivo con vales y toca «Cancelar» mientras se arma la orden de los
+    // vales. Antes, al volver de materializar, el efectivo se registraba igual: cobro de una venta que el cajero canceló. Ahora
+    // la misma puerta que tarjeta: la generación cambió, no se registra nada y se suelta el apartado.
+    @Test
+    fun `P1 cancelar mientras se arma la orden de vales no registra el efectivo`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        val armando = CompletableDeferred<Unit>()
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers { armando.await(); sesion }
+        cobroDeEfectivoRegistrado()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.confirmCashCustom(100)
+        runCurrent()
+        viewModel.cancelarVenta()
+        armando.complete(Unit)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        }
+        coVerify(exactly = 1) { areaTicketRepository.cancel(any()) }
+        assertTrue("regresa al carrito", viewModel.debeSalir.value)
+    }
+
+    // Regla 9 (rediseño r7, Codex r6 #5): las tareas de salida soltaban «el apartado vigente», que pudo ser ya otra venta.
+    // Ahora sueltan sólo el de ESTE cobro.
+    @Test
+    fun `regla 9 salir sin cobrar suelta solo el apartado de este cobro`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { areaTicketRepository.cancel(soloSi = "checkout-vales") }
+    }
+
+    // Codex r7 #1: el cobro marca el abono en la copia del apartado con el saldo que dio el servidor, aunque la pantalla ya no
+    // lo marque (el carrito cambió de venta a media cobranza). Así el aviso «Cobrar saldo» sale con el saldo real.
+    @Test
+    fun `r7 un abono de vales se marca en el apartado desde el cobro con el saldo del servidor`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(paymentId = "pago-vales", receiptAccessKey = null, remainingBalanceCents = 200, orderPaymentStatus = "PARTIAL"),
+        )
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100), lineaDeVale("b", 200))))
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        verify { areaTicketRepository.session.marcarConAbono("order-vales", 200) }
+        val apartado = areaTicketRepository.session
+        verify(exactly = 0) { apartado.clearIf(any()) }
+    }
+
+    // Regla 9: un error de armar que llega cuando el cajero ya canceló no tapa «Cancelando»: se suelta y se sale.
+    @Test
+    fun `regla 9 un error tardio de armar tras cancelar no pinta un error y suelta`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
+        val armando = CompletableDeferred<Unit>()
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers {
+            armando.await()
+            throw com.avoqado.pos.areatickets.data.AreaTicketException("AREA_TICKETS_REQUIRE_CONNECTION", "Sin conexión", true)
+        }
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
+        viewModel.confirmCashCustom(100)
+        runCurrent()
+        viewModel.cancelarVenta()
+        armando.complete(Unit)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        coVerify(exactly = 1) { areaTicketRepository.cancel(soloSi = "checkout-vales") }
+        assertTrue("regresa al carrito", viewModel.debeSalir.value)
+    }
+
     // Codex r6 #1: el servidor agregó el vale B pero su respuesta se perdió; el carrito sólo trae A. Antes se cobraba A en pago
     // completo y B quedaba en la orden sin cobrar. Ahora el cobro se detiene sin cobrar y el carrito toma los vales del servidor.
     @Test
     fun `P1 si el carrito no trae los vales del servidor el cobro se detiene sin cobrar`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
         coEvery { areaTicketRepository.refresh() } returns sesion
         cobroDeEfectivoRegistrado()
 
@@ -1111,7 +1325,7 @@ class PaymentFlowViewModelTest {
         }
         assertTrue(viewModel.valesNoCoincidian.value)
         assertTrue("sale del cobro sin cancelar la sesión de vales", viewModel.debeSalir.value)
-        coVerify(exactly = 0) { areaTicketRepository.cancel() }
+        coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
     }
 
     // Con el carrito ya al día, el mismo cobro pasa: lo que se cobra es lo que la orden tiene.
@@ -1119,7 +1333,7 @@ class PaymentFlowViewModelTest {
     fun `con los mismos vales que el servidor el cobro sigue`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100), lineaDeVale("b", 200))))
@@ -1139,7 +1353,7 @@ class PaymentFlowViewModelTest {
     fun `un split de vales que continua no se compara y sigue como siempre`() = runTest {
         val sesion = sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val saldo = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 200)
 
@@ -1154,13 +1368,14 @@ class PaymentFlowViewModelTest {
     }
 
     // Codex r7 #1: una venta dividida por productos SIN vales deja un producto pendiente en su orden; luego se escanea un vale y
-    // su respuesta se pierde. El cobro siguiente continúa esa orden, pero materializar arma OTRA (producto + vale). Antes se
-    // saltaba la comparación por «continuar» y cobraba el carrito contra la orden nueva: sólo se salta si es la MISMA orden.
+    // su respuesta se pierde. Antes el cobro iba por la ruta de vales (bastaba una sesión viva) y materializar armaba OTRA orden
+    // (producto + vale). Desde la pasada del 20-oct la ruta la decide el carrito (regla 1, como iOS): sin vales en el carrito y
+    // continuando OTRA orden, el taco se cobra contra su orden y el vale apartado no se toca (D4 ya no deja escanearlo así).
     @Test
-    fun `P1 continuar una orden distinta de la que arman los vales no salta la comparacion`() = runTest {
+    fun `P1 continuar una orden normal con una sesion de vales ajena cobra contra su orden y no arma vales`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "0.50"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
         coEvery { areaTicketRepository.refresh() } returns sesion
         cobroDeEfectivoRegistrado()
         val pendiente = CartItem(id = "taco-2", type = CartItemType.ProductItem("taco"), name = "Taco", unitPrice = 100)
@@ -1169,10 +1384,12 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashCustom(100)
         advanceUntilIdle()
 
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment("order-vales", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
-        assertTrue(viewModel.valesNoCoincidian.value)
+        coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
+        assertFalse(viewModel.valesNoCoincidian.value)
     }
 
     // La copia del aparato decía «nada cobrado» pero ya hubo un abono (su relectura falló tras el pago anterior): se relee
@@ -1181,12 +1398,13 @@ class PaymentFlowViewModelTest {
     fun `con un abono que la copia del aparato no tenia el cobro sigue como siempre`() = runTest {
         val vieja = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns vieja
-        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns vieja
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns vieja
         coEvery { areaTicketRepository.refresh() } returns sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         cobroDeEfectivoRegistrado()
         val saldo = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 200)
 
-        viewModel.startPaymentFlow(CartState(items = listOf(saldo)))
+        // El carrito continúa esa orden (`chargingAgainstOrderId`): por eso este cobro es de vales aunque no traiga vales (D5).
+        viewModel.startPaymentFlow(CartState(items = listOf(saldo)), resumeOrderId = "order-vales")
         viewModel.confirmCashCustom(200)
         advanceUntilIdle()
 
@@ -1243,7 +1461,7 @@ class PaymentFlowViewModelTest {
             tickets = listOf(valeDeArea("ticket-line-b3", "1.00")),
         )
         every { areaTicketRepository.session.current() } returns openCheckout
-        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns materializedCheckout
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns materializedCheckout
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
