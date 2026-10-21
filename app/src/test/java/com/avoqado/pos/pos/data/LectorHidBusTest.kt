@@ -148,4 +148,28 @@ class LectorHidBusTest {
             expectNoEvents()
         }
     }
+
+    @Test
+    fun `el lector integrado de Sunmi entrega el codigo entero por codigos`() = runTest {
+        val bus = LectorHidBus()
+
+        bus.codigos.test {
+            // El aviso del lector puede traer el sufijo (Enter) pegado.
+            bus.recibirDelLectorIntegrado("8435732789459\r\n")
+
+            assertEquals("8435732789459", awaitItem())
+        }
+    }
+
+    @Test
+    fun `un aviso vacio del lector integrado no sale como codigo`() = runTest {
+        val bus = LectorHidBus()
+
+        bus.codigos.test {
+            bus.recibirDelLectorIntegrado(null)
+            bus.recibirDelLectorIntegrado("  \n")
+
+            expectNoEvents()
+        }
+    }
 }

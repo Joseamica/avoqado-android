@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -45,8 +46,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -54,7 +53,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -76,6 +74,13 @@ fun BarcodeScannerView(
     manualTitle: String = "Escanea con pistola o escribe el código",
     manualLabel: String = "Código de vale o producto",
     actionText: String = "Consultar código",
+    /**
+     * El aparato trae lector integrado de Sunmi ([com.avoqado.pos.pos.data.LectorIntegradoSunmi]).
+     * Ese lector no lee con una cámara prendida, así que se abre con la cámara APAGADA y el
+     * cajero la prende si quiere. Sólo para quien escucha los códigos del lector (Cobrar): esta
+     * pantalla no los recibe.
+     */
+    lectorIntegrado: Boolean = false,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -88,10 +93,9 @@ fun BarcodeScannerView(
             ) == PackageManager.PERMISSION_GRANTED,
         )
     }
+    var usarCamara by remember { mutableStateOf(!lectorIntegrado) }
     var hasScanned by remember { mutableStateOf(false) }
     var manualCode by remember { mutableStateOf("") }
-    val manualCodeFocusRequester = remember { FocusRequester() }
-    val softwareKeyboardController = LocalSoftwareKeyboardController.current
 
     fun submitCode(rawCode: String) {
         val code = rawCode.trim()
@@ -108,25 +112,47 @@ fun BarcodeScannerView(
         hasCameraPermission = granted
     }
 
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
+    // El permiso se pide al prender la cámara, no al abrir: con lector integrado puede no usarse.
+    LaunchedEffect(usarCamara) {
+        if (usarCamara && !hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
-    LaunchedEffect(Unit) {
-        manualCodeFocusRequester.requestFocus()
-        softwareKeyboardController?.hide()
-    }
+    // Sin foco automático en el campo del código: abría el teclado en pantalla al entrar
+    // (founder, 20-oct). La pistola USB/Bluetooth no lo necesita: entra por `LectorHidBus`.
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        if (hasCameraPermission) {
+        if (!usarCamara) {
+            LectorListo(onUsarCamara = { usarCamara = true }, onDismiss = onDismiss)
+        } else if (hasCameraPermission) {
             // Camera preview with barcode analysis
             val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
             val barcodeScanner = remember { BarcodeScanning.getClient() }
+            val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+            val preview = remember { Preview.Builder().build() }
+            val imageAnalysis = remember {
+                ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+            }
+
+            // Se cerró la pantalla (o se pasó a «Usar lector»): lo que aún no se ataba ya no se ata.
+            val cerrada = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
             DisposableEffect(Unit) {
                 onDispose {
+                    // 🔴 La cámara va atada al ciclo de vida de la Activity, no a esta pantalla: sin
+                    // soltarla aquí seguía prendida al cerrar (OrderPAD, 20-oct: 7 min prendida con la
+                    // pantalla cerrada), y el lector integrado de Sunmi, que se duerme con cualquier
+                    // cámara prendida, dejaba de leer en Cobrar. El orden entre este listener y el que
+                    // ata NO está garantizado (Codex r1 #1): por eso el que ata revisa `cerrada`.
+                    cerrada.set(true)
+                    cameraProviderFuture.addListener(
+                        { runCatching { cameraProviderFuture.get().unbind(preview, imageAnalysis) } },
+                        ContextCompat.getMainExecutor(context),
+                    )
+                    camera = null
                     cameraExecutor.shutdown()
                     barcodeScanner.close()
                 }
@@ -135,18 +161,14 @@ fun BarcodeScannerView(
             AndroidView(
                 factory = { ctx ->
                     val previewView = PreviewView(ctx)
-                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
                     cameraProviderFuture.addListener({
+                        if (cerrada.get()) return@addListener
                         val cameraProvider = cameraProviderFuture.get()
 
-                        val preview = Preview.Builder().build().also {
-                            it.surfaceProvider = previewView.surfaceProvider
-                        }
+                        preview.surfaceProvider = previewView.surfaceProvider
 
-                        val imageAnalysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
+                        imageAnalysis
                             .also { analysis ->
                                 analysis.setAnalyzer(cameraExecutor) { imageProxy ->
                                     val mediaImage = imageProxy.image
@@ -251,6 +273,24 @@ fun BarcodeScannerView(
                         .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                         .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
                 )
+
+                // Con la cámara prendida el lector integrado no lee: se dice y se ofrece volver.
+                if (lectorIntegrado) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = AvoqadoTheme.spacing.xxxl),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                    ) {
+                        Text(
+                            text = "Con la cámara prendida, el botón naranja no lee",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White,
+                        )
+                        PrimaryButton(text = "Usar lector", onClick = { usarCamara = false })
+                    }
+                }
             }
         } else {
             // Permission denied state
@@ -306,7 +346,6 @@ fun BarcodeScannerView(
                 onValueChange = { manualCode = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .focusRequester(manualCodeFocusRequester)
                     .onPreviewKeyEvent { event ->
                         val isSubmitKey = event.key == Key.Enter || event.key == Key.Tab
                         if (isSubmitKey && event.type == KeyEventType.KeyUp) {
@@ -326,6 +365,51 @@ fun BarcodeScannerView(
                 enabled = manualCode.isNotBlank() && !hasScanned,
                 onClick = { submitCode(manualCode) },
             )
+        }
+    }
+}
+
+/** Cámara apagada: el lector integrado lee con el botón naranja y el código llega por el aviso de Sunmi. */
+@Composable
+private fun LectorListo(onUsarCamara: () -> Unit, onDismiss: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(AvoqadoTheme.spacing.xl)
+                .size(44.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White.copy(alpha = 0.15f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cerrar escaner",
+                tint = Color.White,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(top = 160.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+        ) {
+            Icon(
+                Icons.Outlined.QrCodeScanner,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(64.dp),
+            )
+            Text(
+                text = "Apunta a la etiqueta y aprieta el botón naranja",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+            )
+            PrimaryButton(text = "Usar cámara", onClick = onUsarCamara)
         }
     }
 }
