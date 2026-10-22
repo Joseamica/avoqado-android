@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private const val TAG = "🛎 PedidosEnLinea-Vigilante"
 
@@ -159,6 +161,12 @@ class VigilanteDePedidosEnLinea internal constructor(
         }
     }
 
+    /** Un sondeo ya (la bandeja aceptó o rechazó): el sonido para en esta petición y no en el siguiente compás. */
+    fun sondearYa() {
+        if (ciclo == null) return // sin ciclo vivo (app en segundo plano) no se consulta nada
+        scope.launch { sondearUnaVez() }
+    }
+
     /** Detiene la consulta y el sonido. La última lista queda tal cual para la insignia al volver. */
     @Synchronized
     override fun onStop(owner: LifecycleOwner) {
@@ -166,7 +174,12 @@ class VigilanteDePedidosEnLinea internal constructor(
         sonido?.cancel(); sonido = null
     }
 
-    private suspend fun sondearUnaVez() {
+    /** Un sondeo a la vez: el del compás y el de [sondearYa] no se pisan. */
+    private val turnoDeSondeo = Mutex()
+
+    private suspend fun sondearUnaVez() = turnoDeSondeo.withLock { sondeo() }
+
+    private suspend fun sondeo() {
         if (!puedeLeer()) {
             // Sin sesión o sin orders:read: no se consulta NADA y no queda nada colgado (ni lista, ni sonido, ni aviso).
             olvidarDatos()

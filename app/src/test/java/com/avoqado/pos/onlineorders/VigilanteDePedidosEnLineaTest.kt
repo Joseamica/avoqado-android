@@ -239,6 +239,30 @@ class VigilanteDePedidosEnLineaTest {
     }
 
     @Test
+    fun `sondearYa polls once right away and does not start a second loop`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")))))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals(1, f.falso.llamadas.size)
+        f.falso.respuesta = Result.success(inbox())
+        f.vigilante.sondearYa()
+        runCurrent()
+        assertEquals("un sondeo inmediato", 2, f.falso.llamadas.size)
+        assertTrue("y la lista ya se vació", f.vigilante.pendientes.value.isEmpty())
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("el compás sigue siendo uno solo, cada 10 s", 3, f.falso.llamadas.size)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `sondearYa without an active cycle does nothing`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.vigilante.sondearYa()
+        runCurrent()
+        assertEquals(0, f.falso.llamadas.size)
+    }
+
+    @Test
     fun `double onStart does not double the polls`() = runTest {
         val f = armar(Result.success(inbox()))
         f.vigilante.onStart(owner)

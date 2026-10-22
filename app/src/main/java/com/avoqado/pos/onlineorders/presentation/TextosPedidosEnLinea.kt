@@ -43,6 +43,7 @@ object TextosPedidosEnLinea {
     // --- Textos de la pantalla que el Anexo A no fija (iOS debe copiarlos tal cual) ---
     const val SE_MUESTRAN_ULTIMOS = "Se muestran los últimos 50"
     const val CARGAR_MAS = "Cargar más"
+    const val NO_SE_PUDO_LEER = "No se pudo leer la bandeja. Reintentando…"
     const val SIN_PEDIDOS = "No hay pedidos por ahora"
     const val PAUSAR_TIENDA = "Pausar pedidos"
     const val PAUSAR_TITULO = "Pausar pedidos en línea"

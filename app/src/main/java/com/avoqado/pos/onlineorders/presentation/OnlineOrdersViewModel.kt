@@ -83,6 +83,7 @@ class OnlineOrdersViewModel internal constructor(
     private val tienePlan: () -> Boolean,
     private val hayPedidosAbiertos: () -> Boolean,
     private val ventanaALaVista: StateFlow<Boolean> = VentanaALaVista.aLaVista,
+    private val sondearVigilante: () -> Unit = {},
 ) : ViewModel() {
 
     @Inject
@@ -97,6 +98,7 @@ class OnlineOrdersViewModel internal constructor(
         permisoCancelar = { roleManager.canCancelOnlineOrders },
         tienePlan = { planManager.hasFeature("ONLINE_ORDERING") },
         hayPedidosAbiertos = { vigilante.hayPedidosAbiertos.value },
+        sondearVigilante = vigilante::sondearYa,
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -135,6 +137,16 @@ class OnlineOrdersViewModel internal constructor(
     /** Todavía no llegó la primera lectura de esta apertura. */
     val cargando: StateFlow<Boolean> = _cargando.asStateFlow()
 
+    private val _leyoAlgunaVez = MutableStateFlow(false)
+
+    /** Hubo al menos una lectura buena: sólo entonces «No hay pedidos por ahora» dice la verdad. */
+    val leyoAlgunaVez: StateFlow<Boolean> = _leyoAlgunaVez.asStateFlow()
+
+    private val _noSePudoLeer = MutableStateFlow(false)
+
+    /** La última lectura falló por algo que NO es falta de red (403, 5xx, JSON roto): aviso neutro. */
+    val noSePudoLeer: StateFlow<Boolean> = _noSePudoLeer.asStateFlow()
+
     val puedeActualizar: Boolean get() = permisoActualizar()
     val puedeCancelar: Boolean get() = permisoCancelar()
 
@@ -154,14 +166,14 @@ class OnlineOrdersViewModel internal constructor(
         paginasExtra = 0
         _aviso.value = null
         while (true) {
-            refrescar()
+            // Sólo este ciclo (pantalla a la vista) manda la cabecera de latido, y sólo si la ventana se ve (R13).
+            refrescar(comoBandeja = ventanaALaVista.value)
             delay(INTERVALO_MS)
         }
     }
 
     /** Una lectura de la bandeja. Una a la vez: la del latido y la de después de una acción no se pisan. */
-    suspend fun refrescar() = mutex.withLock {
-        val comoBandeja = ventanaALaVista.value
+    suspend fun refrescar(comoBandeja: Boolean = false) = mutex.withLock {
         val primera = try {
             repositorio.inbox("all", comoBandeja, null)
         } catch (e: CancellationException) {
@@ -194,10 +206,17 @@ class OnlineOrdersViewModel internal constructor(
             _hayMas.value = cursor != null
             _hoyRecortado.value = inbox.truncated
             _sinConexion.value = false
+            _leyoAlgunaVez.value = true
+            _noSePudoLeer.value = false
         }.onFailure {
             // Se conserva la última lista. «Sin conexión» sólo si de verdad no hay red: un 403 o un JSON roto no lo son.
             Log.d(TAG, "Bandeja sin respuesta: ${it.message}")
-            if (it is IOException) _sinConexion.value = true
+            if (it is IOException) {
+                _sinConexion.value = true
+                _noSePudoLeer.value = false
+            } else {
+                _noSePudoLeer.value = true
+            }
         }
         _cargando.value = false
     }
@@ -218,11 +237,11 @@ class OnlineOrdersViewModel internal constructor(
     // MARK: - Acciones (sólo en línea, nunca encoladas)
 
     fun aceptar(orderId: String, minutos: Int) =
-        ejecutar(orderId, permisoActualizar()) { repositorio.accept(orderId, minutos) }
+        ejecutar(orderId, permisoActualizar(), sonidoCambia = true) { repositorio.accept(orderId, minutos) }
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
     fun rechazar(orderId: String, motivo: String) =
-        ejecutar(orderId, permisoActualizar()) { repositorio.reject(orderId, motivo, null) }
+        ejecutar(orderId, permisoActualizar(), sonidoCambia = true) { repositorio.reject(orderId, motivo, null) }
 
     fun marcarListo(orderId: String) = ejecutar(orderId, permisoActualizar()) { repositorio.ready(orderId) }
 
@@ -240,6 +259,7 @@ class OnlineOrdersViewModel internal constructor(
         clave: String,
         permitido: Boolean,
         textoExito: String? = null,
+        sonidoCambia: Boolean = false,
         llamada: suspend () -> AccionResultado,
     ) {
         if (!permitido) return
@@ -261,6 +281,10 @@ class OnlineOrdersViewModel internal constructor(
                     is AccionResultado.Error -> resultado.mensaje
                 }
                 // Siempre se relee: el servidor es el que dice dónde quedó el pedido.
+                // El pedido salió de «por aceptar» (o ya no estaba): el aviso global para en ESTA petición, no en el siguiente compás.
+                if (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible) {
+                    if (clave != CLAVE_PAUSA && sonidoCambia) sondearVigilante()
+                }
                 refrescar()
             } finally {
                 _ocupados.value = _ocupados.value - clave

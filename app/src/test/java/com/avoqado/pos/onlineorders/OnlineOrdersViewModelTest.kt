@@ -84,7 +84,10 @@ class OnlineOrdersViewModelTest {
         tienePlan = { tienePlan },
         hayPedidosAbiertos = { hayAbiertos },
         ventanaALaVista = ventana,
+        sondearVigilante = { sondeosYa++ },
     )
+
+    private var sondeosYa = 0
 
     @Test
     fun `groups orders into the four sections`() = runTest(dispatcher) {
@@ -129,8 +132,9 @@ class OnlineOrdersViewModelTest {
     }
 
     @Test
-    fun `second device accept gets 409 ACCEPTED and shows no error`() = runTest(dispatcher) {
-        // El repositorio (A1) ya cuenta el 409 con el estado que se quería como Hecho (OP-D6): la pantalla no dice nada.
+    fun `Hecho from a second device accept is success and shows no error`() = runTest(dispatcher) {
+        // Sólo prueba que el VM trata Hecho como éxito sin aviso. El mapeo 409 ORDER_STATE_CHANGED -> Hecho (OP-D6) lo prueba el
+        // repositorio: OnlineOrdersRepositoryTest «409 ... wanted status is Hecho» (A1).
         coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja(pedido("p1", OnlineOrderStatus.ACCEPTED)))
         coEvery { repo.accept("p1", 10) } returns AccionResultado.Hecho
         val vm = armar()
@@ -335,6 +339,64 @@ class OnlineOrdersViewModelTest {
         val vm = armar()
         vm.pausar(15); runCurrent()
         assertEquals("No tienes permiso", vm.aviso.value)
+    }
+
+    @Test
+    fun `accept and reject nudge the global watcher to poll now`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.Hecho
+        coEvery { repo.accept("p2", 15) } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.EXPIRED)
+        coEvery { repo.reject("p3", "CLOSED", null) } returns AccionResultado.Hecho
+        coEvery { repo.ready("a1") } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.aceptar("p1", 15); runCurrent()
+        assertEquals(1, sondeosYa)
+        vm.aceptar("p2", 15); runCurrent()
+        assertEquals(2, sondeosYa)
+        vm.rechazar("p3", "CLOSED"); runCurrent()
+        assertEquals(3, sondeosYa)
+        vm.marcarListo("a1"); runCurrent()
+        assertEquals("Listo no cambia lo que suena", 3, sondeosYa)
+    }
+
+    @Test
+    fun `empty text only after one good read`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.failure(IllegalStateException("HTTP 500"))
+        val vm = armar()
+        vm.refrescar()
+        assertFalse(vm.leyoAlgunaVez.value)
+        assertTrue("fallo que no es de red: aviso neutro", vm.noSePudoLeer.value)
+        assertFalse(vm.sinConexion.value)
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        vm.refrescar()
+        assertTrue(vm.leyoAlgunaVez.value)
+        assertFalse(vm.noSePudoLeer.value)
+    }
+
+    @Test
+    fun `offline first load shows only the offline banner and no empty text`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+        vm.refrescar()
+        assertTrue(vm.sinConexion.value)
+        assertFalse("sin lectura buena no hay texto de vacío", vm.leyoAlgunaVez.value)
+        assertFalse("y no es un fallo ajeno a la red", vm.noSePudoLeer.value)
+    }
+
+    @Test
+    fun `tray header goes only with the visible cycle - action reread and load more send false`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), null) } returns Result.success(
+            bandeja(pedido("a1", OnlineOrderStatus.ACCEPTED), nextCursor = "c1"),
+        )
+        coEvery { repo.inbox("active", any(), "c1") } returns Result.success(bandeja(nextCursor = null))
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.Hecho
+        val vm = armar() // la ventana se ve (true), pero no corre el ciclo «mientras se ve»
+        vm.refrescar()
+        vm.aceptar("p1", 15); runCurrent()
+        vm.cargarMas(); runCurrent()
+        coVerify(exactly = 0) { repo.inbox(any(), true, any()) }
+        coVerify(atLeast = 1) { repo.inbox("all", false, null) }
+        coVerify(exactly = 1) { repo.inbox("active", false, "c1") }
     }
 
     @Test

@@ -94,6 +94,8 @@ fun OnlineOrdersScreen(
     val cargandoMas by viewModel.cargandoMas.collectAsState()
     val hoyRecortado by viewModel.hoyRecortado.collectAsState()
     val cargando by viewModel.cargando.collectAsState()
+    val leyoAlgunaVez by viewModel.leyoAlgunaVez.collectAsState()
+    val noSePudoLeer by viewModel.noSePudoLeer.collectAsState()
     var pausando by remember { mutableStateOf(false) }
     val puedeActualizar = viewModel.puedeActualizar
     val puedeCancelar = viewModel.puedeCancelar
@@ -125,6 +127,7 @@ fun OnlineOrdersScreen(
 
             // Sin red = estado normal: texto neutro, nunca rojo de error.
             if (sinConexion) AvisoNeutro(TextosPedidosEnLinea.SIN_CONEXION)
+            if (noSePudoLeer) AvisoNeutro(TextosPedidosEnLinea.NO_SE_PUDO_LEER)
             aviso?.let { texto ->
                 AvisoNeutro(texto, accion = TextosPedidosEnLinea.ENTENDIDO, onAccion = viewModel::cerrarAviso)
             }
@@ -139,7 +142,8 @@ fun OnlineOrdersScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else if (secciones.vacia) {
-                    Text(
+                    // «No hay pedidos» sólo dice la verdad tras una lectura buena; sin ella (sin red o fallo) basta el aviso de arriba.
+                    if (leyoAlgunaVez) Text(
                         TextosPedidosEnLinea.SIN_PEDIDOS,
                         Modifier.padding(espacio.xl),
                         style = MaterialTheme.typography.bodyLarge,
