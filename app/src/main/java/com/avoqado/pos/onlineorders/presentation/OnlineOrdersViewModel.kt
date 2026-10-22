@@ -14,6 +14,7 @@ import com.avoqado.pos.onlineorders.data.ResultadoImpresion
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.payment.data.CashPaymentRepository
+import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
@@ -94,7 +95,8 @@ class OnlineOrdersViewModel internal constructor(
     private val sondearVigilante: () -> Unit = {},
     private val imprimirSiToca: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.OtroAparato },
     private val reimprimirPedido: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.NoSalio },
-    private val efectivoSinSubir: suspend (orderId: String) -> Boolean = { false },
+    private val efectivoDelPedido: suspend (orderId: String) -> EfectivoDelPedido = { EfectivoDelPedido.NINGUNO },
+    private val efectivoYaSubido: suspend (orderId: String) -> Boolean = { false },
 ) : ViewModel() {
 
     @Inject
@@ -119,7 +121,8 @@ class OnlineOrdersViewModel internal constructor(
             if (deviceId == null) ResultadoImpresion.NoSalio else impresion.imprimirSiToca(pedido, deviceId)
         },
         reimprimirPedido = { pedido -> impresion.reimprimir(pedido) },
-        efectivoSinSubir = cashPaymentRepository::hayEfectivoSinSubir,
+        efectivoDelPedido = cashPaymentRepository::efectivoDelPedido,
+        efectivoYaSubido = cashPaymentRepository::huboEfectivoSubido,
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -339,8 +342,10 @@ class OnlineOrdersViewModel internal constructor(
      * 1. Un cobro a la vez en la pantalla, y un toque en vuelo de ese pedido no hace nada.
      * 2. Si ESTE aparato tiene un efectivo de ese pedido guardado sin subir (`EN_VUELO`, `PENDING` o `SYNCING`), no abre
      *    otro: sin red la bandeja conserva el saldo viejo y el segundo cobro llevaría otra llave (Codex plan r1 #2, r2 #1).
+     *    El aviso dice quién lo sube: la cola sola («se sube al volver la conexión») o un gerente («Operaciones por revisar»).
      * 3. El saldo lo dice el SERVIDOR (`preBillBalance.remainingBalanceCents`): otro aparato pudo abonar o descontar. Sin red,
-     *    el último `remaining` de la bandeja (contrato con Rappi 2b). Nunca se recalcula desde los renglones.
+     *    el último `remaining` de la bandeja (contrato con Rappi 2b), salvo que este aparato ya haya subido un efectivo de ese
+     *    pedido (la bandeja vieja no lo sabe): «Reintenta cuando vuelva la conexión». Nunca se recalcula desde los renglones.
      * 4. Saldo 0 ⇒ no abre: «Pagado», y se relee la bandeja.
      * Después de cobrar NO se llama `delivered`: lo decide el servidor ([cobroTerminado] sólo relee).
      */
@@ -351,7 +356,7 @@ class OnlineOrdersViewModel internal constructor(
         viewModelScope.launch {
             try {
                 val guardado = try {
-                    efectivoSinSubir(pedido.orderId)
+                    efectivoDelPedido(pedido.orderId)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -360,9 +365,17 @@ class OnlineOrdersViewModel internal constructor(
                     _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
-                if (guardado) {
-                    _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO
-                    return@launch
+                when (guardado) {
+                    EfectivoDelPedido.NINGUNO -> Unit
+                    // Los dos bloquean; el texto dice la verdad de quién lo sube (Ruling 21 #2).
+                    EfectivoDelPedido.EN_COLA -> {
+                        _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO
+                        return@launch
+                    }
+                    EfectivoDelPedido.POR_REVISAR -> {
+                        _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR
+                        return@launch
+                    }
                 }
                 val leido = try {
                     repositorio.saldoCents(pedido.orderId)
@@ -373,7 +386,21 @@ class OnlineOrdersViewModel internal constructor(
                 }
                 val saldo = leido.getOrElse { error ->
                     if (error is IOException) {
-                        // Sin red es un estado normal: se cobra el último saldo que dijo la bandeja.
+                        // Sin red es un estado normal: se cobra el último saldo que dijo la bandeja. Salvo que ESTE aparato ya
+                        // haya subido un efectivo de ese pedido: la bandeja vieja no sabe de él y se cobraría dos veces
+                        // (Ruling 21 #3). Se espera a la red, que trae el saldo del servidor.
+                        val yaSubio = try {
+                            efectivoYaSubido(pedido.orderId)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.w(TAG, "No se pudo revisar lo subido de ${pedido.orderNumber}: ${e.message}")
+                            true
+                        }
+                        if (yaSubio) {
+                            _aviso.value = TextosPedidosEnLinea.REINTENTA
+                            return@launch
+                        }
                         pedido.remainingCents
                     } else {
                         // El servidor contestó otra cosa (404, 5xx, JSON roto): no se adivina con la bandeja.
@@ -391,6 +418,9 @@ class OnlineOrdersViewModel internal constructor(
                     _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
+                // Dos toques rápidos en pedidos distintos pasan los dos la revisión del principio: el que tarda más no
+                // reemplaza a un cobro que ya está abierto (el cajero pudo haber recibido el efectivo del primero).
+                if (_cobroAbierto.value != null) return@launch
                 _aviso.value = null
                 _cobroAbierto.value = CobroDePedido(orderId = pedido.orderId, orderNumber = pedido.orderNumber, saldoCents = saldo.toInt())
             } finally {

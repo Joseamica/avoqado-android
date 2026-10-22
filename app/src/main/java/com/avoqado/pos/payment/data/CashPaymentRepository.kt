@@ -226,32 +226,58 @@ class CashPaymentRepository @Inject constructor(
     }
 
     /**
-     * 🔴 DINERO. ¿Este aparato tiene un cobro de la orden [orderId] guardado que todavía puede llegar al servidor?
-     * Lo pregunta la bandeja «Pedidos en línea» antes de abrir «Cobrar» (un cobro por pedido a la vez, Codex plan r1 #2 y
-     * r2 #1): sin red la bandeja conserva el saldo viejo, y un segundo cobro nacería con OTRA llave — el servidor aceptaría
-     * los dos porque los dos son dinero que el cajero declaró recibido.
+     * 🔴 DINERO. ¿Este aparato tiene un cobro de la orden [orderId] guardado que todavía puede llegar al servidor, y quién lo
+     * sube? Lo pregunta la bandeja «Pedidos en línea» antes de abrir «Cobrar» (un cobro por pedido a la vez, Codex plan r1 #2
+     * y r2 #1): sin red la bandeja conserva el saldo viejo, y un segundo cobro nacería con OTRA llave — el servidor aceptaría
+     * los dos porque los dos son dinero que el cajero declaró recibido. Los dos estados distintos de [EfectivoDelPedido.NINGUNO]
+     * bloquean; sólo cambia lo que se le dice al cajero (Ruling 21 #2: no decir «se sube solo» de algo que nada sube).
      *
-     * Cuentan:
-     * - `PENDING`: en la cola, se sube solo al volver la red (también si está retenido por precio, Q16: sale después).
-     * - `SYNCING`: subiéndose ahora; si la red vuelve a caer, regresa a `PENDING`.
-     * - `EN_VUELO` sin motivo de revisión: guardado antes del POST, sin desenlace (en curso o el proceso murió a media
-     *   petición): pudo llegar.
-     *
-     * No cuentan: `SYNCED` (ya está en el saldo del servidor), `FAILED` (el servidor lo rechazó; lo resuelve el gerente) y
-     * un `EN_VUELO` con motivo (el gerente dijo «no se cobró»: queda guardado sólo para revisión y nada lo reproduce).
+     * - [EfectivoDelPedido.EN_COLA]: `PENDING` sin motivo de revisión (la cola lo sube sola al volver la red) o `SYNCING`
+     *   (subiéndose ahora; si la red cae, regresa a `PENDING`).
+     * - [EfectivoDelPedido.POR_REVISAR]: espera a un gerente en «Operaciones por revisar»:
+     *   - `EN_VUELO` sin motivo: guardado antes del POST y sin desenlace (el proceso murió a media petición, o un 4xx dejó la
+     *     reserva). Pudo llegar; nada lo reproduce hasta «Sí, se cobró».
+     *   - `PENDING` con motivo de revisión: `PaymentSyncService` lo detiene (también el retenido por precio, que para una orden
+     *     que el servidor ya tiene no se suelta solo).
+     *   Si hay de los dos tipos, gana éste: es el que necesita a una persona.
+     * - [EfectivoDelPedido.NINGUNO]: `SYNCED` (ya está en el saldo del servidor), `FAILED` (el servidor lo rechazó; lo
+     *   resuelve el gerente) y un `EN_VUELO` con motivo (el gerente dijo «no se cobró»: queda sólo para revisión).
      *
      * El SQL sólo acota por local; la decisión vive aquí, en Kotlin, donde las pruebas la fijan (como `PendingCashSales`).
      */
-    suspend fun hayEfectivoSinSubir(orderId: String): Boolean {
-        val venueId = secureStorage.venueId ?: return false
-        if (orderId.isBlank()) return false
-        return pendingPaymentDao.forVenue(venueId).any { fila ->
-            fila.orderId == orderId && when (fila.syncStatus) {
-                PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name -> true
-                PaymentSyncStatus.EN_VUELO.name -> fila.q15Reason == null
-                else -> false
+    suspend fun efectivoDelPedido(orderId: String): EfectivoDelPedido {
+        val venueId = secureStorage.venueId ?: return EfectivoDelPedido.NINGUNO
+        if (orderId.isBlank()) return EfectivoDelPedido.NINGUNO
+        val estados = pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map { fila ->
+            when (fila.syncStatus) {
+                PaymentSyncStatus.SYNCING.name -> EfectivoDelPedido.EN_COLA
+                PaymentSyncStatus.PENDING.name ->
+                    if (fila.q15Reason == null) EfectivoDelPedido.EN_COLA else EfectivoDelPedido.POR_REVISAR
+                PaymentSyncStatus.EN_VUELO.name ->
+                    if (fila.q15Reason == null) EfectivoDelPedido.POR_REVISAR else EfectivoDelPedido.NINGUNO
+                else -> EfectivoDelPedido.NINGUNO
             }
         }
+        return when {
+            EfectivoDelPedido.POR_REVISAR in estados -> EfectivoDelPedido.POR_REVISAR
+            EfectivoDelPedido.EN_COLA in estados -> EfectivoDelPedido.EN_COLA
+            else -> EfectivoDelPedido.NINGUNO
+        }
+    }
+
+    /**
+     * 🔴 DINERO. ¿Este aparato ya SUBIÓ un cobro de la orden [orderId] (`SYNCED`)? Sólo importa SIN red (Ruling 21 #3): el
+     * efectivo encolado se sube en un parpadeo del WiFi y la red se cae antes de que la bandeja se relea; la bandeja vieja
+     * sigue diciendo el saldo completo y no sabe de ese pago. Con red el saldo del servidor ya lo cuenta.
+     *
+     * La fila no guarda CUÁNDO subió (sería una columna nueva de Room), así que no se puede distinguir «subió después de la
+     * última lectura buena de la bandeja» de «subió antes»: se responde por cualquier fila subida, que es lo seguro. El único
+     * falso positivo es un segundo abono SIN red a un pedido que ya recibió efectivo de este aparato: espera a la red.
+     */
+    suspend fun huboEfectivoSubido(orderId: String): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        if (orderId.isBlank()) return false
+        return pendingPaymentDao.forVenue(venueId).any { it.orderId == orderId && it.syncStatus == PaymentSyncStatus.SYNCED.name }
     }
 
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
@@ -352,6 +378,16 @@ class CashPaymentRepository @Inject constructor(
         return entity.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(capture),
             capturedOrderRef = entity.orderId ?: if (hasOrderItems) orderExternalId ?: "offline-order:$localId" else null)
     }
+}
+
+/** Lo que este aparato tiene guardado de una orden, para «Cobrar» de la bandeja. Ver `CashPaymentRepository.efectivoDelPedido`. */
+enum class EfectivoDelPedido {
+    /** Nada que pueda llegar al servidor: se puede cobrar. */
+    NINGUNO,
+    /** En la cola: se sube solo al volver la red. Bloquea. */
+    EN_COLA,
+    /** Lo resuelve un gerente en «Operaciones por revisar». Bloquea. */
+    POR_REVISAR,
 }
 
 sealed class CashPaymentResult {

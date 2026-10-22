@@ -515,6 +515,19 @@ class PaymentFlowViewModel @Inject constructor(
     /** El toque de «Cobrar» que arrancó el cobro en pantalla. Ver `startPaymentFlow`. */
     private var aperturaEnCurso: String? = null
 
+    /** Quién abrió el cobro en curso (`startPaymentFlow`). Ver [sesionDeValesDelCobro]. */
+    private var origenDelCobro: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL
+
+    /**
+     * 🔴 DINERO. La sesión de vales que ESTE cobro puede usar. La sesión es global (un `@Singleton` en disco): el cajero puede
+     * dejar vales escaneados a medias en «Cobrar» e irse a «Más → Pedidos en línea». El cobro de un pedido web nunca la toma
+     * (Ruling 21 #1): ni la materializa, ni cobra contra su orden, ni la termina, ni la cancela. Con NORMAL es exactamente la
+     * lectura de antes.
+     */
+    private fun sesionDeValesDelCobro(): AreaTicketCheckout? =
+        if (origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA) null
+        else areaTicketRepository.session.current()
+
     /** ¿Esta apertura ya arrancó el cobro que está en pantalla? Entonces la pantalla no reparte ni arranca otra vez. */
     fun esElCobroEnCurso(apertura: String): Boolean = apertura == aperturaEnCurso
 
@@ -1350,6 +1363,7 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
         aperturaEnCurso = apertura
+        origenDelCobro = origen
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
         flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
@@ -1872,7 +1886,7 @@ class PaymentFlowViewModel @Inject constructor(
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
         } == true
-        val permiteColaCapturada = areaTicketRepository.session.current() == null
+        val permiteColaCapturada = sesionDeValesDelCobro() == null
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
@@ -2283,7 +2297,7 @@ class PaymentFlowViewModel @Inject constructor(
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
         } == true
-        val permiteColaCapturada = areaTicketRepository.session.current() == null
+        val permiteColaCapturada = sesionDeValesDelCobro() == null
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
@@ -3246,7 +3260,7 @@ class PaymentFlowViewModel @Inject constructor(
         // dos borrados.
         if (estado is PaymentFlowState.CancelandoCobro || estado is PaymentFlowState.CancelacionPendiente) return
 
-        val esDeVales = areaTicketRepository.session.current() != null
+        val esDeVales = sesionDeValesDelCobro() != null
         val cobro = objetivoDeCancelacion(estado)
         val orderId = createdOrderId
         // La cuenta de una MESA o la orden de un split que ya existía no las creó este flujo:
@@ -3373,7 +3387,7 @@ class PaymentFlowViewModel @Inject constructor(
      * @param orderId `null` = la creación falló, así que no hay nada que cancelar: sólo se sale.
      */
     private fun cancelarLoCreadoTrasCancelar(orderId: String?) {
-        if (areaTicketRepository.session.current() != null) {
+        if (sesionDeValesDelCobro() != null) {
             cancelarSesionDeValesSiAplica()
             salirDelFlujo()
             return
@@ -3475,7 +3489,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun cancelarSesionDeValesSiAplica() {
-        if (areaTicketRepository.session.current() == null) return
+        if (sesionDeValesDelCobro() == null) return
         viewModelScope.launch {
             runCatching { areaTicketRepository.cancel() }
                 .onFailure { Log.e("PaymentFlow", "⚠️ No se pudo liberar la sesión de vales: ${it.message}") }
@@ -4331,7 +4345,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun finishAreaTicketPayment() {
-        if (areaTicketRepository.session.current() == null) return
+        if (sesionDeValesDelCobro() == null) return
         if (_splitType.value == "FULLPAYMENT") {
             areaTicketRepository.session.clear()
         } else {

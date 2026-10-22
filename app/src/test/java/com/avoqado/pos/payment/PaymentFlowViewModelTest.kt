@@ -2922,6 +2922,53 @@ class PaymentFlowViewModelTest {
         assertEquals("web-1", ordenALaTerminal.captured)
     }
 
+    /**
+     * Ruling 21 #1: el otro contexto global de venta, la sesión de VALES (`AreaTicketSession`), tampoco captura el cobro web.
+     * El cajero escaneó vales a medias en «Cobrar» (la venta de vales ya tiene un abono), se fue a «Más → Pedidos en línea» y
+     * cobró un pedido: antes el efectivo y la tarjeta liquidaban la orden de los vales, y al terminar se borraba su sesión.
+     */
+    @Test
+    fun `a half-scanned vales session does not capture the web order charge`() = runTest {
+        val vales = sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
+        every { areaTicketRepository.session.current() } returns vales
+        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns vales
+        coEvery { areaTicketRepository.refresh() } returns vales
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals("el dinero va al pedido web", listOf("web-1"), cobradas)
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+
+        // Con la terminal, igual: la orden que viaja es la del pedido web.
+        val ordenALaTerminal = slot<String>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+        } returns TerminalPaymentResult.Error("Terminal timeout")
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertEquals("web-1", ordenALaTerminal.captured)
+
+        // Y cancelar ese cobro no cancela la venta de vales.
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        // La venta de vales sigue viva: ni se materializó, ni se terminó, ni se borró, ni se canceló.
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.refresh() }
+        coVerify(exactly = 0) { areaTicketRepository.cancel() }
+        verify(exactly = 0) { areaTicketRepository.session.clear() }
+    }
+
     /** Sin origen (NORMAL) nada cambia: la mesa en PAYING sigue mandando, y el split de mostrador cobra su orden. */
     @Test
     fun `existing table and split flows unchanged with origen NORMAL`() = runTest {
