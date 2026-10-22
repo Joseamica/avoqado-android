@@ -120,7 +120,12 @@ class OnlineOrdersRepository @Inject constructor(
             pending = counts?.optInt("pending") ?: 0,
             active = counts?.optInt("active") ?: 0,
             done = counts?.optInt("done") ?: 0,
-            orders = (0 until (lista?.length() ?: 0)).map { parseOrder(lista!!.getJSONObject(it)) },
+            // Un renglón dañado se salta y se registra: no tumba la bandeja (el vigilante dejaría de sonar por un pedido real).
+            orders = (0 until (lista?.length() ?: 0)).mapNotNull { i ->
+                runCatching { parseOrder(lista!!.getJSONObject(i)) }
+                    .onFailure { Log.w(TAG, "Pedido #$i de la bandeja ignorado por malformado: ${it.message}") }
+                    .getOrNull()
+            },
             // «Tienda apagada» = nunca encendida (`DISABLED`). Pausada, fuera de horario o sin aparato siguen siendo tienda viva.
             storeOff = data.optJSONObject("store")?.textoONulo("status") == "DISABLED",
             truncated = data.optBoolean("truncated", false),

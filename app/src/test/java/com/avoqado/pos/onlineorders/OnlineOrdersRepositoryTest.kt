@@ -37,7 +37,7 @@ class OnlineOrdersRepositoryTest {
         System.setProperty("avoqado.test.baseUrl", server.url("/api/v1").toString().trimEnd('/'))
         every { secureStorage.venueId } returns "v1"
         every { secureStorage.accessToken } returns "tok"
-        repo = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).build())
+        repo = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).retryOnConnectionFailure(false).build())
     }
 
     @After
@@ -75,6 +75,26 @@ class OnlineOrdersRepositoryTest {
         assertEquals(OnlineOrderStatus.PENDING_ACCEPTANCE, o.status)
         assertEquals(3, inbox.pending); assertEquals(2, inbox.active); assertEquals(7, inbox.done)
         assertFalse(inbox.storeOff)
+    }
+
+    @Test
+    fun `exact money conversion including E-notation`() = runTest {
+        server.enqueue(MockResponse().setBody(bandeja(
+            pedido(total = "0.10", remaining = "185.5") + "," + pedido(total = "12345678.9", remaining = "0"))))
+        val (a, b) = repo.inbox("all", true).getOrThrow().orders
+        assertEquals(10L, a.totalCents); assertEquals(18550L, a.remainingCents)
+        assertEquals(1234567890L, b.totalCents); assertEquals(0L, b.remainingCents)
+    }
+
+    @Test
+    fun `a malformed order is skipped and the rest of the inbox survives`() = runTest {
+        val sinId = pedido().replace("\"orderId\":\"o1\",", "")
+        val malaFecha = pedido().replace("2026-10-21T12:00:00.000Z", "ayer")
+        server.enqueue(MockResponse().setBody(bandeja(sinId + "," + pedido() + "," + malaFecha)))
+        val inbox = repo.inbox("pending", true).getOrThrow()
+        assertEquals(1, inbox.orders.size)
+        assertEquals("o1", inbox.orders.single().orderId)
+        assertEquals(3, inbox.pending); assertEquals(2, inbox.active)
     }
 
     @Test
