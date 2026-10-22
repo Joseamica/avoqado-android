@@ -298,19 +298,30 @@ fun PaymentResultScreen(
                         if (resultMessage != null && isResultSuccess) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
                     ),
                 )
-                Surface(
-                    color = if (renglonDelSello.positivo) Success.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                    modifier = Modifier
-                        .widthIn(max = 400.dp)
-                        .fillMaxWidth(),
-                ) {
-                    Text(
-                        text = renglonDelSello.texto,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (renglonDelSello.positivo) Success else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                // Si SÍ sumó: la tarjetita (sellos llenos, los que faltan y el premio). Los motivos siguen en texto.
+                val tarjeta = renglonDelSello.tarjeta
+                if (tarjeta != null) {
+                    TarjetaDeSellos(
+                        tarjeta = tarjeta,
+                        modifier = Modifier
+                            .widthIn(max = 400.dp)
+                            .fillMaxWidth(),
                     )
+                } else {
+                    Surface(
+                        color = if (renglonDelSello.positivo) Success.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                        modifier = Modifier
+                            .widthIn(max = 400.dp)
+                            .fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = renglonDelSello.texto,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (renglonDelSello.positivo) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                        )
+                    }
                 }
             }
 
