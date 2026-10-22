@@ -9,13 +9,18 @@ import kotlin.test.assertTrue
 
 class RecursosTest {
     @OptIn(ExperimentalTestApi::class)
-    @Test fun `los dos recursos de Android se cargan (png y vector)`() = runDesktopComposeUiTest {
+    @Test fun `los recursos de Android se cargan (png y vector)`() = runDesktopComposeUiTest {
         var anchos = listOf<Float>()
         setContent {
-            anchos = listOf(painterResource(R.drawable.avoqado_logo_mark), painterResource(R.drawable.ic_whatsapp))
-                .map { it.intrinsicSize.width }
+            anchos = listOf(
+                painterResource(R.drawable.avoqado_logo_mark),
+                painterResource(R.drawable.ic_whatsapp),
+                // El «Powered by» de la pantalla del cliente (logo horizontal negro y blanco).
+                painterResource(R.drawable.avoqado_logo_inline_black),
+                painterResource(R.drawable.avoqado_logo_inline_white),
+            ).map { it.intrinsicSize.width }
         }
         waitForIdle()
-        assertTrue(anchos.size == 2 && anchos.all { it > 0f }, "$anchos")
+        assertTrue(anchos.size == 4 && anchos.all { it > 0f }, "$anchos")
     }
 }

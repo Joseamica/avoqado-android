@@ -254,7 +254,7 @@ class CustomerDisplayManager @Inject constructor(
             letreroEn = monitor
             limitesDelLetrero = Rectangle(limites)
             isActive = true
-            state.setPresenting(true)
+            state.setPresenting(true, SURFACE_WINDOW)
             // Un monitor es pantalla FÍSICA: recibe sus propios toques (como la HDMI del D3 en Android).
             state.setTouchCapable(true)
             Log.i(tag, "Pantalla del cliente montada en el monitor $monitor (${limites.width}×${limites.height})")

@@ -54,6 +54,10 @@ internal object DeviceFormFactorResolver {
         }
 }
 
+/** `x-app-version` y `x-app-version-code`, siempre juntas. Pura: se prueba sin Android. */
+internal fun appVersionHeaders(versionName: String, versionCode: Int): List<Pair<String, String>> =
+    listOf("x-app-version" to versionName, "x-app-version-code" to versionCode.toString())
+
 @Singleton
 class DeviceHeadersInterceptor @Inject constructor(
     private val syncOutbox: Provider<SyncOutbox>,
@@ -89,7 +93,9 @@ class DeviceHeadersInterceptor @Inject constructor(
             // nada: el server simplemente nunca encuentra el header y ese campo llega
             // vacio para siempre. Falla en silencio.
             .header("x-device-os-version", "Android ${Build.VERSION.RELEASE}")
-            .header("x-app-version", BuildConfig.VERSION_NAME)
+        // La versión y su número de compilación salen de UNA lista: una nunca viaja sin la otra (el server decide con el
+        // número qué versión de diseño de la pantalla del cliente entiende este aparato).
+        appVersionHeaders(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE).forEach { (name, value) -> builder.header(name, value) }
 
         // OJO: no mandamos `X-Device-Serial`. En Android ≥10 `Build.getSerial()` exige
         // el permiso privilegiado READ_PHONE_STATE, y pedirlo sólo para nombrar un

@@ -43,6 +43,26 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
+/**
+ * Los centavos de propina de un porcentaje sobre la base SIN IVA. Una sola cuenta para el cajero (este archivo)
+ * y para la pantalla del cliente (la manda el ViewModel ya calculada): trunca, como siempre.
+ * 🔴 `baseCents * percent` se multiplica en Long: en Int se desbordaba desde ~$214,748 al 100 % (una venta de $500,000 al
+ * 90 % daba $20,503.27 en vez de $450,000.00). Lo que aun así no quepa en Int topa en Int.MAX_VALUE, no se envuelve.
+ */
+internal fun tipCentsForPercent(baseCents: Int, percent: Int): Int = (baseCents.toLong() * percent / 100.0).toInt()
+
+/** Lo más que cabe en pantalla (el servidor y el editor del panel topan en 6): lo que sobre no se pinta. */
+private const val MAX_TIP_PERCENTS = 6
+
+/**
+ * Los porcentajes de propina por fila, igual en el cajero (este archivo) y en la pantalla del cliente: hasta 4 caben en
+ * una fila; 5 o 6 van en dos filas casi parejas (3+2, 3+3), para que cada tarjeta siga siendo un blanco cómodo.
+ */
+internal fun <T> tipRows(items: List<T>): List<List<T>> {
+    val visibles = items.take(MAX_TIP_PERCENTS)
+    return visibles.chunked(if (visibles.size <= 4) 4 else (visibles.size + 1) / 2)
+}
+
 @Composable
 fun TipSelectionScreen(
     amountCents: Int,
@@ -85,12 +105,12 @@ fun TipSelectionSheet(
     val tipCents = when {
         showCustomInput && customTipCents > 0 -> {
             if (isPercentageMode) {
-                (tipBaseCents * customTipCents / 100.0).toInt()
+                tipCentsForPercent(tipBaseCents, customTipCents)
             } else {
                 customTipCents
             }
         }
-        selectedTipPercent > 0 -> (tipBaseCents * selectedTipPercent / 100.0).toInt()
+        selectedTipPercent > 0 -> tipCentsForPercent(tipBaseCents, selectedTipPercent)
         else -> 0
     }
 
@@ -137,48 +157,55 @@ fun TipSelectionSheet(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-            // 3 percentage buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-            ) {
-                tipSuggestions.forEach { percent ->
-                    val isSelected = selectedTipPercent == percent && !showCustomInput
-                    val tipAmount = (tipBaseCents * percent / 100.0).toInt()
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(60.dp)
-                            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-                            .background(
-                                if (isSelected) Success
-                                else MaterialTheme.colorScheme.surfaceVariant,
-                            )
-                            .clickable {
-                                selectedTipPercent = percent
-                                showCustomInput = false
-                                customTipCents = 0
-                            },
-                        contentAlignment = Alignment.Center,
+            // Hasta 6 porcentajes: una fila (≤ 4) o dos filas parejas
+            val filas = tipRows(tipSuggestions)
+            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                filas.forEach { fila ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
                     ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            Text(
-                                text = "$percent%",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = formatMoney(tipAmount / 100.0),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (isSelected) Color.White.copy(alpha = 0.8f)
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        fila.forEach { percent ->
+                            val isSelected = selectedTipPercent == percent && !showCustomInput
+                            val tipAmount = tipCentsForPercent(tipBaseCents, percent)
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(60.dp)
+                                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                                    .background(
+                                        if (isSelected) Success
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                    )
+                                    .clickable {
+                                        selectedTipPercent = percent
+                                        showCustomInput = false
+                                        customTipCents = 0
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Text(
+                                        text = "$percent%",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = formatMoney(tipAmount / 100.0),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (isSelected) Color.White.copy(alpha = 0.8f)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
+                        // Con 5, la fila corta se completa con huecos: todas las tarjetas miden lo mismo.
+                        repeat(filas[0].size - fila.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
