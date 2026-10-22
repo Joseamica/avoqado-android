@@ -3039,6 +3039,17 @@ class PaymentFlowViewModelTest {
         orderType = "PICKUP",
     )
 
+    @Test fun `cached web balance cannot start a card charge`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO)
+        advanceUntilIdle()
+        val before = viewModel.state.value
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals(before, viewModel.state.value)
+    }
+
     private fun mesaCobrando() = com.avoqado.pos.tables.data.TableSession.Active(
         tableId = "mesa-5", tableNumber = "5", areaName = null, orderId = "orden-de-la-mesa", orderNumber = "M5",
         version = 1, totalCents = 30000, mode = com.avoqado.pos.tables.data.TableSession.Mode.PAYING,

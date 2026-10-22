@@ -87,8 +87,9 @@ class CobroDePedidoEnLineaTest {
         method = "CASH", paymentType = "ORDER", orderId = orderId, syncStatus = estado, q15Reason = q15Reason,
     )
 
-    private fun armar() = OnlineOrdersViewModel(
+    private fun armar(puedeCobrar: Boolean = true) = OnlineOrdersViewModel(
         repositorio = repo,
+        permisoCobrar = { puedeCobrar },
         permisoActualizar = { true },
         permisoCancelar = { true },
         tienePlan = { true },
@@ -97,6 +98,15 @@ class CobroDePedidoEnLineaTest {
         efectivoDelPedido = { cola.efectivoDelPedido(it) },
         efectivoYaSubido = { cola.huboEfectivoSubido(it) },
     )
+
+    @Test fun `kitchen cannot open a payment without payments create`() = runTest {
+        coEvery { repo.saldoCents(any()) } returns Result.success(20000L)
+        val vm = armar(puedeCobrar = false)
+        vm.cobrar(webOrder)
+        advanceUntilIdle()
+        assertNull(vm.cobroAbierto.value)
+        coVerify(exactly = 0) { repo.saldoCents(any()) }
+    }
 
     // MARK: - El saldo
 
@@ -132,6 +142,7 @@ class CobroDePedidoEnLineaTest {
         vm.cobrar(abonado)
         advanceUntilIdle()
 
+        assertEquals(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO, vm.cobroAbierto.value?.origen)
         assertEquals(18000, vm.cobroAbierto.value?.saldoCents)
         assertEquals(18000, carritoDelCobro(vm.cobroAbierto.value!!).totalCents)
         assertNull("sin red es un estado normal: no hay aviso", vm.aviso.value)

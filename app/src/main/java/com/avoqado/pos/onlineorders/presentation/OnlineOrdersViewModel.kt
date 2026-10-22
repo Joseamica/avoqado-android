@@ -97,6 +97,7 @@ class OnlineOrdersViewModel internal constructor(
     private val reimprimirPedido: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.NoSalio },
     private val efectivoDelPedido: suspend (orderId: String) -> EfectivoDelPedido = { EfectivoDelPedido.NINGUNO },
     private val efectivoYaSubido: suspend (orderId: String) -> Boolean = { false },
+    private val permisoCobrar: () -> Boolean = { true },
 ) : ViewModel() {
 
     @Inject
@@ -111,6 +112,7 @@ class OnlineOrdersViewModel internal constructor(
     ) : this(
         repositorio = repositorio,
         permisoActualizar = { roleManager.canOperateOnlineOrders },
+        permisoCobrar = { roleManager.hasVenuePermission("payments:create", setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")) },
         permisoCancelar = { roleManager.canCancelOnlineOrders },
         tienePlan = { planManager.hasFeature("ONLINE_ORDERING") },
         hayPedidosAbiertos = { vigilante.hayPedidosAbiertos.value },
@@ -172,6 +174,7 @@ class OnlineOrdersViewModel internal constructor(
     val noSePudoLeer: StateFlow<Boolean> = _noSePudoLeer.asStateFlow()
 
     val puedeActualizar: Boolean get() = permisoActualizar()
+    val puedeCobrar: Boolean get() = permisoCobrar()
     val puedeCancelar: Boolean get() = permisoCancelar()
 
     /** Sin plan y sin pedidos abiertos la pantalla es sólo el teaser: no consulta nada. */
@@ -350,6 +353,7 @@ class OnlineOrdersViewModel internal constructor(
      * Después de cobrar NO se llama `delivered`: lo decide el servidor ([cobroTerminado] sólo relee).
      */
     fun cobrar(pedido: OnlineOrder) {
+        if (!permisoActualizar() || !permisoCobrar() || esTeaser) return
         if (_cobroAbierto.value != null) return
         if (pedido.orderId in _ocupados.value) return
         _ocupados.value = _ocupados.value + pedido.orderId
@@ -418,11 +422,14 @@ class OnlineOrdersViewModel internal constructor(
                     _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
+                if (!permisoActualizar() || !permisoCobrar()) return@launch
                 // Dos toques rápidos en pedidos distintos pasan los dos la revisión del principio: el que tarda más no
                 // reemplaza a un cobro que ya está abierto (el cajero pudo haber recibido el efectivo del primero).
                 if (_cobroAbierto.value != null) return@launch
                 _aviso.value = null
-                _cobroAbierto.value = CobroDePedido(orderId = pedido.orderId, orderNumber = pedido.orderNumber, saldoCents = saldo.toInt())
+                _cobroAbierto.value = CobroDePedido(orderId = pedido.orderId, orderNumber = pedido.orderNumber, saldoCents = saldo.toInt(),
+                    origen = if (leido.isSuccess) com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA
+                    else com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO)
             } finally {
                 _ocupados.value = _ocupados.value - pedido.orderId
             }
@@ -498,6 +505,7 @@ data class CobroDePedido(
     val orderId: String,
     val orderNumber: String,
     val saldoCents: Int,
+    val origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
     val apertura: String = java.util.UUID.randomUUID().toString(),
 )
 

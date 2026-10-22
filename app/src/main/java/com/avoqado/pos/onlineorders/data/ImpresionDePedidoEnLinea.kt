@@ -87,7 +87,8 @@ class ImpresionDePedidoEnLinea internal constructor(
         },
         venueId = { secureStorage.venueId },
         despachar = { venue, lineas, folio, tipo, orderId, encabezado ->
-            dispatcher.dispatch(
+            val config = venue?.let { printConfigRepository.savedConfig(it) }
+            if (venue == null || secureStorage.venueId != venue) null else dispatcher.dispatch(
                 venueId = venue,
                 lines = lineas,
                 orderNumber = folio,
@@ -96,6 +97,7 @@ class ImpresionDePedidoEnLinea internal constructor(
                 maxIntentos = 1,
                 orderId = orderId,
                 encabezado = encabezado.ifEmpty { null },
+                configDeLaRonda = config,
             )
         },
     )
@@ -108,6 +110,7 @@ class ImpresionDePedidoEnLinea internal constructor(
     suspend fun imprimirSiToca(order: OnlineOrder, deviceId: String): ResultadoImpresion {
         // Sin renglones no hay comanda que sacar: reclamar sólo retendría el pedido a otro aparato.
         if (order.items.isEmpty()) return ResultadoImpresion.NoSalio
+        val sucursal = venueId() ?: return ResultadoImpresion.NoSalio
         val ahora = reloj()
         fallosRecientes.entries.removeIf { ahora - it.value >= DESCANSO_TRAS_NO_SALIO_MS }
         if (fallosRecientes.containsKey(order.orderId)) return ResultadoImpresion.NoSalio
@@ -115,11 +118,12 @@ class ImpresionDePedidoEnLinea internal constructor(
         return try {
             withContext(NonCancellable) {
                 val resultado = run {
-                    if (!hayImpresoraDeCocina()) return@run ResultadoImpresion.NoSalio
+                    if (!hayImpresoraDeCocina() || venueId() != sucursal) return@run ResultadoImpresion.NoSalio
                     if (!repositorio.claimPrint(order.orderId, deviceId)) return@run ResultadoImpresion.OtroAparato
-                    if (!sacarComanda(order)) return@run ResultadoImpresion.NoSalio
+                    if (venueId() != sucursal) return@run ResultadoImpresion.NoSalio
+                    if (!sacarComanda(order, sucursal)) return@run ResultadoImpresion.NoSalio
                     // Si la confirmación se pierde, el papel ya salió: a los 90 s otro aparato puede repetirla (límite aceptado, R20).
-                    repositorio.confirmPrint(order.orderId, deviceId)
+                    if (venueId() == sucursal) repositorio.confirmPrint(order.orderId, deviceId)
                     ResultadoImpresion.Impresa
                 }
                 if (resultado == ResultadoImpresion.NoSalio) fallosRecientes[order.orderId] = reloj() else fallosRecientes.remove(order.orderId)
@@ -132,11 +136,12 @@ class ImpresionDePedidoEnLinea internal constructor(
 
     /** «Reimprimir»: la saca en ESTE aparato sin reclamar ni confirmar (no toca el estado de impresión del servidor). */
     suspend fun reimprimir(order: OnlineOrder): ResultadoImpresion {
+        val sucursal = venueId() ?: return ResultadoImpresion.NoSalio
         if (!enCurso.add(order.orderId)) return ResultadoImpresion.YaEnCurso
         return try {
             withContext(NonCancellable) {
-                if (!hayImpresoraDeCocina()) return@withContext ResultadoImpresion.NoSalio
-                if (sacarComanda(order)) ResultadoImpresion.Impresa else ResultadoImpresion.NoSalio
+                if (!hayImpresoraDeCocina() || venueId() != sucursal) return@withContext ResultadoImpresion.NoSalio
+                if (sacarComanda(order, sucursal)) ResultadoImpresion.Impresa else ResultadoImpresion.NoSalio
             }
         } finally {
             enCurso.remove(order.orderId)
@@ -144,9 +149,9 @@ class ImpresionDePedidoEnLinea internal constructor(
     }
 
     /** `dispatch` nunca lanza ante una impresora caída: devuelve el estado. «No lanzó» NO es «salió». */
-    private suspend fun sacarComanda(order: OnlineOrder): Boolean {
+    private suspend fun sacarComanda(order: OnlineOrder, sucursal: String): Boolean {
         val estado = try {
-            despachar(venueId(), lineasDeComanda(order), order.orderNumber, TextosPedidosEnLinea.PARA_RECOGER, order.orderId, encabezadoDeComanda(order))
+            despachar(sucursal, lineasDeComanda(order), order.orderNumber, TextosPedidosEnLinea.PARA_RECOGER, order.orderId, encabezadoDeComanda(order))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

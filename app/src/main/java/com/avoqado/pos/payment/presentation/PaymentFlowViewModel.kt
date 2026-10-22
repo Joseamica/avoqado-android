@@ -1371,7 +1371,7 @@ class PaymentFlowViewModel @Inject constructor(
         // 🔴 DINERO. El cobro de un pedido web (bandeja «Pedidos en línea») NUNCA adopta una mesa: una sesión que quedó en
         // PAYING reemplazaba abajo a `resumeOrderId` y el dinero liquidaba la cuenta de la mesa (Codex plan r1 #1). Sin mesa
         // tampoco hay ticket ni saldo esperado de mesa. NORMAL queda exactamente como antes.
-        mesaDelCobro = if (origen == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA) {
+        mesaDelCobro = if (origen.esPedidoEnLinea) {
             null
         } else {
             tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
@@ -1567,6 +1567,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
+        if (method == PaymentMethod.CARD && !origenDelCobro.permiteTarjeta) return
         selectedMethod = method
         val baseAmount = currentBaseAmount()
         val total = baseAmount + currentTipCents
@@ -3530,7 +3531,7 @@ class PaymentFlowViewModel @Inject constructor(
         // 🔴 Pedidos en línea (Ruling 21 #1): la sesión de vales es global (un `@Singleton` en disco) y el cajero puede dejar
         // vales a medias en «Cobrar» e irse a «Más → Pedidos en línea». El cobro de un pedido web nunca es de vales: ni los
         // arma, ni cobra contra su orden, ni los termina, ni los suelta (`sesionDelCobro` queda null). Con NORMAL no cambia nada.
-        if (origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA) return false
+        if (origenDelCobro.esPedidoEnLinea) return false
         val sesion = areaTicketRepository.session.current() ?: return false
         if (cart?.items?.any { it.areaTicketLineId != null } == true) return true
         return sesion.order?.id?.let { it == createdOrderId } == true

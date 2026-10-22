@@ -181,6 +181,7 @@ fun OnlineOrdersScreen(
                                         seccion = seccion,
                                         puedeActualizar = puedeActualizar,
                                         puedeCancelar = puedeCancelar,
+                                        puedeCobrar = viewModel.puedeCobrar,
                                         sinConexion = sinConexion,
                                         ocupado = pedido.orderId in ocupados,
                                         onAceptar = { viewModel.aceptar(pedido.orderId, it) },
@@ -309,7 +310,7 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
                 onCobroAnteriorResuelto(mensaje)
             },
             resumeOrderId = cobro.orderId,
-            origen = OrigenDelCobro.PEDIDO_EN_LINEA,
+            origen = cobro.origen,
             apertura = cobro.apertura,
         )
     }

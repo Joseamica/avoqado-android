@@ -17,4 +17,9 @@ enum class OrigenDelCobro {
      * (Codex plan r1 #1: el dinero liquidaba otra cuenta y el pedido web seguía debiendo).
      */
     PEDIDO_EN_LINEA,
+    /** Un saldo de bandeja sirve para efectivo durable; jamás para autorizar una tarjeta. */
+    PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO;
+
+    val esPedidoEnLinea: Boolean get() = this != NORMAL
+    val permiteTarjeta: Boolean get() = this != PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO
 }

@@ -54,6 +54,7 @@ object TextosPedidosEnLinea {
     const val COBRO_EN_EFECTIVO_GUARDADO = "Cobro en efectivo guardado: se sube al volver la conexión"
     const val COBRO_EN_EFECTIVO_POR_REVISAR =
         "Este pedido tiene un cobro en efectivo por revisar: un gerente lo resuelve en Operaciones por revisar"
+    const val SOLO_EFECTIVO_SIN_SALDO = "Saldo sin actualizar: sólo efectivo. Para tarjeta, cierra este cobro y vuelve a abrirlo con conexión."
     const val SALDO_NO_LEIDO = "No se pudo leer el saldo del pedido. Intenta de nuevo."
     // Los mismos textos que el aviso de las mesas (`TableOrderScreen`): un cobro con tarjeta de OTRA venta que sí pasó.
     const val COBRO_ANTERIOR_TITULO = "Cobro anterior resuelto"

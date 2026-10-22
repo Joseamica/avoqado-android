@@ -190,6 +190,7 @@ fun PaymentFlowScreen(
                         tenderTypes = tenderTypes,
                         onCancel = salirSinCobrar,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        saldoSinActualizar = !origen.permiteTarjeta,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -213,6 +214,7 @@ fun PaymentFlowScreen(
                         tenderTypes = tenderTypes,
                     onCancel = salirSinCobrar,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        saldoSinActualizar = !origen.permiteTarjeta,
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     onSplitImporte = onSplitImporte,

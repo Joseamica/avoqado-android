@@ -60,6 +60,7 @@ fun OnlineOrderCard(
     seccion: SeccionDePedido,
     puedeActualizar: Boolean,
     puedeCancelar: Boolean,
+    puedeCobrar: Boolean,
     sinConexion: Boolean,
     ocupado: Boolean,
     onAceptar: (minutos: Int) -> Unit,
@@ -139,7 +140,7 @@ fun OnlineOrderCard(
                                     Text(TextosPedidosEnLinea.LISTO)
                                 }
                             }
-                            if (!estaPagado(pedido)) {
+                            if (puedeCobrar && !estaPagado(pedido)) {
                                 Button(onClick = onCobrar, enabled = !ocupado, modifier = Modifier.testTag("cobrar-${pedido.orderId}")) {
                                     Text(TextosPedidosEnLinea.COBRAR)
                                 }

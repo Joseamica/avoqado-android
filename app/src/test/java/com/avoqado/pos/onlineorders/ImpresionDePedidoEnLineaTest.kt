@@ -19,6 +19,7 @@ import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.ProductOverride
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.printing.routing.StationInfo
+import io.mockk.every
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -45,6 +46,54 @@ class ImpresionDePedidoEnLineaTest {
         var lineas: List<RoutableItem> = emptyList()
         var encabezado: List<String> = emptyList()
         var compuerta: CompletableDeferred<Unit>? = null
+    }
+
+    @Test fun `changing venue during claim never prints or confirms in the next venue`() = runTest {
+        var venue = "v1"
+        var prints = 0
+        coEvery { repo.claimPrint("p1", "dev-1") } answers { venue = "v2"; true }
+        coEvery { repo.confirmPrint("p1", "dev-1") } returns true
+        val sut = ImpresionDePedidoEnLinea(repo, { true }, { venue }, { _, _, _, _, _, _ -> prints++; EstadoDeComanda.Salio })
+        assertEquals(ResultadoImpresion.NoSalio, sut.imprimirSiToca(pedido(), "dev-1"))
+        assertEquals(0, prints)
+        coVerify(exactly = 0) { repo.confirmPrint(any(), any()) }
+    }
+
+    @Test fun `dispatch never adopts a new venue config after the context check`() = runTest {
+        var venue = "v1"
+        var configReads = 0
+        val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>()
+        val configRepo = mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>()
+        val printers = mockk<com.avoqado.pos.printing.data.PrinterService>()
+        val dispatcher = mockk<com.avoqado.pos.core.domain.printing.ComandaDispatcher>(relaxed = true)
+        val config = PrintConfig(printers = listOf(PrinterInfo("p", "Cocina", "NETWORK", "192.168.1.50:9100")),
+            stations = listOf(StationInfo("s", "Cocina", printerId = "p")))
+        every { storage.venueId } answers { venue }
+        every { printers.savedPrinters } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        every { configRepo.getCurrentConfig() } answers { if (++configReads > 1) venue = "v2"; config }
+        coEvery { configRepo.savedConfig("v1") } coAnswers { venue = "v2"; config }
+        coEvery { repo.claimPrint("p1", "dev-1") } returns true
+        coEvery { repo.confirmPrint("p1", "dev-1") } returns true
+        coEvery { dispatcher.dispatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns EstadoDeComanda.Salio
+        val sut = ImpresionDePedidoEnLinea(repo, dispatcher, printers, configRepo, storage)
+        assertEquals(ResultadoImpresion.NoSalio, sut.imprimirSiToca(pedido(), "dev-1"))
+    }
+
+    @Test fun `unreadable saved route reports no print instead of escaping the task`() = runTest {
+        val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>()
+        val configRepo = mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>()
+        val printers = mockk<com.avoqado.pos.printing.data.PrinterService>()
+        val dispatcher = mockk<com.avoqado.pos.core.domain.printing.ComandaDispatcher>(relaxed = true)
+        every { storage.venueId } returns "v1"
+        every { printers.savedPrinters } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        every { configRepo.getCurrentConfig() } returns PrintConfig(
+            printers = listOf(PrinterInfo("p", "Cocina", "NETWORK", "192.168.1.50:9100")),
+            stations = listOf(StationInfo("s", "Cocina", printerId = "p")))
+        coEvery { configRepo.savedConfig("v1") } throws IllegalStateException("caché ilegible")
+        coEvery { repo.claimPrint("p1", "dev-1") } returns true
+        val sut = ImpresionDePedidoEnLinea(repo, dispatcher, printers, configRepo, storage)
+        assertEquals(ResultadoImpresion.NoSalio, sut.imprimirSiToca(pedido(), "dev-1"))
+        coVerify(exactly = 0) { repo.confirmPrint(any(), any()) }
     }
 
     private var ahora = 1_000_000L
