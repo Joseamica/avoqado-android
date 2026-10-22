@@ -75,9 +75,12 @@ class CartViewModelWeightTest {
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
 
     private val venueSwitchedFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val apartadoDeVales = MutableStateFlow<AreaTicketCheckout?>(null)
 
     @Before
     fun setup() {
+        every { areaTicketRepository.session.checkout } returns apartadoDeVales
+        every { areaTicketRepository.session.ventaDuena } returns null
         every { productsRepository.products } returns MutableStateFlow<List<Product>>(emptyList())
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
@@ -311,6 +314,51 @@ class CartViewModelWeightTest {
         )
     }
 
+    // D1 (20-oct): el apartado del vale ya no existe y el cobro se detuvo pidiendo volver a escanearlo. El renglón tiene que
+    // poder quitarse: antes el borrado le pedía al servidor quitar el vale de una sesión que ya no había, fallaba en silencio
+    // y el renglón se quedaba para siempre.
+    @Test
+    fun `un vale sin apartado se quita del carrito sin pedirle nada al servidor`() {
+        every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "10.00")
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        val renglon = vm.cartState.value.items.single()
+        every { areaTicketRepository.session.current() } returns null
+
+        vm.removeItem(renglon.id)
+
+        assertTrue(vm.cartState.value.items.isEmpty())
+        coVerify(exactly = 0) { areaTicketRepository.removeTicket(any()) }
+    }
+
+    // D1 (20-oct): cuando el apartado se suelta de verdad («Cancelar» con red, vencido o pagado), los vales salen del carrito y
+    // lo demás se queda. Antes los renglones se quedaban sin apartado y el siguiente cobro los vendía como importe libre.
+    @Test
+    fun `cuando el apartado se suelta los vales salen del carrito y lo demas se queda`() {
+        val apartado = checkoutConVales("linea-a" to "10.00")
+        every { areaTicketRepository.session.current() } returns apartado
+        apartadoDeVales.value = apartado
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        vm.addCustomAmount(name = "Agua", amountCents = 2500)
+
+        apartadoDeVales.value = null
+
+        assertEquals(listOf("Agua"), vm.cartState.value.items.map { it.name })
+    }
+
+    // Al abrir no hay apartado todavía (se restaura después): eso no es «se soltó» y no toca el carrito.
+    @Test
+    fun `sin apartado desde el principio el carrito no se toca`() {
+        every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "10.00")
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+
+        apartadoDeVales.value = null
+
+        assertEquals(listOf("linea-a"), vm.cartState.value.items.map { it.areaTicketLineId })
+    }
+
     private fun checkoutConVales(vararg lineas: Pair<String, String>) = AreaTicketCheckout(
         id = "checkout-1",
         status = "MATERIALIZED",
@@ -448,5 +496,251 @@ class CartViewModelWeightTest {
         vm.markPendingSplitOrder("otra-orden")
 
         assertEquals("MATERIALIZED", sesionReal.current()?.status)
+    }
+
+    // MARK: - D5 (20-oct): una venta de vales con abono no se vacía (Toast y Clover tampoco lo dejan)
+
+    @Test
+    fun `D5 con un abono en la venta de vales que sigue el carrito, Vaciar se bloquea`() {
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+
+        assertTrue(vm.vaciarBloqueadoPorAbono())
+    }
+
+    @Test
+    fun `D5 sin abono, o si el carrito no sigue esa venta, Vaciar se deja`() {
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "MATERIALIZED", pagado = "0.00")
+        val vm = createViewModel()
+        vm.markPendingSplitOrder("orden-vales")
+        assertFalse(vm.vaciarBloqueadoPorAbono())
+
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        vm.markPendingSplitOrder(null)
+        assertFalse(vm.vaciarBloqueadoPorAbono())
+    }
+
+    // MARK: - D4 (20-oct): con una venta cobrada a medias no se escanea un vale (armaba una orden nueva y la vieja quedaba abierta)
+
+    @Test
+    fun `D4 con una venta cobrada a medias, escanear un vale se detiene sin pedirlo`() = runTest {
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 5000)
+        vm.markPendingSplitOrder("orden-normal")
+
+        val result = vm.resolveScannedBarcode("9470000015")
+
+        assertEquals(VALE_CON_VENTA_A_MEDIAS, (result as ScannedBarcodeResult.Error).message)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
+    }
+
+    @Test
+    fun `D4 con una venta cobrada a medias, restaurar la sesion no mete vales encima del saldo`() = runTest {
+        val sesion = checkoutConVales("linea-a" to "10.00")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.restore() } returns sesion
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 5000)
+        vm.markPendingSplitOrder("orden-normal")
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(5000, vm.cartState.value.totalCents)
+        assertTrue(vm.cartState.value.items.none { it.areaTicketLineId != null })
+    }
+
+    @Test
+    fun `un vale no se deja para pagar despues`() = runTest {
+        every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "10.00")
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+
+        val resultado = vm.createPayLaterOrder("cliente-1")
+
+        assertEquals(VALES_NO_PAGAR_DESPUES, resultado.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `D5 una venta de vales con abono no se deja para pagar despues`() = runTest {
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+
+        val resultado = vm.createPayLaterOrder("cliente-1")
+
+        assertEquals(com.avoqado.pos.payment.presentation.VALES_CON_ABONO, resultado.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `D5 con abono no se quita el saldo pendiente a mano (deslizar o anular)`() {
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        val saldo = vm.cartState.value.items.single()
+
+        assertFalse(vm.quitarPorElCajero(saldo.id))
+        assertEquals(7500, vm.cartState.value.totalCents)
+        assertEquals(com.avoqado.pos.payment.presentation.VALES_CON_ABONO, vm.avisoDeVales.value)
+    }
+
+    // MARK: - Rediseño r7 (Codex r6, 21-oct): dueño del apartado, aviso «Cobrar saldo» y venta con abono cerrada
+
+    private fun sesionReal(checkout: AreaTicketCheckout): com.avoqado.pos.areatickets.data.AreaTicketSession {
+        val real = com.avoqado.pos.areatickets.data.AreaTicketSession(mockk(relaxed = true))
+        real.update("venue-1", checkout)
+        every { areaTicketRepository.session } returns real
+        return real
+    }
+
+    private fun conAbonoEnElCarrito(): CartViewModel {
+        sesionReal(sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00"))
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        return vm
+    }
+
+    // Regla 8 (Codex r6 #5): el cajero vació la venta pero el apartado no se pudo soltar (sin red). Sus vales no aparecen en
+    // la venta siguiente: al restaurar se vuelve a intentar soltarlo.
+    @Test
+    fun `regla 8 los vales de una venta vaciada no aparecen en la siguiente y se intenta soltarlos`() = runTest {
+        val real = sesionReal(checkoutConVales("linea-a" to "10.00"))
+        coEvery { areaTicketRepository.restore() } coAnswers { real.current() }
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        assertEquals(1, vm.cartState.value.items.size)
+
+        vm.clearCart()
+        vm.addProduct(burger)
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+        coVerify { areaTicketRepository.cancel(soloSi = "checkout-1") }
+    }
+
+    // Regla 8: con un apartado de otra venta que no se pudo soltar, escanear no le cuelga el vale nuevo a esa venta.
+    @Test
+    fun `regla 8 escanear con el apartado de otra venta sin soltar se detiene y lo dice`() = runTest {
+        sesionReal(checkoutConVales("linea-a" to "10.00"))
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        vm.clearCart()
+
+        val result = vm.resolveScannedBarcode("9470000015")
+
+        assertEquals(VALES_SOLTAR_ANTERIOR, (result as ScannedBarcodeResult.Error).message)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
+    }
+
+    // Regla 8 (Codex r6 #5): la respuesta de «quitar vale» de A llega cuando el carrito ya es otra venta: no le mete el otro
+    // vale de A.
+    @Test
+    fun `regla 8 la respuesta tardia de quitar un vale no entra a la venta siguiente`() = runTest {
+        val real = sesionReal(checkoutConVales("linea-a" to "10.00", "linea-b" to "20.00"))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<AreaTicketCheckout>()
+        coEvery { areaTicketRepository.removeTicket("vale-linea-a") } coAnswers { respuesta.await() }
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        val valeA = vm.cartState.value.items.first { it.areaTicketLineId == "linea-a" }
+
+        vm.removeItem(valeA.id)
+        runCurrent()
+        vm.clearCart()
+        vm.addProduct(burger)
+        respuesta.complete(real.current()!!.copy(tickets = real.current()!!.tickets.drop(1)))
+        runCurrent()
+
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+    }
+
+    // Regla 10: la venta con abono salió del carrito por otra puerta (reimprimir y cambiar usuario llaman a `finalizarVenta`).
+    // El aviso fijo la ofrece, y «Cobrar saldo» la vuelve a sembrar continuando su orden.
+    @Test
+    fun `regla 10 la venta con abono que sale del carrito queda en el aviso y Cobrar saldo la regresa`() = runTest {
+        val vm = conAbonoEnElCarrito()
+        coEvery { areaTicketRepository.refresh() } coAnswers { areaTicketRepository.session.current() }
+        backgroundScope.launch { vm.saldoDeVales.collect {} }
+        runCurrent()
+        assertNull(vm.saldoDeVales.value)
+
+        vm.finalizarVenta()
+        runCurrent()
+        assertEquals(SaldoDeVales("orden-vales", 7500), vm.saldoDeVales.value)
+
+        vm.cobrarSaldoDeVales()
+        runCurrent()
+        assertEquals(listOf("Saldo pendiente" to 7500), vm.cartState.value.items.map { it.name to it.unitPrice })
+        assertNull(vm.saldoDeVales.value)
+        assertEquals("orden-vales", vm.resolvePendingSplitOrderForCharge())
+    }
+
+    @Test
+    fun `regla 10 Cobrar saldo con otra venta en el carrito pide terminarla y no la toca`() = runTest {
+        val vm = conAbonoEnElCarrito()
+        vm.finalizarVenta()
+        vm.addProduct(burger)
+
+        vm.cobrarSaldoDeVales()
+        runCurrent()
+
+        assertEquals(VALES_SALDO_CON_OTRA_VENTA, vm.avisoDeVales.value)
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `regla 10 si el saldo ya se cobro en otro aparato el aviso lo dice y no siembra nada`() = runTest {
+        val vm = conAbonoEnElCarrito()
+        vm.finalizarVenta()
+        coEvery { areaTicketRepository.refresh() } returns sesionConOrden(status = "PAID", pagado = "150.00")
+
+        vm.cobrarSaldoDeVales()
+        runCurrent()
+
+        assertEquals(VALES_SALDO_YA_COBRADO, vm.avisoDeVales.value)
+        assertTrue(vm.cartState.value.items.isEmpty())
+    }
+
+    // Regla 11 (Codex r6 #1 y #2): agregar algo a la venta con abono no rompe su vínculo (eso apagaba Vaciar y los demás
+    // candados); el cobro no se abre hasta quitarlo.
+    @Test
+    fun `regla 11 agregar a la venta con abono detiene el cobro sin soltar la venta`() {
+        val vm = conAbonoEnElCarrito()
+        vm.addProduct(burger)
+
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+        assertEquals(VALES_ABONO_CAMBIADA, vm.avisoDeVales.value)
+        assertNull(vm.resolvePendingSplitOrderForCharge())
+        assertTrue("el candado de Vaciar sigue", vm.vaciarBloqueadoPorAbono())
+
+        val agregado = vm.cartState.value.items.first { it.name == "Hamburguesa" }
+        assertTrue("lo agregado sí se quita", vm.quitarPorElCajero(agregado.id))
+        assertFalse(vm.detenerCobroDeVentaCambiada())
+        assertEquals("orden-vales", vm.resolvePendingSplitOrderForCharge())
+    }
+
+    @Test
+    fun `regla 11 un descuento sobre el saldo de la venta con abono detiene el cobro`() {
+        val vm = conAbonoEnElCarrito()
+        vm.applyOrderDiscount(Discount(id = "d1", name = "10%", type = "PERCENTAGE", value = 10.0))
+
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+    }
+
+    @Test
+    fun `regla 11 bajar de 1 el saldo pendiente tambien pasa por el candado de D5`() {
+        val vm = conAbonoEnElCarrito()
+        val saldo = vm.cartState.value.items.single()
+
+        vm.decrementQuantity(saldo.id)
+
+        assertEquals(7500, vm.cartState.value.totalCents)
     }
 }

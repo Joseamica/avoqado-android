@@ -72,6 +72,9 @@ fun PaymentFlowScreen(
     apertura: String? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
+    // Salir del cobro sin cobrar (calificación, propina, elegir método): si ESTE cobro ya armó la cuenta de los vales (una
+    // tarjeta rechazada, por ejemplo), se suelta, igual que con «Cancelar» (Codex r4 #6).
+    val salirSinCobrar: () -> Unit = { viewModel.alSalirSinCobrar(); onCancel() }
     val state by viewModel.state.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
@@ -152,13 +155,13 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin calificación",
                         onSkip = { viewModel.submitRating(null) },
-                        onCancel = onCancel,
+                        onCancel = salirSinCobrar,
                     )
                 } else {
                     RatingScreen(
                         onRatingSubmitted = { viewModel.submitRating(it) },
                         onSkip = { viewModel.submitRating(null) },
-                        onCancel = onCancel,
+                        onCancel = salirSinCobrar,
                     )
                 }
             }
@@ -173,7 +176,7 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin propina",
                         onSkip = { viewModel.submitTip(0) },
-                        onCancel = onCancel,
+                        onCancel = salirSinCobrar,
                     )
                 } else {
                     // Sin pantalla de cliente: método de pago con la hoja de
@@ -185,7 +188,7 @@ fun PaymentFlowScreen(
                         onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
-                        onCancel = onCancel,
+                        onCancel = salirSinCobrar,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
@@ -208,7 +211,7 @@ fun PaymentFlowScreen(
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
-                    onCancel = onCancel,
+                    onCancel = salirSinCobrar,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
@@ -220,7 +223,7 @@ fun PaymentFlowScreen(
                 CashPaymentScreen(
                     totalCents = currentState.total,
                     onCashReceived = { viewModel.processCashPayment(it) },
-                    onCancel = onCancel,
+                    onCancel = salirSinCobrar,
                 )
             }
             is PaymentFlowState.Confirming -> {
@@ -230,7 +233,7 @@ fun PaymentFlowScreen(
                     totalCents = currentState.amount + currentState.tip,
                     rating = currentState.rating,
                     onConfirm = { viewModel.confirmPayment() },
-                    onCancel = onCancel,
+                    onCancel = salirSinCobrar,
                 )
             }
             is PaymentFlowState.SelectingTerminal -> {

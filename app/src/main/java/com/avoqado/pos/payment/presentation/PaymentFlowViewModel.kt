@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
+import com.avoqado.pos.areatickets.data.tieneAbono
 import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.areatickets.data.moneyToCents
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
@@ -114,6 +115,12 @@ data class PaymentCompletion(
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
+
+/** Mismo texto en iOS (`AreaTicketPaymentError.ventaConAbono`) y en «Vaciar» (D5, 20-oct). */
+const val VALES_CON_ABONO = "Esta venta de vales ya tiene un abono: cobra su saldo pendiente para terminarla."
+
+/** Mismo texto en iOS (`AreaTicketRepositoryError.noActiveCheckout`). */
+const val VALES_SIN_APARTADO = "Estos vales ya no están apartados para esta venta: quítalos y vuelve a escanear el vale."
 
 /**
  * 🔴 DINERO. ¿El carrito trae exactamente los vales de la sesión del servidor? Renglón por renglón y en centavos, como los pone
@@ -515,18 +522,8 @@ class PaymentFlowViewModel @Inject constructor(
     /** El toque de «Cobrar» que arrancó el cobro en pantalla. Ver `startPaymentFlow`. */
     private var aperturaEnCurso: String? = null
 
-    /** Quién abrió el cobro en curso (`startPaymentFlow`). Ver [sesionDeValesDelCobro]. */
+    /** Quién abrió el cobro en curso (`startPaymentFlow`). Ver [esCobroDeVales]. */
     private var origenDelCobro: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL
-
-    /**
-     * 🔴 DINERO. La sesión de vales que ESTE cobro puede usar. La sesión es global (un `@Singleton` en disco): el cajero puede
-     * dejar vales escaneados a medias en «Cobrar» e irse a «Más → Pedidos en línea». El cobro de un pedido web nunca la toma
-     * (Ruling 21 #1): ni la materializa, ni cobra contra su orden, ni la termina, ni la cancela. Con NORMAL es exactamente la
-     * lectura de antes.
-     */
-    private fun sesionDeValesDelCobro(): AreaTicketCheckout? =
-        if (origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA) null
-        else areaTicketRepository.session.current()
 
     /** ¿Esta apertura ya arrancó el cobro que está en pantalla? Entonces la pantalla no reparte ni arranca otra vez. */
     fun esElCobroEnCurso(apertura: String): Boolean = apertura == aperturaEnCurso
@@ -1367,6 +1364,7 @@ class PaymentFlowViewModel @Inject constructor(
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
         flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
+        cobroDeValesId = java.util.UUID.randomUUID().toString()
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
         cartState = cart
@@ -1461,6 +1459,8 @@ class PaymentFlowViewModel @Inject constructor(
         // created for this charge. With no session active this is a no-op and
         // every retail/quick flow is byte-identical.
         mesaDelCobro?.let { createdOrderId = it.orderId }
+        // Regla 9 (vales, r7): el apartado que cobra ESTE cobro; terminar, soltar y salir actúan sobre él, nunca sobre el vigente.
+        sesionDelCobro = areaTicketRepository.session.current()?.id?.takeIf { esCobroDeVales() }
         selectedTerminalId = null
         _canPrintOnTerminal.value = false
         lastPaymentId = null
@@ -1868,6 +1868,7 @@ class PaymentFlowViewModel @Inject constructor(
         if (isProcessingPayment) return
         if (primeroRetirarLaReservaPendiente { confirmPayment() }) return
         val cart = cartState ?: return
+        if (detenerSiHayValesSinApartado(cart)) return
         isProcessingPayment = true
         val venueCapturado = secureStorage.venueId.orEmpty()
         val actorCapturado = secureStorage.userId.orEmpty()
@@ -1886,7 +1887,7 @@ class PaymentFlowViewModel @Inject constructor(
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
         } == true
-        val permiteColaCapturada = sesionDeValesDelCobro() == null
+        val permiteColaCapturada = !esCobroDeVales()
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
@@ -2278,6 +2279,7 @@ class PaymentFlowViewModel @Inject constructor(
     fun processCashPayment(cashReceivedCents: Int) {
         if (isProcessingPayment) return
         if (primeroRetirarLaReservaPendiente { processCashPayment(cashReceivedCents) }) return
+        if (detenerSiHayValesSinApartado(cartState)) return
         isProcessingPayment = true
         lastCashTenderedCents = cashReceivedCents
         val cart = cartState
@@ -2297,7 +2299,7 @@ class PaymentFlowViewModel @Inject constructor(
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
         } == true
-        val permiteColaCapturada = sesionDeValesDelCobro() == null
+        val permiteColaCapturada = !esCobroDeVales()
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
@@ -2312,6 +2314,12 @@ class PaymentFlowViewModel @Inject constructor(
 
                     if (cart != null && !permiteColaCapturada) {
                         if (!materializeAreaTicketCheckout(cart)) return@launch
+                        // La misma puerta que tarjeta: si el cajero canceló mientras se armaba la orden de los vales, el
+                        // efectivo NO se registra (D2, 20-oct).
+                        if (generacion != paymentGeneration) {
+                            cancelarLoCreadoTrasCancelar(orderId = null)
+                            return@launch
+                        }
                         recordCashPaymentForOrder(
                             orderId = createdOrderId!!,
                             total = total,
@@ -3260,7 +3268,7 @@ class PaymentFlowViewModel @Inject constructor(
         // dos borrados.
         if (estado is PaymentFlowState.CancelandoCobro || estado is PaymentFlowState.CancelacionPendiente) return
 
-        val esDeVales = sesionDeValesDelCobro() != null
+        val esDeVales = esCobroDeVales()
         val cobro = objetivoDeCancelacion(estado)
         val orderId = createdOrderId
         // La cuenta de una MESA o la orden de un split que ya existía no las creó este flujo:
@@ -3304,10 +3312,10 @@ class PaymentFlowViewModel @Inject constructor(
             }
 
             else -> {
-                // Nada que cancelar en el servidor: se sale como siempre.
+                // Nada que cancelar en el servidor: se sale como siempre. Con vales se suelta su apartado (D1, 20-oct).
                 paymentGeneration++
                 isProcessingPayment = false
-                cancelarSesionDeValesSiAplica()
+                soltarApartadoDeVales()
                 salirDelFlujo()
             }
         }
@@ -3387,8 +3395,8 @@ class PaymentFlowViewModel @Inject constructor(
      * @param orderId `null` = la creación falló, así que no hay nada que cancelar: sólo se sale.
      */
     private fun cancelarLoCreadoTrasCancelar(orderId: String?) {
-        if (sesionDeValesDelCobro() != null) {
-            cancelarSesionDeValesSiAplica()
+        if (esCobroDeVales()) {
+            soltarApartadoDeVales()
             salirDelFlujo()
             return
         }
@@ -3456,7 +3464,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     private fun terminarLaCancelacion() {
         dejarDeObservarLaCancelacion()
-        cancelarSesionDeValesSiAplica()
+        soltarApartadoDeVales()
         salirDelFlujo()
     }
 
@@ -3488,12 +3496,51 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    private fun cancelarSesionDeValesSiAplica() {
-        if (sesionDeValesDelCobro() == null) return
+    /**
+     * Suelta el apartado de los vales en el servidor, con su orden armada y sin cobrar. Cuando el servidor lo confirma, la
+     * sesión local se borra y el carrito saca sus vales (`CartViewModel` observa la sesión): se vuelven a escanear. Sin red no
+     * se suelta nada y los vales siguen en el carrito para reintentar. Conservar el apartado con la orden ya armada la dejaba
+     * congelada: lo que el cajero agregaba después no entraba al cobro (Codex r1 #1, 20-oct).
+     */
+    private fun soltarApartadoDeVales() {
+        // Regla 9: sólo el apartado de este cobro (las tareas de salida soltaban «el vigente», que pudo ser ya otra venta).
+        val id = sesionDelCobro ?: return
         viewModelScope.launch {
-            runCatching { areaTicketRepository.cancel() }
-                .onFailure { Log.e("PaymentFlow", "⚠️ No se pudo liberar la sesión de vales: ${it.message}") }
+            runCatching { areaTicketRepository.cancel(soloSi = id) }
+                .onFailure { Log.e("PaymentFlow", "⚠️ No se pudo soltar el apartado de vales: ${it.message}") }
         }
+    }
+
+    /**
+     * 🔴 DINERO (D1, 20-oct). Un renglón de vale cuyo apartado ya no existe (venció o se soltó) no se cobra: por la ruta de
+     * venta normal entraba como importe libre, el dinero entraba y el vale quedaba sin pagar, así que el área no lo entregaba.
+     * La ruta se decide por lo que trae el carrito, como iOS (`hasAreaTicketLines`), no sólo por el apartado.
+     */
+    /** El cajero salió sin cobrar sin pasar por «Cancelar»: una cuenta de vales que armó ESTE cobro se suelta (Codex r4 #6). */
+    fun alSalirSinCobrar() {
+        if (areaTicketRepository.session.cobroQueLaArmo == cobroDeValesId) soltarApartadoDeVales()
+    }
+
+    /**
+     * 🔴 DINERO (D5, 20-oct). Este cobro es de vales si su carrito trae vales o si continúa la orden de la sesión de vales (su
+     * saldo pendiente). Antes bastaba con que hubiera una sesión viva: tras dejar una venta de vales con abono, la venta
+     * siguiente de productos normales se cobraba contra la orden vieja, y al terminar olvidaba esa sesión.
+     */
+    private fun esCobroDeVales(cart: CartState? = cartState): Boolean {
+        // 🔴 Pedidos en línea (Ruling 21 #1): la sesión de vales es global (un `@Singleton` en disco) y el cajero puede dejar
+        // vales a medias en «Cobrar» e irse a «Más → Pedidos en línea». El cobro de un pedido web nunca es de vales: ni los
+        // arma, ni cobra contra su orden, ni los termina, ni los suelta (`sesionDelCobro` queda null). Con NORMAL no cambia nada.
+        if (origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA) return false
+        val sesion = areaTicketRepository.session.current() ?: return false
+        if (cart?.items?.any { it.areaTicketLineId != null } == true) return true
+        return sesion.order?.id?.let { it == createdOrderId } == true
+    }
+
+    private fun detenerSiHayValesSinApartado(cart: CartState?): Boolean {
+        if (cart?.items?.any { it.areaTicketLineId != null } != true) return false
+        if (areaTicketRepository.session.current() != null) return false
+        _state.value = PaymentFlowState.Error(message = VALES_SIN_APARTADO, source = PaymentErrorSource.SERVER)
+        return true
     }
 
     private fun salirDelFlujo() {
@@ -4264,14 +4311,37 @@ class PaymentFlowViewModel @Inject constructor(
         return cart.items.any { it.type is CartItemType.ProductItem }
     }
 
+    /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
+    private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()
+
+    /** Regla 9: el apartado de vales de ESTE cobro (se fija al abrir y al armar). */
+    private var sesionDelCobro: String? = null
+
     private suspend fun materializeAreaTicketCheckout(cart: CartState): Boolean {
         // La orden que este cobro continúa (ya se cobró una parte). Si es la MISMA que arman los vales, lo que falta lo dice el
         // servidor y el carrito ya no lleva todos los vales; si es otra, se compara como cualquier cobro (Codex r7).
         val ordenQueContinua = createdOrderId
+        // Regla 9 (Codex r6 #5): una respuesta que llega cuando el cajero ya canceló no pinta nada. Entonces devuelve `true`:
+        // quien llama compara la generación y suelta el apartado (`cancelarLoCreadoTrasCancelar`).
+        val generacion = paymentGeneration
         return try {
             val normalItems = cart.items
                 .filter { !it.locked }
                 .mapNotNull { item ->
+                    // 🔴 DINERO (Codex r4 #7, founder «arréglalo de una vez»): un importe tecleado junto con los vales se quedaba
+                    // fuera de la orden y se perdía al cobrar. Viaja como en una venta normal (nombre + precio en centavos); iOS
+                    // ya lo mandaba (`areaTicketNormalItemsPayload`).
+                    if (item.type is CartItemType.CustomAmount && item.areaTicketLineId == null) {
+                        return@mapNotNull NormalCheckoutItem(
+                            productId = null,
+                            name = item.name,
+                            // El mismo precio que la venta normal (`toOrderItemRequest`), y una cortesía vale 0 (Codex r5 #1).
+                            unitPrice = if (item.isCortesia) 0 else item.effectiveUnitPrice,
+                            quantity = item.quantity,
+                            notes = item.itemNote,
+                            discountId = item.itemDiscountId,
+                        )
+                    }
                     val productId = (item.type as? CartItemType.ProductItem)?.productId ?: return@mapNotNull null
                     NormalCheckoutItem(
                         productId = productId,
@@ -4286,7 +4356,11 @@ class PaymentFlowViewModel @Inject constructor(
                 normalItems = normalItems,
                 customerName = null,
                 note = cart.orderNote,
+                cobroId = cobroDeValesId,
             )
+            sesionDelCobro = checkout.id
+            // El cajero canceló mientras se armaba: nada se pinta aquí; quien llama ve la generación y suelta (D2).
+            if (generacion != paymentGeneration) return true
             if (checkout.status in setOf("PAYMENT_PENDING", "RECONCILIATION_REQUIRED")) {
                 _state.value = PaymentFlowState.Error(
                     message = "Este cobro sigue en confirmación. No vuelvas a cobrar; revisa el estado del pago.",
@@ -4300,6 +4374,10 @@ class PaymentFlowViewModel @Inject constructor(
                     message = "No se pudo materializar la orden de los vales.",
                     source = PaymentErrorSource.SERVER,
                 )
+                false
+            } else if (order.id != ordenQueContinua && checkout.tieneAbono()) {
+                // 🔴 D5: una venta de vales con abono sólo se cobra por su saldo pendiente; nunca se le cuelga otra cuenta.
+                _state.value = PaymentFlowState.Error(message = VALES_CON_ABONO, source = PaymentErrorSource.SERVER)
                 false
             } else if (order.id != ordenQueContinua && valesNoCoinciden(cart, checkout)) {
                 // Nada que cancelar: la sesión sigue viva con los vales del servidor y el carrito los toma al volver.
@@ -4319,8 +4397,19 @@ class PaymentFlowViewModel @Inject constructor(
             // siguen vivos. Tirar aquí la sesión muerta es lo que permite que el
             // siguiente escaneo abra una nueva; si la dejáramos, la caja se quedaría
             // pulsando Cobrar contra algo que el server ya no acepta.
-            if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_SESSION_STALE") {
-                runCatching { areaTicketRepository.session.clear() }
+            //
+            // 🔴 Pero el servidor contesta lo mismo cuando la sesión sólo CAMBIÓ (un latido al mismo tiempo): ahí sigue viva y
+            // sus vales apartados. Olvidarla dejaba el vale apartado sin que el aparato lo supiera (Codex r1 #3, 20-oct). Se
+            // relee y sólo se olvida si de verdad ya no sirve; sin red no se toca.
+            // La relectura olvida sólo lo que el servidor da por muerto y `restore` suelta lo vencido con orden armada
+            // (reglas 2 y 3 de la pasada): nunca se olvida a ciegas una sesión con vales apartados.
+            // Regla 9: el error tardío de un cobro que ya se canceló no tapa «Cancelando»; quien llama suelta y sale (D2).
+            if (generacion != paymentGeneration) return true
+            if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_SESSION_STALE" &&
+                areaTicketRepository.session.current()?.id == sesionDelCobro
+            ) {
+                runCatching { areaTicketRepository.refresh() }
+                runCatching { areaTicketRepository.restore() }
             }
             _state.value = PaymentFlowState.Error(
                 message = error.message ?: "No se pudo preparar la venta de vales.",
@@ -4344,12 +4433,23 @@ class PaymentFlowViewModel @Inject constructor(
         return !cobraLosValesDeLaSesion(cart.items, alDia)
     }
 
+    /**
+     * Regla 9 (Codex r6 #5): termina el apartado de ESTE cobro, nunca el vigente (si un latido ya cerró este y el cajero abrió
+     * otra venta antes de que llegara la respuesta del pago, borraba la otra). Un pago completo con saldo según el servidor
+     * no se da por terminado: se relee y la venta sigue en el aviso «Cobrar saldo».
+     */
     private fun finishAreaTicketPayment() {
-        if (sesionDeValesDelCobro() == null) return
-        if (_splitType.value == "FULLPAYMENT") {
-            areaTicketRepository.session.clear()
+        val id = sesionDelCobro ?: return
+        if (_splitType.value == "FULLPAYMENT" && (serverRemainingBalanceCents ?: 0) <= 0) {
+            areaTicketRepository.session.clearIf(id)
         } else {
+            // Quedó saldo: la copia del apartado lo sabe desde AQUÍ, aunque el carrito ya sea otra venta (la pantalla no lo
+            // marca entonces) y aunque falle la relectura: así el aviso «Cobrar saldo» sale con el saldo real (Codex r7 #1).
+            val saldo = serverRemainingBalanceCents
+            val orden = areaTicketRepository.session.current()?.takeIf { it.id == id }?.order?.id
+            if (orden != null && saldo != null && saldo > 0) areaTicketRepository.session.marcarConAbono(orden, saldo)
             viewModelScope.launch {
+                if (areaTicketRepository.session.current()?.id != id) return@launch
                 runCatching { areaTicketRepository.refresh() }
                     .onFailure { Log.e("🎟️", "No se pudo refrescar el saldo de la sesión: ${it.message}") }
             }

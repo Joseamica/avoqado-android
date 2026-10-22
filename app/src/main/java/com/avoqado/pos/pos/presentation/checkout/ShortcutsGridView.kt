@@ -1067,7 +1067,7 @@ private fun VoidItemsSubView(
                     onClick = {
                         if (voidReason.isNotBlank()) {
                             selectedItemIds.forEach { id ->
-                                cartViewModel.removeItem(id)
+                                cartViewModel.quitarPorElCajero(id)
                             }
                             onBack()
                         }
@@ -1448,6 +1448,7 @@ private fun SavedCartsSubView(
 ) {
     val savedCarts by cartViewModel.savedCarts.collectAsState()
     var confirmarRestauracion by remember { mutableStateOf<SavedCart?>(null) }
+    var restaurarBloqueadoPorAbono by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Carritos guardados", onBack = onBack)
@@ -1488,6 +1489,7 @@ private fun SavedCartsSubView(
                             when (cartViewModel.restoreSavedCart(cart)) {
                                 Restauracion.Hecha -> onBack()
                                 is Restauracion.PideConfirmacion -> confirmarRestauracion = cart
+                                Restauracion.BloqueadaPorAbono -> restaurarBloqueadoPorAbono = true
                             }
                         },
                         onDelete = {
@@ -1497,6 +1499,17 @@ private fun SavedCartsSubView(
                 }
             }
         }
+    }
+
+    if (restaurarBloqueadoPorAbono) {
+        AvoqadoDialog(
+            title = "No se puede restaurar",
+            description = com.avoqado.pos.payment.presentation.VALES_CON_ABONO,
+            onDismiss = { restaurarBloqueadoPorAbono = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", fullWidth = true, onClick = { restaurarBloqueadoPorAbono = false })
+            },
+        ) {}
     }
 
     confirmarRestauracion?.let { copia ->
