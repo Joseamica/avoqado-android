@@ -40,8 +40,10 @@ import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.customerdisplay.CustomerContent
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.payment.presentation.cobraLosValesDeLaSesion
+import com.avoqado.pos.payment.presentation.tipCentsForPercent
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.SelectedModifier
@@ -73,6 +75,7 @@ import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -139,6 +142,9 @@ class PaymentFlowViewModelTest {
     }
 
     private lateinit var viewModel: PaymentFlowViewModel
+
+    /** El espejo REAL de la pantalla del cliente: se guarda para leer lo que el ViewModel le empuja. */
+    private lateinit var customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState
 
     /**
      * El coordinador de la cancelación durable, REAL, con disco en memoria y transporte falso: si
@@ -262,7 +268,7 @@ class PaymentFlowViewModelTest {
             comandaDispatcher = comandaDispatcherReal,
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
-            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState().also { customerDisplay = it },
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = cancelacionDeCobro,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
@@ -2636,7 +2642,8 @@ class PaymentFlowViewModelTest {
     }
 
     /**
-     * P1 · La base de la propina NUNCA lleva IVA — decision del founder, 2026-09-18.
+     * P1 · La base de la propina no lleva el impuesto cobrado APARTE (`orderTaxPercent`). Con el precio con IVA incluido
+     * la base es el total, como en el mercado mexicano (founder, 18-oct-2026; antes, 18-sep, se había dicho «sin IVA»).
      *
      * El ajuste `includeTaxInTipBase` se retiro: era una convencion fiscal de EE.UU. (alla el
      * impuesto se suma aparte y el cliente lo ve), no de Mexico, donde el precio en pantalla ya
@@ -2645,7 +2652,7 @@ class PaymentFlowViewModelTest {
      * distintas y el dashboard no lo veia.
      *
      * Esta prueba es el candado: aunque llegue un ajuste viejo en `true` —de un cache en disco de
-     * una version anterior, o del servidor algun dia— la base se calcula SIN IVA.
+     * una version anterior, o del servidor algun dia— la base no suma el impuesto aparte.
      */
     @Test
     fun `P1 la base de propina excluye el IVA aunque venga el ajuste viejo encendido`() {
@@ -2672,6 +2679,69 @@ class PaymentFlowViewModelTest {
         viewModel.startPaymentFlow(cart)
 
         assertEquals(1000, viewModel.currentTipPercentageBaseCents())
+    }
+
+    /**
+     * P1 · El «10 %» del cliente es el mismo que el del cajero: una sola base (`currentTipPercentageBaseCents`) y una
+     * sola fórmula. Antes la pantalla del cliente calculaba `amountCents * percent / 100` con su propia base, y con
+     * impuesto cobrado aparte el mismo toque cobraba distinto. Ahora el ViewModel manda los montos ya calculados y la
+     * pantalla no hace aritmética.
+     */
+    @Test
+    fun `P1 el 10 por ciento del cliente es el del cajero con IVA en el carrito`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = true, tipSuggestions = listOf(10, 15))
+        val cart = CartState(
+            items = listOf(CartItem(id = "l1", type = CartItemType.ProductItem("p1"), name = "Producto", unitPrice = 8621)),
+            orderTaxPercent = 16,
+        )
+        viewModel.startPaymentFlow(cart)
+
+        val tip = customerDisplay.content.value as CustomerContent.Tip
+        val base = viewModel.currentTipPercentageBaseCents()
+        assertNotEquals("el carrito debe llevar IVA", tip.amountCents, base)
+        assertEquals(listOf(10, 15), tip.options.map { it.percent })
+        assertEquals(tipCentsForPercent(base, 10), tip.options[0].tipCents)
+        assertEquals(tipCentsForPercent(base, 15), tip.options[1].tipCents)
+
+        // El toque del cliente llega a submitTip (CustomerDisplayState.onTipPicked → submitTip) con el monto del ViewModel.
+        viewModel.submitTip(tip.options[0].tipCents)
+        val next = viewModel.state.value as PaymentFlowState.SelectingPaymentMethod
+        assertEquals(tip.amountCents + tipCentsForPercent(base, 10), next.amount)
+    }
+
+    @Test
+    fun `tipCentsForPercent trunca igual que el cajero de hoy`() {
+        assertEquals(862, tipCentsForPercent(8621, 10)) // 862.1 → 862
+        assertEquals(1293, tipCentsForPercent(8621, 15)) // 1293.15 → 1293
+        assertEquals(0, tipCentsForPercent(0, 20))
+    }
+
+    @Test
+    fun `tipCentsForPercent no se desborda en una venta grande`() {
+        // Valores escritos a mano. Antes: 50,000,000 × 90 se desbordaba en Int y daba 2,050,327 ($20,503.27).
+        assertEquals(45_000_000, tipCentsForPercent(50_000_000, 90)) // $500,000.00 × 90 % = $450,000.00
+        // Primer monto (en centavos) cuyo × 100 ya no cabe en Int: antes daba una propina NEGATIVA.
+        assertEquals(21_474_837, tipCentsForPercent(21_474_837, 100))
+        assertEquals(21_474_836, tipCentsForPercent(21_474_836, 100)) // el último que sí cabía: sigue igual
+    }
+
+    @Test
+    fun `tipCentsForPercent cerca del maximo de Int trunca y nunca da negativo`() {
+        val max = Int.MAX_VALUE // 2,147,483,647
+        assertEquals(1_932_735_282, tipCentsForPercent(max, 90)) // 1,932,735,282.3 → trunca
+        assertEquals(1_073_741_823, tipCentsForPercent(max, 50)) // 1,073,741,823.5 → trunca
+        assertEquals(max, tipCentsForPercent(max, 100))
+        // El editor del cajero deja capturar hasta 999 %: lo que ya no cabe topa en Int.MAX_VALUE, no se envuelve.
+        assertEquals(max, tipCentsForPercent(max, 999))
+    }
+
+    @Test
+    fun `tipCentsForPercent en montos normales da lo mismo que siempre`() {
+        assertEquals(1851, tipCentsForPercent(12_345, 15)) // $123.45 × 15 % = $18.5175 → $18.51
+        assertEquals(1234, tipCentsForPercent(12_345, 10)) // 1234.5 → 1234
+        assertEquals(0, tipCentsForPercent(1, 10)) // 0.1 → 0
+        assertEquals(10_000_000, tipCentsForPercent(100_000_000, 10)) // $1,000,000 × 10 %
     }
 
     @Test
@@ -4501,6 +4571,105 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue("otra apertura es otro cobro: $primero → ${viewModel.state.value}", primero != viewModel.state.value)
+    }
+
+    // ── Los ajustes de un cobro se copian al empezarlo (pantalla del cliente F2, Task 4.2) ──────
+    //
+    // Desde la 4.1b el poll refresca los ajustes en segundo plano (y también ON_RESUME y la reconexión). Si el cobro los
+    // leyera vivos, un refresco a media venta cambiaría los pasos (calificación/propina) o los porcentajes de la propina
+    // con el cliente ya frente a ellos. Se copian al arrancar el cobro; el refresco sólo cuenta para el SIGUIENTE.
+
+    @Test
+    fun `un refresco a media venta no cambia los pasos`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true)
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        assertTrue("montaje: pide calificación", viewModel.state.value is PaymentFlowState.CollectingRating)
+
+        // Llega el refresco: el negocio apagó las dos pantallas.
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = false)
+        viewModel.submitRating(5)
+
+        val estado = viewModel.state.value
+        assertTrue("este cobro sigue con sus pasos: pide propina, fue $estado", estado is PaymentFlowState.CollectingTip)
+    }
+
+    @Test
+    fun `un refresco a media venta no cambia los porcentajes`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true, tipSuggestions = listOf(10))
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true, tipSuggestions = listOf(5))
+        viewModel.submitRating(5)
+
+        val tip = customerDisplay.content.value as CustomerContent.Tip
+        assertEquals("el cliente ve los porcentajes con que empezó el cobro", listOf(10), tip.options.map { it.percent })
+        assertEquals(tipCentsForPercent(viewModel.currentTipPercentageBaseCents(), 10), tip.options[0].tipCents)
+        // La hoja del cajero (`PaymentFlowScreen`) lee `viewModel.settings.tipSuggestions`: la misma copia.
+        assertEquals(listOf(10), viewModel.settings.tipSuggestions)
+    }
+
+    @Test
+    fun `el siguiente cobro usa lo nuevo`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = true, showTipScreen = true, tipSuggestions = listOf(10))
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = true, tipSuggestions = listOf(5))
+
+        // Volver de otra pestaña (misma apertura) es el MISMO cobro: conserva su copia.
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-1")
+        assertTrue(viewModel.state.value is PaymentFlowState.CollectingRating)
+        assertEquals(listOf(10), viewModel.settings.tipSuggestions)
+
+        // Un «Cobrar» nuevo toma copia nueva.
+        viewModel.startPaymentFlow(cartConOtroProducto(), apertura = "apertura-2")
+
+        val estado = viewModel.state.value
+        assertTrue("el cobro nuevo salta la calificación, fue $estado", estado is PaymentFlowState.CollectingTip)
+        val tip = customerDisplay.content.value as CustomerContent.Tip
+        assertEquals(listOf(5), tip.options.map { it.percent })
+        assertEquals(listOf(5), viewModel.settings.tipSuggestions)
+    }
+
+    // ── «Ofrecer recibo» sale de la copia del cobro (pantalla del cliente F2, Task 4.4) ──────
+
+    @Test
+    fun `el gracias lleva offerReceipt de la copia del cobro`() = runTest {
+        // El «Gracias» vuelve solo al reposo a los 30 s y `advanceUntilIdle` se los salta: se guarda lo que vio el cliente.
+        val vistos = mutableListOf<CustomerContent>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            customerDisplay.content.collect { vistos += it }
+        }
+        fun ultimoGracias() = vistos.filterIsInstance<CustomerContent.Done>().last()
+
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = false, showReceiptScreen = false)
+        viewModel.startPaymentFlow(cartConImporteTecleado(), apertura = "apertura-1")
+
+        // Llega el refresco a media venta: el negocio prende «Ofrecer recibo». Sólo cuenta para el SIGUIENTE cobro.
+        every { tpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings(showReviewScreen = false, showTipScreen = false, showReceiptScreen = true)
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertTrue("montaje: el cobro terminó", viewModel.state.value is PaymentFlowState.Success)
+        assertFalse("el cliente no ve el envío: la copia del cobro lo traía apagado", ultimoGracias().offerReceipt)
+        // La caja (`PaymentFlowScreen`) pasa `viewModel.settings.showReceiptScreen`: la misma copia.
+        assertFalse(viewModel.settings.showReceiptScreen)
+
+        // Un «Cobrar» nuevo toma lo nuevo.
+        val antes = vistos.filterIsInstance<CustomerContent.Done>().size
+        viewModel.startPaymentFlow(cartConImporteTecleado(), apertura = "apertura-2")
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertEquals("montaje: un gracias más", antes + 1, vistos.filterIsInstance<CustomerContent.Done>().size)
+        assertTrue(ultimoGracias().offerReceipt)
+        assertTrue(viewModel.settings.showReceiptScreen)
     }
 
     /** Y cuando el aviso tocado ES la libreta, «Ya la canté» la resuelve y cierra sus entregas (venue + orden + plan). */

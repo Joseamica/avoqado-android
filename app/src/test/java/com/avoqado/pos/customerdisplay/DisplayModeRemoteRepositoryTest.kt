@@ -411,6 +411,367 @@ class DisplayModeRemoteRepositoryTest {
         assertEquals("stop", observed?.message)
     }
 
+    // ── El sobre del poll (F2, Task 1.2): huellas, capacidad y «repórtame» viajan aunque no haya solicitud ──
+
+    @Test
+    fun `sin solicitud conserva huellas capacidad y requested`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"request\":null," +
+                    "\"fingerprints\":{\"customerDisplay\":\"$HUELLA_A\",\"settings\":\"$HUELLA_B\"," +
+                    "\"promotions\":\"$HUELLA_C\"}," +
+                    "\"capabilities\":{\"customerDisplayDesign\":2}," +
+                    "\"capabilityReport\":{\"requested\":true}}}",
+            ),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.NoRequest(
+                "t1",
+                PollSignals(PollFingerprints(HUELLA_A, HUELLA_B), designCapability = 2, capabilityReportRequested = true),
+            ),
+            repository.fetchDisplayModeRequest("venue-1"),
+        )
+    }
+
+    @Test
+    fun `huella omitida queda null y no inventa nada`() = runTest {
+        server.enqueue(
+            MockResponse().setBody("{\"data\":{\"terminalId\":\"t1\",\"request\":null,\"fingerprints\":{}}}"),
+        )
+
+        val result = repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.NoRequest
+
+        assertNull(result.signals.fingerprints.customerDisplay)
+        assertNull(result.signals.fingerprints.settings)
+    }
+
+    @Test
+    fun `huella que no es de 32 hex cuenta como omitida`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"request\":null," +
+                    "\"fingerprints\":{\"customerDisplay\":\"${HUELLA_A.uppercase()}\",\"settings\":\"abc\"}}}",
+            ),
+        )
+
+        val result = repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.NoRequest
+
+        assertEquals(PollFingerprints(), result.signals.fingerprints)
+    }
+
+    @Test
+    fun `servidor viejo sin sobre`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"data\":{\"terminalId\":\"t1\",\"request\":null}}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.NoRequest("t1", PollSignals()),
+            repository.fetchDisplayModeRequest("venue-1"),
+        )
+    }
+
+    @Test
+    fun `bloque de huellas roto no tumba la solicitud`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"fingerprints\":\"basura\"," +
+                    "\"capabilities\":[1],\"capabilityReport\":{\"requested\":\"si\"}," +
+                    "\"request\":{\"requestId\":\"r1\",\"desiredInverted\":true," +
+                    "\"requestedAt\":\"2026-08-29T17:00:00Z\",\"expiresAt\":\"2026-08-29T17:05:00Z\"}}}",
+            ),
+        )
+
+        val result = repository.fetchDisplayModeRequest("venue-1")
+
+        assertTrue(result is DisplayModeRemoteOutcome.Success)
+        val binding = (result as DisplayModeRemoteOutcome.Success).data
+        assertEquals("r1", binding.request.requestId)
+        assertTrue(binding.request.desiredInverted)
+        assertEquals(PollSignals(), binding.signals)
+    }
+
+    @Test
+    fun `con solicitud el sobre tambien llega`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"fingerprints\":{\"settings\":\"$HUELLA_B\"}," +
+                    "\"capabilities\":{\"customerDisplayDesign\":1},\"capabilityReport\":{\"requested\":false}," +
+                    "\"request\":{\"requestId\":\"r1\",\"desiredInverted\":false," +
+                    "\"requestedAt\":\"2026-08-29T17:00:00Z\",\"expiresAt\":\"2026-08-29T17:05:00Z\"}}}",
+            ),
+        )
+
+        val binding = (repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.Success).data
+
+        assertEquals(PollSignals(PollFingerprints(settings = HUELLA_B), designCapability = 1), binding.signals)
+    }
+
+    @Test
+    fun `capacidad de diseno cero o negativa cuenta como no anunciada`() = runTest {
+        for (capacidad in listOf(0, -1)) {
+            server.enqueue(
+                MockResponse().setBody(
+                    "{\"data\":{\"terminalId\":\"t1\",\"capabilities\":{\"customerDisplayDesign\":$capacidad}," +
+                        "\"request\":{\"requestId\":\"r1\",\"desiredInverted\":false," +
+                        "\"requestedAt\":\"2026-08-29T17:00:00Z\",\"expiresAt\":\"2026-08-29T17:05:00Z\"}}}",
+                ),
+            )
+
+            val binding = (repository.fetchDisplayModeRequest("venue-1") as DisplayModeRemoteOutcome.Success).data
+
+            assertNull(binding.signals.designCapability)
+        }
+    }
+
+    // ── Reporte de capacidades v1 (F2, Task 1.3): versión de diseño e instalación, sólo cuando se mandan ──
+
+    @Test
+    fun `sin diseno el cuerpo es el de hoy`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        repository.reportCapabilities("venue-1", DisplayCapabilitySnapshot(present = true, invertible = false))
+
+        assertEquals(
+            "{\"customerDisplay\":{\"present\":true,\"invertible\":false},\"displayModeProtocolVersion\":1}",
+            server.takeRequest(1, TimeUnit.SECONDS)!!.body.readUtf8(),
+        )
+    }
+
+    @Test
+    fun `con diseno manda version e instalacion`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        val result = repository.reportCapabilities(
+            venueId = "venue-1",
+            snapshot = DisplayCapabilitySnapshot(present = true, invertible = true),
+            design = DesignReport(designVersion = 1, installationId = INSTALACION),
+        )
+
+        assertEquals(DisplayModeRemoteOutcome.Success(Unit), result)
+        val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/device-capabilities", request.path)
+        assertEquals(
+            "{\"customerDisplay\":{\"present\":true,\"invertible\":true},\"displayModeProtocolVersion\":1," +
+                "\"customerDisplayDesignVersion\":1,\"installationId\":\"$INSTALACION\"}",
+            request.body.readUtf8(),
+        )
+    }
+
+    @Test
+    fun `409 de carrera es reintentable`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(409)
+                .setBody("{\"code\":\"CUSTOMER_DISPLAY_INSTALLATION_RACE\",\"message\":\"Otra instalación\"}"),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Retryable(409),
+            repository.reportCapabilities(
+                "venue-1",
+                DisplayCapabilitySnapshot(present = true, invertible = false),
+                DesignReport(1, INSTALACION),
+            ),
+        )
+    }
+
+    @Test
+    fun `503 es reintentable`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(503).setBody("{}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Retryable(503),
+            repository.reportCapabilities(
+                "venue-1",
+                DisplayCapabilitySnapshot(present = true, invertible = false),
+                DesignReport(1, INSTALACION),
+            ),
+        )
+    }
+
+    @Test
+    fun `400 sigue siendo Rejected`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(400)
+                .setBody("{\"code\":\"VALIDATION_ERROR\",\"message\":\"La versión de diseño y la instalación van juntas\"}"),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(400, "VALIDATION_ERROR", "La versión de diseño y la instalación van juntas"),
+            repository.reportCapabilities(
+                "venue-1",
+                DisplayCapabilitySnapshot(present = true, invertible = false),
+                DesignReport(1, INSTALACION),
+            ),
+        )
+    }
+
+    @Test
+    fun `otro 409 del reporte sigue siendo Rejected`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("{\"code\":\"OTRA_COSA\"}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(409, "OTRA_COSA", null),
+            repository.reportCapabilities("venue-1", DisplayCapabilitySnapshot(present = true, invertible = false)),
+        )
+    }
+
+    // ── La ficha del aparato (F2, Task 1.4): GET /customer-display ──
+
+    @Test
+    fun `200 trae la ficha y los origenes`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"imageOrigins\":[\"https://storage.googleapis.com\"]," +
+                    "\"ficha\":{\"schemaVersion\":1,\"fingerprint\":\"$HUELLA_A\",\"theme\":\"DARK\"," +
+                    "\"accent\":{\"custom\":true,\"color\":\"#1A7F5A\",\"on\":\"#FFFFFF\"},\"logo\":null," +
+                    "\"welcomeText\":\"Hola\",\"thanksText\":null,\"slides\":[],\"slideSeconds\":6," +
+                    "\"promotionCards\":{\"enabled\":false},\"poweredBy\":true}}}",
+            ),
+        )
+
+        val result = repository.fetchCustomerDisplay("venue /café")
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(
+                CustomerDisplayPayload(
+                    terminalId = "t1",
+                    ficha = FichaDto(
+                        schemaVersion = 1,
+                        fingerprint = HUELLA_A,
+                        theme = "DARK",
+                        accent = AccentDto(custom = true, color = "#1A7F5A", on = "#FFFFFF"),
+                        welcomeText = "Hola",
+                    ),
+                    imageOrigins = listOf("https://storage.googleapis.com"),
+                ),
+            ),
+            result,
+        )
+        val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("GET", request.method)
+        assertEquals("/api/v1/mobile/venues/venue%20%2Fcaf%C3%A9/customer-display", request.path)
+        assertEquals("1", request.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+    }
+
+    @Test
+    fun `ficha con otra forma y schema 2 llega con su esquema y su huella`() = runTest {
+        // Un esquema futuro puede cambiar el TIPO de un campo (aquí `theme` deja de ser texto): decodificarla directo en
+        // FichaDto tumbaba el 2xx a Retryable para siempre y el sync nunca podía acusar `unsupportedSchema`.
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"terminalId\":\"t1\",\"imageOrigins\":[\"https://storage.googleapis.com\"]," +
+                    "\"ficha\":{\"schemaVersion\":2,\"fingerprint\":\"$HUELLA_A\",\"theme\":{\"mode\":\"DARK\"}," +
+                    "\"welcomeText\":[\"Hola\"]}}}",
+            ),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(
+                CustomerDisplayPayload(
+                    terminalId = "t1",
+                    ficha = FichaDto(schemaVersion = 2, fingerprint = HUELLA_A),
+                    imageOrigins = listOf("https://storage.googleapis.com"),
+                ),
+            ),
+            repository.fetchCustomerDisplay("venue-1"),
+        )
+    }
+
+    @Test
+    fun `404 DEVICE_NOT_FOUND llega como Rejected 404`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(404)
+                .setBody("{\"code\":\"DEVICE_NOT_FOUND\",\"message\":\"Dispositivo POS Android no encontrado.\"}"),
+        )
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(404, "DEVICE_NOT_FOUND", "Dispositivo POS Android no encontrado."),
+            repository.fetchCustomerDisplay("venue-1"),
+        )
+    }
+
+    @Test
+    fun `500 de la ficha es reintentable`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(500).setBody("{}"))
+
+        assertEquals(DisplayModeRemoteOutcome.Retryable(500), repository.fetchCustomerDisplay("venue-1"))
+    }
+
+    // ── El acuse de la pantalla del cliente (F2, Task 1.5): PUT /customer-display/ack ──
+
+    private fun acuse() = CustomerDisplayAckBody(
+        installationId = INSTALACION,
+        fingerprint = HUELLA_A,
+        seq = 7,
+        storedAt = "2026-10-18T12:00:00.000Z",
+        shownAt = null,
+        surface = null,
+        imagesReady = 0,
+        imagesPending = 1,
+        imagesFailed = 0,
+        unsupportedSchema = false,
+    )
+
+    @Test
+    fun `manda el cuerpo exacto con nulls`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"data\":{\"accepted\":true,\"current\":true}}"))
+
+        val result = repository.acknowledgeCustomerDisplay("venue /café", acuse())
+
+        assertEquals(DisplayModeRemoteOutcome.Success(CustomerDisplayAckResponse(accepted = true, current = true)), result)
+        val request = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/mobile/venues/venue%20%2Fcaf%C3%A9/customer-display/ack", request.path)
+        assertEquals(
+            "{\"installationId\":\"$INSTALACION\",\"fingerprint\":\"$HUELLA_A\",\"seq\":7," +
+                "\"storedAt\":\"2026-10-18T12:00:00.000Z\",\"shownAt\":null,\"surface\":null," +
+                "\"imagesReady\":0,\"imagesPending\":1,\"imagesFailed\":0,\"unsupportedSchema\":false}",
+            request.body.readUtf8(),
+        )
+        assertEquals("1", request.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+    }
+
+    @Test
+    fun `decodifica acuse guardado pero no vigente y acuse rechazado`() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                "{\"data\":{\"accepted\":true,\"current\":false,\"currentFingerprint\":\"$HUELLA_B\"}}",
+            ),
+        )
+        server.enqueue(MockResponse().setBody("{\"data\":{\"accepted\":false,\"reason\":\"STALE_SEQ\"}}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(
+                CustomerDisplayAckResponse(accepted = true, current = false, currentFingerprint = HUELLA_B),
+            ),
+            repository.acknowledgeCustomerDisplay("venue-1", acuse()),
+        )
+        assertEquals(
+            DisplayModeRemoteOutcome.Success(CustomerDisplayAckResponse(accepted = false, reason = "STALE_SEQ")),
+            repository.acknowledgeCustomerDisplay("venue-1", acuse()),
+        )
+    }
+
+    @Test
+    fun `503 ACK_BUSY es reintentable`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(503).setBody("{\"code\":\"CUSTOMER_DISPLAY_ACK_BUSY\"}"),
+        )
+
+        assertEquals(DisplayModeRemoteOutcome.Retryable(503), repository.acknowledgeCustomerDisplay("venue-1", acuse()))
+    }
+
+    @Test
+    fun `404 del acuse es Rejected 404`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404).setBody("{\"code\":\"DEVICE_NOT_FOUND\"}"))
+
+        assertEquals(
+            DisplayModeRemoteOutcome.Rejected(404, "DEVICE_NOT_FOUND", null),
+            repository.acknowledgeCustomerDisplay("venue-1", acuse()),
+        )
+    }
+
     private fun repositoryWith(client: OkHttpClient): DisplayModeRemoteRepository =
         DisplayModeRemoteRepository(client) {
             server.url("/api/v1").toString().removeSuffix("/")
@@ -437,5 +798,12 @@ class DisplayModeRemoteRepositoryTest {
         override fun contentLength(): Long = -1L
 
         override fun source(): BufferedSource = trackedSource
+    }
+
+    private companion object {
+        const val HUELLA_A = "0123456789abcdef0123456789abcdef"
+        const val HUELLA_B = "fedcba9876543210fedcba9876543210"
+        const val HUELLA_C = "00000000000000000000000000000000"
+        const val INSTALACION = "3f2a9c1e-7b4d-4e8a-9f10-2c3d4e5f6a7b"
     }
 }

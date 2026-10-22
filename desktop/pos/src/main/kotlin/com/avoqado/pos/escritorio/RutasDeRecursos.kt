@@ -10,5 +10,7 @@ import com.avoqado.pos.R
 fun rutaDeRecurso(id: Int): String? = when (id) {
     R.drawable.avoqado_logo_mark -> "android-res/drawable-nodpi/avoqado_logo_mark.png"
     R.drawable.ic_whatsapp -> "android-res/drawable/ic_whatsapp.xml"
+    R.drawable.avoqado_logo_inline_black -> "android-res/drawable-nodpi/avoqado_logo_inline_black.png"
+    R.drawable.avoqado_logo_inline_white -> "android-res/drawable-nodpi/avoqado_logo_inline_white.png"
     else -> null
 }

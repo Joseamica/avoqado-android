@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -54,10 +55,17 @@ sealed interface CustomerContent {
     /** Las estrellas: el cliente califica en SU pantalla. */
     data class Rating(val amountCents: Int) : CustomerContent
 
-    /** Propina: el cliente elige en SU pantalla. */
+    /**
+     * Propina: el cliente elige en SU pantalla.
+     *
+     * 🔴 `options` lleva el monto YA calculado por el ViewModel (la misma base del cajero,
+     * `currentTipPercentageBaseCents`): la pantalla sólo pinta el porcentaje y entrega `tipCents`. Antes calculaba
+     * aquí `amountCents * percent / 100` con su propia base: dos fórmulas para el mismo dinero, que se separaban
+     * cuando el impuesto se cobraba aparte.
+     */
     data class Tip(
         val amountCents: Int,
-        val suggestions: List<Int>,
+        val options: List<TipOption>,
         val selectedTipCents: Int?,
     ) : CustomerContent
 
@@ -85,9 +93,32 @@ sealed interface CustomerContent {
         val etiqueta: String = "Total",
     ) : CustomerContent
 
-    /** Gracias + QR del recibo digital. */
-    data class Done(val totalCents: Int, val receiptUrl: String?) : CustomerContent
+    /**
+     * Gracias + QR del recibo digital. [offerReceipt] = «Ofrecer recibo» de la copia del cobro: apagado, sólo el gracias y
+     * el total (sin QR ni envío).
+     */
+    data class Done(val totalCents: Int, val receiptUrl: String?, val offerReceipt: Boolean = true) : CustomerContent
 }
+
+/** Dónde se dibuja la pantalla del cliente; viaja en el acuse (`surface`) con estos mismos valores que acepta el server. */
+const val SURFACE_PRESENTATION = "presentation"
+/** Pantallas invertidas: la ventana del cliente es una Activity en la otra pantalla. */
+const val SURFACE_ACTIVITY = "activity"
+/** El segundo monitor del POS de Windows. */
+const val SURFACE_WINDOW = "window"
+/** La cara del cliente es el kiosco: la ficha no se dibuja (el acuse va sin `shownAt`). */
+const val SURFACE_KIOSK = "kiosk"
+
+/** Una sugerencia de propina: el porcentaje a mostrar y los centavos que cobra (ya calculados). */
+data class TipOption(val percent: Int, val tipCents: Int)
+
+/**
+ * El diseño de la pantalla del cliente ya listo para pintar: la ficha y, si trae logo, el archivo local (ya verificado).
+ * `logoStamp` = `lastModified` del archivo: un logo legado revalidado con 200 se reescribe en la MISMA ruta, y sin la marca el
+ * diseño nuevo sería igual al viejo (el StateFlow no emitiría y se seguiría pintando el bitmap anterior). Un 304 no toca el
+ * archivo: misma marca, sin emisión de sobra.
+ */
+data class AppliedDesign(val ficha: Ficha, val logoFile: File?, val logoStamp: Long = 0L)
 
 /**
  * Canal único hacia la pantalla del cliente. Los ViewModels de pantalla
@@ -147,9 +178,17 @@ class CustomerDisplayState @Inject constructor() {
     private val _customerCapturesInput = MutableStateFlow(false)
     val customerCapturesInput: StateFlow<Boolean> = _customerCapturesInput.asStateFlow()
 
-    fun setPresenting(value: Boolean) {
+    /**
+     * La superficie montada AHORA ([SURFACE_PRESENTATION], [SURFACE_ACTIVITY] o [SURFACE_WINDOW]); `null` = ninguna. La
+     * observa el acuse «mostrado» de [CustomerDisplaySync]: dice en qué superficie se dibujó el diseño.
+     */
+    private val _presentingSurface = MutableStateFlow<String?>(null)
+    val presentingSurface: StateFlow<String?> = _presentingSurface.asStateFlow()
+
+    fun setPresenting(value: Boolean, surface: String = SURFACE_PRESENTATION) {
         presenting = value
         _isPresenting.value = value
+        _presentingSurface.value = if (value) surface else null
         recompute()
     }
 
@@ -229,6 +268,40 @@ class CustomerDisplayState @Inject constructor() {
         _invertUnsupported.value = value
     }
 
+    /**
+     * El diseño que el negocio configuró (F2). 🔴 Un diseño nuevo NUNCA reemplaza al actual delante del cliente a media
+     * venta: [offerDesign] lo aplica ya sólo en reposo (`Idle`); si no, queda pendiente y se promueve en el siguiente paso
+     * a `Idle` (ver [promotePendingDesign]). Mismo criterio que la propina y el upsell: lo que ve el cliente no cambia solo.
+     */
+    private val _design = MutableStateFlow<AppliedDesign?>(null)
+    val design: StateFlow<AppliedDesign?> = _design.asStateFlow()
+
+    // `hasPendingDesign` distingue «nada pendiente» de «pendiente: quitar el diseño» (`offerDesign(null)`).
+    // ponytail: sin candado; se llama desde Main como el resto de este estado. Si algún día se ofrece desde otro hilo, sincronizar.
+    private var pendingDesign: AppliedDesign? = null
+    private var hasPendingDesign = false
+
+    /** Ofrece un diseño: ya si el cliente está en reposo; si no, espera (el último ofrecido gana). */
+    fun offerDesign(next: AppliedDesign?) {
+        pendingDesign = next
+        hasPendingDesign = true
+        if (_content.value is CustomerContent.Idle) promotePendingDesign()
+    }
+
+    /** Quita el diseño YA (también el pendiente): no hay nada que proteger de un diseño que dejó de existir. */
+    fun clearDesign() {
+        pendingDesign = null
+        hasPendingDesign = false
+        _design.value = null
+    }
+
+    private fun promotePendingDesign() {
+        if (!hasPendingDesign) return
+        _design.value = pendingDesign
+        pendingDesign = null
+        hasPendingDesign = false
+    }
+
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */
     var onRatingPicked: ((Int) -> Unit)? = null
     var onTipPicked: ((Int) -> Unit)? = null
@@ -269,6 +342,7 @@ class CustomerDisplayState @Inject constructor() {
 
     fun show(content: CustomerContent) {
         _content.value = content
+        if (content is CustomerContent.Idle) promotePendingDesign()
         // Cualquier cambio cancela el timer previo. Si lo nuevo es "Gracias",
         // se programa el regreso al reposo tras un rato (suficiente para leer el
         // QR del recibo); una nueva venta lo interrumpe antes con su carrito.
@@ -286,6 +360,7 @@ class CustomerDisplayState @Inject constructor() {
         revertJob = timerScope.launch {
             kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
             _content.value = CustomerContent.Idle
+            promotePendingDesign()
         }
     }
 
@@ -316,11 +391,13 @@ class CustomerDisplayState @Inject constructor() {
                 totalCents = state.totalCents,
             )
         }
+        if (_content.value is CustomerContent.Idle) promotePendingDesign()
     }
 
     fun idle() {
         revertJob?.cancel()
         _content.value = CustomerContent.Idle
+        promotePendingDesign()
         onRatingPicked = null
         onTipPicked = null
     }

@@ -612,7 +612,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     /**
      * Espejo del flujo de pago a la pantalla del cliente. Traduce estado →
-     * contenido; NO decide nada ni calcula montos (llegan ya resueltos).
+     * contenido; NO decide nada y los montos llegan ya resueltos (la propina, con la misma cuenta que el cajero).
      */
     private fun mirrorToCustomerDisplay(st: PaymentFlowState) {
         customerDisplay.show(
@@ -623,7 +623,12 @@ class PaymentFlowViewModel @Inject constructor(
                 is PaymentFlowState.CollectingTip ->
                     com.avoqado.pos.customerdisplay.CustomerContent.Tip(
                         amountCents = st.amount,
-                        suggestions = settings.tipSuggestions,
+                        // Montos ya calculados sobre la MISMA base que ve el cajero (sin IVA): ver tipCentsForPercent.
+                        options = currentTipPercentageBaseCents().let { base ->
+                            settings.tipSuggestions.map {
+                                com.avoqado.pos.customerdisplay.TipOption(it, tipCentsForPercent(base, it))
+                            }
+                        },
                         selectedTipCents = null,
                     )
 
@@ -655,6 +660,8 @@ class PaymentFlowViewModel @Inject constructor(
                             st.receiptUrl,
                             st.receiptAccessKey,
                         ),
+                        // «Ofrecer recibo» de la copia del cobro (`settings` = `flowSettings`), igual que la caja.
+                        offerReceipt = settings.showReceiptScreen,
                     )
 
                 // Le toca al cajero: el cliente ve su total, sin nada tocable.
@@ -1303,7 +1310,15 @@ class PaymentFlowViewModel @Inject constructor(
         splitCustomAmountCents = customAmountCents
     }
 
-    val settings: TpvSettings get() = tpvSettingsRepository.getCurrentSettings()
+    /**
+     * 🔴 Copia de los ajustes del cobro en curso, tomada al arrancarlo (`startPaymentFlow`). El poll, ON_RESUME y la
+     * reconexión refrescan los ajustes en segundo plano: leídos vivos, un refresco a media venta cambiaba los pasos
+     * (calificación/propina) o los porcentajes con el cliente ya frente a ellos. Un refresco sólo cuenta para el
+     * SIGUIENTE cobro. Es local: sin red funciona igual.
+     */
+    private var flowSettings: TpvSettings? = null
+
+    val settings: TpvSettings get() = flowSettings ?: tpvSettingsRepository.getCurrentSettings()
 
     private fun selectedStaffId(): String {
         return cartState?.selectedStaffId?.takeIf { it.isNotBlank() }
@@ -1339,6 +1354,8 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
         aperturaEnCurso = apertura
+        // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
+        flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
         cobroDeValesId = java.util.UUID.randomUUID().toString()
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
@@ -4223,7 +4240,11 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /**
-     * La base del porcentaje de propina va SIEMPRE sin IVA. Decision del founder, 2026-09-18.
+     * La base del porcentaje de propina es el TOTAL de la cuenta, con el IVA que ya trae el precio (founder, 18-oct-2026,
+     * tras comparar con el mercado: en México la propina se calcula sobre el total, y las terminales de cobro —Mercado
+     * Pago, Netpay— sólo ven el total). El 18-sep se había decidido «sin IVA», pero esta función sólo resta el impuesto
+     * cobrado APARTE (`cart.taxCents` = `orderTaxPercent`, que hoy nadie fija): con el precio con IVA incluido nunca lo
+     * quitó. Se conserva esa resta para el impuesto aparte; no extraer el IVA incluido sin una decisión nueva.
      *
      * Antes esto lo decidia el ajuste `includeTaxInTipBase`, que se retiro por dos razones: era
      * una convencion fiscal de EE.UU. —alla el impuesto se suma aparte y el cliente lo ve; aca el
