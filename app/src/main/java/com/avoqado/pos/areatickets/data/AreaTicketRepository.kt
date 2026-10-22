@@ -103,6 +103,17 @@ class AreaTicketSession @Inject constructor(
         venueId = currentVenueId
     }
 
+    /**
+     * 🔴 DINERO. La orden [orderId] de esta sesión ya tiene un abono, aunque esta copia no lo traiga (su relectura tras cobrar
+     * pudo fallar). Así el carrito ya no le proyecta los vales (D3, Codex r1). La siguiente respuesta del servidor la pone al día.
+     */
+    fun marcarConAbono(orderId: String) {
+        val actual = _checkout.value ?: return
+        if (actual.order?.id == orderId && actual.status != "PARTIALLY_PAID") {
+            _checkout.value = actual.copy(status = "PARTIALLY_PAID")
+        }
+    }
+
     fun createIdempotencyKey(): String = createKey
     fun materializeIdempotencyKey(): String = materializeKey
     fun persistedCheckoutId(currentVenueId: String): String? =

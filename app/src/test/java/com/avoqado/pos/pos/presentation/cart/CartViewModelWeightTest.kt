@@ -34,6 +34,7 @@ import io.mockk.coVerify
 import com.avoqado.pos.areatickets.data.AreaTicket
 import com.avoqado.pos.areatickets.data.AreaTicketArea
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
+import com.avoqado.pos.areatickets.data.AreaTicketCheckoutOrder
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
 import com.avoqado.pos.areatickets.data.AreaTicketLine
 import com.avoqado.pos.areatickets.data.AreaTicketScanData
@@ -332,4 +333,120 @@ class CartViewModelWeightTest {
         },
         totals = AreaTicketCheckoutTotals(subtotal = "0.00", discountAmount = "0.00", total = "0.00"),
     )
+
+    // MARK: - D3 de vales: tras un abono, el carrito queda en «Saldo pendiente» y la sesión no lo infla (Codex r7 AJENO #3)
+
+    private fun sesionConOrden(status: String, pagado: String) =
+        checkoutConVales("linea-a" to "50.00", "linea-b" to "100.00").copy(
+            status = status,
+            order = AreaTicketCheckoutOrder(
+                id = "orden-vales",
+                orderNumber = "AREA-9",
+                paymentStatus = "PARTIAL",
+                status = "OPEN",
+                paidAmount = pagado,
+                remainingBalance = "75.00",
+                total = "150.00",
+            ),
+        )
+
+    // Tras cobrar $75 de $150, el carrito queda en «Saldo pendiente $75». La sesión sigue viva (el servidor no deja cancelar
+    // una venta con abono) y, al volver a la pantalla, restaurarla metía TODOS los vales encima: $75 + $150 = $225.
+    @Test
+    fun `D3 tras un abono, volver a la pantalla no mete los vales encima del saldo pendiente`() = runTest {
+        val sesion = sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.restore() } returns sesion
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(7500, vm.cartState.value.totalCents)
+        assertTrue(vm.cartState.value.items.none { it.areaTicketLineId != null })
+    }
+
+    // La copia del aparato puede no saber del abono (su relectura falló tras cobrar), pero el carrito sí sabe que continúa ESA
+    // orden: tampoco se le meten los vales.
+    @Test
+    fun `D3 con la copia vieja de la sesion, el carrito que continua esa orden tampoco recibe los vales`() = runTest {
+        val vieja = sesionConOrden(status = "MATERIALIZED", pagado = "0.00")
+        every { areaTicketRepository.session.current() } returns vieja
+        coEvery { areaTicketRepository.restore() } returns vieja
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(7500, vm.cartState.value.totalCents)
+        assertTrue(vm.cartState.value.items.none { it.areaTicketLineId != null })
+    }
+
+    // El cajero dejó ese saldo y empezó otra venta: la sesión con abono que quedó viva no se mete en la venta nueva.
+    @Test
+    fun `D3 una venta nueva no recibe los vales de una sesion con abono que quedo viva`() = runTest {
+        val sesion = sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.restore() } returns sesion
+        val vm = createViewModel()
+        vm.addProduct(burger)
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+    }
+
+    // Lo de siempre sigue igual: una sesión SIN abonos se restaura con sus vales.
+    @Test
+    fun `restaurar una sesion sin abonos sigue poniendo sus vales en el carrito`() = runTest {
+        val sesion = checkoutConVales("linea-a" to "50.00", "linea-b" to "100.00")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.restore() } returns sesion
+        val vm = createViewModel()
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(listOf("linea-a", "linea-b"), vm.cartState.value.items.map { it.areaTicketLineId })
+        assertEquals(15000, vm.cartState.value.totalCents)
+    }
+
+    // Codex r1 de D3: se cobró el abono pero la relectura falló, así que la copia del aparato sigue diciendo «sin abonos». Si
+    // luego el cajero vacía el carrito (se pierde el vínculo con la orden), al empezar otra venta y volver a la pantalla
+    // regresaban los vales viejos. Ahora el carrito anota el abono en la sesión en cuanto sabe que la venta sigue con saldo.
+    @Test
+    fun `D3 con la copia vieja y el carrito vaciado, la venta nueva no recibe los vales de la orden con abono`() = runTest {
+        val sesionReal = com.avoqado.pos.areatickets.data.AreaTicketSession(mockk(relaxed = true))
+        sesionReal.update("venue-1", sesionConOrden(status = "MATERIALIZED", pagado = "0.00"))
+        every { areaTicketRepository.session } returns sesionReal
+        coEvery { areaTicketRepository.restore() } coAnswers { sesionReal.current() }
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+
+        vm.clearCart()
+        vm.addProduct(burger)
+        vm.restoreAreaTicketSession()
+        runCurrent()
+
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+    }
+
+    // Dividir OTRA venta no marca la sesión de vales: su orden es distinta y sus vales se siguen viendo.
+    @Test
+    fun `D3 dividir otra venta no marca la sesion de vales`() = runTest {
+        val sesionReal = com.avoqado.pos.areatickets.data.AreaTicketSession(mockk(relaxed = true))
+        sesionReal.update("venue-1", sesionConOrden(status = "MATERIALIZED", pagado = "0.00"))
+        every { areaTicketRepository.session } returns sesionReal
+        val vm = createViewModel()
+
+        vm.markPendingSplitOrder("otra-orden")
+
+        assertEquals("MATERIALIZED", sesionReal.current()?.status)
+    }
 }
