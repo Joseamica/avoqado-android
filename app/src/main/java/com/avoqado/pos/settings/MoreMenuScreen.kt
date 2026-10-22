@@ -1564,6 +1564,8 @@ private data class MenuEntry(
     val tierBadgeLabel: String? = null,
     /** Apagada se VE y se explica en el subtítulo: nunca desaparece en silencio. */
     val enabled: Boolean = true,
+    /** Número de pendientes junto al título (0 = sin insignia). Ej.: «Pedidos en línea» por aceptar. */
+    val badgeCount: Int = 0,
 )
 
 @Composable
@@ -1668,6 +1670,10 @@ private fun MenuRow(
                 if (entry.tierBadgeLabel != null) {
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                     TierBadge(tierLabel = entry.tierBadgeLabel)
+                }
+                if (entry.badgeCount > 0) {
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                    androidx.compose.material3.Badge { Text(if (entry.badgeCount > 99) "99+" else "${entry.badgeCount}") }
                 }
             }
             if (entry.subtitle != null) {

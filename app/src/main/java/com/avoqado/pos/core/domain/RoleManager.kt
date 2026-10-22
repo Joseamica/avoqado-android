@@ -153,6 +153,10 @@ class RoleManager @Inject constructor(
     val canViewCustomers: Boolean
         get() = hasVenuePermission("customers:read", fallbackRoles = FLOOR)
 
+    /** «Pedidos en línea» (bandeja y vigilante): `orders:read`, nombre EXACTO del servidor. Con o sin plan (R14). */
+    val canReadOnlineOrders: Boolean
+        get() = hasVenuePermission("orders:read", fallbackRoles = FLOOR)
+
     /**
      * Reportes — espejo de `reports:read` (las rutas `/mobile/venues/:id/reports`).
      *

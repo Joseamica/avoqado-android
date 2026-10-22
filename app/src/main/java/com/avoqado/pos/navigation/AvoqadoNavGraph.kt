@@ -104,6 +104,7 @@ interface FormatterEntryPoint {
     fun errorNotifier(): com.avoqado.pos.core.data.network.ErrorNotifier
     fun managerOverrideCoordinator(): com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
     fun secureStorage(): com.avoqado.pos.core.data.local.SecureStorage
+    fun vigilanteDePedidosEnLinea(): com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 }
 
 @Composable
@@ -287,6 +288,7 @@ private fun MainScaffold(
         )
     }
     val formatter = remember { entryPoint.formatter() }
+    val vigilanteDePedidos = remember { entryPoint.vigilanteDePedidosEnLinea() }
     // Los rechazos por permiso (403) eran invisibles: el botón simplemente no
     // hacía nada. Se taparon con un Toast, que en la Sunmi con pantalla de cliente
     // vuelve a ser invisible — el mismo agujero, otra forma.
@@ -384,6 +386,7 @@ private fun MainScaffold(
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
                     )
+                    com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
@@ -666,6 +669,7 @@ private fun MainScaffold(
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
                     )
+                    com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
