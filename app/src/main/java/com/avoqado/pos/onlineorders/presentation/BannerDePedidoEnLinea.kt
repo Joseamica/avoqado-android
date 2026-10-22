@@ -28,8 +28,8 @@ internal fun textoDelBanner(folios: List<String>): String = when (folios.size) {
 }
 
 /**
- * Banda global «Nuevo pedido en línea #folio» con «Ver» (abre la bandeja vía [VigilanteDePedidosEnLinea.pedirAbrirBandeja]) y
- * «Silenciar». Vive en el tope de las dos disposiciones del NavGraph, junto a los demás avisos, así se ve en CUALQUIER pantalla.
+ * Banda global «Nuevo pedido en línea #folio» con «Ver» (abre la bandeja vía [VigilanteDePedidosEnLinea.pedirAbrirBandeja]) ; la
+ * pantalla de A3 observa `bandejaSolicitada`. Vive en el tope de las dos disposiciones del NavGraph, junto a los demás avisos, así se ve en CUALQUIER pantalla.
  * Color de acento, nunca el rojo de error: un pedido nuevo es una buena noticia.
  */
 @Composable
@@ -56,7 +56,6 @@ fun BannerDePedidoEnLinea(vigilante: VigilanteDePedidosEnLinea, modifier: Modifi
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = { vigilante.silenciarHastaNuevo() }) { Text("Silenciar") }
             TextButton(onClick = { vigilante.pedirAbrirBandeja() }) { Text("Ver") }
         }
     }

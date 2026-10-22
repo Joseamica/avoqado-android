@@ -42,8 +42,10 @@ class VigilanteDePedidosEnLineaTest {
     /** El repositorio falso: cada llamada se anota (estado, comoBandeja) y responde lo que diga [respuesta]. */
     private class Falso(var respuesta: Result<Inbox>) {
         val llamadas = mutableListOf<Pair<String, Boolean>>()
+        var antes: () -> Unit = {}
         suspend fun consultar(status: String, comoBandeja: Boolean): Result<Inbox> {
             llamadas += status to comoBandeja
+            antes()
             return respuesta
         }
     }
@@ -54,6 +56,7 @@ class VigilanteDePedidosEnLineaTest {
         var tienePlan: Boolean = true,
     ) {
         var sonidos = 0
+        var venue: String? = "v1"
         lateinit var vigilante: VigilanteDePedidosEnLinea
     }
 
@@ -69,6 +72,7 @@ class VigilanteDePedidosEnLineaTest {
             tienePlan = { f.tienePlan },
             sonar = { f.sonidos++ },
             scope = backgroundScope,
+            venueActual = { f.venue },
         )
         return f
     }
@@ -155,7 +159,66 @@ class VigilanteDePedidosEnLineaTest {
         f.vigilante.onStart(owner)
         runCurrent()
         assertEquals("al volver consulta de inmediato", consultas + 1, f.falso.llamadas.size)
-        assertTrue(f.sonidos > sonidos)
+        assertTrue("tras el primer sondeo bueno vuelve a sonar", f.sonidos > sonidos)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `an order gone in the first fresh poll after resume never rings`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")))))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        f.vigilante.onStop(owner)
+        val sonidos = f.sonidos
+        // En segundo plano el pedido venció: el primer sondeo al volver ya viene vacío.
+        f.falso.respuesta = Result.success(inbox())
+        f.vigilante.onStart(owner)
+        runCurrent()
+        advanceTimeBy(20_000); runCurrent()
+        assertEquals("no suena con datos viejos", sonidos, f.sonidos)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `a field change on the same order does not add an extra ring`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")))))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals(1, f.sonidos)
+        advanceTimeBy(4_000); runCurrent()
+        assertEquals(2, f.sonidos)
+        // Mismo pedido, otro campo (cambia el folio): el sondeo de los 10 s no reinicia el compás de 4 s.
+        f.falso.respuesta = Result.success(inbox(listOf(pedido("a", folio = "99"))))
+        advanceTimeBy(4_000); runCurrent() // t = 8 s
+        assertEquals(3, f.sonidos)
+        advanceTimeBy(2_000); runCurrent() // t = 10 s: sondeo con el campo cambiado
+        assertEquals("el sondeo no da un timbre extra", 3, f.sonidos)
+        advanceTimeBy(2_000); runCurrent() // t = 12 s
+        assertEquals("sigue el compás de 4 s", 4, f.sonidos)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `a poll that returns after a venue switch is discarded`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")))))
+        f.falso.antes = { f.venue = "v2" } // la sucursal cambia mientras el sondeo va en vuelo
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertTrue("el resultado de la sucursal vieja no se guarda", f.vigilante.pendientes.value.isEmpty())
+        assertEquals(0, f.sonidos)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `double onStart does not double the polls`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.vigilante.onStart(owner)
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val alArrancar = f.falso.llamadas.size
+        advanceTimeBy(30_000); runCurrent()
+        // Tres ciclos más de 10 s: uno por ciclo, no dos.
+        assertEquals(alArrancar + 3, f.falso.llamadas.size)
         f.vigilante.onStop(owner)
     }
 
@@ -211,6 +274,18 @@ class VigilanteDePedidosEnLineaTest {
         f.falso.respuesta = Result.success(inbox(listOf(pedido("a"))))
         advanceTimeBy(10_000); runCurrent()
         assertFalse("al volver la red se apaga el aviso", f.vigilante.sinConexion.value)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `non network failure keeps last list and does not claim sinConexion`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")))))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        f.falso.respuesta = Result.failure(IllegalStateException("403"))
+        advanceTimeBy(10_000); runCurrent()
+        assertFalse("un 403 o un JSON roto no es «sin conexión»", f.vigilante.sinConexion.value)
+        assertEquals(listOf("a"), f.vigilante.pendientes.value.map { it.orderId })
         f.vigilante.onStop(owner)
     }
 

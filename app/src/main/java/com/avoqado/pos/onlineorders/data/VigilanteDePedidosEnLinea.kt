@@ -11,6 +11,7 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import java.io.IOException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -52,6 +54,8 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val tienePlan: () -> Boolean,
     private val sonar: () -> Unit,
     private val scope: CoroutineScope,
+    /** La sucursal de ahora: un sondeo que vuelve tras un cambio de sucursal se descarta. */
+    private val venueActual: () -> String? = { null },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -70,6 +74,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         tienePlan = { planManager.hasFeature("ONLINE_ORDERING") },
         sonar = { sonarAviso(contexto) },
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        venueActual = { secureStorage.venueId },
     )
 
     private val _pendientes = MutableStateFlow<List<OnlineOrder>>(emptyList())
@@ -107,17 +112,25 @@ class VigilanteDePedidosEnLinea internal constructor(
 
     private var ciclo: Job? = null
     private var sonido: Job? = null
-    private var ultimosConteos: Inbox? = null
+    @Volatile private var ultimosConteos: Inbox? = null
+
+    /** Falso desde cada [onStart] hasta el primer sondeo BUENO: con datos viejos del segundo plano no suena nada. */
+    private val sonidoListo = MutableStateFlow(false)
 
     @Synchronized
     override fun onStart(owner: LifecycleOwner) {
         ciclo?.cancel()
         sonido?.cancel()
+        sonidoListo.value = false
         sonido = scope.launch {
-            combine(_pendientes, silenciados) { lista, callados -> lista.any { it.orderId !in callados } }
-                .collectLatest { debeSonar ->
+            combine(_pendientes, silenciados, sonidoListo) { lista, callados, listo ->
+                if (listo) lista.map { it.orderId }.filter { it !in callados }.toSet() else emptySet()
+            }
+                // Sólo el CONJUNTO de pedidos que suenan reinicia el ciclo: un campo que cambia no da un timbre extra.
+                .distinctUntilChanged()
+                .collectLatest { ids ->
                     // Se cancela solo en cuanto la lista se vacía (o se silencia): el sonido para en ese instante.
-                    while (debeSonar && isActive) {
+                    while (ids.isNotEmpty() && isActive) {
                         try { sonar() } catch (e: CancellationException) { throw e } catch (e: Exception) {
                             Log.w(TAG, "No se pudo reproducir el aviso: ${e.message}")
                         }
@@ -149,12 +162,17 @@ class VigilanteDePedidosEnLinea internal constructor(
             _hayPedidosAbiertos.value = false
             return
         }
+        val venue = venueActual()
         val resultado = try {
             consultar("pending", false)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
+        }
+        if (venueActual() != venue) {
+            Log.d(TAG, "Sondeo de otra sucursal descartado")
+            return
         }
         resultado.onSuccess { inbox ->
             ultimosConteos = inbox
@@ -163,10 +181,12 @@ class VigilanteDePedidosEnLinea internal constructor(
             silenciados.value = silenciados.value intersect lista.map { it.orderId }.toSet()
             _hayPedidosAbiertos.value = inbox.pending + inbox.active > 0
             _sinConexion.value = false
+            sonidoListo.value = true
         }.onFailure {
-            // Sin red (o cualquier fallo): estado normal. Se conserva la última lista y se reintenta en el siguiente ciclo.
+            // Se conserva la última lista y se reintenta. «Sin conexión» sólo si de verdad no hay red: un 403, un 5xx, la falta
+            // de sesión o un JSON roto no son «sin conexión» (el texto mentiría).
             Log.d(TAG, "Sondeo sin respuesta: ${it.message}")
-            _sinConexion.value = true
+            if (it is IOException) _sinConexion.value = true
         }
     }
 
