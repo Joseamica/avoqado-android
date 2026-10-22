@@ -8,7 +8,7 @@
 # Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
 com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 13636ea7b3e52865dc2c57dab08bc6e8141b5de436dd7991f8567d6637e2fd39
 com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 58bea02fbd39aaa815d6d6e484956aeffe6a4e6d62b4e027f1c66979b81eb3b1
-com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: bfd0eae749c91ef16171f63282092c9fafb081c8a74c53d68bc46527dea15c33
+com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: 9048af0c6480c4e09530def9a51ddb11e90736a6504492898e330c488e8ce06b
 com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 9d77ee128ab6ce7793b8f3a68b2443d64de86b2b0ae23f20aec63b80d741d72a
 com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: de75c3d40a887602e2162cc4f3e751693fbe2b0741feda3fd7ffed67078a0a4f
 com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: c1ecb81f76934be4033d3bf67be13c9d753abd42c57e66b61feae99268f972d1

@@ -94,6 +94,7 @@ class TpvSettingsRepositoryOfflineCacheTest {
             displayModeAuthorityGate = DisplayModeAuthorityGate(),
         ).refreshSettingsForVenue(VENUE_ID)
 
+        sesion = "venue-b" // como en producción: se refresca la sucursal de la sesión
         val otherVenueRepository = TpvSettingsRepository(
             secureStorage = storage,
             client = clientThrowing(IOException("offline")),
@@ -383,8 +384,12 @@ class TpvSettingsRepositoryOfflineCacheTest {
             }
         }
 
+    /** La sucursal de la sesión: el repositorio sólo escribe lo de la sucursal en la que está la sesión (Task 4.1). */
+    @Volatile private var sesion: String = VENUE_ID
+
     private fun authenticatedStorage(): SecureStorage = mockk<SecureStorage>(relaxed = true) {
         every { accessToken } returns "access-token"
+        every { venueId } answers { sesion }
     }
 
     /**
@@ -504,8 +509,10 @@ class TpvSettingsRepositoryOfflineCacheTest {
         primeraVenue: String,
         segundaVenue: String,
     ) {
+        sesion = primeraVenue
         val primera = async(Dispatchers.Default) { repository.refreshSettingsForVenue(primeraVenue) }
         assertTrue("la primera nunca salió a la red", withContext(Dispatchers.Default) { dos.primeraEnVuelo.await(30, TimeUnit.SECONDS) })
+        sesion = segundaVenue // un cambio de sucursal cambia la sesión ANTES de refrescar (AuthRepository.switchVenue)
         repository.refreshSettingsForVenue(segundaVenue)
         dos.soltarPrimera.countDown()
         withContext(Dispatchers.Default) { withTimeout(30_000) { primera.await() } }

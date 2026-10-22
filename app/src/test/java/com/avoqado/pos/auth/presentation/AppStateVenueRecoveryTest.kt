@@ -88,6 +88,44 @@ class AppStateVenueRecoveryTest {
         assertEquals(false, appState.visibleTabs.value.isEmpty())
     }
 
+    // ── La marca del negocio en la pantalla del cliente sigue a la sesión (QA F2-1) ──
+
+    @Test
+    fun `iniciar sesion pone la marca del negocio en la pantalla del cliente sin pasar por onResume`() = runTest {
+        val pantalla = com.avoqado.pos.customerdisplay.CustomerDisplayState()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, configurarSesion = {
+            every { venueDisplayName } returns "Taquería Lupe"
+            every { venueLogo } returns "https://storage.googleapis.com/b/lupe.png"
+        })
+        appState.customerDisplayState = pantalla
+        advanceUntilIdle()
+
+        appState.onLoginSuccess()
+
+        assertEquals("Taquería Lupe", pantalla.venueName.value)
+        assertEquals("https://storage.googleapis.com/b/lupe.png", pantalla.venueLogoUrl.value)
+    }
+
+    @Test
+    fun `cerrar sesion deja la pantalla del cliente sin la marca del negocio`() = runTest {
+        var conSesion = true
+        val pantalla = com.avoqado.pos.customerdisplay.CustomerDisplayState()
+            .apply { setVenueBranding("Taquería Lupe", "https://storage.googleapis.com/b/lupe.png") }
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, configurarSesion = {
+            every { venueDisplayName } answers { if (conSesion) "Taquería Lupe" else null }
+            every { venueLogo } answers { if (conSesion) "https://storage.googleapis.com/b/lupe.png" else null }
+            every { clearSession() } answers { conSesion = false }
+        })
+        appState.customerDisplayState = pantalla
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        assertEquals(null, pantalla.venueName.value)
+        assertEquals(null, pantalla.venueLogoUrl.value)
+    }
+
     @Test
     fun `logout detiene inventory sync sin bloquear por trabajo durable separado`() = runTest {
         val events = mutableListOf<String>()
@@ -194,6 +232,72 @@ class AppStateVenueRecoveryTest {
         assertEquals("El contador debe capturar la identidad vigente tras PIN", true, contextsAtStart.drop(previousStarts).all { it })
     }
 
+    /**
+     * Task 4.1: un refresco de ajustes que sigue en vuelo cuando cambia la sesión. El login lanza el suyo (la respuesta
+     * vieja ya no puede escribir: la descarta el boleto del repositorio) y el logout suelta los ajustes y cancela.
+     */
+    private class RefrescoQueNoTermina {
+        val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var lanzados = 0
+        var cancelados = 0
+        val repo = mockk<TpvSettingsRepository>(relaxed = true) {
+            every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
+            coEvery { refreshSettings() } coAnswers {
+                lanzados++
+                try {
+                    soltar.await()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    cancelados++
+                    throw e
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `onLoginSuccess con un refresco en vuelo lanza uno nuevo`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo)
+        runCurrent()
+        assertEquals("el arranque ya dejó uno en vuelo", 1, refresco.lanzados)
+
+        appState.onLoginSuccess()
+        runCurrent()
+
+        assertEquals("el login no puede quedarse con los ajustes de la sesión anterior", 2, refresco.lanzados)
+        assertEquals(1, refresco.cancelados)
+        refresco.soltar.complete(Unit)
+    }
+
+    @Test
+    fun `onLogout limpia los ajustes y cancela el refresco`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo)
+        runCurrent()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        io.mockk.verify(exactly = 1) { refresco.repo.clearCache() }
+        assertEquals(1, refresco.cancelados)
+        refresco.soltar.complete(Unit)
+    }
+
+    @Test
+    fun `sesion expirada limpia los ajustes y cancela el refresco`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val invalidada = MutableSharedFlow<Unit>()
+        createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo, sessionInvalidated = invalidada)
+        runCurrent()
+
+        invalidada.emit(Unit) // TokenRefreshAuthenticator: el refresco del token fue rechazado de verdad
+        runCurrent()
+
+        io.mockk.verify(exactly = 1) { refresco.repo.clearCache() }
+        assertEquals(1, refresco.cancelados)
+        refresco.soltar.complete(Unit)
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
@@ -204,16 +308,20 @@ class AppStateVenueRecoveryTest {
         onTableStart: () -> Unit = {},
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
+        tpvSettingsRepository: TpvSettingsRepository? = null,
+        sessionInvalidated: MutableSharedFlow<Unit> = MutableSharedFlow(),
         printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
             mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
             },
+        configurarSesion: SecureStorage.() -> Unit = {},
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
             every { venueId } returns "venue-atole"
             every { reservationsEnabled } returns false
-            every { sessionInvalidated } returns MutableSharedFlow()
+            every { this@mockk.sessionInvalidated } returns sessionInvalidated
+            configurarSesion()
         }
         val authRepository = mockk<AuthRepository>(relaxed = true) {
             coEvery { repairCurrentVenueBinding() } coAnswers {
@@ -237,7 +345,7 @@ class AppStateVenueRecoveryTest {
         val posModeManager = mockk<PosModeManager>(relaxed = true) {
             every { currentMode } returns MutableStateFlow(PosMode.RETAIL)
         }
-        val tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true) {
+        val tpvSettingsRepository = tpvSettingsRepository ?: mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
             coEvery { refreshSettings() } coAnswers { onSettingsRefresh() }
         }

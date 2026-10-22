@@ -309,6 +309,8 @@ fun PaymentFlowScreen(
                             showCustomersSheet = true
                         },
                         renglonDelSello = renglonDelSello,
+                        // La copia de los ajustes tomada al empezar el cobro: un refresco a media venta no la mueve.
+                        offerReceipt = viewModel.settings.showReceiptScreen,
                         onDone = {
                             // También cerrar la carrera de un toque inmediato contra el
                             // LaunchedEffect: exactamente uno de los dos consume el pago.
