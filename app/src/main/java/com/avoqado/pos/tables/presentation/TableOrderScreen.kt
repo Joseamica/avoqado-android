@@ -68,6 +68,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -295,6 +296,8 @@ fun TableOrderScreen(
     }
 
     fun handleProductTap(product: Product) {
+        // Mientras el cobro se prepara o está abierto, lo leído (cámara o pistola) no entra: el importe ya se está congelando.
+        if (preparandoPago || showPayment || showSplitImporte) return
         if (blockIfReadOnly()) return
         if (product.hasModifiers) selectedProduct = product else viewModel.addProduct(product)
     }
@@ -322,6 +325,8 @@ fun TableOrderScreen(
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
             committedPaymentCompletion = null
+            // Al abrirse el cobro la cámara se cierra: no queda leyendo debajo del importe congelado.
+            showBarcodeScanner = false
             showPayment = true
         }
         // El motivo lo pone `preparePagar()`, que es quien SABE por qué no se
@@ -809,19 +814,34 @@ fun TableOrderScreen(
                 .fillMaxSize()
                 .background(Color.Black),
         ) {
+            val alEscanear: (String) -> Unit = escanear@{ barcode ->
+                // Cámara y pistola pueden leer la misma etiqueta casi a la vez: la primera cierra el
+                // escáner y la otra ya no agrega (Codex d2 #3).
+                if (!showBarcodeScanner) return@escanear
+                showBarcodeScanner = false
+                val matched = catalogViewModel.products.value.find { product ->
+                    product.sku == barcode || product.barcode == barcode || product.gtin == barcode
+                }
+                if (matched != null) {
+                    handleProductTap(matched)
+                    panelTab = PanelTab.CUENTA
+                } else {
+                    unknownBarcode = barcode
+                }
+            }
+            // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
+            // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba). Sólo con
+            // esta pantalla RESUMED: al cambiar de pestaña la saliente y Cobrar conviven ~700 ms y el
+            // código entraba a las dos (Codex d2 #1).
+            val ciclo = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            LaunchedEffect(ciclo) {
+                ciclo.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+                    catalogViewModel.codigosEscaneados.collect { alEscanear(it) }
+                }
+            }
             com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView(
-                onBarcodeScanned = { barcode ->
-                    showBarcodeScanner = false
-                    val matched = catalogViewModel.products.value.find { product ->
-                        product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                    }
-                    if (matched != null) {
-                        handleProductTap(matched)
-                        panelTab = PanelTab.CUENTA
-                    } else {
-                        unknownBarcode = barcode
-                    }
-                },
+                onBarcodeScanned = alEscanear,
+                lectorIntegrado = remember { com.avoqado.pos.pos.data.LectorIntegradoSunmi.hay() },
                 onDismiss = { showBarcodeScanner = false },
             )
         }
@@ -1131,6 +1151,7 @@ fun TableOrderScreen(
                 prepararPago {
                     paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
                     if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
+                    showBarcodeScanner = false
                     showSplitImporte = true
                 }
             },

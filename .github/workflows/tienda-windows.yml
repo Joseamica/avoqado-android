@@ -106,12 +106,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Kotlin compila DENTRO de Gradle (un solo tope): con el daemon aparte de 2 GB, `:pos:compileKotlin` se quedaba sin
+      # memoria («GC overhead limit exceeded»: 2.25.6 1 de 2 y 2.25.7 3 de 3 en «Escritorio», 1 de 2 en la Tienda).
       - name: Acotar memoria al tamaño del runner
         run: |
           mkdir -p ~/.gradle
           cat >> ~/.gradle/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.jvmargs=-Xmx4608m -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+          kotlin.compiler.execution.strategy=in-process
           org.gradle.workers.max=2
           org.gradle.daemon=false
           EOF
@@ -147,6 +149,42 @@ jobs:
           name: zip-windows
           path: ${{ runner.temp }}/salida/avoqado-pos-windows-produccion.zip
           retention-days: 7
+
+  # El ZIP portátil también queda en la página del Release de GitHub (la que crea release.yml con el APK y el AAB), sin
+  # vencer: el artefacto dura 7 días, y hay clientes que instalan por ZIP para recibir cada versión sin esperar la revisión de
+  # Microsoft (founder, 20-oct). Corre aparte de la Tienda y nunca la frena: si no encuentra la página, sólo avisa.
+  release-github:
+    needs: [decidir, paquete]
+    if: needs.decidir.outputs.prueba != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zip-windows
+          path: ${{ runner.temp }}/zip
+
+      - name: Pegar el ZIP al Release de esta versión
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ needs.decidir.outputs.version }}
+        run: |
+          # release.yml corre en paralelo y crea la página con --target <este commit>. Se busca por commit, no por etiqueta:
+          # el versionCode de la etiqueta lo calcula release.yml contra Play. Espera hasta 40 min a que aparezca.
+          ETQ=""
+          for i in $(seq 1 80); do
+            ETQ=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=20" \
+              --jq "[.[] | select(.target_commitish == \"$GITHUB_SHA\")][0].tag_name // empty")
+            [ -n "$ETQ" ] && break
+            sleep 30
+          done
+          if [ -z "$ETQ" ]; then
+            echo "::warning::No apareció el Release de GitHub de $GITHUB_SHA en 40 min: el ZIP de la $VER sólo queda como artefacto (7 días)."
+            exit 0
+          fi
+          cp "$RUNNER_TEMP/zip/avoqado-pos-windows-produccion.zip" "$RUNNER_TEMP/avoqado-pos-windows-$VER.zip"
+          gh release upload "$ETQ" "$RUNNER_TEMP/avoqado-pos-windows-$VER.zip" --clobber --repo "$GITHUB_REPOSITORY"
+          echo "::notice::ZIP de Windows $VER pegado al Release $ETQ."
 
   tienda:
     needs: [decidir, paquete]

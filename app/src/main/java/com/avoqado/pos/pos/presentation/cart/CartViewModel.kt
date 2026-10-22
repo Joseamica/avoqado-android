@@ -49,6 +49,7 @@ import com.avoqado.pos.referrals.presentation.ReferralCaptureUiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -297,6 +298,19 @@ class CartViewModel @Inject constructor(
     val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
         get() = lectorHidBus.codigos
 
+    /**
+     * 🔴 DINERO. El CARRITO —no la pantalla— sabe si hay un cobro abierto y cuántos códigos leídos se están consultando.
+     * Vive aquí porque la pantalla se recrea (cambiar de pestaña) y con ella se perdía: un vale lento podía entrar después
+     * de abrir el cobro, sin cobrarse (pendientes del 19-oct, Codex r1 #2 a r4 #1). Con el cobro abierto, lo leído no toca
+     * el carrito ([resolveScannedBarcode]); mientras haya consultas, el cobro no se abre (`CheckoutScreen.proceedToPayment`).
+     */
+    @Volatile var cobroAbierto: Boolean = false
+        private set
+    fun abrirCobro() { cobroAbierto = true }
+    fun cerrarCobro() { cobroAbierto = false }
+    private val consultasDeCodigo = java.util.concurrent.atomic.AtomicInteger(0)
+    val hayConsultasDeCodigo: Boolean get() = consultasDeCodigo.get() > 0
+
     private val _staffOptions = MutableStateFlow<List<StaffMember>>(emptyList())
     val staffOptions: StateFlow<List<StaffMember>> = _staffOptions.asStateFlow()
 
@@ -466,6 +480,9 @@ class CartViewModel @Inject constructor(
             itemIds = cart.items.map { it.id }.toSet(),
             totalCents = cart.totalCents,
         )
+        // Si es la orden de la sesión de vales, ya tiene un abono aunque su copia no lo diga: que no vuelva a proyectarse
+        // aunque luego se vacíe el carrito (D3, Codex r1).
+        areaTicketRepository.session.marcarConAbono(id)
         Log.d("🛒", "Split de mostrador a medias: la venta sigue contra la orden $id")
     }
 
@@ -1509,6 +1526,15 @@ class CartViewModel @Inject constructor(
     }
 
     /**
+     * 🔴 DINERO. Un cobro de vales se detuvo porque este carrito no traía los vales de la sesión del servidor
+     * (`PaymentFlowViewModel.valesNoCoincidian`): el carrito toma los de la sesión, que el cobro acaba de releer. Sin red.
+     * Esa parada sólo ocurre sin abonos en la orden, así que nunca regresa al carrito algo ya pagado.
+     */
+    fun traerValesDeLaSesion() {
+        areaTicketRepository.session.current()?.let(::replaceAreaTicketLines)
+    }
+
+    /**
      * Renueva la sesión de cobro de vales para que no venza mientras el cajero
      * trabaja. Espejo de `maintainAreaTicketCheckout` en iOS.
      *
@@ -1520,6 +1546,17 @@ class CartViewModel @Inject constructor(
     }
 
     suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+        // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
+        if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
+        consultasDeCodigo.incrementAndGet()
+        try {
+            return resolverCodigo(rawCode)
+        } finally {
+            consultasDeCodigo.decrementAndGet()
+        }
+    }
+
+    private suspend fun resolverCodigo(rawCode: String): ScannedBarcodeResult {
         val code = rawCode.trim()
         val localProduct = products.value.firstOrNull {
             it.sku == code || it.barcode == code || it.gtin == code
@@ -1578,8 +1615,19 @@ class CartViewModel @Inject constructor(
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
                     if (!settings.areaTickets.allowMixedCart && hasNormalItems) {
                         ScannedBarcodeResult.Error("Este local cobra los vales en un carrito separado.")
+                    } else if (cobroAbierto) {
+                        ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                     } else {
-                        val checkout = areaTicketRepository.addTicket(code)
+                        // Pedir el vale CAMBIA el servidor: una vez pedido se termina aunque la pantalla se vaya (cambiar
+                        // de pestaña, girar la tablet). Si no, el servidor quedaba con el vale y el carrito sin él, y el
+                        // cobro podía congelar un importe menor (Codex r5). Mientras, el contador sigue y el cobro espera.
+                        // Si la pantalla se fue ANTES de pedirlo, no se pide: un paso anterior pudo tragarse la cancelación
+                        // (guardar la configuración en disco) y `NonCancellable` la ignoraría (Codex r6).
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        val checkout = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                            areaTicketRepository.addTicket(code)
+                        }
+                        if (cobroAbierto) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
                         replaceAreaTicketLines(checkout)
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }
@@ -1589,11 +1637,22 @@ class CartViewModel @Inject constructor(
                 else -> ScannedBarcodeResult.Error("Vale no encontrado en este local.")
             }
         }.getOrElse { error ->
+            // Una cancelación (la pantalla se fue) no es un «Error» del vale: se deja pasar para que nada siga después.
+            if (error is kotlinx.coroutines.CancellationException) throw error
             ScannedBarcodeResult.Error(error.message ?: "No se pudo consultar el vale. Revisa la conexión.")
         }
     }
 
     private fun replaceAreaTicketLines(checkout: AreaTicketCheckout) {
+        // 🔴 DINERO. Una sesión con abonos ya no se proyecta al carrito. Tras el primer abono el carrito quedó en «Saldo
+        // pendiente» (`aplicarCobroConfirmado`), y la sesión sigue viva porque el servidor no deja cancelar una venta con
+        // abono (409). Restaurarla al volver a la pantalla metía todos los vales encima del saldo y el total se inflaba
+        // (D3, Codex r7). La copia del aparato puede no saber del abono si su relectura falló: por eso también cuenta que el
+        // carrito continúe ESA orden y que el carrito ya la haya anotado (`marcarConAbono`). iOS no lo necesita: conserva
+        // los vales y cobra el saldo del servidor.
+        val conAbonos = checkout.status == "PARTIALLY_PAID" || (checkout.order?.paidAmount?.moneyToCents() ?: 0) > 0
+        val continuaEsaOrden = checkout.order?.id?.let { it == _pendingSplitOrder.value?.orderId } == true
+        if (conAbonos || continuaEsaOrden) return
         val ticketRows = checkout.tickets.flatMap { ticket ->
             ticket.lines.map { line ->
                 val detail = buildList {

@@ -12,6 +12,7 @@ import com.avoqado.pos.designsystem.components.AtajoDeTeclado
 import com.avoqado.pos.designsystem.components.AtajosDeTeclado
 import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import com.avoqado.pos.designsystem.components.pasaDetrasDelCobro
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent.KEY_PRESSED
 import java.awt.event.KeyEvent.KEY_RELEASED
@@ -33,6 +34,26 @@ class AtajosDeTecladoTest {
         teclaDeCompose(java.awt.event.KeyEvent(componente, tipo, 0L, mods, codigo, java.awt.event.KeyEvent.CHAR_UNDEFINED))
 
     // MARK: - La ventana
+
+    // Pendientes del 19-oct: detrás del cobro sólo PASAN las teclas de una lista corta (F, Esc, Tab, flechas…); lo demás se
+    // frena. Adivinar «qué escribe» por el carácter falló dos veces: en Windows las F y las flechas traen `CHAR_UNDEFINED`
+    // (se comía el F12 de «Omitir», prueba en Windows real) y en Android el centro del D-pad trae 0 (Codex r3 #2).
+    // Las teclas aquí son las de AWT, como llegan en Windows.
+    @Test fun `detras del cobro pasan F, Esc, Tab y flechas, y se frena todo lo demas`() {
+        fun tecla(codigo: Int, caracter: Char = java.awt.event.KeyEvent.CHAR_UNDEFINED) =
+            teclaDeCompose(java.awt.event.KeyEvent(componente, KEY_PRESSED, 0L, 0, codigo, caracter))
+        val ke = java.awt.event.KeyEvent::class.java
+        fun vk(nombre: String) = ke.getField(nombre).getInt(null)
+        for (pasa in listOf("VK_F1", "VK_F4", "VK_F5", "VK_F12", "VK_DOWN", "VK_UP", "VK_LEFT", "VK_RIGHT", "VK_HOME", "VK_END")) {
+            assertTrue(pasaDetrasDelCobro(tecla(vk(pasa))), pasa)
+        }
+        assertTrue(pasaDetrasDelCobro(tecla(vk("VK_ESCAPE"), '\u001b')), "Esc")
+        assertTrue(pasaDetrasDelCobro(tecla(vk("VK_TAB"), '\t')), "Tab")
+        for ((nombre, caracter) in listOf("VK_ENTER" to '\n', "VK_SPACE" to ' ', "VK_A" to 'a', "VK_5" to '5', "VK_BACK_SPACE" to '\b')) {
+            assertFalse(pasaDetrasDelCobro(tecla(vk(nombre), caracter)), nombre)
+        }
+        assertFalse(pasaDetrasDelCobro(tecla(vk("VK_CONTEXT_MENU"))), "menú contextual")
+    }
 
     @Test fun `sostener una tecla la cuenta una sola vez`() {
         var reloj = 0L

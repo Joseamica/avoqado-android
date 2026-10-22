@@ -42,19 +42,28 @@ class SignInViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(SignInUiState())
+    private val _uiState = MutableStateFlow(estadoInicial())
     val uiState: StateFlow<SignInUiState> = _uiState.asStateFlow()
 
-    init {
-        // Check biometric availability
+    /** Lo que ve quien abre la app: paso del correo, sin contraseña ni ruedita, y la huella si hay con qué. */
+    private fun estadoInicial(): SignInUiState {
         val hasBiometric = secureStorage.isBiometricLoginEnabled &&
             secureStorage.biometricRefreshToken != null
-        _uiState.update {
-            it.copy(
-                canUseBiometric = hasBiometric,
-                biometricEmail = if (hasBiometric) secureStorage.biometricUserEmail else null,
-            )
-        }
+        return SignInUiState(
+            canUseBiometric = hasBiometric,
+            biometricEmail = if (hasBiometric) secureStorage.biometricUserEmail else null,
+        )
+    }
+
+    /**
+     * 🔴 Tras entrar, la pantalla vuelve a su estado inicial. Este ViewModel NO muere al entrar: `LandingScreen` no
+     * vive en un NavHost, así que `hiltViewModel()` lo cuelga de la Activity (en Windows, de la raíz de la ventana)
+     * y al cerrar sesión se pinta la MISMA instancia. Antes se quedaba con `isLoading = true` y la contraseña
+     * anterior: el botón salía con la ruedita, deshabilitado, y sólo cerrar la app lo destrababa (D3, 2.25.8, 20-oct).
+     */
+    private fun alEntrar(onSuccess: () -> Unit) {
+        onSuccess()
+        _uiState.value = estadoInicial()
     }
 
     fun onEmailChange(email: String) {
@@ -89,7 +98,7 @@ class SignInViewModel @Inject constructor(
             when (val result = authRepository.loginWithEmail(state.email, state.password)) {
                 is LoginResult.Success -> {
                     Log.d("🔐", "✅ Login success, navigating...")
-                    onSuccess()
+                    alEntrar(onSuccess)
                 }
                 is LoginResult.Error -> {
                     _uiState.update { it.copy(isLoading = false, errorMessage = ServerErrorText.humanize(result.message)) }
@@ -127,7 +136,7 @@ class SignInViewModel @Inject constructor(
                 }
 
                 Log.d("🔐", "✅ Biometric login success")
-                onSuccess()
+                alEntrar(onSuccess)
             } catch (e: Exception) {
                 Log.e("🔐", "❌ Biometric login failed: ${e.message}")
                 _uiState.update {

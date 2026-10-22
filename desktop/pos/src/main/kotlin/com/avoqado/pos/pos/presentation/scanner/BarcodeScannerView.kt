@@ -55,6 +55,8 @@ fun BarcodeScannerView(
     manualTitle: String = "Escanea con pistola o escribe el código",
     manualLabel: String = "Código de vale o producto",
     actionText: String = "Consultar código",
+    // Lector integrado de Sunmi: no existe en Windows. Se acepta para que Cobrar compile igual.
+    @Suppress("UNUSED_PARAMETER") lectorIntegrado: Boolean = false,
 ) {
     var hasScanned by remember { mutableStateOf(false) }
     var manualCode by remember { mutableStateOf("") }
