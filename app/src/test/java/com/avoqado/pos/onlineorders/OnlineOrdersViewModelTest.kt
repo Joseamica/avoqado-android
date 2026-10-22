@@ -1,6 +1,7 @@
 package com.avoqado.pos.onlineorders
 
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
+import com.avoqado.pos.onlineorders.data.ResultadoImpresion
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.Inbox
@@ -51,11 +52,12 @@ class OnlineOrdersViewModelTest {
         total: Long = 20000,
         restante: Long = 20000,
         pago: String = "PENDING",
+        needsPrint: Boolean = false,
     ) = OnlineOrder(
         orderId = id, onlineOrderId = "o-$id", orderNumber = id, status = estado,
         paymentMode = "PAY_AT_PICKUP", paymentStatus = pago, customerName = "Ana", customerPhone = "5512345678", note = null,
         createdAt = Instant.parse("2026-10-22T10:00:00Z"), acceptDeadlineAt = null, estimatedReadyAt = null,
-        totalCents = total, remainingCents = restante, needsPrint = false, items = emptyList(),
+        totalCents = total, remainingCents = restante, needsPrint = needsPrint, items = emptyList(),
     )
 
     private fun bandeja(
@@ -85,7 +87,13 @@ class OnlineOrdersViewModelTest {
         hayPedidosAbiertos = { hayAbiertos },
         ventanaALaVista = ventana,
         sondearVigilante = { sondeosYa++ },
+        imprimirSiToca = { impresiones += it.orderId; ResultadoImpresion.Impresa },
+        reimprimirPedido = { reimpresiones += it.orderId; resultadoReimpresion },
     )
+
+    private val impresiones = mutableListOf<String>()
+    private val reimpresiones = mutableListOf<String>()
+    private var resultadoReimpresion: ResultadoImpresion = ResultadoImpresion.Impresa
 
     private var sondeosYa = 0
 
@@ -443,5 +451,82 @@ class OnlineOrdersViewModelTest {
         assertEquals("\$185.50", formatoPesos(18550))
         assertEquals("\$0.29", formatoPesos(29))
         assertEquals("\$1,234.00", formatoPesos(123400))
+    }
+
+    // MARK: - Task A4: impresión
+
+    @Test
+    fun `accept success prints the accepted order once`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE))),
+            Result.success(bandeja(pedido("p1", OnlineOrderStatus.ACCEPTED))),
+        )
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+        assertTrue(impresiones.isEmpty())
+        vm.aceptar("p1", 15)
+        runCurrent()
+        assertEquals(listOf("p1"), impresiones)
+    }
+
+    @Test
+    fun `a rejected or failed accept prints nothing`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja(pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE)))
+        coEvery { repo.accept("p1", 10) } returns AccionResultado.SinConexion
+        coEvery { repo.reject("p1", "CLOSED", null) } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+        vm.aceptar("p1", 10)
+        runCurrent()
+        vm.rechazar("p1", "CLOSED")
+        runCurrent()
+        assertTrue(impresiones.isEmpty())
+    }
+
+    @Test
+    fun `each visible poll prints only open orders that need print`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(
+            bandeja(
+                pedido("a1", OnlineOrderStatus.ACCEPTED, needsPrint = true),
+                pedido("a2", OnlineOrderStatus.ACCEPTED, needsPrint = false),
+                pedido("r1", OnlineOrderStatus.READY, needsPrint = true),
+                pedido("x1", OnlineOrderStatus.REJECTED, needsPrint = true),
+            ),
+        )
+        val vm = armar()
+        vm.refrescar()
+        runCurrent()
+        assertEquals(listOf("a1", "r1"), impresiones)
+        vm.refrescar()
+        runCurrent()
+        // Cada latido lo vuelve a pedir (la clase de impresión es la que no repite al mismo tiempo / el servidor el que ya no lo marca).
+        assertEquals(listOf("a1", "r1", "a1", "r1"), impresiones)
+    }
+
+    @Test
+    fun `reprint goes to the reprint path and tells the result`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja(pedido("a1", OnlineOrderStatus.ACCEPTED)))
+        val vm = armar()
+        vm.refrescar()
+        vm.reimprimir("a1")
+        runCurrent()
+        assertEquals(listOf("a1"), reimpresiones)
+        assertTrue(impresiones.isEmpty())
+        assertEquals(TextosPedidosEnLinea.REIMPRESA, vm.aviso.value)
+        resultadoReimpresion = ResultadoImpresion.NoSalio
+        vm.reimprimir("a1")
+        runCurrent()
+        assertEquals(TextosPedidosEnLinea.REIMPRESION_FALLO, vm.aviso.value)
+    }
+
+    @Test
+    fun `reprint needs orders update`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja(pedido("a1", OnlineOrderStatus.ACCEPTED)))
+        val vm = armar(Permisos(actualizar = false))
+        vm.refrescar()
+        vm.reimprimir("a1")
+        runCurrent()
+        assertTrue(reimpresiones.isEmpty())
     }
 }

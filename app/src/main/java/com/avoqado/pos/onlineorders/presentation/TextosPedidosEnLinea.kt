@@ -43,6 +43,10 @@ object TextosPedidosEnLinea {
     // --- Textos de la pantalla que el Anexo A no fija (iOS debe copiarlos tal cual) ---
     const val SE_MUESTRAN_ULTIMOS = "Se muestran los últimos 50"
     const val CARGAR_MAS = "Cargar más"
+    // Task A4 — texto nuevo fuera del Anexo A: iOS debe copiarlo igual.
+    const val REIMPRIMIR = "Reimprimir"
+    const val REIMPRESA = "Comanda enviada a la impresora"
+    const val REIMPRESION_FALLO = "No se pudo imprimir la comanda"
     const val NO_SE_PUDO_LEER = "No se pudo leer la bandeja. Reintentando…"
     const val SIN_PEDIDOS = "No hay pedidos por ahora"
     const val PAUSAR_TIENDA = "Pausar pedidos"

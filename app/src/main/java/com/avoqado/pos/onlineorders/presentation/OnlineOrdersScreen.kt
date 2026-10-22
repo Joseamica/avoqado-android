@@ -179,6 +179,7 @@ fun OnlineOrdersScreen(
                                     onEntregado = { viewModel.marcarEntregado(pedido.orderId) },
                                     onCancelar = { viewModel.cancelar(pedido.orderId) },
                                     onCobrar = { onCobrar(pedido) },
+                                    onReimprimir = { viewModel.reimprimir(pedido.orderId) },
                                 )
                             }
                             if (pie != null) item(key = "pie-$titulo") { pie() }

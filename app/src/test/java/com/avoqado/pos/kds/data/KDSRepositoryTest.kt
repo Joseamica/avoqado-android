@@ -116,6 +116,15 @@ class KDSRepositoryTest {
     }
 
     @Test
+    fun `un pedido de la tienda web (PICKUP) dice Para recoger y uno de app de delivery sigue diciendo Delivery`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda().replace("\"DINE_IN\"", "\"PICKUP\""), comanda().replace("\"DINE_IN\"", "\"DELIVERY\""))))
+
+        val tipos = repo.fetchOrders("st-barra").getOrThrow().map { it.orderType }
+
+        assertEquals(listOf("Para recoger", "Delivery"), tipos)
+    }
+
+    @Test
     fun `recientes, deshacer y marcar todas usan sus rutas y sus cuerpos`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda())))
         server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))

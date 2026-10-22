@@ -69,6 +69,8 @@ fun OnlineOrderCard(
     onCancelar: () -> Unit,
     /** A5 lo llena: abre el cobro del pedido. En A3 es sólo el botón. */
     onCobrar: () -> Unit,
+    /** Vuelve a sacar la comanda en este aparato, sin reclamar. */
+    onReimprimir: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var dialogo by remember { mutableStateOf<Dialogo?>(null) }
@@ -141,6 +143,10 @@ fun OnlineOrderCard(
                                 Button(onClick = onCobrar, enabled = !ocupado, modifier = Modifier.testTag("cobrar-${pedido.orderId}")) {
                                     Text(TextosPedidosEnLinea.COBRAR)
                                 }
+                            }
+                            // La comanda sale en la impresora de ESTE aparato: no necesita red (el servidor no interviene).
+                            OutlinedButton(onClick = onReimprimir, enabled = !ocupado, modifier = Modifier.testTag("reimprimir-${pedido.orderId}")) {
+                                Text(TextosPedidosEnLinea.REIMPRIMIR)
                             }
                             OutlinedButton(onClick = onEntregado, enabled = enLinea, modifier = Modifier.testTag("entregado-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.ENTREGADO)

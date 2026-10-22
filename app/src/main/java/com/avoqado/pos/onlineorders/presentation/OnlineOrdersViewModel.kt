@@ -3,11 +3,14 @@ package com.avoqado.pos.onlineorders.presentation
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.onlineorders.data.ImpresionDePedidoEnLinea
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
+import com.avoqado.pos.onlineorders.data.ResultadoImpresion
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.onlineorders.domain.AccionResultado
@@ -18,6 +21,7 @@ import java.io.IOException
 import java.math.BigDecimal
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
+import javax.inject.Provider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,6 +88,8 @@ class OnlineOrdersViewModel internal constructor(
     private val hayPedidosAbiertos: () -> Boolean,
     private val ventanaALaVista: StateFlow<Boolean> = VentanaALaVista.aLaVista,
     private val sondearVigilante: () -> Unit = {},
+    private val imprimirSiToca: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.OtroAparato },
+    private val reimprimirPedido: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.NoSalio },
 ) : ViewModel() {
 
     @Inject
@@ -92,6 +98,8 @@ class OnlineOrdersViewModel internal constructor(
         roleManager: RoleManager,
         planManager: PlanManager,
         vigilante: VigilanteDePedidosEnLinea,
+        impresion: ImpresionDePedidoEnLinea,
+        syncOutbox: Provider<SyncOutbox>,
     ) : this(
         repositorio = repositorio,
         permisoActualizar = { roleManager.canOperateOnlineOrders },
@@ -99,6 +107,12 @@ class OnlineOrdersViewModel internal constructor(
         tienePlan = { planManager.hasFeature("ONLINE_ORDERING") },
         hayPedidosAbiertos = { vigilante.hayPedidosAbiertos.value },
         sondearVigilante = vigilante::sondearYa,
+        // El deviceId del outbox, NO uno nuevo (regla de offline-first): sin él no se reclama nada.
+        imprimirSiToca = { pedido ->
+            val deviceId = try { syncOutbox.get().deviceId } catch (e: Exception) { null }
+            if (deviceId == null) ResultadoImpresion.NoSalio else impresion.imprimirSiToca(pedido, deviceId)
+        },
+        reimprimirPedido = { pedido -> impresion.reimprimir(pedido) },
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -208,6 +222,8 @@ class OnlineOrdersViewModel internal constructor(
             _sinConexion.value = false
             _leyoAlgunaVez.value = true
             _noSePudoLeer.value = false
+            // Mientras la pantalla se ve, cada lectura saca la comanda de lo aceptado que aún nadie imprimió.
+            ordenes.filter { it.needsPrint && it.status in IMPRIMIBLES }.forEach { imprimir(it) }
         }.onFailure {
             // Se conserva la última lista. «Sin conexión» sólo si de verdad no hay red: un 403 o un JSON roto no lo son.
             Log.d(TAG, "Bandeja sin respuesta: ${it.message}")
@@ -236,8 +252,13 @@ class OnlineOrdersViewModel internal constructor(
 
     // MARK: - Acciones (sólo en línea, nunca encoladas)
 
-    fun aceptar(orderId: String, minutos: Int) =
-        ejecutar(orderId, permisoActualizar(), sonidoCambia = true) { repositorio.accept(orderId, minutos) }
+    fun aceptar(orderId: String, minutos: Int) {
+        val pedido = buscar(orderId)
+        ejecutar(
+            orderId, permisoActualizar(), sonidoCambia = true,
+            alHecho = { if (pedido != null) imprimir(pedido) },
+        ) { repositorio.accept(orderId, minutos) }
+    }
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
     fun rechazar(orderId: String, motivo: String) =
@@ -253,6 +274,48 @@ class OnlineOrdersViewModel internal constructor(
     fun pausar(minutos: Int?) = ejecutar(CLAVE_PAUSA, permitido = true, textoExito = minutos?.let { TextosPedidosEnLinea.pausadaPor(it) }
         ?: TextosPedidosEnLinea.PAUSA_REANUDADA) { repositorio.pause(minutos) }
 
+    /** «Reimprimir» (sin reclamar, sin confirmar): vuelve a sacar la comanda en ESTE aparato. */
+    fun reimprimir(orderId: String) {
+        if (!permisoActualizar()) return
+        val pedido = buscar(orderId) ?: return
+        if (orderId in _ocupados.value) return
+        _ocupados.value = _ocupados.value + orderId
+        viewModelScope.launch {
+            try {
+                val resultado = try {
+                    reimprimirPedido(pedido)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    ResultadoImpresion.NoSalio
+                }
+                _aviso.value = if (resultado == ResultadoImpresion.Impresa) TextosPedidosEnLinea.REIMPRESA else TextosPedidosEnLinea.REIMPRESION_FALLO
+            } finally {
+                _ocupados.value = _ocupados.value - orderId
+            }
+        }
+    }
+
+    private fun buscar(orderId: String): OnlineOrder? = with(_secciones.value) {
+        (porAceptar + enPreparacion + listos + hoy).firstOrNull { it.orderId == orderId }
+    }
+
+    /**
+     * Fuera de la lectura y de la acción (que no esperan al papel). El reclamo y la comanda corren en [ImpresionDePedidoEnLinea],
+     * que no repite el mismo pedido a la vez y no depende de que esta pantalla siga viva.
+     */
+    private fun imprimir(pedido: OnlineOrder) {
+        viewModelScope.launch {
+            try {
+                imprimirSiToca(pedido)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "No se pudo intentar la comanda de ${pedido.orderNumber}: ${e.message}")
+            }
+        }
+    }
+
     fun cerrarAviso() { _aviso.value = null }
 
     private fun ejecutar(
@@ -260,6 +323,7 @@ class OnlineOrdersViewModel internal constructor(
         permitido: Boolean,
         textoExito: String? = null,
         sonidoCambia: Boolean = false,
+        alHecho: () -> Unit = {},
         llamada: suspend () -> AccionResultado,
     ) {
         if (!permitido) return
@@ -285,6 +349,7 @@ class OnlineOrdersViewModel internal constructor(
                 if (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible) {
                     if (clave != CLAVE_PAUSA && sonidoCambia) sondearVigilante()
                 }
+                if (resultado is AccionResultado.Hecho) alHecho()
                 refrescar()
             } finally {
                 _ocupados.value = _ocupados.value - clave
@@ -295,6 +360,7 @@ class OnlineOrdersViewModel internal constructor(
     companion object {
         const val INTERVALO_MS = 10_000L
         const val CLAVE_PAUSA = "__pausa__"
+        private val IMPRIMIBLES = setOf(OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY)
         private val ABIERTOS = setOf(
             OnlineOrderStatus.PENDING_ACCEPTANCE, OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY,
         )
