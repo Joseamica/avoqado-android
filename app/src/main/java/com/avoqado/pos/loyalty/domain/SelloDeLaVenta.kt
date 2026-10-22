@@ -31,8 +31,10 @@ object TextosDelSello {
 
     fun cuenta(llenos: Int, total: Int): String = "$llenos de $total"
 
-    fun faltan(faltan: Int, premio: String?): String =
-        if (premio.isNullOrBlank()) "Faltan $faltan para el premio" else "Faltan $faltan para: $premio"
+    fun faltan(faltan: Int, premio: String?): String {
+        val verbo = if (faltan == 1) "Falta" else "Faltan"
+        return if (premio.isNullOrBlank()) "$verbo $faltan para el premio" else "$verbo $faltan para: $premio"
+    }
 
     fun premioPorCobrar(premio: String?): String =
         if (premio.isNullOrBlank()) "Tiene un premio por cobrar" else "Tiene un premio por cobrar: $premio"

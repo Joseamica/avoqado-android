@@ -180,6 +180,13 @@ class TextoDelSelloTest {
         assertEquals("Ganó: Café gratis", tarjetaDelSello(sello(stamped = true, cartilla = cobrada))!!.pie)
     }
 
+    // QA en la D3 (22-oct): con 6 de 7 decía «Faltan 1 para…»
+    @Test
+    fun `con un sello por llenar dice falta en singular`() {
+        assertEquals("Falta 1 para: Un café gratis", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(6, 7, rewardLabel = "Un café gratis")))!!.pie)
+        assertEquals("Falta 1 para el premio", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(6, 7)))!!.pie)
+    }
+
     @Test
     fun `sin premio no inventa uno`() {
         assertEquals("Faltan 4 para el premio", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(3, 7)))!!.pie)
