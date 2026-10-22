@@ -4,7 +4,11 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.presentation.laComandaSalio
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
+import com.avoqado.pos.onlineorders.presentation.estaPagado
+import com.avoqado.pos.onlineorders.presentation.formatoPesos
+import java.time.format.DateTimeFormatter
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
@@ -47,7 +51,7 @@ class ImpresionDePedidoEnLinea internal constructor(
     private val repositorio: OnlineOrdersRepository,
     private val hayImpresoraDeCocina: suspend () -> Boolean,
     private val venueId: () -> String?,
-    private val despachar: suspend (venueId: String?, lineas: List<RoutableItem>, folio: String, tipo: String, orderId: String) -> EstadoDeComanda?,
+    private val despachar: suspend (venueId: String?, lineas: List<RoutableItem>, folio: String, tipo: String, orderId: String, encabezado: List<String>) -> EstadoDeComanda?,
 ) {
     @Inject
     constructor(
@@ -64,7 +68,7 @@ class ImpresionDePedidoEnLinea internal constructor(
                 printConfigRepository.getCurrentConfig().printers.any { it.active }
         },
         venueId = { secureStorage.venueId },
-        despachar = { venue, lineas, folio, tipo, orderId ->
+        despachar = { venue, lineas, folio, tipo, orderId, encabezado ->
             dispatcher.dispatch(
                 venueId = venue,
                 lines = lineas,
@@ -73,6 +77,7 @@ class ImpresionDePedidoEnLinea internal constructor(
                 // Como el KDS: sin reintento largo. Hay aparatos hermanos que la sacan a los 90 s si ésta no pudo.
                 maxIntentos = 1,
                 orderId = orderId,
+                encabezado = encabezado.ifEmpty { null },
             )
         },
     )
@@ -111,7 +116,7 @@ class ImpresionDePedidoEnLinea internal constructor(
     /** `dispatch` nunca lanza ante una impresora caída: devuelve el estado. «No lanzó» NO es «salió». */
     private suspend fun sacarComanda(order: OnlineOrder): Boolean {
         val estado = try {
-            despachar(venueId(), lineasDeComanda(order), order.orderNumber, TextosPedidosEnLinea.PARA_RECOGER, order.orderId)
+            despachar(venueId(), lineasDeComanda(order), order.orderNumber, TextosPedidosEnLinea.PARA_RECOGER, order.orderId, encabezadoDeComanda(order))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -133,3 +138,17 @@ fun lineasDeComanda(order: OnlineOrder): List<RoutableItem> = order.items.mapInd
         notes = item.note?.takeIf { it.isNotBlank() },
     )
 }
+
+private val FORMATO_HORA_COMANDA = DateTimeFormatter.ofPattern("HH:mm")
+
+/**
+ * Lo que el mostrador necesita para ENTREGAR el pedido: a nombre de quién, su teléfono, a qué hora estará, cuánto cobrar y la
+ * nota del cliente. Las líneas vacías no se imprimen. La hora va en la zona del NEGOCIO; el dinero sale del saldo exacto en centavos.
+ */
+fun encabezadoDeComanda(order: OnlineOrder): List<String> = listOfNotNull(
+    order.customerName?.trim()?.takeIf { it.isNotEmpty() },
+    order.customerPhone?.trim()?.takeIf { it.isNotEmpty() },
+    order.estimatedReadyAt?.let { TextosPedidosEnLinea.listoALas(VenueTimeZone.at(it).format(FORMATO_HORA_COMANDA)) },
+    if (estaPagado(order)) TextosPedidosEnLinea.PAGADO else TextosPedidosEnLinea.cobrarAlRecoger(formatoPesos(order.remainingCents)),
+    order.note?.trim()?.takeIf { it.isNotEmpty() }?.let { TextosPedidosEnLinea.notaDelPedido(it) },
+)

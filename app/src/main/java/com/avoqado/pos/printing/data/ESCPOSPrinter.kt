@@ -711,6 +711,9 @@ class ESCPOSPrinter(
             printTwoColumns("Mesero:", it)
         }
 
+        // Pedido en línea: a quién se le entrega y cuánto cobrar. Sin encabezado no se emite NI un byte.
+        ticket.encabezado?.forEach { linea -> printLine(linea) }
+
         printDoubleDivider()
 
         // Items - Large and clear

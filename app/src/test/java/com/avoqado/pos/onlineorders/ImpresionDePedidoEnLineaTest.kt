@@ -39,6 +39,7 @@ class ImpresionDePedidoEnLineaTest {
         var tipo: String? = null
         var orderId: String? = null
         var lineas: List<RoutableItem> = emptyList()
+        var encabezado: List<String> = emptyList()
         var compuerta: CompletableDeferred<Unit>? = null
     }
 
@@ -46,9 +47,9 @@ class ImpresionDePedidoEnLineaTest {
         repositorio = repo,
         hayImpresoraDeCocina = { hayImpresora },
         venueId = { "v1" },
-        despachar = { venue, lineas, folio, tipo, orderId ->
+        despachar = { venue, lineas, folio, tipo, orderId, encabezado ->
             despacho.llamadas++
-            despacho.venue = venue; despacho.lineas = lineas; despacho.folio = folio; despacho.tipo = tipo; despacho.orderId = orderId
+            despacho.venue = venue; despacho.lineas = lineas; despacho.folio = folio; despacho.tipo = tipo; despacho.orderId = orderId; despacho.encabezado = encabezado
             despacho.compuerta?.await()
             despacho.estado
         },
@@ -83,6 +84,25 @@ class ImpresionDePedidoEnLineaTest {
         assertEquals("p1", despacho.orderId)
         coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
         coVerify(exactly = 1) { repo.confirmPrint("p1", "dev-1") }
+    }
+
+    @Test
+    fun `the web ticket carries customer, ready time, payment and note as header lines`() = runTest {
+        coEvery { repo.claimPrint(any(), any()) } returns true
+        coEvery { repo.confirmPrint(any(), any()) } returns true
+        val despacho = Despacho()
+        val base = pedido()
+        val conTodo = base.copy(note = "Sin salsa", estimatedReadyAt = Instant.parse("2026-10-22T20:30:00Z"), remainingCents = 18550, totalCents = 18550)
+        armar(despacho).imprimirSiToca(conTodo, "dev-1")
+        val hora = com.avoqado.pos.core.util.VenueTimeZone.at(conTodo.estimatedReadyAt!!).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+        assertEquals(
+            listOf("Ana", "5512345678", "Listo a las $hora", "Cobrar al recoger \$185.50", "Nota: Sin salsa"),
+            despacho.encabezado,
+        )
+        // Pagado, sin hora ni nota ni teléfono: sólo lo que hay.
+        val pagado = base.copy(paymentStatus = "PAID", remainingCents = 0, customerPhone = null, estimatedReadyAt = null, note = " ")
+        armar(despacho).imprimirSiToca(pagado, "dev-1")
+        assertEquals(listOf("Ana", "Pagado"), despacho.encabezado)
     }
 
     @Test

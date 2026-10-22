@@ -484,6 +484,8 @@ data class KitchenTicketData(
      *  shown in the ticket header when per-station routing is active. Additive:
      *  null (the default) reproduces today's ticket exactly. */
     val stationName: String? = null,
+    /** Líneas extra bajo el bloque tipo/folio y sobre los renglones (pedido en línea: cliente, hora, pago, nota). `null` = el ticket de siempre, byte por byte. */
+    val encabezado: List<String>? = null,
 ) {
     val formattedTime: String
         get() = timestamp.toInstant()

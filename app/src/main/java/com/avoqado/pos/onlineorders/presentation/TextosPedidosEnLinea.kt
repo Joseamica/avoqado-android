@@ -44,6 +44,9 @@ object TextosPedidosEnLinea {
     const val SE_MUESTRAN_ULTIMOS = "Se muestran los últimos 50"
     const val CARGAR_MAS = "Cargar más"
     // Task A4 — texto nuevo fuera del Anexo A: iOS debe copiarlo igual.
+    // Líneas del encabezado de la comanda en papel (iOS debe copiarlas igual).
+    fun listoALas(hora: String) = "Listo a las $hora"
+    fun notaDelPedido(nota: String) = "Nota: $nota"
     const val REIMPRIMIR = "Reimprimir"
     const val REIMPRESA = "Comanda enviada a la impresora"
     const val REIMPRESION_FALLO = "No se pudo imprimir la comanda"
