@@ -50,6 +50,12 @@ object TextosPedidosEnLinea {
     const val REIMPRIMIR = "Reimprimir"
     const val REIMPRESA = "Comanda enviada a la impresora"
     const val REIMPRESION_FALLO = "No se pudo imprimir la comanda"
+    // Task A5 — textos nuevos fuera del Anexo A: iOS debe copiarlos igual.
+    const val COBRO_EN_EFECTIVO_GUARDADO = "Cobro en efectivo guardado: se sube al volver la conexión"
+    const val SALDO_NO_LEIDO = "No se pudo leer el saldo del pedido. Intenta de nuevo."
+    // Los mismos textos que el aviso de las mesas (`TableOrderScreen`): un cobro con tarjeta de OTRA venta que sí pasó.
+    const val COBRO_ANTERIOR_TITULO = "Cobro anterior resuelto"
+    fun cobroAnteriorResuelto(mensaje: String) = "$mensaje. Búscala en Ventas si necesitas dar el recibo."
     const val NO_SE_PUDO_LEER = "No se pudo leer la bandeja. Reintentando…"
     const val SIN_PEDIDOS = "No hay pedidos por ahora"
     const val PAUSAR_TIENDA = "Pausar pedidos"

@@ -225,6 +225,35 @@ class CashPaymentRepository @Inject constructor(
         return false
     }
 
+    /**
+     * 🔴 DINERO. ¿Este aparato tiene un cobro de la orden [orderId] guardado que todavía puede llegar al servidor?
+     * Lo pregunta la bandeja «Pedidos en línea» antes de abrir «Cobrar» (un cobro por pedido a la vez, Codex plan r1 #2 y
+     * r2 #1): sin red la bandeja conserva el saldo viejo, y un segundo cobro nacería con OTRA llave — el servidor aceptaría
+     * los dos porque los dos son dinero que el cajero declaró recibido.
+     *
+     * Cuentan:
+     * - `PENDING`: en la cola, se sube solo al volver la red (también si está retenido por precio, Q16: sale después).
+     * - `SYNCING`: subiéndose ahora; si la red vuelve a caer, regresa a `PENDING`.
+     * - `EN_VUELO` sin motivo de revisión: guardado antes del POST, sin desenlace (en curso o el proceso murió a media
+     *   petición): pudo llegar.
+     *
+     * No cuentan: `SYNCED` (ya está en el saldo del servidor), `FAILED` (el servidor lo rechazó; lo resuelve el gerente) y
+     * un `EN_VUELO` con motivo (el gerente dijo «no se cobró»: queda guardado sólo para revisión y nada lo reproduce).
+     *
+     * El SQL sólo acota por local; la decisión vive aquí, en Kotlin, donde las pruebas la fijan (como `PendingCashSales`).
+     */
+    suspend fun hayEfectivoSinSubir(orderId: String): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        if (orderId.isBlank()) return false
+        return pendingPaymentDao.forVenue(venueId).any { fila ->
+            fila.orderId == orderId && when (fila.syncStatus) {
+                PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name -> true
+                PaymentSyncStatus.EN_VUELO.name -> fila.q15Reason == null
+                else -> false
+            }
+        }
+    }
+
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
     fun observarEstado(id: String): Flow<String?> = pendingPaymentDao.observarEstado(id)
 

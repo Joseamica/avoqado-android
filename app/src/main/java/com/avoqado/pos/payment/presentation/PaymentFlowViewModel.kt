@@ -1330,6 +1330,8 @@ class PaymentFlowViewModel @Inject constructor(
      *   venta anterior, así que un setter externo se perdería en silencio — y
      *   perderlo es exactamente el bug que esto cierra. Lo resuelve el carrito,
      *   que es el dueño de la venta (`CartViewModel.resolvePendingSplitOrderForCharge`).
+     * @param origen Quién abrió el cobro ([com.avoqado.pos.payment.domain.OrigenDelCobro]). Con `PEDIDO_EN_LINEA` una mesa
+     *   en PAYING no reemplaza a [resumeOrderId]. Default `NORMAL`: todo cobro de hoy queda igual.
      */
     fun startPaymentFlow(
         cart: CartState,
@@ -1337,6 +1339,7 @@ class PaymentFlowViewModel @Inject constructor(
         customerName: String? = null,
         resumeOrderId: String? = null,
         apertura: String? = null,
+        origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -1353,7 +1356,14 @@ class PaymentFlowViewModel @Inject constructor(
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
         cartState = cart
-        mesaDelCobro = tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
+        // 🔴 DINERO. El cobro de un pedido web (bandeja «Pedidos en línea») NUNCA adopta una mesa: una sesión que quedó en
+        // PAYING reemplazaba abajo a `resumeOrderId` y el dinero liquidaba la cuenta de la mesa (Codex plan r1 #1). Sin mesa
+        // tampoco hay ticket ni saldo esperado de mesa. NORMAL queda exactamente como antes.
+        mesaDelCobro = if (origen == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA) {
+            null
+        } else {
+            tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
+        }
         nombreDelNegocioDelCobro = secureStorage.venueName ?: "Avoqado"
         nombreDeLaSesionDelCobro = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim()
             .ifEmpty { secureStorage.userEmail.orEmpty() }.takeIf { it.isNotBlank() }
@@ -2747,7 +2757,13 @@ class PaymentFlowViewModel @Inject constructor(
                 // caja movió la orden y el server recortó el importe al saldo
                 // fresco): al restar sobre el total REALMENTE cobrado, el sobrante
                 // recortado ya queda dentro del cambio, sin sumar dos fuentes.
-                val finalChange = (cashReceivedCents - authoritativeTotal).coerceAtLeast(0)
+                //
+                // Contrato con Rappi 2b (21-oct, Task S2 del SERVIDOR): si la respuesta trae `cashRetainedCents` (lo que se
+                // queda en el cajón por este cobro: hoy importe + propina registrados; Rappi le sumará su PAY_IN), el cambio
+                // es recibido − eso. Sin él (servidor viejo), la resta de arriba. Sigue sin usarse `changeCents`.
+                val finalChange = result.cashRetainedCents
+                    ?.let { retenido -> (cashReceivedCents - retenido).coerceAtLeast(0) }
+                    ?: (cashReceivedCents - authoritativeTotal).coerceAtLeast(0)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }

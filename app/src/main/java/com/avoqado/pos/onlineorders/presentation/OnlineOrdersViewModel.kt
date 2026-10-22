@@ -13,9 +13,13 @@ import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.data.ResultadoImpresion
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
+import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.pos.data.model.CartItem
+import com.avoqado.pos.pos.data.model.CartItemType
+import com.avoqado.pos.pos.presentation.cart.CartState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.IOException
 import java.math.BigDecimal
@@ -90,6 +94,7 @@ class OnlineOrdersViewModel internal constructor(
     private val sondearVigilante: () -> Unit = {},
     private val imprimirSiToca: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.OtroAparato },
     private val reimprimirPedido: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.NoSalio },
+    private val efectivoSinSubir: suspend (orderId: String) -> Boolean = { false },
 ) : ViewModel() {
 
     @Inject
@@ -100,6 +105,7 @@ class OnlineOrdersViewModel internal constructor(
         vigilante: VigilanteDePedidosEnLinea,
         impresion: ImpresionDePedidoEnLinea,
         syncOutbox: Provider<SyncOutbox>,
+        cashPaymentRepository: CashPaymentRepository,
     ) : this(
         repositorio = repositorio,
         permisoActualizar = { roleManager.canOperateOnlineOrders },
@@ -113,6 +119,7 @@ class OnlineOrdersViewModel internal constructor(
             if (deviceId == null) ResultadoImpresion.NoSalio else impresion.imprimirSiToca(pedido, deviceId)
         },
         reimprimirPedido = { pedido -> impresion.reimprimir(pedido) },
+        efectivoSinSubir = cashPaymentRepository::hayEfectivoSinSubir,
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -320,6 +327,88 @@ class OnlineOrdersViewModel internal constructor(
 
     fun cerrarAviso() { _aviso.value = null }
 
+    // MARK: - Cobrar (Task A5): el pedido sin mesa se cobra con el flujo de pago de siempre
+
+    private val _cobroAbierto = MutableStateFlow<CobroDePedido?>(null)
+
+    /** El cobro que la pantalla tiene abierto ahora (uno a la vez). null = ninguno. */
+    val cobroAbierto: StateFlow<CobroDePedido?> = _cobroAbierto.asStateFlow()
+
+    /**
+     * «Cobrar»: decide si se abre el cobro y por cuánto. 🔴 DINERO.
+     * 1. Un cobro a la vez en la pantalla, y un toque en vuelo de ese pedido no hace nada.
+     * 2. Si ESTE aparato tiene un efectivo de ese pedido guardado sin subir (`EN_VUELO`, `PENDING` o `SYNCING`), no abre
+     *    otro: sin red la bandeja conserva el saldo viejo y el segundo cobro llevaría otra llave (Codex plan r1 #2, r2 #1).
+     * 3. El saldo lo dice el SERVIDOR (`preBillBalance.remainingBalanceCents`): otro aparato pudo abonar o descontar. Sin red,
+     *    el último `remaining` de la bandeja (contrato con Rappi 2b). Nunca se recalcula desde los renglones.
+     * 4. Saldo 0 ⇒ no abre: «Pagado», y se relee la bandeja.
+     * Después de cobrar NO se llama `delivered`: lo decide el servidor ([cobroTerminado] sólo relee).
+     */
+    fun cobrar(pedido: OnlineOrder) {
+        if (_cobroAbierto.value != null) return
+        if (pedido.orderId in _ocupados.value) return
+        _ocupados.value = _ocupados.value + pedido.orderId
+        viewModelScope.launch {
+            try {
+                val guardado = try {
+                    efectivoSinSubir(pedido.orderId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // No se pudo leer la cola del aparato: no se sabe si hay un cobro guardado, así que no se abre otro.
+                    Log.w(TAG, "No se pudo revisar la cola de efectivo de ${pedido.orderNumber}: ${e.message}")
+                    _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
+                    return@launch
+                }
+                if (guardado) {
+                    _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO
+                    return@launch
+                }
+                val leido = try {
+                    repositorio.saldoCents(pedido.orderId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+                val saldo = leido.getOrElse { error ->
+                    if (error is IOException) {
+                        // Sin red es un estado normal: se cobra el último saldo que dijo la bandeja.
+                        pedido.remainingCents
+                    } else {
+                        // El servidor contestó otra cosa (404, 5xx, JSON roto): no se adivina con la bandeja.
+                        Log.w(TAG, "Saldo de ${pedido.orderNumber} no leído: ${error.message}")
+                        _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
+                        return@launch
+                    }
+                }
+                if (saldo <= 0L) {
+                    _aviso.value = TextosPedidosEnLinea.PAGADO
+                    refrescar(imprimirPendientes = false)
+                    return@launch
+                }
+                if (saldo > Int.MAX_VALUE) {
+                    _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
+                    return@launch
+                }
+                _aviso.value = null
+                _cobroAbierto.value = CobroDePedido(orderId = pedido.orderId, orderNumber = pedido.orderNumber, saldoCents = saldo.toInt())
+            } finally {
+                _ocupados.value = _ocupados.value - pedido.orderId
+            }
+        }
+    }
+
+    /**
+     * El cobro se cerró (cobrado, encolado sin red o cancelado): se suelta y se relee la bandeja. 🔴 Nunca `delivered`: pagado
+     * y «Listo» lo entrega el servidor en la siguiente lectura; pagado y en preparación, a su hora o con el botón «Entregado».
+     */
+    fun cobroTerminado() {
+        if (_cobroAbierto.value == null) return
+        _cobroAbierto.value = null
+        viewModelScope.launch { refrescar(imprimirPendientes = false) }
+    }
+
     private fun ejecutar(
         clave: String,
         permitido: Boolean,
@@ -369,3 +458,32 @@ class OnlineOrdersViewModel internal constructor(
         )
     }
 }
+
+/**
+ * Un «Cobrar» de la bandeja ya decidido: la orden ([orderId] = `Order.id`) y el saldo que se cobra, en centavos enteros.
+ * [apertura] = UNA por cada «Cobrar» (`PaymentFlowScreen`): vive aquí, en el ViewModel, porque la superposición de «Más» no
+ * sobrevive a que se recree la Activity; al volver a abrirla, el cobro sigue donde iba en vez de arrancar otro.
+ */
+data class CobroDePedido(
+    val orderId: String,
+    val orderNumber: String,
+    val saldoCents: Int,
+    val apertura: String = java.util.UUID.randomUUID().toString(),
+)
+
+/**
+ * El carrito que siembra el cobro: UN renglón de importe por el saldo, para recoger (molde: `TableOrderScreen`). El dinero
+ * real vive en la orden del servidor; el renglón sólo dice cuánto. PURA: la pantalla la guarda en un `remember(cobro)` para
+ * que el carrito sea estable (es llave del arranque del cobro: uno nuevo por recomposición reiniciaba el flujo).
+ */
+fun carritoDelCobro(cobro: CobroDePedido): CartState = CartState(
+    items = listOf(
+        CartItem(
+            id = "pedido-en-linea-${cobro.orderId}",
+            type = CartItemType.CustomAmount,
+            name = TextosPedidosEnLinea.pedidoNumero(cobro.orderNumber),
+            unitPrice = cobro.saldoCents,
+        ),
+    ),
+    orderType = "PICKUP",
+)

@@ -379,6 +379,10 @@ class OrderRepository @Inject constructor(
         fun extractChangeCentsFromResponse(responseBody: String): Int? =
             extractStrictNonNegativeCents(responseBody, "changeCents")
 
+        /** Lo que se queda en el cajón por este cobro (centavos enteros, `payment.cashRetainedCents`); null si no viene. */
+        fun extractCashRetainedCentsFromResponse(responseBody: String): Int? =
+            extractStrictNonNegativeCents(responseBody, "cashRetainedCents")
+
         /**
          * ¿Esta venta tiene que crear una ORDEN (y no un cobro suelto "fast")?
          *
@@ -972,6 +976,12 @@ class OrderRepository @Inject constructor(
         val recordedTipCents: Int? = null,
         /** Cambio que el server determinó tras releer la orden, en centavos. */
         val authoritativeChangeCents: Int? = null,
+        /**
+         * Lo que se queda en el cajón por este cobro, en centavos enteros (`payment.cashRetainedCents`, Task S2 del
+         * SERVIDOR; hoy = importe + propina registrados, y Rappi 2b le sumará su PAY_IN). Con él, cambio = recibido −
+         * esto. null = servidor viejo: el cambio se calcula como siempre. Contrato acordado con Rappi 2b (21-oct).
+         */
+        val cashRetainedCents: Int? = null,
     )
 
     suspend fun recordCashPayment(
@@ -1049,7 +1059,8 @@ class OrderRepository @Inject constructor(
                 val recordedAmount = extractRecordedAmountCentsFromResponse(body)
                 val recordedTip = extractRecordedTipCentsFromResponse(body)
                 val authoritativeChange = extractChangeCentsFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange")
+                val cashRetained = extractCashRetainedCentsFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange, cashRetained: $cashRetained")
                 Result.success(
                     CashPayResult(
                         paymentId = paymentId,
@@ -1061,6 +1072,7 @@ class OrderRepository @Inject constructor(
                         recordedAmountCents = recordedAmount,
                         recordedTipCents = recordedTip,
                         authoritativeChangeCents = authoritativeChange,
+                        cashRetainedCents = cashRetained,
                     ),
                 )
             } else {

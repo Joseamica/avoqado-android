@@ -54,14 +54,26 @@ class OnlineOrdersRepository @Inject constructor(
         return venueId to token
     }
 
+    /**
+     * El saldo se lee al tocar «Cobrar», con el cliente esperando: en la ruta del dinero se rinde rápido (5 s conectar, 8 s en
+     * total; regla offline-first 2.5) y sin red se cobra el último saldo de la bandeja. Con los 30 s del cliente compartido el
+     * cajero esperaba medio minuto con el WiFi «conectado sin datos». Comparte el pool de conexiones (`newBuilder`).
+     */
+    private val clienteDelCobro: OkHttpClient by lazy {
+        client.newBuilder()
+            .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     private fun sinSesion(): Result<Nothing> = Result.failure(IllegalStateException("Sin sesión o sin sucursal"))
 
     /** El cuerpo si fue 2xx; si no, [Rechazo] como excepción interna; sin red, la `IOException` tal cual. */
     private class RechazoException(val rechazo: Rechazo) : Exception(rechazo.mensaje)
 
-    private suspend fun ejecutar(request: Request): Result<String> = try {
+    private suspend fun ejecutar(request: Request, cliente: OkHttpClient = client): Result<String> = try {
         val (code, body) = withContext(Dispatchers.IO) {
-            client.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+            cliente.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
         }
         if (code in 200..299) Result.success(body) else Result.failure(RechazoException(leerRechazo(code, body)))
     } catch (e: CancellationException) {
@@ -242,7 +254,7 @@ class OnlineOrdersRepository @Inject constructor(
     /** El saldo a cobrar lo dice el servidor (`preBillBalance.remainingBalanceCents`); la app nunca lo recalcula desde renglones. */
     suspend fun saldoCents(orderId: String): Result<Long> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        return ejecutar(get(ruta(venueId, "orders/$orderId"), token)).mapCatching {
+        return ejecutar(get(ruta(venueId, "orders/$orderId"), token), clienteDelCobro).mapCatching {
             JSONObject(it).getJSONObject("order").getJSONObject("preBillBalance").getLong("remainingBalanceCents")
         }
     }
