@@ -3,6 +3,7 @@ package com.avoqado.pos.printing.data
 import com.avoqado.pos.inventory.data.ConteoNoAplicado
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
 import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
@@ -712,7 +713,15 @@ class ESCPOSPrinter(
         }
 
         // Pedido en línea: a quién se le entrega y cuánto cobrar. Sin encabezado no se emite NI un byte.
-        ticket.encabezado?.forEach { linea -> printLine(linea) }
+        ticket.encabezado?.forEach { linea ->
+            if (linea.startsWith(MARCA_NEGRITA_ENCABEZADO)) {
+                setBold(true)
+                printLine(linea.removePrefix(MARCA_NEGRITA_ENCABEZADO))
+                setBold(false)
+            } else {
+                printLine(linea)
+            }
+        }
 
         printDoubleDivider()
 

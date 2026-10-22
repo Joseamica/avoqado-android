@@ -87,11 +87,12 @@ class OnlineOrdersViewModelTest {
         hayPedidosAbiertos = { hayAbiertos },
         ventanaALaVista = ventana,
         sondearVigilante = { sondeosYa++ },
-        imprimirSiToca = { impresiones += it.orderId; ResultadoImpresion.Impresa },
+        imprimirSiToca = { impresiones += it.orderId; impresas += it; ResultadoImpresion.Impresa },
         reimprimirPedido = { reimpresiones += it.orderId; resultadoReimpresion },
     )
 
     private val impresiones = mutableListOf<String>()
+    private val impresas = mutableListOf<OnlineOrder>()
     private val reimpresiones = mutableListOf<String>()
     private var resultadoReimpresion: ResultadoImpresion = ResultadoImpresion.Impresa
 
@@ -457,9 +458,10 @@ class OnlineOrdersViewModelTest {
 
     @Test
     fun `accept success prints the accepted order once`() = runTest(dispatcher) {
+        val lista = Instant.parse("2026-10-22T20:30:00Z")
         coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
             Result.success(bandeja(pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE))),
-            Result.success(bandeja(pedido("p1", OnlineOrderStatus.ACCEPTED))),
+            Result.success(bandeja(pedido("p1", OnlineOrderStatus.ACCEPTED, needsPrint = true).copy(estimatedReadyAt = lista))),
         )
         coEvery { repo.accept("p1", 15) } returns AccionResultado.Hecho
         val vm = armar()
@@ -467,7 +469,24 @@ class OnlineOrdersViewModelTest {
         assertTrue(impresiones.isEmpty())
         vm.aceptar("p1", 15)
         runCurrent()
+        // Se imprime el pedido RELEÍDO (aceptado, con su hora estimada), nunca la foto de antes de aceptar. Una sola vez.
         assertEquals(listOf("p1"), impresiones)
+        assertEquals(OnlineOrderStatus.ACCEPTED, impresas.single().status)
+        assertEquals(lista, impresas.single().estimatedReadyAt)
+    }
+
+    @Test
+    fun `accept with a failed reread prints nothing from the stale snapshot`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE))),
+            Result.failure(java.io.IOException("sin red")),
+        )
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+        vm.aceptar("p1", 15)
+        runCurrent()
+        assertTrue(impresiones.isEmpty())
     }
 
     @Test

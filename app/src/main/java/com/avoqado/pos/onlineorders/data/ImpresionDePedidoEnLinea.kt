@@ -11,6 +11,7 @@ import com.avoqado.pos.onlineorders.presentation.formatoPesos
 import java.time.format.DateTimeFormatter
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.RoutableItem
@@ -36,6 +37,20 @@ sealed interface ResultadoImpresion {
 }
 
 /**
+ * ¿Este aparato puede sacar una comanda? Sí con una impresora de cocina guardada en el aparato, o con una impresora ACTIVA del
+ * negocio que esté ligada a una estación ACTIVA (así se marca una impresora de cocina en la configuración; una impresora sin
+ * estación es la de recibos y NO cuenta). PURA.
+ */
+fun hayImpresoraDeCocina(localDeCocina: Boolean, config: com.avoqado.pos.printing.routing.PrintConfig): Boolean {
+    if (localDeCocina) return true
+    val ligadas = config.stations.filter { it.active }.mapNotNull { it.printerId }.toSet()
+    return config.printers.any { it.active && it.id in ligadas }
+}
+
+/** Tras un `NoSalio` este aparato deja pasar este tiempo antes de volver a reclamar el mismo pedido (otro aparato lo toma). */
+private const val DESCANSO_TRAS_NO_SALIO_MS = 3 * 60 * 1000L
+
+/**
  * Task A4: la comanda de un pedido en línea sale UNA vez, en UN aparato.
  *
  * - Sólo reclama (`claimPrint`) si ESTE aparato tiene al menos una impresora de cocina: así S4 no detiene la entrega por
@@ -52,6 +67,7 @@ class ImpresionDePedidoEnLinea internal constructor(
     private val hayImpresoraDeCocina: suspend () -> Boolean,
     private val venueId: () -> String?,
     private val despachar: suspend (venueId: String?, lineas: List<RoutableItem>, folio: String, tipo: String, orderId: String, encabezado: List<String>) -> EstadoDeComanda?,
+    private val reloj: () -> Long = System::currentTimeMillis,
 ) {
     @Inject
     constructor(
@@ -64,8 +80,10 @@ class ImpresionDePedidoEnLinea internal constructor(
         repositorio = repositorio,
         // Una impresora de cocina de ESTE aparato (USB/BT/WiFi guardada) o una activa en la configuración del negocio.
         hayImpresoraDeCocina = {
-            printerService.savedPrinters.value.any { it.isEnabled && it.hasRole(PrinterRole.KITCHEN) } ||
-                printConfigRepository.getCurrentConfig().printers.any { it.active }
+            hayImpresoraDeCocina(
+                localDeCocina = printerService.savedPrinters.value.any { it.isEnabled && it.hasRole(PrinterRole.KITCHEN) },
+                config = printConfigRepository.getCurrentConfig(),
+            )
         },
         venueId = { secureStorage.venueId },
         despachar = { venue, lineas, folio, tipo, orderId, encabezado ->
@@ -84,16 +102,28 @@ class ImpresionDePedidoEnLinea internal constructor(
 
     private val enCurso: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** orderId -> cuándo (reloj) falló aquí por última vez. En memoria: reiniciar la app lo olvida, que es lo seguro. */
+    private val fallosRecientes = ConcurrentHashMap<String, Long>()
+
     suspend fun imprimirSiToca(order: OnlineOrder, deviceId: String): ResultadoImpresion {
+        // Sin renglones no hay comanda que sacar: reclamar sólo retendría el pedido a otro aparato.
+        if (order.items.isEmpty()) return ResultadoImpresion.NoSalio
+        val ahora = reloj()
+        fallosRecientes.entries.removeIf { ahora - it.value >= DESCANSO_TRAS_NO_SALIO_MS }
+        if (fallosRecientes.containsKey(order.orderId)) return ResultadoImpresion.NoSalio
         if (!enCurso.add(order.orderId)) return ResultadoImpresion.YaEnCurso
         return try {
             withContext(NonCancellable) {
-                if (!hayImpresoraDeCocina()) return@withContext ResultadoImpresion.NoSalio
-                if (!repositorio.claimPrint(order.orderId, deviceId)) return@withContext ResultadoImpresion.OtroAparato
-                if (!sacarComanda(order)) return@withContext ResultadoImpresion.NoSalio
-                // Si la confirmación se pierde, el papel ya salió: a los 90 s otro aparato puede repetirla (límite aceptado, R20).
-                repositorio.confirmPrint(order.orderId, deviceId)
-                ResultadoImpresion.Impresa
+                val resultado = run {
+                    if (!hayImpresoraDeCocina()) return@run ResultadoImpresion.NoSalio
+                    if (!repositorio.claimPrint(order.orderId, deviceId)) return@run ResultadoImpresion.OtroAparato
+                    if (!sacarComanda(order)) return@run ResultadoImpresion.NoSalio
+                    // Si la confirmación se pierde, el papel ya salió: a los 90 s otro aparato puede repetirla (límite aceptado, R20).
+                    repositorio.confirmPrint(order.orderId, deviceId)
+                    ResultadoImpresion.Impresa
+                }
+                if (resultado == ResultadoImpresion.NoSalio) fallosRecientes[order.orderId] = reloj() else fallosRecientes.remove(order.orderId)
+                resultado
             }
         } finally {
             enCurso.remove(order.orderId)
@@ -149,6 +179,8 @@ fun encabezadoDeComanda(order: OnlineOrder): List<String> = listOfNotNull(
     order.customerName?.trim()?.takeIf { it.isNotEmpty() },
     order.customerPhone?.trim()?.takeIf { it.isNotEmpty() },
     order.estimatedReadyAt?.let { TextosPedidosEnLinea.listoALas(VenueTimeZone.at(it).format(FORMATO_HORA_COMANDA)) },
-    if (estaPagado(order)) TextosPedidosEnLinea.PAGADO else TextosPedidosEnLinea.cobrarAlRecoger(formatoPesos(order.remainingCents)),
+    // Lo que el mostrador no se puede equivocar: la línea del dinero va en negrita.
+    MARCA_NEGRITA_ENCABEZADO +
+        if (estaPagado(order)) TextosPedidosEnLinea.PAGADO else TextosPedidosEnLinea.cobrarAlRecoger(formatoPesos(order.remainingCents)),
     order.note?.trim()?.takeIf { it.isNotEmpty() }?.let { TextosPedidosEnLinea.notaDelPedido(it) },
 )

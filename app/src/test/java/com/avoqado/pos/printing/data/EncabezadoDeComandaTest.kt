@@ -3,6 +3,7 @@ package com.avoqado.pos.printing.data
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfig
@@ -122,5 +123,15 @@ class EncabezadoDeComandaTest {
         val sinCampo = json.encodeToString(TrabajoPendiente.serializer(), estado.trabajo!!.copy(encabezado = null))
         assertTrue(!sinCampo.contains("encabezado"))
         assertNull(json.decodeFromString(TrabajoPendiente.serializer(), sinCampo).encabezado)
+    }
+
+    @Test
+    fun `a header line with the bold mark prints in bold and without the mark`() {
+        val t = ticket.copy(encabezado = listOf("Ana", MARCA_NEGRITA_ENCABEZADO + "Cobrar al recoger \$185.50"))
+        val h = hex(ESCPOSPrinter(PaperWidth.MM80).generateKitchenTicket(t))
+        // ESC E 1 · texto · LF · ESC E 0
+        assertTrue(h.contains("1b4501" + hexDe("Cobrar al recoger \$185.50") + "0a1b4500"))
+        // La línea sin marca no lleva negrita propia.
+        assertTrue(h.contains(hexDe("Ana\n")) && !h.contains("1b4501" + hexDe("Ana")))
     }
 }

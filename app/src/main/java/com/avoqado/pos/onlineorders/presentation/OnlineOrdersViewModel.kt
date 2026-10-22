@@ -187,7 +187,7 @@ class OnlineOrdersViewModel internal constructor(
     }
 
     /** Una lectura de la bandeja. Una a la vez: la del latido y la de después de una acción no se pisan. */
-    suspend fun refrescar(comoBandeja: Boolean = false) = mutex.withLock {
+    suspend fun refrescar(comoBandeja: Boolean = false, imprimirPendientes: Boolean = true) = mutex.withLock {
         val primera = try {
             repositorio.inbox("all", comoBandeja, null)
         } catch (e: CancellationException) {
@@ -223,7 +223,7 @@ class OnlineOrdersViewModel internal constructor(
             _leyoAlgunaVez.value = true
             _noSePudoLeer.value = false
             // Mientras la pantalla se ve, cada lectura saca la comanda de lo aceptado que aún nadie imprimió.
-            ordenes.filter { it.needsPrint && it.status in IMPRIMIBLES }.forEach { imprimir(it) }
+            if (imprimirPendientes) ordenes.filter { it.needsPrint && it.status in IMPRIMIBLES }.forEach { imprimir(it) }
         }.onFailure {
             // Se conserva la última lista. «Sin conexión» sólo si de verdad no hay red: un 403 o un JSON roto no lo son.
             Log.d(TAG, "Bandeja sin respuesta: ${it.message}")
@@ -253,10 +253,12 @@ class OnlineOrdersViewModel internal constructor(
     // MARK: - Acciones (sólo en línea, nunca encoladas)
 
     fun aceptar(orderId: String, minutos: Int) {
-        val pedido = buscar(orderId)
         ejecutar(
             orderId, permisoActualizar(), sonidoCambia = true,
-            alHecho = { if (pedido != null) imprimir(pedido) },
+            // Después de releer: se imprime el pedido ACEPTADO que dijo el servidor (con su hora estimada), nunca la foto de
+            // antes de aceptar. Si la relectura falló o el pedido no está, no se imprime de una foto vieja: el siguiente latido
+            // lo hace por `needsPrint`.
+            alHechoYReleido = { buscar(orderId)?.takeIf { it.status in IMPRIMIBLES }?.let { imprimir(it) } },
         ) { repositorio.accept(orderId, minutos) }
     }
 
@@ -323,7 +325,7 @@ class OnlineOrdersViewModel internal constructor(
         permitido: Boolean,
         textoExito: String? = null,
         sonidoCambia: Boolean = false,
-        alHecho: () -> Unit = {},
+        alHechoYReleido: () -> Unit = {},
         llamada: suspend () -> AccionResultado,
     ) {
         if (!permitido) return
@@ -349,8 +351,9 @@ class OnlineOrdersViewModel internal constructor(
                 if (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible) {
                     if (clave != CLAVE_PAUSA && sonidoCambia) sondearVigilante()
                 }
-                if (resultado is AccionResultado.Hecho) alHecho()
-                refrescar()
+                // Los pendientes de impresión los maneja cada acción por su cuenta (aceptar, abajo) o el siguiente latido.
+                refrescar(imprimirPendientes = false)
+                if (resultado is AccionResultado.Hecho) alHechoYReleido()
             } finally {
                 _ocupados.value = _ocupados.value - clave
             }

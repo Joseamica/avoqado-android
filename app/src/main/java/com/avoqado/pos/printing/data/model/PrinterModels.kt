@@ -530,3 +530,6 @@ enum class KitchenPriority {
             VIP -> "*** VIP ***"
         }
 }
+
+/** Una línea del encabezado que empieza con esta marca se imprime en negrita (la marca no sale en el papel). */
+const val MARCA_NEGRITA_ENCABEZADO = "\u0001"

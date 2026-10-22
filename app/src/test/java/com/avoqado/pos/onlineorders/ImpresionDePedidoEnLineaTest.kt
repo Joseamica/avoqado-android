@@ -3,7 +3,11 @@ package com.avoqado.pos.onlineorders
 import com.avoqado.pos.onlineorders.data.ImpresionDePedidoEnLinea
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.data.ResultadoImpresion
+import com.avoqado.pos.onlineorders.data.encabezadoDeComanda
+import com.avoqado.pos.onlineorders.data.hayImpresoraDeCocina
 import com.avoqado.pos.onlineorders.data.lineasDeComanda
+import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
+import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.domain.OnlineOrderModifier
@@ -43,6 +47,8 @@ class ImpresionDePedidoEnLineaTest {
         var compuerta: CompletableDeferred<Unit>? = null
     }
 
+    private var ahora = 1_000_000L
+
     private fun armar(despacho: Despacho = Despacho(), hayImpresora: Boolean = true) = ImpresionDePedidoEnLinea(
         repositorio = repo,
         hayImpresoraDeCocina = { hayImpresora },
@@ -53,6 +59,7 @@ class ImpresionDePedidoEnLineaTest {
             despacho.compuerta?.await()
             despacho.estado
         },
+        reloj = { ahora },
     )
 
     private fun pedido(items: List<OnlineOrderItem> = listOf(renglon("Taco", 2))) = OnlineOrder(
@@ -96,13 +103,13 @@ class ImpresionDePedidoEnLineaTest {
         armar(despacho).imprimirSiToca(conTodo, "dev-1")
         val hora = com.avoqado.pos.core.util.VenueTimeZone.at(conTodo.estimatedReadyAt!!).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         assertEquals(
-            listOf("Ana", "5512345678", "Listo a las $hora", "Cobrar al recoger \$185.50", "Nota: Sin salsa"),
+            listOf("Ana", "5512345678", "Listo a las $hora", "${MARCA_NEGRITA_ENCABEZADO}Cobrar al recoger \$185.50", "Nota: Sin salsa"),
             despacho.encabezado,
         )
         // Pagado, sin hora ni nota ni teléfono: sólo lo que hay.
         val pagado = base.copy(paymentStatus = "PAID", remainingCents = 0, customerPhone = null, estimatedReadyAt = null, note = " ")
         armar(despacho).imprimirSiToca(pagado, "dev-1")
-        assertEquals(listOf("Ana", "Pagado"), despacho.encabezado)
+        assertEquals(listOf("Ana", "${MARCA_NEGRITA_ENCABEZADO}Pagado"), despacho.encabezado)
     }
 
     @Test
@@ -215,5 +222,60 @@ class ImpresionDePedidoEnLineaTest {
         val sin = Despacho()
         assertEquals(ResultadoImpresion.NoSalio, armar(sin, hayImpresora = false).reimprimir(pedido()))
         assertEquals(0, sin.llamadas)
+    }
+
+    @Test
+    fun `after a NoSalio this device does not claim that order again for 3 minutes`() = runTest {
+        coEvery { repo.claimPrint(any(), any()) } returns true
+        coEvery { repo.confirmPrint(any(), any()) } returns true
+        val despacho = Despacho(EstadoDeComanda.NoSalio(listOf("Cocina"), "sin papel", "W-17"))
+        val impresion = armar(despacho)
+        assertEquals(ResultadoImpresion.NoSalio, impresion.imprimirSiToca(pedido(), "dev-1"))
+        coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
+        // Dentro de los 3 minutos: ni reclamo ni papel (otro aparato la puede tomar).
+        ahora += 179_000
+        assertEquals(ResultadoImpresion.NoSalio, impresion.imprimirSiToca(pedido(), "dev-1"))
+        coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
+        assertEquals(1, despacho.llamadas)
+        // «Reimprimir» ignora el descanso.
+        despacho.estado = EstadoDeComanda.Salio
+        assertEquals(ResultadoImpresion.Impresa, impresion.reimprimir(pedido()))
+        // Pasados los 3 minutos vuelve a reclamar.
+        ahora += 2_000
+        assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
+        coVerify(exactly = 2) { repo.claimPrint("p1", "dev-1") }
+    }
+
+    @Test
+    fun `a business printer that is only the receipt printer gives no claim`() {
+        val recibo = PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")
+        val cocina = PrinterInfo("pr_cocina", "Cocina", "NETWORK", "192.168.1.50:9100")
+        // Impresora activa sin estación: es la de recibos.
+        assertFalse(hayImpresoraDeCocina(false, PrintConfig(printers = listOf(recibo))))
+        // Con estación activa que la usa: es de cocina.
+        assertTrue(hayImpresoraDeCocina(false, PrintConfig(printers = listOf(recibo, cocina), stations = listOf(StationInfo("st", "Cocina", printerId = "pr_cocina")))))
+        // Estación apagada o impresora apagada: no cuenta.
+        assertFalse(hayImpresoraDeCocina(false, PrintConfig(printers = listOf(cocina), stations = listOf(StationInfo("st", "Cocina", printerId = "pr_cocina", active = false)))))
+        assertFalse(hayImpresoraDeCocina(false, PrintConfig(printers = listOf(cocina.copy(active = false)), stations = listOf(StationInfo("st", "Cocina", printerId = "pr_cocina")))))
+        // Una cocina local del aparato basta.
+        assertTrue(hayImpresoraDeCocina(true, PrintConfig()))
+    }
+
+    @Test
+    fun `an order with no items is never claimed`() = runTest {
+        val despacho = Despacho()
+        val resultado = armar(despacho).imprimirSiToca(pedido(emptyList()), "dev-1")
+        assertEquals(ResultadoImpresion.NoSalio, resultado)
+        assertEquals(0, despacho.llamadas)
+        coVerify(exactly = 0) { repo.claimPrint(any(), any()) }
+    }
+
+    @Test
+    fun `the payment line of the header is marked bold and the others are not`() {
+        val cobrar = encabezadoDeComanda(pedido().copy(remainingCents = 18550))
+        assertTrue(cobrar.single { it.contains("Cobrar al recoger") }.startsWith(MARCA_NEGRITA_ENCABEZADO))
+        assertEquals(listOf("Ana", "5512345678"), cobrar.filterNot { it.contains("Cobrar al recoger") })
+        val pagado = encabezadoDeComanda(pedido().copy(paymentStatus = "PAID", remainingCents = 0))
+        assertTrue(pagado.single { it.contains("Pagado") }.startsWith(MARCA_NEGRITA_ENCABEZADO))
     }
 }
