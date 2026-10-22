@@ -96,7 +96,7 @@ jobs:
     if: needs.decidir.outputs.publicar == 'true'
     # macOS ARM64 como desktop.yml: es donde el build de escritorio ya está probado.
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 75   # hasta 30 min esperando el Release de Android + el build
     steps:
       - uses: actions/checkout@v4
 
@@ -128,6 +128,31 @@ jobs:
           echo "$JRE_SHA256  $RUNNER_TEMP/jre.zip" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/jre.zip" -d "$RUNNER_TEMP/jre"
           test -f "$RUNNER_TEMP/jre/$JRE_CARPETA/bin/javaw.exe"
+
+      # El versionCode del archivo es fijo (55): release.yml pone el de Play sólo dentro de su corrida. Sin esto WINDOWS mandaba
+      # `x-app-version-code` = 55 en todas sus versiones (tablero D3, 21-oct). Se toma el MISMO de Android: el de la etiqueta
+      # v<versión>-<versionCode> del Release que release.yml crea para este commit (la misma búsqueda que «Pegar el ZIP»).
+      - name: El mismo versionCode que Play le dio a Android
+        if: needs.decidir.outputs.prueba != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ETQ=""
+          for i in $(seq 1 60); do
+            ETQ=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=20" \
+              --jq "[.[] | select(.target_commitish == \"$GITHUB_SHA\")][0].tag_name // empty")
+            [ -n "$ETQ" ] && break
+            sleep 30
+          done
+          CODE="${ETQ##*-}"
+          case "$CODE" in ''|*[!0-9]*)
+            echo "::warning::No apareció el Release de Android de $GITHUB_SHA en 30 min ('$ETQ'): WINDOWS sale con el versionCode del archivo."
+            exit 0;;
+          esac
+          sed -i '' "s/^\( *versionCode *= *\)[0-9][0-9]*/\1$CODE/" app/build.gradle.kts
+          APLICADO=$(grep -m1 'versionCode *=' app/build.gradle.kts | tr -dc '0-9')
+          [ "$APLICADO" = "$CODE" ] || { echo "::error::El versionCode no se aplicó ($APLICADO ≠ $CODE)."; exit 1; }
+          echo "::notice::WINDOWS lleva el versionCode $CODE de $ETQ."
 
       - name: Armar el ZIP de producción
         run: |
