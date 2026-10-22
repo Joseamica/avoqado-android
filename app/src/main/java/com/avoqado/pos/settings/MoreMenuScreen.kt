@@ -157,7 +157,7 @@ fun MoreMenuScreen(
     var showPendingWaste by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
-    var showOnlineOrders by remember { mutableStateOf(false) }
+    var showOnlineOrders by rememberSaveable { mutableStateOf(false) }
     // Task 7b: filtro con el que arranca la lista de Pedidos al abrirla.
     // null = "Pedidos" normal, sin tocar filtro. Con valor: Cierre del día
     // → "Cuentas abiertas" abre la lista YA filtrada a abiertas.
