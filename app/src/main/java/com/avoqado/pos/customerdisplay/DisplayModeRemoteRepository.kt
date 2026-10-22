@@ -11,8 +11,11 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
@@ -35,8 +38,14 @@ import kotlin.coroutines.resumeWithException
 sealed interface DisplayModeRemoteOutcome<out T> {
     data class Success<T>(val data: T) : DisplayModeRemoteOutcome<T>
 
-    /** El binding sigue siendo necesario aunque el server no tenga intención activa. */
-    data class NoRequest(val terminalId: String) : DisplayModeRemoteOutcome<Nothing>
+    /**
+     * El binding sigue siendo necesario aunque el server no tenga intención activa; y el sobre del poll (huellas,
+     * capacidad, «repórtame») también, porque la pantalla del cliente lo necesita aunque no haya nada que invertir.
+     */
+    data class NoRequest(
+        val terminalId: String,
+        val signals: PollSignals = PollSignals(),
+    ) : DisplayModeRemoteOutcome<Nothing>
 
     data class Retryable(val status: Int? = null) : DisplayModeRemoteOutcome<Nothing>
 
@@ -53,7 +62,70 @@ sealed interface DisplayModeRemoteOutcome<out T> {
 data class DisplayModeRequestBinding(
     val terminalId: String,
     val request: RemoteDisplayModeRequest,
+    val signals: PollSignals = PollSignals(),
 )
+
+/** Huellas que el poll anuncia (32 hex en minúscula). `null` = el server no la mandó, o no tenía el formato. */
+data class PollFingerprints(
+    val customerDisplay: String? = null,
+    val settings: String? = null,
+)
+
+/**
+ * El resto del sobre del poll. Un servidor viejo no lo manda y todo queda en su default: sin huellas, sin capacidad
+ * de diseño anunciada y sin pedir reporte.
+ */
+data class PollSignals(
+    val fingerprints: PollFingerprints = PollFingerprints(),
+    val designCapability: Int? = null,
+    val capabilityReportRequested: Boolean = false,
+)
+
+/** El bloque de `GET …/customer-display`: la ficha cruda (se normaliza con `toFicha`) y los orígenes de imagen permitidos. */
+@Serializable
+data class CustomerDisplayPayload(
+    val terminalId: String,
+    val ficha: FichaDto,
+    val imageOrigins: List<String> = emptyList(),
+)
+
+/**
+ * El cuerpo del acuse. Todas las propiedades SIN default: con `encodeDefaults = false` una con default se omitiría, y
+ * así los `null` viajan como `null` (el server los trata igual que omitidos).
+ */
+@Serializable
+data class CustomerDisplayAckBody(
+    val installationId: String,
+    val fingerprint: String,
+    val seq: Long,
+    val storedAt: String,
+    val shownAt: String?,
+    val surface: String?,
+    val imagesReady: Int,
+    val imagesPending: Int,
+    val imagesFailed: Int,
+    val unsupportedSchema: Boolean,
+)
+
+/** `accepted` = «guardé lo que dices mostrar»; `current` dice si eso es lo vigente; `reason` sólo cuando no se aceptó. */
+@Serializable
+data class CustomerDisplayAckResponse(
+    val accepted: Boolean,
+    val current: Boolean? = null,
+    val currentFingerprint: String? = null,
+    val reason: String? = null,
+)
+
+/** Lo que la pantalla del cliente agrega al reporte de capacidades: qué versión de diseño entiende y qué instalación es. */
+data class DesignReport(
+    val designVersion: Int,
+    val installationId: String,
+)
+
+private val POLL_FINGERPRINT = Regex("^[0-9a-f]{32}$")
+
+/** La forma de toda huella del server (`canonicalHash.ts`: 32 hex del sha256). */
+internal fun isPollFingerprint(value: String): Boolean = POLL_FINGERPRINT.matches(value)
 
 /** Estado tipado que evita construir un ACK REJECTED sin resultCode. */
 sealed interface DisplayModeAcknowledgement {
@@ -82,26 +154,52 @@ class DisplayModeRemoteRepository @Inject constructor(
     }
     private val jsonMediaType = "application/json".toMediaType()
 
+    /**
+     * Sin [design] el cuerpo es byte a byte el de siempre (sin las llaves nuevas). Con [design], versión de diseño e
+     * instalación viajan juntas, como exige el server. La carrera entre dos instalaciones (409
+     * `CUSTOMER_DISPLAY_INSTALLATION_RACE`) se reintenta en el siguiente ciclo.
+     */
     suspend fun reportCapabilities(
         venueId: String,
         snapshot: DisplayCapabilitySnapshot,
+        design: DesignReport? = null,
     ): DisplayModeRemoteOutcome<Unit> = execute(
         requestFactory = {
-            val payload = CapabilityReportBody(
-                customerDisplay = CustomerDisplayBody(
-                    present = snapshot.present,
-                    invertible = snapshot.invertible,
-                ),
-                displayModeProtocolVersion = DISPLAY_MODE_PROTOCOL_VERSION,
+            val customerDisplay = CustomerDisplayBody(
+                present = snapshot.present,
+                invertible = snapshot.invertible,
             )
+            val body = if (design == null) {
+                json.encodeToString(
+                    CapabilityReportBody(
+                        customerDisplay = customerDisplay,
+                        displayModeProtocolVersion = DISPLAY_MODE_PROTOCOL_VERSION,
+                    ),
+                )
+            } else {
+                json.encodeToString(
+                    CapabilityReportWithDesignBody(
+                        customerDisplay = customerDisplay,
+                        displayModeProtocolVersion = DISPLAY_MODE_PROTOCOL_VERSION,
+                        customerDisplayDesignVersion = design.designVersion,
+                        installationId = design.installationId,
+                    ),
+                )
+            }
             Request.Builder()
                 .url(venueUrl(venueId).newBuilder().addPathSegment("device-capabilities").build())
                 .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
-                .put(json.encodeToString(payload).toRequestBody(jsonMediaType))
+                .put(body.toRequestBody(jsonMediaType))
                 .build()
         },
         decodeSuccess = { DisplayModeRemoteOutcome.Success(Unit) },
-    )
+    ).let { outcome ->
+        if (outcome is DisplayModeRemoteOutcome.Rejected && outcome.status == 409 && outcome.code == INSTALLATION_RACE_CODE) {
+            DisplayModeRemoteOutcome.Retryable(409)
+        } else {
+            outcome
+        }
+    }
 
     suspend fun fetchDisplayModeRequest(
         venueId: String,
@@ -117,8 +215,9 @@ class DisplayModeRemoteRepository @Inject constructor(
             val envelope = json.decodeFromString<PollEnvelope>(body)
             val terminalId = requireBoundedId(envelope.data.terminalId)
             val request = envelope.data.request
+            val signals = pollSignals(envelope.data)
             if (request == null) {
-                DisplayModeRemoteOutcome.NoRequest(terminalId)
+                DisplayModeRemoteOutcome.NoRequest(terminalId, signals)
             } else {
                 val requestId = requireBoundedId(request.requestId)
                 val requestedAt = Instant.parse(request.requestedAt)
@@ -133,9 +232,58 @@ class DisplayModeRemoteRepository @Inject constructor(
                             expiresAt = expiresAt,
                             requestedAt = requestedAt,
                         ),
+                        signals = signals,
                     ),
                 )
             }
+        },
+    )
+
+    /** La ficha de ESTE aparato (`GET …/customer-display`), con los orígenes de imagen que el server permite. */
+    suspend fun fetchCustomerDisplay(
+        venueId: String,
+    ): DisplayModeRemoteOutcome<CustomerDisplayPayload> = execute(
+        requestFactory = {
+            Request.Builder()
+                .url(venueUrl(venueId).newBuilder().addPathSegment("customer-display").build())
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
+                .get()
+                .build()
+        },
+        decodeSuccess = { body -> DisplayModeRemoteOutcome.Success(customerDisplayPayload(body)) },
+    )
+
+    /**
+     * El esquema se lee ANTES que el DTO: una ficha de otra versión puede cambiar el TIPO de un campo y, decodificada
+     * directo, tumbaría el 2xx (Retryable para siempre). Así llega con sólo su esquema y su huella, y el sync la acusa
+     * `unsupportedSchema`. Sin `schemaVersion` entero, sí es una respuesta rota (Retryable).
+     */
+    private fun customerDisplayPayload(body: String): CustomerDisplayPayload {
+        val data = json.decodeFromString<CustomerDisplayRawEnvelope>(body).data
+        val raw = data.ficha as JsonObject
+        val schemaVersion = (raw["schemaVersion"] as JsonPrimitive).intOrNull ?: error("schemaVersion no es entero")
+        val ficha = if (schemaVersion == SUPPORTED_SCHEMA_VERSION) {
+            json.decodeFromJsonElement(FichaDto.serializer(), raw)
+        } else {
+            FichaDto(schemaVersion = schemaVersion, fingerprint = (raw["fingerprint"] as? JsonPrimitive)?.contentOrNull.orEmpty())
+        }
+        return CustomerDisplayPayload(terminalId = data.terminalId, ficha = ficha, imageOrigins = data.imageOrigins)
+    }
+
+    /** El acuse: lo que la tablet DICE tener guardado y mostrar (`PUT …/customer-display/ack`). */
+    suspend fun acknowledgeCustomerDisplay(
+        venueId: String,
+        body: CustomerDisplayAckBody,
+    ): DisplayModeRemoteOutcome<CustomerDisplayAckResponse> = execute(
+        requestFactory = {
+            Request.Builder()
+                .url(venueUrl(venueId).newBuilder().addPathSegment("customer-display").addPathSegment("ack").build())
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
+                .put(json.encodeToString(body).toRequestBody(jsonMediaType))
+                .build()
+        },
+        decodeSuccess = { response ->
+            DisplayModeRemoteOutcome.Success(json.decodeFromString<CustomerDisplayAckEnvelope>(response).data)
         },
     )
 
@@ -174,6 +322,28 @@ class DisplayModeRemoteRepository @Inject constructor(
         },
         decodeSuccess = { DisplayModeRemoteOutcome.Success(Unit) },
     )
+
+    /**
+     * Cada bloque del sobre se decodifica APARTE: uno roto cae a su default y nunca tumba la entrega de la solicitud
+     * de inversión. `promotions` no se lee todavía (F3).
+     */
+    private fun pollSignals(data: PollData): PollSignals {
+        val fingerprints = data.fingerprints?.let { element ->
+            runCatching { json.decodeFromJsonElement(PollFingerprintsWire.serializer(), element) }.getOrNull()
+        }
+        return PollSignals(
+            fingerprints = PollFingerprints(
+                customerDisplay = fingerprints?.customerDisplay?.takeIf(::isPollFingerprint),
+                settings = fingerprints?.settings?.takeIf(::isPollFingerprint),
+            ),
+            designCapability = data.capabilities?.let { element ->
+                runCatching { json.decodeFromJsonElement(PollCapabilitiesWire.serializer(), element) }.getOrNull()
+            }?.customerDisplayDesign?.takeIf { it > 0 },   // ≤ 0 = no anunciada
+            capabilityReportRequested = data.capabilityReport?.let { element ->
+                runCatching { json.decodeFromJsonElement(PollCapabilityReportWire.serializer(), element) }.getOrNull()
+            }?.requested ?: false,
+        )
+    }
 
     private fun venueUrl(venueId: String): HttpUrl {
         val base = baseUrlProvider().toHttpUrlOrNull()
@@ -344,6 +514,28 @@ class DisplayModeRemoteRepository @Inject constructor(
         val displayModeProtocolVersion: Int,
     )
 
+    /** Propiedades SIN default: con `encodeDefaults = false` una con default se omitiría y el server la pide junto a la otra. */
+    @Serializable
+    private data class CapabilityReportWithDesignBody(
+        val customerDisplay: CustomerDisplayBody,
+        val displayModeProtocolVersion: Int,
+        val customerDisplayDesignVersion: Int,
+        val installationId: String,
+    )
+
+    @Serializable
+    private data class CustomerDisplayAckEnvelope(val data: CustomerDisplayAckResponse)
+
+    @Serializable
+    private data class CustomerDisplayRawEnvelope(val data: CustomerDisplayRawPayload)
+
+    @Serializable
+    private data class CustomerDisplayRawPayload(
+        val terminalId: String,
+        val ficha: JsonElement,
+        val imageOrigins: List<String> = emptyList(),
+    )
+
     @Serializable
     private data class PollEnvelope(val data: PollData)
 
@@ -351,7 +543,23 @@ class DisplayModeRemoteRepository @Inject constructor(
     private data class PollData(
         val terminalId: String,
         val request: PollRequest?,
+        // Se leen crudos y se decodifican aparte (ver `pollSignals`): un bloque roto no rompe el sobre.
+        val fingerprints: JsonElement? = null,
+        val capabilities: JsonElement? = null,
+        val capabilityReport: JsonElement? = null,
     )
+
+    @Serializable
+    private data class PollFingerprintsWire(
+        val customerDisplay: String? = null,
+        val settings: String? = null,
+    )
+
+    @Serializable
+    private data class PollCapabilitiesWire(val customerDisplayDesign: Int? = null)
+
+    @Serializable
+    private data class PollCapabilityReportWire(val requested: Boolean = false)
 
     @Serializable
     private data class PollRequest(
@@ -371,6 +579,7 @@ class DisplayModeRemoteRepository @Inject constructor(
 
     private companion object {
         const val DISPLAY_MODE_PROTOCOL_VERSION = 1
+        const val INSTALLATION_RACE_CODE = "CUSTOMER_DISPLAY_INSTALLATION_RACE"
         const val BACKGROUND_HEADER_VALUE = "1"
         const val MAX_SERVER_ID_LENGTH = 128
         const val MAX_RESPONSE_BODY_BYTES = 64L * 1024L

@@ -89,6 +89,13 @@ class AppState @Inject constructor(
     @Inject
     lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
 
+    /**
+     * La marca del negocio en la pantalla del cliente (nombre y logo en reposo). Por miembro, como las de arriba; en Windows
+     * Guice la inyecta igual. Se pone al día en cada cambio de sesión ([notifyDeviceSessionChanged]).
+     */
+    @Inject
+    lateinit var customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState
+
     private fun detenerRedLocal() {
         if (::preparationDelivery.isInitialized) preparationDelivery.stop()
         if (::lanHubService.isInitialized) lanHubService.stop()
@@ -97,6 +104,11 @@ class AppState @Inject constructor(
     }
 
     private fun notifyDeviceSessionChanged() {
+        // La marca del negocio en la pantalla del cliente (QA F2-1): antes sólo se ponía al volver la app al frente, así que
+        // tras iniciar sesión el reposo seguía con la de Avoqado. Sin sesión queda vacía ⇒ la de Avoqado, a propósito.
+        if (::customerDisplayState.isInitialized) {
+            customerDisplayState.setVenueBranding(secureStorage.venueDisplayName, secureStorage.venueLogo)
+        }
         tableSyncCoordinator.onSessionChanged()
         syncOutbox.refreshQ15Observation()
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
@@ -158,8 +170,13 @@ class AppState @Inject constructor(
      */
     private var settingsRefreshJob: Job? = null
 
-    private fun refreshPlanAndSettings(rebuildNavigation: Boolean = true) {
-        if (settingsRefreshJob?.isActive == true) return
+    /**
+     * ON_RESUME y la reconexión NO se apilan sobre uno en vuelo (evita ráfagas). El login sí lo reemplaza
+     * ([replaceInFlight]): descartar el suyo dejaba a la sesión nueva con los ajustes de la anterior, y la respuesta
+     * vieja ya no puede escribir nada (boleto por petición en [TpvSettingsRepository]).
+     */
+    private fun refreshPlanAndSettings(rebuildNavigation: Boolean = true, replaceInFlight: Boolean = false) {
+        if (replaceInFlight) settingsRefreshJob?.cancel() else if (settingsRefreshJob?.isActive == true) return
         settingsRefreshJob = viewModelScope.launch {
             tpvSettingsRepository.refreshSettings()
             if (_isLoggedIn.value) {
@@ -176,6 +193,16 @@ class AppState @Inject constructor(
         if (_isLoggedIn.value) refreshPlanAndSettings(rebuildNavigation = false)
     }
 
+    /**
+     * Al cerrar la sesión (a mano o porque expiró) se sueltan los ajustes de la sucursal y se cancela el refresco en vuelo:
+     * si no, la siguiente sesión arranca con la propina, las estrellas y el PIN de gerente de la anterior.
+     */
+    private fun soltarAjustesDeLaSesion() {
+        settingsRefreshJob?.cancel()
+        settingsRefreshJob = null
+        tpvSettingsRepository.clearCache()
+    }
+
     private val _isLoggedIn = MutableStateFlow(secureStorage.isLoggedIn)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
@@ -184,6 +211,7 @@ class AppState @Inject constructor(
         // to Landing instead of leaving a zombie session behind.
         viewModelScope.launch {
             secureStorage.sessionInvalidated.collect {
+                soltarAjustesDeLaSesion()
                 tableSyncCoordinator.onSessionInvalidated()
                 stopInventorySync()
                 detenerRedLocal()
@@ -417,7 +445,7 @@ class AppState @Inject constructor(
         refreshTabs()
         // Pull venue settings (incl. the plan block) right after login so
         // plan gates apply without waiting for a venue switch.
-        refreshPlanAndSettings()
+        refreshPlanAndSettings(replaceInFlight = true)
     }
 
     fun onLogout() {
@@ -445,6 +473,7 @@ class AppState @Inject constructor(
             syncOutbox.stop()
             detenerRedLocal()
             tableSyncCoordinator.onSessionInvalidated()
+            soltarAjustesDeLaSesion()
             secureStorage.clearSession()
             _isLoggedIn.value = false
             notifyDeviceSessionChanged()
