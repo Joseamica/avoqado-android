@@ -158,6 +158,28 @@ class RoleManager @Inject constructor(
         get() = hasVenuePermission("orders:read", fallbackRoles = FLOOR)
 
     /**
+     * Aceptar, rechazar, «Listo», «Entregado» y cobrar un pedido en línea — espejo EXACTO de `orders:update`. Sin él la bandeja se
+     * ve (leer es `orders:read`), pero no se muestra ni un botón de acción. Con la lista real: WAITER, CASHIER, KITCHEN, MANAGER,
+     * ADMIN, OWNER; VIEWER y HOST no. Espejo de iOS.
+     */
+    val canOperateOnlineOrders: Boolean
+        get() = hasVenuePermission("orders:update", fallbackRoles = KDS_RESPALDO)
+
+    /**
+     * Cancelar un pedido en línea que aún no tiene dinero — espejo EXACTO de `orders:cancel-unpaid`. Con la lista real: WAITER,
+     * CASHIER, MANAGER (ADMIN y OWNER por `*:*`). Sin lista, el respaldo es el piso completo. Espejo de iOS.
+     */
+    val canCancelOnlineOrders: Boolean
+        get() = hasVenuePermission("orders:cancel-unpaid", fallbackRoles = FLOOR)
+
+    /**
+     * Pausar o reanudar la tienda en línea — espejo EXACTO de `online-orders:pause` (MANAGER, ADMIN, OWNER). La bandeja deja el
+     * botón a la vista aun sin él: el 403 `overridable` del servidor pide el PIN de un gerente. Espejo de iOS.
+     */
+    val canPauseOnlineOrders: Boolean
+        get() = hasVenuePermission("online-orders:pause", fallbackRoles = MANAGER_UP)
+
+    /**
      * Reportes — espejo de `reports:read` (las rutas `/mobile/venues/:id/reports`).
      *
      * Espejo SIN cambio de tabla: `reports:read` lo tienen exactamente

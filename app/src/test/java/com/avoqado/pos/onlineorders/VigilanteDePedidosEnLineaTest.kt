@@ -210,6 +210,35 @@ class VigilanteDePedidosEnLineaTest {
     }
 
     @Test
+    fun `a discarded poll from the old branch also clears its list and open orders state`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")), active = 2)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals(1, f.vigilante.pendientes.value.size)
+        assertTrue(f.vigilante.hayPedidosAbiertos.value)
+        // La sucursal cambia mientras el siguiente sondeo va en vuelo: se descarta, y NO queda el banner de la otra sucursal.
+        f.falso.antes = { f.venue = "v2" }
+        advanceTimeBy(10_000); runCurrent()
+        assertTrue("el banner de la sucursal vieja no se queda", f.vigilante.pendientes.value.isEmpty())
+        assertFalse("tampoco los pedidos abiertos de la vieja", f.vigilante.hayPedidosAbiertos.value)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `a failed poll after a venue switch does not keep the old branch list`() = runTest {
+        val f = armar(Result.success(inbox(listOf(pedido("a")), active = 1)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals(1, f.vigilante.pendientes.value.size)
+        f.venue = "v2"
+        f.falso.respuesta = Result.failure(IOException("sin red"))
+        advanceTimeBy(10_000); runCurrent()
+        assertTrue(f.vigilante.pendientes.value.isEmpty())
+        assertFalse(f.vigilante.hayPedidosAbiertos.value)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
     fun `double onStart does not double the polls`() = runTest {
         val f = armar(Result.success(inbox()))
         f.vigilante.onStart(owner)

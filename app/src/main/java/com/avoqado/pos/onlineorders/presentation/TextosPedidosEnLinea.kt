@@ -39,4 +39,27 @@ object TextosPedidosEnLinea {
     val MINUTOS_ACEPTAR: List<Int> = listOf(10, 15, 20, 30)
     val MINUTOS_PAUSA: List<Int> = listOf(15, 30, 60)
     const val REANUDAR = "Reanudar"
+
+    // --- Textos de la pantalla que el Anexo A no fija (iOS debe copiarlos tal cual) ---
+    const val SE_MUESTRAN_ULTIMOS = "Se muestran los últimos 50"
+    const val CARGAR_MAS = "Cargar más"
+    const val SIN_PEDIDOS = "No hay pedidos por ahora"
+    const val PAUSAR_TIENDA = "Pausar pedidos"
+    const val PAUSAR_TITULO = "Pausar pedidos en línea"
+    const val PAUSAR_AYUDA = "La tienda deja de recibir pedidos nuevos durante este tiempo."
+    fun pausadaPor(minutos: Int) = "Pedidos en pausa por $minutos min"
+    const val PAUSA_REANUDADA = "Pedidos reanudados"
+    const val ACEPTAR_TITULO = "¿En cuántos minutos estará listo?"
+    fun minutosEtiqueta(minutos: Int) = "$minutos min"
+    const val RECHAZAR_TITULO = "¿Por qué lo rechazas?"
+    const val CANCELAR = "Cancelar pedido"
+    const val CANCELAR_TITULO = "¿Cancelar este pedido?"
+    const val CANCELAR_CONFIRMA = "Cancelar pedido"
+    const val CANCELAR_VOLVER = "Volver"
+    const val CERRAR = "Cerrar"
+    const val ENTENDIDO = "Entendido"
+    const val TEASER_TITULO = "Pedidos en línea"
+    const val TEASER_CUERPO = "Recibe los pedidos de la tienda web de tu negocio y acéptalos desde aquí."
+    fun teaserPlan(plan: String) = "Incluido en el Plan $plan"
+    fun pedidoNumero(folio: String) = "Pedido #$folio"
 }

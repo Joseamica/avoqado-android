@@ -358,6 +358,13 @@ private fun MainScaffold(
     var ultimaPestana by remember { mutableStateOf(startTab) }
     LaunchedEffect(pestanaDeLaRuta) { if (pestanaDeLaRuta != null) ultimaPestana = pestanaDeLaRuta }
     val pestanaMarcada = PestanaDeLaBarra.marcada(pestanaDeLaRuta, ultimaPestana, graphVisibleTabs, startTab)
+    // «Ver» del banner de «Pedidos en línea»: debe abrir la bandeja desde CUALQUIER pantalla. Aquí (siempre compuesto) se lleva
+    // a la pestaña «Más»; allí `MoreMenuScreen` abre la superposición y llama `bandejaAtendida()`. Es un StateFlow, no un evento,
+    // para que el toque no se pierda si «Más» todavía no está compuesta.
+    val bandejaSolicitada by vigilanteDePedidos.bandejaSolicitada.collectAsState()
+    LaunchedEffect(bandejaSolicitada) {
+        if (bandejaSolicitada && pestanaDeLaRuta != MainTab.MORE) navigateToTab(MainTab.MORE)
+    }
     fun tocarPestana(tab: MainTab) {
         if (tab == MainTab.MORE && tab == pestanaMarcada) moreTabReselectionTick++
         when (PestanaDeLaBarra.alTocar(tab, pestanaMarcada, enUnaPestana = pestanaDeLaRuta != null)) {

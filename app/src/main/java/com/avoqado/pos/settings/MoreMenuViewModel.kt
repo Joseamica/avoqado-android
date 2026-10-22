@@ -53,7 +53,31 @@ class MoreMenuViewModel @Inject constructor(
     private val bloqueoDeMerma: com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan,
     private val pendingWasteDao: com.avoqado.pos.inventory.waste.data.PendingWasteDao,
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
+    private val vigilanteDePedidos: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea,
 ) : ViewModel() {
+
+    // MARK: - Pedidos en línea (A3)
+
+    /** Los pedidos por aceptar de ahora: su número es la insignia de la entrada. */
+    val pedidosEnLineaPendientes = vigilanteDePedidos.pendientes
+
+    /** `pendientes + activos > 0`: con eso la entrada se atiende aunque el plan haya vencido (R14). */
+    val hayPedidosEnLineaAbiertos = vigilanteDePedidos.hayPedidosAbiertos
+
+    /** «Ver» del banner pidió abrir la bandeja (el NavGraph ya nos trajo aquí). */
+    val bandejaSolicitada = vigilanteDePedidos.bandejaSolicitada
+    fun bandejaAtendida() = vigilanteDePedidos.bandejaAtendida()
+
+    /** OCULTA sin `orders:read`; TEASER sin plan y sin pedidos abiertos; ABIERTA en cualquier otro caso. */
+    val entradaPedidosEnLinea: com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea
+        get() = com.avoqado.pos.onlineorders.presentation.entradaDePedidosEnLinea(
+            puedeLeer = roleManager.canReadOnlineOrders,
+            tienePlan = planManager.hasFeature("ONLINE_ORDERING"),
+            hayPedidosAbiertos = vigilanteDePedidos.hayPedidosAbiertos.value,
+        )
+
+    val pedidosEnLineaTierLabel: String
+        get() = planManager.requiredTierLabel("ONLINE_ORDERING") ?: "Pro"
 
     /** Cómo se llama este aparato en el panel, para la pantalla «Impresoras y cajón». null = no se sabe. */
     val nombreDeEsteAparato: StateFlow<String?> = tpvSettingsRepository.terminalNavigation

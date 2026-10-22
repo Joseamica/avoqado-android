@@ -114,6 +114,19 @@ class VigilanteDePedidosEnLinea internal constructor(
     private var sonido: Job? = null
     @Volatile private var ultimosConteos: Inbox? = null
 
+    /** La sucursal de la que vienen [pendientes] y los conteos de ahora; null = no hay datos de ninguna. */
+    @Volatile private var venueDeLosDatos: String? = null
+
+    /** Suelta lo de una sucursal que ya no es la activa: ni su banner, ni su insignia, ni su sonido. */
+    private fun olvidarDatos() {
+        ultimosConteos = null
+        venueDeLosDatos = null
+        _pendientes.value = emptyList()
+        silenciados.value = emptySet()
+        _hayPedidosAbiertos.value = false
+        _sinConexion.value = false
+    }
+
     /** Falso desde cada [onStart] hasta el primer sondeo BUENO: con datos viejos del segundo plano no suena nada. */
     private val sonidoListo = MutableStateFlow(false)
 
@@ -156,13 +169,12 @@ class VigilanteDePedidosEnLinea internal constructor(
     private suspend fun sondearUnaVez() {
         if (!puedeLeer()) {
             // Sin sesión o sin orders:read: no se consulta NADA y no queda nada colgado (ni lista, ni sonido, ni aviso).
-            ultimosConteos = null
-            _pendientes.value = emptyList()
-            _sinConexion.value = false
-            _hayPedidosAbiertos.value = false
+            olvidarDatos()
             return
         }
         val venue = venueActual()
+        // Cambió la sucursal desde el último sondeo bueno: lo de la anterior no se queda ni un instante (aunque este sondeo falle).
+        if (venueDeLosDatos != null && venueDeLosDatos != venue) olvidarDatos()
         val resultado = try {
             consultar("pending", false)
         } catch (e: CancellationException) {
@@ -172,10 +184,13 @@ class VigilanteDePedidosEnLinea internal constructor(
         }
         if (venueActual() != venue) {
             Log.d(TAG, "Sondeo de otra sucursal descartado")
+            // El banner y la insignia de la sucursal de la que venimos no se pueden quedar colgados (A2, ruling 16).
+            olvidarDatos()
             return
         }
         resultado.onSuccess { inbox ->
             ultimosConteos = inbox
+            venueDeLosDatos = venue
             val lista = inbox.orders.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
             _pendientes.value = lista
             silenciados.value = silenciados.value intersect lista.map { it.orderId }.toSet()
