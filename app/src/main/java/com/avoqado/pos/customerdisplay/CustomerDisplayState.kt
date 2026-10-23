@@ -375,6 +375,9 @@ class CustomerDisplayState @Inject constructor() {
 
     /** Carrito vacío = volver a la marca (no dejar un carrito fantasma). */
     fun showCart(state: com.avoqado.pos.pos.presentation.cart.CartState) {
+        // El carrito VACÍO no quita el "Gracias": al cobrar, el carrito se vacía en el mismo instante y el gracias (con
+        // el texto propio del negocio) duraba ~0.1 s (tablero D2, 21-oct). Lo quitan su tiempo o una venta nueva.
+        if (state.items.isEmpty() && _content.value is CustomerContent.Done) return
         // Una venta nueva cancela el timer del "Gracias": si no, el timer viejo
         // borraría este carrito 30 s después.
         revertJob?.cancel()
