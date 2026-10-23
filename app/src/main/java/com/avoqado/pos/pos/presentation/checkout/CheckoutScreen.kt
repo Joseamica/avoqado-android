@@ -151,6 +151,8 @@ fun CheckoutScreen(
         areaTicketOperations.retryPendingPrintRecords()
         onPauseOrDispose { }
     }
+    // Regla 10 (vales, r7): la venta con abono que el carrito no trae, para el aviso fijo «Cobrar saldo».
+    val saldoDeVales by cartViewModel.saldoDeVales.collectAsState()
     val scaleCaptureViewModel: ScaleCaptureViewModel = hiltViewModel()
     val scaleState by scaleCaptureViewModel.state.collectAsState()
 
@@ -266,7 +268,7 @@ fun CheckoutScreen(
     var promocionAQuitar by remember { mutableStateOf<CartItem?>(null) }
     val quitarLineaDelCarrito: (String) -> Unit = { itemId ->
         val linea = cartState.items.firstOrNull { it.id == itemId }
-        if (linea?.promotionInstanceId != null) promocionAQuitar = linea else cartViewModel.removeItem(itemId)
+        if (linea?.promotionInstanceId != null) promocionAQuitar = linea else cartViewModel.quitarPorElCajero(itemId)
     }
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
@@ -490,6 +492,9 @@ fun CheckoutScreen(
         // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
         // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
         if (cartViewModel.hayConsultasDeCodigo) return
+        // Regla 11 (vales) y tablero D3 (venta normal): una venta a medio cobrar sólo se cobra por su saldo; el carrito dice
+        // qué quitar. Antes lo agregado se cobraba como venta nueva llevándose el saldo de la vieja.
+        if (cartViewModel.detenerCobroDeVentaCambiada()) return
         if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
             savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
             return
@@ -782,11 +787,13 @@ fun CheckoutScreen(
                 }
 
                 // Right panel - Cart
-                Box(
+                Column(
                     modifier = Modifier
                         .weight(if (modoPanelPromos == PanelMode.SIDE_PANEL) 0.25f else 0.5f)
                         .fillMaxHeight(),
                 ) {
+                    saldoDeVales?.let { AvisoSaldoDeVales(it, onCobrar = cartViewModel::cobrarSaldoDeVales) }
+                    Box(modifier = Modifier.weight(1f)) {
                     CartPanelView(
                         cartState = cartState,
                         onItemTap = { item -> selectedCartItem = item },
@@ -798,6 +805,10 @@ fun CheckoutScreen(
                         onSaveCart = {
                             if (cartViewModel.saveCurrentCart()) {
                                 showSavedSnackbar = true
+                            } else if (cartViewModel.vaciarBloqueadoPorAbono()) {
+                                savedCartError = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+                            } else if (cartViewModel.hayVentaAMedias()) {
+                                savedCartError = com.avoqado.pos.pos.presentation.cart.VENTA_A_MEDIAS_NO_SE_GUARDA
                             } else if (!cartState.isEmpty && cartState.items.none { it.locked }) {
                                 savedCartError = "No se pudo guardar el carrito. Sigue aquí; intenta de nuevo."
                             }
@@ -837,6 +848,7 @@ fun CheckoutScreen(
                         primaryActionEnabled = !areaOperationsState.issuing,
                         teclaCobrar = "F12",
                     )
+                    }
                 }
             }
         }
@@ -961,6 +973,8 @@ fun CheckoutScreen(
                             }
                         }
                     }
+
+                    saldoDeVales?.let { AvisoSaldoDeVales(it, onCobrar = cartViewModel::cobrarSaldoDeVales) }
 
                     // Bottom cart bar (iPhone only)
                     if (!cartState.isEmpty) {
@@ -1126,6 +1140,10 @@ fun CheckoutScreen(
             onSaveCart = {
                 if (cartViewModel.saveCurrentCart()) {
                     showSavedSnackbar = true
+                } else if (cartViewModel.vaciarBloqueadoPorAbono()) {
+                    savedCartError = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+                } else if (cartViewModel.hayVentaAMedias()) {
+                    savedCartError = com.avoqado.pos.pos.presentation.cart.VENTA_A_MEDIAS_NO_SE_GUARDA
                 } else if (!cartState.isEmpty && cartState.items.none { it.locked }) {
                     savedCartError = "No se pudo guardar el carrito. Sigue aquí; intenta de nuevo."
                 }
@@ -1420,6 +1438,17 @@ fun CheckoutScreen(
             message = "Producto sin existencias",
             subtitle = aviso,
             onDismiss = cartViewModel::consumeStockWarning,
+        )
+    }
+
+    // Vales (D5 y rediseño r7): por qué no se dejó algo, o qué hacer para cobrar el saldo.
+    val avisoDeVales by cartViewModel.avisoDeVales.collectAsState()
+    avisoDeVales?.let { aviso ->
+        AvoqadoWarningToast(
+            message = if (aviso == com.avoqado.pos.pos.presentation.cart.VENTA_A_MEDIAS_CAMBIADA) "Venta a medio cobrar" else "Venta de vales",
+            subtitle = aviso,
+            durationMs = 6000L,
+            onDismiss = cartViewModel::consumeAvisoDeVales,
         )
     }
 
@@ -1821,23 +1850,6 @@ fun CheckoutScreen(
         }
     }
 
-    // 🔴 DINERO. Se agregó mercancía a una venta que quedó a medio cobrar: NO se
-    // bloquea (un POS jamás impide vender), pero tampoco se cobra en silencio
-    // contra la orden vieja. Va DESPUÉS del overlay de pago a propósito — lo que
-    // se compone después se dibuja encima, y este aviso sale justo al abrirse el
-    // cobro; detrás del overlay no lo vería nadie.
-    val splitWarning by cartViewModel.splitWarning.collectAsState()
-    splitWarning?.let { aviso ->
-        AvoqadoWarningToast(
-            message = "Venta anterior a medio cobrar",
-            subtitle = aviso,
-            // Más que el default de 2.6 s: esto tiene consecuencia en el dinero
-            // (una orden queda abierta) y hay que darle tiempo de leerlo.
-            durationMs = 6000L,
-            onDismiss = cartViewModel::consumeSplitWarning,
-        )
-    }
-
     // ── Upsell "¿Algo más?" — la tira del cajero ──────────────────────────────
     // Se pinta ENCIMA, anclada abajo: el cobro es el acto principal y esto no
     // puede secuestrar la pantalla. Sale sola cuando el momento se resuelve.
@@ -1996,7 +2008,19 @@ fun CheckoutScreen(
     }
 
     // Note dialog for keypad custom amount
-    if (showClearCartConfirm) {
+    // 🔴 D5 (20-oct): una venta de vales con abono no se vacía (como Toast y Clover): el abono ya está en la caja. Se dice
+    // por qué y qué hacer, en vez de un botón que no hace nada.
+    if (showClearCartConfirm && cartViewModel.vaciarBloqueadoPorAbono()) {
+        AvoqadoDialog(
+            title = "No se puede vaciar",
+            description = com.avoqado.pos.payment.presentation.VALES_CON_ABONO,
+            onDismiss = { showClearCartConfirm = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { showClearCartConfirm = false })
+            },
+            content = {},
+        )
+    } else if (showClearCartConfirm) {
         AvoqadoDialog(
             title = "¿Vaciar carrito?",
             description = if (cartState.reservationId != null)
@@ -2766,4 +2790,29 @@ private fun IPhoneCartBar(
  * al confirmarlo y lo escaneado se perdía sin cobrarse (pendiente del 19-oct); iOS ya lo ignora así (`CheckoutView`,
  * `guard !showPaymentFlow`). Mientras se emite un vale, tampoco: al terminar se vacía el carrito (Codex final #3).
  */
+/**
+ * 🔴 DINERO (regla 10, rediseño r7, 21-oct). Una venta de vales con abono que el carrito ya no trae (salió por cualquier
+ * puerta: cambiar usuario, reimprimir, reiniciar…). Fijo hasta que se cobre su saldo, como Toast deja la cuenta abierta.
+ * Mismo texto en iOS.
+ */
+@Composable
+private fun AvisoSaldoDeVales(saldo: com.avoqado.pos.pos.presentation.cart.SaldoDeVales, onCobrar: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(com.avoqado.pos.designsystem.theme.Warning.copy(alpha = 0.15f))
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Venta de vales con saldo pendiente: ${com.avoqado.pos.core.util.formatMoneyFromCents(saldo.saldoCents)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+        PrimaryButton(text = "Cobrar saldo", onClick = onCobrar)
+    }
+}
+
 internal fun codigoEntraALaVenta(cobroAbierto: Boolean, emitiendoVale: Boolean): Boolean = !cobroAbierto && !emitiendoVale

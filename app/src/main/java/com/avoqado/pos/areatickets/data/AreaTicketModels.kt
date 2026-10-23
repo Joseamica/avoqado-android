@@ -202,12 +202,15 @@ data class CheckoutData(val checkout: AreaTicketCheckout)
 
 @Serializable
 data class NormalCheckoutItem(
-    val productId: String,
+    /** null = importe libre: viaja con [name] y [unitPrice] (centavos), como en una venta normal. */
+    val productId: String?,
     val quantity: Int,
     val notes: String? = null,
     val modifierIds: List<String> = emptyList(),
     val discountId: String? = null,
     val weightQuantity: Double? = null,
+    val name: String? = null,
+    val unitPrice: Int? = null,
 )
 
 @Serializable
@@ -295,3 +298,6 @@ data class DeliveryResolutionData(
 fun String.moneyToCents(): Int = runCatching {
     java.math.BigDecimal(this).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).intValueExact()
 }.getOrDefault(0)
+
+/** Centavos → el texto en pesos con dos decimales que manda el servidor ("12.50"). */
+fun centsToMoney(cents: Int): String = java.math.BigDecimal(cents).movePointLeft(2).setScale(2).toPlainString()

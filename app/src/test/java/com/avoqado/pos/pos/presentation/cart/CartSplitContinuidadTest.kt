@@ -107,7 +107,6 @@ class CartSplitContinuidadTest {
         val vm = createViewModel()
 
         assertNull(vm.resolvePendingSplitOrderForCharge())
-        assertNull(vm.splitWarning.value)
     }
 
     // ── La parte 2 reusa la orden ───────────────────────────────────────────────
@@ -118,7 +117,6 @@ class CartSplitContinuidadTest {
         vm.sembrarSaldoPendiente("order-parte-1")
 
         assertEquals("order-parte-1", vm.resolvePendingSplitOrderForCharge())
-        assertNull(vm.splitWarning.value)
     }
 
     @Test
@@ -290,7 +288,6 @@ class CartSplitContinuidadTest {
         // aviso ámbar puesto — un "venta anterior a medio cobrar" FALSO sobre una
         // venta que ya terminó. Sin ella el test pasa aunque nadie limpie nada,
         // porque el guard de renglones nuevos también devuelve null.
-        assertNull(vm.splitWarning.value)
     }
 
     /**
@@ -399,52 +396,61 @@ class CartSplitContinuidadTest {
 
     // ── El caso feo: mercancía NUEVA a media split ─────────────────────────────
 
+    // Tablero D3 (21-oct, founder «arréglalo de una vez»): antes lo agregado se cobraba como venta NUEVA llevándose el
+    // «Saldo pendiente» de la vieja, que seguía debiéndolo. Ahora el cobro no se abre y el vínculo no se rompe.
     @Test
-    fun `agregar mercancia nueva rompe el vinculo y AVISA — nunca se cobra en silencio`() = runTest {
+    fun `P1 agregar mercancia a una venta a medias no abre el cobro ni rompe el vinculo`() = runTest {
         val vm = createViewModel()
         vm.sembrarSaldoPendiente("order-parte-1")
 
         vm.addProduct(refresco)
 
-        // Cobrar esto contra la orden vieja la dejaría cobrando de más por algo
-        // que no tiene registrado: la venta arranca de cero, con su propia orden.
-        assertNull(vm.resolvePendingSplitOrderForCharge())
-        assertNotNull(vm.splitWarning.value)
-        assertTrue(vm.splitWarning.value!!.contains("saldo"))
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+        assertEquals(VENTA_A_MEDIAS_CAMBIADA, vm.avisoDeVales.value)
+        assertNull("no se cobra contra la orden vieja", vm.resolvePendingSplitOrderForCharge())
 
-        vm.consumeSplitWarning()
-        assertNull(vm.splitWarning.value)
+        // Quitar lo agregado regresa a la venta: se cobra su saldo contra su orden.
+        vm.quitarPorElCajero(vm.cartState.value.items.last().id)
+        assertFalse(vm.detenerCobroDeVentaCambiada())
+        assertEquals("order-parte-1", vm.resolvePendingSplitOrderForCharge())
     }
 
     @Test
-    fun `subir la cantidad de un articulo que YA estaba tambien rompe el vinculo`() = runTest {
+    fun `P1 subir la cantidad de un articulo que YA estaba tambien detiene el cobro`() = runTest {
         val vm = createViewModel()
         // Parte 2 de un BYPRODUCT: en el carrito quedó el refresco sin cobrar.
         vm.addProduct(refresco)
         vm.markPendingSplitOrder("order-parte-1")
 
-        // 🔴 `addProduct` FUSIONA en la línea que ya existe: mismo id, cantidad 2.
-        // Mirar sólo los ids no lo vería, y cobraríamos dos refrescos contra una
-        // orden que sólo tiene uno.
+        // 🔴 `addProduct` FUSIONA en la línea que ya existe: mismo id, cantidad 2. Mirar sólo los ids no lo vería.
         vm.addProduct(refresco)
 
         assertEquals(2, vm.cartState.value.items.first().quantity)
-        assertNull(vm.resolvePendingSplitOrderForCharge())
-        assertNotNull(vm.splitWarning.value)
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+        vm.decrementQuantity(vm.cartState.value.items.first().id)
+        assertFalse("bajarla de nuevo deshace el cambio", vm.detenerCobroDeVentaCambiada())
     }
 
+    // Codex r9: guardar soltaba el vínculo y restaurar dejaba cobrar el saldo dentro de otra venta; pagar después hacía otra
+    // cuenta con el saldo adentro. Una venta a medias no se guarda ni se difiere: primero su saldo.
     @Test
-    fun `una vez roto, el vinculo NO revive aunque se quite el producto nuevo`() = runTest {
+    fun `P1 una venta a medias no se guarda ni se deja para pagar despues`() = runTest {
         val vm = createViewModel()
         vm.sembrarSaldoPendiente("order-parte-1")
         vm.addProduct(refresco)
 
-        assertNull(vm.resolvePendingSplitOrderForCharge())
+        assertFalse(vm.saveCurrentCart("Para luego"))
+        assertEquals(VENTA_A_MEDIAS_NO_SE_GUARDA, vm.createPayLaterOrder("cliente-1").exceptionOrNull()?.message)
+        assertTrue("la venta sigue en el carrito", vm.hayVentaAMedias())
+        assertEquals(2, vm.cartState.value.items.size)
+    }
 
-        val nuevo = vm.cartState.value.items.last().id
-        vm.removeItem(nuevo)
+    @Test
+    fun `sin venta a medias nada detiene el cobro`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(refresco)
 
-        assertNull(vm.resolvePendingSplitOrderForCharge())
+        assertFalse(vm.detenerCobroDeVentaCambiada())
     }
 
     @Test
@@ -460,7 +466,6 @@ class CartSplitContinuidadTest {
         // no en cada toque: si el producto ya no está, la venta sigue siendo la
         // continuación de la anterior.
         assertEquals("order-parte-1", vm.resolvePendingSplitOrderForCharge())
-        assertNull(vm.splitWarning.value)
     }
 
     // ── El CLIENTE de la venta ──────────────────────────────────────────────────
