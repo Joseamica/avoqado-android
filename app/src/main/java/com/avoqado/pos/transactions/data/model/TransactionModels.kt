@@ -112,6 +112,8 @@ data class Transaction(
     /** Nombre del método del negocio («Vale de despensa»), para la pastilla «mismo medio». */
     val tenderLabel: String? = null,
     val customerName: String? = null,
+    val customerId: String? = null,
+    val canAssignCustomer: Boolean? = null,
     val createdAt: String? = null,
     val staffName: String? = null,
     val cardBrand: String? = null,
@@ -355,3 +357,13 @@ data class TransactionFilters(
         true
     }
 }
+
+/** Confirmación pendiente: se recupera sólo al abrir SU venta con la misma identidad, nunca por el outbox. */
+@Serializable
+data class PendingCustomerAssignment(
+    val actorId: String,
+    val venueId: String,
+    val paymentId: String,
+    val customerId: String,
+    val customerName: String,
+)
