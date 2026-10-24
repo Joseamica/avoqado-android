@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -31,8 +33,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -108,6 +114,7 @@ fun OnlineOrdersScreen(
     var cobroAnteriorResuelto by remember { mutableStateOf<String?>(null) }
     val puedeActualizar = viewModel.puedeActualizar
     val puedeCancelar = viewModel.puedeCancelar
+    val dialogo = rememberDialogoDePedido()
 
     Box(Modifier.fillMaxSize()) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -160,69 +167,23 @@ fun OnlineOrdersScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(espacio.lg),
-                            verticalArrangement = Arrangement.spacedBy(espacio.md),
-                        ) {
-                            fun tarjetas(titulo: String, lista: List<OnlineOrder>, seccion: SeccionDePedido, pie: (@Composable () -> Unit)? = null) {
-                                if (lista.isEmpty()) return
-                                item(key = "h-$titulo") {
-                                    Text(
-                                        "$titulo (${lista.size})",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.padding(top = espacio.sm).testTag("seccion-$titulo"),
-                                    )
-                                }
-                                items(lista, key = { "$titulo-${it.orderId}" }) { pedido ->
-                                    OnlineOrderCard(
-                                        pedido = pedido,
-                                        seccion = seccion,
-                                        puedeActualizar = puedeActualizar,
-                                        puedeCancelar = puedeCancelar,
-                                        puedeCobrar = viewModel.puedeCobrar,
-                                        sinConexion = sinConexion,
-                                        ocupado = pedido.orderId in ocupados,
-                                        onAceptar = { viewModel.aceptar(pedido.orderId, it) },
-                                        onRechazar = { viewModel.rechazar(pedido.orderId, it) },
-                                        onListo = { viewModel.marcarListo(pedido.orderId) },
-                                        onEntregado = { viewModel.marcarEntregado(pedido.orderId) },
-                                        onCancelar = { viewModel.cancelar(pedido.orderId) },
-                                        onCobrar = { viewModel.cobrar(pedido) },
-                                        onReimprimir = { viewModel.reimprimir(pedido.orderId) },
-                                    )
-                                }
-                                if (pie != null) item(key = "pie-$titulo") { pie() }
-                            }
-
-                            val cargarMas: @Composable () -> Unit = {
-                                if (hayMas) {
-                                    OutlinedButton(
-                                        onClick = viewModel::cargarMas,
-                                        enabled = !cargandoMas && !sinConexion,
-                                        modifier = Modifier.fillMaxWidth().testTag("cargar-mas"),
-                                    ) { Text(TextosPedidosEnLinea.CARGAR_MAS) }
-                                }
-                            }
-                            tarjetas(TextosPedidosEnLinea.SECCION_POR_ACEPTAR, secciones.porAceptar, SeccionDePedido.POR_ACEPTAR)
-                            tarjetas(TextosPedidosEnLinea.SECCION_EN_PREPARACION, secciones.enPreparacion, SeccionDePedido.EN_PREPARACION, cargarMas)
-                            tarjetas(TextosPedidosEnLinea.SECCION_LISTOS, secciones.listos, SeccionDePedido.LISTOS, cargarMas)
-                            tarjetas(
-                                TextosPedidosEnLinea.SECCION_HOY, secciones.hoy, SeccionDePedido.HOY,
-                                pie = if (hoyRecortado) {
-                                    {
-                                        Text(
-                                            TextosPedidosEnLinea.SE_MUESTRAN_ULTIMOS,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.fillMaxWidth().testTag("hoy-recortado"),
-                                            textAlign = TextAlign.Center,
-                                        )
-                                    }
-                                } else null,
-                            )
-                        }
+                        ListaDeBandeja(
+                            secciones = secciones,
+                            sinConexion = sinConexion,
+                            ocupados = ocupados,
+                            hayMas = hayMas,
+                            cargandoMas = cargandoMas,
+                            hoyRecortado = hoyRecortado,
+                            puedeActualizar = puedeActualizar,
+                            puedeCancelar = puedeCancelar,
+                            puedeCobrar = viewModel.puedeCobrar,
+                            onPedirDialogo = dialogo::abrir,
+                            onListo = viewModel::marcarListo,
+                            onEntregado = viewModel::marcarEntregado,
+                            onCobrar = viewModel::cobrar,
+                            onReimprimir = viewModel::reimprimir,
+                            onCargarMas = viewModel::cargarMas,
+                        )
                     }
                 }
             }
@@ -252,6 +213,15 @@ fun OnlineOrdersScreen(
             confirmButton = { Button(onClick = reconocer) { Text(TextosPedidosEnLinea.ENTENDIDO) } },
         )
     }
+
+    // Los diálogos de las tarjetas viven AQUÍ, fuera de la lista: una fila que sale de la ventana ya no se lleva su diálogo.
+    DialogosDeLaBandeja(
+        dialogo = dialogo,
+        secciones = secciones,
+        onAceptar = viewModel::aceptar,
+        onRechazar = viewModel::rechazar,
+        onCancelar = viewModel::cancelar,
+    )
 
     if (pausando) {
         AlertDialog(
@@ -353,6 +323,226 @@ private fun Teaser(plan: String) {
             TextosPedidosEnLinea.teaserPlan(plan),
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.padding(top = espacio.sm),
+        )
+    }
+}
+
+/** La clave de la primera fila que la lista va a emitir: la cabecera de la primera sección con pedidos (`h-$titulo`). */
+internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja): String? = when {
+    secciones.porAceptar.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_POR_ACEPTAR}"
+    secciones.enPreparacion.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_EN_PREPARACION}"
+    secciones.listos.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_LISTOS}"
+    secciones.hoy.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_HOY}"
+    else -> null
+}
+
+/** «Si estabas hasta arriba, te quedas hasta arriba»: sólo si la primera fila de la lista cambió respecto a la composición anterior. PURA. */
+internal fun debeQuedarseArriba(estabaArriba: Boolean, primeraClaveAntes: String?, primeraClaveAhora: String?): Boolean =
+    estabaArriba && primeraClaveAntes != null && primeraClaveAntes != primeraClaveAhora
+
+/**
+ * El pedido de un diálogo abierto, o `null` si ya no vale: ACEPTAR y RECHAZAR sólo mientras siga en «Por aceptar»; CANCELAR mientras
+ * siga en «En preparación» o «Listos» y sin dinero. PURA.
+ */
+internal fun pedidoDelDialogo(orderId: String, tipo: TipoDeDialogo, secciones: SeccionesBandeja): OnlineOrder? = when (tipo) {
+    TipoDeDialogo.ACEPTAR, TipoDeDialogo.RECHAZAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId }
+    TipoDeDialogo.CANCELAR ->
+        (secciones.enPreparacion + secciones.listos).firstOrNull { it.orderId == orderId && sinDinero(it) }
+}
+
+/** El diálogo abierto de la bandeja (de qué pedido y cuál). Sobrevive a un giro de la tableta: se guarda como dos textos. */
+@Stable
+internal class DialogoDePedido(orderId: String? = null, tipo: TipoDeDialogo? = null) {
+    var orderId by mutableStateOf(orderId)
+        private set
+    var tipo by mutableStateOf(tipo)
+        private set
+
+    fun abrir(orderId: String, tipo: TipoDeDialogo) {
+        this.orderId = orderId
+        this.tipo = tipo
+    }
+
+    fun cerrar() {
+        orderId = null
+        tipo = null
+    }
+
+    companion object {
+        val Guardador: Saver<DialogoDePedido, ArrayList<String>> = Saver(
+            save = { arrayListOf(it.orderId.orEmpty(), it.tipo?.name.orEmpty()) },
+            restore = { (id, nombre) ->
+                val tipo = TipoDeDialogo.entries.firstOrNull { it.name == nombre }
+                if (id.isEmpty() || tipo == null) DialogoDePedido() else DialogoDePedido(id, tipo)
+            },
+        )
+    }
+}
+
+@Composable
+internal fun rememberDialogoDePedido(): DialogoDePedido = rememberSaveable(saver = DialogoDePedido.Guardador) { DialogoDePedido() }
+
+/** La lista de la bandeja: las cuatro secciones con sus tarjetas. Los diálogos de las tarjetas NO viven aquí ([DialogosDeLaBandeja]). */
+@Composable
+internal fun ListaDeBandeja(
+    secciones: SeccionesBandeja,
+    sinConexion: Boolean,
+    ocupados: Set<String>,
+    hayMas: Boolean,
+    cargandoMas: Boolean,
+    hoyRecortado: Boolean,
+    puedeActualizar: Boolean,
+    puedeCancelar: Boolean,
+    puedeCobrar: Boolean,
+    onPedirDialogo: (orderId: String, tipo: TipoDeDialogo) -> Unit,
+    onListo: (String) -> Unit,
+    onEntregado: (String) -> Unit,
+    onCobrar: (OnlineOrder) -> Unit,
+    onReimprimir: (String) -> Unit,
+    onCargarMas: () -> Unit,
+    estadoLista: LazyListState = rememberLazyListState(),
+) {
+    val espacio = AvoqadoTheme.spacing
+
+    // 🔴 «Si estabas hasta arriba, te quedas hasta arriba» (W77Q9). El anclaje por clave de LazyColumn deja como primera fila a la que
+    // ya estaba (`h-En preparación`) y un pendiente que llega ARRIBA queda fuera de la ventana. Se mira ANTES de la medición nueva:
+    // sin gesto en curso y en 0/0 hay que seguir en 0; con la primera fila distinta, `requestScrollToItem(0)` salta el anclaje sólo
+    // en esa medición. Las claves de las filas no se tocan, y si la persona está más abajo (o deslizando) manda el anclaje de siempre.
+    val estabaArriba = estadoLista.firstVisibleItemIndex == 0 && estadoLista.firstVisibleItemScrollOffset == 0 && !estadoLista.isScrollInProgress
+    val primeraClaveAhora = primeraClaveDeLaLista(secciones)
+    val primeraClaveAntes = remember { arrayOfNulls<String>(1) }
+    val quedarseArriba = debeQuedarseArriba(estabaArriba, primeraClaveAntes[0], primeraClaveAhora)
+    SideEffect {
+        if (quedarseArriba) estadoLista.requestScrollToItem(0)
+        primeraClaveAntes[0] = primeraClaveAhora
+    }
+
+    LazyColumn(
+        state = estadoLista,
+        modifier = Modifier.fillMaxSize().widthIn(max = 720.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(espacio.lg),
+        verticalArrangement = Arrangement.spacedBy(espacio.md),
+    ) {
+        fun tarjetas(titulo: String, lista: List<OnlineOrder>, seccion: SeccionDePedido, pie: (@Composable () -> Unit)? = null) {
+            if (lista.isEmpty()) return
+            item(key = "h-$titulo") {
+                Text(
+                    "$titulo (${lista.size})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = espacio.sm).testTag("seccion-$titulo"),
+                )
+            }
+            items(lista, key = { "$titulo-${it.orderId}" }) { pedido ->
+                OnlineOrderCard(
+                    pedido = pedido,
+                    seccion = seccion,
+                    puedeActualizar = puedeActualizar,
+                    puedeCancelar = puedeCancelar,
+                    puedeCobrar = puedeCobrar,
+                    sinConexion = sinConexion,
+                    ocupado = pedido.orderId in ocupados,
+                    onPedirDialogo = { onPedirDialogo(pedido.orderId, it) },
+                    onListo = { onListo(pedido.orderId) },
+                    onEntregado = { onEntregado(pedido.orderId) },
+                    onCobrar = { onCobrar(pedido) },
+                    onReimprimir = { onReimprimir(pedido.orderId) },
+                )
+            }
+            if (pie != null) item(key = "pie-$titulo") { pie() }
+        }
+
+        val cargarMas: @Composable () -> Unit = {
+            if (hayMas) {
+                OutlinedButton(
+                    onClick = onCargarMas,
+                    enabled = !cargandoMas && !sinConexion,
+                    modifier = Modifier.fillMaxWidth().testTag("cargar-mas"),
+                ) { Text(TextosPedidosEnLinea.CARGAR_MAS) }
+            }
+        }
+        tarjetas(TextosPedidosEnLinea.SECCION_POR_ACEPTAR, secciones.porAceptar, SeccionDePedido.POR_ACEPTAR)
+        tarjetas(TextosPedidosEnLinea.SECCION_EN_PREPARACION, secciones.enPreparacion, SeccionDePedido.EN_PREPARACION, cargarMas)
+        tarjetas(TextosPedidosEnLinea.SECCION_LISTOS, secciones.listos, SeccionDePedido.LISTOS, cargarMas)
+        tarjetas(
+            TextosPedidosEnLinea.SECCION_HOY, secciones.hoy, SeccionDePedido.HOY,
+            pie = if (hoyRecortado) {
+                {
+                    Text(
+                        TextosPedidosEnLinea.SE_MUESTRAN_ULTIMOS,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().testTag("hoy-recortado"),
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            } else null,
+        )
+    }
+}
+
+/** Los tres diálogos de las tarjetas (aceptar, rechazar, cancelar), fuera de la lista. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun DialogosDeLaBandeja(
+    dialogo: DialogoDePedido,
+    secciones: SeccionesBandeja,
+    onAceptar: (orderId: String, minutos: Int) -> Unit,
+    onRechazar: (orderId: String, motivo: String) -> Unit,
+    onCancelar: (orderId: String) -> Unit,
+) {
+    val orderId = dialogo.orderId
+    val tipo = dialogo.tipo
+    if (orderId == null || tipo == null) return
+    // Si el pedido ya no está donde la acción vale (otro aparato lo atendió), el diálogo se cierra, igual que cuando vivía en la tarjeta.
+    val pedido = pedidoDelDialogo(orderId, tipo, secciones)
+    if (pedido == null) {
+        SideEffect { dialogo.cerrar() }
+        return
+    }
+    val cerrar = dialogo::cerrar
+    when (tipo) {
+        TipoDeDialogo.ACEPTAR -> AlertDialog(
+            onDismissRequest = cerrar,
+            title = { Text(TextosPedidosEnLinea.ACEPTAR_TITULO) },
+            text = {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    TextosPedidosEnLinea.MINUTOS_ACEPTAR.forEach { minutos ->
+                        Button(onClick = { cerrar(); onAceptar(orderId, minutos) }, modifier = Modifier.testTag("minutos-$minutos")) {
+                            Text(TextosPedidosEnLinea.minutosEtiqueta(minutos))
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = cerrar) { Text(TextosPedidosEnLinea.CERRAR) } },
+        )
+        TipoDeDialogo.RECHAZAR -> AlertDialog(
+            onDismissRequest = cerrar,
+            title = { Text(TextosPedidosEnLinea.RECHAZAR_TITULO) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    TextosPedidosEnLinea.MOTIVOS.forEach { (texto, codigo) ->
+                        OutlinedButton(
+                            onClick = { cerrar(); onRechazar(orderId, codigo) },
+                            modifier = Modifier.fillMaxWidth().testTag("motivo-$codigo"),
+                        ) { Text(texto) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = cerrar) { Text(TextosPedidosEnLinea.CERRAR) } },
+        )
+        TipoDeDialogo.CANCELAR -> AlertDialog(
+            onDismissRequest = cerrar,
+            title = { Text(TextosPedidosEnLinea.CANCELAR_TITULO) },
+            text = { Text(TextosPedidosEnLinea.pedidoNumero(pedido.orderNumber)) },
+            confirmButton = {
+                TextButton(onClick = { cerrar(); onCancelar(orderId) }, modifier = Modifier.testTag("cancelar-confirma")) {
+                    Text(TextosPedidosEnLinea.CANCELAR_CONFIRMA, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = cerrar) { Text(TextosPedidosEnLinea.CANCELAR_VOLVER) } },
         )
     }
 }

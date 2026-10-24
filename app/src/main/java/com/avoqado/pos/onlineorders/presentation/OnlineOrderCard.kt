@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -20,10 +19,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -31,6 +26,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+
+/** Los diálogos que una tarjeta pide a la bandeja (viven fuera de la lista). */
+enum class TipoDeDialogo { ACEPTAR, RECHAZAR, CANCELAR }
 
 /** En qué sección de la bandeja vive la tarjeta: de ella dependen sus acciones. */
 enum class SeccionDePedido { POR_ACEPTAR, EN_PREPARACION, LISTOS, HOY }
@@ -63,18 +61,16 @@ fun OnlineOrderCard(
     puedeCobrar: Boolean,
     sinConexion: Boolean,
     ocupado: Boolean,
-    onAceptar: (minutos: Int) -> Unit,
-    onRechazar: (motivo: String) -> Unit,
+    /** Aceptar, rechazar y cancelar piden su diálogo a la bandeja: viven fuera de la lista (la fila puede salir de la ventana). */
+    onPedirDialogo: (TipoDeDialogo) -> Unit,
     onListo: () -> Unit,
     onEntregado: () -> Unit,
-    onCancelar: () -> Unit,
     /** A5 lo llena: abre el cobro del pedido. En A3 es sólo el botón. */
     onCobrar: () -> Unit,
     /** Vuelve a sacar la comanda en este aparato, sin reclamar. */
     onReimprimir: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    var dialogo by remember { mutableStateOf<Dialogo?>(null) }
     val espacio = AvoqadoTheme.spacing
     Card(
         modifier = modifier.fillMaxWidth().testTag("pedido-${pedido.orderId}"),
@@ -127,10 +123,10 @@ fun OnlineOrderCard(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(espacio.sm), verticalArrangement = Arrangement.spacedBy(espacio.sm)) {
                     when (seccion) {
                         SeccionDePedido.POR_ACEPTAR -> {
-                            Button(onClick = { dialogo = Dialogo.ACEPTAR }, enabled = enLinea, modifier = Modifier.testTag("aceptar-${pedido.orderId}")) {
+                            Button(onClick = { onPedirDialogo(TipoDeDialogo.ACEPTAR) }, enabled = enLinea, modifier = Modifier.testTag("aceptar-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.ACEPTAR)
                             }
-                            OutlinedButton(onClick = { dialogo = Dialogo.RECHAZAR }, enabled = enLinea, modifier = Modifier.testTag("rechazar-${pedido.orderId}")) {
+                            OutlinedButton(onClick = { onPedirDialogo(TipoDeDialogo.RECHAZAR) }, enabled = enLinea, modifier = Modifier.testTag("rechazar-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.RECHAZAR)
                             }
                         }
@@ -153,7 +149,7 @@ fun OnlineOrderCard(
                                 Text(TextosPedidosEnLinea.ENTREGADO)
                             }
                             if (puedeCancelar && sinDinero(pedido)) {
-                                TextButton(onClick = { dialogo = Dialogo.CANCELAR }, enabled = enLinea, modifier = Modifier.testTag("cancelar-${pedido.orderId}")) {
+                                TextButton(onClick = { onPedirDialogo(TipoDeDialogo.CANCELAR) }, enabled = enLinea, modifier = Modifier.testTag("cancelar-${pedido.orderId}")) {
                                     Text(TextosPedidosEnLinea.CANCELAR, color = MaterialTheme.colorScheme.error)
                                 }
                             }
@@ -171,52 +167,4 @@ fun OnlineOrderCard(
             }
         }
     }
-
-    when (dialogo) {
-        Dialogo.ACEPTAR -> AlertDialog(
-            onDismissRequest = { dialogo = null },
-            title = { Text(TextosPedidosEnLinea.ACEPTAR_TITULO) },
-            text = {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                    TextosPedidosEnLinea.MINUTOS_ACEPTAR.forEach { minutos ->
-                        Button(onClick = { dialogo = null; onAceptar(minutos) }, modifier = Modifier.testTag("minutos-$minutos")) {
-                            Text(TextosPedidosEnLinea.minutosEtiqueta(minutos))
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { dialogo = null }) { Text(TextosPedidosEnLinea.CERRAR) } },
-        )
-        Dialogo.RECHAZAR -> AlertDialog(
-            onDismissRequest = { dialogo = null },
-            title = { Text(TextosPedidosEnLinea.RECHAZAR_TITULO) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                    TextosPedidosEnLinea.MOTIVOS.forEach { (texto, codigo) ->
-                        OutlinedButton(
-                            onClick = { dialogo = null; onRechazar(codigo) },
-                            modifier = Modifier.fillMaxWidth().testTag("motivo-$codigo"),
-                        ) { Text(texto) }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { dialogo = null }) { Text(TextosPedidosEnLinea.CERRAR) } },
-        )
-        Dialogo.CANCELAR -> AlertDialog(
-            onDismissRequest = { dialogo = null },
-            title = { Text(TextosPedidosEnLinea.CANCELAR_TITULO) },
-            text = { Text(TextosPedidosEnLinea.pedidoNumero(pedido.orderNumber)) },
-            confirmButton = {
-                TextButton(onClick = { dialogo = null; onCancelar() }, modifier = Modifier.testTag("cancelar-confirma")) {
-                    Text(TextosPedidosEnLinea.CANCELAR_CONFIRMA, color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = { TextButton(onClick = { dialogo = null }) { Text(TextosPedidosEnLinea.CANCELAR_VOLVER) } },
-        )
-        null -> Unit
-    }
 }
-
-private enum class Dialogo { ACEPTAR, RECHAZAR, CANCELAR }
