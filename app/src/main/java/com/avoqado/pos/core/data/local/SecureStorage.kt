@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
+import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import com.avoqado.pos.core.domain.PlanSnapshot
 import com.avoqado.pos.core.domain.retainNewestPlan
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -42,6 +43,22 @@ class SecureStorage @Inject constructor(
 
     private val plainPrefs: SharedPreferences =
         context.getSharedPreferences("avoqado_prefs", Context.MODE_PRIVATE)
+
+    fun readPendingCustomerAssignment(actorId: String, venueId: String, paymentId: String): PendingCustomerAssignment? =
+        prefs.getString(customerAssignmentKey(actorId, venueId, paymentId), null)?.let {
+            json.decodeFromString<PendingCustomerAssignment>(it)
+        }
+
+    fun writePendingCustomerAssignment(pending: PendingCustomerAssignment): Boolean =
+        prefs.edit().putString(
+            customerAssignmentKey(pending.actorId, pending.venueId, pending.paymentId), json.encodeToString(pending),
+        ).commit()
+
+    fun clearPendingCustomerAssignment(pending: PendingCustomerAssignment): Boolean =
+        prefs.edit().remove(customerAssignmentKey(pending.actorId, pending.venueId, pending.paymentId)).commit()
+
+    private fun customerAssignmentKey(actorId: String, venueId: String, paymentId: String) =
+        "pendingCustomerAssignment.$actorId.$venueId.$paymentId"
 
     // MARK: - Session Data
 
