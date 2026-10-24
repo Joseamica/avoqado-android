@@ -191,6 +191,7 @@ fun PaymentFlowScreen(
                         onCancel = salirSinCobrar,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         saldoSinActualizar = !origen.permiteTarjeta,
+                        textoSoloEfectivo = textoSoloEfectivoDe(origen),
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -215,6 +216,7 @@ fun PaymentFlowScreen(
                     onCancel = salirSinCobrar,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         saldoSinActualizar = !origen.permiteTarjeta,
+                        textoSoloEfectivo = textoSoloEfectivoDe(origen),
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     onSplitImporte = onSplitImporte,
@@ -569,3 +571,8 @@ private fun SplitType.toApiSplitType(): String {
         SplitType.CUSTOM_AMOUNT -> "CUSTOMAMOUNT"
     }
 }
+
+/** Rappi 2b: por qué el cobro es sólo efectivo, según quién lo abrió. */
+private fun textoSoloEfectivoDe(origen: com.avoqado.pos.payment.domain.OrigenDelCobro): String =
+    if (origen.esDePlataforma) com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.REPARTO_SOLO_EFECTIVO
+    else com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO

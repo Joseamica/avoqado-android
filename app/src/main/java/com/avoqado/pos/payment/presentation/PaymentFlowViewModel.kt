@@ -1527,7 +1527,10 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** Primer paso del cobro según la configuración de la TPV (calificación → propina → método). */
     private fun enterInitialState(amount: Int) {
-        if (settings.showReviewScreen) {
+        if (!origenDelCobro.pideCalificacionYPropina) {
+            // Rappi 2b: la propina ya viene en el pedido; pedir otra sumaría una segunda. Directo al método (sólo efectivo).
+            _state.value = PaymentFlowState.SelectingPaymentMethod(amount)
+        } else if (settings.showReviewScreen) {
             _state.value = PaymentFlowState.CollectingRating(amount)
         } else if (settings.showTipScreen) {
             _state.value = PaymentFlowState.CollectingTip(amount, null)
@@ -1544,7 +1547,7 @@ class PaymentFlowViewModel @Inject constructor(
         currentRating = rating
         val amount = currentBaseAmount()
 
-        if (settings.showTipScreen) {
+        if (settings.showTipScreen && origenDelCobro.pideCalificacionYPropina) {
             _state.value = PaymentFlowState.CollectingTip(amount, rating)
         } else {
             _state.value = PaymentFlowState.SelectingPaymentMethod(amount)
@@ -1627,6 +1630,8 @@ class PaymentFlowViewModel @Inject constructor(
         tenderTypeRepository.tenderTypes
 
     fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
+        // Un pedido de plataforma se cobra SÓLO en efectivo: el SERVIDOR rechaza otro método (la pantalla ni lo ofrece).
+        if (origenDelCobro.esDePlataforma) return
         when (choice) {
             is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
                 manualMethod = choice.method
@@ -2740,6 +2745,7 @@ class PaymentFlowViewModel @Inject constructor(
             tenderType = tenderCapturado,
             capturedVenueId = venueCapturado,
             importeAceptadoCents = subtotal.takeIf { precioAceptadoEnPantalla },
+            capturaPrevia = origenDelCobro.esCapturaPrevia,
         )
         payResult.fold(
             onSuccess = { result ->
@@ -2784,16 +2790,17 @@ class PaymentFlowViewModel @Inject constructor(
                 // Contrato con Rappi 2b (21-oct, Task S2 del SERVIDOR): si la respuesta trae `cashRetainedCents` (lo que se
                 // queda en el cajón por este cobro: hoy importe + propina registrados; Rappi le sumará su PAY_IN), el cambio
                 // es recibido − eso. Sin él (servidor viejo), la resta de arriba. Sigue sin usarse `changeCents`.
-                val finalChange = result.cashRetainedCents
-                    ?.let { retenido -> (cashReceivedCents - retenido).coerceAtLeast(0) }
-                    ?: (cashReceivedCents - authoritativeTotal).coerceAtLeast(0)
+                // Rappi 2b (Codex plan r1 #3): UN total para caja, pantalla de éxito y ticket: lo que se quedó en el cajón
+                // (incluye lo cobrado por cuenta de Rappi). En un cobro normal `cashRetainedCents` = importe + propina: igual.
+                val retenido = result.cashRetainedCents ?: authoritativeTotal
+                val finalChange = (cashReceivedCents - retenido).coerceAtLeast(0)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
-                recordCashSale(authoritativeTotal, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                recordCashSale(retenido, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(
-                    totalAmount = authoritativeTotal,
+                    totalAmount = retenido,
                     method = PaymentMethod.CASH,
                     changeAmount = finalChange,
                     paymentId = result.paymentId,

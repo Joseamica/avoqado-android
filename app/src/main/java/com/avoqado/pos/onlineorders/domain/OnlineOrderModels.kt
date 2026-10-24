@@ -55,6 +55,32 @@ data class Inbox(
     val nextCursor: String?,
 )
 
+/**
+ * Rappi 2b: un pedido de plataforma que el negocio cobra en EFECTIVO con su repartidor («Rappi · por cobrar»). Centavos enteros tal
+ * como los manda `GET online-orders/delivery-cash`; [remainingBalanceCents] = venta + propina + lo de la plataforma.
+ */
+data class PedidoPorCobrar(
+    val orderId: String,
+    val orderNumber: String,
+    val provider: String,
+    val customerName: String?,
+    val createdAt: Instant,
+    val remainingBalanceCents: Long,
+    val saleCents: Long,
+    val tipCents: Long,
+    val thirdPartyCents: Long,
+    val thirdPartyLabel: String,
+)
+
+/** [disponible] = `false` si el servidor no tiene la ruta (404) o la persona no puede leerla (403): la sección no sale. */
+data class ListaPorCobrar(
+    val pedidos: List<PedidoPorCobrar>,
+    val total: Int,
+    val truncated: Boolean,
+    val nextCursor: String?,
+    val disponible: Boolean = true,
+)
+
 sealed interface AccionResultado {
     data object Hecho : AccionResultado
     data class YaNoDisponible(val status: OnlineOrderStatus) : AccionResultado

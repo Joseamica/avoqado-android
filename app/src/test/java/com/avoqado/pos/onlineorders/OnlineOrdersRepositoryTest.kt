@@ -1,5 +1,6 @@
 package com.avoqado.pos.onlineorders
 
+import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.domain.PlanManager
@@ -7,6 +8,7 @@ import com.avoqado.pos.core.domain.PlanTier
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -29,6 +31,12 @@ class OnlineOrdersRepositoryTest {
 
     private val server = MockWebServer()
     private val secureStorage = mockk<SecureStorage>()
+    /** El caché del aparato, en memoria: lo que `save` guarda lo devuelve `load` (como `cached_payloads`). */
+    private val guardado = mutableMapOf<String, String>()
+    private val cache = mockk<PayloadCache>().also { c ->
+        coEvery { c.save(any(), any(), any()) } answers { guardado["${firstArg<String>()}|${secondArg<String>()}"] = thirdArg() }
+        coEvery { c.load(any(), any()) } answers { guardado["${firstArg<String>()}|${secondArg<String>()}"]?.let { PayloadCache.Cached(it, 0L) } }
+    }
     private lateinit var repo: OnlineOrdersRepository
 
     @Before
@@ -37,7 +45,7 @@ class OnlineOrdersRepositoryTest {
         System.setProperty("avoqado.test.baseUrl", server.url("/api/v1").toString().trimEnd('/'))
         every { secureStorage.venueId } returns "v1"
         every { secureStorage.accessToken } returns "tok"
-        repo = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).retryOnConnectionFailure(false).build())
+        repo = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).retryOnConnectionFailure(false).build(), cache)
     }
 
     @After
@@ -249,5 +257,77 @@ class OnlineOrdersRepositoryTest {
     @Test
     fun `PlanManager maps ONLINE_ORDERING to PRO`() {
         assertEquals(PlanTier.PRO, PlanManager.FEATURE_REQUIRED_TIER["ONLINE_ORDERING"])
+    }
+
+    // MARK: - Rappi 2b: «Rappi · por cobrar»
+
+    private fun porCobrar(extra: String = "", fila: String = filaPorCobrar(), total: Int = 1, truncated: Boolean = false, cursor: String? = null) =
+        """{"success":true,"data":{"orders":[$fila$extra],"total":$total,"truncated":$truncated,"nextCursor":${cursor?.let { "\"$it\"" } ?: "null"}}}"""
+
+    private fun filaPorCobrar(id: String = "o9") =
+        """{"orderId":"$id","orderNumber":"881655210","provider":"RAPPI","status":"CONFIRMED","kitchenStatus":"PENDING","customerName":"Ana",
+        "createdAt":"2026-10-23T18:00:00.000Z","remainingBalanceCents":20500,"saleCents":17500,"tipCents":2000,"thirdPartyCents":1000,"thirdPartyLabel":"Rappi"}"""
+
+    @Test
+    fun `porCobrar reads the delivery cash list in cents with its breakdown`() = runTest {
+        server.enqueue(MockResponse().setBody(porCobrar()))
+        val lista = repo.porCobrar().getOrThrow()
+        val p = lista.pedidos.single()
+        assertEquals("o9", p.orderId); assertEquals("881655210", p.orderNumber); assertEquals("Ana", p.customerName)
+        assertEquals(20500L, p.remainingBalanceCents); assertEquals(17500L, p.saleCents); assertEquals(2000L, p.tipCents)
+        assertEquals(1000L, p.thirdPartyCents); assertEquals("Rappi", p.thirdPartyLabel)
+        assertEquals(1, lista.total); assertFalse(lista.truncated); assertNull(lista.nextCursor); assertTrue(lista.disponible)
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/delivery-cash", server.takeRequest(1, TimeUnit.SECONDS)!!.path)
+    }
+
+    @Test
+    fun `porCobrar skips a malformed row and keeps the rest`() = runTest {
+        val sinSaldo = filaPorCobrar("o8").replace("\"remainingBalanceCents\":20500,", "")
+        server.enqueue(MockResponse().setBody(porCobrar(extra = ",$sinSaldo", total = 2)))
+        assertEquals(listOf("o9"), repo.porCobrar().getOrThrow().pedidos.map { it.orderId })
+    }
+
+    @Test
+    fun `porCobrar sends the cursor and keeps truncated and nextCursor`() = runTest {
+        server.enqueue(MockResponse().setBody(porCobrar(total = 60, truncated = true, cursor = "abc")))
+        server.enqueue(MockResponse().setBody(porCobrar(total = 60)))
+        val primera = repo.porCobrar().getOrThrow()
+        assertTrue(primera.truncated); assertEquals("abc", primera.nextCursor); assertEquals(60, primera.total)
+        repo.porCobrar(cursor = primera.nextCursor).getOrThrow()
+        server.takeRequest(1, TimeUnit.SECONDS)
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/delivery-cash?cursor=abc", server.takeRequest(1, TimeUnit.SECONDS)!!.path)
+    }
+
+    @Test
+    fun `porCobrar on an old server or without permission is not available, without error`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"success":false,"error":"Not found"}"""))
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"success":false,"error":"Forbidden"}"""))
+        for (i in 0..1) {
+            val lista = repo.porCobrar().getOrThrow()
+            assertFalse(lista.disponible); assertTrue(lista.pedidos.isEmpty())
+        }
+    }
+
+    @Test
+    fun `porCobrar saves page one in the device and a network failure keeps it`() = runTest {
+        server.enqueue(MockResponse().setBody(porCobrar()))
+        repo.porCobrar().getOrThrow()
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+        assertTrue(repo.porCobrar().isFailure)
+        assertEquals(listOf("o9"), repo.porCobrarGuardado()!!.pedidos.map { it.orderId })
+    }
+
+    @Test
+    fun `porCobrar does not overwrite the saved list with a later page`() = runTest {
+        server.enqueue(MockResponse().setBody(porCobrar()))
+        server.enqueue(MockResponse().setBody(porCobrar(fila = filaPorCobrar("o7"))))
+        repo.porCobrar().getOrThrow()
+        repo.porCobrar(cursor = "abc").getOrThrow()
+        assertEquals(listOf("o9"), repo.porCobrarGuardado()!!.pedidos.map { it.orderId })
+    }
+
+    @Test
+    fun `porCobrarGuardado is null when nothing was ever saved`() = runTest {
+        assertNull(repo.porCobrarGuardado())
     }
 }
