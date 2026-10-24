@@ -327,9 +327,14 @@ private fun Teaser(plan: String) {
     }
 }
 
-/** La clave de la primera fila que la lista va a emitir: la cabecera de la primera sección con pedidos (`h-$titulo`). */
-internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja): String? = when {
+/**
+ * La clave de la primera fila que la lista va a emitir: la cabecera de la primera sección con pedidos (`h-$titulo`).
+ * [claveTrasPorAceptar] es la cabecera de una sección que se emite justo después de «Por aceptar» cuando se muestra (Rappi 2b:
+ * `h-reparto`); «Por aceptar» siempre va primero (Ruling 29). Sin ella, una sección que aparece arriba no movería el detector.
+ */
+internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja, claveTrasPorAceptar: String? = null): String? = when {
     secciones.porAceptar.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_POR_ACEPTAR}"
+    claveTrasPorAceptar != null -> claveTrasPorAceptar
     secciones.enPreparacion.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_EN_PREPARACION}"
     secciones.listos.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_LISTOS}"
     secciones.hoy.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_HOY}"
@@ -401,6 +406,8 @@ internal fun ListaDeBandeja(
     onReimprimir: (String) -> Unit,
     onCargarMas: () -> Unit,
     estadoLista: LazyListState = rememberLazyListState(),
+    /** Cabecera de una sección que se emite justo después de «Por aceptar» mientras se muestra (Rappi 2b: `h-reparto`). */
+    claveTrasPorAceptar: String? = null,
 ) {
     val espacio = AvoqadoTheme.spacing
 
@@ -409,7 +416,7 @@ internal fun ListaDeBandeja(
     // sin gesto en curso y en 0/0 hay que seguir en 0; con la primera fila distinta, `requestScrollToItem(0)` salta el anclaje sólo
     // en esa medición. Las claves de las filas no se tocan, y si la persona está más abajo (o deslizando) manda el anclaje de siempre.
     val estabaArriba = estadoLista.firstVisibleItemIndex == 0 && estadoLista.firstVisibleItemScrollOffset == 0 && !estadoLista.isScrollInProgress
-    val primeraClaveAhora = primeraClaveDeLaLista(secciones)
+    val primeraClaveAhora = primeraClaveDeLaLista(secciones, claveTrasPorAceptar)
     val primeraClaveAntes = remember { arrayOfNulls<String>(1) }
     val quedarseArriba = debeQuedarseArriba(estabaArriba, primeraClaveAntes[0], primeraClaveAhora)
     SideEffect {

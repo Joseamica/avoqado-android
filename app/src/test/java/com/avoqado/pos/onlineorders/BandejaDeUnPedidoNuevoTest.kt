@@ -61,6 +61,18 @@ class BandejaDeUnPedidoNuevoTest {
     }
 
     @Test
+    fun `una seccion que va justo despues de Por aceptar (Rappi) cuenta como primera fila`() {
+        val p = pedido("a")
+        // Sin pendientes web: la sección de reparto, si la hay, es la primera fila y la llegada de un pendiente la cambia.
+        assertEquals("h-reparto", primeraClaveDeLaLista(SeccionesBandeja(enPreparacion = listOf(p)), claveTrasPorAceptar = "h-reparto"))
+        assertEquals("h-reparto", primeraClaveDeLaLista(SeccionesBandeja(), claveTrasPorAceptar = "h-reparto"))
+        // «Por aceptar» siempre va primero (Ruling 29).
+        assertEquals("h-Por aceptar", primeraClaveDeLaLista(SeccionesBandeja(porAceptar = listOf(p)), claveTrasPorAceptar = "h-reparto"))
+        assertTrue(debeQuedarseArriba(true, "h-reparto", "h-Por aceptar"))
+        assertTrue(debeQuedarseArriba(true, "h-En preparación", "h-reparto"))
+    }
+
+    @Test
     fun `aceptar y rechazar valen solo mientras el pedido siga en Por aceptar`() {
         val p = pedido("a")
         val enPendientes = SeccionesBandeja(porAceptar = listOf(p))
