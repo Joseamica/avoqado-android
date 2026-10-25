@@ -129,7 +129,7 @@ object PermissionLabels {
         "loyalty:update" to "editar el programa de lealtad",
         "loyalty:delete" to "borrar el programa de lealtad",
         "loyalty:redeem" to "canjear puntos",
-        "loyalty:adjust" to "ajustar los puntos de un cliente",
+        "loyalty:adjust" to "ajustar los puntos o sellos de un cliente",
         "loyalty:expire" to "vencer puntos",
         "referral:read" to "ver el programa de referidos",
         "referral:override-existing-customer" to "referir a un cliente que ya existía",
