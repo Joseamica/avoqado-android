@@ -11,6 +11,10 @@ class RoleManager @Inject constructor(
     val role: String
         get() = secureStorage.userRole?.uppercase() ?: "VIEWER"
 
+    /** Histórico: piso gerencial Y permiso efectivo; no permite autorización por PIN ni respaldo con cache vacía. */
+    val canAttachCustomer: Boolean
+        get() = role in MANAGER_UP && hasVenuePermission("orders:attach-customer")
+
     // MARK: - Feature Access
     //
     // 🔴 La regla: un gate del cliente ESPEJA un permiso del server por nombre

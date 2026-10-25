@@ -63,10 +63,16 @@ object PermissionLabels {
         "tender-types:read" to "ver los tipos de pago",
         "tender-types:manage" to "configurar los tipos de pago",
 
+        "giftCards:read" to "ver tarjetas de regalo",
+        "giftCards:sell" to "vender tarjetas de regalo",
+        "giftCards:redeem" to "cobrar con tarjeta de regalo",
+        "giftCards:manage" to "administrar tarjetas de regalo",
+
         // MARK: - Cuentas
         "orders:read" to "ver las cuentas",
         "orders:create" to "abrir una cuenta",
         "orders:update" to "modificar la cuenta",
+        "orders:attach-customer" to "asignar un cliente a una venta cobrada",
         "orders:cancel" to "cancelar la cuenta",
         // 🔴 NO es lo mismo que `orders:cancel`, y la diferencia es el mostrador.
         // El POS crea la orden ANTES de cobrar, así que si el cliente se arrepiente
