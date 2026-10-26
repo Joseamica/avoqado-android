@@ -134,4 +134,14 @@ class EncabezadoDeComandaTest {
         // La línea sin marca no lleva negrita propia.
         assertTrue(h.contains(hexDe("Ana\n")) && !h.contains("1b4501" + hexDe("Ana")))
     }
+
+    @Test
+    fun `a control byte in the header never reaches the printer`() {
+        // ESC p 0 abre el cajón: un texto de fuera nunca manda un comando a la impresora (PR #53).
+        val t = ticket.copy(encabezado = listOf("Ana\u001Bp0\u0019", MARCA_NEGRITA_ENCABEZADO + "Nota\u0007"))
+        val h = hex(ESCPOSPrinter(PaperWidth.MM80).generateKitchenTicket(t))
+        assertTrue(h.contains(hexDe("Anap0\n")))
+        assertTrue(h.contains("1b4501" + hexDe("Nota") + "0a1b4500"))
+        assertTrue(!h.contains("1b7030"))
+    }
 }

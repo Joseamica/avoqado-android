@@ -713,13 +713,14 @@ class ESCPOSPrinter(
         }
 
         // Pedido en línea: a quién se le entrega y cuánto cobrar. Sin encabezado no se emite NI un byte.
+        // El texto viene de fuera (la tienda web): sin bytes de control, nunca un comando a la impresora (PR #53).
         ticket.encabezado?.forEach { linea ->
             if (linea.startsWith(MARCA_NEGRITA_ENCABEZADO)) {
                 setBold(true)
-                printLine(linea.removePrefix(MARCA_NEGRITA_ENCABEZADO))
+                printLine(linea.removePrefix(MARCA_NEGRITA_ENCABEZADO).filterNot { it.isISOControl() })
                 setBold(false)
             } else {
-                printLine(linea)
+                printLine(linea.filterNot { it.isISOControl() })
             }
         }
 
