@@ -340,7 +340,13 @@ class AuthRepository @Inject constructor(
      * servidor, y falla en silencio — el usuario ve el mensaje genérico y nadie se entera.
      */
     private fun mensajeDelServidor(e: retrofit2.HttpException): String? = try {
-        val body = e.response()?.errorBody()?.string()
+        mensajeDelCuerpo(e.response()?.errorBody()?.string())
+    } catch (_: Exception) {
+        null
+    }
+
+    /** El cuerpo de un error sólo se puede leer UNA vez: quien ya lo leyó le pasa el texto. */
+    private fun mensajeDelCuerpo(body: String?): String? = try {
         if (body.isNullOrBlank()) null
         else org.json.JSONObject(body).optString("message").takeIf { it.isNotBlank() }
     } catch (_: Exception) {
@@ -357,7 +363,9 @@ class AuthRepository @Inject constructor(
                     "Cuenta bloqueada temporalmente. Intenta de nuevo más tarde."
                 body.contains("NO_VENUE_ACCESS", ignoreCase = true) ->
                     "No tienes acceso a ningún establecimiento."
-                else -> "Acceso denegado."
+                // Cualquier otro rechazo (negocio suspendido o cerrado, alta sin terminar…) trae en `message` qué pasa
+                // y qué hacer: se muestra tal cual. «Acceso denegado.» a secas no le decía nada al dueño (D7, 26-oct).
+                else -> mensajeDelCuerpo(body) ?: "Acceso denegado."
             }
         } catch (_: Exception) {
             "Acceso denegado."
