@@ -110,7 +110,10 @@ object ConciliacionDelCobro {
         }
         compare("amountCents", c.amountCents, amount); compare("tipCents", c.tipCents, tip)
         compare("method", c.method, text(payment["method"]))
-        compare("splitType", c.splitType, text(payment["splitType"]))
+        // D2 (25-oct): `/fast` guarda siempre FULLPAYMENT (SERVIDOR), así que el reparto de una venta rápida dividida no se puede
+        // comprobar: queda «sin confirmar», nunca como diferencia (era la alarma falsa «reparto»). Los demás canales, igual.
+        if (canal == CanalDelCobro.FAST) { if (c.splitType != null && c.splitType != "FULLPAYMENT") missing.add("splitType") }
+        else compare("splitType", c.splitType, text(payment["splitType"]))
         compare("tenderTypeId", c.tenderTypeId, text(payment["tenderTypeId"]))
         compare("tenderRevision", c.tenderRevision, integer(payment["tenderRevision"]))
         // 🔴 Q16 (2.24.1): la venta se cobró sin red y su orden nació al sincronizar, desde el pedido de ESTA captura. El
