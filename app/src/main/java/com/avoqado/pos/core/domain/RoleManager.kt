@@ -150,6 +150,16 @@ class RoleManager @Inject constructor(
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
     /**
+     * Editar cliente — espejo de `customers:update` (`PUT /mobile/venues/:id/customers/:customerId`, 26-oct-2026).
+     *
+     * Lee el permiso EFECTIVO: si el dueño se lo dio al cajero en Roles y permisos, aquí ya dice que sí. El respaldo
+     * por rol es el default del server (MANAGER para arriba). Quien no lo tiene ve «Editar» igual y se le pide el PIN
+     * de un gerente (`EdicionDeCliente.kt`).
+     */
+    val canEditCustomers: Boolean
+        get() = hasVenuePermission("customers:update", fallbackRoles = MANAGER_UP)
+
+    /**
      * Ver clientes — espejo de `customers:read` (`GET /mobile/venues/:id/customers`).
      *
      * Cambia de tabla y se queda a propósito: el server le da `customers:read`
