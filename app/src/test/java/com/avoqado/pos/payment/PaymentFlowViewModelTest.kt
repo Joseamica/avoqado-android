@@ -1315,6 +1315,81 @@ class PaymentFlowViewModelTest {
         assertTrue("regresa al carrito", viewModel.debeSalir.value)
     }
 
+    @Test
+    fun `P1 materializar A tarde no cancela ni cierra el cobro B que ya se abrio`() = runTest {
+        val sesionA = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        val sesionB = sesionDeVales("0.00", valeDeArea("b", "3.00")).copy(id = "checkout-b")
+        var sesionActual: AreaTicketCheckout? = sesionA
+        val armandoA = CompletableDeferred<Unit>()
+        every { areaTicketRepository.session.current() } answers { sesionActual }
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers {
+            armandoA.await()
+            // El repositorio real rechaza A si el apartado vigente ya es B.
+            throw com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "Cambió el apartado", false)
+        }
+        coEvery { areaTicketRepository.cancel(any()) } coAnswers {
+            val cancelada = sesionActual?.takeIf { it.id == firstArg<String?>() }
+            if (cancelada != null) sesionActual = null
+            cancelada
+        }
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))), apertura = "A")
+        viewModel.confirmCashCustom(300)
+        runCurrent()
+        viewModel.cancelarVenta()
+        viewModel.salirDejandoPendiente()
+
+        sesionActual = sesionB
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("b", 300))), apertura = "B")
+        runCurrent()
+        val pantallaDeB = viewModel.state.value
+        armandoA.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("el apartado de B sigue vivo", "checkout-b", sesionActual?.id)
+        assertEquals("la respuesta de A no cambia la pantalla de B", pantallaDeB, viewModel.state.value)
+        assertFalse("B sigue abierto", viewModel.debeSalir.value)
+        coVerify(exactly = 0) { areaTicketRepository.cancel(soloSi = "checkout-b") }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        }
+    }
+
+    @Test
+    fun `P1 refrescar A tarde no cierra el cobro B que ya se abrio`() = runTest {
+        val sesionA = sesionDeVales("0.00", valeDeArea("a", "1.50"), valeDeArea("x", "1.50"))
+        val sesionB = sesionDeVales("0.00", valeDeArea("b", "3.00")).copy(id = "checkout-b")
+        var sesionActual = sesionA
+        val refrescandoA = CompletableDeferred<Unit>()
+        every { areaTicketRepository.session.current() } answers { sesionActual }
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesionA
+        coEvery { areaTicketRepository.refresh() } coAnswers {
+            refrescandoA.await()
+            sesionActual
+        }
+
+        // Se perdió la respuesta que agregaba x: el carrito sólo trae a y debe releer antes de cobrar.
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 150))), apertura = "A")
+        viewModel.confirmCashCustom(150)
+        runCurrent()
+        viewModel.cancelarVenta()
+        viewModel.salirDejandoPendiente()
+
+        sesionActual = sesionB
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("b", 300))), apertura = "B")
+        runCurrent()
+        val pantallaDeB = viewModel.state.value
+        refrescandoA.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("la relectura de A no cambia la pantalla de B", pantallaDeB, viewModel.state.value)
+        assertFalse("B sigue abierto", viewModel.debeSalir.value)
+        assertFalse("A no marca una diferencia de vales en B", viewModel.valesNoCoincidian.value)
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        }
+    }
+
     // Codex r6 #1: el servidor agregó el vale B pero su respuesta se perdió; el carrito sólo trae A. Antes se cobraba A en pago
     // completo y B quedaba en la orden sin cobrar. Ahora el cobro se detiene sin cobrar y el carrito toma los vales del servidor.
     @Test

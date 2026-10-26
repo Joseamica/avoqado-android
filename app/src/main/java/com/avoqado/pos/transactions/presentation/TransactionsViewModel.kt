@@ -4,6 +4,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
+import kotlinx.coroutines.CancellationException
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
@@ -76,6 +80,7 @@ class TransactionsViewModel @Inject constructor(
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
     refreshGateFactory: RefreshGateFactory,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -102,6 +107,152 @@ class TransactionsViewModel @Inject constructor(
 
     private val _isLoadingDetail = MutableStateFlow(false)
     val isLoadingDetail: StateFlow<Boolean> = _isLoadingDetail.asStateFlow()
+
+    private data class DetailScope(val actorId: String?, val venueId: String?, val paymentId: String, val generation: Long)
+    private var detailGeneration = 0L
+    private var detailScope: DetailScope? = null
+    private fun current(scope: DetailScope) = detailScope == scope &&
+        secureStorage.userId == scope.actorId && secureStorage.venueId == scope.venueId &&
+        _selectedTransactionId.value == scope.paymentId
+
+    private val _customerCandidate = MutableStateFlow<Customer?>(null)
+    val customerCandidate = _customerCandidate.asStateFlow()
+    private val _customerPickerVisible = MutableStateFlow(false)
+    val customerPickerVisible = _customerPickerVisible.asStateFlow()
+    private val _isAssigningCustomer = MutableStateFlow(false)
+    val isAssigningCustomer = _isAssigningCustomer.asStateFlow()
+    private val _customerAssignmentMessage = MutableStateFlow<String?>(null)
+    val customerAssignmentMessage = _customerAssignmentMessage.asStateFlow()
+    private val _customerAssignmentSucceeded = MutableStateFlow(false)
+    val customerAssignmentSucceeded = _customerAssignmentSucceeded.asStateFlow()
+
+    val canAssignCustomer: Boolean
+        get() = detailScope?.let { !it.actorId.isNullOrBlank() && !it.venueId.isNullOrBlank() && current(it) } == true &&
+            roleManager.canAttachCustomer &&
+            roleManager.hasVenuePermission("customers:read") &&
+            _selectedTransaction.value?.let { it.canAssignCustomer == true && it.customerId == null } == true
+
+    val canCreateCustomerForAssignment: Boolean
+        get() = canAssignCustomer && roleManager.hasVenuePermission("customers:create")
+
+    val customerConnection = connectivityMonitor.isConnected
+    val customerServerReachable = connectivityMonitor.isServerReachable
+    val customerAssignmentOnline: Boolean get() = connectivityMonitor.isOnline()
+
+    fun openCustomerPicker() {
+        if (!canAssignCustomer || _isAssigningCustomer.value) return
+        if (!customerAssignmentOnline) {
+            _customerAssignmentMessage.value = CUSTOMER_ASSIGNMENT_OFFLINE
+            return
+        }
+        _customerAssignmentMessage.value = null
+        _customerPickerVisible.value = true
+    }
+
+    fun chooseCustomer(customer: Customer) {
+        if (!canAssignCustomer || _isAssigningCustomer.value) return
+        val scope = detailScope ?: return
+        val old = try { readPending(scope) } catch (e: Exception) {
+            _customerAssignmentMessage.value = "No se pudo recuperar la selección guardada. Inténtalo de nuevo."
+            return
+        }
+        if (old != null && old.customerId != customer.id) {
+            _customerAssignmentMessage.value = "Hay una asignación pendiente. Reinténtala antes de elegir otro cliente."
+            return
+        }
+        _customerCandidate.value = customer
+        _customerPickerVisible.value = false
+        _customerAssignmentMessage.value = null
+        _customerAssignmentSucceeded.value = false
+    }
+
+    fun cancelCustomerAssignment() {
+        if (_isAssigningCustomer.value) return
+        _customerPickerVisible.value = false
+        _customerCandidate.value = null
+        _customerAssignmentMessage.value = null
+    }
+
+    fun clearCustomerAssignmentSuccess() { _customerAssignmentSucceeded.value = false }
+
+    private fun readPending(scope: DetailScope): PendingCustomerAssignment? {
+        val actor = scope.actorId ?: return null
+        val venue = scope.venueId ?: return null
+        return secureStorage.readPendingCustomerAssignment(actor, venue, scope.paymentId)
+            ?.takeIf { it.actorId == actor && it.venueId == venue && it.paymentId == scope.paymentId }
+    }
+
+    private fun verifiedCustomer(pending: PendingCustomerAssignment, detail: Transaction): Boolean {
+        if (detail.customerId == null) return false
+        _selectedTransaction.value = detail
+        if (detail.customerId == pending.customerId) {
+            if (secureStorage.clearPendingCustomerAssignment(pending)) {
+                _customerCandidate.value = null
+                _customerAssignmentMessage.value = null
+                _customerAssignmentSucceeded.value = true
+            } else {
+                _customerAssignmentMessage.value = "Cliente asignado. Vuelve a abrir esta venta para confirmar la recuperación."
+            }
+        } else {
+            secureStorage.clearPendingCustomerAssignment(pending)
+            _customerCandidate.value = null
+            _customerAssignmentMessage.value = "Esta venta ya tiene otro cliente asignado"
+        }
+        return true
+    }
+
+    fun confirmCustomerAssignment() {
+        if (_isAssigningCustomer.value || !canAssignCustomer) return
+        val scope = detailScope ?: return
+        val customer = _customerCandidate.value ?: return
+        if (!customerAssignmentOnline) {
+            _customerAssignmentMessage.value = CUSTOMER_ASSIGNMENT_OFFLINE
+            return
+        }
+        val pending = PendingCustomerAssignment(scope.actorId ?: return, scope.venueId ?: return,
+            scope.paymentId, customer.id, customer.fullName)
+        _isAssigningCustomer.value = true
+        _customerAssignmentMessage.value = null
+        _customerAssignmentSucceeded.value = false
+        viewModelScope.launch {
+            try {
+                if (!secureStorage.writePendingCustomerAssignment(pending)) {
+                    _customerAssignmentMessage.value = "No se pudo guardar la selección en el aparato. Inténtalo de nuevo."
+                    return@launch
+                }
+                // También antes de un reintento: el POST anterior pudo haber llegado aunque no recibimos su respuesta.
+                val before = repository.fetchTransactionDetail(scope.paymentId, scope.actorId, scope.venueId)
+                if (!current(scope)) return@launch
+                if (before == null || before.id != scope.paymentId) {
+                    _customerAssignmentMessage.value = CUSTOMER_ASSIGNMENT_PENDING
+                    return@launch
+                }
+                if (verifiedCustomer(pending, before)) return@launch
+                _selectedTransaction.value = before
+                if (!canAssignCustomer) {
+                    _customerAssignmentMessage.value = "Esta venta ya no permite asignar un cliente"
+                    return@launch
+                }
+                val result = repository.assignCustomer(pending)
+                if (!current(scope)) return@launch
+                val after = repository.fetchTransactionDetail(scope.paymentId, scope.actorId, scope.venueId)
+                if (!current(scope)) return@launch
+                if (after != null && after.id == scope.paymentId) {
+                    if (verifiedCustomer(pending, after)) return@launch
+                    _selectedTransaction.value = after
+                }
+                val error = result.exceptionOrNull()
+                _customerAssignmentMessage.value = if (error != null && error !is java.io.IOException)
+                    error.message ?: CUSTOMER_ASSIGNMENT_PENDING else CUSTOMER_ASSIGNMENT_PENDING
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (current(scope)) _customerAssignmentMessage.value = CUSTOMER_ASSIGNMENT_PENDING
+            } finally {
+                _isAssigningCustomer.value = false
+            }
+        }
+    }
 
     // Print receipt (Ventas → detalle → "Imprimir")
     private val _isPrintingReceipt = MutableStateFlow(false)
@@ -169,7 +320,8 @@ class TransactionsViewModel @Inject constructor(
 
     /** Guard §4.5 — dinero: con la devolución abierta (lista o detalle) o corriendo, ni el gesto refresca. */
     private fun workInProgress(): Boolean =
-        _showRefundSheet.value || _refundState.value is RefundUiState.Loading || _detailRefundActive.value
+        _showRefundSheet.value || _refundState.value is RefundUiState.Loading || _detailRefundActive.value ||
+            _customerPickerVisible.value || _customerCandidate.value != null || _isAssigningCustomer.value
 
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
     suspend fun refreshNow(): Result<Unit> =
@@ -298,23 +450,45 @@ class TransactionsViewModel @Inject constructor(
     // MARK: - Transaction Selection
 
     fun selectTransaction(transactionId: String) {
+        val scope = DetailScope(secureStorage.userId, secureStorage.venueId, transactionId, ++detailGeneration)
+        detailScope = scope
         _selectedTransactionId.value = transactionId
         _isLoadingDetail.value = true
         _selectedTransaction.value = null
-        // Don't carry the previous sale's "Recibo impreso" message into this one.
         _printReceiptResult.value = null
-
+        _customerCandidate.value = null
+        _customerPickerVisible.value = false
+        _customerAssignmentMessage.value = null
+        _customerAssignmentSucceeded.value = false
         viewModelScope.launch {
-            val detail = repository.fetchTransactionDetail(transactionId)
-            _selectedTransaction.value = detail
+            val detail = repository.fetchTransactionDetail(transactionId, scope.actorId, scope.venueId)
+            if (!current(scope)) return@launch
+            _selectedTransaction.value = detail?.takeIf { it.id == scope.paymentId }
             _isLoadingDetail.value = false
+            if (detail != null && detail.id == scope.paymentId && roleManager.canAttachCustomer && roleManager.hasVenuePermission("customers:read")) {
+                try {
+                    readPending(scope)?.let { pending ->
+                        if (!verifiedCustomer(pending, detail) && canAssignCustomer) {
+                            _customerCandidate.value = Customer(pending.customerId, firstName = pending.customerName)
+                            _customerAssignmentMessage.value = CUSTOMER_ASSIGNMENT_PENDING
+                        }
+                    }
+                } catch (e: Exception) {
+                    _customerAssignmentMessage.value = "No se pudo recuperar la selección guardada. Inténtalo de nuevo."
+                }
+            }
         }
     }
 
     fun clearSelection() {
+        detailScope = null
         _selectedTransactionId.value = null
         _selectedTransaction.value = null
         _printReceiptResult.value = null
+        _customerCandidate.value = null
+        _customerPickerVisible.value = false
+        _customerAssignmentMessage.value = null
+        _customerAssignmentSucceeded.value = false
     }
 
     // MARK: - Print Receipt
@@ -579,3 +753,6 @@ internal fun Transaction.toReceiptData(
         reprintedAt = reprintedAt,
     )
 }
+
+private const val CUSTOMER_ASSIGNMENT_OFFLINE = "Necesitas conexión para asignar un cliente a esta venta"
+private const val CUSTOMER_ASSIGNMENT_PENDING = "No se pudo confirmar la asignación. Revisa la conexión y reintenta."

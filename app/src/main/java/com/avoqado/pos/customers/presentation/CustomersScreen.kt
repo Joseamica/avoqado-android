@@ -777,6 +777,9 @@ private fun CustomerDetailPanel(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
+        // Tarjeta de sellos (ajuste a mano; online-only)
+        CustomerStampsSection(customerId = customer.id)
+
         // Prepaid credit packs / memberships (sell in person + redeem)
         CustomerCreditsSection(customer = customer)
     }

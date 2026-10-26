@@ -695,6 +695,18 @@ class RoleManagerTest {
         assertTrue(roleManager.canManagePrinters)
     }
 
+    @Test
+    fun `historical customer attachment needs managerial floor and effective permission`() {
+        listOf("VIEWER", "HOST", "KITCHEN", "WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN").forEach { role ->
+            every { secureStorage.userRole } returns role
+            every { secureStorage.venuePermissions } returns listOf("*:*")
+            val expected = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+            assertEquals(role, expected, roleManager.canAttachCustomer)
+            every { secureStorage.venuePermissions } returns emptyList()
+            assertFalse("$role cannot infer a new permission from an empty cache", roleManager.canAttachCustomer)
+        }
+    }
+
     // MARK: - Pedidos en línea (A3): nombres EXACTOS del server
 
     @Test

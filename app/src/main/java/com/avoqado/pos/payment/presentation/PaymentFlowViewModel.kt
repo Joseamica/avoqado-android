@@ -4322,8 +4322,8 @@ class PaymentFlowViewModel @Inject constructor(
         // La orden que este cobro continúa (ya se cobró una parte). Si es la MISMA que arman los vales, lo que falta lo dice el
         // servidor y el carrito ya no lleva todos los vales; si es otra, se compara como cualquier cobro (Codex r7).
         val ordenQueContinua = createdOrderId
-        // Regla 9 (Codex r6 #5): una respuesta que llega cuando el cajero ya canceló no pinta nada. Entonces devuelve `true`:
-        // quien llama compara la generación y suelta el apartado (`cancelarLoCreadoTrasCancelar`).
+        // Cancelar conserva esta apertura; abrir otra la cambia: una respuesta de A nunca limpia ni pinta sobre B.
+        val cobroCapturado = cobroDeValesId
         val generacion = paymentGeneration
         return try {
             val normalItems = cart.items
@@ -4357,8 +4357,9 @@ class PaymentFlowViewModel @Inject constructor(
                 normalItems = normalItems,
                 customerName = null,
                 note = cart.orderNote,
-                cobroId = cobroDeValesId,
+                cobroId = cobroCapturado,
             )
+            if (cobroCapturado != cobroDeValesId) return false
             sesionDelCobro = checkout.id
             // El cajero canceló mientras se armaba: nada se pinta aquí; quien llama ve la generación y suelta (D2).
             if (generacion != paymentGeneration) return true
@@ -4370,6 +4371,10 @@ class PaymentFlowViewModel @Inject constructor(
                 return false
             }
             val order = checkout.order
+            val noCoinciden = order != null && order.id != ordenQueContinua && !checkout.tieneAbono() &&
+                valesNoCoinciden(cart, checkout)
+            if (cobroCapturado != cobroDeValesId) return false
+            if (generacion != paymentGeneration) return true
             if (order == null) {
                 _state.value = PaymentFlowState.Error(
                     message = "No se pudo materializar la orden de los vales.",
@@ -4380,7 +4385,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // 🔴 D5: una venta de vales con abono sólo se cobra por su saldo pendiente; nunca se le cuelga otra cuenta.
                 _state.value = PaymentFlowState.Error(message = VALES_CON_ABONO, source = PaymentErrorSource.SERVER)
                 false
-            } else if (order.id != ordenQueContinua && valesNoCoinciden(cart, checkout)) {
+            } else if (noCoinciden) {
                 // Nada que cancelar: la sesión sigue viva con los vales del servidor y el carrito los toma al volver.
                 paymentGeneration++
                 isProcessingPayment = false
@@ -4405,13 +4410,18 @@ class PaymentFlowViewModel @Inject constructor(
             // La relectura olvida sólo lo que el servidor da por muerto y `restore` suelta lo vencido con orden armada
             // (reglas 2 y 3 de la pasada): nunca se olvida a ciegas una sesión con vales apartados.
             // Regla 9: el error tardío de un cobro que ya se canceló no tapa «Cancelando»; quien llama suelta y sale (D2).
+            if (cobroCapturado != cobroDeValesId) return false
             if (generacion != paymentGeneration) return true
             if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_SESSION_STALE" &&
                 areaTicketRepository.session.current()?.id == sesionDelCobro
             ) {
                 runCatching { areaTicketRepository.refresh() }
+                if (cobroCapturado != cobroDeValesId) return false
+                if (generacion != paymentGeneration) return true
                 runCatching { areaTicketRepository.restore() }
             }
+            if (cobroCapturado != cobroDeValesId) return false
+            if (generacion != paymentGeneration) return true
             _state.value = PaymentFlowState.Error(
                 message = error.message ?: "No se pudo preparar la venta de vales.",
                 source = PaymentErrorSource.SERVER,

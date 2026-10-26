@@ -24,7 +24,22 @@ data class SaleStampOutcome(
     val stampsEarned: Int,
     val stampsRequired: Int,
     val rewardReady: Boolean = false,
+    /** La cartilla donde cayó el sello de ESTA venta (21-oct). null = no sumó, servidor viejo, o la llenó otra venta. */
+    val saleCard: SaleStampCard? = null,
 ) {
     val reasonCode: SaleStampReason?
         get() = SaleStampReason.entries.firstOrNull { it.name == reason }
 }
+
+/**
+ * La cartilla de la venta, tal como la describe el servidor (`SaleStampCard`): su meta aunque el negocio la haya cambiado
+ * después, y el premio GANADO si ya está llena (no dice qué venta la llenó). Espejo EXACTO, por nombre, del servidor y de iOS.
+ */
+@Serializable
+data class SaleStampCard(
+    val stampsEarned: Int,
+    val stampsRequired: Int,
+    val completed: Boolean = false,
+    val rewardLabel: String? = null,
+    val rewardPending: Boolean = false,
+)

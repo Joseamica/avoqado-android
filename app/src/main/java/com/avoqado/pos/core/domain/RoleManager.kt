@@ -11,6 +11,10 @@ class RoleManager @Inject constructor(
     val role: String
         get() = secureStorage.userRole?.uppercase() ?: "VIEWER"
 
+    /** Histórico: piso gerencial Y permiso efectivo; no permite autorización por PIN ni respaldo con cache vacía. */
+    val canAttachCustomer: Boolean
+        get() = role in MANAGER_UP && hasVenuePermission("orders:attach-customer")
+
     // MARK: - Feature Access
     //
     // 🔴 La regla: un gate del cliente ESPEJA un permiso del server por nombre
@@ -99,6 +103,10 @@ class RoleManager @Inject constructor(
      */
     val canLogWaste: Boolean
         get() = hasVenuePermission("inventory:log-waste")
+
+    /** Ajustar a mano los sellos de un cliente — espejo EXACTO de `loyalty:adjust`, sin respaldo por rol. */
+    val canAdjustLoyalty: Boolean
+        get() = hasVenuePermission("loyalty:adjust")
 
     /** «Mermas por subir»: cada quien ve lo suyo; MANAGER+ ve lo de todos en el aparato (spec §5). */
     val veMermasDeTodos: Boolean
