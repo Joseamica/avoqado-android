@@ -623,6 +623,10 @@ class OrderRepository @Inject constructor(
                 put("total", request.total)
                 if (request.discount > 0) put("discount", request.discount)
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+                // «Pagar después» como Toast (founder 26-oct): el método con el que nace la cuenta. El SERVIDOR sólo cuenta como
+                // deuda del cliente lo que llega con `PAY_LATER` (`CartViewModel.createPayLaterOrder`); con otro método, un cobro
+                // con tarjeta que falla no es fiado. El modelo siempre lo tuvo y el cuerpo armado a mano lo tiraba.
+                request.paymentMethod.takeIf { it.isNotBlank() }?.let { put("paymentMethod", it) }
                 stampRewardId?.takeIf { it.isNotBlank() }?.let {
                     put("stampRewardId", it)
                     // 🔴 «Esta caja resta el premio de lo que cobra.» Sin esto el servidor lo
