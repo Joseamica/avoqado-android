@@ -270,11 +270,16 @@ class CobroDePedidoEnLineaTest {
             fila("otro-pedido", "PENDING"),
             fila("web-1", "SYNCED"),
             fila(null, "PENDING"),
-            fila("web-1", "FAILED"),
-            // El gerente dijo «no se cobró»: queda guardada para revisión, nadie la reproduce.
-            fila("web-1", "EN_VUELO", q15Reason = "RESULTADO_NO_COMPROBADO"),
         )
         assertEquals(EfectivoDelPedido.NINGUNO, cola.efectivoDelPedido("web-1"))
+
+        // 🔴 DINERO (PR #53): ninguno prueba que el dinero no se recibió, así que no deja cobrar otra vez.
+        // FAILED también es un efectivo que agotó sus reintentos de red; el gerente lo reintenta en «Operaciones por revisar».
+        filas = listOf(fila("web-1", "FAILED"))
+        assertEquals(EfectivoDelPedido.POR_REVISAR, cola.efectivoDelPedido("web-1"))
+        // El gerente dijo «no se cobró»: la afirmación sola no prueba que no se cobró (`descartarPorqueNoSeCobro`).
+        filas = listOf(fila("web-1", "EN_VUELO", q15Reason = "RESULTADO_NO_COMPROBADO"))
+        assertEquals(EfectivoDelPedido.POR_REVISAR, cola.efectivoDelPedido("web-1"))
 
         filas = listOf(fila("web-1", "PENDING"))
         assertEquals(EfectivoDelPedido.EN_COLA, cola.efectivoDelPedido("web-1"))

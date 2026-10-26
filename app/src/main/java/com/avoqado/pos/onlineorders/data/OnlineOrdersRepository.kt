@@ -93,10 +93,12 @@ class OnlineOrdersRepository @Inject constructor(
     private fun JSONObject.textoONulo(k: String): String? =
         if (isNull(k)) null else optString(k).takeIf { it.isNotBlank() }
 
-    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false): Request =
+    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false): Request =
         Request.Builder().url(url).header("Authorization", "Bearer $token").apply {
             if (fondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
             if (bandeja) header(TRAY_HEADER, "1")
+            // La ruta del dinero no espera un PIN dentro de su plazo corto: el 403 vuelve como respuesta, no como `IOException`.
+            if (rapida) header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
         }.get().build()
 
     private fun post(url: String, token: String, cuerpo: JSONObject? = null, deviceId: String? = null, errorLocal: Boolean = true): Request =
@@ -254,7 +256,7 @@ class OnlineOrdersRepository @Inject constructor(
     /** El saldo a cobrar lo dice el servidor (`preBillBalance.remainingBalanceCents`); la app nunca lo recalcula desde renglones. */
     suspend fun saldoCents(orderId: String): Result<Long> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        return ejecutar(get(ruta(venueId, "orders/$orderId"), token), clienteDelCobro).mapCatching {
+        return ejecutar(get(ruta(venueId, "orders/$orderId"), token, rapida = true), clienteDelCobro).mapCatching {
             JSONObject(it).getJSONObject("order").getJSONObject("preBillBalance").getLong("remainingBalanceCents")
         }
     }

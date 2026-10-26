@@ -235,13 +235,15 @@ class CashPaymentRepository @Inject constructor(
      * - [EfectivoDelPedido.EN_COLA]: `PENDING` sin motivo de revisión (la cola lo sube sola al volver la red) o `SYNCING`
      *   (subiéndose ahora; si la red cae, regresa a `PENDING`).
      * - [EfectivoDelPedido.POR_REVISAR]: espera a un gerente en «Operaciones por revisar»:
-     *   - `EN_VUELO` sin motivo: guardado antes del POST y sin desenlace (el proceso murió a media petición, o un 4xx dejó la
-     *     reserva). Pudo llegar; nada lo reproduce hasta «Sí, se cobró».
+     *   - `EN_VUELO`: guardado antes del POST y sin desenlace (el proceso murió a media petición, o un 4xx dejó la reserva).
+     *     Pudo llegar; nada lo reproduce hasta «Sí, se cobró». Con motivo también: «no se cobró» del gerente no prueba que no
+     *     se cobró (`descartarPorqueNoSeCobro`).
      *   - `PENDING` con motivo de revisión: `PaymentSyncService` lo detiene (también el retenido por precio, que para una orden
      *     que el servidor ya tiene no se suelta solo).
+     *   - `FAILED`: el servidor lo rechazó O se agotaron los reintentos de red (`handleNetworkError`); el dinero se recibió y
+     *     el gerente lo reintenta ahí (PR #53).
      *   Si hay de los dos tipos, gana éste: es el que necesita a una persona.
-     * - [EfectivoDelPedido.NINGUNO]: `SYNCED` (ya está en el saldo del servidor), `FAILED` (el servidor lo rechazó; lo
-     *   resuelve el gerente) y un `EN_VUELO` con motivo (el gerente dijo «no se cobró»: queda sólo para revisión).
+     * - [EfectivoDelPedido.NINGUNO]: sólo `SYNCED` (ya está en el saldo del servidor).
      *
      * El SQL sólo acota por local; la decisión vive aquí, en Kotlin, donde las pruebas la fijan (como `PendingCashSales`).
      */
@@ -253,8 +255,7 @@ class CashPaymentRepository @Inject constructor(
                 PaymentSyncStatus.SYNCING.name -> EfectivoDelPedido.EN_COLA
                 PaymentSyncStatus.PENDING.name ->
                     if (fila.q15Reason == null) EfectivoDelPedido.EN_COLA else EfectivoDelPedido.POR_REVISAR
-                PaymentSyncStatus.EN_VUELO.name ->
-                    if (fila.q15Reason == null) EfectivoDelPedido.POR_REVISAR else EfectivoDelPedido.NINGUNO
+                PaymentSyncStatus.EN_VUELO.name, PaymentSyncStatus.FAILED.name -> EfectivoDelPedido.POR_REVISAR
                 else -> EfectivoDelPedido.NINGUNO
             }
         }

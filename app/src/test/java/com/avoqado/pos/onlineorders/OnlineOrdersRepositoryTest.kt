@@ -239,7 +239,11 @@ class OnlineOrdersRepositoryTest {
     fun `saldoCents reads preBillBalance remainingBalanceCents from the order detail`() = runTest {
         server.enqueue(MockResponse().setBody("""{"success":true,"order":{"id":"o1","preBillBalance":{"orderTotalCents":20000,"totalPaidCents":5000,"remainingBalanceCents":15000,"tipAmountCents":0}}}"""))
         assertEquals(15000L, repo.saldoCents("o1").getOrThrow())
-        assertEquals("/api/v1/mobile/venues/v1/orders/o1", server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!.encodedPath)
+        val pedida = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/mobile/venues/v1/orders/o1", pedida.requestUrl!!.encodedPath)
+        // 🔴 DINERO (PR #53): un 403 con PIN de gerente no se espera DENTRO de la llamada de 8 s; si no, muere como `IOException`
+        // y «Cobrar» lo toma por «sin red» y cobra el saldo viejo de la bandeja.
+        assertEquals("1", pedida.getHeader(ForbiddenInterceptor.FAIL_FAST_HEADER))
     }
 
     @Test
