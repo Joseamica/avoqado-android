@@ -87,7 +87,7 @@ fun PaymentMethodSelectionScreen(
     terminalsUnavailable: Boolean = false,
     saldoSinActualizar: Boolean = false,
     onRetryTerminals: () -> Unit = {},
-    /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
+    /** Link "Dividir importe" arriba (Mesas y tienda, como Square) — null lo oculta. */
     onSplitImporte: (() -> Unit)? = null,
     /** Cobro que NO pasó por Avoqado (terminal ajena, transferencia). */
     onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit)? = null,

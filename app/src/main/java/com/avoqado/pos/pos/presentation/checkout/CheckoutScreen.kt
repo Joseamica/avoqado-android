@@ -1827,6 +1827,24 @@ fun CheckoutScreen(
                     upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                 },
+                // «Dividir importe» también en tienda (founder, 26-oct: IQ cobró dos tarjetas como dos
+                // cobros manuales porque en Cobrar no lo encontró; sólo estaba en el «⋯» del carrito).
+                // Como Square («Split Amount» en la pantalla de cobro). Sólo existe en «Elegir método»,
+                // donde no hay cobro en vuelo: se suelta el cobro como la X y se abre la MISMA hoja del
+                // «⋯», con su mismo guard de membresías. El upsell se suelta como en la X (Codex r1 #1):
+                // su conversión no sabe de qué venta es, y si el cajero cierra la hoja y cobra otra venta
+                // se la llevaría ésa. Costo: un upsell cobrado en partes no cuenta como convertido.
+                onSplitImporte = {
+                    showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
+                    paymentCartSnapshot = null
+                    cartViewModel.releaseChargingOrder()
+                    pendingSplitConfig = SplitConfig()
+                    upsellViewModel.cancelPendingConversion()
+                    cartViewModel.refreshCustomerDisplay()
+                    if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                    else showSplitPayment = true
+                },
                 // Se resolvió un cobro que había quedado de OTRA venta: el flujo se cierra y
                 // el cajero vuelve a su carrito intacto. El aviso lo pinta ESTA pantalla,
                 // que es la que se queda — antes lo mostraba la que se iba, y se desvanecía
