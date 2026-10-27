@@ -460,16 +460,20 @@ class AreaTicketRepository @Inject constructor(
         customerName: String?,
         note: String?,
         cobroId: String,
+        objetivo: AreaTicketCheckout? = session.current(),
+        llave: String = session.materializeIdempotencyKey(),
+        negocio: String? = null,
+        cobroQueLaArmo: String? = session.cobroQueLaArmo,
     ): AreaTicketCheckout {
-        val venueId = venueId()
-        val checkout = session.current()
+        val venueId = negocio ?: venueId()
+        val checkout = objetivo
             ?: throw AreaTicketException("CHECKOUT_NOT_FOUND", "No hay una sesión de vales abierta.", false)
         // 🔴 DINERO (regla 4, Codex r2 #1 y r3 #1, 20-oct). Una orden ya armada sólo se reusa dentro del cobro que la armó. Si
         // el cajero salió sin red (no se pudo soltar) y luego cambió el carrito, reusarla cobraba la orden vieja y lo nuevo se
         // quedaba fuera. Otro cobro, o desconocido (tras reiniciar) ⇒ se suelta y se vuelve a escanear. Con abono no: la venta
         // sigue por su saldo (quien llama exige que el carrito continúe esa orden). Con un pago en confirmación tampoco.
-        val armadaOPedida = checkout.order != null || session.cobroQueLaArmo != null
-        if (armadaOPedida && session.cobroQueLaArmo != cobroId && !checkout.tieneAbono() &&
+        val armadaOPedida = checkout.order != null || cobroQueLaArmo != null
+        if (armadaOPedida && cobroQueLaArmo != cobroId && !checkout.tieneAbono() &&
             checkout.status in setOf("OPEN", "MATERIALIZED")
         ) {
             cancel(soloSi = checkout.id)
@@ -481,32 +485,33 @@ class AreaTicketRepository @Inject constructor(
         }
         if (checkout.order != null) return checkout
 
-        session.anotarCobroQueLaArmo(cobroId)
+        if (session.current()?.id == checkout.id) session.anotarCobroQueLaArmo(cobroId)
         val updated = request {
             api.materializeAreaTicketCheckout(
                 venueId,
                 checkout.id,
                 MaterializeCheckoutRequest(
-                    idempotencyKey = session.materializeIdempotencyKey(),
+                    idempotencyKey = llave,
                     normalItems = normalItems,
                     customerName = customerName,
                     note = note,
                 ),
             )
         }.checkout
-        if (!session.updateIf(checkout.id, venueId, updated)) throw sesionReemplazada()
+        session.updateIf(checkout.id, venueId, updated)
         return updated
     }
 
-    suspend fun refresh(): AreaTicketCheckout? {
-        val venueId = venueId()
-        val checkout = session.current() ?: return null
+    suspend fun refresh(objetivo: AreaTicketCheckout? = session.current(), negocio: String? = null): AreaTicketCheckout? {
+        val venueId = negocio ?: venueId()
+        val checkout = objetivo ?: return null
         val updated = request { api.getAreaTicketCheckout(venueId, checkout.id) }.checkout
         if (updated.status in AREA_TICKET_TERMINAL_STATUSES) {
             session.clearIf(checkout.id)
             return updated
         }
-        return updated.takeIf { session.updateIf(checkout.id, venueId, it) }
+        session.updateIf(checkout.id, venueId, updated)
+        return updated
     }
 
     /** [soloSi]: suelta sólo si el apartado vigente sigue siendo ése (regla 9: un cobro nunca suelta el apartado de otro). */

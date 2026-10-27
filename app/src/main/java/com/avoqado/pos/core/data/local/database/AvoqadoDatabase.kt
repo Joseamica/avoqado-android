@@ -23,6 +23,7 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
 @Database(
     entities = [
         PendingPaymentEntity::class,
+        com.avoqado.pos.sync.data.SalesNoticeAcknowledgementEntity::class,
         CashDrawerSessionEntity::class,
         CashDrawerEventEntity::class,
         PurchaseOrderEntity::class,
@@ -41,10 +42,11 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         EntregaKdsPendienteEntity::class,
         KdsTicketLocalEntity::class,
     ],
-    version = 16,
+    version = 18,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
+    abstract fun salesNoticeDao(): com.avoqado.pos.sync.data.SalesNoticeDao
     abstract fun pendingPaymentDao(): PendingPaymentDao
     abstract fun cashDrawerDao(): CashDrawerDao
     abstract fun purchaseOrderDao(): PurchaseOrderDao

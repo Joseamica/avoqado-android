@@ -87,6 +87,52 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 @Composable
 fun TransactionsScreen(
     isTablet: Boolean = false,
+    openPendingsRequest: Int = 0,
+    reviewCourtesyPaymentId:String? = null,
+    onCourtesyNavigationConsumed:()->Unit = {},
+    notices: com.avoqado.pos.sync.presentation.SalesNoticesViewModel = hiltViewModel(),
+) {
+    var pending by remember { mutableStateOf(openPendingsRequest > 0) }
+    var legacy by remember { mutableStateOf(false) }
+    val courtesyOnline by notices.courtesyOnline.collectAsState()
+    val globalPendingCount by notices.globalPendingCount.collectAsState()
+    val noticeMessage by notices.message.collectAsState()
+    val noticeSummary by notices.summary.collectAsState()
+    val pendingLabel=remember(globalPendingCount,noticeMessage,noticeSummary,isTablet) { notices.presentation(isTablet).pendingLabel }
+    LaunchedEffect(openPendingsRequest,reviewCourtesyPaymentId) {
+        if(openPendingsRequest > 0) pending=true
+        reviewCourtesyPaymentId?.let { pending=true;notices.openCourtesyPayment(it);onCourtesyNavigationConsumed() }
+    }
+    LaunchedEffect(notices) { notices.observeChanges() }
+    LaunchedEffect(notices) { notices.observeContextChanges() }
+    LifecycleResumeEffect(notices) { notices.refresh();onPauseOrDispose { } }
+    Column(Modifier.fillMaxSize()) {
+        Text("Ventas",style=MaterialTheme.typography.headlineSmall,
+            modifier=Modifier.padding(horizontal=AvoqadoTheme.spacing.lg,vertical=AvoqadoTheme.spacing.sm))
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            androidx.compose.material3.TextButton(onClick={pending=false},modifier=Modifier.height(48.dp)) {
+                Text("Registradas",fontWeight=if(!pending) FontWeight.Bold else FontWeight.Normal)
+            }
+            if(notices.canRead) androidx.compose.material3.TextButton(onClick={pending=true},modifier=Modifier.height(48.dp)) {
+                Text(pendingLabel,fontWeight=if(pending) FontWeight.Bold else FontWeight.Normal)
+            }
+        }
+        HorizontalDivider()
+        Box(Modifier.weight(1f)) {
+            if(pending && notices.canRead) com.avoqado.pos.sync.presentation.SalesNoticesContent(
+                isTablet=isTablet,onOpenLegacyReview={legacy=true},viewModel=notices)
+            else RegisteredTransactionsScreen(isTablet=isTablet)
+        }
+    }
+    if(legacy) com.avoqado.pos.sync.presentation.QuarantineSheet(
+        onDismissSheet={legacy=false;notices.refresh()},courtesyReviewOnline=courtesyOnline,courtesyCanPreview=notices.canPreviewCourtesy,
+        onReviewCourtesy={ id -> legacy=false;pending=true;notices.openCourtesyPayment(id) },
+    )
+}
+
+@Composable
+private fun RegisteredTransactionsScreen(
+    isTablet: Boolean = false,
     viewModel: TransactionsViewModel = hiltViewModel(),
 ) {
     val activeFilter by viewModel.activeFilter.collectAsState()
@@ -220,20 +266,6 @@ private fun TransactionListPanel(
     Column(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
     ) {
-        // Header (tablet only)
-        if (isTablet) {
-            Text(
-                text = "Transacciones",
-                style = if (denseList) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineLarge,
-                modifier = Modifier.padding(
-                    start = horizontalPadding,
-                    end = horizontalPadding,
-                    top = if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.xl,
-                    bottom = dateHeaderBottomPadding,
-                ),
-            )
-        }
-
         // TODO [HIGH RISK - DISABLED]: Unassociated Refund button
         //
         // This feature is HIDDEN until the backend financial integrity bugs are fixed.

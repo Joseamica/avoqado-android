@@ -12,6 +12,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -28,6 +29,8 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.pos.data.model.TITULO_AVISO_DE_PRECIO
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.EstadoDeComanda
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 
 @Composable
 fun PaymentFlowScreen(
@@ -114,6 +117,16 @@ fun PaymentFlowScreen(
     val aperturaGuardada = rememberSaveable { java.util.UUID.randomUUID().toString() }
     val aperturaDelCobro = apertura ?: aperturaGuardada
 
+    // 🔴 D2 v7: «Cancelar» (la X, Esc) es la decisión de la cajera sobre esta venta. Primero se borran —y se espera— sus
+    // apartados de efectivo (p. ej. el del 409 de precio); si no se pudo, el aviso lo dice y la pantalla no se cierra. Sin
+    // apartados sale en el mismo toque, como siempre.
+    val alcanceDelCancelar = rememberCoroutineScope()
+    val cancelarElCobro: () -> Unit = {
+        alcanceDelCancelar.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (viewModel.descartarApartadosDeEstaVenta()) salirSinCobrar()
+        }
+    }
+
     LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId) {
         if (viewModel.esElCobroEnCurso(aperturaDelCobro)) return@LaunchedEffect
         viewModel.setSplitConfig(
@@ -155,13 +168,13 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin calificación",
                         onSkip = { viewModel.submitRating(null) },
-                        onCancel = salirSinCobrar,
+                        onCancel = cancelarElCobro,
                     )
                 } else {
                     RatingScreen(
                         onRatingSubmitted = { viewModel.submitRating(it) },
                         onSkip = { viewModel.submitRating(null) },
-                        onCancel = salirSinCobrar,
+                        onCancel = cancelarElCobro,
                     )
                 }
             }
@@ -176,7 +189,7 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin propina",
                         onSkip = { viewModel.submitTip(0) },
-                        onCancel = salirSinCobrar,
+                        onCancel = cancelarElCobro,
                     )
                 } else {
                     // Sin pantalla de cliente: método de pago con la hoja de
@@ -188,7 +201,7 @@ fun PaymentFlowScreen(
                         onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
-                        onCancel = salirSinCobrar,
+                        onCancel = cancelarElCobro,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         saldoSinActualizar = !origen.permiteTarjeta,
                         textoSoloEfectivo = textoSoloEfectivoDe(origen),
@@ -213,7 +226,7 @@ fun PaymentFlowScreen(
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
-                    onCancel = salirSinCobrar,
+                    onCancel = cancelarElCobro,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         saldoSinActualizar = !origen.permiteTarjeta,
                         textoSoloEfectivo = textoSoloEfectivoDe(origen),
@@ -227,7 +240,7 @@ fun PaymentFlowScreen(
                 CashPaymentScreen(
                     totalCents = currentState.total,
                     onCashReceived = { viewModel.processCashPayment(it) },
-                    onCancel = salirSinCobrar,
+                    onCancel = cancelarElCobro,
                 )
             }
             is PaymentFlowState.Confirming -> {
@@ -237,7 +250,7 @@ fun PaymentFlowScreen(
                     totalCents = currentState.amount + currentState.tip,
                     rating = currentState.rating,
                     onConfirm = { viewModel.confirmPayment() },
-                    onCancel = salirSinCobrar,
+                    onCancel = cancelarElCobro,
                 )
             }
             is PaymentFlowState.SelectingTerminal -> {
@@ -261,7 +274,9 @@ fun PaymentFlowScreen(
                     // 🔴 Ya NO se cierra la pantalla aquí: la cancelación tiene que esperar el
                     // desenlace del cobro antes de cancelar la venta. El flujo se cierra cuando el
                     // coordinador dice que terminó (ver `debeSalir`).
-                    onCancel = { viewModel.cancelarVenta() },
+                    // 🔴 D2 v6 punto 5: con el efectivo viajando no hay «Cancelar» (como iOS en `.processing`).
+                    onCancel = { viewModel.cancelarVenta() }
+                        .takeIf { (currentState as? PaymentFlowState.Processing)?.efectivoEnVuelo != true },
                 )
             }
             is PaymentFlowState.CancelandoCobro -> {

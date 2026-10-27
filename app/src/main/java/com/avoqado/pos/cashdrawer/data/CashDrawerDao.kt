@@ -78,6 +78,16 @@ interface CashDrawerDao {
     @Update
     suspend fun updateSession(session: CashDrawerSessionEntity)
 
+    /**
+     * D9 (24-oct-2026): cierra AQUÍ una caja que el servidor ya no tiene abierta, sólo si sigue OPEN y sin tocar el resto de la fila:
+     * un conteo que el cajero guardó mientras tanto no se pisa (Codex apps r15 #3).
+     */
+    @Query(
+        "UPDATE cash_drawer_sessions SET status = 'CLOSED', closedAt = COALESCE(closedAt, :ahora), " +
+            "closingNote = COALESCE(closingNote, :nota) WHERE id = :sessionId AND status = 'OPEN'",
+    )
+    suspend fun marcarCerradaEnOtroAparato(sessionId: String, ahora: Long, nota: String): Int
+
     @Query("DELETE FROM cash_drawer_sessions WHERE id = :sessionId")
     suspend fun deleteSession(sessionId: String)
 
@@ -92,8 +102,19 @@ interface CashDrawerDao {
     @Query("SELECT * FROM cash_drawer_events WHERE id = :eventId")
     suspend fun getEvent(eventId: String): CashDrawerEventEntity?
 
+    /** Codex r16 #2: las cajas del negocio que no están abiertas (sólo sus ids): la foto no lee sus ventas, pero sabe cuáles no leyó. */
+    @Query("SELECT id FROM cash_drawer_sessions WHERE venueId = :venueId AND status != 'OPEN'")
+    suspend fun idsDeCajasNoAbiertas(venueId: String): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertEvent(event: CashDrawerEventEntity)
+
+    /**
+     * 🔴 D2, rediseño r9: la venta en efectivo de un cobro entra al cajón UNA sola vez. Si ya hay un movimiento con ese id, no lo
+     * toca (nunca REPLACE: reemplazar cambiaría su caja y su hora). Devuelve -1 si ya estaba.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertarEventoSiNoExiste(event: CashDrawerEventEntity): Long
 
     @Query("DELETE FROM cash_drawer_events WHERE id = :eventId")
     suspend fun deleteEvent(eventId: String)

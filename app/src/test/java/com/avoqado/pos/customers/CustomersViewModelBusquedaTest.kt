@@ -57,7 +57,7 @@ class CustomersViewModelBusquedaTest {
     fun setup() {
         coEvery { repository.buscarClientes(any()) } returns pagina()
         every { repository.clientesGuardados() } returns emptyList()
-        viewModel = CustomersViewModel(repository, roleManager)
+        viewModel = CustomersViewModel(repository, roleManager, mockk(relaxed = true), mockk(relaxed = true))
     }
 
     @Test

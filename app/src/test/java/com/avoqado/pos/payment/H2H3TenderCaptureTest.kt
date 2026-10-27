@@ -67,7 +67,9 @@ import com.avoqado.pos.core.data.local.database.SyncIntentEntity
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import io.mockk.*
 import java.nio.file.Files
@@ -84,11 +86,20 @@ class H2H3TenderCaptureTest {
 
     private val orderRepository = mockk<OrderRepository>(relaxed = true)
     private val secureStorageForRepository = mockk<SecureStorage>(relaxed = true)
-    private val dao = mockk<PendingPaymentDao>(relaxed = true)
+    private val sql = mockk<PendingPaymentDao>(relaxed = true)
+    // Los defaults suspendidos son reales: callOriginal de MockK puede perder la espera de un retorno Unit.
+    private val dao = object : PendingPaymentDao by sql {
+        override suspend fun insert(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insert(payment)
+        override suspend fun insertTransactionQ16(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insertTransactionQ16(payment)
+        override suspend fun insertRaw(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insertRaw(payment)
+    }
     private val rows = linkedMapOf<String, PendingPaymentEntity>()
     private val writes = mutableListOf<PendingPaymentEntity>()
     private val pendingWritten = CompletableDeferred<Unit>()
-    private val cashPaymentRepository = CashPaymentRepository(secureStorageForRepository, dao)
+    private val compuertasPropias = mutableListOf<CompletableDeferred<Unit>>()
+    // Rediseño r9: la salida de `EN_VUELO` anota el cajón (el mismo cajón de verdad que el ViewModel usaba antes).
+    private val salida by lazy { com.avoqado.pos.payment.data.SalidaDelApartado(dao, drawerDao, secureStorageForRepository) }
+    private val cashPaymentRepository by lazy { CashPaymentRepository(secureStorageForRepository, dao, salida) }
     private val terminalPaymentService = mockk<TerminalPaymentService>(relaxed = true)
     private val tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true)
     private val cashDrawerRepository = mockk<CashDrawerRepository>(relaxed = true)
@@ -113,6 +124,7 @@ class H2H3TenderCaptureTest {
     private val drawerPushes = CopyOnWriteArrayList<okhttp3.Request>()
     private var drawerStarted = false
     private var drawerFinished = CompletableDeferred<Unit>()
+    private lateinit var customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState
     private lateinit var viewModel: PaymentFlowViewModel
 
     private fun otroImporte(cents: Int = 10_000) = CartState(
@@ -123,17 +135,21 @@ class H2H3TenderCaptureTest {
     fun setup() {
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
-        coEvery { dao.insert(any()) } coAnswers {
+        coEvery { sql.insertRawSqlQ16(any()) } coAnswers {
             val row = firstArg<PendingPaymentEntity>()
             rows[row.id] = row
             writes += row
             if (row.syncStatus == "PENDING") pendingWritten.complete(Unit)
         }
-        coEvery { dao.borrarSiEnVuelo(any()) } coAnswers {
+        coEvery { sql.borrarSiEnVuelo(any()) } coAnswers {
             val id = firstArg<String>()
             if (rows[id]?.syncStatus == "EN_VUELO") { rows.remove(id); 1 } else 0
         }
-        every { dao.observarEstado(any()) } answers { flowOf(rows[firstArg<String>()]?.syncStatus) }
+        every { sql.observarEstado(any()) } answers { flowOf(rows[firstArg<String>()]?.syncStatus) }
+        coEvery { sql.findByIdQ15(any()) } coAnswers { rows[firstArg<String>()] }
+        coEvery { sql.findForVenue(any(), any()) } coAnswers {
+            rows[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() }
+        }
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
         coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
@@ -149,9 +165,9 @@ class H2H3TenderCaptureTest {
         }
         val realDrawer = CashDrawerRepository(drawerDao, secureStorage, client, sinCobrosEnCola(), conectividadDePrueba())
         drawerDao.sessions["drawer-A"] = sesionLocal("drawer-A", openedAt = 1L)
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } coAnswers {
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } coAnswers {
             drawerStarted = true
-            try { realDrawer.addCashSale(firstArg(), secondArg(), arg(2), arg(3), arg(4)) }
+            try { realDrawer.addCashSale(firstArg(), secondArg(), arg(2), arg(3), arg(4), arg(5)) }
             finally { drawerFinished.complete(Unit) }
         }
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
@@ -180,6 +196,7 @@ class H2H3TenderCaptureTest {
         }
         outbox = SyncOutbox(intentDao, api, connectivity, secureStorage, cashDrawerRepository,
             context, mockk(relaxed = true), tableSession)
+        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState()
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
             cashPaymentRepository = cashPaymentRepository,
@@ -201,7 +218,7 @@ class H2H3TenderCaptureTest {
             ),
             tableSession = tableSession,
             syncOutbox = outbox,
-            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+            customerDisplay = customerDisplay,
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = mockk(relaxed = true),
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
@@ -219,10 +236,15 @@ class H2H3TenderCaptureTest {
         viewModel.selectPaymentMethod(PaymentMethod.CASH)
     }
 
-    @After fun cleanup() {
-        viewModel.viewModelScope.cancel()
-        outbox.stop()
-        temporary.deleteRecursively()
+    @After fun cleanup() = runBlocking {
+        try {
+            compuertasPropias.forEach { it.complete(Unit) }
+            if (::viewModel.isInitialized) viewModel.viewModelScope.coroutineContext.job.cancelAndJoin()
+        } finally {
+            if (::customerDisplay.isInitialized) customerDisplay.idle()
+            if (::outbox.isInitialized) outbox.stop()
+            temporary.deleteRecursively()
+        }
     }
 
     private fun tender(physical: Boolean? = false, system: Boolean = false, base: String = "OTHER") =
@@ -234,10 +256,10 @@ class H2H3TenderCaptureTest {
         advanceUntilIdle()
     }
 
-    private fun assertDrawer(count: Int) {
+    private fun assertDrawer(count: Int, pushes: Int = count) {
         val events = drawerDao.events.values.filter { it.type == "CASH_SALE" }
         assertEquals(count, events.size)
-        assertEquals(count, drawerPushes.size)
+        assertEquals(pushes, drawerPushes.size)
         events.forEach { assertEquals(4500, it.amountCents); assertEquals("venue-1", it.venueId) }
     }
 
@@ -275,6 +297,18 @@ class H2H3TenderCaptureTest {
         outbox.stop()
     }
 
+    /**
+     * P1 (A2, efectivo sin red en el turno correcto) — la mesa abierta sin red se cobra por el outbox (`PAY_CASH`): su payload
+     * lleva la caja que estaba abierta al confirmar, para que el servidor sepa el turno de la venta aunque suba tarde.
+     */
+    @Test fun `P1 el PAY_CASH de una mesa provisional lleva la caja abierta al confirmar`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("caja-A-local", openedAt = 1L)
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        val payload = Json.parseToJsonElement(intents.single().payloadJson).jsonObject
+        assertEquals("caja-A-local", payload["cashDrawerSessionId"]?.jsonPrimitive?.content)
+    }
+
     @Test fun `provisional legacy manual keeps method without fabricated tender`() = runTest {
         provisional()
         val manual = ManualPaymentMethod.values().first()
@@ -285,8 +319,11 @@ class H2H3TenderCaptureTest {
         assertDrawer(0)
     }
 
-    @Test fun `plain cash still creates one drawer event and one compatibility push`() = runTest {
-        open(); viewModel.processCashPayment(4500); finishCash(); assertDrawer(1)
+    /** Rediseño r9: con apartado, la venta la anota su salida de `EN_VUELO` (aquí, al encolar sin red), sin el POST de compatibilidad (N3). */
+    @Test fun `plain cash still creates one drawer event from its EN_VUELO exit and no compatibility push`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        open(); viewModel.processCashPayment(4500); finishCash(); assertDrawer(1, pushes = 0)
+        assertEquals("drawer-A", drawerDao.events.values.single().sessionId)
     }
 
     @Test fun `catalog physical explicit true creates one drawer event`() = runTest {
@@ -316,7 +353,7 @@ class H2H3TenderCaptureTest {
     }
 
     @Test fun `held order post keeps non physical captured tender after selection changes to cash`() = runTest {
-        val hold = CompletableDeferred<Unit>()
+        val hold = CompletableDeferred<Unit>().also { compuertasPropias += it }
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
             hold.await(); Result.failure(IOException("sin red"))
         }
@@ -335,21 +372,32 @@ class H2H3TenderCaptureTest {
     }
 
     @Test fun `held cash post still records physical cash after later noncash selection`() = runTest {
-        val hold = CompletableDeferred<Unit>()
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        val hold = CompletableDeferred<Unit>().also { compuertasPropias += it }
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
             hold.await(); Result.failure(IOException("sin red"))
         }
         open(orderId = "order-A"); viewModel.processCashPayment(4500); runCurrent()
         try { viewModel.confirmManualChoice(ManualPaymentChoice.Tender(tender(false))) }
         finally { hold.complete(Unit) }
-        finishCash(); assertDrawer(1)
+        finishCash(); assertDrawer(1, pushes = 0) // rediseño r9: la anota su salida de `EN_VUELO`, sin POST de compatibilidad
         assertNull(rows.values.single().tenderTypeId)
     }
 
+    /**
+     * Rediseño r9: el 2xx de A llega con B ya abierta. La venta de A la anota su salida de `EN_VUELO` con los datos de SU fila (negocio,
+     * orden, la caja capturada) y la cajera que el flujo de A capturó (agregado 2 de la ronda corta), no el ViewModel con los de la
+     * pantalla. Sin POST de compatibilidad (N3).
+     */
     @Test fun `physical sale A held POST keeps venue order and actor after opening sale B`() = runTest {
-        val hold = CompletableDeferred<Unit>()
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        val hold = CompletableDeferred<Unit>().also { compuertasPropias += it }
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
-            hold.await(); Result.success(OrderRepository.CashPayResult("payment-A", null))
+            hold.await()
+            // Lo que hace el `OrderRepository` de verdad con un 2xx comprobado (`guardarRespuestaDeCaptura`).
+            val llave = arg<String>(5)
+            salida.salir(llave, conDosXx = true, delFlujo = true, importe = { 4500 }) { rows[llave] = rows.getValue(llave).copy(syncStatus = "SYNCED"); true }
+            Result.success(OrderRepository.CashPayResult("payment-A", null))
         }
         every { secureStorage.userFirstName } returns "Ana"
         every { secureStorage.userLastName } returns "Original"
@@ -366,22 +414,17 @@ class H2H3TenderCaptureTest {
         val event = drawerDao.events.values.single { it.type == "CASH_SALE" }
         assertEquals("venue-1", event.venueId); assertEquals("drawer-A", event.sessionId)
         assertEquals("order-A", event.orderId); assertEquals("user-456", event.staffId)
-        assertEquals("Ana Original", event.staffName); assertEquals(4500, event.amountCents)
+        assertEquals("la cajera de A, aunque la sesión ya sea de Bea", "Ana Original", event.staffName); assertEquals(4500, event.amountCents)
         assertTrue(drawerDao.events.values.none { it.venueId == "venue-B" })
-        val push = drawerPushes.single()
-        assertTrue(push.url.encodedPath.endsWith("/venues/venue-1/cash-drawer/sync"))
-        val buffer = okio.Buffer(); push.body!!.writeTo(buffer)
-        val body = Json.parseToJsonElement(buffer.readUtf8()).jsonObject.getValue("events").jsonArray.single().jsonObject
-        assertEquals("order-A", body.getValue("orderId").jsonPrimitive.content)
-        assertEquals("user-456", body.getValue("staffId").jsonPrimitive.content)
-        assertEquals(event.id, body.getValue("localId").jsonPrimitive.content)
+        assertTrue("sin el POST de compatibilidad (N3)", drawerPushes.isEmpty())
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
     @Test fun `zero cash still creates no event or push`() = runTest {
         viewModel.processCashPayment(0); finishCash(); assertDrawer(0)
     }
     @Test fun `held failing POST preserves reservation payment and replay A after opening B`() = runTest {
         val started = CompletableDeferred<Unit>()
-        val release = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>().also { compuertasPropias += it }
         val sent = CopyOnWriteArrayList<okhttp3.Request>()
         val client = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request(); sent += request
@@ -432,16 +475,16 @@ class H2H3TenderCaptureTest {
         assertEquals(500, replay.getValue("tip").jsonPrimitive.int)
         assertEquals("tender-A", replay.getValue("tenderTypeId").jsonPrimitive.content)
         val replayed = CompletableDeferred<Unit>()
-        coEvery { dao.getPendingPayments(any()) } returns listOf(pending)
-        every { dao.getPendingCount() } returns flowOf(1)
-        every { dao.getFailedCount() } returns flowOf(0)
-        coEvery { dao.incrementRetry(pending.id, any()) } coAnswers { replayed.complete(Unit); Unit }
+        coEvery { sql.getPendingPayments(any()) } returns listOf(pending)
+        every { sql.getPendingCount() } returns flowOf(1)
+        every { sql.getFailedCount() } returns flowOf(0)
+        coEvery { sql.incrementRetry(pending.id, any()) } coAnswers { replayed.complete(Unit); Unit }
         val work = mockk<SyncOutbox>(relaxed = true)
         coEvery { work.trabajoSinResolverDeLaOrden("venue-1", setOf("order-A")) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
         val red = mockk<ConnectivityMonitor>(relaxed = true)
         every { red.isConnected } returns MutableStateFlow(true)
         every { red.isServerReachable } returns MutableStateFlow(true)
-        val replayService = PaymentSyncService(dao, secureStorage, client, red, cashDrawerRepository, work)
+        val replayService = PaymentSyncService(dao, secureStorage, client, red, cashDrawerRepository, work, io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true))
         replayService.usarContextoDeSincronizacion(kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
         try {
             replayService.start(); replayed.await()
@@ -456,8 +499,8 @@ class H2H3TenderCaptureTest {
 
     @Test fun `reservation await cannot move the original order request payment or tenant to B`() = runTest {
         val reserved = CompletableDeferred<Unit>()
-        val release = CompletableDeferred<Unit>()
-        coEvery { dao.insert(any()) } coAnswers {
+        val release = CompletableDeferred<Unit>().also { compuertasPropias += it }
+        coEvery { sql.insertRawSqlQ16(any()) } coAnswers {
             val row = firstArg<PendingPaymentEntity>(); rows[row.id] = row; writes += row
             if (row.syncStatus == "PENDING") pendingWritten.complete(Unit)
             if (row.syncStatus == "EN_VUELO") { reserved.complete(Unit); release.await() }
@@ -477,10 +520,12 @@ class H2H3TenderCaptureTest {
         viewModel.processCashPayment(4500)
         try {
             reserved.await()
+            assertEquals("La escritura de reserva bloqueada debe impedir el POST", 0, sent.size)
             every { secureStorage.venueId } returns "venue-B"; every { secureStorage.userId } returns "actor-B"
             viewModel.startPaymentFlow(otroImporte(9900), customerId = "customer-B", resumeOrderId = "order-B")
         } finally { release.complete(Unit) }
         finished.await(); pendingWritten.await(); finishCash()
+        assertEquals("Filas: ${rows.map { (key, value) -> "$key/${value.venueId}/${value.orderId}/${value.syncStatus}" }}", 1, rows.values.count { it.syncStatus == "PENDING" })
         val row = rows.values.single { it.syncStatus == "PENDING" }
         assertEquals("venue-1", row.venueId); assertEquals("order-A", row.orderId)
         assertEquals("customer-A", row.customerId); assertEquals("user-456", row.staffId)

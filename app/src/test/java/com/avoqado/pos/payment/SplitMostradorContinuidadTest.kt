@@ -132,7 +132,7 @@ class SplitMostradorContinuidadTest {
         coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "fast-1", receiptAccessKey = null))
 
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit

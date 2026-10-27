@@ -2036,7 +2036,9 @@ class CartViewModel @Inject constructor(
                             }
                             return@runCatching ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
                         }
-                        replaceAreaTicketLines(checkout, venta)
+                        if (!replaceAreaTicketLines(checkout, venta)) {
+                            return@runCatching ScannedBarcodeResult.Error("La venta cambió mientras se pedía el vale: vuelve a escanearlo.")
+                        }
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }
                 }
@@ -2088,11 +2090,11 @@ class CartViewModel @Inject constructor(
      * ella y el apartado es suyo (sin dueño, tras reiniciar, lo adopta). La respuesta atrasada de una venta que ya se fue no
      * mete sus vales en la siguiente.
      */
-    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String) {
+    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String): Boolean {
         val sesion = areaTicketRepository.session
-        if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return
+        if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
         val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
-        if (duena != venta) return
+        if (duena != venta) return false
         // 🔴 DINERO. Una sesión con abonos ya no se proyecta al carrito. Tras el primer abono el carrito quedó en «Saldo
         // pendiente» (`aplicarCobroConfirmado`), y la sesión sigue viva porque el servidor no deja cancelar una venta con
         // abono (409). Restaurarla al volver a la pantalla metía todos los vales encima del saldo y el total se inflaba
@@ -2103,7 +2105,7 @@ class CartViewModel @Inject constructor(
         // respuesta perdida) se proyectaba al volver a la pantalla encima del saldo pendiente y mezclaba las dos ventas. Se
         // queda apartado y aparece al terminar esa venta.
         val conAbonos = checkout.status == "PARTIALLY_PAID" || (checkout.order?.paidAmount?.moneyToCents() ?: 0) > 0
-        if (conAbonos || _pendingSplitOrder.value != null) return
+        if (conAbonos || _pendingSplitOrder.value != null) return false
         val ticketRows = checkout.tickets.flatMap { ticket ->
             ticket.lines.map { line ->
                 val detail = buildList {
@@ -2132,6 +2134,7 @@ class CartViewModel @Inject constructor(
                 orderTaxPercent = null,
             )
         }
+        return true
     }
 
     // MARK: - Referral capture (Plan 5B)
@@ -2227,11 +2230,22 @@ class CartViewModel @Inject constructor(
 
         viewModelScope.launch {
             _referralValidation.value = ReferralCaptureUiState.Validating
-            validateReferralUseCase(
+            val resultado = validateReferralUseCase(
                 venueId = venueId,
                 referralCode = code,
                 newCustomerId = customerId,
-            ).fold(
+            )
+            // 🔴 La respuesta es del cliente y del código de ANTES: si mientras tanto quitaron al cliente (aunque lo hayan
+            // vuelto a elegir, Codex r2 #1), lo cambiaron o editaron el código, no se aplica. Quitar al cliente vacía el
+            // código (`clearReferral()`), así que una respuesta vieja nunca coincide (Codex r1 #2: el descuento volvía a una
+            // venta sin cliente).
+            if (_selectedCustomer.value?.id != customerId || _referralCode.value.trim() != code) {
+                if (_referralValidation.value is ReferralCaptureUiState.Validating) {
+                    _referralValidation.value = ReferralCaptureUiState.Idle
+                }
+                return@launch
+            }
+            resultado.fold(
                 onSuccess = { result ->
                     when (result) {
                         is ReferralValidationResult.Valid -> {

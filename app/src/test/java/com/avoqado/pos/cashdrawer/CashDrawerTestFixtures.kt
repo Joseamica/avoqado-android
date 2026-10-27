@@ -112,12 +112,21 @@ internal class FakeCashDrawerDao : CashDrawerDao {
         if (sessions.containsKey(session.id)) sessions[session.id] = session
     }
 
+    override suspend fun marcarCerradaEnOtroAparato(sessionId: String, ahora: Long, nota: String): Int {
+        val s = sessions[sessionId]?.takeIf { it.status == "OPEN" } ?: return 0
+        sessions[sessionId] = s.copy(status = "CLOSED", closedAt = s.closedAt ?: ahora, closingNote = s.closingNote ?: nota)
+        return 1
+    }
+
     override suspend fun deleteSession(sessionId: String) {
         sessions.remove(sessionId)
     }
 
     override suspend fun getClosedSessions(venueId: String): List<CashDrawerSessionEntity> =
         sessions.values.filter { it.venueId == venueId && it.status == "CLOSED" }
+
+    override suspend fun idsDeCajasNoAbiertas(venueId: String): List<String> =
+        sessions.values.filter { it.venueId == venueId && it.status != "OPEN" }.map { it.id }
 
     override suspend fun getSessionEvents(sessionId: String): List<CashDrawerEventEntity> =
         events.values.filter { it.sessionId == sessionId }.sortedBy { it.createdAt }
@@ -127,6 +136,12 @@ internal class FakeCashDrawerDao : CashDrawerDao {
     override suspend fun insertEvent(event: CashDrawerEventEntity) {
         events.remove(event.id)
         events[event.id] = event
+    }
+
+    override suspend fun insertarEventoSiNoExiste(event: CashDrawerEventEntity): Long {
+        if (events.containsKey(event.id)) return -1
+        events[event.id] = event
+        return events.size.toLong()
     }
 
     override suspend fun deleteEvent(eventId: String) {
@@ -226,6 +241,11 @@ internal fun cashDrawerSecureStorage(): SecureStorage = mockk(relaxed = true) {
  */
 internal fun sinCobrosEnCola(): PendingCashSales = mockk {
     coEvery { sinReproducir(any(), any()) } returns emptyList()
+    // Efectivo sin red en el turno correcto: ningún cobro con caja que retenga un cierre ni que proteja un alias.
+    coEvery { cajasDeCobrosPorSubir(any()) } returns emptyList()
+    coEvery { cajasReferenciadas(any()) } returns emptySet()
+    // Rediseño r9: ningún apartado de efectivo cuya venta proteger por su pareja exacta.
+    coEvery { paresExactos(any(), any(), any()) } returns emptyMap()
 }
 
 /** Un cobro en efectivo que sigue esperando a reproducirse, como lo ve el cajón. */
@@ -242,6 +262,9 @@ internal fun cobroSinOrden(totalCents: Int) =
 
 internal fun cobrosEnCola(vararg cobros: CobroSinReproducir): PendingCashSales = mockk {
     coEvery { sinReproducir(any(), any()) } returns cobros.toList()
+    coEvery { cajasDeCobrosPorSubir(any()) } returns emptyList()
+    coEvery { cajasReferenciadas(any()) } returns emptySet()
+    coEvery { paresExactos(any(), any(), any()) } returns emptyMap()
 }
 
 /**
@@ -255,8 +278,22 @@ internal fun colaDeCobros(
     intents: List<SyncIntentPayload> = emptyList(),
 ): PendingCashSales = PendingCashSales(
     intentDao = mockk { coEvery { pendingPayloads(any(), any()) } returns intents },
-    pendingPaymentDao = mockk { coEvery { forVenue(any()) } returns cobros },
+    pendingPaymentDao = mockk {
+        coEvery { forVenue(any()) } returns cobros
+        // Agregado 5: la pareja exacta lee sólo los vivos (el SQL acota; aquí, el mismo criterio).
+        coEvery { cobrosDeEfectivoVivos(any(), any(), any(), any(), any()) } answers { cobros.tandaDeVivos(arg(0), arg(1), arg(2), arg(3), arg(4)) }
+    },
 )
+
+/**
+ * La réplica en Kotlin del SQL de `cobrosDeEfectivoVivos`: una tanda de los vivos de efectivo puro de esas cajas, en orden
+ * (`createdAt`, `id`) desde el cursor (el de verdad lo fija `SalidaDelApartadoRoomTest` en WINDOWS).
+ */
+internal fun List<PendingPaymentEntity>.tandaDeVivos(venue: String, cajas: List<String>, despuesDe: Long, despuesDeId: String, tanda: Int) =
+    filter {
+        it.venueId == venue && it.cashDrawerSessionId in cajas && it.method == "CASH" && it.tenderTypeId == null &&
+            PendingCashSales.todaviaPuedeSubir(it) && (it.createdAt > despuesDe || (it.createdAt == despuesDe && it.id > despuesDeId))
+    }.sortedWith(compareBy({ it.createdAt }, { it.id })).take(tanda)
 
 /**
  * Una fila de `pending_payments` con la forma real que le da

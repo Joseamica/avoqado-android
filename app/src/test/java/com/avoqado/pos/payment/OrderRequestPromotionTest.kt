@@ -895,7 +895,7 @@ class OrderRequestPromotionTest {
             )
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns
             CashPaymentResult.Success(changeCents = 0)
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-1"

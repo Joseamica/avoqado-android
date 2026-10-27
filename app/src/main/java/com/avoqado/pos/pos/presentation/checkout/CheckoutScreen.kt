@@ -359,6 +359,8 @@ fun CheckoutScreen(
     // `CartViewModel.pendingPackGrant`.
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    /** Sube cada vez que se ABRE el alta: la respuesta de un formulario descartado no es la del que está abierto. */
+    var aperturaDelAlta by remember { mutableIntStateOf(0) }
     var createCustomerSearchText by remember { mutableStateOf("") }
     var showSavedSnackbar by remember { mutableStateOf(false) }
     var savedCartError by remember { mutableStateOf<String?>(null) }
@@ -825,6 +827,8 @@ fun CheckoutScreen(
                         customerName = selectedCustomer?.name,
                         customerId = selectedCustomer?.id,
                         onCustomerTap = openGeneralCustomerPicker,
+                        onCustomerRemove = { cartViewModel.setSelectedCustomer(null) },
+                        clienteQuitable = !cartViewModel.hayVentaAMedias(),
                         staffName = cartState.selectedStaffName,
                         onStaffTap = {
                             cartViewModel.fetchStaff()
@@ -1193,6 +1197,8 @@ fun CheckoutScreen(
             customerName = selectedCustomer?.name,
             customerId = selectedCustomer?.id,
             onCustomerTap = openGeneralCustomerPicker,
+            onCustomerRemove = { cartViewModel.setSelectedCustomer(null) },
+            clienteQuitable = !cartViewModel.hayVentaAMedias(),
             referralCode = referralCodeState,
             referralUiState = referralUiState,
             customerSelectedForReferral = selectedCustomer != null,
@@ -1238,6 +1244,9 @@ fun CheckoutScreen(
             val entra = {
                 codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)
             }
+            // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
+            // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
+            val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
             val result = cartViewModel.resolveScannedBarcode(barcode)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra()) return@launch
@@ -1253,7 +1262,7 @@ fun CheckoutScreen(
                     cartViewModel.addProductByWeight(result.product, result.weightKg)
                 is ScannedBarcodeResult.AreaTicketsAdded ->
                     areaTicketAddedCount = result.ticketCount
-                is ScannedBarcodeResult.CustomerCardFound -> {
+                is ScannedBarcodeResult.CustomerCardFound -> if (cartViewModel.selectedCustomer.value?.id == clienteAlEscanear) {
                     // 🔴 Escanear la tarjeta LIGA la venta al cliente, y eso es lo
                     // que hace que el sello suba solo al cobrar. Sin esta línea el
                     // cajero vería el nombre pero la compra no contaría para su
@@ -1975,13 +1984,18 @@ fun CheckoutScreen(
                     ),
             )
             if (showCreateCustomer) {
+                val aperturaDeEsteAlta = aperturaDelAlta
                 CreateCustomerView(
                     viewModel = customersViewModel,
                     // «81 2944 0042» es un teléfono aunque traiga espacios: antes caía en el NOMBRE y nacía un
                     // cliente llamado «81 2944 0042» sin teléfono (la clase de dato roto de C3).
                     initialPhone = createCustomerSearchText.takeIf { esTextoDeTelefono(it) },
                     initialName = createCustomerSearchText.takeIf { it.isNotBlank() && !esTextoDeTelefono(it) },
-                    onCustomerCreated = { customer ->
+                    onCustomerCreated = creado@{ customer ->
+                        // El alta respondió tarde y el cajero ya cerró el formulario (y quizá quitó al cliente), o lo
+                        // cerró y abrió OTRO: el cliente queda creado, pero no se liga solo a la venta (Codex, cliente en
+                        // cobrar r3 #1 y r4 #2).
+                        if (!showCustomersSheet || !showCreateCustomer || aperturaDeEsteAlta != aperturaDelAlta) return@creado
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
                         cartViewModel.setSelectedCustomer(customer.id, customer.fullName)
                         showCreateCustomer = false
@@ -2015,6 +2029,7 @@ fun CheckoutScreen(
                     },
                     onCreateCustomer = { searchText ->
                         createCustomerSearchText = searchText
+                        aperturaDelAlta += 1
                         showCreateCustomer = true
                     },
                     canCreateCustomer = roleManager?.canManageCustomers ?: true,
@@ -2227,6 +2242,8 @@ private fun IPhoneCartSheet(
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
+    onCustomerRemove: () -> Unit,
+    clienteQuitable: Boolean,
     referralCode: String = "",
     referralUiState: com.avoqado.pos.referrals.presentation.ReferralCaptureUiState =
         com.avoqado.pos.referrals.presentation.ReferralCaptureUiState.Idle,
@@ -2296,6 +2313,8 @@ private fun IPhoneCartSheet(
                 customerName = customerName,
                 customerId = customerId,
                 onCustomerTap = onCustomerTap,
+                onCustomerRemove = onCustomerRemove,
+                clienteQuitable = clienteQuitable,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
                 onSplitPayment = onSplitPayment,

@@ -354,7 +354,8 @@ class CashDrawerRelojDesfasadoTest {
         assertEquals(
             "la banda de duda del reloj no mide 5 minutos exactos hacia adelante en las dos colas",
             listOf(
-                CobroSinReproducir(orderId = null, totalCents = 30_000),
+                // Rediseño r9: el cobro de `pending_payments` trae su llave (la consume su pareja exacta en el cajón).
+                CobroSinReproducir(orderId = null, totalCents = 30_000, llave = "justo-dentro"),
                 CobroSinReproducir(orderId = "local-order-dentro", totalCents = 40_000),
             ),
             cola.sinReproducir(VENUE_ID, abrio),

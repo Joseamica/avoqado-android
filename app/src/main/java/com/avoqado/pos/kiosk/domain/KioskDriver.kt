@@ -56,6 +56,10 @@ class KioskDriver @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var ticker: Job? = null
     private var work: Job? = null
+    private var refreshJob: Job? = null
+
+    /** Turno de cada consulta: sólo la más reciente pinta; una respuesta vieja se descarta (Codex r2). */
+    private var refreshGen = 0
 
     /** Tolerancia que configuró el admin. Se refresca con los ajustes. */
     private var graceMin: Int = KioskWindow.DEFAULT_GRACE_MIN
@@ -74,13 +78,16 @@ class KioskDriver @Inject constructor(
         // el founder se topó con eso en la D3.
         //
         // Un botón de salida que depende de una llamada de red no es un botón de salida.
-        // Primero se suelta la pantalla (y con ella los datos de quien estaba ahí), y ya
-        // después se pide la lista al día.
+        // Primero se suelta la pantalla (y con ella los datos de quien estaba ahí) volviendo
+        // a la lista que ya se tenía —no a «Bienvenida» con la clase abierta, D3 26-oct—, y
+        // ya después se pide la lista al día.
         kiosk.onRestart = {
             touched()
-            kiosk.restart()
+            kiosk.backToList()
             refreshNow()
         }
+        // Un «Listo» que se vence solo no es un toque: no detiene el reloj, sólo lo adelanta.
+        kiosk.onTimedOut = { refreshNow() }
 
         // Respaldo "no aparezco en la lista": teclear el teléfono. Se identifica por
         // CONTACTO, como el resto del mercado (WellnessLiving pide "Client ID, Email, or
@@ -120,6 +127,7 @@ class KioskDriver @Inject constructor(
     private fun stop() {
         ticker?.cancel(); ticker = null
         work?.cancel(); work = null
+        refreshJob?.cancel(); refreshJob = null
     }
 
     private fun touched() {
@@ -141,7 +149,8 @@ class KioskDriver @Inject constructor(
      */
     private fun refreshNow() {
         work?.cancel()
-        scope.launch { refresh(force = true) }
+        refreshJob?.cancel()
+        refreshJob = scope.launch { refresh(force = true) }
     }
 
     // MARK: - El reloj decide
@@ -172,6 +181,8 @@ class KioskDriver @Inject constructor(
         // 25 segundos y se iba.
         if (!force && !tickerOwnsScreen(kiosk.content.value)) return
 
+        val turno = ++refreshGen
+        val epoca = kiosk.epoch
         // La tolerancia la manda el admin; si el servidor no la dice, se cae al
         // mismo default que él usa. Nunca se adivina un número distinto.
         reservations.reservationSettings().getOrNull()
@@ -179,6 +190,11 @@ class KioskDriver @Inject constructor(
             ?.let { graceMin = it }
 
         val candidatas = reservasEnVentana() ?: return  // Sin red: deja lo que ya estaba, no parpadea.
+
+        // 🔴 Los guardias de arriba se miraron ANTES de la red. Si mientras esperábamos alguien
+        // tocó «¿No apareces?», la respuesta llega tarde y no puede taparle el teclado
+        // (Codex r1, 26-oct). Cubre también al `force`: quien pidió salir ya está en la lista.
+        if (!tickerOwnsScreen(kiosk.content.value) || turno != refreshGen || epoca != kiosk.epoch) return
 
         val activo = grupoEnVentana(candidatas)
 
@@ -198,7 +214,7 @@ class KioskDriver @Inject constructor(
         // media petición y parecería que el toque no hizo nada.
         val previo = kiosk.content.value as? KioskContent.Roster
 
-        kiosk.show(
+        kiosk.showFromServer(
             KioskContent.Roster(
                 justConfirmedId = previo?.justConfirmedId,
                 busyId = previo?.busyId,
@@ -338,6 +354,11 @@ class KioskDriver @Inject constructor(
                                 timeLabel = "",
                                 staffLabel = c.staffLabel,
                                 alreadyCheckedIn = c.alreadyCheckedIn,
+                                // El servidor no manda el lugar; la lista de la clase sí lo
+                                // tiene. Igual que al tocar su nombre: «Tapete 4 · con María».
+                                spotLabel = kiosk.lastRoster?.people
+                                    ?.firstOrNull { it.reservationId == c.reservationId }
+                                    ?.spotLabel,
                             ),
                         ),
                     )

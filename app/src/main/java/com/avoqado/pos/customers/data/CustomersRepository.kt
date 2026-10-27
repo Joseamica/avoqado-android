@@ -8,6 +8,7 @@ import com.avoqado.pos.customers.data.model.CreateCustomerResponse
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.data.model.CustomersResponse
 import com.avoqado.pos.customers.data.model.PaginaDeClientes
+import com.avoqado.pos.customers.data.model.UpdateCustomerRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,6 +20,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** El servidor contestó, y dijo que no ([codigo] = status HTTP). Lo distingue de un fallo de red. */
+class RechazoAlEditarCliente(val codigo: Int, mensaje: String) : Exception(mensaje)
 
 @Singleton
 class CustomersRepository @Inject constructor(
@@ -146,6 +150,69 @@ class CustomersRepository @Inject constructor(
             Result.failure(e)
         }
     }
+
+    /**
+     * Editar cliente (26-oct-2026). Online-only: un fallo de red sale tal cual (el ViewModel lo dice como «Sin conexión»).
+     * El servidor responde sólo los datos de contacto; se fusionan sobre [original] (lo que la tablet ya tenía: visitas,
+     * gasto…) y eso se devuelve y se guarda para buscar sin red.
+     * Va por el cliente compartido: si el servidor dice 403 con PIN de gerente prendido, `ForbiddenInterceptor` abre el
+     * teclado y reintenta solo.
+     */
+    suspend fun updateCustomer(original: Customer, request: UpdateCustomerRequest): Result<Customer> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No hay sucursal activa"))
+        return try {
+            val requestBody = json.encodeToString(UpdateCustomerRequest.serializer(), request)
+                .toRequestBody("application/json".toMediaType())
+            val httpRequest = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/customers/${original.id}")
+                .put(requestBody)
+                .build()
+
+            val (code, body) = withContext(Dispatchers.IO) {
+                client.newCall(httpRequest).execute().use { response -> response.code to (response.body?.string() ?: "") }
+            }
+
+            if (code in 200..299) {
+                val contacto = json.decodeFromString<CreateCustomerResponse>(body).customer
+                    ?: return Result.failure(Exception("Respuesta inválida del servidor"))
+                val actualizado = original.copy(
+                    firstName = contacto.firstName,
+                    lastName = contacto.lastName,
+                    phone = contacto.phone,
+                    email = contacto.email,
+                )
+                Log.d("👤", "Customer updated: ${actualizado.id}")
+                guardar(venueId, listOf(actualizado))
+                Result.success(actualizado)
+            } else {
+                Log.e("👤", "Update customer failed: $code - $body")
+                Result.failure(RechazoAlEditarCliente(code, errorAlEditar(code, body)))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("👤", "Update customer error: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    /** Por CÓDIGO del servidor, no por su texto en inglés (Codex r1 #6). */
+    internal fun errorAlEditar(code: Int, body: String): String {
+        val error = runCatching { json.decodeFromString<ErrorDelServidor>(body) }.getOrNull()
+        // Un 400 de validación ya trae el motivo en español: «Error de validación: email: El correo no es válido».
+        val motivo = error?.message?.takeIf { it.startsWith("Error de validación:") }?.substringAfterLast(": ")
+        return when {
+            error?.code == "CUSTOMER_PHONE_TAKEN" -> "Ese teléfono ya es de otro cliente."
+            error?.code == "CUSTOMER_EMAIL_TAKEN" -> "Ese correo ya es de otro cliente."
+            code == 400 && !motivo.isNullOrBlank() -> motivo
+            code == 403 -> "No tienes permiso para editar clientes."
+            code == 404 -> "Este cliente ya no existe en el negocio."
+            else -> "No se pudo guardar el cliente. Intenta de nuevo."
+        }
+    }
+
+    @kotlinx.serialization.Serializable
+    private data class ErrorDelServidor(val code: String? = null, val message: String? = null)
 
     private fun translateError(body: String): String {
         return when {
