@@ -6,6 +6,18 @@ import org.junit.Test
 
 /** Source guards catch accidental removals, not rendering, clipping or touch accessibility. */
 class ExchangeLayoutGuardTest {
+    @Test fun `payment blocks header and system back and disabled settlement shows reason`() {
+        val screen = source("transactions/presentation/exchange/ExchangeScreen.kt")
+        assertTrue(screen.contains("navEnabled = !busy"))
+        assertTrue(screen.contains("BackHandler { if (!busy)"))
+        assertTrue(screen.contains("enabled = !busy && option.disabledReason == null"))
+        assertTrue(screen.contains("option.disabledReason?.let"))
+        val header = source("designsystem/components/AvoqadoFullscreenHeader.kt")
+        assertTrue(header.contains("CloseButton(onClick = onNav, enabled = navEnabled)"))
+        assertTrue(header.contains("BackButton(onClick = onNav, enabled = navEnabled"))
+        val button = source("designsystem/components/CircularIconButton.kt")
+        assertTrue(button.contains(".clickable(enabled = enabled, onClick = onClick)"))
+    }
     private fun source(file: String): String {
         var dir: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
         val path = "app/src/main/java/com/avoqado/pos/$file"

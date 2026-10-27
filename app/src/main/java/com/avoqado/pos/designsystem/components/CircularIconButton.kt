@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -31,6 +32,7 @@ fun CircularIconButton(
     modifier: Modifier = Modifier,
     icon: ImageVector = Icons.AutoMirrored.Filled.ArrowBack,
     contentDescription: String = "Regresar",
+    enabled: Boolean = true,
 ) {
     val adaptive = AvoqadoTheme.adaptive
 
@@ -38,8 +40,9 @@ fun CircularIconButton(
         modifier = modifier
             .size(adaptive.circularIconButtonSize)
             .clip(CircleShape)
+            .alpha(if (enabled) 1f else 0.38f)
             .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -59,12 +62,14 @@ fun BackButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     contentDescription: String = "Regresar",
+    enabled: Boolean = true,
 ) {
     CircularIconButton(
         onClick = onClick,
         modifier = modifier,
         icon = Icons.AutoMirrored.Filled.ArrowBack,
         contentDescription = contentDescription,
+        enabled = enabled,
     )
 }
 
@@ -75,12 +80,14 @@ fun BackButton(
 fun CloseButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     CircularIconButton(
         onClick = onClick,
         modifier = modifier,
         icon = Icons.Filled.Close,
         contentDescription = "Cerrar",
+        enabled = enabled,
     )
 }
 

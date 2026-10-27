@@ -11,6 +11,7 @@ import com.avoqado.pos.payment.data.*
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.transactions.data.*
 import com.avoqado.pos.transactions.data.model.Transaction
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -27,7 +28,7 @@ import javax.inject.Inject
 class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepository, private val store: ExchangePendingStore,
     private val secure: SecureStorage, private val outbox: SyncOutbox, private val drawer: CashDrawerRepository,
     private val terminal: TerminalPaymentService, private val role: RoleManager, private val printer: PrinterService,
-    private val monitor: ConnectivityMonitor) : ViewModel() {
+    private val monitor: ConnectivityMonitor, private val settings: TpvSettingsRepository) : ViewModel() {
     private val submission = ExchangeSubmission(repository, store)
     private val card = ExchangeCardCharge(terminal, submission)
     val state = submission.state
@@ -80,7 +81,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
 
     fun options(value: ExchangeDraft): List<ExchangeSettlementOption> = if (value.settlement.kind == "COLLECT")
         ExchangeSettlement.collectOptions() else ExchangeSettlement.payoutOptions(transaction?.payoutOptions,
-            -value.settlement.expectedDifferenceCents, role.canRefundToCash)
+            -value.settlement.expectedDifferenceCents, role.canRefundToCash, settings.managerPinOverrideEnabled.value)
 
     fun begin(value: ExchangeDraft) {
         if (!_ready.value || _busy.value || state.value.locked || !allowed()) return
@@ -91,7 +92,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
 
     fun choose(option: ExchangeSettlementOption) {
         val value = _draft.value ?: return
-        if (!allowed() || option !in options(value)) return
+        if (!allowed() || option.disabledReason != null || option !in options(value)) return
         perform {
             if (option.method == "CARD_TERMINAL") {
                 when (val list = terminal.fetchOnlineTerminals()) {

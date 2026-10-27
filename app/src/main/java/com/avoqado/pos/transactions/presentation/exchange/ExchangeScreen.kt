@@ -45,12 +45,13 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
     var showCart by rememberSaveable { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).imePadding().navigationBarsPadding()) {
         val isTablet = maxWidth >= 600.dp
-        BackHandler { if (!isTablet && showCart) showCart = false else onClose() }
+        BackHandler { if (!busy) { if (!isTablet && showCart) showCart = false else onClose() } }
         Column(Modifier.fillMaxSize()) {
             AvoqadoFullscreenHeader(
                 title = TextosCambio.TITULO.replace("{folio}", state.transaction?.orderNumber.orEmpty())
                     .replace("{cuando}", state.transaction?.dateGroup.orEmpty()),
                 onNav = { if (!isTablet && showCart) showCart = false else onClose() },
+                navEnabled = !busy,
                 navStyle = if (!isTablet && showCart) FullscreenHeaderNav.BACK else FullscreenHeaderNav.CLOSE,
                 backContentDescription = TextosCambio.REGRESAR,
                 showDivider = true,
@@ -109,7 +110,8 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                     PrimaryButton(terminal.name, { payments.chooseTerminal(terminal.terminalId) }, enabled = !busy, fullWidth = true)
                 } else payments.options(draft!!).forEach { option ->
                     if (option.requiresPin) Text(TextosCambio.PIN_EFECTIVO, style = MaterialTheme.typography.bodySmall)
-                    PrimaryButton(option.label, { payments.choose(option) }, enabled = !busy, fullWidth = true)
+                    PrimaryButton(option.label, { payments.choose(option) }, enabled = !busy && option.disabledReason == null, fullWidth = true)
+                    option.disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             }

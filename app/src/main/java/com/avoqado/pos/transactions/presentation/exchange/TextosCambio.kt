@@ -10,6 +10,7 @@ object TextosCambio {
     const val CAJA_SIN_CONFIRMAR = "La apertura de esta caja aún no está confirmada. Entra a Caja con conexión antes de hacer el cambio."
     const val SIN_TERMINALES = "No hay terminales conectadas. Abre la app en la terminal e inténtalo de nuevo."
     const val PIN_EFECTIVO = "Necesitarás que un encargado autorice la devolución en efectivo con su código."
+    const val EFECTIVO_SIN_PERMISO = "Devolver efectivo de un cobro con otro medio necesita permiso de un encargado"
     const val GUARDADO_FALLIDO = "No se pudo guardar el cambio en el aparato. No se envió; inténtalo de nuevo."
     const val RECUPERACION_FALLIDA = "No se pudo leer el cambio guardado. Confirma su estado antes de empezar otro."
     const val TICKET_PAGO = "Pago:"

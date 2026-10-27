@@ -18,7 +18,31 @@ class ExchangePaymentViewModelTest {
     private val store=mockk<ExchangePendingStore>()
     private val secure=mockk<SecureStorage>(relaxed=true) { every { venueId } returns "venue"; every { userId } returns "actor" }
     private val monitor=mockk<ConnectivityMonitor> { every { isOnline() } returns true }
-    private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor)
+    private val overrideEnabled = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val settings = mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository> {
+        every { managerPinOverrideEnabled } returns overrideEnabled
+    }
+    private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor,settings)
+
+    @Test fun `disabled cash cannot create pending even after override changes`() {
+        coEvery { store.load("venue", "payment") } returns null
+        val vm = vm()
+        vm.open(Transaction("payment", payoutOptions = listOf(com.avoqado.pos.transactions.data.model.PayoutOption("CASH", 1000, 0, true))))
+        val draft = ExchangeDraft("payment", emptyList(), emptyList(), ExchangeSettlementDraft("PAYOUT", -250))
+        vm.begin(draft)
+        overrideEnabled.value = true
+        val enabled = vm.options(draft).single()
+        assertTrue(enabled.requiresPin)
+        overrideEnabled.value = false
+        val disabled = vm.options(draft).single()
+        assertEquals(TextosCambio.EFECTIVO_SIN_PERMISO, disabled.disabledReason)
+        vm.choose(disabled)
+        vm.choose(enabled)
+        assertFalse(vm.state.value.locked)
+        assertNotNull(vm.draft.value)
+        coVerify(exactly = 0) { store.save(any()) }
+        coVerify(exactly = 0) { repo.create(any(), any()) }
+    }
     @Test fun `opening pending sale does not post or charge without explicit confirmation`() {
         coEvery { store.load("venue","payment") } returns PendingExchange("venue","payment","ORD-1","Ana","""{"staffId":"actor"}""")
         val vm=vm(); vm.open(Transaction("payment"))
