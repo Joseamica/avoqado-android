@@ -409,9 +409,9 @@ fun CheckoutScreen(
                 }
                 result
                     .onSuccess {
-                        areaTicketOperations.confirmPendingPdfSaved {
-                            // Fin de venta: el vale quedó emitido y guardado.
-                            cartViewModel.finalizarVenta()
+                        areaTicketOperations.confirmPendingPdfSaved { ventaQueEmitio ->
+                            // J7: sólo termina la venta que emitió el vale; otra venta en pantalla no se toca.
+                            cartViewModel.finalizarVentaSiEs(ventaQueEmitio)
                         }
                     }
                     .onFailure { error ->
@@ -571,9 +571,13 @@ fun CheckoutScreen(
 
     fun runPrimaryAction(closePhoneCart: Boolean = false) {
         if (areaOperationsState.issueWorkspace) {
-            areaTicketOperations.issue(cartState) {
-                // Fin de venta: el vale se emitió.
-                cartViewModel.finalizarVenta()
+            // D1: como el cobro, la copia guardada se marca justo antes de pedir el vale (si la app muere, restaurarla pregunta) y se
+            // retira al quedar emitido.
+            val copiaDelVale = cartState.carritoGuardadoId
+            areaTicketOperations.issue(cartState, antesDeEmitir = { cartViewModel.prepararCobroDelCarritoGuardado() }) { ventaQueEmitio ->
+                cartViewModel.retirarCopiaDelVale(copiaDelVale)
+                // Fin de venta: el vale se emitió (J7: sólo la venta que lo emitió).
+                cartViewModel.finalizarVentaSiEs(ventaQueEmitio)
                 if (closePhoneCart) showIPhoneCart = false
             }
             return
@@ -1612,9 +1616,9 @@ fun CheckoutScreen(
                 PrimaryButton(
                     text = if (areaOperationsState.submitting) "Reimprimiendo…" else "Reimprimir",
                     onClick = {
-                        areaTicketOperations.reprintPending {
-                            // Fin de venta: el vale se reimprimió y queda emitido.
-                            cartViewModel.finalizarVenta()
+                        areaTicketOperations.reprintPending { ventaQueEmitio ->
+                            // J7: la emisión ya terminó la venta del vale; reimprimirlo nunca vacía otra venta en pantalla.
+                            cartViewModel.finalizarVentaSiEs(ventaQueEmitio)
                         }
                     },
                     enabled = !areaOperationsState.submitting && !areaOperationsState.preparingPdf,
@@ -2080,8 +2084,8 @@ fun CheckoutScreen(
                 PrimaryButton(text = "Vaciar", onClick = {
                     // 🔴 Vaciar a mano ES terminar la venta: si sólo se vacía el
                     // carrito, el cliente se queda en el encabezado y la venta
-                    // siguiente se le atribuye a él.
-                    cartViewModel.finalizarVenta()
+                    // siguiente se le atribuye a él. D2: también suelta la llave de emisión de vales.
+                    cartViewModel.vaciar()
                     showClearCartConfirm = false
                 })
             },
