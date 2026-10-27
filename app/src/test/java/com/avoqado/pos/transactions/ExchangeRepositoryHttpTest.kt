@@ -153,6 +153,14 @@ class ExchangeRepositoryHttpTest {
             assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
             assertTrue(flow.state.value.locked)
         }
+        // An intermediary can also answer JSON that looks like ours: its header still says it is not the API (rE2).
+        for (contentType in listOf("application/json", "text/html; charset=utf-8")) {
+            server.enqueue(MockResponse().setResponseCode(404).addHeader("ngrok-error-code", "ERR_NGROK_3200")
+                .addHeader("Content-Type", contentType).setBody("""{"message":"Endpoint offline","code":"NOT_FOUND"}"""))
+            flow.retry()
+            assertEquals(pending().body,store.load("venue","payment")!!.body)
+            assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+        }
     }
     @Test fun `structured validation releases a 400 and key reuse is explicit`()=runBlocking {
         for ((code,body) in listOf(400 to """{"message":"invalid","details":[{"path":["body","taken"],"code":"too_small"}]}""",
