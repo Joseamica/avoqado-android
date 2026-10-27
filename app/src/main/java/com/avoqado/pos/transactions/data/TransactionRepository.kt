@@ -128,6 +128,33 @@ class TransactionRepository @Inject constructor(
     suspend fun fetchTransactionDetail(paymentId: String): Transaction? =
         fetchTransactionDetail(paymentId, secureStorage.userId, secureStorage.venueId)
 
+    /** Exchange links contain order ids; the transaction detail route requires a payment id. */
+    suspend fun paymentIdForExchangeOrder(orderId: String, actorId: String?, venueId: String?): String? {
+        if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
+        val token = secureStorage.accessToken ?: return null
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/orders/${URLEncoder.encode(orderId, "UTF-8")}")
+                .header("Authorization", "Bearer $token")
+                .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
+                .build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                scopedCustomerClient(actorId, venueId, token, isRead = true).newCall(request).execute().use {
+                    it.code to it.body?.string().orEmpty()
+                }
+            }
+            if (!sameIdentity(actorId, venueId)) return null
+            if (code == 403) throw SecurityException("orders:read")
+            if (code !in 200..299) return null
+            val order = json.decodeFromString<com.avoqado.pos.tables.data.OrderDetailResponse>(body).order ?: return null
+            if (order.id != orderId) return null
+            order.payments.firstOrNull { it.status == "COMPLETED" && it.id.isNotBlank() }?.id
+        } catch (e: CancellationException) { throw e }
+        catch (e: SecurityException) { throw e }
+        catch (_: Exception) { null }
+    }
+
     suspend fun fetchTransactionDetail(paymentId: String, actorId: String?, venueId: String?): Transaction? {
         if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
         val token = secureStorage.accessToken ?: return null

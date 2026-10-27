@@ -58,12 +58,13 @@ fun CircularIconButton(
 fun BackButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    contentDescription: String = "Regresar",
 ) {
     CircularIconButton(
         onClick = onClick,
         modifier = modifier,
         icon = Icons.AutoMirrored.Filled.ArrowBack,
-        contentDescription = "Regresar",
+        contentDescription = contentDescription,
     )
 }
 

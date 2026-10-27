@@ -88,7 +88,10 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 fun TransactionsScreen(
     isTablet: Boolean = false,
     viewModel: TransactionsViewModel = hiltViewModel(),
+    onOpenExchange: () -> Unit = {},
 ) {
+    val exchangeTransaction by viewModel.exchangeTransaction.collectAsState()
+    LaunchedEffect(exchangeTransaction?.id) { if (exchangeTransaction != null) onOpenExchange() }
     val activeFilter by viewModel.activeFilter.collectAsState()
     val showRefundSheet by viewModel.showRefundSheet.collectAsState()
     val adaptive = AvoqadoTheme.adaptive

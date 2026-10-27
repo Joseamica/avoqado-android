@@ -39,6 +39,9 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.avoqado.pos.core.util.aCentavos
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeEntry
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import com.avoqado.pos.core.domain.ActionVisibility
 
 // MARK: - Refund UI State
 
@@ -138,6 +141,56 @@ class TransactionsViewModel @Inject constructor(
     val customerConnection = connectivityMonitor.isConnected
     val customerServerReachable = connectivityMonitor.isServerReachable
     val customerAssignmentOnline: Boolean get() = connectivityMonitor.isOnline()
+
+    private val _exchangeTransaction = MutableStateFlow<Transaction?>(null)
+    val exchangeTransaction = _exchangeTransaction.asStateFlow()
+    private val _exchangeMessage = MutableStateFlow<String?>(null)
+    val exchangeMessage = _exchangeMessage.asStateFlow()
+    private var exchangeAuthorizing = false
+
+    fun onExchangeTapped() {
+        val transaction = _selectedTransaction.value ?: return
+        val scope = detailScope ?: return
+        val decision = ExchangeEntry.decide(transaction, tpvSettingsRepository.exchangesEnabled.value,
+            connectivityMonitor.isOnline(), roleManager.canIssueRefund, tpvSettingsRepository.managerPinOverrideEnabled.value)
+        val visibility = roleManager.visibilityOf(roleManager.canIssueRefund, tpvSettingsRepository.managerPinOverrideEnabled.value)
+        if (!decision.visible || visibility == ActionVisibility.HIDDEN || !current(scope) || exchangeAuthorizing) return
+        if (decision.blockedReason != null) { _exchangeMessage.value = decision.blockedReason; return }
+        if (visibility == ActionVisibility.ALLOWED) { _exchangeTransaction.value = transaction; return }
+        exchangeAuthorizing = true
+        viewModelScope.launch {
+            try {
+                val authorized = managerOverrideCoordinator.preauthorize(REFUND_PERMISSION)
+                if (authorized && current(scope) &&
+                    _selectedTransaction.value == transaction && connectivityMonitor.isOnline() &&
+                    tpvSettingsRepository.exchangesEnabled.value) _exchangeTransaction.value = transaction
+                else if (authorized) managerOverrideCoordinator.discardPreauthorized(REFUND_PERMISSION)
+            } finally { exchangeAuthorizing = false }
+        }
+    }
+
+    fun dismissExchange() {
+        managerOverrideCoordinator.discardPreauthorized(REFUND_PERMISSION)
+        _exchangeTransaction.value = null
+    }
+    fun clearExchangeMessage() { _exchangeMessage.value = null }
+
+    fun openExchangeOrder(orderId: String) {
+        val scope = detailScope ?: return
+        if (!current(scope)) return
+        if (!connectivityMonitor.isOnline()) { _exchangeMessage.value = TextosCambio.SIN_CONEXION; return }
+        viewModelScope.launch {
+            val paymentId = try {
+                repository.paymentIdForExchangeOrder(orderId, scope.actorId, scope.venueId)
+            } catch (_: SecurityException) {
+                if (current(scope)) _exchangeMessage.value = TextosCambio.VINCULO_SIN_PERMISO
+                return@launch
+            }
+            if (!current(scope)) return@launch
+            if (paymentId != null) selectTransaction(paymentId)
+            else _exchangeMessage.value = TextosCambio.VINCULO_NO_DISPONIBLE
+        }
+    }
 
     fun openCustomerPicker() {
         if (!canAssignCustomer || _isAssigningCustomer.value) return
@@ -321,6 +374,7 @@ class TransactionsViewModel @Inject constructor(
     /** Guard §4.5 — dinero: con la devolución abierta (lista o detalle) o corriendo, ni el gesto refresca. */
     private fun workInProgress(): Boolean =
         _showRefundSheet.value || _refundState.value is RefundUiState.Loading || _detailRefundActive.value ||
+            _exchangeTransaction.value != null || exchangeAuthorizing ||
             _customerPickerVisible.value || _customerCandidate.value != null || _isAssigningCustomer.value
 
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
@@ -450,6 +504,8 @@ class TransactionsViewModel @Inject constructor(
     // MARK: - Transaction Selection
 
     fun selectTransaction(transactionId: String) {
+        if (_exchangeTransaction.value != null) dismissExchange()
+        _exchangeMessage.value = null
         val scope = DetailScope(secureStorage.userId, secureStorage.venueId, transactionId, ++detailGeneration)
         detailScope = scope
         _selectedTransactionId.value = transactionId
@@ -481,6 +537,8 @@ class TransactionsViewModel @Inject constructor(
     }
 
     fun clearSelection() {
+        if (_exchangeTransaction.value != null) dismissExchange()
+        _exchangeMessage.value = null
         detailScope = null
         _selectedTransactionId.value = null
         _selectedTransaction.value = null

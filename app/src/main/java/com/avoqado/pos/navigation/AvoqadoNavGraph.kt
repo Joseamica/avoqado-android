@@ -90,6 +90,9 @@ import com.avoqado.pos.settings.MoreMenuScreen
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 import com.avoqado.pos.transactions.presentation.TransactionsScreen
+import com.avoqado.pos.transactions.presentation.TransactionsViewModel
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeScreen
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeViewModel
 import dagger.hilt.android.EntryPointAccessors
 import java.time.format.DateTimeFormatter
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -365,6 +368,7 @@ private fun MainScaffold(
         }
     }
 
+    val isExchanging = currentDestination?.route == EXCHANGE_ROUTE
     if (isTablet) {
         // iPad-style: custom capsule tab bar at bottom.
         // 🔴 DERIVADO de la navegación real (como ya hacía la barra de teléfono):
@@ -393,7 +397,7 @@ private fun MainScaffold(
             bottomBar = {
                 // Durante el cobro el tab bar se esconde: el diálogo del pago no
                 // cubre la pantalla completa y este quedaba asomando y tocable.
-                if (!isPaying) TabletTabBar(
+                if (!isPaying && !isExchanging) TabletTabBar(
                     visibleTabs = graphVisibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab -> tocarPestana(tab) },
@@ -433,7 +437,10 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
+                    composable(MainTab.TRANSACTIONS.route) {
+                        TransactionsScreen(isTablet = true, onOpenExchange = { navController.navigate(EXCHANGE_ROUTE) { launchSingleTop = true } })
+                    }
+                    composable(EXCHANGE_ROUTE) { ExchangeDestination(navController) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -675,7 +682,7 @@ private fun MainScaffold(
             bottomBar = {
                 // Mismo criterio que el layout de tablet: durante el cobro no se
                 // muestra, porque asoma por debajo del diálogo del pago.
-                if (!isPaying) NavigationBar {
+                if (!isPaying && !isExchanging) NavigationBar {
                     graphVisibleTabs.forEach { tab ->
                         val selected = tab == pestanaMarcada
                         NavigationBarItem(
@@ -734,7 +741,10 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
+                    composable(MainTab.TRANSACTIONS.route) {
+                        TransactionsScreen(onOpenExchange = { navController.navigate(EXCHANGE_ROUTE) { launchSingleTop = true } })
+                    }
+                    composable(EXCHANGE_ROUTE) { ExchangeDestination(navController) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -1114,6 +1124,31 @@ private fun TabBarItem(
             )
         }
     }
+}
+
+private const val EXCHANGE_ROUTE = "exchange"
+
+@Composable
+private fun ExchangeDestination(navController: androidx.navigation.NavHostController) {
+    val parent = remember(navController) { navController.getBackStackEntry(MainTab.TRANSACTIONS.route) }
+    val transactions: TransactionsViewModel = hiltViewModel(parent)
+    val exchange: ExchangeViewModel = hiltViewModel()
+    val transaction by transactions.exchangeTransaction.collectAsState()
+    var leaving by remember { mutableStateOf(false) }
+    LaunchedEffect(transaction?.id) {
+        val sale = transaction
+        if (sale == null && !leaving) {
+            leaving = true
+            navController.popBackStack()
+        } else if (sale != null) exchange.start(sale)
+    }
+    if (transaction != null) ExchangeScreen(exchange, onClose = {
+        if (!leaving) {
+            leaving = true
+            transactions.dismissExchange()
+            navController.popBackStack()
+        }
+    })
 }
 
 /**
