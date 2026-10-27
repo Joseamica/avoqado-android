@@ -56,7 +56,7 @@ class AreaTicketPendingPrintRecordTest {
     private val repository = mockk<AreaTicketRepository>()
     private val printerService = mockk<PrinterService>()
     private val pdfGenerator = mockk<AreaTicketPdfGenerator>()
-    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true } // D2: el disco guarda la llave
 
     // El disco, respaldado con variables: el "" del mock relajado no es ni una lista ni un negocio.
     private var negocio: String? = "v1"
@@ -300,8 +300,8 @@ class AreaTicketPendingPrintRecordTest {
         // La llave nace al confirmar el servidor y al vaciar el carrito. La del aparato ya puede ser la de OTRO vale cuya
         // respuesta se perdió: cambiarla al salir el papel de uno viejo hacía que su reintento creara un segundo vale.
         var llave: String? = "llave-de-otro-vale-en-curso"
-        every { secureStorage.pendingAreaTicketIssueKey } answers { llave }
-        every { secureStorage.pendingAreaTicketIssueKey = any() } answers { llave = firstArg() }
+        every { secureStorage.llaveDeEmisionDeVales("v1") } answers { llave }
+        every { secureStorage.guardarLlaveDeEmisionDeVales("v1", any()) } answers { llave = secondArg(); true }
         codigoPendiente = CODIGO
         negocioDelPendiente = "v1"
         val vm = viewModel()

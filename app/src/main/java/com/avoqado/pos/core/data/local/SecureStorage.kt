@@ -146,9 +146,16 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_AREA_TICKET_MATERIALIZE_KEY, null)
         set(value) = prefs.edit().putString(KEY_AREA_TICKET_MATERIALIZE_KEY, value).apply()
 
-    var pendingAreaTicketIssueKey: String?
-        get() = prefs.getString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, null)
-        set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, value).apply()
+    /** 🔴 D2 (vales-ciclo): la llave de emisión de vales de [venueId]; ver [LlaveDeEmisionDeVales]. */
+    fun llaveDeEmisionDeVales(venueId: String): String? = LlaveDeEmisionDeVales.leer(prefs, venueId)
+
+    /** `true` sólo si la llave quedó en disco. */
+    fun guardarLlaveDeEmisionDeVales(venueId: String, llave: String): Boolean = LlaveDeEmisionDeVales.guardar(prefs, venueId, llave)
+
+    /** Suelta la llave de [venueId]; con [siEs], sólo si sigue siendo ésa. */
+    fun soltarLlaveDeEmisionDeVales(venueId: String, siEs: String? = null) {
+        LlaveDeEmisionDeVales.soltar(prefs, venueId, siEs)
+    }
 
     var pendingAreaTicketPrintCode: String?
         get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_CODE, null)
@@ -669,7 +676,6 @@ class SecureStorage @Inject constructor(
         private const val KEY_AREA_TICKET_CHECKOUT_VENUE_ID = "areaTicketCheckoutVenueId"
         private const val KEY_AREA_TICKET_CREATE_KEY = "areaTicketCreateKey"
         private const val KEY_AREA_TICKET_MATERIALIZE_KEY = "areaTicketMaterializeKey"
-        private const val KEY_PENDING_AREA_TICKET_ISSUE_KEY = "pendingAreaTicketIssueKey"
         private const val KEY_PENDING_AREA_TICKET_PRINT_CODE = "pendingAreaTicketPrintCode"
         private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
         private const val KEY_PENDING_AREA_TICKET_PRINT_RECORDS = "pendingAreaTicketPrintRecords"
@@ -763,5 +769,35 @@ fun roleDisplayName(role: String?): String? {
         "VIEWER" -> "Observador"
         "STAFF" -> "Staff"
         else -> normalized
+    }
+}
+
+/**
+ * 🔴 D2 (vales-ciclo): la llave de emisión de vales, POR NEGOCIO (`pendingAreaTicketIssueKey_<venueId>`), como la deduplica el
+ * SERVIDOR (negocio + llave). Todo va con `commit()`: `apply()` cambia la memoria y escribe después sin avisar si el disco
+ * falla (ANDROID), y en WINDOWS un disco que falla deja lo de antes. Aparte de [SecureStorage] para probarla sin el cifrado.
+ */
+internal object LlaveDeEmisionDeVales {
+    /** La de versiones anteriores: una sola para todo el aparato. Nunca se escribe ni se borra. */
+    private const val GLOBAL = "pendingAreaTicketIssueKey"
+    private fun clave(venueId: String) = "${GLOBAL}_$venueId"
+    private fun yaNoHereda(venueId: String) = "${GLOBAL}_sinHeredar_$venueId"
+
+    /**
+     * La llave de [venueId]. Si nunca tuvo, la global de una versión anterior (Codex r7 #1): puede ser la de un vale cuya
+     * respuesta se perdió antes de actualizar y no dice de qué negocio era, así que la ve CADA negocio hasta que ése la suelta
+     * ([soltar]). Dársela a uno solo (al primero que emitía o al activo al arrancar) fallaba cuando era otro (r8 #1, r9 #1-#3).
+     */
+    fun leer(prefs: SharedPreferences, venueId: String): String? = prefs.getString(clave(venueId), null)
+        ?: prefs.getString(GLOBAL, null)?.takeUnless { prefs.getBoolean(yaNoHereda(venueId), false) }
+
+    /** `true` sólo si [llave] quedó en disco. */
+    fun guardar(prefs: SharedPreferences, venueId: String, llave: String): Boolean =
+        prefs.edit().putString(clave(venueId), llave).commit() && prefs.getString(clave(venueId), null) == llave
+
+    /** Con [siEs], sólo si la de [venueId] sigue siendo ésa: una confirmación tardía no suelta la de otra emisión (r7 #4). */
+    fun soltar(prefs: SharedPreferences, venueId: String, siEs: String? = null) {
+        if (siEs != null && leer(prefs, venueId) != siEs) return
+        prefs.edit().remove(clave(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
     }
 }

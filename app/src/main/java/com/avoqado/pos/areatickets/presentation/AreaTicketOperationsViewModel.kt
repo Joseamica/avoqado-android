@@ -128,13 +128,16 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private var refreshRequestId = 0L
 
     /**
-     * 🔴 D2 (vales-ciclo): la llave de emisión vive en el aparato, no en esta pantalla. Nace sólo ① al confirmar el servidor
-     * un vale (abajo, en [issue]) y ② al vaciar el carrito a mano (`CartViewModel.vaciar`); si no hay, se crea y se guarda
-     * ANTES del POST. Un 409, reimprimir o el PDF no la tocan: con llave nueva, el carrito cambiado tras una respuesta perdida
-     * era un SEGUNDO vale. Antes había una copia en memoria que quedaba vieja cuando el carrito la soltaba.
+     * 🔴 D2 (vales-ciclo): la llave de emisión vive en el aparato, una por negocio (`SecureStorage.llaveDeEmisionDeVales`), no
+     * en esta pantalla. Se suelta sólo ① al confirmar el servidor el vale de ESA llave (abajo, en [issue]; si otra pantalla ya
+     * la cambió, no se toca) y ② al vaciar el carrito a mano (`CartViewModel.vaciar`); sin llave, se crea y se guarda en disco
+     * ANTES del POST, y si el disco no la confirmó (Codex r6 #1, r7 #2) da null y el vale no se pide. Un 409, reimprimir o el PDF no la tocan: con llave nueva, el carrito
+     * cambiado tras una respuesta perdida era un SEGUNDO vale. Antes había una copia en memoria que quedaba vieja.
      */
-    private fun llaveDeEmision(): String = secureStorage.pendingAreaTicketIssueKey
-        ?: UUID.randomUUID().toString().also { secureStorage.pendingAreaTicketIssueKey = it }
+    private fun llaveDeEmision(venueId: String): String? =
+        // r8 #2: también la que ya estaba se vuelve a guardar: tras un commit fallido sólo vive en la memoria del proceso.
+        (secureStorage.llaveDeEmisionDeVales(venueId) ?: UUID.randomUUID().toString())
+            .takeIf { secureStorage.guardarLlaveDeEmisionDeVales(venueId, it) }
 
     // D12. Antes del `init`: su `refresh()` ya manda los registros pendientes.
     private val pendingRecordsJson = Json { ignoreUnknownKeys = true }
@@ -251,6 +254,13 @@ class AreaTicketOperationsViewModel @Inject constructor(
         val venueId = secureStorage.venueId
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
+            // D2 (Codex r10 #1): la llave se toma (y se guarda) AL TOCAR, antes de esperar lo pendiente. Si mientras tanto otra
+            // pantalla recupera el vale y la suelta, este reintento sale con ELLA y el servidor compara; con una nueva, otro vale.
+            val llave = llaveDeEmision(venueId.orEmpty())
+            if (llave == null) {
+                _state.value = _state.value.copy(submitting = false, error = "No se pudo preparar el vale. Intenta de nuevo.")
+                return@launch
+            }
             // Codex r2 #3: DESPUÉS de `submitting`; si no, mientras esto espera a la red un segundo toque emitiría otro vale.
             runCatching { flushWithinBudget() }
             // Task 13: si en esa espera se cambió de negocio, el vale nacería en el NUEVO y su registro y su reimpresión
@@ -274,7 +284,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                         discountId = item.itemDiscountId,
                     )
                 }
-                val ticket = repository.issue(lines, llaveDeEmision())
+                val ticket = repository.issue(lines, llave)
                 // Primero persiste la recuperación: si la app muere al limpiar el
                 // carrito, el mismo vale todavía puede reimprimirse al volver.
                 secureStorage.pendingAreaTicketPrintCode = ticket.code
@@ -284,7 +294,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 // La llave protege la creación, no la impresión. Una vez que el
                 // servidor aceptó este vale, el siguiente carrito necesita otra
                 // llave aunque todavía quede pendiente reimprimir el papel.
-                secureStorage.pendingAreaTicketIssueKey = UUID.randomUUID().toString()
+                secureStorage.soltarLlaveDeEmisionDeVales(venueId.orEmpty(), siEs = llave)
                 // El vale ya quedó emitido en servidor. Desde este punto el carrito no
                 // puede seguir cobrable aunque falle la salida en papel: imprimir es una
                 // recuperación secundaria del mismo vale, no parte de su creación.

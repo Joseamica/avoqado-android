@@ -719,13 +719,13 @@ class CartViewModelWeightTest {
         val vm = createViewModel()
         vm.addProduct(burger)
         vm.finalizarVenta()
-        verify(exactly = 0) { secureStorage.pendingAreaTicketIssueKey = any() }
+        verify(exactly = 0) { secureStorage.soltarLlaveDeEmisionDeVales(any(), any()) }
 
         vm.addProduct(burger)
         vm.vaciar()
 
         assertTrue(vm.cartState.value.isEmpty)
-        verify(exactly = 1) { secureStorage.pendingAreaTicketIssueKey = null }
+        verify(exactly = 1) { secureStorage.soltarLlaveDeEmisionDeVales("venue-1", null) }
     }
 
     // J12 (vales-ciclo, Codex r1): la restauración que tardó vuelve con el apartado de la venta B que el cajero empezó mientras

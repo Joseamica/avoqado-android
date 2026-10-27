@@ -1592,6 +1592,8 @@ class CartViewModel @Inject constructor(
             cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn,
             items = state.items.map { item ->
                 SavedCartItem(
+                    lineId = item.id,
+                    weightKg = item.weightKg,
                     productId = when (val type = item.type) {
                         is CartItemType.ProductItem -> type.productId
                         is CartItemType.CustomAmount -> null
@@ -1704,7 +1706,7 @@ class CartViewModel @Inject constructor(
      * se perdió vuelve con el mismo contenido y el servidor devuelve ESE vale en vez de crear otro.
      */
     fun vaciar() {
-        secureStorage.pendingAreaTicketIssueKey = null
+        secureStorage.venueId?.let { secureStorage.soltarLlaveDeEmisionDeVales(it) }
         finalizarVenta()
     }
 
@@ -2404,6 +2406,8 @@ class CartViewModel @Inject constructor(
         }
         val items = savedCart.items.map { savedItem ->
             CartItem(
+                id = savedItem.lineId ?: UUID.randomUUID().toString(),
+                weightKg = savedItem.weightKg,
                 type = when {
                     savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId)
                     savedItem.productId != null -> CartItemType.ProductItem(savedItem.productId)

@@ -319,4 +319,44 @@ class CarritoGuardadoDurableTest {
         assertNull(vm.cartState.value.carritoGuardadoId)
     }
 
+    // D2 (vales-ciclo, Codex r6 #3): guardar y restaurar conserva el id de cada renglón. El servidor reconoce un vale por su
+    // llave y sus renglones (`clientLineId`): con ids nuevos, el carrito restaurado «como estaba» chocaba con 409 y la única
+    // salida era vaciarlo, dejando huérfano el vale cuya respuesta se perdió.
+    @Test
+    fun `D2 guardar y restaurar conserva el id de cada renglon - tambien tras reiniciar`() {
+        val prefs = PrefsDeDosCapas(); val repo = SavedCartsRepository(prefs.context)
+        val vm = createViewModel(repo)
+        vm.addCustomAmount(name = "Agua", amountCents = 2500)
+        vm.addCustomAmount(name = "Pan", amountCents = 1500)
+        val ids = vm.cartState.value.items.map { it.id }
+        assertTrue(vm.saveCurrentCart())
+
+        val tras = SavedCartsRepository(prefs.reiniciarProceso().context)
+        val otra = createViewModel(tras)
+        otra.restoreSavedCart(tras.savedCarts.value.single())
+
+        assertEquals(ids, otra.cartState.value.items.map { it.id })
+    }
+
+    // D2 (vales-ciclo, Codex r7 #3) y tablero D3: el renglón pesado se guarda CON su peso. Sin él volvía a precio de 1 kg (se
+    // cobraba de más) y el SERVIDOR no reconocía el vale del carrito restaurado.
+    @Test
+    fun `D2 guardar y restaurar conserva el peso - el total no cambia`() {
+        val prefs = PrefsDeDosCapas(); val repo = SavedCartsRepository(prefs.context)
+        val vm = createViewModel(repo)
+        val jamon = com.avoqado.pos.pos.data.model.Product(
+            id = "jamon", name = "Jamón serrano", priceValue = 420.0, soldByWeight = true, unit = "KILOGRAM",
+        )
+        vm.addProductByWeight(jamon, 0.435)
+        val total = vm.cartState.value.totalCents
+        assertTrue(vm.saveCurrentCart())
+
+        val tras = SavedCartsRepository(prefs.reiniciarProceso().context)
+        val otra = createViewModel(tras)
+        otra.restoreSavedCart(tras.savedCarts.value.single())
+
+        assertEquals(0.435, otra.cartState.value.items.single().weightKg!!, 0.0)
+        assertEquals(total, otra.cartState.value.totalCents)
+    }
+
 }
