@@ -284,6 +284,12 @@ class CashPaymentRepository @Inject constructor(
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
     fun observarEstado(id: String): Flow<String?> = pendingPaymentDao.observarEstado(id)
 
+    /** D1 (26-oct): cómo va, en vivo, la parte de una venta dividida que se guardó sin red. Ver [estadoDeParte]. */
+    fun observarParte(id: String): Flow<EstadoDeParte> {
+        val venueId = secureStorage.venueId ?: return kotlinx.coroutines.flow.flowOf(EstadoDeParte.NoEsta)
+        return pendingPaymentDao.observarFila(venueId, id).map(::estadoDeParte)
+    }
+
     /**
      * El id del pago que el SERVIDOR le dio a un cobro encolado que ya subió (Info-7, QA en la D3, 15-oct): con él
      * «Cobro exitoso» pregunta por el sello de esa venta y cambia «El sello se suma al sincronizar» por lo que pasó.
@@ -378,6 +384,55 @@ class CashPaymentRepository @Inject constructor(
             customerId = entity.customerId, orderRequestJson = entity.orderRequestJson)
         return entity.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(capture),
             capturedOrderRef = entity.orderId ?: if (hasOrderItems) orderExternalId ?: "offline-order:$localId" else null)
+    }
+}
+
+/**
+ * D1 (26-oct, founder «B»): la parte de una venta de tienda dividida que se cobró en efectivo y se guardó sin red. El resto
+ * de la venta espera a que ESTA parte suba y el servidor le dé su orden; entonces se cobra contra esa orden (una sola venta).
+ */
+sealed interface EstadoDeParte {
+    /** En la cola: se sube sola cuando vuelva la conexión. */
+    data object Subiendo : EstadoDeParte
+
+    /** Retenida, sin confirmar o fallida: la resuelve un gerente en «Operaciones por revisar». Esperar no basta. */
+    data object PorRevisar : EstadoDeParte
+
+    /**
+     * Subió: su orden, lo que esa orden quedó debiendo según el servidor (null si no lo dijo) y si la dio por PAGADA (el
+     * servidor perdona un centavo: PAID puede venir con saldo 1).
+     */
+    data class Subida(val orderId: String, val saldoCents: Int?, val pagada: Boolean = false) : EstadoDeParte
+
+    /** Subió, pero el servidor dice que la venta debe otra cosa que el carrito: nada se cobra solo, lo revisa el cajero. */
+    data class SaldoDistinto(val orderId: String, val saldoCents: Int) : EstadoDeParte
+
+    /**
+     * Venta sin productos (cobro rápido de importe tecleado): el servidor la cierra con lo cobrado y no hay orden que
+     * continuar. Queda fuera de D1 (no hay inventario): el resto es otro cobro rápido, como antes.
+     */
+    data object SinOrden : EstadoDeParte
+
+    /** Ya no está en este aparato. */
+    data object NoEsta : EstadoDeParte
+}
+
+/** La lectura pura de una fila de la cola (sin red ni base: se prueba sola). */
+internal fun estadoDeParte(fila: PendingPaymentEntity?): EstadoDeParte {
+    if (fila == null) return EstadoDeParte.NoEsta
+    if (fila.paymentType == "FAST") return EstadoDeParte.SinOrden
+    return when (fila.syncStatus) {
+        PaymentSyncStatus.SYNCED.name -> {
+            val resultado = runCatching { Json.parseToJsonElement(fila.q15ResultJson ?: "").jsonObject }.getOrNull()
+            val orderId = (resultado?.get("orderId") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+                ?: fila.orderId?.takeIf { it.isNotBlank() }
+            val saldo = (resultado?.get("saldoCents") as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()
+            val pagada = (resultado?.get("estadoDeLaOrden") as? JsonPrimitive)?.content == "PAID"
+            if (orderId == null) EstadoDeParte.PorRevisar else EstadoDeParte.Subida(orderId, saldo, pagada)
+        }
+        PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name ->
+            if (fila.q15Reason != null) EstadoDeParte.PorRevisar else EstadoDeParte.Subiendo
+        else -> EstadoDeParte.PorRevisar
     }
 }
 

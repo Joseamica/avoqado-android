@@ -492,6 +492,8 @@ fun CheckoutScreen(
         // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
         // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
         if (cartViewModel.hayConsultasDeCodigo) return
+        // D1 (26-oct): la primera parte de esta venta se guardó sin red; el resto se cobra en la MISMA venta cuando suba.
+        if (!isTablePaying && cartViewModel.detenerCobroPorParteEnEspera()) return
         // Regla 11 (vales) y tablero D3 (venta normal): una venta a medio cobrar sólo se cobra por su saldo; el carrito dice
         // qué quitar. Antes lo agregado se cobraba como venta nueva llevándose el saldo de la vieja.
         if (cartViewModel.detenerCobroDeVentaCambiada()) return
@@ -830,6 +832,8 @@ fun CheckoutScreen(
                             // Membresías grant only on FULL payment — a split sale
                             // charged the pack without ever granting credits.
                             if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                            // D1 (founder «B»): en tienda, dividir pide conexión con Avoqado.
+                            else if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) Unit
                             else showSplitPayment = true
                         },
                         referralCode = referralCodeState,
@@ -1171,6 +1175,8 @@ fun CheckoutScreen(
                 // Membresías grant only on FULL payment — mismo guard que en tablet.
                 if (cartViewModel.hasCreditPack) {
                     showPackNoSplitAlert = true
+                } else if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) {
+                    // D1 (founder «B»): en tienda, dividir pide conexión con Avoqado.
                 } else {
                     // 🔴 El carrito de teléfono ocupa la pantalla completa: hay que
                     // cerrarlo ANTES de abrir la hoja de dividir, o la hoja queda
@@ -1445,7 +1451,7 @@ fun CheckoutScreen(
     val avisoDeVales by cartViewModel.avisoDeVales.collectAsState()
     avisoDeVales?.let { aviso ->
         AvoqadoWarningToast(
-            message = if (aviso == com.avoqado.pos.pos.presentation.cart.VENTA_A_MEDIAS_CAMBIADA) "Venta a medio cobrar" else "Venta de vales",
+            message = com.avoqado.pos.pos.presentation.cart.tituloDelAviso(aviso),
             subtitle = aviso,
             durationMs = 6000L,
             onDismiss = cartViewModel::consumeAvisoDeVales,
@@ -1745,6 +1751,12 @@ fun CheckoutScreen(
                     // final. Con `null` cierra la venta: el cobro completo no deja
                     // nada vivo y el siguiente arranca su propia orden.
                     cartViewModel.markPendingSplitOrder(ordenQueSigueViva)
+                    // 🔴 DINERO (D1, 26-oct). Esta parte quedó en la cola sin red y queda saldo: el resto espera a que SUBA y
+                    // se cobra contra la orden que le dé el servidor (una sola venta). Aunque ya hubiera orden (falló sólo el
+                    // pago, Codex r2 #3): mientras su dinero no suba, el saldo del servidor no lo cuenta. Mesas: su sesión.
+                    completion.parteEnCola
+                        ?.takeIf { !isTablePaying && completion.remainingBalanceCents > 0 }
+                        ?.let(cartViewModel::esperarParteEnCola)
                     // Referral is real now: capture on actual payment success
                     // (a cancelled payment no longer leaves a dangling referral).
                     //
@@ -1826,6 +1838,26 @@ fun CheckoutScreen(
                     // que es lo correcto — el cliente lo pidió; lo que no ocurrió es la venta.
                     upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
+                },
+                // «Dividir importe» también en tienda (founder, 26-oct: IQ cobró dos tarjetas como dos
+                // cobros manuales porque en Cobrar no lo encontró; sólo estaba en el «⋯» del carrito).
+                // Como Square («Split Amount» en la pantalla de cobro). Sólo existe en «Elegir método»,
+                // donde no hay cobro en vuelo: se suelta el cobro como la X y se abre la MISMA hoja del
+                // «⋯», con su mismo guard de membresías. El upsell se suelta como en la X (Codex r1 #1):
+                // su conversión no sabe de qué venta es, y si el cajero cierra la hoja y cobra otra venta
+                // se la llevaría ésa. Costo: un upsell cobrado en partes no cuenta como convertido.
+                onSplitImporte = onSplitImporte@{
+                    // D1 (founder «B»): sin conexión no se divide; el cobro sigue abierto para cobrar todo junto.
+                    if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) return@onSplitImporte
+                    showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
+                    paymentCartSnapshot = null
+                    cartViewModel.releaseChargingOrder()
+                    pendingSplitConfig = SplitConfig()
+                    upsellViewModel.cancelPendingConversion()
+                    cartViewModel.refreshCustomerDisplay()
+                    if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                    else showSplitPayment = true
                 },
                 // Se resolvió un cobro que había quedado de OTRA venta: el flujo se cierra y
                 // el cajero vuelve a su carrito intacto. El aviso lo pinta ESTA pantalla,

@@ -112,6 +112,11 @@ data class PaymentCompletion(
     val cambiosDePrecio: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList(),
     /** El descuento de cuenta que quedó fijo en la orden (sólo tras un 201 con cambios). Ver `CartState.conPreciosDelServidor`. */
     val descuentoDeCuentaCongelado: com.avoqado.pos.pos.data.model.DescuentoCongelado? = null,
+    /**
+     * D1 (26-oct): este cobro NO subió todavía; quedó en la cola sin red con esta llave (`pending_payments`). Con saldo, el
+     * resto de la venta espera a que suba (`CartViewModel.esperarParteEnCola`). null = subió, o no se encoló.
+     */
+    val parteEnCola: String? = null,
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
@@ -4157,6 +4162,7 @@ class PaymentFlowViewModel @Inject constructor(
         }.copy(
             carritoGuardadoDelCobro = cart.carritoGuardadoId,
             identidadDeVenta = cart.identidadDeVenta,
+            parteEnCola = ((_state.value as? PaymentFlowState.Success)?.colaDelCobro as? com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos)?.id,
             cambiosDePrecio = cambiosDeEstaVenta,
             descuentoDeCuentaCongelado = cart.descuentoDeCuentaCongelado,
         )

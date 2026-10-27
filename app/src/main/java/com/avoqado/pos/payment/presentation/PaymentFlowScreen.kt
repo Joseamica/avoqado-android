@@ -43,7 +43,7 @@ fun PaymentFlowScreen(
      */
     onPreviousChargeResolved: (String) -> Unit,
     splitConfig: SplitConfig = SplitConfig(),
-    /** Mesas (Square): link "Dividir importe" en la selección de método. */
+    /** Link "Dividir importe" en la selección de método (Mesas y tienda, como Square). */
     onSplitImporte: (() -> Unit)? = null,
     /**
      * Cliente que el cajero ya eligió ANTES de cobrar (encabezado del carrito o

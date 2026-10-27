@@ -89,7 +89,7 @@ fun PaymentMethodSelectionScreen(
     /** Por qué sólo efectivo (con [saldoSinActualizar]): el saldo sin actualizar, o un pedido de plataforma (Rappi 2b). */
     textoSoloEfectivo: String = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
     onRetryTerminals: () -> Unit = {},
-    /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
+    /** Link "Dividir importe" arriba (Mesas y tienda, como Square) — null lo oculta. */
     onSplitImporte: (() -> Unit)? = null,
     /** Cobro que NO pasó por Avoqado (terminal ajena, transferencia). */
     onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit)? = null,
