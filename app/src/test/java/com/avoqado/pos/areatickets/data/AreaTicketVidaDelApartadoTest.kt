@@ -154,6 +154,50 @@ class AreaTicketVidaDelApartadoTest {
         coVerify(exactly = 1) { api.cancelAreaTicketCheckout(VENUE, "A", any()) }
     }
 
+    // F1 (vales-ciclo, Codex r3): tras reiniciar, la restauración que pidió la venta A tarda; mientras, la venta B pide un vale.
+    // B no hereda la llave de A (crearía «su» sesión y recibiría el apartado de A con sus vales) y la respuesta de A, al llegar,
+    // no se instala encima de B.
+    @Test
+    fun `F1 - la restauracion tardia de A no le pasa su apartado a la venta B`() = runTest {
+        every { storage.areaTicketCheckoutVenueId } returns VENUE
+        every { storage.areaTicketCheckoutId } returns "A"
+        val respuesta = CompletableDeferred<AreaTicketEnvelope<CheckoutData>>()
+        coEvery { api.getAreaTicketCheckout(VENUE, "A") } coAnswers { respuesta.await() }
+        val llaveDeA = session.createIdempotencyKey()
+
+        val restaurando = async { repo.restore(venta = "venta-A") }
+        testScheduler.advanceUntilIdle()
+        session.prepararCreacionPara("venta-B")
+        assertTrue(session.createIdempotencyKey() != llaveDeA)
+        respuesta.complete(envelope(checkout("A")))
+
+        assertNull(restaurando.await())
+        assertNull(session.current())
+        assertEquals("venta-B", session.ventaDuena)
+    }
+
+    // F1 (vales-ciclo, Codex r4): la variante con DOS restauraciones. B ya preparó su creación (dueña B, llave nueva), pero el disco
+    // todavía apunta al apartado de A. El cajero vuelve a Cobrar y la restauración que pide B no adopta ese apartado como suyo.
+    @Test
+    fun `F1 - una segunda restauracion de B no adopta el apartado guardado de A`() = runTest {
+        every { storage.areaTicketCheckoutVenueId } returns VENUE
+        every { storage.areaTicketCheckoutId } returns "A"
+        val respuesta = CompletableDeferred<AreaTicketEnvelope<CheckoutData>>()
+        coEvery { api.getAreaTicketCheckout(VENUE, "A") } coAnswers { respuesta.await() }
+
+        val primera = async { repo.restore(venta = "venta-A") }
+        testScheduler.advanceUntilIdle()
+        session.prepararCreacionPara("venta-B")
+        val segunda = async { repo.restore(venta = "venta-B") }
+        testScheduler.advanceUntilIdle()
+        respuesta.complete(envelope(checkout("A")))
+
+        assertNull(segunda.await())
+        assertNull(primera.await())
+        assertNull(session.current())
+        assertEquals("venta-B", session.ventaDuena)
+    }
+
     @Test
     fun `regla 3 - la restauracion tardia de A no pisa la sesion B`() = runTest {
         every { storage.areaTicketCheckoutVenueId } returns VENUE
@@ -183,6 +227,31 @@ class AreaTicketVidaDelApartadoTest {
 
         assertEquals("CHECKOUT_SUPERSEDED", (escaneando.await().exceptionOrNull() as? AreaTicketException)?.code)
         assertEquals("B", session.current()?.id)
+    }
+
+    // J9 (vales-ciclo r0): dos escaneos de la misma venta piden crear con la misma llave. El primero agrega V1 (versión 2);
+    // la segunda respuesta de crear, fotografiada antes de V1, no puede regresar la copia a la versión 1.
+    @Test
+    fun `J9 - la segunda respuesta de crear no retrocede la version del mismo apartado ya instalado`() = runTest {
+        val primera = CompletableDeferred<AreaTicketEnvelope<CheckoutData>>()
+        val segunda = CompletableDeferred<AreaTicketEnvelope<CheckoutData>>()
+        var creaciones = 0
+        coEvery { api.createAreaTicketCheckout(VENUE, any()) } coAnswers { if (creaciones++ == 0) primera.await() else segunda.await() }
+        var agregados = 0
+        coEvery { api.addAreaTicketToCheckout(VENUE, "A", any()) } coAnswers {
+            if (agregados++ == 0) envelope(checkout("A", version = 2)) else throw IOException("sin red")
+        }
+
+        val uno = async { runCatching { repo.addTicket("VALE-1") } }
+        val dos = async { runCatching { repo.addTicket("VALE-2") } }
+        testScheduler.advanceUntilIdle()
+        primera.complete(envelope(checkout("A", version = 1)))
+        uno.await()
+        assertEquals(2, session.current()?.version)
+        segunda.complete(envelope(checkout("A", version = 1)))
+        dos.await()
+
+        assertEquals(2, session.current()?.version)
     }
 
     @Test

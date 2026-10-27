@@ -277,6 +277,9 @@ const val VALES_SOLTAR_ANTERIOR = "No se pudo soltar la venta de vales anterior.
 const val VALES_SALDO_CON_OTRA_VENTA = "Termina, guarda o vacía la venta del carrito para cobrar el saldo pendiente."
 const val VALES_SALDO_YA_COBRADO = "Esa venta de vales ya se terminó de cobrar."
 
+/** J5 (vales-ciclo, 26-oct): el cajero empezó otra venta mientras se consultaba el vale. Mismo texto en iOS. */
+const val VALES_VENTA_CAMBIO_AL_LEER = "La venta cambió mientras se leía el vale: vuelve a escanearlo."
+
 /** Tablero D3 (Codex r9): guardar o diferir una venta a medias se llevaba su saldo a otra venta. Mismo texto en iOS. */
 const val VENTA_A_MEDIAS_NO_SE_GUARDA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. No se puede guardar ni dejar para pagar después."
@@ -594,6 +597,10 @@ class CartViewModel @Inject constructor(
                 _avisoDeVales.value = VALES_SALDO_CON_OTRA_VENTA
                 return@launch
             }
+            // F3 (vales-ciclo, Codex r3): la venta y el negocio de ESTE toque. Si mientras se relee el cajero agrega algo y vacía, el
+            // carrito vuelve a estar vacío pero ya es otra venta: el saldo no se siembra en ella (el aviso sigue para tocarlo otra vez).
+            val ventaAlTocar = _cartState.value.identidadDeVenta
+            val negocioAlTocar = secureStorage.venueId
             val releida = runCatching { areaTicketRepository.refresh() }.getOrNull()
             if (releida != null && releida.status == "PAID") {
                 _avisoDeVales.value = VALES_SALDO_YA_COBRADO
@@ -605,6 +612,7 @@ class CartViewModel @Inject constructor(
                 _avisoDeVales.value = VALES_SALDO_CON_OTRA_VENTA
                 return@launch
             }
+            if (_cartState.value.identidadDeVenta != ventaAlTocar || secureStorage.venueId != negocioAlTocar) return@launch
             val saldo = orden.remainingBalance.moneyToCents().takeIf { it > 0 }
                 ?: (orden.total.moneyToCents() - orden.paidAmount.moneyToCents()).coerceAtLeast(0)
             if (saldo <= 0) return@launch
@@ -1532,6 +1540,24 @@ class CartViewModel @Inject constructor(
         setSelectedCustomer(null)
     }
 
+    /**
+     * El botón «Vaciar»: termina la venta y, 🔴 D2 (vales-ciclo), suelta la llave de emisión de vales. Es la salida que da el
+     * aviso del 409 («… o vacíalo»), y sólo aquí: guardar el carrito o pagar después la conservan, así un vale cuya respuesta
+     * se perdió vuelve con el mismo contenido y el servidor devuelve ESE vale en vez de crear otro.
+     */
+    fun vaciar() {
+        secureStorage.pendingAreaTicketIssueKey = null
+        finalizarVenta()
+    }
+
+    /**
+     * J7 (vales-ciclo r0): termina la venta [venta] —la que emitió el vale— sólo si el carrito sigue siendo ella. Reimprimir o
+     * guardar el PDF de un vale anterior con otra venta en pantalla no la vacía; sin venta conocida (tras reiniciar), nada.
+     */
+    fun finalizarVentaSiEs(venta: String?) {
+        if (venta != null && venta == _cartState.value.identidadDeVenta) finalizarVenta()
+    }
+
     /** En qué quedó la venta tras un cobro confirmado. Espeja 1:1 los tres caminos. */
     enum class RamaCobro {
         /** Split por producto: se pagaron renglones sueltos. */
@@ -1682,7 +1708,7 @@ class CartViewModel @Inject constructor(
             // iOS ya lo hacía bien con `try?` (CheckoutView.swift): esto es el
             // espejo, con log para que el fallo no quede invisible.
             val venta = _cartState.value.identidadDeVenta
-            runCatching { areaTicketRepository.restore() }
+            runCatching { areaTicketRepository.restore(venta) }
                 .onSuccess { checkout -> checkout?.let { proyectarOSoltar(it, venta) } }
                 .onFailure { Log.w("🎟️", "No se pudo restaurar la sesión de vales: ${it.message}") }
         }
@@ -1704,6 +1730,15 @@ class CartViewModel @Inject constructor(
      */
     private suspend fun proyectarOSoltar(checkout: AreaTicketCheckout, venta: String) {
         if (checkout.tieneAbono()) return
+        // J12 (vales-ciclo, Codex r1): una restauración que tardó compara contra la venta de CUANDO se pidió. Si el carrito ya es
+        // otra venta, el apartado que trae puede ser el de esa venta nueva: ni se proyecta ni se suelta.
+        if (_cartState.value.identidadDeVenta != venta) {
+            // J13 (Codex r2): el que la restauración instaló SIN dueño (venía del disco) es de la venta de cuando se pidió; así la
+            // regla 8 lo suelta al siguiente escaneo de la venta nueva, en vez de que ésta lo adopte con sus vales viejos.
+            val sesion = areaTicketRepository.session
+            if (sesion.ventaDuena == null && sesion.current()?.id == checkout.id) sesion.anotarVentaDuena(venta)
+            return
+        }
         val duena = areaTicketRepository.session.ventaDuena
         if (duena != null && duena != venta) {
             runCatching { areaTicketRepository.cancel(soloSi = checkout.id) }
@@ -1789,6 +1824,11 @@ class CartViewModel @Inject constructor(
         }
 
         return runCatching {
+            // J5 (vales-ciclo r0): la venta y el negocio de ESTE escaneo, antes del primer viaje. Si el cajero vacía y empieza
+            // otra venta (o cambia de negocio) mientras se consulta, el vale leído para A nunca cae en B.
+            val venta = _cartState.value.identidadDeVenta
+            val negocio = secureStorage.venueId
+            fun sigueLaVenta() = _cartState.value.identidadDeVenta == venta && secureStorage.venueId == negocio
             val resolved = areaTicketRepository.resolveCheckoutScan(code)
             when (resolved.type) {
                 "PRODUCT" -> localProduct?.let(ScannedBarcodeResult::ProductFound)
@@ -1796,7 +1836,9 @@ class CartViewModel @Inject constructor(
                 "AREA_TICKET" -> {
                     val settings = areaTicketRepository.settings()
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
-                    if (_pendingSplitOrder.value != null) {
+                    if (!sigueLaVenta()) {
+                        ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                    } else if (_pendingSplitOrder.value != null) {
                         // 🔴 D4 (20-oct). Con una venta cobrada a medias, el vale armaba una orden NUEVA con lo que faltaba y la
                         // venta de antes se quedaba con su saldo abierto para siempre. Primero se termina esa venta.
                         ScannedBarcodeResult.Error(VALE_CON_VENTA_A_MEDIAS)
@@ -1804,10 +1846,12 @@ class CartViewModel @Inject constructor(
                         ScannedBarcodeResult.Error("Este local cobra los vales en un carrito separado.")
                     } else if (cobroAbierto) {
                         ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
-                    } else if (!soltarApartadoDeOtraVenta()) {
+                    } else if (!soltarApartadoDeOtraVenta(venta)) {
                         ScannedBarcodeResult.Error(VALES_SOLTAR_ANTERIOR)
+                    } else if (!sigueLaVenta()) {
+                        // Soltar el apartado anterior pudo esperar a la red.
+                        ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
                     } else {
-                        val venta = _cartState.value.identidadDeVenta
                         // Pedir el vale CAMBIA el servidor: una vez pedido se termina aunque la pantalla se vaya (cambiar
                         // de pestaña, girar la tablet). Si no, el servidor quedaba con el vale y el carrito sin él, y el
                         // cobro podía congelar un importe menor (Codex r5). Mientras, el contador sigue y el cobro espera.
@@ -1824,6 +1868,14 @@ class CartViewModel @Inject constructor(
                             }
                         }
                         if (cobroAbierto) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
+                        if (!sigueLaVenta()) {
+                            // El apartado quedó a nombre de A (regla 8): se suelta ya, por el mismo camino que al restaurar,
+                            // en vez de esperar al siguiente escaneo. Otro negocio: su sesión ya se olvidó al cambiar.
+                            if (secureStorage.venueId == negocio && areaTicketRepository.session.ventaDuena == venta) {
+                                proyectarOSoltar(checkout, _cartState.value.identidadDeVenta)
+                            }
+                            return@runCatching ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                        }
                         replaceAreaTicketLines(checkout, venta)
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }
@@ -1843,9 +1895,8 @@ class CartViewModel @Inject constructor(
      * Regla 8 al escanear: un apartado sin abono que era de OTRA venta (el cajero la vació o la cobró y no se pudo soltar)
      * se suelta antes de abrir uno nuevo; si no se puede, no se escanea (el vale nuevo se le colgaría a esa venta).
      */
-    private suspend fun soltarApartadoDeOtraVenta(): Boolean {
+    private suspend fun soltarApartadoDeOtraVenta(venta: String): Boolean {
         val sesion = areaTicketRepository.session
-        val venta = _cartState.value.identidadDeVenta
         val previo = sesion.current()
         val duena = sesion.ventaDuena
         if (previo != null && duena != null && duena != venta && !previo.tieneAbono()) {
@@ -1854,6 +1905,9 @@ class CartViewModel @Inject constructor(
             // Sigue ahí sin soltar: no se escanea. Si resultó tener abono, el escaneo lo dice (cobra su saldo primero).
             if (sesion.current()?.let { it.id == previo.id && !it.tieneAbono() } == true) return false
         }
+        // F2 (vales-ciclo, Codex r3): soltar pudo esperar a la red. Si la venta ya cambió, no se preparan dueño ni llaves para la que
+        // se fue (pisaría la creación de la venta nueva): el llamador ve el cambio y lo dice.
+        if (_cartState.value.identidadDeVenta != venta) return true
         // El dueño se anota ANTES de pedir: si la respuesta se pierde, el apartado ya sabe de qué venta es (Codex r7 #3).
         sesion.prepararCreacionPara(venta)
         return true
@@ -2169,6 +2223,16 @@ class CartViewModel @Inject constructor(
                 false
             },
         )
+    }
+
+    /**
+     * D1 (vales-ciclo, 26-oct): el vale de un carrito guardado quedó emitido en el servidor. Se retira la copia de la que vino,
+     * como hace el cobro confirmado; si no, restaurarla permitía emitir otro vale por la misma mercancía.
+     */
+    fun retirarCopiaDelVale(copia: String?) {
+        val id = copia ?: return
+        if (!savedCartsRepository.deleteCart(id)) Log.w("🛒", "No se confirmó el retiro de la copia $id del vale emitido")
+        if (_cartState.value.carritoGuardadoId == id) _cartState.update { it.copy(carritoGuardadoId = null) }
     }
 
     fun prepararCobroDelCarritoGuardado(): Boolean =

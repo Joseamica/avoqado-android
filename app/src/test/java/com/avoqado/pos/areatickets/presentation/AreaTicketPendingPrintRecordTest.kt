@@ -253,6 +253,74 @@ class AreaTicketPendingPrintRecordTest {
         assertEquals(listOf("k1"), pendientes().map { it.idempotencyKey })
     }
 
+    // -- J7 (vales-ciclo r0): la limpieza es de la venta que EMITIÓ el vale, nunca de la que esté en pantalla ------------
+
+    @Test
+    fun `J7 emitir, reimprimir y el PDF avisan la venta que emitio el vale`() = runTest {
+        var sinPapel = true
+        coEvery { printerService.printAreaTicket(any(), any(), any()) } coAnswers {
+            if (sinPapel) { sinPapel = false; throw IllegalStateException("sin papel") }
+        }
+        val emitio = carrito()
+        val vm = viewModel()
+        var alEmitir: String? = null
+        vm.issue(emitio) { alEmitir = it }
+        assertEquals(CODIGO, vm.state.value.pendingReprintCode)
+
+        var alReimprimir: String? = "no se llamó"
+        vm.reprintPending { alReimprimir = it }
+
+        assertEquals(emitio.identidadDeVenta, alEmitir)
+        assertEquals(emitio.identidadDeVenta, alReimprimir)
+    }
+
+    @Test
+    fun `J7 el pendiente que viene del disco (tras reiniciar) no termina ninguna venta`() = runTest {
+        codigoPendiente = CODIGO
+        negocioDelPendiente = "v1"
+        val vm = viewModel()
+
+        var alReimprimir: String? = "no se llamó"
+        vm.reprintPending { alReimprimir = it }
+        assertNull(alReimprimir)
+
+        codigoPendiente = CODIGO
+        val otra = viewModel()
+        otra.preparePendingPdf()
+        withTimeout(5_000) {
+            while (otra.state.value.pdfExport == null) yield()
+        }
+        var alGuardarPdf: String? = "no se llamó"
+        otra.confirmPendingPdfSaved { alGuardarPdf = it }
+        assertNull(alGuardarPdf)
+    }
+
+    @Test
+    fun `D2 reimprimir y guardar el PDF no tocan la llave de emision`() = runTest {
+        // La llave nace al confirmar el servidor y al vaciar el carrito. La del aparato ya puede ser la de OTRO vale cuya
+        // respuesta se perdió: cambiarla al salir el papel de uno viejo hacía que su reintento creara un segundo vale.
+        var llave: String? = "llave-de-otro-vale-en-curso"
+        every { secureStorage.pendingAreaTicketIssueKey } answers { llave }
+        every { secureStorage.pendingAreaTicketIssueKey = any() } answers { llave = firstArg() }
+        codigoPendiente = CODIGO
+        negocioDelPendiente = "v1"
+        val vm = viewModel()
+
+        vm.reprintPending {}
+        assertNull("El papel salió", vm.state.value.pendingReprintCode)
+
+        codigoPendiente = CODIGO
+        val otra = viewModel()
+        otra.preparePendingPdf()
+        withTimeout(5_000) {
+            while (otra.state.value.pdfExport == null) yield()
+        }
+        otra.confirmPendingPdfSaved {}
+        assertNull("El PDF quedó anotado", otra.state.value.pdfExport)
+
+        assertEquals("llave-de-otro-vale-en-curso", llave)
+    }
+
     // -- 8. El disco no lo guardó: se avisa y se manda igual, por los tres caminos ---------------------
 
     @Test

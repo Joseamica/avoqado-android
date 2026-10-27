@@ -240,6 +240,10 @@ class AreaTicketOperationsStateTest {
         val repository = mockk<AreaTicketRepository>()
         val printerService = mockk<PrinterService>()
         val secureStorage = mockk<SecureStorage>(relaxed = true)
+        // D2 (vales-ciclo): la llave se lee del aparato en cada emisión, así que el disco tiene que recordarla.
+        var llaveGuardada: String? = null
+        every { secureStorage.pendingAreaTicketIssueKey } answers { llaveGuardada }
+        every { secureStorage.pendingAreaTicketIssueKey = any() } answers { llaveGuardada = firstArg() }
         val issuedKeys = mutableListOf<String>()
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
         coEvery { repository.issue(any(), any()) } coAnswers {

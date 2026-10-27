@@ -301,4 +301,22 @@ class CarritoGuardadoDurableTest {
         assertNotEquals(a, vm.cartState.value.identidadDeVenta)
     }
 
+
+    // D1 (vales-ciclo, 26-oct): emitir el vale de un carrito guardado retira su copia, como el cobro confirmado. Antes la copia
+    // seguía en «Carritos guardados» y restaurarla (aun tras reiniciar) dejaba emitir OTRO vale por la misma mercancía.
+    @Test
+    fun `D1 emitir el vale de un carrito guardado retira su copia y no reaparece tras reiniciar`() {
+        val prefs = PrefsDeDosCapas(); val repo = SavedCartsRepository(prefs.context)
+        repo.saveCart(carrito())
+        val vm = createViewModel(repo)
+        vm.restoreSavedCart(repo.savedCarts.value.single())
+        assertTrue(vm.prepararCobroDelCarritoGuardado())
+        val copia = vm.cartState.value.carritoGuardadoId
+
+        vm.retirarCopiaDelVale(copia)
+
+        assertEquals(emptyList<String>(), SavedCartsRepository(prefs.reiniciarProceso().context).savedCarts.value.map { it.id })
+        assertNull(vm.cartState.value.carritoGuardadoId)
+    }
+
 }

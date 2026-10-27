@@ -101,10 +101,17 @@ class AreaTicketSession @Inject constructor(
 
     fun current(): AreaTicketCheckout? = _checkout.value
 
+    /**
+     * F1 (vales-ciclo, Codex r4): el apartado guardado al que tiene derecho [ventaDuena]. Tras preparar la creación de OTRA venta, el
+     * disco todavía apunta al apartado anterior: esa referencia ya no es de la dueña nueva y una restauración no se la pasa.
+     */
+    private var refDelDueno: String? = null
+
     fun update(currentVenueId: String, checkout: AreaTicketCheckout) {
         if (venueId != null && venueId != currentVenueId) clear()
         venueId = currentVenueId
         _checkout.value = checkout
+        refDelDueno = checkout.id
         secureStorage.areaTicketCheckoutVenueId = currentVenueId
         secureStorage.areaTicketCheckoutId = checkout.id
     }
@@ -118,6 +125,7 @@ class AreaTicketSession @Inject constructor(
         if (venueId != null && venueId != currentVenueId) {
             cobroQueLaArmo = null
             ventaDuena = null
+            refDelDueno = null
             _checkout.value = null
             createKey = UUID.randomUUID().toString()
             materializeKey = UUID.randomUUID().toString()
@@ -168,8 +176,25 @@ class AreaTicketSession @Inject constructor(
             materializeKey = UUID.randomUUID().toString()
             secureStorage.areaTicketCreateKey = createKey
             secureStorage.areaTicketMaterializeKey = materializeKey
+            refDelDueno = null // F1: lo guardado en disco era de la otra venta
         }
+        // F1: la primera venta que reclama tras reiniciar hereda la referencia guardada (es la del carrito que vuelve).
+        if (ventaDuena == null) refDelDueno = secureStorage.areaTicketCheckoutId
         if (ventaDuena == null || _checkout.value == null) ventaDuena = venta
+    }
+
+    /**
+     * F1 (vales-ciclo, Codex r3/r4): la restauración que pide [venta] aparta al dueño ANTES de preguntar. Sin dueño, [venta] lo es y
+     * tiene derecho a la referencia guardada [checkoutId]. Con dueño, sigue siendo de ese dueño sólo si esa referencia es la suya.
+     * null = no se restaura (la referencia quedó de una venta anterior).
+     */
+    fun reservarParaRestaurar(venta: String, checkoutId: String): String? {
+        val duena = ventaDuena ?: run {
+            ventaDuena = venta
+            refDelDueno = checkoutId
+            return venta
+        }
+        return duena.takeIf { refDelDueno == checkoutId }
     }
 
     /**
@@ -229,6 +254,7 @@ class AreaTicketSession @Inject constructor(
     fun clear() {
         cobroQueLaArmo = null
         ventaDuena = null
+        refDelDueno = null
         venueId = null
         _checkout.value = null
         createKey = UUID.randomUUID().toString()
@@ -306,7 +332,8 @@ class AreaTicketRepository @Inject constructor(
         }
     }
 
-    suspend fun restore(): AreaTicketCheckout? {
+    /** [venta]: la venta del carrito que pide la restauración; null = la recuperación del cobro, que no proyecta nada. */
+    suspend fun restore(venta: String? = null): AreaTicketCheckout? {
         val venueId = venueId()
         session.ensureVenue(venueId)
         // También la que ya está en memoria: una sesión puede vencer con la app
@@ -317,11 +344,15 @@ class AreaTicketRepository @Inject constructor(
             return descartarVencida(current)
         }
         val checkoutId = session.persistedCheckoutId(venueId) ?: return null
+        // F1 (vales-ciclo, Codex r3): el dueño se aparta ANTES de preguntar. Si mientras tanto otra venta pide un vale, ya no hereda
+        // este apartado (crear con otro dueño rota la llave) y la respuesta, al volver, no se instala encima de ella.
+        val reservada = venta?.let { session.reservarParaRestaurar(it, checkoutId) ?: return null }
         return runCatching {
             request { api.getAreaTicketCheckout(venueId, checkoutId) }.checkout
         }.getOrElse {
             return null
         }.also { checkout ->
+            if (reservada != null && session.ventaDuena != reservada) return null
             // Antes esto sólo miraba `status`, y la caducidad del venue NO se refleja
             // ahí: una sesión de la madrugada seguía en OPEN y volvía como carrito
             // cobrable. El cajero se enteraba al pulsar Cobrar —con el cliente
@@ -365,7 +396,9 @@ class AreaTicketRepository @Inject constructor(
                 if (session.createIdempotencyKey() != llave || session.current()?.let { it.id != creada.id } == true) {
                     throw sesionReemplazada()
                 }
-                session.update(venueId, creada)
+                // J9 (vales-ciclo r0): otra creación con la misma llave ya instaló ESTE apartado (quizá con vales agregados):
+                // esta respuesta, más vieja, pasa por la guarda de versión. Directo sólo con la sesión vacía.
+                if (session.current() == null) session.update(venueId, creada) else session.updateIf(creada.id, venueId, creada)
             }
         }
 
