@@ -143,6 +143,10 @@ interface PendingPaymentDao {
     @Query("SELECT syncStatus FROM pending_payments WHERE id = :id")
     fun observarEstado(id: String): Flow<String?>
 
+    /** UNA fila de la cola, en vivo (D1: la parte de una venta dividida que se guardó sin red espera a que suba). */
+    @Query("SELECT * FROM pending_payments WHERE venueId = :venueId AND id = :id")
+    fun observarFila(venueId: String, id: String): Flow<PendingPaymentEntity?>
+
     @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'PENDING'")
     fun getPendingCount(): Flow<Int>
 

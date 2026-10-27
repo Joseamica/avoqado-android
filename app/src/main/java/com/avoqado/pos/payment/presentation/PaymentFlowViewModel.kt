@@ -112,6 +112,11 @@ data class PaymentCompletion(
     val cambiosDePrecio: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList(),
     /** El descuento de cuenta que quedó fijo en la orden (sólo tras un 201 con cambios). Ver `CartState.conPreciosDelServidor`. */
     val descuentoDeCuentaCongelado: com.avoqado.pos.pos.data.model.DescuentoCongelado? = null,
+    /**
+     * D1 (26-oct): este cobro NO subió todavía; quedó en la cola sin red con esta llave (`pending_payments`). Con saldo, el
+     * resto de la venta espera a que suba (`CartViewModel.esperarParteEnCola`). null = subió, o no se encoló.
+     */
+    val parteEnCola: String? = null,
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
@@ -521,6 +526,9 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** El toque de «Cobrar» que arrancó el cobro en pantalla. Ver `startPaymentFlow`. */
     private var aperturaEnCurso: String? = null
+
+    /** Quién abrió el cobro en curso (`startPaymentFlow`). Ver [esCobroDeVales]. */
+    private var origenDelCobro: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL
 
     /** ¿Esta apertura ya arrancó el cobro que está en pantalla? Entonces la pantalla no reparte ni arranca otra vez. */
     fun esElCobroEnCurso(apertura: String): Boolean = apertura == aperturaEnCurso
@@ -1337,6 +1345,8 @@ class PaymentFlowViewModel @Inject constructor(
      *   venta anterior, así que un setter externo se perdería en silencio — y
      *   perderlo es exactamente el bug que esto cierra. Lo resuelve el carrito,
      *   que es el dueño de la venta (`CartViewModel.resolvePendingSplitOrderForCharge`).
+     * @param origen Quién abrió el cobro ([com.avoqado.pos.payment.domain.OrigenDelCobro]). Con `PEDIDO_EN_LINEA` una mesa
+     *   en PAYING no reemplaza a [resumeOrderId]. Default `NORMAL`: todo cobro de hoy queda igual.
      */
     fun startPaymentFlow(
         cart: CartState,
@@ -1344,6 +1354,7 @@ class PaymentFlowViewModel @Inject constructor(
         customerName: String? = null,
         resumeOrderId: String? = null,
         apertura: String? = null,
+        origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -1354,6 +1365,7 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
         aperturaEnCurso = apertura
+        origenDelCobro = origen
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
         flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
@@ -1361,7 +1373,14 @@ class PaymentFlowViewModel @Inject constructor(
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
         cartState = cart
-        mesaDelCobro = tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
+        // 🔴 DINERO. El cobro de un pedido web (bandeja «Pedidos en línea») NUNCA adopta una mesa: una sesión que quedó en
+        // PAYING reemplazaba abajo a `resumeOrderId` y el dinero liquidaba la cuenta de la mesa (Codex plan r1 #1). Sin mesa
+        // tampoco hay ticket ni saldo esperado de mesa. NORMAL queda exactamente como antes.
+        mesaDelCobro = if (origen.esPedidoEnLinea) {
+            null
+        } else {
+            tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
+        }
         nombreDelNegocioDelCobro = secureStorage.venueName ?: "Avoqado"
         nombreDeLaSesionDelCobro = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim()
             .ifEmpty { secureStorage.userEmail.orEmpty() }.takeIf { it.isNotBlank() }
@@ -1513,7 +1532,10 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** Primer paso del cobro según la configuración de la TPV (calificación → propina → método). */
     private fun enterInitialState(amount: Int) {
-        if (settings.showReviewScreen) {
+        if (!origenDelCobro.pideCalificacionYPropina) {
+            // Rappi 2b: la propina ya viene en el pedido; pedir otra sumaría una segunda. Directo al método (sólo efectivo).
+            _state.value = PaymentFlowState.SelectingPaymentMethod(amount)
+        } else if (settings.showReviewScreen) {
             _state.value = PaymentFlowState.CollectingRating(amount)
         } else if (settings.showTipScreen) {
             _state.value = PaymentFlowState.CollectingTip(amount, null)
@@ -1530,7 +1552,7 @@ class PaymentFlowViewModel @Inject constructor(
         currentRating = rating
         val amount = currentBaseAmount()
 
-        if (settings.showTipScreen) {
+        if (settings.showTipScreen && origenDelCobro.pideCalificacionYPropina) {
             _state.value = PaymentFlowState.CollectingTip(amount, rating)
         } else {
             _state.value = PaymentFlowState.SelectingPaymentMethod(amount)
@@ -1553,6 +1575,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
+        if (method == PaymentMethod.CARD && !origenDelCobro.permiteTarjeta) return
         selectedMethod = method
         val baseAmount = currentBaseAmount()
         val total = baseAmount + currentTipCents
@@ -1612,6 +1635,8 @@ class PaymentFlowViewModel @Inject constructor(
         tenderTypeRepository.tenderTypes
 
     fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
+        // Un pedido de plataforma se cobra SÓLO en efectivo: el SERVIDOR rechaza otro método (la pantalla ni lo ofrece).
+        if (origenDelCobro.esDePlataforma) return
         when (choice) {
             is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
                 manualMethod = choice.method
@@ -2725,6 +2750,7 @@ class PaymentFlowViewModel @Inject constructor(
             tenderType = tenderCapturado,
             capturedVenueId = venueCapturado,
             importeAceptadoCents = subtotal.takeIf { precioAceptadoEnPantalla },
+            capturaPrevia = origenDelCobro.esCapturaPrevia,
         )
         payResult.fold(
             onSuccess = { result ->
@@ -2765,14 +2791,21 @@ class PaymentFlowViewModel @Inject constructor(
                 // caja movió la orden y el server recortó el importe al saldo
                 // fresco): al restar sobre el total REALMENTE cobrado, el sobrante
                 // recortado ya queda dentro del cambio, sin sumar dos fuentes.
-                val finalChange = (cashReceivedCents - authoritativeTotal).coerceAtLeast(0)
+                //
+                // Contrato con Rappi 2b (21-oct, Task S2 del SERVIDOR): si la respuesta trae `cashRetainedCents` (lo que se
+                // queda en el cajón por este cobro: hoy importe + propina registrados; Rappi le sumará su PAY_IN), el cambio
+                // es recibido − eso. Sin él (servidor viejo), la resta de arriba. Sigue sin usarse `changeCents`.
+                // Rappi 2b (Codex plan r1 #3): UN total para caja, pantalla de éxito y ticket: lo que se quedó en el cajón
+                // (incluye lo cobrado por cuenta de Rappi). En un cobro normal `cashRetainedCents` = importe + propina: igual.
+                val retenido = result.cashRetainedCents ?: authoritativeTotal
+                val finalChange = (cashReceivedCents - retenido).coerceAtLeast(0)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
-                recordCashSale(authoritativeTotal, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                recordCashSale(retenido, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(
-                    totalAmount = authoritativeTotal,
+                    totalAmount = retenido,
                     method = PaymentMethod.CASH,
                     changeAmount = finalChange,
                     paymentId = result.paymentId,
@@ -3507,6 +3540,10 @@ class PaymentFlowViewModel @Inject constructor(
      * siguiente de productos normales se cobraba contra la orden vieja, y al terminar olvidaba esa sesión.
      */
     private fun esCobroDeVales(cart: CartState? = cartState): Boolean {
+        // 🔴 Pedidos en línea (Ruling 21 #1): la sesión de vales es global (un `@Singleton` en disco) y el cajero puede dejar
+        // vales a medias en «Cobrar» e irse a «Más → Pedidos en línea». El cobro de un pedido web nunca es de vales: ni los
+        // arma, ni cobra contra su orden, ni los termina, ni los suelta (`sesionDelCobro` queda null). Con NORMAL no cambia nada.
+        if (origenDelCobro.esPedidoEnLinea) return false
         val sesion = areaTicketRepository.session.current() ?: return false
         if (cart?.items?.any { it.areaTicketLineId != null } == true) return true
         return sesion.order?.id?.let { it == createdOrderId } == true
@@ -4125,6 +4162,7 @@ class PaymentFlowViewModel @Inject constructor(
         }.copy(
             carritoGuardadoDelCobro = cart.carritoGuardadoId,
             identidadDeVenta = cart.identidadDeVenta,
+            parteEnCola = ((_state.value as? PaymentFlowState.Success)?.colaDelCobro as? com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos)?.id,
             cambiosDePrecio = cambiosDeEstaVenta,
             descuentoDeCuentaCongelado = cart.descuentoDeCuentaCongelado,
         )

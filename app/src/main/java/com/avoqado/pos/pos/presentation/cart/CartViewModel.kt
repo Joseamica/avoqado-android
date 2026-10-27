@@ -288,6 +288,34 @@ const val VENTA_A_MEDIAS_NO_SE_GUARDA =
 const val VENTA_A_MEDIAS_CAMBIADA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. Quita lo que agregaste y véndelo aparte."
 
+// D1 (26-oct, founder «B»): dividir en tienda pide conexión; una parte guardada sin red hace esperar al resto. Mismos textos en iOS.
+const val DIVIDIR_SIN_CONEXION =
+    "Dividir necesita conexión con Avoqado. Cobra todo junto o espera a que vuelva la conexión."
+const val PARTE_SIN_RED_SUBIENDO =
+    "La primera parte de esta venta se guardó sin conexión. El resto se cobra en esta misma venta en cuanto se suba."
+const val PARTE_SIN_RED_POR_REVISAR =
+    "La primera parte de esta venta se guardó sin conexión y quedó por revisar. Revísala en «Operaciones por revisar»: " +
+        "el resto se cobra en esta misma venta cuando se resuelva."
+const val PARTE_SIN_RED_YA_NO_ESTA =
+    "La primera parte de esta venta ya no está en este aparato: el resto se cobra como venta aparte."
+const val PARTE_SIN_RED_VENTA_PAGADA =
+    "Al subir la primera parte, esta venta quedó pagada: no queda saldo por cobrar."
+const val PARTE_SIN_RED_PAGADA_CON_ALGO_MAS =
+    "Al subir la primera parte, esa venta quedó pagada. Lo que hay en el carrito se cobra como venta aparte."
+
+/** El título del aviso ámbar del carrito: el de vales sólo para vales (D1 reusa el mismo aviso). */
+fun tituloDelAviso(aviso: String): String = when {
+    aviso == DIVIDIR_SIN_CONEXION -> "Sin conexión"
+    aviso == VENTA_A_MEDIAS_CAMBIADA || aviso.startsWith("La primera parte de esta venta") ||
+        aviso.startsWith("Al subir la primera parte") -> "Venta a medio cobrar"
+    else -> "Venta de vales"
+}
+
+fun parteSinRedSaldoDistinto(carritoCents: Int, servidorCents: Int): String =
+    "Al subir la primera parte, Avoqado dice que esta venta debe ${com.avoqado.pos.core.util.formatMoneyFromCents(servidorCents)} " +
+        "y el carrito dice ${com.avoqado.pos.core.util.formatMoneyFromCents(carritoCents)}. Revísala en «Ventas» antes de cobrar; " +
+        "si vacías el carrito, el resto se cobra como venta aparte."
+
 /** Regla 10: una venta de vales con abono que el carrito no trae. Lo pinta el aviso fijo «Cobrar saldo». */
 data class SaldoDeVales(val orderId: String, val saldoCents: Int)
 
@@ -316,6 +344,10 @@ class CartViewModel @Inject constructor(
      */
     private val lectorHidBus: com.avoqado.pos.pos.data.LectorHidBus = com.avoqado.pos.pos.data.LectorHidBus(),
     private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+    /** D1 (26-oct): la parte de una venta dividida que se guardó sin red. Default para las pruebas que no la usan. */
+    private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
+    /** D1 (26-oct): «Dividir» en tienda pide conexión con Avoqado. Sin monitor (pruebas) se da por conectado. */
+    private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -391,12 +423,17 @@ class CartViewModel @Inject constructor(
      * @param totalCents  cuánto valía el carrito al quedar el saldo.
      */
     private data class PendingSplitOrder(
-        val orderId: String,
+        /** null mientras espera a que suba su parte guardada sin red ([parteEnCola]). */
+        val orderId: String?,
         val itemIds: Set<String>,
         val totalCents: Int,
         /** Foto exacta de los renglones y del descuento de cuenta al quedar el saldo (regla 11: venta de vales con abono). */
         val renglones: List<CartItem> = emptyList(),
         val descuentoDeCuenta: Discount? = null,
+        /** D1: la llave en `pending_payments` de la parte que se guardó sin red; mientras no suba, el resto no se cobra. */
+        val parteEnCola: String? = null,
+        /** D1: nació de una parte sin red ⇒ el carrito tiene que seguir EXACTO (un descuento lo abarataría, Codex r2 #5). */
+        val exacta: Boolean = false,
     )
 
     private val _pendingSplitOrder = MutableStateFlow<PendingSplitOrder?>(null)
@@ -561,7 +598,127 @@ class CartViewModel @Inject constructor(
 
     /** Hay un renglón que la orden no tiene, o el carrito creció en dinero (`addProduct` FUSIONA: misma línea, cantidad 2). */
     private fun carritoCambioDesde(pendiente: PendingSplitOrder, cart: CartState): Boolean =
-        cart.items.any { it.id !in pendiente.itemIds } || cart.totalCents > pendiente.totalCents
+        // Exacta: renglones, descuento Y total (quitar al cliente quita su premio y sube el total sin tocar renglones, Codex r2 #1).
+        if (pendiente.exacta) cart.items != pendiente.renglones || cart.orderDiscount != pendiente.descuentoDeCuenta ||
+            cart.totalCents != pendiente.totalCents
+        else cart.items.any { it.id !in pendiente.itemIds } || cart.totalCents > pendiente.totalCents
+
+    // MARK: - D1: la parte que se guardó sin red (founder «B», 26-oct)
+
+    private var observadorDeParte: kotlinx.coroutines.Job? = null
+    private val _estadoDeParte = MutableStateFlow<com.avoqado.pos.payment.data.EstadoDeParte?>(null)
+
+    /**
+     * 🔴 DINERO (D1). La parte de una venta dividida se cobró en efectivo y se guardó SIN RED: todavía no tiene orden en el
+     * servidor. El carrito queda con su saldo ligado a ESA parte y no se cobra hasta que suba; al subir, el vínculo pasa a la
+     * orden que le dio el servidor (con la foto de ahora) y el resto se cobra contra ella, como cualquier parte 2. Antes el
+     * resto salía como venta rápida suelta: dos registros y el inventario sin bajar.
+     */
+    fun esperarParteEnCola(colaId: String) {
+        val repo = cashPaymentRepository ?: return
+        val cart = _cartState.value
+        _pendingSplitOrder.value = PendingSplitOrder(
+            orderId = null,
+            itemIds = cart.items.map { it.id }.toSet(),
+            totalCents = cart.totalCents,
+            renglones = cart.items,
+            descuentoDeCuenta = cart.orderDiscount,
+            parteEnCola = colaId,
+            exacta = true,
+        )
+        _estadoDeParte.value = com.avoqado.pos.payment.data.EstadoDeParte.Subiendo
+        observadorDeParte?.cancel()
+        observadorDeParte = viewModelScope.launch {
+            repo.observarParte(colaId).collect { estado ->
+                // El carrito ya es otra venta (se vació, se cobró, se cambió de venta): se deja de mirar.
+                val vigente = _pendingSplitOrder.value?.takeIf { it.parteEnCola == colaId }
+                if (vigente == null) {
+                    _estadoDeParte.value = null
+                    observadorDeParte?.cancel()
+                    return@collect
+                }
+                when (estado) {
+                    is com.avoqado.pos.payment.data.EstadoDeParte.Subida -> adoptarOrdenDeLaParte(vigente, estado)
+                    com.avoqado.pos.payment.data.EstadoDeParte.SinOrden -> {
+                        // Venta sin productos: el servidor la cerró con lo cobrado; el resto es un cobro rápido, como antes.
+                        _pendingSplitOrder.value = null
+                        _estadoDeParte.value = null
+                    }
+                    com.avoqado.pos.payment.data.EstadoDeParte.NoEsta -> {
+                        _pendingSplitOrder.value = null
+                        _estadoDeParte.value = null
+                        _avisoDeVales.value = PARTE_SIN_RED_YA_NO_ESTA
+                    }
+                    else -> _estadoDeParte.value = estado
+                }
+            }
+        }
+    }
+
+    /**
+     * La parte subió. Sólo se sigue SOLA cuando el servidor y el carrito dicen lo mismo; nada se ajusta ni se borra solo
+     * (Codex D1 código r1 #2-#6: ajustar el saldo, vaciar el carrito o soltar al cliente en automático cobraba de más, borraba
+     * mercancía agregada o dejaba pegado al cliente).
+     */
+    private fun adoptarOrdenDeLaParte(vigente: PendingSplitOrder, subida: com.avoqado.pos.payment.data.EstadoDeParte.Subida) {
+        observadorDeParte?.cancel()
+        val cart = _cartState.value
+        val sinCambios = !carritoCambioDesde(vigente, cart)
+        val saldo = subida.saldoCents
+        when {
+            // Ya quedó pagada al subir: con el carrito como estaba, la venta termina (como cualquier cobro completo); si se
+            // le agregó algo, eso es otra venta y se queda en el carrito.
+            subida.pagada || (saldo != null && saldo <= 0) -> {
+                _pendingSplitOrder.value = null
+                _estadoDeParte.value = null
+                if (sinCambios) finalizarVenta()
+                _avisoDeVales.value = if (sinCambios) PARTE_SIN_RED_VENTA_PAGADA else PARTE_SIN_RED_PAGADA_CON_ALGO_MAS
+            }
+            // El servidor dice lo mismo que el carrito (un centavo de tolerancia): el resto se cobra contra esa orden.
+            saldo == null || kotlin.math.abs(saldo - vigente.totalCents) <= 1 -> {
+                _pendingSplitOrder.value = vigente.copy(orderId = subida.orderId, parteEnCola = null)
+                _estadoDeParte.value = null
+            }
+            // Debe otra cosa: no se cobra solo. El cajero lo ve y decide (vaciar ⇒ el resto es otra venta).
+            else -> {
+                _pendingSplitOrder.value = vigente.copy(orderId = subida.orderId)
+                _estadoDeParte.value = com.avoqado.pos.payment.data.EstadoDeParte.SaldoDistinto(subida.orderId, saldo)
+            }
+        }
+        Log.d("🛒", "D1: la parte sin red subió (orden ${subida.orderId}, saldo $saldo, pagada ${subida.pagada})")
+    }
+
+    /**
+     * D1: el mensaje que ve el cajero al tocar Cobrar mientras la parte guardada sin red no sube. null = se puede cobrar.
+     * «Por revisar» no se arregla esperando: lo resuelve un gerente (Codex r2 #6).
+     */
+    fun mensajeDeParteEnEspera(): String? {
+        val pendiente = _pendingSplitOrder.value ?: return null
+        if (pendiente.parteEnCola == null) return null
+        return when (val estado = _estadoDeParte.value) {
+            com.avoqado.pos.payment.data.EstadoDeParte.PorRevisar -> PARTE_SIN_RED_POR_REVISAR
+            is com.avoqado.pos.payment.data.EstadoDeParte.SaldoDistinto -> parteSinRedSaldoDistinto(pendiente.totalCents, estado.saldoCents)
+            else -> PARTE_SIN_RED_SUBIENDO
+        }
+    }
+
+    /** D1: el cobro no se abre mientras la parte guardada sin red no sube; lo dice el aviso. true = detenerse. */
+    fun detenerCobroPorParteEnEspera(): Boolean {
+        val mensaje = mensajeDeParteEnEspera() ?: return false
+        _avisoDeVales.value = mensaje
+        return true
+    }
+
+    /** D1: «Dividir» en tienda sin conexión no abre la hoja; lo dice el aviso. true = detenerse. */
+    fun detenerDividirSinConexion(): Boolean {
+        if (hayConexionConAvoqado()) return false
+        _avisoDeVales.value = DIVIDIR_SIN_CONEXION
+        return true
+    }
+
+    /** D1: «Dividir» en tienda pide conexión con Avoqado (founder «B»). Sin monitor (pruebas) se da por conectado. */
+    fun hayConexionConAvoqado(): Boolean =
+        connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
 
     /** Aviso de vales (rojo, no el de impuesto): un candado de D5 o del rediseño r7 que el cajero tiene que leer. */
     private val _avisoDeVales = MutableStateFlow<String?>(null)
@@ -641,7 +798,8 @@ class CartViewModel @Inject constructor(
      */
     fun resolvePendingSplitOrderForCharge(): String? {
         val pending = _pendingSplitOrder.value
-        if (pending == null) {
+        // D1: mientras su parte sin red no sube (o el saldo no cuadró), no hay orden que continuar (Codex r2 #2).
+        if (pending == null || pending.parteEnCola != null) {
             chargingAgainstOrderId = null
             return null
         }

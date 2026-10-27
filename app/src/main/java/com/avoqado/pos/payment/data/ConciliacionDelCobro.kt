@@ -108,7 +108,13 @@ object ConciliacionDelCobro {
             if (original == null) return
             if (actual == null) missing.add(field) else if (original != actual) different.add(field)
         }
-        compare("amountCents", c.amountCents, amount); compare("tipCents", c.tipCents, tip)
+        // Rappi 2b (Codex plan r1 #2): en un pedido de plataforma en efectivo el SERVIDOR reparte lo recibido (terceros → propina →
+        // venta) y lo dice en `deliveryCashAllocation`: se compara lo que se quedó en el cajón con lo capturado, no cada parte.
+        if (canal == CanalDelCobro.ORDER && payment["deliveryCashAllocation"] is JsonObject) {
+            compare("cashRetainedCents", c.amountCents + c.tipCents, integer(payment["cashRetainedCents"]))
+        } else {
+            compare("amountCents", c.amountCents, amount); compare("tipCents", c.tipCents, tip)
+        }
         compare("method", c.method, text(payment["method"]))
         // D2 (25-oct): `/fast` guarda siempre FULLPAYMENT (SERVIDOR), así que el reparto de una venta rápida dividida no se puede
         // comprobar: queda «sin confirmar», nunca como diferencia (era la alarma falsa «reparto»). Los demás canales, igual.
@@ -147,6 +153,11 @@ object ConciliacionDelCobro {
         } else null
         val result = buildJsonObject {
             put("paymentId", paymentId); put("orderId", orderId)
+            // D1 (26-oct): lo que la orden quedó debiendo tras ESTE pago. La parte 2 de una venta dividida que esperó a esta
+            // parte guardada sin red se cobra contra ese saldo, no contra el del carrito (el servidor valora al subir).
+            integer(payment["remainingBalanceCents"])?.let { put("saldoCents", it) }
+            // …y si la orden quedó PAGADA: el servidor perdona un centavo y aun así dice PAID (Codex D1 código r1 #3).
+            text(payment["orderPaymentStatus"])?.let { put("estadoDeLaOrden", it) }
             amount?.let { put("amountCents", it) }; tip?.let { put("tipCents", it) }
             for (field in listOf("method", "splitType", "tenderTypeId")) text(payment[field])?.let { put(field, it) }
             integer(payment["tenderRevision"])?.let { put("tenderRevision", it) }

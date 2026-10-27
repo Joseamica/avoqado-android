@@ -379,6 +379,10 @@ class OrderRepository @Inject constructor(
         fun extractChangeCentsFromResponse(responseBody: String): Int? =
             extractStrictNonNegativeCents(responseBody, "changeCents")
 
+        /** Lo que se queda en el cajón por este cobro (centavos enteros, `payment.cashRetainedCents`); null si no viene. */
+        fun extractCashRetainedCentsFromResponse(responseBody: String): Int? =
+            extractStrictNonNegativeCents(responseBody, "cashRetainedCents")
+
         /**
          * ¿Esta venta tiene que crear una ORDEN (y no un cobro suelto "fast")?
          *
@@ -623,6 +627,10 @@ class OrderRepository @Inject constructor(
                 put("total", request.total)
                 if (request.discount > 0) put("discount", request.discount)
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+                // «Pagar después» como Toast (founder 26-oct): el método con el que nace la cuenta. El SERVIDOR sólo cuenta como
+                // deuda del cliente lo que llega con `PAY_LATER` (`CartViewModel.createPayLaterOrder`); con otro método, un cobro
+                // con tarjeta que falla no es fiado. El modelo siempre lo tuvo y el cuerpo armado a mano lo tiraba.
+                request.paymentMethod.takeIf { it.isNotBlank() }?.let { put("paymentMethod", it) }
                 stampRewardId?.takeIf { it.isNotBlank() }?.let {
                     put("stampRewardId", it)
                     // 🔴 «Esta caja resta el premio de lo que cobra.» Sin esto el servidor lo
@@ -972,6 +980,12 @@ class OrderRepository @Inject constructor(
         val recordedTipCents: Int? = null,
         /** Cambio que el server determinó tras releer la orden, en centavos. */
         val authoritativeChangeCents: Int? = null,
+        /**
+         * Lo que se queda en el cajón por este cobro, en centavos enteros (`payment.cashRetainedCents`, Task S2 del
+         * SERVIDOR; hoy = importe + propina registrados, y Rappi 2b le sumará su PAY_IN). Con él, cambio = recibido −
+         * esto. null = servidor viejo: el cambio se calcula como siempre. Contrato acordado con Rappi 2b (21-oct).
+         */
+        val cashRetainedCents: Int? = null,
     )
 
     suspend fun recordCashPayment(
@@ -999,6 +1013,8 @@ class OrderRepository @Inject constructor(
          * cliente). Sólo cambia contra qué se compara el resultado; la captura original no se toca. null = como siempre.
          */
         importeAceptadoCents: Int? = null,
+        /** Rappi 2b: efectivo ya recibido con un saldo guardado ⇒ viaja con `isOfflineReplay` (el contrato del replay). */
+        capturaPrevia: Boolean = false,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -1023,6 +1039,7 @@ class OrderRepository @Inject constructor(
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
+                if (capturaPrevia) append("\"isOfflineReplay\":true,")
                 append("\"idempotencyKey\":\"$idempotencyKey\"")
                 append("}")
             }
@@ -1049,7 +1066,8 @@ class OrderRepository @Inject constructor(
                 val recordedAmount = extractRecordedAmountCentsFromResponse(body)
                 val recordedTip = extractRecordedTipCentsFromResponse(body)
                 val authoritativeChange = extractChangeCentsFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange")
+                val cashRetained = extractCashRetainedCentsFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange, cashRetained: $cashRetained")
                 Result.success(
                     CashPayResult(
                         paymentId = paymentId,
@@ -1061,6 +1079,7 @@ class OrderRepository @Inject constructor(
                         recordedAmountCents = recordedAmount,
                         recordedTipCents = recordedTip,
                         authoritativeChangeCents = authoritativeChange,
+                        cashRetainedCents = cashRetained,
                     ),
                 )
             } else {

@@ -29,6 +29,12 @@ class AvoqadoApp : Application() {
     @Inject lateinit var refrescoDelCatalogo: com.avoqado.pos.pos.data.RefrescoDelCatalogo
 
     /**
+     * «Pedidos en línea»: el vigilante global (insignia, banner y sonido que insiste) vive con el PROCESO y se detiene en
+     * segundo plano. Espejo obligatorio en `desktop/.../Arranque.iniciar`.
+     */
+    @Inject lateinit var vigilanteDePedidosEnLinea: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
+
+    /**
      * 🔴 Las cancelaciones de cobro se reproducen desde el ARRANQUE DEL PROCESO, no desde la
      * pantalla de cobro ni desde la sesión: una cancelación que quedó a medias cuando la app murió
      * tiene que seguir su camino aunque nadie vuelva a abrir Cobrar, y sobrevive al logout y al
@@ -51,6 +57,7 @@ class AvoqadoApp : Application() {
         // mudarse de display y no debe multiplicar el scheduler.
         ProcessLifecycleOwner.get().lifecycle.addObserver(deviceCapabilitySyncCoordinator)
         ProcessLifecycleOwner.get().lifecycle.addObserver(refrescoDelCatalogo)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(vigilanteDePedidosEnLinea)
         // Hydrate the global venue timezone holder so DTO-level formatters
         // (TransactionModel.timeDisplay etc.) work from the very first compose.
         VenueTimeZone.set(secureStorage.venueTimezone)
