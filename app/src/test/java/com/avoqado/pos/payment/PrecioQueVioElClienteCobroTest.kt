@@ -39,7 +39,6 @@ import com.avoqado.pos.pos.data.model.CambioDePrecio
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Discount
-import com.avoqado.pos.pos.data.model.MENSAJE_RESERVA_SIN_RETIRAR
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -59,7 +58,6 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,8 +81,9 @@ import java.io.IOException
  *
  * - 201 con `priceChanges`: el carrito del cobro corrige SÓLO las líneas nombradas, el descuento de cuenta que viajó queda fijo,
  *   se cobra lo de la orden y se avisa (en efectivo, con el cambio de más).
- * - 409 `ORDER_PRICE_CHANGED` (sólo en línea; la cola nunca lo recibe): no se cobra; se suelta la reserva durable del efectivo
- *   ANTES de volver a elegir método, se estrena llave, se corrige SIN congelar, se pide el catálogo y se dice el total nuevo.
+ * - 409 `ORDER_PRICE_CHANGED` (sólo en línea; la cola nunca lo recibe): no se cobra; se estrena llave, se corrige SIN congelar,
+ *   se pide el catálogo y se dice el total nuevo. 🔴 D2 v7 (24-oct): la reserva del efectivo NO se borra al 409 (recibir un «no»
+ *   no es una decisión de la cajera); se borra al guardar el apartado del nuevo intento, en la misma escritura.
  * - Lo derivado del total (pago por artículos, partes, segundo pago de la misma orden) cuadra al centavo con la orden.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -199,12 +198,16 @@ class PrecioQueVioElClienteCobroTest {
         assertEquals(1000, vm.buildCompletion().descuentoDeCuentaCongelado?.cents)
     }
 
-    // MARK: - 409: no se cobra, se suelta la reserva, se estrena llave y se vuelve a elegir
+    // MARK: - 409: no se cobra, se estrena llave y se vuelve a elegir; la reserva vieja se va con el intento nuevo (D2 v7)
 
+    /**
+     * 🔴 Actualizada a D2 v7 (24-oct). Antes: el 409 ESPERABA el retiro durable de la reserva antes de volver a elegir (y su DAO
+     * falso borraba donde la SQL real conserva, `AND 0`). Ahora la reserva del intento rechazado sigue del flujo hasta que la
+     * cajera decide, y el apartado del nuevo intento la borra en la MISMA escritura.
+     */
     @Test
-    fun `409 en efectivo - espera el retiro durable de la reserva, estrena llave y vuelve a elegir método con el total nuevo`() = runTest {
-        val retiro = CompletableDeferred<Unit>()
-        val f = DaoFalso(retiro = retiro)
+    fun `409 en efectivo - vuelve a elegir método con el total nuevo, y el apartado del nuevo intento borra el viejo`() = runTest {
+        val f = DaoFalso()
         val caja = vm(f.repositorio())
         val pedidos = mutableListOf<CreateOrderRequest>()
         val llaves = mutableListOf<String>()
@@ -214,19 +217,12 @@ class PrecioQueVioElClienteCobroTest {
         caja.startPaymentFlow(dosCafes)
         caja.selectPaymentMethod(PaymentMethod.CASH)
         caja.processCashPayment(10000)
-
-        // El retiro va en vuelo: nada se mueve hasta que el aparato registró que ese cobro no se hizo.
-        val primera = llaves.single()
-        assertEquals(PaymentFlowState.Processing(10000), caja.state.value)
-        assertEquals("EN_VUELO", f.filas[primera]?.syncStatus)
-        verify(exactly = 0) { refresco.refrescarAhora() }
-
-        retiro.complete(Unit)
         advanceUntilIdle()
 
+        val primera = llaves.single()
         assertEquals(PaymentFlowState.SelectingPaymentMethod(12000), caja.state.value)
-        assertNull("la reserva del intento rechazado ya no existe", f.filas[primera])
-        assertTrue("al reiniciar no aparece un cobro fantasma", CashPaymentRepository(secureStorage, f.dao).cobrosSinConfirmar().isEmpty())
+        assertEquals("el 409 no borra: la reserva sigue del flujo", "EN_VUELO", f.filas[primera]?.syncStatus)
+        assertTrue("y no aparece «sin confirmar» mientras la venta vive", f.repositorio().cobrosSinConfirmar().isEmpty())
         verify(exactly = 1) { refresco.refrescarAhora() }
         assertEquals("Café cambió de precio: ahora cuesta \$60.00.\nTotal nuevo: \$120.00.", caja.avisoDePrecio.value)
         assertTrue("no se registra ningún cobro", cobrados.isEmpty())
@@ -235,48 +231,48 @@ class PrecioQueVioElClienteCobroTest {
         advanceUntilIdle()
 
         assertNotEquals("el reintento es otra creación", primera, llaves[1])
+        assertNull("al guardar el apartado nuevo se borró el del intento rechazado", f.filas[primera])
         assertEquals("el pedido nuevo lleva el precio corregido", listOf(6000, 6000), pedidos[1].items.map { it.displayedUnitPrice })
         assertEquals(listOf(12000), cobrados)
     }
 
+    /**
+     * 🔴 Actualizada a D2 v7 (24-oct). Antes: el retiro de la reserva al 409 fallaba y no se estrenaba llave. Ya no hay retiro al
+     * 409; lo que puede fallar es guardar el apartado del nuevo intento, que borra el viejo en la misma escritura: si falla, no
+     * sale nada y el viejo se queda; al volver el disco, el viejo se borra y el cobro sale con la llave nueva.
+     */
     @Test
-    fun `409 en efectivo con retiro que falla - no estrena llave ni reintenta`() = runTest {
-        val f = DaoFalso(fallaElRetiro = true)
+    fun `409 en efectivo y el apartado del nuevo intento no se puede guardar - no sale nada y el viejo se queda`() = runTest {
+        val f = DaoFalso()
         val caja = vm(f.repositorio())
         val llaves = mutableListOf<String>()
-        cuandoSeCreaLaOrden(
-            rechazo409(cambio("e1", 5000, 6000), cambio("e2", 5000, 6000)),
-            rechazo409(cambio("e1", 5000, 6000), cambio("e2", 5000, 6000)),
-            llaves = llaves,
-        )
+        cuandoSeCreaLaOrden(rechazo409(cambio("e1", 5000, 6000), cambio("e2", 5000, 6000)), creada(120.0), llaves = llaves)
+        val cobrados = cobradoEnEfectivo()
 
         caja.startPaymentFlow(dosCafes)
         caja.selectPaymentMethod(PaymentMethod.CASH)
         caja.processCashPayment(10000)
         advanceUntilIdle()
-
         val primera = llaves.single()
-        assertEquals(PaymentFlowState.Error(MENSAJE_RESERVA_SIN_RETIRAR, com.avoqado.pos.payment.data.model.PaymentErrorSource.UNKNOWN), caja.state.value)
-        assertEquals("EN_VUELO", f.filas[primera]?.syncStatus)
-        verify(exactly = 0) { refresco.refrescarAhora() }
-        assertNull("nada más: ni corrección ni aviso", caja.avisoDePrecio.value)
 
-        // Sigue fallando: ni reserva nueva ni POST.
-        caja.processCashPayment(10000)
+        f.fallaAlGuardar = true
+        caja.processCashPayment(12000)
         advanceUntilIdle()
-        assertEquals(1, llaves.size)
-        assertEquals(PaymentFlowState.Error(MENSAJE_RESERVA_SIN_RETIRAR, com.avoqado.pos.payment.data.model.PaymentErrorSource.UNKNOWN), caja.state.value)
 
-        // El disco vuelve: primero el retiro, y sólo entonces el cobro, con llave nueva.
-        f.fallaElRetiro = false
-        caja.processCashPayment(10000)
+        assertTrue((caja.state.value as PaymentFlowState.Error).message.contains("No se pudo guardar el cobro"))
+        assertEquals("ni creación ni POST", 1, llaves.size)
+        assertTrue(cobrados.isEmpty())
+        assertEquals("el viejo sigue, del flujo", "EN_VUELO", f.filas[primera]?.syncStatus)
+        assertEquals(1, f.filas.size)
+
+        f.fallaAlGuardar = false
+        caja.retry()
         advanceUntilIdle()
 
         assertNull(f.filas[primera])
         assertEquals(2, llaves.size)
         assertNotEquals(primera, llaves[1])
-        assertEquals(PaymentFlowState.SelectingPaymentMethod(12000), caja.state.value)
-        assertTrue(f.filas.values.none { it.syncStatus == "EN_VUELO" })
+        assertEquals(listOf(12000), cobrados)
     }
 
     @Test
@@ -608,21 +604,45 @@ class PrecioQueVioElClienteCobroTest {
 
     // MARK: - Andamiaje
 
-    /** Un DAO en memoria para la reserva del efectivo: lo que el aparato tendría en disco. */
-    private inner class DaoFalso(retiro: CompletableDeferred<Unit>? = null, var fallaElRetiro: Boolean = false) {
+    /**
+     * Un DAO en memoria para la reserva del efectivo: lo que el aparato tendría en disco, con las reglas de la SQL real
+     * (`borrarSiEnVuelo` no borra —`AND 0`—; `descartarReservaRechazada` sólo un `EN_VUELO` con captura; el apartado nuevo y el
+     * borrado de los viejos van en una sola escritura). La SQL de verdad la fija `ApartadosDelEfectivoRoomTest` (escritorio).
+     */
+    private inner class DaoFalso(var fallaAlGuardar: Boolean = false) {
         val filas = linkedMapOf<String, PendingPaymentEntity>()
+        private fun descartar(id: String) {
+            if (filas[id]?.let { it.syncStatus == "EN_VUELO" && it.q15CaptureJson != null && it.q15Reason == null } == true) filas.remove(id)
+        }
+        /** Como `insertTransactionQ16`: una fila ya subida no se pisa, y el reemplazo conserva la captura de disco. */
+        private fun guardar(fila: PendingPaymentEntity) {
+            val vieja = filas[fila.id]
+            if (vieja?.syncStatus == "SYNCED") return
+            filas[fila.id] = com.avoqado.pos.core.data.local.database.filaAlReemplazar(vieja, fila)
+        }
         val dao = mockk<PendingPaymentDao>(relaxed = true).also { dao ->
-            coEvery { dao.insert(any()) } coAnswers { firstArg<PendingPaymentEntity>().let { filas[it.id] = it } }
-            coEvery { dao.borrarSiEnVuelo(any()) } coAnswers {
-                retiro?.await()
-                if (fallaElRetiro) throw IOException("disco lleno")
-                val id = firstArg<String>()
-                if (filas[id]?.syncStatus == "EN_VUELO") { filas.remove(id); 1 } else 0
+            coEvery { dao.insert(any()) } coAnswers {
+                if (fallaAlGuardar) throw IOException("disco lleno")
+                guardar(firstArg())
             }
+            coEvery { dao.reservarEnLugarDe(any(), any()) } coAnswers {
+                if (fallaAlGuardar) throw IOException("disco lleno")
+                secondArg<Collection<String>>().forEach(::descartar)
+                guardar(firstArg())
+            }
+            coEvery { dao.borrarSiEnVuelo(any()) } returns 0
+            coEvery { dao.descartarReservaRechazada(any()) } coAnswers { val antes = filas.size; descartar(firstArg()); antes - filas.size }
             coEvery { dao.findForVenue(any(), any()) } coAnswers { filas[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() } }
             coEvery { dao.enVueloDelVenue(any()) } coAnswers { filas.values.filter { it.venueId == firstArg<String>() && it.syncStatus == "EN_VUELO" } }
+            // Ronda corta (agregados 1 y 3): al nacer la orden, el apartado guarda su importe y su orden; 0 filas = fallo.
+            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+                val f = filas[firstArg()]?.takeIf { it.syncStatus == "EN_VUELO" } ?: return@coAnswers 0
+                filas[f.id] = f.copy(amountCents = secondArg(), orderId = thirdArg()); 1
+            }
         }
-        fun repositorio() = CashPaymentRepository(secureStorage, dao)
+        /** UNO por disco: la propiedad de los apartados (qué es de un flujo vivo) vive en el repositorio. */
+        private val repo by lazy { CashPaymentRepository(secureStorage, dao) }
+        fun repositorio() = repo
     }
 
     private val orderRepository = mockk<OrderRepository>(relaxed = true)
@@ -727,7 +747,7 @@ class PrecioQueVioElClienteCobroTest {
             val cambio = secondArg<Int>() - firstArg<Int>()
             if (cambio >= 0) CashPaymentResult.Success(changeCents = cambio) else CashPaymentResult.InsufficientFunds(shortfall = -cambio)
         }
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-1"

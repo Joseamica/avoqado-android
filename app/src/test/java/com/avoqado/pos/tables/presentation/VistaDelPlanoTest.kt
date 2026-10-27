@@ -46,7 +46,7 @@ class VistaDelPlanoTest {
     private val vm = TablesViewModel(
         mesas, mockk(relaxed = true), TableSession(), mockk(relaxed = true),
         mockk<SecureStorage>(relaxed = true).also { every { it.venueId } returns "v1" },
-        mockk(relaxed = true), mockk(relaxed = true), plano, mockk(relaxed = true), mockk<ApiFuenteDeVersiones>(relaxed = true),
+        mockk(relaxed = true), mockk(relaxed = true), plano, mockk(relaxed = true), mockk<ApiFuenteDeVersiones>(relaxed = true), mockk(relaxed = true),
     )
 
     private val mesa = DiningTable(id = "t1", number = "1", positionX = 0.5f, positionY = 0.5f, areaId = "a1", areaName = "Salón", areaFloorShape = "WIDE")

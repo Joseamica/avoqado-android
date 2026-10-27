@@ -17,6 +17,26 @@ data class CapturaDelCobro(
     val restanteEsperadoCents: Int? = null,
     /** Codex r2/r3 (19-oct): 1¢ por componente de combo de las rondas sin red de la mesa (un combo redondea distinto); 0 lo demás. */
     val toleranciaCents: Int? = null,
+    /**
+     * 🔴 D2 v7 (24-oct, mismo nombre que iOS): `true` = el apartado lo guardó la app que, si nadie lo resuelve, lo da por COBRADO
+     * (`CashPaymentRepository.darPorCobradasLasAbandonadas`). Null en capturas viejas: las filas «sin confirmar» que la app de antes
+     * dejó al soltar un rechazo NO se tocan (su billete pudo devolverse o la venta pudo cobrarse con otra llave). No es evidencia del
+     * cobro: `evaluar` no lo compara. `version` no cambia (se valida estricto `== 1`).
+     */
+    val daPorCobradaAlAbandonar: Boolean? = null,
+    /**
+     * Codex r11 #1: la hora del PRIMER intento de este cobro (epoch ms del aparato). La captura es la primera y manda: un reintento con la
+     * misma llave reescribe el `createdAt` de la fila, no esto. Con ella la gemela del servidor de un intento anterior se reconoce
+     * (`SalidaDelApartado`). Null en capturas viejas: se usa el `createdAt`. No es evidencia del cobro: `evaluar` no la compara.
+     * Mismo nombre que en iOS (`primeraCapturaEn`).
+     */
+    val primeraCapturaEn: Long? = null,
+    /**
+     * D15 (QA de WINDOWS, 25-oct): los ids de las ventas DEL SERVIDOR que la caja ya traía al apartar este cobro (la primera captura
+     * manda). Existían antes de su POST: no pueden ser su gemela (`SalidaDelApartado`), aunque coincidan importe y hora. Null en capturas
+     * viejas: como antes. No es evidencia del cobro: `evaluar` no la compara. Mismo nombre que en iOS.
+     */
+    val ventasYaEnLaCaja: List<String>? = null,
 )
 
 data class EvaluacionDelCobro(
@@ -48,6 +68,9 @@ object ConciliacionDelCobro {
             c.customerId?.let { put("customerId", it) }
             c.orderRequestJson?.let { put("orderRequestJson", it) }; c.intentoPayloadJson?.let { put("intentoPayloadJson", it) }
             c.restanteEsperadoCents?.let { put("restanteEsperadoCents", it) }; c.toleranciaCents?.let { put("toleranciaCents", it) }
+            c.daPorCobradaAlAbandonar?.let { put("daPorCobradaAlAbandonar", it) }
+            c.primeraCapturaEn?.let { put("primeraCapturaEn", it) }
+            c.ventasYaEnLaCaja?.let { put("ventasYaEnLaCaja", JsonArray(it.map(::JsonPrimitive))) }
         }.toString()
     }
 
@@ -76,7 +99,10 @@ object ConciliacionDelCobro {
             text(o["tenderTypeId"]), integer(o["tenderRevision"]), integer(o["cashTenderedCents"]),
             integer(o["changeCents"]), text(o["customerId"]), text(o["localOrderId"]),
             orderRequestJson = text(o["orderRequestJson"]), intentoPayloadJson = text(o["intentoPayloadJson"]),
-            restanteEsperadoCents = integer(o["restanteEsperadoCents"]), toleranciaCents = integer(o["toleranciaCents"]))
+            restanteEsperadoCents = integer(o["restanteEsperadoCents"]), toleranciaCents = integer(o["toleranciaCents"]),
+            daPorCobradaAlAbandonar = (o["daPorCobradaAlAbandonar"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull,
+            primeraCapturaEn = (o["primeraCapturaEn"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull,
+            ventasYaEnLaCaja = (o["ventasYaEnLaCaja"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content })
             .also { guardarCaptura(it) }
     }.getOrNull()
 

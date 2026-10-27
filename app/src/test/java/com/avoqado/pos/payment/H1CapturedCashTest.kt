@@ -92,6 +92,9 @@ class H1CapturedCashTest {
     fun setup() {
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
+        coEvery { dao.findForVenue(any(), any()) } coAnswers {
+            rows[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() }
+        }
         coEvery { dao.insert(any()) } coAnswers {
             val row = firstArg<PendingPaymentEntity>()
             rows[row.id] = row
@@ -105,7 +108,7 @@ class H1CapturedCashTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
         coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         every { secureStorage.userId } returns "user-456"
@@ -251,7 +254,7 @@ class H1CapturedCashTest {
             rows[first.id] = rows.getValue(first.id).copy(retryCount = first.retryCount + 1, lastRetryAt = secondArg())
         }
         val replay = PaymentSyncService(dao, secureStorage, mockk(relaxed = true), mockk(relaxed = true),
-            cashDrawerRepository, mockk(relaxed = true))
+            cashDrawerRepository, mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true))
         try {
             assertTrue(replay.handleSyncResult(first, 503, "sin red"))
             val retried = rows.getValue(first.id)

@@ -32,8 +32,8 @@ internal fun SQLiteConnection.volcar(tabla: String): List<List<String>> = prepar
 }
 
 /** El ayudante de Room JVM sobre los JSON de esquema que exporta Android (app/schemas), en una base de [archivo]. */
-internal fun ayudanteDeMigraciones(archivo: Path) = MigrationTestHelper(
-    schemaDirectoryPath = Path.of(System.getProperty("avoqado.esquemas")),
+internal fun ayudanteDeMigraciones(archivo: Path, esquemas: Path = Path.of(System.getProperty("avoqado.esquemas"))) = MigrationTestHelper(
+    schemaDirectoryPath = esquemas,
     databasePath = archivo,
     driver = BundledSQLiteDriver(),
     databaseClass = AvoqadoDatabase::class,
@@ -98,6 +98,67 @@ class MigracionesDeAndroidTest {
                 assertEquals(12L, c.leerLargo("PRAGMA user_version"))
                 assertEquals(antes, listOf(c.volcar("pending_payments"), c.volcar("pos_sync_intents")))
             }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+}
+
+/**
+ * Las 32 columnas de `pending_payments` en v16, todas con valor distinto de cero/vacío, de un cobro sin red con su
+ * evidencia Q15. Es la fila que tiene que llegar IDÉNTICA a v17, con la caja de la venta en nulo.
+ */
+internal val SIEMBRA_V16 =
+    "INSERT INTO pending_payments (id, venueId, staffId, amountCents, tipCents, method, paymentType, orderId, orderNumber, cashTenderedCents, " +
+        "changeCents, rating, itemsJson, orderRequestJson, syncStatus, retryCount, lastError, createdAt, lastRetryAt, tenderTypeId, tenderRevision, " +
+        "customerId, splitType, q15CaptureJson, q15InitialResultJson, q15ResultJson, q15Reason, q15DetectedAt, q15ReviewedAt, q15ReviewedBy, " +
+        "q15ReviewRole, capturedOrderRef) " +
+        "VALUES ('pago-16', 'venue-1', 'staff-1', 8732, 450, 'CASH', 'ORDER', 'orden-9', 'A-17', 10000, 1268, 5, '[{\"p\":1}]', '{\"o\":2}', " +
+        "'PENDING', 3, 'sin red', 1700000000000, 1700000099999, 'tender-7', 4, 'cliente-3', 'CUSTOMAMOUNT', '{\"version\":1}', '{\"i\":1}', " +
+        "'{\"r\":1}', 'DIFERENCIA', 1700000000500, 1700000000600, 'gerente-1', 'MANAGER', 'orden-9')"
+
+class MigracionCajaDeLaVentaTest {
+    /** v17 (efectivo sin red en el turno correcto): una columna nula, nada que migrar. La fila vieja NO recibe una caja inventada. */
+    @Test fun `un cobro sin internet guardado en v16 llega idéntico a v17 con la caja de la venta en nulo`() {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val ayudante = ayudanteDeMigraciones(carpeta.resolve("base"))
+            val antes = ayudante.createDatabase(16).use { v16 ->
+                v16.execSQL(SIEMBRA_V16)
+                v16.volcar("pending_payments")
+            }
+            assertEquals(32, antes.single().size)
+            ayudante.runMigrationsAndValidate(18, migracionesDeAndroid().map { it.paraRoom() }).use { v17 ->
+                val despues = v17.volcar("pending_payments")
+                assertEquals(33, despues.single().size)
+                assertEquals(antes, despues.map { it.take(32) }, "Las 32 columnas de antes no cambian")
+                v17.prepare("SELECT cashDrawerSessionId FROM pending_payments WHERE id='pago-16'").use { q ->
+                    q.step(); assertEquals(true, q.isNull(0))
+                }
+            }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+
+    /**
+     * La primera captura manda, por el DAO real de Room (no un doble): la reserva guarda la caja; el encolado tras el fallo
+     * vuelve a escribir la fila con la misma llave y otra caja (o ninguna), y en disco queda la de la reserva.
+     */
+    @Test fun `el reemplazo de la reserva conserva la caja de la reserva en el DAO real`() = runBlocking {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
+            try {
+                val dao = DatabaseModule.providePendingPaymentDao(base)
+                val reserva = com.avoqado.pos.core.data.local.database.PendingPaymentEntity(
+                    id = "llave-A", venueId = "venue-1", staffId = "staff-1", amountCents = 10_000, tipCents = 0,
+                    method = "CASH", paymentType = "FAST", syncStatus = "EN_VUELO", createdAt = 1L,
+                    cashDrawerSessionId = "caja-A-local",
+                )
+                dao.insert(reserva)
+                dao.insert(reserva.copy(syncStatus = "PENDING", cashDrawerSessionId = "caja-B"))
+                assertEquals("caja-A-local", dao.findForVenue("venue-1", "llave-A")?.cashDrawerSessionId)
+                assertEquals("PENDING", dao.findForVenue("venue-1", "llave-A")?.syncStatus)
+                dao.insert(reserva.copy(syncStatus = "PENDING", cashDrawerSessionId = null))
+                assertEquals("caja-A-local", dao.findForVenue("venue-1", "llave-A")?.cashDrawerSessionId)
+            } finally { base.close() }
         } finally { carpeta.toFile().deleteRecursively() }
     }
 }

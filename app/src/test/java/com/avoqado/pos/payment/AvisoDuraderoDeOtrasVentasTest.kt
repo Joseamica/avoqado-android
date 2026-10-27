@@ -206,7 +206,7 @@ class AvisoDuraderoDeOtrasVentasTest {
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
         coEvery { printConfigRepository.refresh(any()) } returns Unit
         every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
 
         servicio = nuevoServicio()
     }

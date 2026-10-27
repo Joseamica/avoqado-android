@@ -102,6 +102,8 @@ class AvoqadoDatabaseMigrationTest {
             AvoqadoDatabaseMigrations.MIGRATION_13_14,
             AvoqadoDatabaseMigrations.MIGRATION_14_15,
             AvoqadoDatabaseMigrations.MIGRATION_15_16,
+            AvoqadoDatabaseMigrations.MIGRATION_16_17,
+            AvoqadoDatabaseMigrations.MIGRATION_17_18,
         ).build().also { roomDb ->
             roomDb.openHelper.writableDatabase
         }
@@ -191,11 +193,11 @@ class AvoqadoDatabaseMigrationTest {
         } finally { helper.close() }
         val database = openMigratedDatabase()
         try {
-            assertEquals(16, database.openHelper.writableDatabase.version)
+            assertEquals(18, database.openHelper.writableDatabase.version)
             val after = snapshot(database.openHelper.writableDatabase)
             val q15FinancialColumns = setOf("q15CaptureJson", "q15InitialResultJson", "q15ResultJson",
                 "q15Reason", "q15DetectedAt", "q15ReviewedAt", "q15ReviewedBy", "q15ReviewRole")
-            val addedColumns = q15FinancialColumns + setOf("splitType", "capturedOrderRef")
+            val addedColumns = q15FinancialColumns + setOf("splitType", "capturedOrderRef", "cashDrawerSessionId")
             assertEquals(2, after.size)
             after.forEach { row ->
                 // Every added column is checked BEFORE projecting the unchanged legacy columns.
@@ -207,6 +209,8 @@ class AvoqadoDatabaseMigrationTest {
                 }
                 // The migration links an original STRING ID only; it does not invent a capture.
                 assertEquals(Cursor.FIELD_TYPE_STRING to "order-original", row["capturedOrderRef"])
+                // v17: la caja de la venta de una fila vieja queda nula; no se inventa.
+                assertEquals(Cursor.FIELD_TYPE_NULL to null, row["cashDrawerSessionId"])
             }
             assertEquals(before, after.map { it - addedColumns })
             assertTrue(after.all { it["splitType"]?.second == "FULLPAYMENT" })
@@ -261,7 +265,7 @@ class AvoqadoDatabaseMigrationTest {
             q15ResultJson = applied.resultadoJson, q15Reason = applied.motivo, q15DetectedAt = 200)
         val migrated = openMigratedDatabase()
         try {
-            assertEquals(16, migrated.openHelper.writableDatabase.version)
+            assertEquals(18, migrated.openHelper.writableDatabase.version)
             migrated.pendingPaymentDao().insert(original)
             assertEquals(original, migrated.pendingPaymentDao().findForVenue(venue, key))
             assertEquals(1, migrated.pendingPaymentDao().registrarResultadoQ15(venue, key,
@@ -293,6 +297,63 @@ class AvoqadoDatabaseMigrationTest {
             assertEquals(reviewed.q15ResultJson, history.q15ResultJson)
             assertEquals("MANAGER", history.q15ReviewRole)
         } finally { historyReopened.close() }
+    }
+
+    /**
+     * v16 → v17 (efectivo sin red en el turno correcto, 21-oct): la fila de un cobro sin red guardada en v16 llega IDÉNTICA,
+     * con la caja de la venta en nulo (no se inventa), y la reserva nueva con caja la conserva aunque se reemplace sin ella.
+     */
+    @Test fun migrationFrom16To17KeepsEveryPaymentColumnAndLeavesTheSaleDrawerNull() = runBlocking {
+        createVersion13Database()
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(
+            androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context).name(dbName)
+                .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(16) {
+                    override fun onCreate(db: SupportSQLiteDatabase) = error("The v13 fixture must already exist")
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                        assertEquals(13, oldVersion); assertEquals(16, newVersion)
+                        AvoqadoDatabaseMigrations.MIGRATION_13_14.migrate(db)
+                        AvoqadoDatabaseMigrations.MIGRATION_14_15.migrate(db)
+                        AvoqadoDatabaseMigrations.MIGRATION_15_16.migrate(db)
+                    }
+                }).build())
+        fun snapshot(db: SupportSQLiteDatabase): List<Map<String, String?>> =
+            db.query("SELECT * FROM pending_payments ORDER BY id").use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) add(cursor.columnNames.indices.associate { index ->
+                        cursor.columnNames[index] to if (cursor.isNull(index)) null else cursor.getString(index)
+                    })
+                }
+            }
+        val before = try {
+            val db = helper.writableDatabase
+            db.execSQL("""INSERT INTO pending_payments
+                (id,venueId,staffId,amountCents,tipCents,method,paymentType,orderId,orderNumber,cashTenderedCents,changeCents,
+                 rating,itemsJson,orderRequestJson,syncStatus,retryCount,lastError,createdAt,lastRetryAt,tenderTypeId,tenderRevision,
+                 customerId,splitType,q15CaptureJson,q15InitialResultJson,q15ResultJson,q15Reason,q15DetectedAt,q15ReviewedAt,
+                 q15ReviewedBy,q15ReviewRole,capturedOrderRef)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                arrayOf("v16-pending","venue-16","staff-16",8732,450,"CASH","ORDER","order-16","A-17",10000,1268,5,"[]",
+                    "{\"total\":9182}","PENDING",3,"sin red",100L,110L,"tender-16",4,"customer-16","CUSTOMAMOUNT",
+                    "{\"version\":1}","{\"i\":1}","{\"r\":1}","DIFERENCIA",120L,130L,"manager-16","MANAGER","order-16"))
+            snapshot(db)
+        } finally { helper.close() }
+        val database = openMigratedDatabase()
+        try {
+            assertEquals(18, database.openHelper.writableDatabase.version)
+            val after = snapshot(database.openHelper.writableDatabase)
+            assertEquals(1, after.size)
+            assertEquals(before.single().keys + "cashDrawerSessionId", after.single().keys)
+            assertEquals(null, after.single()["cashDrawerSessionId"])
+            assertEquals(before, after.map { it - "cashDrawerSessionId" })
+            val dao = database.pendingPaymentDao()
+            val reserva = PendingPaymentEntity(id = "v17-reserva", venueId = "venue-16", staffId = "staff-16", amountCents = 10_000,
+                tipCents = 0, method = "CASH", paymentType = "FAST", syncStatus = "EN_VUELO", createdAt = 200L,
+                cashDrawerSessionId = "caja-A-local")
+            dao.insert(reserva)
+            dao.insert(reserva.copy(syncStatus = "PENDING", cashDrawerSessionId = null))
+            assertEquals("caja-A-local", dao.findForVenue("venue-16", "v17-reserva")?.cashDrawerSessionId)
+        } finally { database.close() }
     }
 
     private fun createVersion1Database() {

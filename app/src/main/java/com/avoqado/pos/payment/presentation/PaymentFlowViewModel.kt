@@ -127,6 +127,9 @@ const val VALES_CON_ABONO = "Esta venta de vales ya tiene un abono: cobra su sal
 /** Mismo texto en iOS (`AreaTicketRepositoryError.noActiveCheckout`). */
 const val VALES_SIN_APARTADO = "Estos vales ya no están apartados para esta venta: quítalos y vuelve a escanear el vale."
 
+/** Ronda final (A2): el cobro en efectivo no se pudo guardar en el aparato tras fallar la red; su apartado sigue del flujo. */
+const val MENSAJE_EFECTIVO_SIN_GUARDAR = "No se pudo guardar el cobro en el aparato. Intenta de nuevo o cancélalo."
+
 /**
  * 🔴 DINERO. ¿El carrito trae exactamente los vales de la sesión del servidor? Renglón por renglón y en centavos, como los pone
  * `CartViewModel.replaceAreaTicketLines`. Lo usa `PaymentFlowViewModel.valesNoCoinciden` antes de cobrar.
@@ -184,6 +187,12 @@ class PaymentFlowViewModel @Inject constructor(
      * Guice en Windows) inyecta siempre el singleton real.
      */
     private val refrescoDelCatalogo: com.avoqado.pos.pos.data.RefrescoDelCatalogo? = null,
+    /**
+     * Familia B (rediseño r9, paridad con iOS `handleTablePaymentSuccess(original:venueId:expectedEpoch:)`): la mesa de una venta
+     * que ya no está en pantalla se libera con SU contexto. Default por el mismo patrón que [refrescoDelCatalogo].
+     */
+    private val tableServiceRepository: com.avoqado.pos.tables.data.TableServiceRepository? = null,
+    private val lanHub: com.avoqado.pos.core.data.lan.LanHubService? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -223,11 +232,11 @@ class PaymentFlowViewModel @Inject constructor(
     private var ultimoAvisoDePrecio: String? = null
 
     /**
-     * La reserva de efectivo de un intento que el servidor rechazó por precio y cuyo retiro NO se pudo escribir en el aparato.
-     * Mientras exista, ningún cobro sale: primero se reintenta el retiro (ver [primeroRetirarLaReservaPendiente]). No se limpia al
-     * empezar otra venta: es una fila en disco que diría «sin confirmar» un cobro que nunca pasó.
+     * Apartados de efectivo de una venta que YA terminó cobrada por otro camino (otra llave, tarjeta) y cuyo borrado NO se pudo
+     * escribir en el aparato. Mientras existan, ningún cobro sale: primero se reintenta el borrado (ver
+     * [primeroDescartarLosPendientes]). No se sueltan al empezar otra venta: soltarlos los daría por cobrados (D2 v7).
      */
-    private var llavePorRetirar: String? = null
+    private val porDescartar = linkedSetOf<String>()
 
     /** Lo que el servidor CONFIRMÓ del premio al crear la venta (0 si no lo aplicó). null = aún no se sabe. */
     private var premioConfirmadoCents: Int? = null
@@ -261,6 +270,18 @@ class PaymentFlowViewModel @Inject constructor(
     private var cartState: CartState? = null
     // Copias del cobro, anteriores a cualquier suspensión; el piso/sucursal vivos pueden cambiar después.
     private var mesaDelCobro: com.avoqado.pos.tables.data.TableSession.Active? = null
+    /** El contexto de la sesión de mesas al abrir el cobro: con él se libera la mesa de ESTA venta aunque ya haya otra. */
+    private var contextoDeLaMesaDelCobro = 0L
+
+    /** La mesa de una venta, fotografiada antes de su primera suspensión (familia B). */
+    private data class MesaCapturada(
+        val mesa: com.avoqado.pos.tables.data.TableSession.Active,
+        val venueId: String,
+        val contexto: Long,
+    )
+
+    private fun mesaCapturada(venueId: String): MesaCapturada? =
+        mesaDelCobro?.let { MesaCapturada(it, venueId, contextoDeLaMesaDelCobro) }
     private var nombreDelNegocioDelCobro: String = "Avoqado"
     /** D4 (mesas40): quien tiene la sesión al abrir el cobro — «Atendió» sin mesero ni vendedor elegido. Nunca «Staff». */
     private var nombreDeLaSesionDelCobro: String? = null
@@ -294,11 +315,42 @@ class PaymentFlowViewModel @Inject constructor(
         paymentIdempotencyKey ?: java.util.UUID.randomUUID().toString().also { paymentIdempotencyKey = it }
 
     /**
-     * La llave del cobro en efectivo que se guardó en el aparato ANTES de mandarlo (ver
-     * `reservarEfectivo`). Se suelta en cuanto el cobro deja de estar «Procesando»: registrado,
-     * encolado, rechazado o cancelado. Si el proceso muere antes, la fila queda «sin confirmar».
+     * 🔴 D2 v7 (24-oct): las llaves de efectivo que ESTA venta guardó en el aparato ANTES de mandarlas (ver `reservarEfectivo`):
+     * la del intento actual y las de intentos anteriores de la misma venta (p. ej. la del 409 de precio). Son del flujo mientras
+     * la venta viva, sea cual sea el desenlace que vio la cajera: el aparato nunca las borra por lo que contestó la red.
+     * - Las borra (y espera el borrado) una ACCIÓN de la cajera sobre esta venta: «Cancelar» ([descartarApartadosDeEstaVenta]),
+     *   volver a cobrarla con otra llave (el apartado nuevo reemplaza a los viejos) o terminarla cobrada por otro camino.
+     * - Empezar otra venta, recrear la pantalla u `onCleared` NO deciden nada: se sueltan y se dan por cobradas (Toast).
      */
-    private var reservaDeEfectivo: String? = null
+    private val apartadosDeEstaVenta = linkedSetOf<String>()
+
+    /** La llave que apartó el intento de efectivo EN CURSO (null = el intento actual no apartó). Es la del cobro si termina bien. */
+    private var apartadoDelIntento: String? = null
+
+    /** Un «Cancelar» está escribiendo el borrado de los apartados: ni otro «Cancelar» ni un cobro nuevo hasta que termine. */
+    private var descartandoApartados = false
+
+    /** Codex r15 #1: `onCleared` ya corrió. Un borrado que termina después suelta lo que no pudo borrar ([descartarApartadosDeEstaVenta]). */
+    private var destruido = false
+
+    /**
+     * 🔴 Ronda final (A5, espejo de iOS `alFallarElIntento`): el apartado del intento EN CURSO si es «Ya pagó de otra forma»
+     * (método manual o tipo del catálogo). No es de [apartadosDeEstaVenta]: nunca se borra ni se da por cobrado; si el intento
+     * falla se suelta y queda «sin confirmar», como hoy.
+     */
+    private var reservaNoEfectivo: String? = null
+
+    /**
+     * Ronda final (M-1, espejo de iOS): el último «Cancelar» no pudo borrar los apartados. Mientras siga así, «Reintentar» de la
+     * pantalla de error reintenta la CANCELACIÓN, nunca el cobro.
+     */
+    private var cancelacionFallida = false
+
+    /**
+     * Ronda final (A3, Codex r8 #5): cuál venta está en pantalla. Sólo `startPaymentFlow` la cambia (la generación cambia también
+     * al cancelar): una respuesta tardía de una venta ANTERIOR no escribe nada en la nueva.
+     */
+    private var ventaEnCurso = 0
 
     /**
      * Qué dice la pantalla de resultado de un cobro encolado, EN VIVO (30-sep-2026: «Se sincronizará
@@ -350,15 +402,28 @@ class PaymentFlowViewModel @Inject constructor(
     /**
      * 🔴 Guarda el cobro en efectivo en el aparato ANTES de mandarlo (regla «se persiste antes de tocar
      * la red», `.claude/rules/todo-funciona-sin-red.md` pregunta 2). Con la MISMA llave que el intento
-     * en línea, la creación de la orden y la cola: si la app muere a media petición, al reabrir el
-     * cobro aparece «sin confirmar» y, si alguien dice que sí se cobró, se manda con esa llave y el
-     * servidor deduplica en vez de crear otra venta.
+     * en línea, la creación de la orden y la cola: si la app muere a media petición, al reabrir se da
+     * por cobrado (D2 v7) y sube con esa llave, y el servidor deduplica en vez de crear otra venta.
+     *
+     * 🔴 D2 v7: es volver a cobrar ESTA venta. Si es con otra llave (tras el 409 de precio o un rechazo que la estrenó), el
+     * apartado nuevo borra los de los intentos anteriores en la MISMA escritura; con la misma llave reemplaza su propia fila.
+     * Ya no suelta nada al empezar: los apartados de la venta son del flujo hasta que la cajera decide.
      *
      * No se reserva donde no hay cola que lo pueda reproducir: fichas de área (su cobro no se encola),
      * mesa abierta sin red (va por el outbox, que ya guarda antes) y venta con premio de lealtad (el
      * canje es en línea a propósito).
+     *
+     * @return 🔴 qué apartado quedó en disco (también si la venta cambió mientras se escribía). Con [Apartado.EFECTIVO] la venta en el
+     *   cajón la anota su salida de `EN_VUELO` (`SalidaDelApartado`), no este intento (rediseño r9). Con CUALQUIER apartado la orden de
+     *   esta venta no se cancela si otra empezó (ruling N1 de la ronda corta) y la fila lleva su orden e importe antes del `/pay`.
      */
     private suspend fun reservarEfectivo(
+        generacion: Int,
+        /**
+         * 🔴 Ronda final (A1, Codex r8 #1): la foto de los apartados de ESTA venta, tomada al EMPEZAR el intento (antes de la primera
+         * suspensión, en su generación). Leerla al escribir podía traer los de OTRA venta que empezó mientras tanto, y borrarlos.
+         */
+        anterioresDeEstaVenta: List<String>,
         cart: CartState?,
         total: Int,
         cashReceivedCents: Int,
@@ -376,12 +441,15 @@ class PaymentFlowViewModel @Inject constructor(
         venueCapturado: String,
         provisionalCapturada: Boolean,
         permiteColaCapturada: Boolean,
-    ) {
-        soltarReservaDeEfectivo() // una reserva vieja nunca sobrevive a un cobro nuevo
-        if (cart == null || pedido == null) return
-        if (!permiteColaCapturada) return
-        if (provisionalCapturada) return
-        if (cart.pendingStampRewardId != null && cart.premioAplica) return
+        cajaCapturada: String?,
+        /** Agregado 2 de la ronda corta: quién cobra (la sesión al confirmar). La venta que el flujo anote va a su nombre. */
+        actorCapturado: String,
+        nombreActorCapturado: String,
+    ): Apartado {
+        if (cart == null || pedido == null) return Apartado.NINGUNO
+        if (!permiteColaCapturada) return Apartado.NINGUNO
+        if (provisionalCapturada) return Apartado.NINGUNO
+        if (cart.pendingStampRewardId != null && cart.premioAplica) return Apartado.NINGUNO
         val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
         try {
             cashPaymentRepository.reservarCobro(
@@ -402,20 +470,192 @@ class PaymentFlowViewModel @Inject constructor(
                 manualMethod = manualCapturado,
                 tenderType = tenderCapturado,
                 venueId = venueCapturado,
+                cajaDelCobro = cajaCapturada,
+                // Si la venta ya cambió, este intento guarda SU captura sin borrar nada.
+                enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
             )
-            reservaDeEfectivo = llave
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            // No POST without its original durable capture. The caller presents the error.
+            // No POST without its original durable capture. The caller presents the error. Los apartados viejos siguen del flujo.
             throw IllegalStateException("No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.", e)
+        }
+        cashPaymentRepository.recordarCajero(llave, actorCapturado, nombreActorCapturado)
+        val efectivoPuro = manualCapturado == null && tenderCapturado == null
+        val apartado = if (efectivoPuro) Apartado.EFECTIVO else Apartado.OTRA_FORMA
+        if (generacion != paymentGeneration) {
+            // La venta de este intento ya no está en pantalla (otra venta empezó mientras se escribía): nadie decide por él.
+            cashPaymentRepository.olvidarReservaEnMemoria(llave)
+            barrerYa() // ronda final: lo soltado se da por cobrado en el acto
+            return apartado
+        }
+        apartadosDeEstaVenta.removeAll(anterioresDeEstaVenta.toSet()) // se borraron en la misma escritura (o es su misma llave)
+        if (efectivoPuro) {
+            apartadosDeEstaVenta += llave
+        } else {
+            reservaNoEfectivo = llave // «Ya pagó de otra forma»: sigue como hoy (A5)
+        }
+        apartadoDelIntento = llave
+        return apartado
+    }
+
+    /** Lo que [reservarEfectivo] dejó en disco para este intento. */
+    private enum class Apartado {
+        /** Sin apartado (premio, vales, mesa provisional, sin carrito): nada durable antes de la red. */
+        NINGUNO,
+        /** Efectivo puro: si nadie decide, se da por cobrado; su venta la anota su salida de `EN_VUELO`. */
+        EFECTIVO,
+        /** «Ya pagó de otra forma» (método manual o tipo del catálogo): queda «sin confirmar» y lo decide una persona. */
+        OTRA_FORMA,
+    }
+
+    /**
+     * Borra, y ESPERA a que quede escrito, cada apartado de [llaves] (sólo los `EN_VUELO` con captura). false = el disco falló:
+     * los que no se pudieron borrar siguen siendo del flujo.
+     */
+    private suspend fun descartar(llaves: Collection<String>): Boolean = try {
+        withContext(kotlinx.coroutines.NonCancellable) { llaves.forEach { cashPaymentRepository.descartarReservaRechazada(it) } }
+        true
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e("💵", "No se pudieron borrar los apartados $llaves: ${e.message}")
+        false
+    }
+
+    /**
+     * 🔴 D2 v7 — «Cancelar» de la cajera sobre ESTA venta: se borran, y se espera a que quede escrito, todos sus apartados de
+     * efectivo, sea cual sea el desenlace que vio (es su decisión, tomada sabiendo si tiene el billete). true = ya no queda
+     * ninguno y la pantalla puede cerrarse. false = no se pudo: la pantalla dice «No se pudo cancelar el cobro. Intenta de
+     * nuevo.», no se cierra y los apartados siguen del flujo. Con el POST del efectivo en vuelo no hay cancelación (punto 5).
+     */
+    suspend fun descartarApartadosDeEstaVenta(): Boolean {
+        if (efectivoEnVuelo() || descartandoApartados) return false
+        val llaves = apartadosDeEstaVenta.toList()
+        if (llaves.isEmpty()) return true
+        // 🔴 Codex r14 B1: la venta dueña de estas llaves, y las llaves fuera de la lista ANTES del disco: si otra venta empieza mientras
+        // se borran, no las suelta (soltarlas las daría por cobradas a medio borrar). El borrado de las llaves de A termina igual.
+        val venta = ventaEnCurso
+        apartadosDeEstaVenta.removeAll(llaves.toSet())
+        descartandoApartados = true
+        try {
+            // 🔴 Codex r15 #1: el desenlace se decide en NonCancellable, así que también corre si la pantalla se destruyó mientras se
+            // borraba. Lo que no se pudo borrar y ya no tiene dueño (pantalla destruida u otra venta) se suelta y se barre en el acto,
+            // como en cualquier suelta; si no, quedaba EN_VUELO reservado por un ViewModel muerto, sin barrido, hasta reiniciar.
+            val borrados = withContext(kotlinx.coroutines.NonCancellable) {
+                val ok = descartar(llaves)
+                if (!ok && (destruido || otraVenta(venta))) {
+                    llaves.forEach(cashPaymentRepository::olvidarReservaEnMemoria)
+                    barrerYa()
+                }
+                ok
+            }
+            // Nadie decide ya por A: nada se escribe en B ni en una pantalla destruida.
+            if (destruido || otraVenta(venta)) return false
+            if (!borrados) {
+                apartadosDeEstaVenta += llaves // siguen del flujo
+                _cancelFailure.value = com.avoqado.pos.payment.domain.CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO
+                return false
+            }
+            cancelacionFallida = false
+            if (apartadoDelIntento in llaves) apartadoDelIntento = null
+            return true
+        } finally {
+            descartandoApartados = false
         }
     }
 
-    private fun soltarReservaDeEfectivo() {
-        val llave = reservaDeEfectivo ?: return
-        reservaDeEfectivo = null
-        viewModelScope.launch(kotlinx.coroutines.NonCancellable) { cashPaymentRepository.soltarReserva(llave) }
+    /** El POST del efectivo viaja (punto 5 de D2 v6): la pantalla no ofrece «Cancelar» y el ViewModel lo ignora. */
+    private fun efectivoEnVuelo(): Boolean = (_state.value as? PaymentFlowState.Processing)?.efectivoEnVuelo == true
+
+    /**
+     * La venta se cobró (D2 v5, punto 2). El apartado del intento que cobró sólo se suelta (ya subió, se encoló o se da por
+     * cobrado); los de intentos anteriores de esta venta sobran y se borran. Si ese borrado falla, se reintenta antes del
+     * siguiente cobro ([primeroDescartarLosPendientes]).
+     */
+    private fun alCobrarLaVenta(st: PaymentFlowState.Success) {
+        val cobrado = apartadoDelIntento?.takeIf { st.method == PaymentMethod.CASH }
+        val anteriores = apartadosDeEstaVenta.filter { it != cobrado }
+        apartadosDeEstaVenta.clear()
+        apartadoDelIntento = null
+        reservaNoEfectivo?.takeIf { it != cobrado }?.let(cashPaymentRepository::olvidarReservaEnMemoria)
+        reservaNoEfectivo = null
+        if (cobrado == null && anteriores.isEmpty()) return
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            cobrado?.let { llave ->
+                runCatching { cashPaymentRepository.soltarReserva(llave) }
+                    .onFailure { Log.e("💵", "No se pudo soltar el apartado cobrado $llave: ${it.message}") }
+            }
+            if (anteriores.isNotEmpty() && !descartar(anteriores)) porDescartar += anteriores
+        }
+    }
+
+    /**
+     * La venta ya no está en pantalla sin que la cajera decidiera (otra venta, pantalla recreada, `onCleared`): sus apartados
+     * dejan de ser del flujo y la cola los da por cobrados con su misma llave (D2 v7, punto 3). Nunca borra.
+     */
+    private fun soltarLosApartadosDeEstaVenta() {
+        soltarLaReservaNoEfectivo()
+        if (apartadosDeEstaVenta.isEmpty()) return
+        apartadosDeEstaVenta.forEach(cashPaymentRepository::olvidarReservaEnMemoria)
+        apartadosDeEstaVenta.clear()
+        apartadoDelIntento = null
+        barrerYa()
+    }
+
+    /** A5: «Ya pagó de otra forma» que no se cobró se suelta (queda «sin confirmar», como hoy); nunca se borra ni se da por cobrado. */
+    private fun soltarLaReservaNoEfectivo() {
+        val llave = reservaNoEfectivo ?: return
+        reservaNoEfectivo = null
+        if (apartadoDelIntento == llave) apartadoDelIntento = null
+        cashPaymentRepository.olvidarReservaEnMemoria(llave)
+    }
+
+    /** Ronda 1 (M4): lo soltado se da por cobrado EN EL ACTO (aunque haya una vuelta corriendo) y la cola lo sube ya. */
+    private fun barrerYa() {
+        runCatching { paymentSyncService.darPorCobradasLasAbandonadasYa(); paymentSyncService.syncNow() }
+            .onFailure { Log.e("💵", "No se pudo pedir la vuelta de la cola; los apartados suben en la siguiente: ${it.message}") }
+    }
+
+    /**
+     * 🔴 Ronda final (A2, Codex r8 #6): un fallo inesperado del cobro en efectivo (p. ej. el encolado sin red que truena) no tumba la
+     * app ni deja «Procesando» sin salida: sale el error del efectivo y la cajera decide; su apartado sigue del flujo («Cancelar» lo
+     * borra; salir sin cancelar lo da por cobrado, v7).
+     */
+    private fun alFallarElEfectivo(generacion: Int) = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        Log.e("💵", "El cobro en efectivo falló sin desenlace: ${e.message}", e)
+        if (generacion != paymentGeneration) return@CoroutineExceptionHandler
+        isProcessingPayment = false
+        _state.value = PaymentFlowState.Error(MENSAJE_EFECTIVO_SIN_GUARDAR, PaymentErrorSource.UNKNOWN)
+    }
+
+    /**
+     * 🔴 LA CAJA DE LA VENTA, leída UNA vez al confirmar el cobro (efectivo sin red en el turno correcto, 21-oct-2026).
+     *
+     * Va en la reserva (antes de la red) y en cada encolado, siempre la MISMA: si la caja abierta cambiara a media petición (una
+     * adopción, otro aparato que cierra), la venta seguiría siendo de la caja en que se cobró. Es el id que el aparato tiene
+     * (local si la apertura no ha llegado; el del servidor si se abrió con red o se adoptó de otro aparato); la cola lo
+     * traduce al reproducir. Leerla nunca detiene una venta: si falla, el cobro va sin caja, como hoy.
+     */
+    /**
+     * 🔴 Codex apps r1 #1: la caja de ESTA venta todavía espera a que su apertura llegue al servidor (la cola del cajón la retiene
+     * detrás del cierre de la caja anterior, que espera a sus ventas). Mandar el efectivo EN LÍNEA ahora lo sumaría a la caja
+     * anterior, que el servidor sigue viendo abierta. Se trata como sin red: va a la cola con su caja y sube detrás de su apertura.
+     * Leerlo nunca detiene una venta: si falla, va en línea como hoy.
+     */
+    private fun laCajaEsperaSuApertura(caja: String?): Boolean =
+        caja != null && runCatching { caja in cashDrawerRepository.cajasQueEsperanSuApertura() }.getOrDefault(false)
+
+    /** El «sin red» de [laCajaEsperaSuApertura]: un IOException, así que cada camino lo encola como siempre ([OrderRepository.isQueueableError]). */
+    private class CajaEsperandoSuApertura : java.io.IOException("La caja de esta venta todavía espera su apertura en el servidor")
+
+    private suspend fun cajaAbiertaAlConfirmar(): String? = try {
+        cashDrawerRepository.getOpenSession()?.id?.takeIf { it.isNotBlank() }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("💵", "No se pudo leer la caja abierta; el cobro sigue sin caja: ${e.message}")
+        null
     }
 
     // MARK: - Se cobra el precio que vio el cliente (17-oct)
@@ -444,38 +684,14 @@ class PaymentFlowViewModel @Inject constructor(
         _avisoDePrecio.value = aviso
     }
 
-    /** Escribe en el aparato que la reserva sobra. false = no se pudo (disco), y el cobro no sigue. */
-    private suspend fun retirarReserva(llave: String): Boolean = try {
-        withContext(kotlinx.coroutines.NonCancellable) { cashPaymentRepository.soltarReserva(llave) }
-        true
-    } catch (e: kotlinx.coroutines.CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Log.e("💵", "No se pudo retirar la reserva $llave: ${e.message}")
-        false
-    }
-
     /**
      * 🔴 DINERO. 409 `ORDER_PRICE_CHANGED` al crear la orden: el servidor no creó nada y no se tomó dinero (la cola sin red nunca
-     * lo recibe). Antes de volver a elegir método, la reserva durable del efectivo de ESTE intento se retira EN ESTA corrutina: si
-     * quedara en disco y el proceso muriera, al reabrir diría «sin confirmar» un cobro que no pasó, y «sí se cobró» lo mandaría a
-     * la cola. Si el retiro no se puede escribir: no se estrena llave, no se corrige ni se cobra; el siguiente toque lo reintenta.
-     * Si sale bien: llave nueva, precios corregidos SIN congelar, catálogo nuevo y el total nuevo a la vista.
+     * lo recibe). 🔴 D2 v7: el apartado de este intento NO se borra aquí —recibir un «no» no es una decisión de la cajera—; sigue
+     * del flujo y se borra cuando ella decide: al guardar el apartado del nuevo intento (otra llave) o al tocar «Cancelar». Si
+     * la pantalla se va sin que decida, se da por cobrado. Llave nueva, precios corregidos SIN congelar, catálogo nuevo y el
+     * total nuevo a la vista.
      */
-    private suspend fun volverAElegirTrasCambioDePrecio(error: Throwable, cambios: List<CambioDePrecio>, totalAntes: Int, tipCapturado: Int) {
-        val generacion = paymentGeneration
-        reservaDeEfectivo?.let { llave ->
-            reservaDeEfectivo = null // el colector del estado ya no la suelta por su cuenta
-            if (!retirarReserva(llave)) {
-                llavePorRetirar = llave // fila en disco: sobrevive a otra venta
-                if (generacion != paymentGeneration) return
-                isProcessingPayment = false
-                _state.value = PaymentFlowState.Error(MENSAJE_RESERVA_SIN_RETIRAR, PaymentErrorSource.UNKNOWN)
-                return
-            }
-        }
-        // Mientras se escribía el retiro se canceló o empezó otra venta: nada de esto es de ella.
-        if (generacion != paymentGeneration) return
+    private fun volverAElegirTrasCambioDePrecio(error: Throwable, cambios: List<CambioDePrecio>, totalAntes: Int, tipCapturado: Int) {
         estrenarLlaveTrasRechazoDeOrden(error)
         if (totalAntesDelRechazoDePrecio == null) totalAntesDelRechazoDePrecio = totalAntes
         corregirPrecios(cambios, congelar = false)
@@ -487,21 +703,26 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /**
-     * Un retiro que no se pudo escribir se reintenta ANTES de cualquier cobro, y sólo si sale bien el cobro sigue ([seguir]) —con
-     * llave nueva si era la de esta venta—. true = hubo retiro pendiente y esta función se encargó.
+     * Un borrado que no se pudo escribir ([porDescartar]) se reintenta ANTES de cualquier cobro, y sólo si sale bien el cobro
+     * sigue ([seguir]). true = había borrados pendientes y esta función se encargó.
      */
-    private fun primeroRetirarLaReservaPendiente(seguir: () -> Unit): Boolean {
-        val llave = llavePorRetirar ?: return false
+    private fun primeroDescartarLosPendientes(seguir: () -> Unit): Boolean {
+        if (porDescartar.isEmpty()) return false
+        val llaves = porDescartar.toList()
+        val venta = ventaEnCurso
         isProcessingPayment = true
-        _state.value = PaymentFlowState.Processing(currentBaseAmount() + currentTipCents)
+        // Es sólo una escritura en el aparato, pero sin «Cancelar»: al terminar arranca el cobro que la cajera pidió.
+        _state.value = PaymentFlowState.Processing(currentBaseAmount() + currentTipCents, efectivoEnVuelo = true)
         viewModelScope.launch {
-            if (!retirarReserva(llave)) {
+            val borrados = descartar(llaves)
+            if (borrados) porDescartar.removeAll(llaves.toSet())
+            // 🔴 Codex r14 B1: si otra venta empezó mientras se borraba, ni la bandera, ni el error, ni el cobro de A van sobre ella.
+            if (otraVenta(venta)) return@launch
+            if (!borrados) {
                 isProcessingPayment = false
                 _state.value = PaymentFlowState.Error(MENSAJE_RESERVA_SIN_RETIRAR, PaymentErrorSource.UNKNOWN)
                 return@launch
             }
-            llavePorRetirar = null
-            if (paymentIdempotencyKey == llave) paymentIdempotencyKey = null
             isProcessingPayment = false
             seguir()
         }
@@ -593,21 +814,29 @@ class PaymentFlowViewModel @Inject constructor(
                 }
                 if (st is PaymentFlowState.Success) {
                     paymentIdempotencyKey = null
+                    // 🔴 D2 v7: sólo el COBRO termina los apartados de la venta. Un rechazo, un error o un 409 ya no los sueltan:
+                    // siguen del flujo hasta que la cajera vuelve a cobrar o toca «Cancelar».
+                    alCobrarLaVenta(st)
+                } else if (st !is PaymentFlowState.Processing) {
+                    // A5: un «Ya pagó de otra forma» que no se cobró sigue como hoy (se suelta, queda «sin confirmar»).
+                    soltarLaReservaNoEfectivo()
                 }
-                // El intento de efectivo terminó, sea cual sea la salida (registrado, encolado —la cola ya
-                // reemplazó la reserva con la misma llave—, rechazado, premio que no alcanza, cancelado).
-                if (st !is PaymentFlowState.Processing) soltarReservaDeEfectivo()
                 mirrorToCustomerDisplay(st)
             }
         }
     }
 
     override fun onCleared() {
-        // La pantalla se fue con un cobro en efectivo en vuelo: el desenlace es incierto, así que se
-        // queda guardado y aparece «sin confirmar» en vez de esconderse hasta reiniciar la app.
-        reservaDeEfectivo?.let { cashPaymentRepository.olvidarReservaEnMemoria(it) }
-        // Un retiro que no se pudo escribir: que también salga «sin confirmar» en vez de esconderse hasta reiniciar.
-        llavePorRetirar?.let { cashPaymentRepository.olvidarReservaEnMemoria(it) }
+        destruido = true
+        // 🔴 D2 v7: la pantalla se fue sin que la cajera decidiera (con o sin el POST en vuelo): los apartados se quedan
+        // guardados, nunca se borran aquí, y la cola los da por cobrados con su misma llave.
+        // ponytail: un borrado ya decidido que el disco no dejó escribir ([porDescartar]) también se suelta y se da por cobrado:
+        // venta doble que el gerente cancela (riesgo aceptado de v7). Mejorar si el disco que falla deja de ser raro.
+        val habiaPorDescartar = porDescartar.isNotEmpty()
+        porDescartar.forEach(cashPaymentRepository::olvidarReservaEnMemoria)
+        porDescartar.clear()
+        if (habiaPorDescartar && apartadosDeEstaVenta.isEmpty()) barrerYa() // ronda final: también en el acto
+        soltarLosApartadosDeEstaVenta()
         super.onCleared()
     }
 
@@ -1237,6 +1466,8 @@ class PaymentFlowViewModel @Inject constructor(
             }
             return
         }
+        // 🔴 Codex r14 B5: la reimpresión de A termina, pero su resultado y su bandera sólo se publican si A sigue en pantalla.
+        val venta = ventaEnCurso
         viewModelScope.launch {
             _printSending.value = true
             _printResult.value = null
@@ -1244,7 +1475,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // El motivo importa: "pon papel" y "configura una impresora" son
                 // acciones distintas, y decir "Recibo impreso" cuando no salió
                 // nada deja al cajero sin ticket creyendo que sí se imprimió.
-                _printResult.value = when (val outcome = printerService.manualPrintReceipt(receipt)) {
+                val resultado = when (val outcome = printerService.manualPrintReceipt(receipt)) {
                     is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
                     is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
                     is PrinterService.PrintOutcome.Failed ->
@@ -1254,10 +1485,13 @@ class PaymentFlowViewModel @Inject constructor(
                         if (!selectedTerminalId.isNullOrBlank()) LOCAL_PRINTER_UNAVAILABLE
                         else "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
                 }
+                if (!otraVenta(venta)) _printResult.value = resultado
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _printResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
+                if (!otraVenta(venta)) _printResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
             } finally {
-                _printSending.value = false
+                if (!otraVenta(venta)) _printSending.value = false
             }
         }
     }
@@ -1274,22 +1508,23 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
 
+        val venta = ventaEnCurso // Codex r14 B5
+        val pago = lastPaymentId
+        val llaveDelRecibo = lastReceiptAccessKey
         viewModelScope.launch {
             _printSending.value = true
             _printResult.value = null
-            terminalPaymentService.printReceiptOnTerminal(
+            val resultado = terminalPaymentService.printReceiptOnTerminal(
                 terminalId = terminalId,
                 receipt = receipt,
-                paymentId = lastPaymentId,
-                receiptAccessKey = lastReceiptAccessKey,
+                paymentId = pago,
+                receiptAccessKey = llaveDelRecibo,
             ).fold(
-                onSuccess = {
-                    _printResult.value = "Recibo impreso en TPV"
-                },
-                onFailure = { error ->
-                    _printResult.value = error.message ?: "No se pudo imprimir en TPV"
-                },
+                onSuccess = { "Recibo impreso en TPV" },
+                onFailure = { error -> error.message ?: "No se pudo imprimir en TPV" },
             )
+            if (otraVenta(venta)) return@launch
+            _printResult.value = resultado
             _printSending.value = false
         }
     }
@@ -1370,6 +1605,8 @@ class PaymentFlowViewModel @Inject constructor(
         flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
         cobroDeValesId = java.util.UUID.randomUUID().toString()
+        ventaEnCurso++
+        cancelacionFallida = false
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
         cartState = cart
@@ -1381,6 +1618,7 @@ class PaymentFlowViewModel @Inject constructor(
         } else {
             tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
         }
+        contextoDeLaMesaDelCobro = tableSession.contextoActual()
         nombreDelNegocioDelCobro = secureStorage.venueName ?: "Avoqado"
         nombreDeLaSesionDelCobro = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim()
             .ifEmpty { secureStorage.userEmail.orEmpty() }.takeIf { it.isNotBlank() }
@@ -1405,7 +1643,10 @@ class PaymentFlowViewModel @Inject constructor(
         serverRemainingBalanceCents = null
         _avisoDelPremio.value = null
         premioConfirmadoCents = null
-        // Las correcciones de precio eran de la venta anterior. `llavePorRetirar` NO: es una fila en disco por retirar.
+        // 🔴 D2 v7: otra venta (o la pantalla recreada) no decide nada de la anterior: sus apartados se sueltan y se dan por
+        // cobrados, nunca se borran. `porDescartar` NO: son borrados ya decididos que esperan su escritura.
+        soltarLosApartadosDeEstaVenta()
+        // Las correcciones de precio eran de la venta anterior.
         _avisoDePrecio.value = null
         ultimoAvisoDePrecio = null
         cambiosDeEstaVenta = emptyList()
@@ -1877,10 +2118,28 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun confirmPayment() {
         if (isProcessingPayment) return
-        if (primeroRetirarLaReservaPendiente { confirmPayment() }) return
+        if (descartandoApartados) return
+        if (primeroDescartarLosPendientes { confirmPayment() }) return
+        // 🔴 Ronda 1 (I3): mandar ESTA venta a la tarjeta es volver a cobrarla por otro método. Antes de la terminal se borran, y se
+        // espera, sus apartados de efectivo; si no se pudo, la tarjeta no sale («No se pudo cancelar el cobro…») y la venta sigue
+        // con su propiedad. Sin esto, «Salir (queda pendiente)» soltaba el efectivo y se daba por cobrado: venta doble.
+        // («Ya pagó de otra forma» pasa por `processCashPayment`: su apartado nuevo ya borra los viejos con `reservarEnLugarDe`.)
+        if (selectedMethod == PaymentMethod.CARD && apartadosDeEstaVenta.isNotEmpty()) {
+            val generacionAlBorrar = paymentGeneration
+            viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                // Ronda final: sólo si sigue siendo ESTA venta y ESTE método (otra venta pudo empezar mientras se borraba).
+                if (descartarApartadosDeEstaVenta() && generacionAlBorrar == paymentGeneration && selectedMethod == PaymentMethod.CARD) {
+                    confirmPayment()
+                }
+            }
+            return
+        }
         val cart = cartState ?: return
         if (detenerSiHayValesSinApartado(cart)) return
         isProcessingPayment = true
+        // N2: un cobro nuevo deja atrás el «Cancelar» que falló; si no, «Reintentar» de SU error cancelaría la venta.
+        cancelacionFallida = false
+        apartadoDelIntento = null // este intento no aparta efectivo
         val venueCapturado = secureStorage.venueId.orEmpty()
         val actorCapturado = secureStorage.userId.orEmpty()
         val nombreActorCapturado = "${secureStorage.userFirstName.orEmpty()} ${secureStorage.userLastName.orEmpty()}"
@@ -1898,25 +2157,38 @@ class PaymentFlowViewModel @Inject constructor(
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
         } == true
-        val permiteColaCapturada = !esCobroDeVales()
+        val valesCapturados = valesDelCobro()
+        val permiteColaCapturada = valesCapturados == null
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
-        _state.value = PaymentFlowState.Processing(total)
+        val mesaCapturada = mesaCapturada(venueCapturado)
+        // Ronda 1 (M1): el `/pay` legado de «Confirmar» en efectivo también es un POST de efectivo: sin «Cancelar» mientras viaja.
+        _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = metodoCapturado == PaymentMethod.CASH && valesCapturados == null)
         // 🔴 La generación con la que entró este cobro. Crear la orden tarda, y en ese rato el
         // cajero puede tocar «Cancelar»: si cuando vuelve la creación la generación cambió, el
         // cobro NO se envía y lo único que queda es cancelar la orden recién creada.
         val generacion = paymentGeneration
+        // Ronda final (A3): y si lo que cambió es la VENTA, nada de ésta se escribe en la nueva.
+        val venta = ventaEnCurso
 
         viewModelScope.launch {
             try {
-                if (!permiteColaCapturada) {
-                    if (!materializeAreaTicketCheckout(cart)) return@launch
-                    if (generacion != paymentGeneration) {
+                val cajaCapturada = cajaAbiertaAlConfirmar()
+                // Agregado 4 de la ronda corta, corregido: con TARJETA todavía no hubo dinero; si otra venta empezó mientras se leía la
+                // caja, no se crea su orden ni se manda nada. Con EFECTIVO el billete ya está en la mano (R5: lo durable se conserva): la
+                // venta sigue con su orden, su cobro y su cola, con su contexto capturado, y no escribe nada en la nueva.
+                val conBilleteEnMano = metodoCapturado == PaymentMethod.CASH
+                if (otraVenta(venta) && !conBilleteEnMano) return@launch
+                if (valesCapturados != null) {
+                    val ordenDeLosVales = materializeAreaTicketCheckout(cart, venta, valesCapturados, venueCapturado) ?: return@launch
+                    if (otraVenta(venta) && !conBilleteEnMano) return@launch // ronda final (A3): otra venta en pantalla
+                    if (!otraVenta(venta) && generacion != paymentGeneration) {
                         cancelarLoCreadoTrasCancelar(orderId = null)
                         return@launch
                     }
-                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, createdOrderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
+                    if (!otraVenta(venta) && conBilleteEnMano) _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = true)
+                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeLosVales, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
                     return@launch
                 }
                 val hasRealProducts = hasProductItems(cart)
@@ -1926,7 +2198,8 @@ class PaymentFlowViewModel @Inject constructor(
                         // Create order only once per payment session.
                         val orderRequest = requireNotNull(pedidoCapturado)
                         val orderExternalId = llaveCapturada
-                        externalIdDeLaVenta = orderExternalId
+                        // Familia B (rediseño r9): tras leer la caja (suspende), el folio sólo es de ESTA venta si sigue en pantalla.
+                        if (!otraVenta(venta)) externalIdDeLaVenta = orderExternalId
                         val orderResult = orderRepository.createOrder(
                             orderRequest,
                             staffId = empleadoCapturado,
@@ -1945,6 +2218,19 @@ class PaymentFlowViewModel @Inject constructor(
 
                         orderResult.fold(
                             onSuccess = { response ->
+                                if (otraVenta(venta)) {
+                                    // Ronda final (A3): otra venta en pantalla; nada de ésta se escribe en ella.
+                                    val ordenDeEstaVenta = response.data?.id
+                                    if (conBilleteEnMano && !ordenDeEstaVenta.isNullOrBlank()) {
+                                        // Corrección del agregado 4: el efectivo ya está en la mano: su orden se cobra con el contexto de esta
+                                        // venta (el total que vio la cajera; el del servidor no se adopta: escribiría en la nueva).
+                                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeEstaVenta, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
+                                    } else {
+                                        // N1: con tarjeta nadie la va a cobrar: se cancela por la vía durable, sin escribir nada en la nueva.
+                                        cancelarLaOrdenDeOtraVenta(ordenDeEstaVenta, response.data?.orderNumber, total, venueCapturado, empleadoCapturado)
+                                    }
+                                    return@fold
+                                }
                                 val orderId = response.data?.id
                                 if (orderId.isNullOrBlank()) {
                                     _state.value = PaymentFlowState.Error(
@@ -1971,10 +2257,13 @@ class PaymentFlowViewModel @Inject constructor(
                                 // estimado del carrito. Ver `totalACobrarCents`.
                                 val adoptado = adoptarTotalDelServer(orderRequest, response, estimado)
                                 if (cambios.isNotEmpty() || totalAntesDelRechazoDePrecio != null) publicarAvisoDePrecio(totalNuevoCents = adoptado)
-                                processPaymentMethod(adoptado, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
+                                processPaymentMethod(adoptado, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
                             },
                             onFailure = { error ->
-                                if (generacion != paymentGeneration) {
+                                // Ronda final (A3): con otra venta en pantalla nada de ésta se escribe en ella. Agregado 7 de la ronda
+                                // corta: pero lo durable se conserva: el efectivo de ESTA venta que no llegó al servidor se encola igual.
+                                val otra = otraVenta(venta)
+                                if (!otra && generacion != paymentGeneration) {
                                     // Se canceló mientras se creaba y la orden ni siquiera nació:
                                     // no se encola nada ni se pinta un error sobre la cancelación.
                                     cancelarLoCreadoTrasCancelar(orderId = null)
@@ -1983,7 +2272,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 // 409 de precio: nada se creó ni se cobró. Antes de mirar si es encolable.
                                 val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
                                 if (cambios.isNotEmpty()) {
-                                    volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
+                                    if (!otra) volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
                                     return@fold
                                 }
                                 // For CASH payments: queue offline if network/server error
@@ -1995,6 +2284,7 @@ class PaymentFlowViewModel @Inject constructor(
                                         // 🔴 El canje de lealtad es online A PROPÓSITO (regla offline §5, como
                                         // Square): no se encola ni se registra. El cajero reintenta (la misma
                                         // llave deduplica si la creación sí llegó) o quita el premio.
+                                        if (otra) return@fold
                                         _state.value = PaymentFlowState.Error(
                                             message = MENSAJE_PREMIO_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
@@ -2016,9 +2306,12 @@ class PaymentFlowViewModel @Inject constructor(
                                             manualMethod = manualCapturado,
                                             tenderType = tenderCapturado,
                                             venueId = venueCapturado,
+                                            cajaDelCobro = cajaCapturada,
                                         )
                                         // Record cash sale in drawer (defensive: same fix as B4)
-                                        recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                                        recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
+                                        // Codex r9 #5: encolar suspende. Si mientras tanto empezó otra venta, su éxito no se pinta en ella.
+                                        if (otraVenta(venta)) return@fold
                                         _state.value = PaymentFlowState.Success(
                                             totalAmount = total,
                                             method = PaymentMethod.CASH,
@@ -2028,12 +2321,15 @@ class PaymentFlowViewModel @Inject constructor(
                                         )
                                         autoPrintAfterPayment(PaymentMethod.CASH)
                                     } else {
+                                        if (otra) return@fold
                                         estrenarLlaveTrasRechazoDeOrden(error)
                                         _state.value = PaymentFlowState.Error(
                                             message = error.message ?: "Error al crear la orden",
                                             source = PaymentErrorSource.SERVER,
                                         )
                                     }
+                                } else if (otra) {
+                                    return@fold // tarjeta: nada que conservar aquí; la venta nueva no se toca
                                 } else if (com.avoqado.pos.core.data.network.ServerErrorText.isOffline(error)) {
                                     // Tarjeta sin red (también si la sesión venció y no hubo red para renovarla,
                                     // Testarudo 15-oct): se dice como en el selector de terminal, nunca con el
@@ -2058,15 +2354,19 @@ class PaymentFlowViewModel @Inject constructor(
                         // mostrador— la parte 2 de una venta por artículos, donde el
                         // carrito conserva productos reales y crear una segunda orden
                         // duplicaría esas líneas en base.
-                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
+                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
                     }
                 } else {
                     // Custom amount only — use Fast Payment endpoint
                     Log.d("💰", "Custom amount payment (fast) - total: $total")
-                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
+                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("💰", "Payment error: ${e.message}")
+                // Codex r11 #4: lo que esta venta ya dejó durable (servidor, cola) se conserva; su error sólo se pinta si sigue en pantalla.
+                if (otraVenta(venta)) return@launch
                 _state.value = PaymentFlowState.Error(
                     message = e.message ?: "Error inesperado",
                     source = PaymentErrorSource.UNKNOWN,
@@ -2094,6 +2394,9 @@ class PaymentFlowViewModel @Inject constructor(
         ratingCapturado: Int?,
         provisionalCapturada: Boolean,
         permiteColaCapturada: Boolean,
+        cajaCapturada: String?,
+        /** La mesa de esta venta, fotografiada al empezar el cobro (familia B). */
+        mesaCapturada: MesaCapturada?,
     ) {
         when (metodoCapturado) {
             PaymentMethod.CARD -> {
@@ -2117,7 +2420,10 @@ class PaymentFlowViewModel @Inject constructor(
                 // con un registro de $0, igual que una cortesía total.
                 val ordenEnCero = ordenCapturada
                 if (total <= 0 && !ordenEnCero.isNullOrBlank() && pedidoCapturado != null) {
+                    // Ronda 1 (M1): el cierre en $0 es un `/pay` en efectivo: sin «Cancelar» mientras viaja.
+                    _state.value = PaymentFlowState.Processing(0, efectivoEnVuelo = true)
                     recordCashPaymentForOrder(
+                        generacion = generacion,
                         orderId = ordenEnCero,
                         total = 0,
                         cashReceivedCents = 0,
@@ -2136,6 +2442,9 @@ class PaymentFlowViewModel @Inject constructor(
                         ratingCapturado = ratingCapturado,
                         provisionalCapturada = provisionalCapturada,
                         permiteColaCapturada = permiteColaCapturada,
+                        cajaCapturada = cajaCapturada,
+                        conApartado = false, // confirmPayment no aparta efectivo
+                        mesaCapturada = mesaCapturada,
                     )
                     return
                 }
@@ -2208,6 +2517,13 @@ class PaymentFlowViewModel @Inject constructor(
                     )
                     payResult.fold(
                         onSuccess = { result ->
+                            // 🔴 Ronda 1b (como I2): otra venta ya está en pantalla. El cobro de ésta SÍ ocurrió: su cajón se registra,
+                            // pero su saldo, su recibo y su éxito no se escriben sobre la venta nueva.
+                            if (generacion != paymentGeneration) {
+                                recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
+                                liberarLaMesaDeOtraVenta(mesaCapturada, orderId) // como iOS: con SU contexto
+                                return@fold
+                            }
                             lastPaymentId = result.paymentId
                             // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
                             adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
@@ -2217,7 +2533,7 @@ class PaymentFlowViewModel @Inject constructor(
                             result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                             result.receiptUrl?.let { lastReceiptUrl = it }
                             finishAreaTicketPayment()
-                            recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                            recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
                             _state.value = PaymentFlowState.Success(
                                 totalAmount = total,
                                 method = PaymentMethod.CASH,
@@ -2232,10 +2548,14 @@ class PaymentFlowViewModel @Inject constructor(
                             Log.w("💵", "Cash payment recording failed: ${error.message}")
                             // FIX B2: Don't silently show Success on payment failure.
                             // Queue for offline sync if error is transient, otherwise show Error.
+                            // 🔴 D2 v7 punto 7: 2xx con lo local fallido = COBRADO, encolado con su llave; nunca un error cancelable.
+                            val registrado = error is OrderRepository.CobroRegistradoSinGuardar
                             val isQueueable = OrderRepository.isQueueableError(error) ||
                                 (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                            if (isQueueable && pedidoCapturado != null && permiteColaCapturada) {
-                                val idEnCola = cashPaymentRepository.queueCashPayment(
+                            if (registrado || (isQueueable && pedidoCapturado != null && permiteColaCapturada)) {
+                                // Codex r14 A5: con el 2xx comprobado, lo que el servidor registró (cajón y pantalla), como el camino normal.
+                                val cobrado = (error as? OrderRepository.CobroRegistradoSinGuardar)?.importeCobradoCents ?: total
+                                val idEnCola = if (registrado) llaveCapturada.also { cashPaymentRepository.darPorCobrado(it, cobrado) } else cashPaymentRepository.queueCashPayment(
                                     orderRequest = requireNotNull(pedidoCapturado),
                                     amountCents = total - tipCapturado,
                                     tipCents = tipCapturado,
@@ -2250,16 +2570,20 @@ class PaymentFlowViewModel @Inject constructor(
                                     manualMethod = manualCapturado,
                                     tenderType = tenderCapturado,
                                     venueId = venueCapturado,
+                                    cajaDelCobro = cajaCapturada,
                                 )
-                                recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                                recordCashSale(cobrado, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
+                                if (generacion != paymentGeneration) return@fold // ronda 1b: otra venta en pantalla
+                                if (registrado) finishAreaTicketPayment()
                                 _state.value = PaymentFlowState.Success(
-                                    totalAmount = total,
+                                    totalAmount = cobrado,
                                     method = PaymentMethod.CASH,
                                     isQueued = true,
                                     colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(idEnCola),
                                 )
                                 autoPrintAfterPayment(PaymentMethod.CASH)
                             } else {
+                                if (generacion != paymentGeneration) return@fold // ronda 1b: otra venta en pantalla
                                 _state.value = PaymentFlowState.Error(
                                     message = mensajeDelCobroFallido(error),
                                     source = PaymentErrorSource.SERVER,
@@ -2269,7 +2593,8 @@ class PaymentFlowViewModel @Inject constructor(
                     )
                 } else {
                     // No orderId — fast payment path. Let caller handle.
-                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
+                    if (generacion != paymentGeneration) return // ronda 1b: otra venta en pantalla (leer la caja suspende)
                     _state.value = PaymentFlowState.Success(
                         totalAmount = total,
                         method = PaymentMethod.CASH,
@@ -2289,9 +2614,14 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun processCashPayment(cashReceivedCents: Int) {
         if (isProcessingPayment) return
-        if (primeroRetirarLaReservaPendiente { processCashPayment(cashReceivedCents) }) return
+        if (descartandoApartados) return
+        if (primeroDescartarLosPendientes { processCashPayment(cashReceivedCents) }) return
         if (detenerSiHayValesSinApartado(cartState)) return
         isProcessingPayment = true
+        // N2: un cobro nuevo deja atrás el «Cancelar» que falló; si no, tras dos fallos de disco «Reintentar» cancelaría la venta
+        // y borraría el apartado nuevo.
+        cancelacionFallida = false
+        apartadoDelIntento = null // lo fija `reservarEfectivo` si este intento aparta
         lastCashTenderedCents = cashReceivedCents
         val cart = cartState
         val venueCapturado = secureStorage.venueId.orEmpty()
@@ -2310,29 +2640,37 @@ class PaymentFlowViewModel @Inject constructor(
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
         } == true
-        val permiteColaCapturada = !esCobroDeVales()
+        val valesCapturados = valesDelCobro()
+        val permiteColaCapturada = valesCapturados == null
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
         // Misma puerta que en tarjeta: crear la orden tarda, y si el cajero cancela mientras
         // tanto, el efectivo NO se registra contra una venta que él ya dio por cancelada.
         val generacion = paymentGeneration
+        // 🔴 Ronda final: la venta y SUS apartados, fotografiados ANTES de la primera suspensión (A1, A3).
+        val venta = ventaEnCurso
+        val anterioresDeEstaVenta = apartadosDeEstaVenta.toList()
+        val mesaCapturada = mesaCapturada(venueCapturado)
 
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
             is CashPaymentResult.Success -> {
-                viewModelScope.launch {
-                    _state.value = PaymentFlowState.Processing(total)
+                viewModelScope.launch(alFallarElEfectivo(generacion)) {
+                    // 🔴 D2 v6 punto 5: mientras el efectivo viaja no hay «Cancelar» (como iOS en `.processing`).
+                    _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = valesCapturados == null)
+                    val cajaCapturada = cajaAbiertaAlConfirmar()
 
-                    if (cart != null && !permiteColaCapturada) {
-                        if (!materializeAreaTicketCheckout(cart)) return@launch
-                        // La misma puerta que tarjeta: si el cajero canceló mientras se armaba la orden de los vales, el
-                        // efectivo NO se registra (D2, 20-oct).
-                        if (generacion != paymentGeneration) {
+                    if (cart != null && valesCapturados != null) {
+                        // Corrección del agregado 4: con el billete en la mano, la orden de ESTOS vales se cobra aunque ya haya otra venta.
+                        val ordenDeLosVales = materializeAreaTicketCheckout(cart, venta, valesCapturados, venueCapturado) ?: return@launch
+                        if (!otraVenta(venta) && generacion != paymentGeneration) {
                             cancelarLoCreadoTrasCancelar(orderId = null)
                             return@launch
                         }
+                        if (!otraVenta(venta)) _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = true)
                         recordCashPaymentForOrder(
-                            orderId = createdOrderId!!,
+                            generacion = generacion,
+                            orderId = ordenDeLosVales,
                             total = total,
                             cashReceivedCents = cashReceivedCents,
                             changeCents = result.changeCents,
@@ -2350,12 +2688,16 @@ class PaymentFlowViewModel @Inject constructor(
                             ratingCapturado = ratingCapturado,
                             provisionalCapturada = provisionalCapturada,
                             permiteColaCapturada = permiteColaCapturada,
+                            cajaCapturada = cajaCapturada,
+                            conApartado = false, // vales: su cobro no se encola ni se aparta
+                            mesaCapturada = mesaCapturada,
                         )
                         return@launch
                     }
                     // 🔴 Antes de la primera llamada de red (crear la orden o registrar el cobro).
-                    try {
-                        reservarEfectivo(cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada)
+                    // Rediseño r9: con apartado de efectivo puro, la venta en el cajón la anota su salida de `EN_VUELO`, no este intento.
+                    val apartadoDelCobro = try {
+                        reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado)
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -2368,6 +2710,9 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                         return@launch
                     }
+                    // Con apartado de efectivo puro, su venta la anota la salida de `EN_VUELO`; con CUALQUIER apartado, su orden no se cancela.
+                    val apartado = apartadoDelCobro == Apartado.EFECTIVO
+                    val reservado = apartadoDelCobro != Apartado.NINGUNO
                     val hasRealProducts = cart?.let(::hasProductItems) ?: false
 
                     // TABLE_SERVICE: a preset createdOrderId (PAYING table session)
@@ -2379,6 +2724,7 @@ class PaymentFlowViewModel @Inject constructor(
                         val existingOrderId = ordenCapturada
                         if (!existingOrderId.isNullOrBlank()) {
                             recordCashPaymentForOrder(
+                                generacion = generacion,
                                 orderId = existingOrderId,
                                 total = total,
                                 cashReceivedCents = cashReceivedCents,
@@ -2397,11 +2743,16 @@ class PaymentFlowViewModel @Inject constructor(
                                 ratingCapturado = ratingCapturado,
                                 provisionalCapturada = provisionalCapturada,
                                 permiteColaCapturada = permiteColaCapturada,
+                                cajaCapturada = cajaCapturada,
+                                conApartado = apartado,
+                                mesaCapturada = mesaCapturada,
                             )
                         } else {
                             val orderExternalId = llaveCapturada
-                            externalIdDeLaVenta = orderExternalId
-                            val orderResult = orderRepository.createOrder(
+                            // Familia B (rediseño r9): tras leer la caja y guardar el apartado (dos suspensiones), el folio de la
+                            // comanda sólo es de ESTA venta si sigue en pantalla.
+                            if (!otraVenta(venta)) externalIdDeLaVenta = orderExternalId
+                            val orderResult = if (laCajaEsperaSuApertura(cajaCapturada)) Result.failure(CajaEsperandoSuApertura()) else orderRepository.createOrder(
                                 orderRequest,
                                 staffId = empleadoCapturado,
                                 customerId = clienteCapturado,
@@ -2416,6 +2767,43 @@ class PaymentFlowViewModel @Inject constructor(
                             )
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
+                                    // 🔴 Ronda final (A3): la orden es de una venta que ya no está en pantalla. Existe en el servidor
+                                    // (lo que ocurrió se conserva), pero nada de ella se escribe en la venta nueva.
+                                    // Aquí el billete ya está en la mano: esa orden nunca se cancela (R5, corrección del agregado 4).
+                                    // Con apartado, nada más: el de efectivo lo da por cobrado el barrido y el de «Ya pagó de otra forma» lo
+                                    // decide una persona (ruling N1). SIN apartado (venta con premio) nada lo haría: se cobra ya, con el
+                                    // contexto de esta venta y el total que vio la cajera (el del servidor no se adopta: escribiría en la
+                                    // nueva). Si el servidor no aplicó el premio, la orden queda con saldo y la ve el gerente.
+                                    if (otraVenta(venta)) {
+                                        val ordenDeEstaVenta = orderResponse.data?.id
+                                        if (!reservado && !ordenDeEstaVenta.isNullOrBlank()) {
+                                            recordCashPaymentForOrder(
+                                                generacion = generacion,
+                                                orderId = ordenDeEstaVenta,
+                                                total = total,
+                                                cashReceivedCents = cashReceivedCents,
+                                                changeCents = result.changeCents,
+                                                orderRequest = orderRequest,
+                                                tipCapturado = tipCapturado,
+                                                splitCapturado = splitCapturado,
+                                                llaveCapturada = llaveCapturada,
+                                                manualCapturado = manualCapturado,
+                                                tenderCapturado = tenderCapturado,
+                                                venueCapturado = venueCapturado,
+                                                actorCapturado = actorCapturado,
+                                                nombreActorCapturado = nombreActorCapturado,
+                                                empleadoCapturado = empleadoCapturado,
+                                                clienteCapturado = clienteCapturado,
+                                                ratingCapturado = ratingCapturado,
+                                                provisionalCapturada = provisionalCapturada,
+                                                permiteColaCapturada = permiteColaCapturada,
+                                                cajaCapturada = cajaCapturada,
+                                                conApartado = false,
+                                                mesaCapturada = mesaCapturada,
+                                            )
+                                        }
+                                        return@fold
+                                    }
                                     val orderId = orderResponse.data?.id
                                     if (orderId.isNullOrBlank()) {
                                         _state.value = PaymentFlowState.Error(
@@ -2463,7 +2851,28 @@ class PaymentFlowViewModel @Inject constructor(
                                     if (hayAvisoDePrecio) {
                                         publicarAvisoDePrecio(totalNuevoCents = totalFinal, cambioDeMasCents = (total - totalFinal).coerceAtLeast(0))
                                     }
+                                    // 🔴 Codex r10 #1 + agregado 1: el apartado lleva el importe que de verdad se cobra y su orden ANTES de
+                                    // mandarlo. Si la app muere o la venta se suelta, el barrido lo da por cobrado (y la cola lo sube) con
+                                    // ESTE importe, y su venta en el cajón lleva su orden.
+                                    if (reservado) {
+                                        try {
+                                            cashPaymentRepository.actualizarApartado(llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId)
+                                        } catch (e: kotlinx.coroutines.CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            // Como el apartado mismo: sin el importe en disco no sale el POST. El reintento lo vuelve a escribir.
+                                            Log.e("💵", "No se pudo guardar el importe nuevo del apartado $llaveCapturada: ${e.message}")
+                                            if (!otraVenta(venta)) {
+                                                _state.value = PaymentFlowState.Error(
+                                                    message = "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
+                                                    source = PaymentErrorSource.UNKNOWN,
+                                                )
+                                            }
+                                            return@fold
+                                        }
+                                    }
                                     recordCashPaymentForOrder(
+                                        generacion = generacion,
                                         orderId = orderId,
                                         total = totalFinal,
                                         cashReceivedCents = cashReceivedCents,
@@ -2486,11 +2895,15 @@ class PaymentFlowViewModel @Inject constructor(
                                         ratingCapturado = ratingCapturado,
                                         provisionalCapturada = provisionalCapturada,
                                         permiteColaCapturada = permiteColaCapturada,
+                                        cajaCapturada = cajaCapturada,
+                                        conApartado = apartado,
+                                        mesaCapturada = mesaCapturada,
                                         // Founder 18-oct («A»): con red, el aviso ya se lo dijo al cajero; sin red sí es alerta.
                                         precioAceptadoEnPantalla = cambios.isNotEmpty() && totalFinal != total,
                                     )
                                 },
                                 onFailure = { error ->
+                                    if (otraVenta(venta)) return@fold // ronda final (A3): otra venta en pantalla
                                     if (generacion != paymentGeneration) {
                                         cancelarLoCreadoTrasCancelar(orderId = null)
                                         return@fold
@@ -2528,9 +2941,12 @@ class PaymentFlowViewModel @Inject constructor(
                                             manualMethod = manualCapturado,
                                             tenderType = tenderCapturado,
                                             venueId = venueCapturado,
+                                            cajaDelCobro = cajaCapturada,
                                         )
                                         // FIX B4: Record cash sale in drawer even on offline queue
-                                        recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                                        recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = apartado)
+                                        // Codex r9 #5: encolar suspende. Si mientras tanto empezó otra venta, su éxito no se pinta en ella.
+                                        if (otraVenta(venta)) return@fold
                                         _state.value = PaymentFlowState.Success(
                                             totalAmount = total,
                                             method = PaymentMethod.CASH,
@@ -2554,7 +2970,8 @@ class PaymentFlowViewModel @Inject constructor(
                         // Fast payment (custom amount, no products)
                         // Send amount WITHOUT tip, tip separately
                         val subtotal = total - tipCapturado
-                        val fastResult = orderRepository.recordFastCashPayment(
+                        // Sólo con carrito: sin él, este camino no encola (lo perdería) y sigue en línea, como hoy.
+                        val fastResult = if (cart != null && laCajaEsperaSuApertura(cajaCapturada)) Result.failure(CajaEsperandoSuApertura()) else orderRepository.recordFastCashPayment(
                             amount = subtotal,
                             staffId = empleadoCapturado,
                             tip = tipCapturado,
@@ -2571,6 +2988,12 @@ class PaymentFlowViewModel @Inject constructor(
                         )
                         fastResult.fold(
                             onSuccess = { fast ->
+                                // 🔴 Ronda 1 (I2): otra venta ya está en pantalla. El cobro de ésta SÍ ocurrió: su cajón se registra,
+                                // pero su recibo, su cliente y su éxito no se escriben sobre la venta nueva.
+                                if (generacion != paymentGeneration) {
+                                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = apartado)
+                                    return@fold
+                                }
                                 lastPaymentId = fast.paymentId
                                 // Recibo → QR en pantalla del cliente y recibo impreso.
                                 fast.receiptAccessKey?.let { lastReceiptAccessKey = it }
@@ -2583,7 +3006,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     attachedCustomerId = null
                                     _attachedCustomerName.value = null
                                 }
-                                recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                                recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = apartado)
                                 // 🔴 D16: este camino (cobro rápido en efectivo) NUNCA pasa por
                                 // `autoPrintAfterPayment`, así que sin
                                 // congelar `lastReceipt` AQUÍ, el primer toque de «Imprimir» en la
@@ -2604,12 +3027,16 @@ class PaymentFlowViewModel @Inject constructor(
                                 )
                             },
                             onFailure = { error ->
-                                val isQueueable = OrderRepository.isQueueableError(error) ||
+                                // 🔴 D2 v7 punto 7: 2xx con lo local fallido = COBRADO, encolado con su llave; nunca un error cancelable.
+                                val registrado = error is OrderRepository.CobroRegistradoSinGuardar
+                                val isQueueable = registrado || OrderRepository.isQueueableError(error) ||
                                     (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
                                 if (isQueueable) {
                                     // FIX B1: Actually queue the fast-cash payment for offline sync
                                     // FIX B4: Also record cash sale in drawer
-                                    val idEnCola = if (cart != null) {
+                                    val idEnCola = if (registrado) {
+                                        llaveCapturada.also { cashPaymentRepository.darPorCobrado(it) }
+                                    } else if (cart != null) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = requireNotNull(pedidoCapturado),
                                             amountCents = total - tipCapturado,
@@ -2625,11 +3052,13 @@ class PaymentFlowViewModel @Inject constructor(
                                             manualMethod = manualCapturado,
                                             tenderType = tenderCapturado,
                                             venueId = venueCapturado,
+                                            cajaDelCobro = cajaCapturada,
                                         )
                                     } else {
                                         null
                                     }
-                                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = apartado)
+                                    if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
                                     // 🔴 Mismo hueco de D16 que arriba, camino encolado: sin esto
                                     // el ticket de una venta rápida que se guardó offline también
                                     // toma la hora de cuando alguien la imprima, no la de la venta.
@@ -2643,6 +3072,7 @@ class PaymentFlowViewModel @Inject constructor(
                                         colaDelCobro = idEnCola?.let { com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(it) },
                                     )
                                 } else {
+                                    if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
                                     _state.value = PaymentFlowState.Error(
                                         message = error.message ?: "Error al registrar pago",
                                         source = PaymentErrorSource.SERVER,
@@ -2672,6 +3102,11 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private suspend fun recordCashPaymentForOrder(
+        /**
+         * 🔴 Ronda 1 (I2): la venta (generación) de este cobro. Si cuando contesta el servidor ya hay OTRA venta en pantalla, el
+         * cobro sí ocurrió (su cajón se registra y su llave ya quedó en disco), pero no pinta nada ni toca la venta nueva.
+         */
+        generacion: Int,
         orderId: String,
         total: Int,
         cashReceivedCents: Int,
@@ -2690,6 +3125,12 @@ class PaymentFlowViewModel @Inject constructor(
         ratingCapturado: Int?,
         provisionalCapturada: Boolean,
         permiteColaCapturada: Boolean,
+        /** La caja abierta al confirmar ([cajaAbiertaAlConfirmar]). */
+        cajaCapturada: String?,
+        /** Rediseño r9: este cobro dejó un apartado de efectivo puro; su venta en el cajón la anota su salida de `EN_VUELO`. */
+        conApartado: Boolean,
+        /** La mesa de esta venta, fotografiada al empezar el cobro (familia B). */
+        mesaCapturada: MesaCapturada?,
         /** El servidor cambió el precio EN LÍNEA y el cajero ya vio el aviso: ese importe no es alerta para el gerente. */
         precioAceptadoEnPantalla: Boolean = false,
     ) {
@@ -2721,13 +3162,16 @@ class PaymentFlowViewModel @Inject constructor(
                             put("method", kotlinx.serialization.json.JsonPrimitive(m.serverMethod))
                             m.externalSource?.let { put("externalSource", kotlinx.serialization.json.JsonPrimitive(it)) }
                         }
+                        // 🔴 La caja de la venta (efectivo sin red en el turno correcto): el servidor saca de ahí el turno.
+                        cajaCapturada?.let { put("cashDrawerSessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
                     },
                     cashTenderedCents = cashReceivedCents, changeCents = changeCents, splitType = splitCapturado,
                     // 19-oct (mesa sin red retenida): lo que la mesa debía al empezar el cobro, menos lo cobrado. Al confirmarse, si
                     // el servidor (que valora con el precio de HOY) deja otro saldo, el gerente ve DIFERENCIA.
                     restanteEsperadoCents = mesaDelCobro?.takeIf { it.orderId == orderId }?.let { (it.totalCents - subtotal).coerceAtLeast(0) },
                 )
-                recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
+                if (generacion != paymentGeneration) return // ronda 1 (I2): otra venta en pantalla
                 _state.value = PaymentFlowState.Success(
                     totalAmount = total,
                     method = PaymentMethod.CASH,
@@ -2739,7 +3183,8 @@ class PaymentFlowViewModel @Inject constructor(
                 return
             }
         }
-        val payResult = orderRepository.recordCashPayment(
+        // Sólo si se puede encolar: un cobro que no admite cola (vales por área) sigue en línea, como hoy.
+        val payResult = if (permiteColaCapturada && laCajaEsperaSuApertura(cajaCapturada)) Result.failure(CajaEsperandoSuApertura()) else orderRepository.recordCashPayment(
             orderId = orderId,
             amount = subtotal,
             staffId = empleadoCapturado,
@@ -2754,26 +3199,28 @@ class PaymentFlowViewModel @Inject constructor(
         )
         payResult.fold(
             onSuccess = { result ->
-                lastPaymentId = result.paymentId
-                // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
-                adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
                 // Una segunda caja pudo mover la orden mientras cobrábamos. En
                 // ese caso el server recorta SÓLO efectivo de cajón al saldo
                 // fresco y devuelve el importe/cambio que de verdad registró.
                 // Pantalla, ticket y arqueo deben contar ese resultado; los
                 // campos opcionales conservan el fallback para servers viejos.
-                val authoritativeTotalOrNull = result.recordedAmountCents?.let { recordedAmount ->
-                    result.recordedTipCents?.let { recordedTip ->
-                        val recordedTotal = recordedAmount.toLong() + recordedTip.toLong()
-                        recordedTotal
-                            .takeIf { recordedAmount >= 0 && recordedTip >= 0 && it <= Int.MAX_VALUE.toLong() }
-                            ?.toInt()
-                    }
-                }
                 // Un payload imposible no puede desbordar Int y convertir una
                 // venta positiva en un movimiento negativo. Igual que iOS,
                 // ante cualquier inconsistencia conservamos el total local.
-                val authoritativeTotal = authoritativeTotalOrNull ?: total
+                // 🔴 Codex r10 #1: la MISMA función con la que la salida de `EN_VUELO` anota el cajón (no existe dos veces).
+                val retenido = OrderRepository.importeCobradoEnEfectivo(
+                    result.recordedAmountCents, result.recordedTipCents, total, cashRetainedCents = result.cashRetainedCents,
+                )
+                // 🔴 Ronda 1 (I2): otra venta ya está en pantalla. El cobro de ésta SÍ ocurrió (el servidor lo tiene y su recibo
+                // también): se registra su cajón, pero su saldo, su recibo y su éxito no se escriben sobre la venta nueva.
+                if (generacion != paymentGeneration) {
+                    recordCashSale(retenido, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
+                    liberarLaMesaDeOtraVenta(mesaCapturada, orderId) // como iOS: con SU contexto
+                    return@fold
+                }
+                lastPaymentId = result.paymentId
+                // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
+                adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
                 // 🔴 EL CAMBIO ES LO QUE SALE DEL CAJÓN: recibido − lo que de
                 // verdad se cobró. NUNCA `result.authoritativeChangeCents`.
                 //
@@ -2797,13 +3244,12 @@ class PaymentFlowViewModel @Inject constructor(
                 // es recibido − eso. Sin él (servidor viejo), la resta de arriba. Sigue sin usarse `changeCents`.
                 // Rappi 2b (Codex plan r1 #3): UN total para caja, pantalla de éxito y ticket: lo que se quedó en el cajón
                 // (incluye lo cobrado por cuenta de Rappi). En un cobro normal `cashRetainedCents` = importe + propina: igual.
-                val retenido = result.cashRetainedCents ?: authoritativeTotal
                 val finalChange = (cashReceivedCents - retenido).coerceAtLeast(0)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
-                recordCashSale(retenido, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                recordCashSale(retenido, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
                 _state.value = PaymentFlowState.Success(
                     totalAmount = retenido,
                     method = PaymentMethod.CASH,
@@ -2816,10 +3262,15 @@ class PaymentFlowViewModel @Inject constructor(
                 autoPrintAfterPayment(PaymentMethod.CASH, finalChange)
             },
             onFailure = { error ->
+                // 🔴 D2 v7 punto 7: 2xx con lo local fallido = COBRADO, encolado con su llave; nunca un error cancelable.
+                val registrado = error is OrderRepository.CobroRegistradoSinGuardar
                 val isQueueable = OrderRepository.isQueueableError(error) ||
                     (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                if (isQueueable && permiteColaCapturada) {
-                    val idEnCola = cashPaymentRepository.queueCashPayment(
+                if (registrado || (isQueueable && permiteColaCapturada)) {
+                    // Codex r14 A5: con el 2xx comprobado, lo que el servidor registró: cajón, pantalla y cambio, como el camino normal.
+                    val cobrado = (error as? OrderRepository.CobroRegistradoSinGuardar)?.importeCobradoCents ?: total
+                    val cambio = if (registrado) (cashReceivedCents - cobrado).coerceAtLeast(0) else changeCents
+                    val idEnCola = if (registrado) llaveCapturada.also { cashPaymentRepository.darPorCobrado(it, cobrado) } else cashPaymentRepository.queueCashPayment(
                         // El pago capturado y el pedido completo son datos distintos.
                         orderRequest = orderRequest,
                         amountCents = total - tipCapturado,
@@ -2835,17 +3286,21 @@ class PaymentFlowViewModel @Inject constructor(
                         manualMethod = manualCapturado,
                         tenderType = tenderCapturado,
                         venueId = venueCapturado,
+                        cajaDelCobro = cajaCapturada,
                     )
-                    recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                    recordCashSale(cobrado, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
+                    if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
+                    if (registrado) finishAreaTicketPayment()
                     _state.value = PaymentFlowState.Success(
-                        totalAmount = total,
+                        totalAmount = cobrado,
                         method = PaymentMethod.CASH,
-                        changeAmount = changeCents,
+                        changeAmount = cambio,
                         isQueued = true,
                         colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(idEnCola),
                     )
-                    autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
+                    autoPrintAfterPayment(PaymentMethod.CASH, cambio)
                 } else {
+                    if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
                     _state.value = PaymentFlowState.Error(
                         message = mensajeDelCobroFallido(error),
                         source = PaymentErrorSource.SERVER,
@@ -2862,27 +3317,28 @@ class PaymentFlowViewModel @Inject constructor(
             _whatsAppResult.value = "No se encontró identificador del recibo"
             return
         }
+        // 🔴 Codex r14 B5: el envío de A termina; su resultado y su bandera sólo se publican si A sigue en pantalla.
+        val venta = ventaEnCurso
         viewModelScope.launch {
             _whatsAppSending.value = true
             _whatsAppResult.value = null
-            orderRepository.sendReceiptWhatsApp(
+            val resultado = orderRepository.sendReceiptWhatsApp(
                 paymentId = paymentId,
                 phone = phone,
                 receiptAccessKey = receiptAccessKey,
             ).fold(
-                onSuccess = {
-                    _whatsAppResult.value = "Recibo enviado por WhatsApp"
-                },
+                onSuccess = { "Recibo enviado por WhatsApp" },
                 onFailure = { e ->
-                    val msg = when (e) {
+                    when (e) {
                         is OrderRepository.ServerException -> "Error del servidor (${e.code}). Intenta de nuevo."
                         is java.net.UnknownHostException -> "Sin conexión a internet"
                         is java.net.SocketTimeoutException -> "Tiempo de espera agotado"
                         else -> e.message ?: "Error al enviar recibo"
                     }
-                    _whatsAppResult.value = msg
                 },
             )
+            if (otraVenta(venta)) return@launch
+            _whatsAppResult.value = resultado
             _whatsAppSending.value = false
         }
     }
@@ -2894,32 +3350,38 @@ class PaymentFlowViewModel @Inject constructor(
             _emailResult.value = "No se encontró identificador del recibo"
             return
         }
+        // 🔴 Codex r14 B5: el envío de A termina; su resultado y su bandera sólo se publican si A sigue en pantalla.
+        val venta = ventaEnCurso
         viewModelScope.launch {
             _emailSending.value = true
             _emailResult.value = null
-            orderRepository.sendReceiptEmail(
+            val resultado = orderRepository.sendReceiptEmail(
                 paymentId = paymentId,
                 email = email,
                 receiptAccessKey = receiptAccessKey,
             ).fold(
-                onSuccess = {
-                    _emailResult.value = "Recibo enviado por correo"
-                },
+                onSuccess = { "Recibo enviado por correo" },
                 onFailure = { e ->
-                    val msg = when (e) {
+                    when (e) {
                         is OrderRepository.ServerException -> "Error del servidor (${e.code}). Intenta de nuevo."
                         is java.net.UnknownHostException -> "Sin conexión a internet"
                         is java.net.SocketTimeoutException -> "Tiempo de espera agotado"
                         else -> e.message ?: "Error al enviar recibo"
                     }
-                    _emailResult.value = msg
                 },
             )
+            if (otraVenta(venta)) return@launch
+            _emailResult.value = resultado
             _emailSending.value = false
         }
     }
 
     fun retry() {
+        // Ronda final (M-1, espejo de iOS): tras «No se pudo cancelar el cobro», «Reintentar» reintenta la CANCELACIÓN.
+        if (cancelacionFallida) {
+            cancelarVenta()
+            return
+        }
         when (selectedMethod) {
             PaymentMethod.CARD -> {
                 val total = currentBaseAmount() + currentTipCents
@@ -3280,6 +3742,29 @@ class PaymentFlowViewModel @Inject constructor(
         // Una cancelación ya en curso no se relanza: un doble toque mandaría dos cancel y, peor,
         // dos borrados.
         if (estado is PaymentFlowState.CancelandoCobro || estado is PaymentFlowState.CancelacionPendiente) return
+        // 🔴 D2 v6 punto 5: con el POST del efectivo en vuelo no hay «Cancelar» (ni el botón, ni aquí). Al terminar, la cajera
+        // decide con el desenlace a la vista.
+        if (efectivoEnVuelo() || descartandoApartados) return
+        // 🔴 D2 v7: «Cancelar» es la decisión de la cajera sobre ESTA venta. Primero se borran sus apartados de efectivo y se
+        // ESPERA a que quede escrito; si no se pudo, la pantalla lo dice y no se sale.
+        if (apartadosDeEstaVenta.isNotEmpty()) {
+            val venta = ventaEnCurso
+            viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                val borrados = descartarApartadosDeEstaVenta()
+                // 🔴 Codex r14 B1: el borrado de A terminó; si mientras tanto empezó otra venta, no se cancela ni se marca ésa.
+                if (otraVenta(venta)) return@launch
+                if (borrados) cancelarVentaSinApartados()
+                // Ronda final (M-1): «Reintentar» de esta pantalla reintenta la cancelación, nunca el cobro.
+                else if (!efectivoEnVuelo()) cancelacionFallida = true
+            }
+            return
+        }
+        cancelarVentaSinApartados()
+    }
+
+    private fun cancelarVentaSinApartados() {
+        val estado = _state.value
+        if (estado is PaymentFlowState.CancelandoCobro || estado is PaymentFlowState.CancelacionPendiente) return
 
         val esDeVales = esCobroDeVales()
         val cobro = objetivoDeCancelacion(estado)
@@ -3421,6 +3906,65 @@ class PaymentFlowViewModel @Inject constructor(
         if (!cancelacionDeCobro.registrar(intencion)) return avisarQueNoSeGuardo()
         empezarACancelar(intencion.id)
     }
+
+    /**
+     * 🔴 N1 (re-revisión de la ronda final): la orden de una venta que ya NO está en pantalla nació después de que empezó otra.
+     * Nadie la va a cobrar, así que se cancela por la vía durable (el incidente del 11-sep: la orden huérfana), con SU importe y
+     * SU número. Sólo se registra la intención y se pide al coordinador que la procese: no se llama [empezarACancelar] ni se
+     * escribe nada en la venta nueva (ni su estado, ni su aviso). Con premio, cancelarla también suelta el premio.
+     */
+    private fun cancelarLaOrdenDeOtraVenta(orderId: String?, orderNumber: String?, montoCents: Int, venueId: String, actor: String) {
+        val id = orderId?.takeIf { it.isNotBlank() } ?: return
+        val intencion = com.avoqado.pos.payment.data.IntencionDeCancelarCobro(
+            id = "orden:$id",
+            requestId = null,
+            venueId = venueId,
+            terminalId = null,
+            orderId = id,
+            borrarOrden = true,
+            actorStaffId = actor.takeIf { it.isNotBlank() },
+            montoCents = montoCents,
+            orderNumber = orderNumber,
+            creadaEn = System.currentTimeMillis(),
+            fase = com.avoqado.pos.payment.data.FaseDeCancelacion.BORRAR_ORDEN.name,
+        )
+        if (!cancelacionDeCobro.registrar(intencion)) {
+            Log.e("PaymentFlow", "⚠️ No se pudo guardar la cancelación de la orden $id de una venta anterior")
+            return
+        }
+        cancelacionDeCobro.procesarAhora(intencion.id)
+    }
+
+    /**
+     * 🔴 Familia B (rediseño r9, paridad con iOS): el cobro de la mesa de una venta que ya NO está en pantalla sí ocurrió. Su mesa
+     * se libera con el contexto y la época que se capturaron al abrir ESE cobro, revalidados antes y después de la red, sin leer la
+     * venta nueva: `clearTable` sólo pasa si el servidor la tiene PAGADA (un abono no la libera) y `finalizar` sólo toca la sesión
+     * de ESA orden. Antes la mesa vieja se quedaba sin liberar (la liberación la hacía la pantalla, que ya es de otra venta).
+     */
+    private fun liberarLaMesaDeOtraVenta(mesa: MesaCapturada?, orderId: String) {
+        if (mesa == null || orderId !in mesa.mesa.idsDeLaOrden) return
+        val repo = tableServiceRepository ?: return
+        fun vigente() = secureStorage.venueId == mesa.venueId && tableSession.contextoActual() == mesa.contexto
+        if (!vigente()) return
+        viewModelScope.launch {
+            if (repo.clearTable(mesa.venueId, mesa.mesa.tableId).isFailure) {
+                Log.d("🍽", "La orden de la mesa ${mesa.mesa.tableNumber} sigue con saldo: su sesión sigue viva")
+                return@launch
+            }
+            if (!vigente()) return@launch
+            tableSession.finalizar(mesa.venueId, mesa.mesa.idsDeLaOrden, mesa.contexto)
+            runCatching { lanHub?.release(mesa.mesa.tableId) }
+            runCatching { repo.refresh(mesa.venueId) }
+        }
+    }
+
+    /**
+     * 🔴 Familia B (rediseño r9): LA guarda de la venta. Cada flujo fotografía `ventaEnCurso` antes de su primera suspensión y la
+     * compara con ésta después de cada una: si cambió, no escribe nada en la venta que muestra la pantalla (estado, identidad,
+     * apartados, recibo, saldo). Lo que de verdad ocurrió se conserva por su cuenta (servidor, cola, cajón, mesa vieja).
+     * `paymentGeneration` sigue siendo otra cosa: «la cajera canceló este intento» (no se manda el cobro).
+     */
+    private fun otraVenta(venta: Int): Boolean = venta != ventaEnCurso
 
     private fun empezarACancelar(id: String) {
         paymentGeneration++
@@ -3602,7 +4146,18 @@ class PaymentFlowViewModel @Inject constructor(
         venueCapturado: String,
         actorCapturado: String,
         nombreActorCapturado: String,
+        /**
+         * 🔴 Ronda final (B): la llave del cobro. El movimiento del cajón toma de ella un id DETERMINISTA (nunca dos por una llave).
+         */
+        llave: String?,
+        /**
+         * 🔴 Rediseño r9: este cobro dejó un apartado de efectivo PURO. Su venta la anota su salida de `EN_VUELO`, en la misma
+         * escritura (`SalidaDelApartado`), sea cual sea la venta en pantalla: aquí no se anota. Sin apartado (canales sin reserva,
+         * «Ya pagó de otra forma», tipos del catálogo) el único escritor sigue siendo éste, como hoy.
+         */
+        conApartado: Boolean,
     ) {
+        if (conApartado) return
         // Todos los callers son registros de efectivo: conservar el medio de ESA captura,
         // antes de cualquier await, y aplicar la misma política del pulso al arqueo.
         if (!CajonDeDinero.debeAbrirse(PaymentMethod.CASH, manualCapturado, tenderCapturado, amountCents)) return
@@ -3612,7 +4167,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // (normal — not every venue runs one). A thrown exception is a
                 // REAL insert failure: the drawer total will drift from recorded
                 // sales, so log at error level instead of a silent Log.d.
-                cashDrawerRepository.addCashSale(amountCents, orderId, venueCapturado, actorCapturado, nombreActorCapturado)
+                cashDrawerRepository.addCashSale(amountCents, orderId, venueCapturado, actorCapturado, nombreActorCapturado, llaveDelCobro = llave)
             } catch (e: Exception) {
                 Log.e("💰", "Cash drawer insert FAILED (drawer total will drift): ${e.message}", e)
             }
@@ -3659,12 +4214,16 @@ class PaymentFlowViewModel @Inject constructor(
         // pantalla» salen en papel de respaldo.
         val servidorLaTiene = (_state.value as? PaymentFlowState.Success)?.isQueued != true
         val origenDelFolio = externalIdDeLaVenta?.let { "sale:$it" }
+        // 🔴 Codex r10 #3 (familia B): la FOTO de esta venta antes de lanzar el trabajo. La impresión y la comanda esperan
+        // (hasta ~1 min con reintentos); si mientras tanto empieza otra venta, siguen con SU recibo, SU orden y SU negocio, nunca
+        // con los de la venta nueva, y sus avisos no la pisan.
+        val recibo = buildReceiptSnapshot(method, changeCents)?.also { lastReceipt = it }
+        val ordenDeLaComanda = createdOrderId
+        val negocioDeLaComanda = secureStorage.venueId
+        val venta = ventaEnCurso
 
         viewModelScope.launch {
-            buildReceiptSnapshot(method, changeCents)?.let { receipt ->
-                lastReceipt = receipt
-                printerService.autoPrintReceipt(receipt)
-            }
+            recibo?.let { printerService.autoPrintReceipt(it) }
 
             // El cajón va DESPUÉS del ticket: los dos salen por la misma impresora.
             if (abrirCajon) abrirCajonDeDinero()
@@ -3675,7 +4234,7 @@ class PaymentFlowViewModel @Inject constructor(
             // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
             // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`
             // aunque la comanda siga reintentando.
-            despacharComanda(cart, servidorLaTiene, origenDelFolio)
+            despacharComanda(cart, servidorLaTiene, origenDelFolio, ordenDeLaComanda, negocioDeLaComanda, venta)
         }
     }
 
@@ -3689,13 +4248,21 @@ class PaymentFlowViewModel @Inject constructor(
      * qué coroutine corre. [autoPrintAfterPayment] ya la corre dentro de la suya; [reintentarComanda]
      * abre una nueva. Nunca se llama desde el camino del cobro.
      */
-    private suspend fun despacharComanda(cart: CartState, servidorLaTiene: Boolean, origenDelFolio: String?) {
+    private suspend fun despacharComanda(
+        cart: CartState,
+        servidorLaTiene: Boolean,
+        origenDelFolio: String?,
+        /** La orden, el negocio y la venta de ESTA comanda, fotografiados antes de lanzarla (Codex r10 #3). */
+        orderId: String?,
+        venueId: String?,
+        venta: Int,
+    ) {
         val realItems = cart.items.filter {
             it.type is CartItemType.ProductItem && !it.locked
         }
         // Sin productos reales (venta de importe libre) no hay comanda que mandar.
         if (realItems.isEmpty()) return
-        val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
+        val orderNumber = orderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
 
         // PRINT_STATIONS — el disparo POST-PAGO del mostrador. La secuencia (refrescar config →
         // rutear → imprimir CON REINTENTO, o el ticket legado si el venue no tiene estaciones)
@@ -3711,14 +4278,14 @@ class PaymentFlowViewModel @Inject constructor(
             val coursePedidos = com.avoqado.pos.payment.domain.buildCounterCoursePedidos(realItems)
             if (coursePedidos != null) {
                 comandaDispatcher.despacharEnFondo(
-                    venueId = secureStorage.venueId, orderNumber = orderNumber, pedidos = coursePedidos,
-                    orderId = createdOrderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
-                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
+                    venueId = venueId, orderNumber = orderNumber, pedidos = coursePedidos,
+                    orderId = orderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
+                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
                 ).join()
                 return
             }
             comandaDispatcher.dispatch(
-                venueId = secureStorage.venueId,
+                venueId = venueId,
                 lines = realItems.map { item ->
                     RoutableItem(
                         orderItemId = item.id,
@@ -3737,7 +4304,7 @@ class PaymentFlowViewModel @Inject constructor(
                 orderType = "En tienda",
                 // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
                 // no dependa del `orderNumber` truncado/aleatorio de arriba.
-                orderId = createdOrderId,
+                orderId = orderId,
                 // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
                 // abanicado a todas las impresoras con rol KITCHEN.
                 noStationsFallback = NoStationsFallback.LegacySingleTicket(
@@ -3765,7 +4332,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
                 servidorLaTiene = servidorLaTiene,
                 origenDelFolio = origenDelFolio,
-                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
+                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -3774,6 +4341,7 @@ class PaymentFlowViewModel @Inject constructor(
             aplicarEstadoDeComanda(
                 EstadoDeComanda.NoSalio(listOf("Cocina"), e.message, orderNumber, trabajo = null),
                 orderNumber,
+                venta,
             )
         }
     }
@@ -3822,7 +4390,16 @@ class PaymentFlowViewModel @Inject constructor(
      * 🔴 Un `Salio` tardío de la venta anterior NO puede borrar el aviso —todavía sin
      * resolver— de la venta que el cajero tiene enfrente. Por eso se compara el folio.
      */
-    private fun aplicarEstadoDeComanda(estado: EstadoDeComanda, orderNumber: String) {
+    private fun aplicarEstadoDeComanda(
+        estado: EstadoDeComanda,
+        orderNumber: String,
+        /** La venta de la comanda (Codex r10 #3). null = no es de una venta en particular. */
+        venta: Int? = null,
+    ) {
+        // 🔴 Familia B: un «Insistiendo» de la comanda de una venta que ya no está en pantalla no se pinta sobre la nueva (describe
+        // algo en curso de otra venta). El veredicto final SÍ se dice, con su folio: una comanda que no salió nunca se esconde
+        // (P1 #6 de Codex, 7-sep; ver `startPaymentFlow`).
+        if (estado is EstadoDeComanda.Insistiendo && venta != null && otraVenta(venta)) return
         if (estado is EstadoDeComanda.Salio) {
             // 🔴 Se mira lo que el cajero TIENE ENFRENTE (`comandaWarning`, que ya combina el
             // aviso en curso con lo pendiente del almacén). Un `Salio` tardío de la venta
@@ -4331,12 +4908,30 @@ class PaymentFlowViewModel @Inject constructor(
     /** Regla 9: el apartado de vales de ESTE cobro (se fija al abrir y al armar). */
     private var sesionDelCobro: String? = null
 
-    private suspend fun materializeAreaTicketCheckout(cart: CartState): Boolean {
+    /** 🔴 Codex r14 B2: la sesión de vales de ESTE cobro y su llave de materializar, fotografiadas antes de la primera espera. */
+    private class ValesDelCobro(val checkout: AreaTicketCheckout, val llave: String, val cobroId: String,
+        val ordenQueContinua: String?, val cobroQueLaArmo: String?)
+
+    private fun valesDelCobro(): ValesDelCobro? = areaTicketRepository.session.current()?.takeIf { esCobroDeVales() }
+        ?.let { ValesDelCobro(it, areaTicketRepository.session.materializeIdempotencyKey(), cobroDeValesId,
+            createdOrderId, areaTicketRepository.session.cobroQueLaArmo) }
+
+    private suspend fun materializeAreaTicketCheckout(
+        cart: CartState,
+        /**
+         * 🔴 Codex r9 #5 (familia B): la venta de este cobro, fotografiada antes de la primera suspensión. Si otra venta empezó
+         * mientras se materializaba, la orden, el folio y el error de los vales no se escriben en ella.
+         */
+        venta: Int,
+        /** Codex r14 B2: se materializa ESTE checkout, nunca la sesión vigente al volver de esperar (puede ser la de otra venta). */
+        vales: ValesDelCobro,
+        venue: String,
+    ): String? /* la orden de ESTOS vales (null = no se cobra); corrección del agregado 4: la devuelve aunque ya haya otra venta */ {
         // La orden que este cobro continúa (ya se cobró una parte). Si es la MISMA que arman los vales, lo que falta lo dice el
         // servidor y el carrito ya no lleva todos los vales; si es otra, se compara como cualquier cobro (Codex r7).
-        val ordenQueContinua = createdOrderId
+        val ordenQueContinua = vales.ordenQueContinua
         // Cancelar conserva esta apertura; abrir otra la cambia: una respuesta de A nunca limpia ni pinta sobre B.
-        val cobroCapturado = cobroDeValesId
+        val cobroCapturado = vales.cobroId
         val generacion = paymentGeneration
         return try {
             val normalItems = cart.items
@@ -4371,75 +4966,77 @@ class PaymentFlowViewModel @Inject constructor(
                 customerName = null,
                 note = cart.orderNote,
                 cobroId = cobroCapturado,
+                objetivo = vales.checkout,
+                llave = vales.llave,
+                negocio = venue.takeIf { it.isNotBlank() },
+                cobroQueLaArmo = vales.cobroQueLaArmo,
             )
-            if (cobroCapturado != cobroDeValesId) return false
-            sesionDelCobro = checkout.id
-            // El cajero canceló mientras se armaba: nada se pinta aquí; quien llama ve la generación y suelta (D2).
-            if (generacion != paymentGeneration) return true
+            if (!otraVenta(venta)) sesionDelCobro = checkout.id
             if (checkout.status in setOf("PAYMENT_PENDING", "RECONCILIATION_REQUIRED")) {
-                _state.value = PaymentFlowState.Error(
-                    message = "Este cobro sigue en confirmación. No vuelvas a cobrar; revisa el estado del pago.",
-                    source = PaymentErrorSource.SERVER,
-                )
-                return false
+                if (!otraVenta(venta) && generacion == paymentGeneration) {
+                    _state.value = PaymentFlowState.Error(
+                        message = "Este cobro sigue en confirmación. No vuelvas a cobrar; revisa el estado del pago.",
+                        source = PaymentErrorSource.SERVER,
+                    )
+                }
+                return null
             }
             val order = checkout.order
-            val noCoinciden = order != null && order.id != ordenQueContinua && !checkout.tieneAbono() &&
-                valesNoCoinciden(cart, checkout)
-            if (cobroCapturado != cobroDeValesId) return false
-            if (generacion != paymentGeneration) return true
             if (order == null) {
-                _state.value = PaymentFlowState.Error(
-                    message = "No se pudo materializar la orden de los vales.",
-                    source = PaymentErrorSource.SERVER,
-                )
-                false
+                if (!otraVenta(venta) && generacion == paymentGeneration) {
+                    _state.value = PaymentFlowState.Error(
+                        message = "No se pudo materializar la orden de los vales.",
+                        source = PaymentErrorSource.SERVER,
+                    )
+                }
+                null
             } else if (order.id != ordenQueContinua && checkout.tieneAbono()) {
-                // 🔴 D5: una venta de vales con abono sólo se cobra por su saldo pendiente; nunca se le cuelga otra cuenta.
-                _state.value = PaymentFlowState.Error(message = VALES_CON_ABONO, source = PaymentErrorSource.SERVER)
-                false
-            } else if (noCoinciden) {
-                // Nada que cancelar: la sesión sigue viva con los vales del servidor y el carrito los toma al volver.
-                paymentGeneration++
-                isProcessingPayment = false
-                _valesNoCoincidian.value = true
-                salirDelFlujo()
-                false
+                if (!otraVenta(venta) && generacion == paymentGeneration) {
+                    _state.value = PaymentFlowState.Error(message = VALES_CON_ABONO, source = PaymentErrorSource.SERVER)
+                }
+                null
+            } else if (order.id != ordenQueContinua && valesNoCoinciden(cart, checkout, venue)) {
+                // No traen los mismos vales: no se cobra (la sesión sigue viva). Releer la sesión suspende: sólo la venta en pantalla sale.
+                if (!otraVenta(venta) && generacion == paymentGeneration) {
+                    // Nada que cancelar: la sesión sigue viva con los vales del servidor y el carrito los toma al volver.
+                    paymentGeneration++
+                    isProcessingPayment = false
+                    _valesNoCoincidian.value = true
+                    salirDelFlujo()
+                }
+                null
             } else {
-                createdOrderId = order.id
-                createdOrderNumber = order.orderNumber
-                lastAreaDeliveryCode = order.areaDeliveryCode
-                true
+                // La orden sólo es de la venta en pantalla si sigue siendo ésta; el cobro de ESTOS vales sigue con su orden igual.
+                if (!otraVenta(venta)) {
+                    createdOrderId = order.id
+                    createdOrderNumber = order.orderNumber
+                    lastAreaDeliveryCode = order.areaDeliveryCode
+                }
+                order.id
             }
         } catch (error: Exception) {
             // Una sesión vencida no es un cobro fallido: no se cobró nada y los vales
             // siguen vivos. Tirar aquí la sesión muerta es lo que permite que el
             // siguiente escaneo abra una nueva; si la dejáramos, la caja se quedaría
             // pulsando Cobrar contra algo que el server ya no acepta.
-            //
-            // 🔴 Pero el servidor contesta lo mismo cuando la sesión sólo CAMBIÓ (un latido al mismo tiempo): ahí sigue viva y
-            // sus vales apartados. Olvidarla dejaba el vale apartado sin que el aparato lo supiera (Codex r1 #3, 20-oct). Se
-            // relee y sólo se olvida si de verdad ya no sirve; sin red no se toca.
-            // La relectura olvida sólo lo que el servidor da por muerto y `restore` suelta lo vencido con orden armada
-            // (reglas 2 y 3 de la pasada): nunca se olvida a ciegas una sesión con vales apartados.
-            // Regla 9: el error tardío de un cobro que ya se canceló no tapa «Cancelando»; quien llama suelta y sale (D2).
-            if (cobroCapturado != cobroDeValesId) return false
-            if (generacion != paymentGeneration) return true
-            if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_SESSION_STALE" &&
-                areaTicketRepository.session.current()?.id == sesionDelCobro
-            ) {
-                runCatching { areaTicketRepository.refresh() }
-                if (cobroCapturado != cobroDeValesId) return false
-                if (generacion != paymentGeneration) return true
-                runCatching { areaTicketRepository.restore() }
+            if (!otraVenta(venta) && generacion != paymentGeneration) {
+                cancelarLoCreadoTrasCancelar(orderId = null)
+                return null
             }
-            if (cobroCapturado != cobroDeValesId) return false
-            if (generacion != paymentGeneration) return true
-            _state.value = PaymentFlowState.Error(
-                message = error.message ?: "No se pudo preparar la venta de vales.",
-                source = PaymentErrorSource.SERVER,
-            )
-            false
+            // STALE también puede ser una revisión vieja: se relee antes de olvidar un apartado con dinero.
+            if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_SESSION_STALE" &&
+                areaTicketRepository.session.current()?.id == vales.checkout.id
+            ) {
+                runCatching { areaTicketRepository.refresh(objetivo = vales.checkout, negocio = venue) }
+                if (!otraVenta(venta) && generacion == paymentGeneration) runCatching { areaTicketRepository.restore() }
+            }
+            if (!otraVenta(venta) && generacion == paymentGeneration) {
+                _state.value = PaymentFlowState.Error(
+                    message = error.message ?: "No se pudo preparar la venta de vales.",
+                    source = PaymentErrorSource.SERVER,
+                )
+            }
+            null
         }
     }
 
@@ -4450,9 +5047,10 @@ class PaymentFlowViewModel @Inject constructor(
      * la orden materializada. Antes de detener se relee la sesión: la copia del aparato puede ser vieja, y con un abono ya
      * hecho la venta sigue por el saldo del servidor, como siempre (el carrito ya no lleva todos los vales).
      */
-    private suspend fun valesNoCoinciden(cart: CartState, checkout: AreaTicketCheckout): Boolean {
+    private suspend fun valesNoCoinciden(cart: CartState, checkout: AreaTicketCheckout, venue: String): Boolean {
         if (cobraLosValesDeLaSesion(cart.items, checkout)) return false
-        val alDia = areaTicketRepository.refresh() ?: return true
+        // Codex r14 B2: se relee ESE checkout, no la sesión vigente.
+        val alDia = areaTicketRepository.refresh(objetivo = checkout, negocio = venue.takeIf { it.isNotBlank() }) ?: return true
         if ((alDia.order?.paidAmount?.moneyToCents() ?: 0) > 0) return false
         return !cobraLosValesDeLaSesion(cart.items, alDia)
     }

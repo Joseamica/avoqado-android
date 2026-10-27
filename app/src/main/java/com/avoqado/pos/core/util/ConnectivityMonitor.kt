@@ -134,6 +134,39 @@ class ConnectivityMonitor @Inject constructor(
         retryJob = null
     }
 
+    /**
+     * 🔴 ¿NUESTRO servidor contesta AHORA, con su base de datos? Una consulta real a la salud profunda (`/api/public/healthcheck`
+     * hace `SELECT 1`), no la bandera. Cuenta sólo un 200 con JSON `"status":"ok"`: un portal cautivo, un proxy o el servidor sin su
+     * base devuelven otra cosa. Lo usa el tope del cierre que espera a sus ventas (efectivo sin red en el turno correcto, 24-oct-2026).
+     */
+    suspend fun elServidorContesta(): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        if (!_isConnected.value) return@withContext false
+        var connection: HttpURLConnection? = null
+        try {
+            val url = java.net.URI(ApiConstants.BASE_URL).resolve("/api/public/healthcheck").toURL()
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = PING_TIMEOUT_MS
+                readTimeout = PING_TIMEOUT_MS
+                instanceFollowRedirects = false
+                // Codex apps r7 #3: nunca una respuesta guardada (ni aquí ni en un proxy): la salud vale sólo si es de AHORA.
+                useCaches = false
+                setRequestProperty("Cache-Control", "no-cache, no-store")
+                setRequestProperty("Pragma", "no-cache")
+            }
+            val code = connection.responseCode
+            val cuerpo = if (code == 200) connection.inputStream.bufferedReader().use { it.readText() } else null
+            val ok = saludContesta(code, connection.contentType, cuerpo)
+            if (ok) reportServerSuccess() else Log.d("📡", "Salud del servidor: $code (${connection.contentType}) — no cuenta")
+            ok
+        } catch (e: Exception) {
+            Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
+            false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     private fun pingServer() {
         if (!_isConnected.value) return
         var connection: HttpURLConnection? = null
@@ -168,6 +201,18 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     companion object {
+        /**
+         * PURA: ¿la salud la contestó NUESTRA API? Un 200 con JSON cuyo campo `status` es `"ok"` (con o sin espacios, Codex apps r7
+         * #4). Un portal cautivo o un proxy devuelven HTML, un 5xx o un JSON sin ese campo.
+         */
+        internal fun saludContesta(code: Int, contentType: String?, cuerpo: String?): Boolean {
+            if (code != 200 || contentType?.lowercase()?.startsWith("application/json") != true || cuerpo == null) return false
+            return runCatching {
+                val raiz = kotlinx.serialization.json.Json.parseToJsonElement(cuerpo) as? kotlinx.serialization.json.JsonObject
+                (raiz?.get("status") as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content == "ok"
+            }.getOrDefault(false)
+        }
+
         private const val RETRY_INTERVAL_MS = 10_000L
         private const val PING_TIMEOUT_MS = 5_000
     }
