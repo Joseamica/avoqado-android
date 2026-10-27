@@ -3156,7 +3156,9 @@ class PaymentFlowViewModelTest {
 
         val exito = viewModel.state.value as PaymentFlowState.Success
         assertEquals("recibido 150.00 − retenido 120.00", 3000, exito.changeAmount)
-        assertEquals("lo cobrado no cambia: importe + propina registrados", 10000, exito.totalAmount)
+        // Rappi 2b (Codex plan r1 #3): un solo total para caja, pantalla y ticket: lo que se quedó en el cajón.
+        assertEquals("el total es lo retenido: recibido − cambio", 12000, exito.totalAmount)
+        assertEquals(15000 - exito.changeAmount, exito.totalAmount)
     }
 
     /** El ejemplo de S2: se deben $100 y el cliente da $150 ⇒ el servidor retiene $100 y el cambio es $50 (igual que hoy). */
@@ -3175,6 +3177,84 @@ class PaymentFlowViewModelTest {
     }
 
     /** Servidor viejo, sin `cashRetainedCents`: la fórmula de hoy (recibido − importe − propina), nunca `changeCents`. */
+    // MARK: - Rappi 2b: pedido de plataforma en efectivo
+
+    private fun cobroDeRappi() = Result.success(
+        OrderRepository.CashPayResult(
+            paymentId = "pay-rappi", receiptAccessKey = null, recordedAmountCents = 17500, recordedTipCents = 2000,
+            authoritativeChangeCents = 0, remainingBalanceCents = 0, orderPaymentStatus = "PAID", cashRetainedCents = 20500,
+        ),
+    )
+
+    @Test
+    fun `P1 a Rappi cash order skips rating and tip even when both are on`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = true, showTipScreen = true)
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
+        advanceUntilIdle()
+        assertTrue(
+            "la propina ya viene en el pedido: pedir otra sumaría una segunda",
+            viewModel.state.value is PaymentFlowState.SelectingPaymentMethod,
+        )
+    }
+
+    @Test
+    fun `P1 a Rappi cash order of 205 paid with 500 keeps 205 in the drawer, screen and ticket`() = runTest {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
+        } returns cobroDeRappi()
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
+        viewModel.confirmCashPreset(tenderedCents = 50000)
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(29500, exito.changeAmount)
+        assertEquals("venta 175 + propina 20 + Rappi 10", 20500, exito.totalAmount)
+        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(20500, "rappi-1", any(), any(), any()) }
+        // Se manda el saldo como importe y SIN propina: el servidor reparte lo recibido. Y como efectivo YA recibido (captura
+        // previa): si Rappi canceló con el cobro abierto, el SERVIDOR lo registra y avisa, nunca lo rechaza (Codex código r1 #2).
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), any(), capturedVenueId = any(), capturaPrevia = true)
+        }
+    }
+
+    @Test
+    fun `P1 a Rappi cash order opened with the saved balance goes as a prior capture`() = runTest {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
+        } returns cobroDeRappi()
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO)
+        viewModel.confirmCashPreset(tenderedCents = 20500)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), any(), capturedVenueId = any(), capturaPrevia = true)
+        }
+    }
+
+    @Test
+    fun `P1 a web order is never sent as a prior capture`() {
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA.esCapturaPrevia)
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO.esCapturaPrevia)
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL.esCapturaPrevia)
+    }
+
+    @Test
+    fun `P1 a Rappi cash order refuses card and other methods`() = runTest {
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
+        advanceUntilIdle()
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.confirmManualChoice(
+            com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed(com.avoqado.pos.payment.domain.ManualPaymentMethod.entries.first()),
+        )
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingPaymentMethod)
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO.permiteTarjeta)
+    }
+
     @Test
     fun `change keeps today's formula without it`() = runTest {
         coEvery {

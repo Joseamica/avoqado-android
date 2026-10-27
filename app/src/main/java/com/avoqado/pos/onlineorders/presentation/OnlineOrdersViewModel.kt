@@ -16,8 +16,10 @@ import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.onlineorders.domain.AccionResultado
+import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
@@ -55,9 +57,15 @@ enum class EntradaPedidosEnLinea { OCULTA, TEASER, ABIERTA }
  * R14: la entrada depende de `orders:read`, NO del plan: el servidor deja atender los pedidos que ya existen aunque el plan venza.
  * Sin plan **y** sin pedidos abiertos se queda a la vista con su candado (teaser, como Reservaciones). PURA.
  */
-fun entradaDePedidosEnLinea(puedeLeer: Boolean, tienePlan: Boolean, hayPedidosAbiertos: Boolean): EntradaPedidosEnLinea = when {
+fun entradaDePedidosEnLinea(
+    puedeLeer: Boolean,
+    tienePlan: Boolean,
+    hayPedidosAbiertos: Boolean,
+    // Rappi 2b (founder «D2-a»): la entrada también se abre con un canal de reparto o con pedidos de reparto por cobrar.
+    tieneReparto: Boolean = false,
+): EntradaPedidosEnLinea = when {
     !puedeLeer -> EntradaPedidosEnLinea.OCULTA
-    tienePlan || hayPedidosAbiertos -> EntradaPedidosEnLinea.ABIERTA
+    tienePlan || hayPedidosAbiertos || tieneReparto -> EntradaPedidosEnLinea.ABIERTA
     else -> EntradaPedidosEnLinea.TEASER
 }
 
@@ -71,7 +79,17 @@ fun formatoPesos(centavos: Long): String = formatMoney(BigDecimal.valueOf(centav
 private val FORMATO_HORA = DateTimeFormatter.ofPattern("HH:mm")
 
 /** La hora en la zona del NEGOCIO, no la del reloj del aparato. */
-fun horaDelPedido(pedido: OnlineOrder): String = VenueTimeZone.at(pedido.createdAt).format(FORMATO_HORA)
+fun horaDelPedido(pedido: OnlineOrder): String = horaDelNegocio(pedido.createdAt)
+
+fun horaDelNegocio(instante: java.time.Instant): String = VenueTimeZone.at(instante).format(FORMATO_HORA)
+
+/** Rappi 2b: «Venta $175 · Propina $20 · Rappi $10»; la propina y la parte de la plataforma salen sólo si no son 0. PURA. */
+fun desgloseDe(pedido: PedidoPorCobrar): String = TextosPedidosEnLinea.desgloseDeReparto(
+    venta = formatoPesos(pedido.saleCents),
+    propina = pedido.tipCents.takeIf { it > 0 }?.let(::formatoPesos),
+    plataforma = pedido.thirdPartyLabel,
+    terceros = pedido.thirdPartyCents.takeIf { it > 0 }?.let(::formatoPesos),
+)
 
 /**
  * Task A3: la pantalla «Pedidos en línea».
@@ -98,6 +116,10 @@ class OnlineOrdersViewModel internal constructor(
     private val efectivoDelPedido: suspend (orderId: String) -> EfectivoDelPedido = { EfectivoDelPedido.NINGUNO },
     private val efectivoYaSubido: suspend (orderId: String) -> Boolean = { false },
     private val permisoCobrar: () -> Boolean = { true },
+    // Rappi 2b: «Rappi · por cobrar». Por omisión, sin reparto (las pruebas de la tienda web no cambian).
+    private val leerPorCobrar: suspend (cursor: String?) -> Result<ListaPorCobrar> = { Result.success(LISTA_NO_DISPONIBLE) },
+    private val porCobrarGuardado: suspend () -> ListaPorCobrar? = { null },
+    private val tieneCanalDeReparto: () -> Boolean = { false },
 ) : ViewModel() {
 
     @Inject
@@ -125,6 +147,9 @@ class OnlineOrdersViewModel internal constructor(
         reimprimirPedido = { pedido -> impresion.reimprimir(pedido) },
         efectivoDelPedido = cashPaymentRepository::efectivoDelPedido,
         efectivoYaSubido = cashPaymentRepository::huboEfectivoSubido,
+        leerPorCobrar = { cursor -> repositorio.porCobrar(cursor) },
+        porCobrarGuardado = { repositorio.porCobrarGuardado() },
+        tieneCanalDeReparto = { planManager.hasFeature("DELIVERY_CHANNELS") },
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -177,8 +202,22 @@ class OnlineOrdersViewModel internal constructor(
     val puedeCobrar: Boolean get() = permisoCobrar()
     val puedeCancelar: Boolean get() = permisoCancelar()
 
-    /** Sin plan y sin pedidos abiertos la pantalla es sólo el teaser: no consulta nada. */
-    val esTeaser: Boolean get() = !tienePlan() && !hayPedidosAbiertos()
+    private val _porCobrar = MutableStateFlow<ListaPorCobrar?>(null)
+
+    /** Rappi 2b: «Rappi · por cobrar». null = todavía no se sabe (ni del aparato ni del servidor). */
+    val porCobrar: StateFlow<ListaPorCobrar?> = _porCobrar.asStateFlow()
+
+    /** Tienda web (plan o pedidos web abiertos): las cuatro secciones y la pausa. */
+    val muestraTienda: Boolean get() = tienePlan() || hayPedidosAbiertos()
+
+    /** Canal de reparto (plan) o pedidos de reparto por cobrar ya vistos: la sección «Rappi · por cobrar» (R14). */
+    val muestraReparto: Boolean get() = tieneCanalDeReparto() || _porCobrar.value?.pedidos?.isNotEmpty() == true
+
+    /** Sin tienda y sin reparto la pantalla es sólo el teaser. Cambia sola si el descubrimiento encuentra pedidos por cobrar. */
+    val esTeaser: Boolean get() = !muestraTienda && !muestraReparto
+
+    /** Páginas extra de «Rappi · por cobrar» cargadas con «Cargar más»; cada lectura las vuelve a recorrer. */
+    private var paginasExtraPorCobrar = 0
 
     private val mutex = Mutex()
 
@@ -199,8 +238,32 @@ class OnlineOrdersViewModel internal constructor(
         }
     }
 
+    /**
+     * Al abrir la pantalla, aunque sea teaser: la lista del aparato primero (sin red sale de ahí) y una lectura con red. Así un
+     * negocio con el plan vencido y sin nada guardado en ESTE aparato descubre sus pedidos de reparto por cobrar (Codex plan r1 #4).
+     */
+    suspend fun descubrirPorCobrar() {
+        if (_porCobrar.value == null) {
+            val guardada = try {
+                porCobrarGuardado()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (_porCobrar.value == null) _porCobrar.value = guardada
+        }
+        mutex.withLock { refrescarPorCobrar(forzar = true) }
+    }
+
     /** Una lectura de la bandeja. Una a la vez: la del latido y la de después de una acción no se pisan. */
     suspend fun refrescar(comoBandeja: Boolean = false, imprimirPendientes: Boolean = true) = mutex.withLock {
+        refrescarPorCobrar()
+        // Sólo reparto (sin tienda web): no se lee la bandeja web (un 403 de plan pintaría «No se pudo leer la bandeja»).
+        if (!muestraTienda) {
+            _cargando.value = false
+            return@withLock
+        }
         val primera = try {
             repositorio.inbox("all", comoBandeja, null)
         } catch (e: CancellationException) {
@@ -248,6 +311,55 @@ class OnlineOrdersViewModel internal constructor(
             }
         }
         _cargando.value = false
+    }
+
+    /** La lista «Rappi · por cobrar» con sus páginas extra. La falla de una lectura nunca borra lo último que se vio. */
+    private suspend fun refrescarPorCobrar(forzar: Boolean = false) {
+        if (!forzar && !muestraReparto) return
+        val primera = try {
+            leerPorCobrar(null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+        primera.onSuccess { lista ->
+            var actual = lista
+            var pagina = 0
+            while (pagina < paginasExtraPorCobrar && actual.nextCursor != null) {
+                val siguiente = try {
+                    leerPorCobrar(actual.nextCursor)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }.getOrNull() ?: break
+                actual = actual.copy(
+                    pedidos = (actual.pedidos + siguiente.pedidos).distinctBy { it.orderId },
+                    truncated = siguiente.truncated,
+                    nextCursor = siguiente.nextCursor,
+                )
+                pagina++
+            }
+            _porCobrar.value = actual
+            if (!muestraTienda) _sinConexion.value = false
+        }.onFailure {
+            Log.d(TAG, "«Por cobrar» sin respuesta: ${it.message}")
+            if (it is IOException) _sinConexion.value = true
+        }
+    }
+
+    fun cargarMasPorCobrar() {
+        if (_porCobrar.value?.nextCursor == null || _cargandoMas.value) return
+        _cargandoMas.value = true
+        viewModelScope.launch {
+            try {
+                paginasExtraPorCobrar++
+                mutex.withLock { refrescarPorCobrar() }
+            } finally {
+                _cargandoMas.value = false
+            }
+        }
     }
 
     fun cargarMas() {
@@ -352,20 +464,52 @@ class OnlineOrdersViewModel internal constructor(
      * 4. Saldo 0 ⇒ no abre: «Pagado», y se relee la bandeja.
      * Después de cobrar NO se llama `delivered`: lo decide el servidor ([cobroTerminado] sólo relee).
      */
-    fun cobrar(pedido: OnlineOrder) {
-        if (!permisoActualizar() || !permisoCobrar() || esTeaser) return
+    fun cobrar(pedido: OnlineOrder) = abrirCobro(
+        orderId = pedido.orderId,
+        orderNumber = pedido.orderNumber,
+        saldoGuardado = pedido.remainingCents,
+        plataforma = null,
+        origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
+        origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
+        permitido = muestraTienda,
+    )
+
+    /**
+     * Rappi 2b: «Cobrar» de un pedido de «Rappi · por cobrar». Las MISMAS guardas que [cobrar] (cola del aparato, saldo del
+     * servidor, sin red el último saldo visto, 0 ⇒ «Pagado»); cobra sólo en efectivo y sin propina (lo decide el origen).
+     */
+    fun cobrarDeReparto(pedido: PedidoPorCobrar) = abrirCobro(
+        orderId = pedido.orderId,
+        orderNumber = pedido.orderNumber,
+        saldoGuardado = pedido.remainingBalanceCents,
+        plataforma = pedido.thirdPartyLabel,
+        origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO,
+        origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO,
+        permitido = muestraReparto,
+    )
+
+    private fun abrirCobro(
+        orderId: String,
+        orderNumber: String,
+        saldoGuardado: Long,
+        plataforma: String?,
+        origenConSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
+        origenSinSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
+        permitido: Boolean,
+    ) {
+        if (!permisoActualizar() || !permisoCobrar() || !permitido) return
         if (_cobroAbierto.value != null) return
-        if (pedido.orderId in _ocupados.value) return
-        _ocupados.value = _ocupados.value + pedido.orderId
+        if (orderId in _ocupados.value) return
+        _ocupados.value = _ocupados.value + orderId
         viewModelScope.launch {
             try {
                 val guardado = try {
-                    efectivoDelPedido(pedido.orderId)
+                    efectivoDelPedido(orderId)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     // No se pudo leer la cola del aparato: no se sabe si hay un cobro guardado, así que no se abre otro.
-                    Log.w(TAG, "No se pudo revisar la cola de efectivo de ${pedido.orderNumber}: ${e.message}")
+                    Log.w(TAG, "No se pudo revisar la cola de efectivo de $orderNumber: ${e.message}")
                     _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
@@ -382,7 +526,7 @@ class OnlineOrdersViewModel internal constructor(
                     }
                 }
                 val leido = try {
-                    repositorio.saldoCents(pedido.orderId)
+                    repositorio.saldoCents(orderId)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -394,21 +538,21 @@ class OnlineOrdersViewModel internal constructor(
                         // haya subido un efectivo de ese pedido: la bandeja vieja no sabe de él y se cobraría dos veces
                         // (Ruling 21 #3). Se espera a la red, que trae el saldo del servidor.
                         val yaSubio = try {
-                            efectivoYaSubido(pedido.orderId)
+                            efectivoYaSubido(orderId)
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            Log.w(TAG, "No se pudo revisar lo subido de ${pedido.orderNumber}: ${e.message}")
+                            Log.w(TAG, "No se pudo revisar lo subido de $orderNumber: ${e.message}")
                             true
                         }
                         if (yaSubio) {
                             _aviso.value = TextosPedidosEnLinea.REINTENTA
                             return@launch
                         }
-                        pedido.remainingCents
+                        saldoGuardado
                     } else {
                         // El servidor contestó otra cosa (404, 5xx, JSON roto): no se adivina con la bandeja.
-                        Log.w(TAG, "Saldo de ${pedido.orderNumber} no leído: ${error.message}")
+                        Log.w(TAG, "Saldo de $orderNumber no leído: ${error.message}")
                         _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                         return@launch
                     }
@@ -427,11 +571,10 @@ class OnlineOrdersViewModel internal constructor(
                 // reemplaza a un cobro que ya está abierto (el cajero pudo haber recibido el efectivo del primero).
                 if (_cobroAbierto.value != null) return@launch
                 _aviso.value = null
-                _cobroAbierto.value = CobroDePedido(orderId = pedido.orderId, orderNumber = pedido.orderNumber, saldoCents = saldo.toInt(),
-                    origen = if (leido.isSuccess) com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA
-                    else com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO)
+                _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
+                    origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma)
             } finally {
-                _ocupados.value = _ocupados.value - pedido.orderId
+                _ocupados.value = _ocupados.value - orderId
             }
         }
     }
@@ -488,6 +631,7 @@ class OnlineOrdersViewModel internal constructor(
 
     companion object {
         const val INTERVALO_MS = 10_000L
+        val LISTA_NO_DISPONIBLE = ListaPorCobrar(emptyList(), 0, false, null, disponible = false)
         const val CLAVE_PAUSA = "__pausa__"
         private val IMPRIMIBLES = setOf(OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY)
         private val ABIERTOS = setOf(
@@ -506,6 +650,8 @@ data class CobroDePedido(
     val orderNumber: String,
     val saldoCents: Int,
     val origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
+    /** Rappi 2b: «Rappi» en un pedido de plataforma (el renglón dice «Rappi #folio»); null en un pedido de la tienda web. */
+    val plataforma: String? = null,
     val apertura: String = java.util.UUID.randomUUID().toString(),
 )
 
@@ -519,7 +665,8 @@ fun carritoDelCobro(cobro: CobroDePedido): CartState = CartState(
         CartItem(
             id = "pedido-en-linea-${cobro.orderId}",
             type = CartItemType.CustomAmount,
-            name = TextosPedidosEnLinea.pedidoNumero(cobro.orderNumber),
+            name = cobro.plataforma?.let { TextosPedidosEnLinea.notaDeReparto(it, cobro.orderNumber) }
+                ?: TextosPedidosEnLinea.pedidoNumero(cobro.orderNumber),
             unitPrice = cobro.saldoCents,
         ),
     ),

@@ -220,6 +220,7 @@ fun MoreMenuScreen(
     val bandejaSolicitada by viewModel.bandejaSolicitada.collectAsState()
     val pedidosEnLineaPendientes by viewModel.pedidosEnLineaPendientes.collectAsState()
     val hayPedidosEnLineaAbiertos by viewModel.hayPedidosEnLineaAbiertos.collectAsState()
+    val hayRepartoPorCobrarGuardado by viewModel.hayRepartoPorCobrarGuardado.collectAsState()
     LaunchedEffect(bandejaSolicitada) {
         if (bandejaSolicitada) {
             if (com.avoqado.pos.onlineorders.presentation.debeAbrirBandeja(true, viewModel.entradaPedidosEnLinea)) {
@@ -555,6 +556,7 @@ fun MoreMenuScreen(
             // «Pedidos en línea»: por `orders:read`, NO por plan (R14). Sin plan y sin pedidos abiertos se queda a la vista
             // con su candado (teaser); `hayPedidosEnLineaAbiertos` se lee aquí para que el menú se repinte al cambiar.
             @Suppress("UNUSED_EXPRESSION") hayPedidosEnLineaAbiertos
+            @Suppress("UNUSED_EXPRESSION") hayRepartoPorCobrarGuardado
             when (viewModel.entradaPedidosEnLinea) {
                 com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea.ABIERTA -> add(
                     MenuEntry(

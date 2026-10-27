@@ -108,7 +108,13 @@ object ConciliacionDelCobro {
             if (original == null) return
             if (actual == null) missing.add(field) else if (original != actual) different.add(field)
         }
-        compare("amountCents", c.amountCents, amount); compare("tipCents", c.tipCents, tip)
+        // Rappi 2b (Codex plan r1 #2): en un pedido de plataforma en efectivo el SERVIDOR reparte lo recibido (terceros → propina →
+        // venta) y lo dice en `deliveryCashAllocation`: se compara lo que se quedó en el cajón con lo capturado, no cada parte.
+        if (canal == CanalDelCobro.ORDER && payment["deliveryCashAllocation"] is JsonObject) {
+            compare("cashRetainedCents", c.amountCents + c.tipCents, integer(payment["cashRetainedCents"]))
+        } else {
+            compare("amountCents", c.amountCents, amount); compare("tipCents", c.tipCents, tip)
+        }
         compare("method", c.method, text(payment["method"]))
         // D2 (25-oct): `/fast` guarda siempre FULLPAYMENT (SERVIDOR), así que el reparto de una venta rápida dividida no se puede
         // comprobar: queda «sin confirmar», nunca como diferencia (era la alarma falsa «reparto»). Los demás canales, igual.

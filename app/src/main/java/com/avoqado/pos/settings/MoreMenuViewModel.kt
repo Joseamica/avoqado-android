@@ -54,6 +54,7 @@ class MoreMenuViewModel @Inject constructor(
     private val pendingWasteDao: com.avoqado.pos.inventory.waste.data.PendingWasteDao,
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
     private val vigilanteDePedidos: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea,
+    private val pedidosEnLineaRepository: com.avoqado.pos.onlineorders.data.OnlineOrdersRepository,
 ) : ViewModel() {
 
     // MARK: - Pedidos en línea (A3)
@@ -68,12 +69,27 @@ class MoreMenuViewModel @Inject constructor(
     val bandejaSolicitada = vigilanteDePedidos.bandejaSolicitada
     fun bandejaAtendida() = vigilanteDePedidos.bandejaAtendida()
 
-    /** OCULTA sin `orders:read`; TEASER sin plan y sin pedidos abiertos; ABIERTA en cualquier otro caso. */
+    /** Rappi 2b: este aparato ya vio pedidos de reparto por cobrar (la lista guardada): la entrada se atiende sin plan (R14). */
+    private val _hayRepartoPorCobrarGuardado = MutableStateFlow(false)
+    val hayRepartoPorCobrarGuardado: StateFlow<Boolean> = _hayRepartoPorCobrarGuardado
+
+    init {
+        viewModelScope.launch {
+            _hayRepartoPorCobrarGuardado.value = runCatching { pedidosEnLineaRepository.porCobrarGuardado() }
+                .getOrNull()?.pedidos?.isNotEmpty() == true
+        }
+    }
+
+    /**
+     * OCULTA sin `orders:read`; TEASER sin plan, sin pedidos abiertos y sin reparto; ABIERTA en cualquier otro caso. El teaser
+     * también abre la pantalla, que descubre con red los pedidos de reparto por cobrar (plan vencido en un aparato sin lista).
+     */
     val entradaPedidosEnLinea: com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea
         get() = com.avoqado.pos.onlineorders.presentation.entradaDePedidosEnLinea(
             puedeLeer = roleManager.canReadOnlineOrders,
             tienePlan = planManager.hasFeature("ONLINE_ORDERING"),
             hayPedidosAbiertos = vigilanteDePedidos.hayPedidosAbiertos.value,
+            tieneReparto = planManager.hasFeature("DELIVERY_CHANNELS") || hayRepartoPorCobrarGuardado.value,
         )
 
     val pedidosEnLineaTierLabel: String

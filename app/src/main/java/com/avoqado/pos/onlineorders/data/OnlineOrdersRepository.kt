@@ -2,15 +2,18 @@ package com.avoqado.pos.onlineorders.data
 
 import android.util.Log
 import com.avoqado.pos.BuildConfig
+import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.Inbox
+import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.domain.OnlineOrderModifier
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -40,6 +43,7 @@ private class Rechazo(val status: Int, val codigo: String?, val mensaje: String,
 class OnlineOrdersRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val cache: PayloadCache,
 ) {
 
     /** Los tests de JVM apuntan a MockWebServer con `avoqado.test.baseUrl`. 🔴 Sólo en DEBUG: estas peticiones llevan el `Bearer`. */
@@ -251,6 +255,60 @@ class OnlineOrdersRepository @Inject constructor(
             .getOrDefault(false)
     }
 
+    // MARK: - Rappi 2b: «Rappi · por cobrar»
+
+    /**
+     * Pedidos de plataforma con efectivo por cobrar (`GET online-orders/delivery-cash`, tope y cursor del servidor). La página 1 se
+     * guarda en el aparato tal cual llegó: sin red o con la app recién abierta, la sección sale de ahí ([porCobrarGuardado]). Un
+     * SERVIDOR sin la ruta (404) o sin permiso (403) ⇒ `disponible = false`, sin error: la sección simplemente no sale.
+     */
+    suspend fun porCobrar(cursor: String? = null): Result<ListaPorCobrar> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val consulta = cursor?.let { "?cursor=" + URLEncoder.encode(it, "UTF-8") }.orEmpty()
+        val leido = ejecutar(get(ruta(venueId, "online-orders/delivery-cash$consulta"), token, fondo = true))
+        val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
+        if (rechazo != null && rechazo.status in setOf(403, 404)) {
+            return Result.success(ListaPorCobrar(emptyList(), 0, false, null, disponible = false))
+        }
+        return leido.mapCatching { cuerpo ->
+            parsePorCobrar(cuerpo).also { if (cursor == null) cache.save(CACHE_POR_COBRAR, venueId, cuerpo) }
+        }.onFailure { Log.d(TAG, "«Por cobrar» no leído: ${it.message}") }
+    }
+
+    /** La última página 1 que llegó del servidor, guardada en el aparato; `null` si nunca se leyó. */
+    suspend fun porCobrarGuardado(): ListaPorCobrar? {
+        val venueId = secureStorage.venueId ?: return null
+        return cache.load(CACHE_POR_COBRAR, venueId)?.let { runCatching { parsePorCobrar(it.json) }.getOrNull() }
+    }
+
+    private fun parsePorCobrar(cuerpo: String): ListaPorCobrar {
+        val data = JSONObject(cuerpo).getJSONObject("data")
+        val lista = data.optJSONArray("orders")
+        return ListaPorCobrar(
+            // Un renglón dañado se salta: no tumba la lista.
+            pedidos = (0 until (lista?.length() ?: 0)).mapNotNull { i ->
+                runCatching {
+                    val o = lista!!.getJSONObject(i)
+                    PedidoPorCobrar(
+                        orderId = o.getString("orderId"),
+                        orderNumber = o.getString("orderNumber"),
+                        provider = o.getString("provider"),
+                        customerName = o.textoONulo("customerName"),
+                        createdAt = Instant.parse(o.getString("createdAt")),
+                        remainingBalanceCents = o.getLong("remainingBalanceCents"),
+                        saleCents = o.getLong("saleCents"),
+                        tipCents = o.getLong("tipCents"),
+                        thirdPartyCents = o.getLong("thirdPartyCents"),
+                        thirdPartyLabel = o.getString("thirdPartyLabel"),
+                    )
+                }.onFailure { Log.w(TAG, "Pedido por cobrar #$i ignorado por malformado: ${it.message}") }.getOrNull()
+            },
+            total = data.optInt("total", 0),
+            truncated = data.optBoolean("truncated", false),
+            nextCursor = data.textoONulo("nextCursor"),
+        )
+    }
+
     // MARK: - Saldo
 
     /** El saldo a cobrar lo dice el servidor (`preBillBalance.remainingBalanceCents`); la app nunca lo recalcula desde renglones. */
@@ -264,5 +322,6 @@ class OnlineOrdersRepository @Inject constructor(
     private companion object {
         const val TRAY_HEADER = "x-online-orders-tray"
         const val DEVICE_HEADER = "x-device-id"
+        const val CACHE_POR_COBRAR = "delivery_cash"
     }
 }
