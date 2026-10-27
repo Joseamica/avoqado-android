@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment
 
+import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
@@ -8,6 +9,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.local.database.filaAlReemplazar
+import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.OnlineTerminal
 import com.avoqado.pos.payment.data.OrderRepository
@@ -33,11 +35,15 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -79,7 +85,9 @@ class ImporteYMesaDeLaVentaViejaTest {
     private val tableSession = TableSession()
     private val mesas = mockk<TableServiceRepository>(relaxed = true)
     private val lanHub = mockk<LanHubService>(relaxed = true)
+    private lateinit var customerDisplay: CustomerDisplayState
     private lateinit var vm: PaymentFlowViewModel
+    private var respuestaPendiente: CompletableDeferred<Result<OrderRepository.CashPayResult>>? = null
 
     @Before
     fun setup() {
@@ -92,6 +100,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         every { secureStorage.userId } returns "user-1"
         every { areaTicketRepository.session.current() } returns null
         coEvery { mesas.clearTable(any(), any()) } returns Result.success(Unit)
+        customerDisplay = CustomerDisplayState()
         vm = PaymentFlowViewModel(
             tableSession = tableSession, syncOutbox = mockk(relaxed = true), orderRepository = orderRepository,
             cashPaymentRepository = CashPaymentRepository(secureStorage, dao), tenderTypeRepository = mockk(relaxed = true),
@@ -100,10 +109,18 @@ class ImporteYMesaDeLaVentaViejaTest {
             kdsRepository = mockk(relaxed = true), kdsOrderBus = mockk(relaxed = true), printerService = mockk(relaxed = true),
             secureStorage = secureStorage, comandaDispatcher = mockk(relaxed = true),
             comandasPendientesStore = ComandasPendientesStore(AlmacenEnMemoria()), replayDeComandas = mockk(relaxed = true),
-            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(), areaTicketRepository = areaTicketRepository,
+            customerDisplay = customerDisplay, areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = mockk(relaxed = true), savedStateHandle = androidx.lifecycle.SavedStateHandle(),
             tableServiceRepository = mesas, lanHub = lanHub,
         )
+    }
+
+    @After
+    fun cerrarRecursos() = runBlocking {
+        // El VM termina antes de apagar su display para que ningún último estado reactive el timer antes de retirar Main.
+        respuestaPendiente?.cancel()
+        if (::vm.isInitialized) vm.viewModelScope.coroutineContext.job.cancelAndJoin()
+        if (::customerDisplay.isInitialized) customerDisplay.idle()
     }
 
     private val catalogo = "2026-10-17T15:00:00.000Z"
@@ -200,7 +217,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         val mesa5 = TableSession.Active("mesa-5", "5", null, "orden-mesa-5", "M5", 1, 10_000, TableSession.Mode.PAYING)
         val mesa8 = TableSession.Active("mesa-8", "8", null, "orden-mesa-8", "M8", 1, 5_000, TableSession.Mode.PAYING)
         tableSession.start(mesa5, VENUE)
-        val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>()
+        val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>().also { respuestaPendiente = it }
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { respuesta.await() }
 
         vm.startPaymentFlow(otroImporte(10_000)) // el cobro de la mesa 5
@@ -225,7 +242,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         val mesa5 = TableSession.Active("mesa-5", "5", null, "orden-mesa-5", "M5", 1, 10_000, TableSession.Mode.PAYING)
         val mesa8 = TableSession.Active("mesa-8", "8", null, "orden-mesa-8", "M8", 1, 5_000, TableSession.Mode.PAYING)
         tableSession.start(mesa5, VENUE)
-        val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>()
+        val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>().also { respuestaPendiente = it }
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { respuesta.await() }
 
         vm.startPaymentFlow(otroImporte(10_000)) // el cobro de la mesa 5, por «Confirmar» en efectivo
