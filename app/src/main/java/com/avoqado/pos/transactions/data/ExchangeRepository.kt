@@ -80,6 +80,10 @@ class ExchangeRepository @Inject constructor(private val secureStorage: SecureSt
         client.newCall(request).execute().use { response ->
             val raw = response.body?.string().orEmpty()
             val root = runCatching { jsonReembolsos.parseToJsonElement(raw).jsonObject }.getOrNull()
+            // A refusal only counts as the server's when it has the server's envelope ({message, code}); an HTML page or an
+            // empty body from a proxy, captive portal or dead tunnel proves nothing, so the pending must survive (rE1).
+            if (!response.isSuccessful && root?.get("message") == null && root?.get("code") == null)
+                throw java.io.IOException(TextosCambio.ENVIO_SIN_CONFIRMAR)
             if (!response.isSuccessful) throw ExchangeApiException(response.code,
                 (root?.get("code") as? JsonPrimitive)?.contentOrNull,
                 (root?.get("message") as? JsonPrimitive)?.contentOrNull ?: TextosCambio.ENVIO_SIN_CONFIRMAR,

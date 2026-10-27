@@ -145,6 +145,15 @@ class ExchangeRepositoryHttpTest {
         assertEquals(1,server.requestCount)
         assertEquals(pending().body,store.load("venue","payment")!!.body)
     }
+    @Test fun `a 400 or 404 from an intermediary or with an unreadable body keeps the pending`()=runBlocking {
+        for ((http,body) in listOf(404 to "<html><body>Tunnel not found</body></html>", 400 to "", 400 to """{"error":"bad gateway"}""")) {
+            server.enqueue(MockResponse().setResponseCode(http).setBody(body))
+            if(store.load("venue","payment")==null) flow.submit(pending()) else flow.retry()
+            assertEquals(pending().body,store.load("venue","payment")!!.body)
+            assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+            assertTrue(flow.state.value.locked)
+        }
+    }
     @Test fun `structured validation releases a 400 and key reuse is explicit`()=runBlocking {
         for ((code,body) in listOf(400 to """{"message":"invalid","details":[{"path":["body","taken"],"code":"too_small"}]}""",
             409 to """{"message":"reused","code":"IDEMPOTENCY_KEY_REUSED"}""")) {
