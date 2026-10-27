@@ -89,6 +89,8 @@ import javax.inject.Inject
 data class PaymentCompletion(
     val splitType: String,
     val remainingBalanceCents: Int,
+    /** D7 (27-oct): `remainingBalanceCents` lo confirmó el SERVIDOR (efectivo o lectura tras tarjeta), no la resta local. */
+    val saldoDelServidor: Boolean = false,
     val paidItemIds: Set<String> = emptySet(),
     /**
      * La orden que quedó cobrada, cuando la hubo (una venta rápida sin orden la
@@ -120,6 +122,10 @@ data class PaymentCompletion(
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
+
+/** D7 (27-oct): el texto del aviso cuando, tras una parte con tarjeta, no se pudo confirmar el saldo con el SERVIDOR. */
+const val AVISO_SALDO_SIN_CONFIRMAR =
+    "El cobro sí quedó, pero no se pudo confirmar con Avoqado cuánto falta de esta venta. Revísala en Ventas antes de cobrar el resto."
 
 /** Mismo texto en iOS (`AreaTicketPaymentError.ventaConAbono`) y en «Vaciar» (D5, 20-oct). */
 const val VALES_CON_ABONO = "Esta venta de vales ya tiene un abono: cobra su saldo pendiente para terminarla."
@@ -671,6 +677,10 @@ class PaymentFlowViewModel @Inject constructor(
         if (cambios.isEmpty()) return false
         val corregido = cartState?.conPreciosDelServidor(cambios, congelar) ?: return false
         cartState = corregido
+        // D10 (Codex r1 #4): con el precio corregido la parte puede pasar a ser TODO lo que falta: se lleva todos los productos.
+        if (_splitType.value == "BYPRODUCT" && parteDeLaSeleccion(corregido).todoLoQueFalta) {
+            splitSelectedItemIds = corregido.items.map { it.id }.toSet()
+        }
         if (splitBaseAmountOverride != null) splitBaseAmountOverride = resolveSplitBaseAmount(corregido)
         cambiosDeEstaVenta = acumularCambiosDePrecio(cambiosDeEstaVenta, cambios)
         return true
@@ -970,6 +980,15 @@ class PaymentFlowViewModel @Inject constructor(
     private var lastAreaDeliveryCode: String? = null
     private var lastCashTenderedCents: Int? = null
     private var splitSelectedItemIds: Set<String> = emptySet()
+
+    /**
+     * D7 (27-oct): este cobro sigue una venta YA partida en tienda (`resumeOrderId`, no mesa). Sólo aquí el saldo del
+     * SERVIDOR manda también en el pago completo del resto: otra caja o la terminal pudieron cambiar la venta entre partes.
+     */
+    private var continuaVentaPartida = false
+
+    /** D7: tras una parte con tarjeta no se pudo confirmar el saldo con el SERVIDOR (el éxito lo dice). */
+    private var saldoSinConfirmar = false
     private var splitNumberOfParts: Int? = null
     private var splitCustomAmountCents: Int? = null
     private var splitBaseAmountOverride: Int? = null
@@ -1635,6 +1654,13 @@ class PaymentFlowViewModel @Inject constructor(
         // Un `Insistiendo` de la venta anterior describe algo que ya terminó: se limpia. El
         // fallo final NO vive aquí, así que no hay nada que preservar a mano.
         _avisoEnCurso.value = null
+        // D4 (27-oct): una pieza de un combo arrastra a todo su combo. Una sola vez, aquí: el importe, el saldo, la pantalla y
+        // el recibo leen la MISMA selección, y el carrito (que quita el combo entero) nunca queda con dinero sin renglón.
+        splitSelectedItemIds = conCombosCompletos(cart.items, splitSelectedItemIds)
+        // D10 (27-oct): si la parte saldría en $0 o dejaría ≤ 1 ¢, se lleva TODO lo que queda (selección, importe y recibo).
+        if (_splitType.value == "BYPRODUCT" && splitSelectedItemIds.isNotEmpty() && parteDeLaSeleccion(cart).todoLoQueFalta) {
+            splitSelectedItemIds = cart.items.map { it.id }.toSet()
+        }
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
         // El total autoritativo es de la venta ANTERIOR: arrastrarlo cobraría
         // esta venta al precio de la pasada.
@@ -1705,6 +1731,8 @@ class PaymentFlowViewModel @Inject constructor(
         // created for this charge. With no session active this is a no-op and
         // every retail/quick flow is byte-identical.
         mesaDelCobro?.let { createdOrderId = it.orderId }
+        continuaVentaPartida = mesaDelCobro == null && !resumeOrderId.isNullOrBlank()
+        saldoSinConfirmar = false
         // Regla 9 (vales, r7): el apartado que cobra ESTE cobro; terminar, soltar y salir actúan sobre él, nunca sobre el vigente.
         sesionDelCobro = areaTicketRepository.session.current()?.id?.takeIf { esCobroDeVales() }
         selectedTerminalId = null
@@ -3414,12 +3442,33 @@ class PaymentFlowViewModel @Inject constructor(
      * descubre TARDE, re-consultando el estado durable. En ese segundo caso el cajero no ve
      * ningún error: el cobro salió bien, la app sólo se enteró después.
      */
-    private fun applyCardCharged(
+    private suspend fun applyCardCharged(
         charged: TerminalPaymentResult.Success,
         total: Int,
         /** Se descubrió al cancelar: la pantalla lo DICE, porque el cajero creía cancelada la venta. */
         trasCancelar: Boolean = false,
     ) {
+        // D7 (27-oct): la terminal no dice cuánto queda de una venta partida. Se le pregunta al SERVIDOR ANTES de soltar la
+        // protección durable del cobro (`reconocerCobro`) y antes de publicar el éxito, que es lo que entrega el resultado
+        // al carrito. Si el cajero se fue mientras tanto, el dinero no se pierde: va por el camino del desenlace tardío.
+        var avisoDeSaldo: String? = null
+        val ordenALeer = createdOrderId
+        if (ordenALeer != null && mesaDelCobro == null && !esCobroDeVales() &&
+            (continuaVentaPartida || _splitType.value != "FULLPAYMENT")
+        ) {
+            val generacion = paymentGeneration
+            val saldo = leerSaldoTrasTarjeta(ordenALeer)
+            if (generacion != paymentGeneration) {
+                handleStaleCardResult(charged)
+                return
+            }
+            if (saldo != null) {
+                adoptarSaldoDelServer(saldo.remainingCents, saldo.paymentStatus)
+            } else {
+                saldoSinConfirmar = true
+                avisoDeSaldo = AVISO_SALDO_SIN_CONFIRMAR
+            }
+        }
         undeterminedRequestId = null // el desenlace ya consta
         // H2: ESTE flujo lo aplica como SU pago: la entrada (marcada por la consulta que lo probó) sale de la lista, sin
         // dejar ni pendiente ni «SÍ pasó» sobre su propio cobro.
@@ -3437,9 +3486,25 @@ class PaymentFlowViewModel @Inject constructor(
             receiptAccessKey = charged.receiptAccessKey,
             receiptUrl = charged.receiptUrl,
             cobroTrasCancelar = trasCancelar,
+            avisoDeSaldo = avisoDeSaldo,
         )
         autoPrintAfterPayment(PaymentMethod.CARD)
     }
+
+    /**
+     * D7: dos intentos (un tropiezo de red no basta para rendirse) y 5 s en TOTAL como máximo: corre entre «la tarjeta
+     * cobró» y «Cobro exitoso» (Codex fase 1 código r1 #2). null = no se pudo confirmar.
+     */
+    private suspend fun leerSaldoTrasTarjeta(orderId: String): OrderRepository.SaldoDeLaOrden? =
+        kotlinx.coroutines.withTimeoutOrNull(5_000) {
+            var saldo: OrderRepository.SaldoDeLaOrden? = null
+            for (intento in 0 until 2) {
+                saldo = orderRepository.saldoDeLaOrden(orderId)
+                if (saldo != null) break
+                if (intento == 0) kotlinx.coroutines.delay(500)
+            }
+            saldo
+        }
 
     /**
      * El desenlace de la terminal llegó TARDE, después de que el cajero canceló y la pantalla
@@ -4520,7 +4585,12 @@ class PaymentFlowViewModel @Inject constructor(
         val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
             cobrado = receiptTotal - currentTipCents,
             propina = currentTipCents,
-            subtotalBruto = (if (cart != null && isFullPayment) cart.subtotalCents else baseAmount) - cargoDeLaMesa,
+            subtotalBruto = when {
+                cart != null && isFullPayment -> cart.subtotalCents
+                // D8 (27-oct): lo elegido a precio de lista; el papel imprime su descuento (bruto − cobrado) y cuadra.
+                cart != null && splitTypeValue == "BYPRODUCT" -> maxOf(brutoDeLaSeleccion(cart), baseAmount)
+                else -> baseAmount
+            } - cargoDeLaMesa,
             cargo = cargoDeLaMesa,
             impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
         )
@@ -4678,10 +4748,8 @@ class PaymentFlowViewModel @Inject constructor(
         return when (splitTypeValue) {
             "BYPRODUCT" -> {
                 val validPaidIds = splitSelectedItemIds.intersect(cart.items.map { it.id }.toSet())
-                val remaining = cart.items
-                    .filterNot { validPaidIds.contains(it.id) }
-                    .sumOf { it.totalPrice }
-                    .coerceAtLeast(0)
+                // D10: sin el saldo del SERVIDOR, lo que falta es el saldo local menos esta parte (no los precios de lista).
+                val remaining = (cart.totalCents - currentBaseAmount()).coerceAtLeast(0)
                 PaymentCompletion(
                     splitType = splitTypeValue,
                     // 🔴 El saldo del server gana; los artículos pagados NO son
@@ -4731,7 +4799,10 @@ class PaymentFlowViewModel @Inject constructor(
                 // lo que el cajero hace todos los días es decisión del founder.
                 PaymentCompletion(
                     splitType = splitTypeValue,
-                    remainingBalanceCents = 0,
+                    // D7 (27-oct): la ÚNICA excepción es el resto de una venta YA partida en tienda: ahí no hay paquetes ni
+                    // efectivo corto que proteger, y si el SERVIDOR dice que aún se debe (otra caja abonó, la terminal quitó
+                    // un descuento), cerrar la venta escondía esa deuda. `adoptarSaldoDelServer` ya pone 0 si quedó PAGADA.
+                    remainingBalanceCents = if (continuaVentaPartida) serverRemainingBalanceCents?.coerceAtLeast(0) ?: 0 else 0,
                     orderId = createdOrderId,
                     premioConfirmadoCents = premioConfirmadoCents,
                 )
@@ -4740,6 +4811,7 @@ class PaymentFlowViewModel @Inject constructor(
             carritoGuardadoDelCobro = cart.carritoGuardadoId,
             identidadDeVenta = cart.identidadDeVenta,
             parteEnCola = ((_state.value as? PaymentFlowState.Success)?.colaDelCobro as? com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos)?.id,
+            saldoDelServidor = serverRemainingBalanceCents != null,
             cambiosDePrecio = cambiosDeEstaVenta,
             descuentoDeCuentaCongelado = cart.descuentoDeCuentaCongelado,
         )
@@ -4780,6 +4852,20 @@ class PaymentFlowViewModel @Inject constructor(
                 items = visibleItems,
                 splitType = splitTypeValue,
             )
+            // D8 (27-oct): renglones a su precio, la línea «Descuento» y lo cobrado cuadran (bruto − cobrado = descuento).
+            "BYPRODUCT" -> {
+                val bruto = maxOf(brutoDeLaSeleccion(cart), baseAmount)
+                PaymentContext(
+                    subtotalCents = bruto,
+                    discountCents = bruto - baseAmount,
+                    taxCents = 0,
+                    tipCents = currentTipCents,
+                    totalCents = baseAmount + currentTipCents,
+                    rating = currentRating,
+                    items = visibleItems,
+                    splitType = splitTypeValue,
+                )
+            }
             else -> PaymentContext(
                 subtotalCents = baseAmount,
                 discountCents = 0,
@@ -5105,14 +5191,42 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    /** D4: lo elegido más todas las piezas de sus combos (`promotionInstanceId`): un combo se paga completo o no se paga. */
+    private fun conCombosCompletos(items: List<CartItem>, elegidos: Set<String>): Set<String> {
+        if (elegidos.isEmpty()) return elegidos
+        val combos = items.filter { it.id in elegidos }.mapNotNull { it.promotionInstanceId }.toSet()
+        if (combos.isEmpty()) return elegidos
+        return elegidos + items.filter { it.promotionInstanceId in combos }.map { it.id }
+    }
+
+    /**
+     * D10: lo que vale cada renglón para repartir: su neto (precio − su descuento propio) y, si es el producto gratis del
+     * premio (el más caro, como el SERVIDOR), menos el premio entero — el SERVIDOR lo pone sólo en ese renglón.
+     */
+    private fun pesosPorRenglon(cart: CartState): Map<String, Long> {
+        val premioDirigido = cart.pendingStampReward?.takeIf { cart.premioAplica && it.tipo?.uppercase() == "FREE_PRODUCT" }
+            ?.let { cart.stampRewardCents } ?: 0
+        val premiado = if (premioDirigido > 0) com.avoqado.pos.loyalty.data.renglonDelProductoGratis(cart.items)?.first else null
+        return cart.items.associate { it.id to (it.totalPrice - if (it.id == premiado) premioDirigido else 0).coerceAtLeast(0).toLong() }
+    }
+
+    private fun parteDeLaSeleccion(cart: CartState): com.avoqado.pos.payment.domain.ParteProporcional {
+        val pesos = pesosPorRenglon(cart)
+        return com.avoqado.pos.payment.domain.parteProporcional(
+            pesosElegidos = pesos.filterKeys { it in splitSelectedItemIds }.values.sum(),
+            pesosRestantes = pesos.values.sum(),
+            saldoCents = cart.totalCents,
+        )
+    }
+
+    /** D8: el precio de lista (sin ningún descuento) de lo elegido en una parte «por producto». */
+    private fun brutoDeLaSeleccion(cart: CartState): Int =
+        cart.items.filter { splitSelectedItemIds.contains(it.id) }.sumOf { it.grossPrice }
+
     private fun resolveSplitBaseAmount(cart: CartState): Int? {
         return when (_splitType.value) {
-            "BYPRODUCT" -> {
-                val selectedTotal = cart.items
-                    .filter { splitSelectedItemIds.contains(it.id) }
-                    .sumOf { it.totalPrice }
-                selectedTotal.coerceAtLeast(0)
-            }
+            // D10 (27-oct, founder «A»): su parte proporcional del saldo, no el precio de lista de sus renglones.
+            "BYPRODUCT" -> parteDeLaSeleccion(cart).cents
             "EQUALPARTS" -> {
                 val parts = (splitNumberOfParts ?: 1).coerceAtLeast(1)
                 (cart.totalCents + parts - 1) / parts

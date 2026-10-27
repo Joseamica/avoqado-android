@@ -1730,6 +1730,7 @@ fun CheckoutScreen(
                         // El carrito de la caja queda con el precio de la orden (y su descuento de cuenta como quedó en ella).
                         cambiosDePrecio = completion.cambiosDePrecio,
                         descuentoDeCuentaCongelado = completion.descuentoDeCuentaCongelado,
+                        saldoDelServidor = completion.saldoDelServidor,
                     )
                     if (!cobro.aplicadoAlCarritoActual) return@PaymentFlowScreen
                     when (cobro.rama) {
@@ -1931,6 +1932,7 @@ fun CheckoutScreen(
             // (`allowPerProduct`), que exigía >1 renglón para ofrecer dividir
             // siquiera — corregido el mismo día.
             allowByProduct = cartState.items.none { it.locked } && cartState.items.size > 1,
+            porProductoApagado = cartState.razonSinPorProducto,
             onDismiss = { showSplitPayment = false },
             onConfirm = { splitConfig ->
                 showSplitPayment = false

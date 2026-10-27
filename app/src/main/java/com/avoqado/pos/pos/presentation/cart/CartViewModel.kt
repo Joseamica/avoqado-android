@@ -241,6 +241,23 @@ data class CartState(
     val totalCents: Int get() = (subtotalCents - discountCents - stampRewardCents + taxCents).coerceAtLeast(0)
     val isEmpty: Boolean get() = items.isEmpty()
 
+    /**
+     * D10 (27-oct, founder «Sí, gris en esos casos»): por qué «Por producto» sale en gris, o null si se puede. En estas dos
+     * ventas la tablet no puede saber el reparto exacto del SERVIDOR (Codex D10 r2): una promoción guarda sus piezas
+     * redondeadas, y el producto gratis empatado lo desempata el SERVIDOR por un id que aquí no existe todavía.
+     */
+    val razonSinPorProducto: String?
+        get() = when {
+            items.any { it.promotionInstanceId != null } &&
+                (orderDiscount != null || descuentoDeCuentaCongelado != null || (pendingStampReward != null && premioAplica)) ->
+                POR_PRODUCTO_CON_PROMOCION
+            // Codex D10 r3: con «producto gratis» el SERVIDOR pone el regalo ENTERO en un renglón que la tablet no puede
+            // seguir con certeza (empates por un id que aquí no existe, precios que el SERVIDOR corrige, y tras la primera
+            // parte el premio ya sólo es un monto). Siempre en gris, no sólo con empate.
+            pendingStampReward?.takeIf { premioAplica && it.tipo?.uppercase() == "FREE_PRODUCT" } != null -> POR_PRODUCTO_PREMIO_EMPATADO
+            else -> null
+        }
+
     val subtotalDisplay: String get() = formatCents(subtotalCents)
     val discountDisplay: String get() = formatCents(discountCents)
     /** Los dos descuentos por separado: se pintan en renglones distintos, con su
@@ -289,6 +306,14 @@ const val VENTA_A_MEDIAS_CAMBIADA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. Quita lo que agregaste y véndelo aparte."
 
 // D1 (26-oct, founder «B»): dividir en tienda pide conexión; una parte guardada sin red hace esperar al resto. Mismos textos en iOS.
+/** D10: «Por producto» en gris — promoción + descuento de toda la cuenta (o premio). */
+const val POR_PRODUCTO_CON_PROMOCION =
+    "Esta venta tiene una promoción y un descuento de toda la cuenta: divídela por monto o en partes iguales."
+
+/** D10: «Por producto» en gris — la venta lleva un premio de «producto gratis». */
+const val POR_PRODUCTO_PREMIO_EMPATADO =
+    "Esta venta lleva un producto gratis del premio de sellos: divídela por monto o en partes iguales."
+
 const val DIVIDIR_SIN_CONEXION =
     "Dividir necesita conexión con Avoqado. Cobra todo junto o espera a que vuelva la conexión."
 const val PARTE_SIN_RED_SUBIENDO =
@@ -1778,6 +1803,8 @@ class CartViewModel @Inject constructor(
         cambiosDePrecio: List<CambioDePrecio> = emptyList(),
         /** El descuento de cuenta como quedó en la orden (fijo tras un 201 con cambios; null tras un 409 o sin descuento). */
         descuentoDeCuentaCongelado: DescuentoCongelado? = null,
+        /** D7: `remainingBalanceCents` lo confirmó el SERVIDOR (no es la resta local). */
+        saldoDelServidor: Boolean = false,
     ): CobroAplicado {
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
@@ -1820,6 +1847,16 @@ class CartViewModel @Inject constructor(
                 // orden PAGADA (pasa con un premio mayor que la parte cobrada). Dejarlo permitía cobrarlo
                 // otra vez en una orden nueva (hallazgo P1 de Codex, ronda 2).
                 if (remainingBalanceCents <= 0 && !_cartState.value.isEmpty) clearCart()
+                // D7 (27-oct): el SERVIDOR confirmó un saldo que no es lo que valen los renglones que quedan (otra caja
+                // abonó, la terminal quitó un descuento) o ya no queda renglón: el carrito enseña ESE saldo, en la misma
+                // venta, para que se pueda cobrar. Sin confirmación (resta local) no se toca: es la de siempre.
+                // D10 (Codex r1 #1): también con el saldo LOCAL: con la parte proporcional, saldo − parte ya es lo que falta, y
+                // un descuento fijo de toda la cuenta se quedaría entero en los renglones que quedan.
+                if (remainingBalanceCents > 0 && _cartState.value.totalCents != remainingBalanceCents) {
+                    clearCart()
+                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal) }
+                    addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
+                }
                 RamaCobro.RENGLONES_PAGADOS
             }
             remainingBalanceCents > 0 -> {
