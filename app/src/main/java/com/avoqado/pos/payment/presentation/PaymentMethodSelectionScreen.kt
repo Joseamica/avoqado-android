@@ -86,6 +86,8 @@ fun PaymentMethodSelectionScreen(
     onCancel: () -> Unit,
     terminalsUnavailable: Boolean = false,
     saldoSinActualizar: Boolean = false,
+    /** Por qué sólo efectivo (con [saldoSinActualizar]): el saldo sin actualizar, o un pedido de plataforma (Rappi 2b). */
+    textoSoloEfectivo: String = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
     onRetryTerminals: () -> Unit = {},
     /** Link "Dividir importe" arriba (Mesas y tienda, como Square) — null lo oculta. */
     onSplitImporte: (() -> Unit)? = null,
@@ -288,7 +290,7 @@ fun PaymentMethodSelectionScreen(
                         else MaterialTheme.colorScheme.onSurface,
                     )
                     if (saldoSinActualizar) {
-                        Text(com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
+                        Text(textoSoloEfectivo,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else if (terminalsUnavailable) {
                         Row(verticalAlignment = Alignment.CenterVertically) {

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -55,7 +56,9 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.payment.domain.OrigenDelCobro
 import com.avoqado.pos.payment.domain.PaymentOverlayState
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
@@ -84,7 +87,13 @@ fun OnlineOrdersScreen(
     planRequerido: String = "Pro",
 ) {
     val espacio = AvoqadoTheme.spacing
-    val teaser = remember(viewModel) { viewModel.esTeaser }
+    // Rappi 2b: la lista guardada primero y una lectura con red, aunque la pantalla abra como teaser (descubre pedidos por cobrar).
+    val porCobrar by viewModel.porCobrar.collectAsState()
+    LaunchedEffect(viewModel) { viewModel.descubrirPorCobrar() }
+    // Se relee en cada recomposición: deja de ser teaser en cuanto el descubrimiento encuentra pedidos por cobrar.
+    @Suppress("UNUSED_EXPRESSION") porCobrar
+    val teaser = viewModel.esTeaser
+    val muestraTienda = viewModel.muestraTienda
 
     if (!teaser) {
         // 🔴 Sólo mientras se ve: cerrada la pantalla o con la app en segundo plano no se consulta (y no late la tienda).
@@ -126,7 +135,7 @@ fun OnlineOrdersScreen(
                 ) {
                     Text(TextosPedidosEnLinea.MENU, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (!teaser) {
+                        if (!teaser && muestraTienda) {
                             OutlinedButton(onClick = { pausando = true }, enabled = !sinConexion, modifier = Modifier.testTag("pausar")) {
                                 Text(TextosPedidosEnLinea.PAUSAR_TIENDA)
                             }
@@ -149,8 +158,10 @@ fun OnlineOrdersScreen(
                     AvisoNeutro(texto, accion = TextosPedidosEnLinea.ENTENDIDO, onAccion = viewModel::cerrarAviso)
                 }
 
+                // Rappi 2b: la sección sale si el servidor la tiene y hay pedidos; sin tienda web, también vacía (con su texto).
+                val reparto = porCobrar?.takeIf { it.disponible && viewModel.muestraReparto && (it.pedidos.isNotEmpty() || !muestraTienda) }
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                    if (cargando && secciones.vacia) {
+                    if (reparto == null && cargando && secciones.vacia) {
                         // Primera lectura: nada que mostrar todavía (el banner de sin conexión, si aplica, ya está arriba).
                         Text(
                             "…",
@@ -158,7 +169,7 @@ fun OnlineOrdersScreen(
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    } else if (secciones.vacia) {
+                    } else if (reparto == null && secciones.vacia) {
                         // «No hay pedidos» sólo dice la verdad tras una lectura buena; sin ella (sin red o fallo) basta el aviso de arriba.
                         if (leyoAlgunaVez) Text(
                             TextosPedidosEnLinea.SIN_PEDIDOS,
@@ -183,6 +194,20 @@ fun OnlineOrdersScreen(
                             onCobrar = viewModel::cobrar,
                             onReimprimir = viewModel::reimprimir,
                             onCargarMas = viewModel::cargarMas,
+                            claveTrasPorAceptar = if (reparto != null) "h-reparto" else null,
+                            trasPorAceptar = reparto?.let { lista ->
+                                {
+                                    seccionDeReparto(
+                                        reparto = lista,
+                                        puedeCobrar = viewModel.puedeCobrar && puedeActualizar,
+                                        ocupados = ocupados,
+                                        cargandoMas = cargandoMas,
+                                        sinConexion = sinConexion,
+                                        onCobrar = viewModel::cobrarDeReparto,
+                                        onCargarMas = viewModel::cargarMasPorCobrar,
+                                    )
+                                }
+                            },
                         )
                     }
                 }
@@ -408,6 +433,8 @@ internal fun ListaDeBandeja(
     estadoLista: LazyListState = rememberLazyListState(),
     /** Cabecera de una sección que se emite justo después de «Por aceptar» mientras se muestra (Rappi 2b: `h-reparto`). */
     claveTrasPorAceptar: String? = null,
+    /** Rappi 2b: las filas de «Rappi · por cobrar», justo después de «Por aceptar» (lo único que suena y vence va primero). */
+    trasPorAceptar: (LazyListScope.() -> Unit)? = null,
 ) {
     val espacio = AvoqadoTheme.spacing
 
@@ -469,6 +496,7 @@ internal fun ListaDeBandeja(
             }
         }
         tarjetas(TextosPedidosEnLinea.SECCION_POR_ACEPTAR, secciones.porAceptar, SeccionDePedido.POR_ACEPTAR)
+        trasPorAceptar?.invoke(this)
         tarjetas(TextosPedidosEnLinea.SECCION_EN_PREPARACION, secciones.enPreparacion, SeccionDePedido.EN_PREPARACION, cargarMas)
         tarjetas(TextosPedidosEnLinea.SECCION_LISTOS, secciones.listos, SeccionDePedido.LISTOS, cargarMas)
         tarjetas(
@@ -551,5 +579,58 @@ internal fun DialogosDeLaBandeja(
             },
             dismissButton = { TextButton(onClick = cerrar) { Text(TextosPedidosEnLinea.CANCELAR_VOLVER) } },
         )
+    }
+}
+
+/** Rappi 2b: «Rappi · por cobrar» (claves `h-reparto`, `reparto-vacio`, `reparto-…`, `reparto-mas`), dentro de [ListaDeBandeja]. */
+internal fun LazyListScope.seccionDeReparto(
+    reparto: ListaPorCobrar,
+    puedeCobrar: Boolean,
+    ocupados: Set<String>,
+    cargandoMas: Boolean,
+    sinConexion: Boolean,
+    onCobrar: (PedidoPorCobrar) -> Unit,
+    onCargarMas: () -> Unit,
+) {
+    item(key = "h-reparto") {
+        Text(
+            "${TextosPedidosEnLinea.SECCION_REPARTO_POR_COBRAR} (${reparto.total})",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm).testTag("seccion-reparto"),
+        )
+    }
+    if (reparto.pedidos.isEmpty()) {
+        item(key = "reparto-vacio") {
+            Text(
+                TextosPedidosEnLinea.REPARTO_VACIO,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    items(reparto.pedidos, key = { "reparto-${it.orderId}" }) { pedido ->
+        PedidoPorCobrarCard(
+            pedido = pedido,
+            puedeCobrar = puedeCobrar,
+            ocupado = pedido.orderId in ocupados,
+            onCobrar = { onCobrar(pedido) },
+        )
+    }
+    if (reparto.truncated) {
+        item(key = "reparto-mas") {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    TextosPedidosEnLinea.mostrandoDe(reparto.pedidos.size, reparto.total),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = onCargarMas,
+                    enabled = !cargandoMas && !sinConexion,
+                    modifier = Modifier.fillMaxWidth().testTag("cargar-mas-reparto"),
+                ) { Text(TextosPedidosEnLinea.CARGAR_MAS) }
+            }
+        }
     }
 }

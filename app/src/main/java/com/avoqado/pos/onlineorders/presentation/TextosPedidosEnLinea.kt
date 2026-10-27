@@ -79,4 +79,15 @@ object TextosPedidosEnLinea {
     const val TEASER_CUERPO = "Recibe los pedidos de la tienda web de tu negocio y acéptalos desde aquí."
     fun teaserPlan(plan: String) = "Incluido en el Plan $plan"
     fun pedidoNumero(folio: String) = "Pedido #$folio"
+
+    // Rappi 2b — textos nuevos: iOS debe copiarlos igual.
+    const val SECCION_REPARTO_POR_COBRAR = "Rappi · por cobrar"
+    /** «Venta $175 · Propina $20 · Rappi $10»; la propina y la parte de la plataforma se omiten cuando son null (valen 0). */
+    fun desgloseDeReparto(venta: String, propina: String?, plataforma: String, terceros: String?) =
+        listOfNotNull("Venta $venta", propina?.let { "Propina $it" }, terceros?.let { "$plataforma $it" }).joinToString(" · ")
+    fun totalACobrar(monto: String) = "Total a cobrar $monto"
+    fun notaDeReparto(plataforma: String, folio: String) = "$plataforma #$folio"
+    const val REPARTO_SOLO_EFECTIVO = "Los pedidos de Rappi con tu repartidor se cobran en efectivo."
+    const val REPARTO_VACIO = "No hay pedidos de Rappi por cobrar."
+    fun mostrandoDe(n: Int, total: Int) = "Mostrando $n de $total"
 }

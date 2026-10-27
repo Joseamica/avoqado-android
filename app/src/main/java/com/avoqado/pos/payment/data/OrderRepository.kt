@@ -1009,6 +1009,8 @@ class OrderRepository @Inject constructor(
          * cliente). Sólo cambia contra qué se compara el resultado; la captura original no se toca. null = como siempre.
          */
         importeAceptadoCents: Int? = null,
+        /** Rappi 2b: efectivo ya recibido con un saldo guardado ⇒ viaja con `isOfflineReplay` (el contrato del replay). */
+        capturaPrevia: Boolean = false,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -1033,6 +1035,7 @@ class OrderRepository @Inject constructor(
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
+                if (capturaPrevia) append("\"isOfflineReplay\":true,")
                 append("\"idempotencyKey\":\"$idempotencyKey\"")
                 append("}")
             }
