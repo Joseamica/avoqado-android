@@ -80,6 +80,16 @@ class ExchangeViewModel @Inject constructor(
     val catalogError = productsRepository.error
     private val _preparedExchange = MutableStateFlow<ExchangeDraft?>(null)
     val preparedExchange = _preparedExchange.asStateFlow()
+    private var serverCalculation: com.avoqado.pos.transactions.data.ExchangeServerCalculation? = null
+    var submissionLocked: Boolean = false
+        private set
+
+    fun lockSubmission(locked: Boolean) { submissionLocked = locked }
+
+    fun applyServerCalculation(calculation: com.avoqado.pos.transactions.data.ExchangeServerCalculation) {
+        serverCalculation = calculation
+        recalculate()
+    }
 
     init {
         viewModelScope.launch {
@@ -91,6 +101,8 @@ class ExchangeViewModel @Inject constructor(
 
     fun start(transaction: Transaction) {
         if (_state.value.transaction?.id == transaction.id) return
+        serverCalculation = null
+        submissionLocked = false
         val rows = transaction.items.map { ExchangeReturnedRow(it, blockedReason = itemBlockedReason(it)) }
         val groups = rows.filter { it.item.isPromotionLine == true && it.item.orderPromotionId != null }
             .groupBy { it.item.orderPromotionId }
@@ -100,6 +112,13 @@ class ExchangeViewModel @Inject constructor(
         })
         recalculate()
         viewModelScope.launch { productsRepository.fetchProducts(enSegundoPlano = true) }
+    }
+
+    fun restart(transaction: Transaction) {
+        submissionLocked = false
+        serverCalculation = null
+        _state.value = ExchangeUiState()
+        start(transaction)
     }
 
     private fun itemBlockedReason(item: TransactionItem): String? {
@@ -122,6 +141,8 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun toggleReturned(id: String) {
+        if (submissionLocked) return
+        serverCalculation = null
         val row = _state.value.returned.firstOrNull { it.item.id == id } ?: return
         if (row.blockedReason != null) return
         val selected = row.quantity == 0
@@ -147,6 +168,8 @@ class ExchangeViewModel @Inject constructor(
     }
     fun setRestock(id: String, restock: Boolean) = changeRow(id) { it.copy(restock = restock && it.item.restockable == true) }
     private fun changeRow(id: String, change: (ExchangeReturnedRow) -> ExchangeReturnedRow) {
+        if (submissionLocked) return
+        serverCalculation = null
         _state.value = _state.value.copy(returned = _state.value.returned.map {
             if (it.item.id == id && it.blockedReason == null) change(it) else it
         })
@@ -160,6 +183,8 @@ class ExchangeViewModel @Inject constructor(
         p.type !in setOf("APPOINTMENTS_SERVICE", "CLASS", "EVENT", "DIGITAL", "GIFT_CARD", "DONATION", "SERVICE")
 
     fun addTaken(product: Product, inheritsFromOrderItemId: String? = null) {
+        if (submissionLocked) return
+        serverCalculation = null
         val current = products.value.firstOrNull { it.id == product.id } ?: return
         if (!sellable(current) || current.isOutOfStock) return
         val returnedIds = _state.value.returned.filter { it.quantity > 0 }.mapNotNull { it.item.productId }
@@ -169,6 +194,8 @@ class ExchangeViewModel @Inject constructor(
         recalculate()
     }
     fun removeTaken(index: Int) {
+        if (submissionLocked) return
+        serverCalculation = null
         _state.value = _state.value.copy(taken = _state.value.taken.filterIndexed { i, _ -> i != index })
         recalculate()
     }
@@ -181,7 +208,8 @@ class ExchangeViewModel @Inject constructor(
             ReturnedPiece(item.id!!, item.productId, item.productGroupId, it.toLong(), item.currentListPriceCents)
         }
     }
-    fun returnedValue(row: ExchangeReturnedRow): Long = pieces(row).sumOf { it.paidCents }
+    fun returnedValue(row: ExchangeReturnedRow): Long = serverCalculation?.lines?.returned
+        ?.firstOrNull { it.orderItemId == row.item.id }?.valueCents ?: pieces(row).sumOf { it.paidCents }
 
     private fun recalculate() {
         _preparedExchange.value = null
@@ -190,7 +218,15 @@ class ExchangeViewModel @Inject constructor(
         val calculation = try {
             calculateExchange(selected.flatMap(::pieces), s.taken.map { row ->
                 TakenLine(row.product.id, row.product.productGroupId, catalogPriceCents(row.product)!!, 1, row.inheritsFromOrderItemId)
-            }).also { value ->
+            }).let { local ->
+                serverCalculation?.let { server ->
+                    ExchangeCalculation(server.returnedCents, server.takenCents, server.differenceCents,
+                        ExchangeKind.valueOf(server.kind), server.lines.taken.flatMapIndexed { index, line ->
+                            line.pieces.map { piece -> TakenPiecePrice(index, piece.priceCents, line.listCents,
+                                local.takenPieces.getOrNull(index)?.inheritedFrom) }
+                        })
+                } ?: local
+            }.also { value ->
                 require(value.takenPieces.all { it.priceCents in 0L..9_007_199_254_740_991L })
             }
         } catch (_: ArithmeticException) {
@@ -208,7 +244,7 @@ class ExchangeViewModel @Inject constructor(
             !connectivityMonitor.isOnline() -> TextosCambio.SIN_CONEXION
             s.transaction?.exchangeable != true -> TextosCambio.NOT_A_SALE
             selected.isEmpty() -> TextosCambio.ELIGE_REGRESA
-            selected.size > 100 || selected.any { it.quantity > 999 } -> TextosCambio.LIMITE_ARTICULOS
+            selected.size > 100 || s.taken.size > 100 || selected.any { it.quantity > 999 } -> TextosCambio.LIMITE_ARTICULOS
             selected.any { it.reason == null } -> TextosCambio.ELIGE_MOTIVO
             s.taken.isEmpty() -> TextosCambio.ELIGE_SE_LLEVA
             s.taken.any { taken -> taken.product.productGroupId != null &&
@@ -231,6 +267,7 @@ class ExchangeViewModel @Inject constructor(
 
     /** Task 5 entry point: validate, expose selection body; no POST, local stock write or outbox. */
     fun prepareExchange(): ExchangeDraft? {
+        if (submissionLocked) return null
         recalculate()
         val s = _state.value
         if (s.blockedReason != null) return null

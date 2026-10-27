@@ -323,6 +323,9 @@ private fun LoadedDetailView(
             val reachable by viewModel.customerServerReachable.collectAsState()
             val canRefund = viewModel.roleManager.canIssueRefund
             val exchangeEntry = ExchangeEntry.decide(transaction, exchangesEnabled, connected && reachable, canRefund, overrideEnabled)
+            com.avoqado.pos.transactions.presentation.exchange.ExchangeRecoveryNotice(transaction) {
+                viewModel.resumePendingExchange(transaction)
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

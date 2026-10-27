@@ -18,6 +18,7 @@ import com.avoqado.pos.printing.data.model.ReceiptItem
 import com.avoqado.pos.transactions.data.RefundItem
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
+import com.avoqado.pos.transactions.data.ExchangePendingStore
 import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.ResultadoDeReimpresion
 import com.avoqado.pos.transactions.data.model.ResultadoLigaRecibo
@@ -52,6 +53,8 @@ sealed interface RefundUiState {
     data class Error(val message: String) : RefundUiState
 }
 
+data class PendingExchangeNotice(val paymentId: String, val message: String)
+
 @HiltViewModel
 class TransactionsViewModel @Inject constructor(
     private val repository: TransactionRepository,
@@ -84,11 +87,42 @@ class TransactionsViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     refreshGateFactory: RefreshGateFactory,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val exchangePendingStore: ExchangePendingStore,
 ) : ViewModel() {
 
     val transactions = repository.transactions
     val isLoading = repository.isLoading
     val isLoadingMore = repository.isLoadingMore
+
+    private val _pendingExchangeNotices = MutableStateFlow<List<PendingExchangeNotice>>(emptyList())
+    val pendingExchangeNotices = _pendingExchangeNotices.asStateFlow()
+    private var pendingExchangeScope: Pair<String, String>? = null
+    private var pendingExchangeGeneration = 0L
+
+    fun refreshPendingExchanges() = viewModelScope.launch {
+        val generation = ++pendingExchangeGeneration
+        _pendingExchangeNotices.value = emptyList()
+        pendingExchangeScope = null
+        val venue = secureStorage.venueId ?: return@launch
+        val actor = secureStorage.userId ?: return@launch
+        try {
+            val pending = exchangePendingStore.forActor(venue, actor)
+            if (generation != pendingExchangeGeneration || venue != secureStorage.venueId || actor != secureStorage.userId)
+                return@launch
+            pendingExchangeScope = venue to actor
+            _pendingExchangeNotices.value = pending.map {
+                PendingExchangeNotice(it.originalPaymentId,
+                    TextosCambio.CAMBIO_SIN_CONFIRMAR.replace("{folio}", it.originalOrderNumber))
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Log.w("Transactions", "Could not read pending exchange notices", e) }
+    }
+
+    fun openPendingExchange(paymentId: String) {
+        if (pendingExchangeScope != (secureStorage.venueId to secureStorage.userId) ||
+            _pendingExchangeNotices.value.none { it.paymentId == paymentId }) return
+        selectTransaction(paymentId)
+    }
 
     // Search
     private val _searchText = MutableStateFlow("")
@@ -174,6 +208,20 @@ class TransactionsViewModel @Inject constructor(
         _exchangeTransaction.value = null
     }
     fun clearExchangeMessage() { _exchangeMessage.value = null }
+
+    /** Recovery opens a saved operation, even if its completed return made the original sale ineligible. */
+    fun resumePendingExchange(transaction: Transaction) {
+        val scope = detailScope ?: return
+        if (current(scope) && _selectedTransaction.value?.id == transaction.id) _exchangeTransaction.value = transaction
+    }
+
+    suspend fun refreshForExchange(): Transaction? {
+        val scope = detailScope ?: return null
+        val detail = repository.fetchTransactionDetail(scope.paymentId, scope.actorId, scope.venueId)
+        if (!current(scope) || detail?.id != scope.paymentId) return null
+        _selectedTransaction.value = detail
+        return detail
+    }
 
     fun openExchangeOrder(orderId: String) {
         val scope = detailScope ?: return

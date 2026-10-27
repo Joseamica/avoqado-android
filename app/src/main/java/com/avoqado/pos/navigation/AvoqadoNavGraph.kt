@@ -53,6 +53,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1133,6 +1135,9 @@ private fun ExchangeDestination(navController: androidx.navigation.NavHostContro
     val parent = remember(navController) { navController.getBackStackEntry(MainTab.TRANSACTIONS.route) }
     val transactions: TransactionsViewModel = hiltViewModel(parent)
     val exchange: ExchangeViewModel = hiltViewModel()
+    val exchangePayments: com.avoqado.pos.transactions.presentation.exchange.ExchangePaymentViewModel = hiltViewModel()
+    val send by exchangePayments.state.collectAsState()
+    val exchangeScope = rememberCoroutineScope()
     val transaction by transactions.exchangeTransaction.collectAsState()
     var leaving by remember { mutableStateOf(false) }
     LaunchedEffect(transaction?.id) {
@@ -1142,7 +1147,19 @@ private fun ExchangeDestination(navController: androidx.navigation.NavHostContro
             navController.popBackStack()
         } else if (sale != null) exchange.start(sale)
     }
-    if (transaction != null) ExchangeScreen(exchange, onClose = {
+    LaunchedEffect(send.phase) {
+        if (send.phase in setOf(com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.COMPLETED,
+                com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.CANCELLED,
+                com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.REVIEW)) transactions.refreshForExchange()
+    }
+    if (transaction != null) ExchangeScreen(exchange, payments = exchangePayments, onStartAgain = {
+        exchangeScope.launch {
+            transactions.refreshForExchange()?.let { fresh ->
+                exchange.restart(fresh)
+                exchangePayments.open(fresh, force = true)
+            }
+        }
+    }, onClose = {
         if (!leaving) {
             leaving = true
             transactions.dismissExchange()

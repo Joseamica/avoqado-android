@@ -67,6 +67,8 @@ import com.avoqado.pos.transactions.data.AssociatedRefundItem
 import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.model.OpcionDeDevolucion
+import com.avoqado.pos.transactions.data.model.refundChainRules
+import com.avoqado.pos.transactions.data.model.refundMethodForSubmit
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
 import com.avoqado.pos.transactions.data.model.avisoDeSoloRegistro
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
@@ -197,11 +199,13 @@ fun IssueRefundSheet(
     var includeTip by remember(transaction.id) { mutableStateOf(true) }
 
     // Sólo la tarjeta que cobró NUESTRA terminal se devuelve allá; lo demás se reembolsa como el efectivo.
-    val enTerminal = seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
+    val chain = refundChainRules(transaction.tenderSystemKind, transaction.chainRefundMethod,
+        transaction.chainRefundLabel, transaction.chainRefundBlockedCode)
+    val enTerminal = !chain.isCredit && seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
 
     // «Devolver con»: null = por el mismo medio. Sólo hay selector si el servidor lo dice (`canChooseRefundMethod`).
     var devolverCon by remember(transaction.id) { mutableStateOf<String?>(null) }
-    val opcionesDeDevolucion = if (transaction.canChooseRefundMethod == true) {
+    val opcionesDeDevolucion = if (chain.isCredit) chain.options else if (transaction.canChooseRefundMethod == true) {
         opcionesParaDevolver(transaction.method, transaction.tenderLabel)
     } else {
         emptyList()
@@ -261,6 +265,7 @@ fun IssueRefundSheet(
         )
     }
     val canSubmit = reason != null &&
+        chain.blockedReason == null &&
         amountToRefund > 0 &&
         amountToRefund <= topeActual + 0.001 &&
         !submitting
@@ -634,7 +639,7 @@ fun IssueRefundSheet(
                         devolverCon = it
                         errorMsg = null // el rechazo era de la opción anterior
                     },
-                    enabled = !submitting,
+                    enabled = !submitting && chain.blockedReason == null,
                     modifier = Modifier.padding(top = spacing.md),
                 )
             }
@@ -764,6 +769,7 @@ fun IssueRefundSheet(
             // fue justo lo que pasó cuando el motivo quedaba fuera de cuadro.
             // Aquí se dice qué falta, en el orden en que hay que resolverlo.
             val faltaParaReembolsar = when {
+                chain.blockedReason != null -> chain.blockedReason
                 submitting -> null
                 amountToRefund <= 0.0 -> if (tab == RefundTab.ITEMS) {
                     "Selecciona al menos un artículo."
@@ -849,7 +855,7 @@ fun IssueRefundSheet(
                                         .filter { restockItemIds.contains(it) },
                                     // null ⇒ el campo no viaja (casilla desmarcada): sólo artículos.
                                     tipRefundCents = propinaArticulosCents,
-                                    refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() },
+                                    refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }),
                                 )
                             } else {
                                 // When the user unchecks "Incluir propina" and
@@ -863,7 +869,7 @@ fun IssueRefundSheet(
                                     reason = chosenReason.code,
                                     amountCents = centavosDelImporte(parsedAmount),
                                     tipRefundCents = tipRefundCentsParaEnvio(paymentTipAmount, includeTip),
-                                    refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() },
+                                    refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }),
                                 )
                             }
 

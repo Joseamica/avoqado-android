@@ -1,6 +1,23 @@
 package com.avoqado.pos.transactions.data.model
 
 import com.avoqado.pos.core.util.aCentavos
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+
+data class RefundChainRules(val isCredit: Boolean, val options: List<OpcionDeDevolucion>, val blockedReason: String?)
+
+fun refundChainRules(systemKind: String?, method: String?, label: String?, blockedCode: String?): RefundChainRules {
+    if (systemKind != "EXCHANGE_CREDIT") return RefundChainRules(false, emptyList(), null)
+    val blocked = when {
+        blockedCode == "EXCHANGE_CHAIN_NEEDS_TERMINAL" -> TextosCambio.EXCHANGE_CHAIN_NEEDS_TERMINAL
+        blockedCode == "EXCHANGE_CHAIN_GIFT_CARD_PENDING" -> TextosCambio.EXCHANGE_CHAIN_GIFT_CARD_PENDING
+        blockedCode != null || method.isNullOrBlank() || label.isNullOrBlank() -> TextosCambio.EXCHANGE_SETTLEMENT_UNAVAILABLE
+        else -> null
+    }
+    return RefundChainRules(true, label?.takeIf { it.isNotBlank() }?.let { listOf(OpcionDeDevolucion(null, it)) }
+        ?: emptyList(), blocked)
+}
+
+fun refundMethodForSubmit(systemKind: String?, selected: String?): String? = selected.takeUnless { systemKind == "EXCHANGE_CREDIT" }
 
 /**
  * ════════════════════════════════════════════════════════════════════════════════════

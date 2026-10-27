@@ -1024,4 +1024,15 @@ class TerminalPaymentServiceHttpTest {
         assertEquals(2, server.requestCount)
     }
 
+    @Test
+    fun `exchange card body uses exact reserved amount zero tip and skips terminal review`() = runBlocking {
+        enqueue(200, """{"success":true,"paymentId":"pay-exchange","status":"completed"}""")
+        service.sendPaymentToTerminal("terminal", amountCents=125, tipCents=0, orderId="new-exchange-order")
+        val request=server.takeRequest()
+        val body=org.json.JSONObject(request.body.readUtf8())
+        assertEquals(125,body.getInt("amountCents"))
+        assertEquals(0,body.getInt("tipCents"))
+        assertTrue(body.getBoolean("skipReview"))
+        assertEquals("new-exchange-order",body.getString("orderId"))
+    }
 }

@@ -57,7 +57,8 @@ class ExchangePinGateTest {
             every { create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO }, random = { 0.5 })
         }
         return TransactionsViewModel(repository, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
-            roles, settings, coordinator, mockk(relaxed = true), mockk(relaxed = true), storage, factory, monitor)
+            roles, settings, coordinator, mockk(relaxed = true), mockk(relaxed = true), storage, factory, monitor,
+            mockk(relaxed = true))
             .also { it.selectTransaction(sale.id) }
     }
 
@@ -161,6 +162,21 @@ class ExchangePinGateTest {
         assertEquals("payments:refund", coordinator.prompt.value?.permission)
         coordinator.cancel()
         assertFalse(next.await())
+    }
+
+    @Test fun `pending recovery can reopen a now ineligible sale without spending another PIN`() = runTest(scheduler) {
+        val vm=vm()
+        val changed=sale.copy(exchangeable=false)
+        coEvery { repository.fetchTransactionDetail(any(),any(),any()) } returns changed
+        vm.selectTransaction(sale.id)
+        vm.resumePendingExchange(changed)
+        assertEquals(changed,vm.exchangeTransaction.value)
+        coVerify(exactly=0) { pin.preauthorize(any()) }
+        val refreshed=changed.copy(orderNumber="ORD-FRESH")
+        coEvery { repository.fetchTransactionDetail(any(),any(),any()) } returns refreshed
+        assertEquals(refreshed,vm.refreshForExchange())
+        assertEquals(refreshed,vm.selectedTransaction.value)
+        assertNotNull(vm.exchangeTransaction.value)
     }
 
 }

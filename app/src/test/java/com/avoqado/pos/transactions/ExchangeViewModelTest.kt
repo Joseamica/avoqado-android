@@ -298,4 +298,59 @@ class ExchangeViewModelTest {
         assertEquals(TextosCambio.TALLA_QUE_REGRESA, vm.state.value.blockedReason)
         assertNull(vm.prepareExchange())
     }
+    @Test fun `server recalculation changes sign and a new confirmation preserves selection pointers`() {
+        val product=Product("other", "Falda L", priceValue=5.0)
+        catalog.value=listOf(product)
+        val vm=vm(item())
+        vm.toggleReturned("line"); vm.setReason("line",ExchangeReason.SIZE); vm.addTaken(product)
+        assertEquals(167L,vm.prepareExchange()!!.settlement.expectedDifferenceCents)
+        vm.applyServerCalculation(com.avoqado.pos.transactions.data.ExchangeServerCalculation("PAYOUT",-50,333,283,
+            com.avoqado.pos.transactions.data.ExchangeResultLines(emptyList(),listOf(
+                com.avoqado.pos.transactions.data.ExchangeTakenLine("other","Falda L",1,500,283,
+                    listOf(com.avoqado.pos.transactions.data.ExchangeTakenPiece(283)),emptyList())))))
+        assertEquals(-50L,vm.state.value.calculation.differenceCents)
+        assertEquals("PAYOUT",vm.prepareExchange()!!.settlement.kind)
+        assertEquals(-50L,vm.prepareExchange()!!.settlement.expectedDifferenceCents)
+        vm.removeTaken(0)
+        assertNull(vm.prepareExchange())
+    }
+
+    @Test fun `locked submission preserves selection and cannot prepare another exchange`() {
+        val product=Product("other","Falda L",priceValue=5.0); catalog.value=listOf(product)
+        val vm=vm(item()); vm.toggleReturned("line"); vm.setReason("line",ExchangeReason.SIZE); vm.addTaken(product)
+        val before=vm.state.value
+        vm.lockSubmission(true)
+        vm.toggleReturned("line"); vm.setReturnedQuantity("line",2); vm.setReason("line",ExchangeReason.DEFECT)
+        vm.setRestock("line",false); vm.removeTaken(0); vm.addTaken(product)
+        assertEquals(before,vm.state.value); assertNull(vm.prepareExchange())
+        vm.lockSubmission(false); assertNotNull(vm.prepareExchange())
+    }
+
+    @Test fun `unknown server calculation kind blocks confirmation without crashing`() {
+        val product=Product("other","Falda L",priceValue=5.0); catalog.value=listOf(product)
+        val vm=vm(item()); vm.toggleReturned("line"); vm.setReason("line",ExchangeReason.SIZE); vm.addTaken(product)
+        vm.applyServerCalculation(com.avoqado.pos.transactions.data.ExchangeServerCalculation("FUTURE",1,1,2,
+            com.avoqado.pos.transactions.data.ExchangeResultLines(emptyList(),emptyList())))
+        assertNull(vm.prepareExchange()); assertNotNull(vm.state.value.blockedReason)
+    }
+
+    @Test fun `101 taken lines block confirmation with the article limit reason`() {
+        val product=Product("other","Blouse",priceValue=5.0)
+        catalog.value=listOf(product)
+        val vm=vm(item())
+        vm.toggleReturned("line")
+        vm.setReason("line",ExchangeReason.SIZE)
+        // Inject an oversized restored state: the add button already caps new selections at 100.
+        val field=ExchangeViewModel::class.java.getDeclaredField("_state").apply { isAccessible=true }
+        @Suppress("UNCHECKED_CAST")
+        val state=field.get(vm) as MutableStateFlow<ExchangeUiState>
+        state.value=state.value.copy(taken=List(100) { ExchangeTakenRow(product) })
+        assertEquals(100,vm.prepareExchange()!!.taken.size)
+        state.value=state.value.copy(taken=List(101) { ExchangeTakenRow(product) })
+        assertNull(vm.prepareExchange())
+        assertEquals(101,vm.state.value.taken.size)
+        assertEquals(TextosCambio.LIMITE_ARTICULOS,vm.state.value.blockedReason)
+        assertNull(vm.preparedExchange.value)
+    }
+
 }

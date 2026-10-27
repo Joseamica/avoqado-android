@@ -68,6 +68,7 @@ class TransactionCustomerAssignmentFlowTest {
             managerOverrideCoordinator = mockk(relaxed = true), orderRepository = mockk(relaxed = true),
             printerService = mockk(relaxed = true), secureStorage = storage, refreshGateFactory = factory,
             connectivityMonitor = connectivity,
+            exchangePendingStore = mockk(relaxed = true),
         ).apply { selectTransaction("payment-a") }
     }
 
