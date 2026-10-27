@@ -53,7 +53,7 @@ class TableProvisionalFloorTest {
             assertTrue(cold.tables.value.single().primaryCheck!!.isProvisional)
             val floorVm = com.avoqado.pos.tables.presentation.TablesViewModel(cold, mockk(relaxed = true), session,
                 mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
-                FloorPlanRepository(mockk(relaxed = true), mockk(relaxed = true)), mockk(relaxed = true), mockk<ApiFuenteDeVersiones>(relaxed = true))
+                FloorPlanRepository(mockk(relaxed = true), mockk(relaxed = true)), mockk(relaxed = true), mockk<ApiFuenteDeVersiones>(relaxed = true), mockk(relaxed = true))
             var reopened = false
             floorVm.startOrdering(cold.tables.value.single()) { reopened = true }
             assertTrue(reopened)

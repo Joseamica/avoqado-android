@@ -107,10 +107,11 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         },
         note = itemNote,
         isCortesia = isCortesia,
-        discountId = itemDiscountId,
+        cortesiaReason = cortesiaReason?.trim()?.takeIf { isCortesia && it.isNotEmpty() },
+        discountId = itemDiscountId.takeUnless { isCortesia },
         weightQuantity = weightKg,
         serviceCourse = serviceCourse,
-        externalId = id.takeIf { delCatalogo || serviceCourse?.preparationVersion == 1 },
+        externalId = id.takeIf { isCortesia || delCatalogo || serviceCourse?.preparationVersion == 1 },
         displayedUnitPrice = unitPrice.takeIf { delCatalogo },
         catalogAt = catalogAt.takeIf { delCatalogo },
     )

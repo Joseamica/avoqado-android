@@ -190,7 +190,7 @@ class PaymentFlowViewModelTest {
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "fast-pay-1", receiptAccessKey = null))
 
         coEvery {
-            cashDrawerRepository.addCashSale(any(), any(), any(), any(), any())
+            cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any())
         } returns null
 
         coEvery {
@@ -1001,7 +1001,7 @@ class PaymentFlowViewModelTest {
         )
         every { areaTicketRepository.session.current() } returns openCheckout
         coEvery {
-            areaTicketRepository.materialize(any(), any(), any(), any())
+            areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any())
         } returns materializedCheckout
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
@@ -1131,7 +1131,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
-        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
         val estado = viewModel.state.value
         assertTrue("$estado", estado is PaymentFlowState.Error && "vuelve a escanear" in estado.message)
     }
@@ -1143,7 +1143,7 @@ class PaymentFlowViewModelTest {
     fun `cancelar un cobro de vales que fallo suelta su apartado`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } throws
             com.avoqado.pos.areatickets.data.AreaTicketException("AREA_TICKETS_REQUIRE_CONNECTION", "Sin conexión", true)
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
@@ -1164,9 +1164,9 @@ class PaymentFlowViewModelTest {
     fun `una sesion de vales que solo cambio no se olvida`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } throws
             com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "La sesión cambió o venció.", false)
-        coEvery { areaTicketRepository.refresh() } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2099-01-01T00:00:00.000Z")
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2099-01-01T00:00:00.000Z")
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
         viewModel.confirmCashCustom(100)
@@ -1181,9 +1181,9 @@ class PaymentFlowViewModelTest {
     fun `una sesion de vales que de verdad vencio si se olvida`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } throws
             com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "La sesión cambió o venció.", false)
-        coEvery { areaTicketRepository.refresh() } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2020-01-01T00:00:00.000Z")
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2020-01-01T00:00:00.000Z")
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
         viewModel.confirmCashCustom(100)
@@ -1191,7 +1191,7 @@ class PaymentFlowViewModelTest {
 
         // Quién la olvida (o la suelta, si tenía la cuenta armada) es `restore`, con la regla 2: lo prueba
         // `AreaTicketVidaDelApartadoTest`. Aquí sólo que se le pide tras releer.
-        coVerify(exactly = 1) { areaTicketRepository.refresh() }
+        coVerify(exactly = 1) { areaTicketRepository.refresh(any(), any()) }
         coVerify(exactly = 1) { areaTicketRepository.restore() }
     }
 
@@ -1202,7 +1202,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
         val enviados = slot<List<com.avoqado.pos.areatickets.data.NormalCheckoutItem>>()
-        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val bolsa = CartItem(id = "bolsa", type = CartItemType.CustomAmount, name = "Bolsa", unitPrice = 2000)
 
@@ -1221,7 +1221,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
         val enviados = slot<List<com.avoqado.pos.areatickets.data.NormalCheckoutItem>>()
-        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val regalo = CartItem(id = "regalo", type = CartItemType.CustomAmount, name = "Regalo", unitPrice = 2000, isCortesia = true)
 
@@ -1240,7 +1240,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         val armando = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers { armando.await(); sesion }
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { armando.await(); sesion }
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
@@ -1277,7 +1277,7 @@ class PaymentFlowViewModelTest {
     fun `r7 un abono de vales se marca en el apartado desde el cobro con el saldo del servidor`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(
@@ -1299,7 +1299,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         val armando = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers {
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
             armando.await()
             throw com.avoqado.pos.areatickets.data.AreaTicketException("AREA_TICKETS_REQUIRE_CONNECTION", "Sin conexión", true)
         }
@@ -1323,7 +1323,7 @@ class PaymentFlowViewModelTest {
         var sesionActual: AreaTicketCheckout? = sesionA
         val armandoA = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } answers { sesionActual }
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers {
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
             armandoA.await()
             // El repositorio real rechaza A si el apartado vigente ya es B.
             throw com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "Cambió el apartado", false)
@@ -1363,8 +1363,8 @@ class PaymentFlowViewModelTest {
         var sesionActual = sesionA
         val refrescandoA = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } answers { sesionActual }
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesionA
-        coEvery { areaTicketRepository.refresh() } coAnswers {
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesionA
+        coEvery { areaTicketRepository.refresh(any(), any()) } coAnswers {
             refrescandoA.await()
             sesionActual
         }
@@ -1397,8 +1397,8 @@ class PaymentFlowViewModelTest {
     fun `P1 si el carrito no trae los vales del servidor el cobro se detiene sin cobrar`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
-        coEvery { areaTicketRepository.refresh() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
@@ -1418,7 +1418,7 @@ class PaymentFlowViewModelTest {
     fun `con los mismos vales que el servidor el cobro sigue`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100), lineaDeVale("b", 200))))
@@ -1428,7 +1428,7 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) {
             orderRepository.recordCashPayment("order-vales", 300, any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
-        coVerify(exactly = 0) { areaTicketRepository.refresh() }
+        coVerify(exactly = 0) { areaTicketRepository.refresh(any(), any()) }
         assertFalse(viewModel.valesNoCoincidian.value)
     }
 
@@ -1438,7 +1438,7 @@ class PaymentFlowViewModelTest {
     fun `un split de vales que continua no se compara y sigue como siempre`() = runTest {
         val sesion = sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val saldo = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 200)
 
@@ -1460,8 +1460,8 @@ class PaymentFlowViewModelTest {
     fun `P1 continuar una orden normal con una sesion de vales ajena cobra contra su orden y no arma vales`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "0.50"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
-        coEvery { areaTicketRepository.refresh() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val pendiente = CartItem(id = "taco-2", type = CartItemType.ProductItem("taco"), name = "Taco", unitPrice = 100)
 
@@ -1469,7 +1469,7 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashCustom(100)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) {
             orderRepository.recordCashPayment("order-vales", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
@@ -1483,8 +1483,8 @@ class PaymentFlowViewModelTest {
     fun `con un abono que la copia del aparato no tenia el cobro sigue como siempre`() = runTest {
         val vieja = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns vieja
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns vieja
-        coEvery { areaTicketRepository.refresh() } returns sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns vieja
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         cobroDeEfectivoRegistrado()
         val saldo = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 200)
 
@@ -1546,7 +1546,7 @@ class PaymentFlowViewModelTest {
             tickets = listOf(valeDeArea("ticket-line-b3", "1.00")),
         )
         every { areaTicketRepository.session.current() } returns openCheckout
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns materializedCheckout
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns materializedCheckout
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
@@ -2889,7 +2889,7 @@ class PaymentFlowViewModelTest {
         )
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     /** El efectivo real SÍ tiene que seguir entrando al arqueo. */
@@ -2914,7 +2914,10 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashPreset(tenderedCents = 800)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(800, any(), any(), any(), any()) }
+        // Rediseño r9: con apartado de efectivo puro (el repositorio de cobros de esta prueba lo acepta) la venta entra al arqueo
+        // por su salida de `EN_VUELO` (`SalidaDelApartadoRoomTest`), no por el ViewModel.
+        coVerify(exactly = 1) { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     @Test
@@ -2954,7 +2957,9 @@ class PaymentFlowViewModelTest {
         val success = viewModel.state.value as PaymentFlowState.Success
         assertEquals(100, success.changeAmount)
         assertEquals(400, success.totalAmount)
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(400, "order-race", any(), any(), any()) }
+        // Rediseño r9: el cajón lo anota la salida de `EN_VUELO` con la MISMA función (`OrderRepository.importeCobradoEnEfectivo`),
+        // fijada con su 2xx en `CashDrawerVentaDadaPorCobradaTest`.
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     @Test
@@ -2993,7 +2998,7 @@ class PaymentFlowViewModelTest {
 
         val success = viewModel.state.value as PaymentFlowState.Success
         assertEquals(500, success.totalAmount)
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(500, "order-overflow", any(), any(), any()) }
+        assertEquals("la misma función que usa la anotación del cajón", 500, OrderRepository.importeCobradoEnEfectivo(Int.MAX_VALUE, Int.MAX_VALUE, 500))
     }
 
     /**
@@ -3201,6 +3206,7 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `P1 a Rappi cash order of 205 paid with 500 keeps 205 in the drawer, screen and ticket`() = runTest {
+        every { cashPaymentRepository.processCashPayment(20500, 50000) } returns CashPaymentResult.Success(changeCents = 29500)
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
         } returns cobroDeRappi()
@@ -3212,11 +3218,23 @@ class PaymentFlowViewModelTest {
         val exito = viewModel.state.value as PaymentFlowState.Success
         assertEquals(29500, exito.changeAmount)
         assertEquals("venta 175 + propina 20 + Rappi 10", 20500, exito.totalAmount)
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(20500, "rappi-1", any(), any(), any()) }
+        // Con apartado puro, SalidaDelApartado anota los 20500 (RetenidoEnElApartadoDevelopTest); el VM no los duplica.
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
+        val llaveDelApartado = slot<String>()
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = match { it.total == 20500 && it.tip == 0 },
+                staffId = any(), cashTenderedCents = 50000, changeCents = 29500, rating = any(),
+                orderId = "rappi-1", orderExternalId = any(), customerId = any(), idempotencyKey = capture(llaveDelApartado),
+                manualMethod = null, tenderType = null, amountCents = 20500, tipCents = 0, splitType = "FULLPAYMENT",
+                venueId = "venue-1", capturadaEn = any(), cajaDelCobro = any(), enLugarDe = any(),
+            )
+        }
+        assertTrue(llaveDelApartado.captured.isNotBlank())
         // Se manda el saldo como importe y SIN propina: el servidor reparte lo recibido. Y como efectivo YA recibido (captura
         // previa): si Rappi canceló con el cobro abierto, el SERVIDOR lo registra y avisa, nunca lo rechaza (Codex código r1 #2).
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), any(), capturedVenueId = any(), capturaPrevia = true)
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), llaveDelApartado.captured, capturedVenueId = any(), capturaPrevia = true)
         }
     }
 
@@ -3316,8 +3334,8 @@ class PaymentFlowViewModelTest {
     fun `a half-scanned vales session does not capture the web order charge`() = runTest {
         val vales = sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns vales
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns vales
-        coEvery { areaTicketRepository.refresh() } returns vales
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns vales
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns vales
         val cobradas = mutableListOf<String>()
         coEvery {
             orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
@@ -3348,8 +3366,8 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         // La venta de vales sigue viva: ni se materializó, ni se terminó, ni se borró, ni se canceló.
-        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
-        coVerify(exactly = 0) { areaTicketRepository.refresh() }
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.refresh(any(), any()) }
         coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
         // La sesión se toma fuera del `verify`: dentro, MockK cuenta el `getSession()` de la cadena como llamada prohibida.
         val sesionDeVales = areaTicketRepository.session
@@ -3423,7 +3441,7 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashPreset(tenderedCents = 0)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     @Test

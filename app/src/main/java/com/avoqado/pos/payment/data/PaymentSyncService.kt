@@ -1,15 +1,19 @@
 package com.avoqado.pos.payment.data
 
 import android.util.Log
+import com.avoqado.pos.cashdrawer.data.CODIGO_CIERRE_EN_PROCESO
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
+import com.avoqado.pos.core.data.local.database.RevisionCanceladoCero
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
@@ -25,6 +29,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -53,6 +64,12 @@ class PaymentSyncService @Inject constructor(
      */
     private val cajon: CashDrawerRepository,
     private val syncOutbox: SyncOutbox,
+    /**
+     * 🔴 D2 v7 (24-oct): lo que nadie resolvió se da por COBRADO antes de reproducir la cola (ver
+     * [CashPaymentRepository.darPorCobradasLasAbandonadas]). Obligatorio a propósito (ronda 1, M6): sin él la cola no barre, y
+     * eso no se puede apagar en silencio.
+     */
+    private val cashPaymentRepository: CashPaymentRepository,
 ) {
     // MARK: - Constants
 
@@ -65,6 +82,16 @@ class PaymentSyncService @Inject constructor(
         private const val INITIAL_BACKOFF_MS = 1000L  // 1 second
         private const val MAX_BACKOFF_MS = 30_000L    // 30 seconds
         private const val CLEANUP_AFTER_MS = 24L * 60 * 60 * 1000  // 24 hours
+
+        /**
+         * 🔴 Cuántas vueltas «caja → cobros» da UNA sincronización mientras alguna avance (efectivo sin red en el turno
+         * correcto, barrera 3). Con un aparato que abrió A, cerró A y abrió B sin red: 1.ª apertura A y cobros de A (el cierre
+         * de A espera a sus cobros); 2.ª cierre de A, apertura B y cobros de B; 3.ª por si algo más quedó listo.
+         */
+        internal const val MAX_VUELTAS = 3
+
+        /** El largo máximo que el servidor acepta para la caja de la venta; algo más largo no se manda (sería un 400). */
+        private const val LARGO_MAXIMO_DE_LA_CAJA = 64
         private val JSON_MEDIA = "application/json".toMediaType()
 
         private val RESPONSE_JSON = Json { ignoreUnknownKeys = true }
@@ -136,6 +163,11 @@ class PaymentSyncService @Inject constructor(
             payment: PendingPaymentEntity,
             venueId: String,
             esCobroDeOrden: Boolean,
+            /**
+             * La caja de la venta YA TRADUCIDA al id del servidor (`CashDrawerRepository.idDeCajaParaElServidor`). Nula = no
+             * viaja (fila sin caja, o caja local sin alias): el cuerpo queda byte a byte como hoy.
+             */
+            cajaParaElServidor: String? = null,
         ): String = buildJsonObject {
             put("venueId", venueId)
             put("amount", payment.amountCents)
@@ -177,7 +209,32 @@ class PaymentSyncService @Inject constructor(
             if (!esCobroDeOrden) {
                 payment.customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
             }
+            // 🔴 LA CAJA DE LA VENTA (efectivo sin red en el turno correcto): el servidor saca de ahí el turno de la venta, y una
+            // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con
+            // `isOfflineReplay`, que este cuerpo siempre lleva. Al final y sólo si viene: sin caja, el cuerpo es el de hoy.
+            cajaParaElServidor?.let { put("cashDrawerSessionId", it) }
         }.toString()
+
+        /**
+         * El pedido congelado de la fila con la caja de la venta para `POST /orders` (efectivo sin red en el turno correcto):
+         * la orden que la cola crea al volver la red nace en el turno de su caja. Sin caja, o con un pedido ilegible, el texto
+         * ORIGINAL sin tocar (una fila vieja sube byte a byte como hoy).
+         */
+        internal fun pedidoConLaCaja(orderRequestJson: String, cajaParaElServidor: String?): String {
+            if (cajaParaElServidor == null) return orderRequestJson
+            val pedido = runCatching { RESPONSE_JSON.parseToJsonElement(orderRequestJson) as? kotlinx.serialization.json.JsonObject }
+                .getOrNull() ?: return orderRequestJson
+            return kotlinx.serialization.json.JsonObject(
+                pedido + ("cashDrawerSessionId" to kotlinx.serialization.json.JsonPrimitive(cajaParaElServidor)),
+            ).toString()
+        }
+
+        /**
+         * 🔴 ¿Este cobro puede salir ya? (barrera 1 por caja). Con caja: sí, salvo que su apertura siga esperando al servidor.
+         * Sin caja (fila vieja, o no había caja abierta al cobrar): la regla global de hoy.
+         */
+        internal fun elCobroPuedeSalir(caja: String?, sinCajaPuedenSalir: Boolean, cajasEsperando: Set<String>): Boolean =
+            if (caja == null) sinCajaPuedenSalir else caja !in cajasEsperando
 
         internal fun extractOrderId(body: String): String? {
             return try {
@@ -201,6 +258,12 @@ class PaymentSyncService @Inject constructor(
 
     private var isStarted = false
     private var syncJob: Job? = null
+    private var syncRequested: SyncContext? = null
+    private var syncCycle = 0L
+    private data class SyncContext(val venue: String?, val actor: String?, val role: String?, val epoch: Long)
+    private fun syncContext() = SyncContext(
+        secureStorage.venueId, secureStorage.userId, secureStorage.userRole, syncOutbox.contextoDeSesionQ15(),
+    )
     private var timerJob: Job? = null
     private var connectivityJob: Job? = null
     private var pendingCountJob: Job? = null
@@ -216,7 +279,11 @@ class PaymentSyncService @Inject constructor(
      * falla por CARGA, no por código. Con un `TestDispatcher` la misma prueba corre en tiempo
      * virtual y es determinista.
      */
+    @Synchronized
     internal fun usarContextoDeSincronizacion(contexto: kotlin.coroutines.CoroutineContext) {
+        syncCycle++
+        syncRequested = null
+        syncJob = null
         syncScope.cancel()
         syncScope = CoroutineScope(SupervisorJob() + contexto)
     }
@@ -249,18 +316,24 @@ class PaymentSyncService @Inject constructor(
 
     // MARK: - Lifecycle
 
+    @Synchronized
     fun start() {
         if (isStarted) return
         isStarted = true
         Log.d(TAG, "Starting payment sync service")
 
-        syncScope.launch {
+        val scope = syncScope
+        val cycle = syncCycle
+        scope.launch {
+            if (!synchronized(this@PaymentSyncService) { isStarted && syncCycle == cycle && syncScope === scope }) return@launch
             // Reset stuck SYNCING payments (crash recovery)
             dao.resetSyncingToPending()
-            startCountObservers()
-
-            // Immediate sync attempt
-            syncNow()
+            synchronized(this@PaymentSyncService) {
+                if (!isStarted || syncCycle != cycle || syncScope !== scope) return@launch
+                startCountObservers()
+                // Immediate sync attempt, only while this start still owns its lifecycle.
+                syncNow()
+            }
         }
 
         // Start periodic timer
@@ -270,13 +343,18 @@ class PaymentSyncService @Inject constructor(
         startConnectivityListener()
     }
 
+    @Synchronized
     fun stop() {
-        if (!isStarted) return
+        if (!isStarted && syncJob == null) return
         isStarted = false
+        syncCycle++
+        syncRequested = null
+        val stoppingJob = syncJob
+        syncJob = null
         Log.d(TAG, "Stopping payment sync service")
         timerJob?.cancel()
         connectivityJob?.cancel()
-        syncJob?.cancel()
+        stoppingJob?.cancel()
         pendingCountJob?.cancel()
         failedCountJob?.cancel()
     }
@@ -285,14 +363,18 @@ class PaymentSyncService @Inject constructor(
 
     private fun startTimer() {
         timerJob?.cancel()
-        timerJob = syncScope.launch {
+        val scope = syncScope
+        val cycle = syncCycle
+        timerJob = scope.launch {
             while (isActive) {
                 delay(SYNC_INTERVAL_MS)
-                if (
-                    connectivityMonitor.isConnected.value &&
-                    connectivityMonitor.isServerReachable.value
-                ) {
-                    syncNow()
+                // 🔴 Codex apps r8 #1: con red del APARATO basta (como iOS). Si sólo se sincronizaba con la bandera del servidor
+                // encendida, una falla parcial (503 en el ping y en los cobros, salud profunda sana) la dejaba apagada para siempre y
+                // el cierre que espera a sus ventas no volvía a contar un intento. El drenado conserva sus barreras; la salud la reenciende.
+                if (connectivityMonitor.isConnected.value) {
+                    synchronized(this@PaymentSyncService) {
+                        if (isStarted && syncCycle == cycle && syncScope === scope) syncNow()
+                    }
                 }
             }
         }
@@ -302,7 +384,9 @@ class PaymentSyncService @Inject constructor(
 
     private fun startConnectivityListener() {
         connectivityJob?.cancel()
-        connectivityJob = syncScope.launch {
+        val scope = syncScope
+        val cycle = syncCycle
+        connectivityJob = scope.launch {
             alReconectar(
                 combine(
                     connectivityMonitor.isConnected,
@@ -312,7 +396,9 @@ class PaymentSyncService @Inject constructor(
                 // 🔴 `syncNow()` arranca por el CAJÓN. Sin esa línea, esta reconexión mandaba los
                 // cobros y dejaba la apertura en la cola — el defecto F1 completo.
                 Log.d(TAG, "Network reconnected — triggering sync")
-                syncNow()
+                synchronized(this@PaymentSyncService) {
+                    if (isStarted && syncCycle == cycle && syncScope === scope) syncNow()
+                }
             }
         }
     }
@@ -432,121 +518,530 @@ class PaymentSyncService @Inject constructor(
     @Synchronized
     fun syncNow() {
         if (syncJob?.isActive == true) {
-            Log.d(TAG, "Sync already in progress, skipping")
+            syncRequested = syncContext()
+            Log.d(TAG, "Sync already in progress, one wake requested")
             return
         }
 
-        syncJob = syncScope.launch {
+        val scope = syncScope
+        val cycle = syncCycle
+        val context = syncContext()
+        syncRequested = null
+        // Install the owner and completion hook before the body can finish, even on an immediate dispatcher.
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                // 🔴 EL CAJÓN VA PRIMERO, Y SI SU APERTURA NO LLEGA LOS COBROS ESPERAN (F1).
+                // 🔴 EL CAJÓN VA PRIMERO, Y LOS COBROS DE UNA CAJA ESPERAN A SU APERTURA (F1).
                 //
                 // El orden NO es cosmético: un cobro en efectivo que aterriza ANTES que el `OPEN`
                 // de su caja nace con `shiftId = null` y sin `CASH_SALE` en el cajón, y ya no hay
                 // quién lo reatribuya — el barrido del servidor no puede, porque el `openedAt` que
                 // acaba registrando es la hora del replay y no la real. Medido en una Samsung el
                 // 5-sep-2026. Esperar un ciclo es barato; un cobro huérfano es permanente.
-                if (!cajon.sincronizarCajonPrimero()) {
-                    Log.w(TAG, "⏸️ La apertura de la caja aún no llega al servidor: los cobros esperan al siguiente ciclo")
-                    return@launch
-                }
-
-                // Cleanup old synced payments
-                val cutoff = System.currentTimeMillis() - CLEANUP_AFTER_MS
-                dao.deleteSynced(cutoff)
-
-                // 🔴 Adenda Q16 (founder, 16-oct) + Codex 2.ª pasada: una venta RETENIDA ya no tapa la cola. Se queda
-                // PENDIENTE con su marca y la vuelta sigue; sólo esperan, sin tocar la red, las filas de su MISMA orden
-                // (`identidadesDeOrden`, más la orden que se le adoptó o que su envío resolvió). Como iOS, cada lote lee la
-                // cola PENDIENTE entera y el tope cuenta cobros INTENTADOS: lo que espera no gasta el lote (N6). `esperan`
-                // dura la vuelta ⇒ cada retenida pide `/sync/recovery` a lo más una vez. La red, el backoff, la recuperación
-                // caída y la cuenta por sincronizar siguen cortando la vuelta (FIFO, C1).
+                //
+                // 🔴 Y DESDE EL 21-OCT LA BARRERA ES POR CAJA Y SE EVALÚA FILA POR FILA (efectivo sin red en el turno
+                // correcto): un cobro cuya caja ya está confirmada sale aunque haya otra apertura pendiente; uno sin caja
+                // conserva la regla global de hoy. Y como el cierre de una caja espera a SUS cobros (barrera 2), una sola
+                // sincronización da hasta [MAX_VUELTAS] vueltas caja → outbox → cobros mientras alguna avance: apertura A,
+                // cobros de A, cierre de A, apertura B, cobros de B — en ese orden y sin esperar al siguiente ciclo.
                 val esperan = mutableSetOf<String>()
                 val bloqueadas = mutableSetOf<String>()
-                fun esperar(payment: PendingPaymentEntity, identidades: Set<String>) { esperan += payment.id; bloqueadas += identidades }
-                repeat(MAX_DRAIN_BATCHES) {
-                    if (!isStarted || !connectivityMonitor.isServerReachable.value) return@launch
-
-                    // ponytail: cada lote lee y decodifica toda la cola local (decenas de filas; la prueba usa 1,000). Techo:
-                    // con decenas de miles pendientes cada lote pesa. Salida: paginar por cursor (createdAt, id).
-                    val pending = dao.getPendingPayments(Int.MAX_VALUE).filter { it.id !in esperan }
-                    if (pending.isEmpty()) {
-                        Log.d(TAG, "No pending payments to sync")
-                        return@launch
+                var limpiado = false
+                // El tope del cierre que espera a sus ventas cuenta intentos (ver [contarPaseDelCierre]): qué cierres retuvo esta
+                // sincronización y si, después de retenerlos, la subida de cobros tuvo su oportunidad.
+                val retenidos = mutableListOf<com.avoqado.pos.cashdrawer.data.PendingDrawerOp>()
+                var corrioElDrenado = false
+                var ultimaBarrera: Pair<Boolean, Set<String>> = true to emptySet()
+                for (vuelta in 1..MAX_VUELTAS) {
+                    val vivasAntes = cajon.operacionesVivasDelCajon()
+                    val sinCajaPuedenSalir = cajon.sincronizarCajonPrimero()
+                    cajon.cierreQueEspera()?.let { retenidos += it }
+                    val cajasEsperando = cajon.cajasQueEsperanSuApertura()
+                    ultimaBarrera = sinCajaPuedenSalir to cajasEsperando
+                    val avanzoElCajon = cajon.operacionesVivasDelCajon() < vivasAntes
+                    if (!sinCajaPuedenSalir) {
+                        Log.w(TAG, "⏸️ La apertura de la caja aún no llega al servidor: los cobros SIN caja esperan al siguiente ciclo")
                     }
-
-                    Log.d(TAG, "Syncing ${pending.size} pending payments")
-                    var intentados = 0
-                    var soltada = false
-
-                    for (payment in pending) {
-                        if (!isStarted) return@launch
-                        if (intentados >= MAX_PAYMENTS_PER_SYNC) break // lote lleno: se relee la cola
-                        val identidades = identidadesDeOrden(payment)
-                        if (identidades.any { it in bloqueadas }) { esperar(payment, identidades); continue }
-
-                        if (payment.q15Reason != null) {
-                            when (val recuperacion = recuperarOrdenRetenidaQ16(payment)) {
-                                // Q16: se soltó ⇒ se relee la cola y sale en esta misma vuelta, en su lugar FIFO.
-                                Recuperacion.Soltada -> { soltada = true; break }
-                                Recuperacion.Pausa -> return@launch
-                                is Recuperacion.Retenida -> { esperar(payment, identidades + listOfNotNull(recuperacion.ordenAdoptada)); continue }
-                            }
-                        }
-
-                        // FIFO: si el más viejo sigue en backoff, no adelantamos
-                        // cobros posteriores y esperamos el próximo trigger.
-                        if (payment.retryCount > 0) {
-                            val backoff = calculateBackoff(payment.retryCount)
-                            val timeSinceLastRetry = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
-                            if (timeSinceLastRetry < backoff) {
-                                Log.d(TAG, "Stopping drain at ${payment.id} — backoff not elapsed")
-                                return@launch
-                            }
-                        }
-
-                        if (ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id) == null) {
-                            check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, System.currentTimeMillis()) == 1) { "No se pudo conservar el cobro por revisar" }
-                            esperar(payment, identidades); continue
-                        }
-                        if (requierePruebaDePrecio(payment)) {
-                            check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.PRICE_PROOF_PENDING, System.currentTimeMillis()) == 1)
-                            esperar(payment, identidades); continue
-                        }
-                        if (payment.orderId != null) {
-                            val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(
-                                payment.venueId, setOf(payment.orderId),
-                            )
-                            if (trabajo.enCamino > 0) {
-                                Log.d(TAG, "Stopping drain at ${payment.id} — order changes still queued")
-                                return@launch
-                            }
-                        }
-
-                        intentados++
-                        dao.updateStatus(payment.id, PaymentSyncStatus.SYNCING.name)
-                        var resuelta: String? = null
-                        if (syncPayment(payment) { resuelta = it }) {
-                            // Codex N3/N4: «retenida» lo dice la FILA (quedó PENDIENTE con su marca en la misma escritura),
-                            // no una bandera. Retenida ⇒ sólo espera su orden (más la que su envío resolvió, N1); lo demás corta.
-                            val fila = dao.findForVenue(payment.venueId, payment.id)
-                            if (fila != null && fila.syncStatus == PaymentSyncStatus.PENDING.name && fila.q15Reason != null) {
-                                esperar(payment, identidades + listOfNotNull(resuelta)); continue
-                            }
-                            return@launch
-                        }
+                    if (!limpiado) {
+                        // Cleanup old synced payments
+                        dao.deleteSynced(System.currentTimeMillis() - CLEANUP_AFTER_MS)
+                        limpiado = true
                     }
-
-                    if (!soltada && intentados < MAX_PAYMENTS_PER_SYNC) return@launch
+                    // El efectivo de MESAS (`PAY_CASH` del outbox) también es cobro de su caja: sin esta vuelta, el cierre de A
+                    // esperaría a un cobro de A que sólo sale con el siguiente disparo del outbox.
+                    val delOutbox = try {
+                        secureStorage.venueId?.takeIf { it.isNotBlank() }?.let { syncOutbox.replayNow(it) } ?: 0
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (e: Exception) { Log.e(TAG, "El outbox no se pudo reproducir en esta vuelta: ${e.message}"); 0 }
+                    darPorCobradasLasAbandonadas()
+                    val drenado = drenarCobros(sinCajaPuedenSalir, cajasEsperando, esperan, bloqueadas)
+                    if (retenidos.isNotEmpty() && drenado.corrio) corrioElDrenado = true
+                    if (drenado.cortada) break
+                    if (!avanzoElCajon && delOutbox == 0 && drenado.resueltos == 0) break
+                    if (vuelta < MAX_VUELTAS) {
+                        Log.d(TAG, "🔁 La vuelta $vuelta avanzó (cajón=$avanzoElCajon, outbox=$delOutbox, cobros=${drenado.resueltos}): otra vuelta caja → cobros")
+                    }
                 }
-                Log.w(TAG, "Drain alcanzó el límite de seguridad de $MAX_DRAIN_BATCHES batches")
+                contarPaseDelCierre(retenidos, corrioElDrenado) {
+                    drenarCobros(ultimaBarrera.first, ultimaBarrera.second, esperan, bloqueadas).corrio
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "Sync batch error: ${e.message}")
             }
         }
+        syncJob = job
+        job.invokeOnCompletion { cause ->
+            synchronized(this@PaymentSyncService) {
+                // stop/new owner may already have replaced it; an old finalizer owns nothing now.
+                if (syncJob !== job) return@synchronized
+                syncJob = null
+                val wake = syncRequested == context && cause == null && !job.isCancelled &&
+                    syncScope === scope && scope.isActive && syncCycle == cycle && syncContext() == context
+                syncRequested = null
+                // The Job is REALLY completed and released here, never merely in its still-active finally.
+                if (wake) syncNow()
+            }
+        }
+        job.start()
+    }
+
+    /**
+     * 🔴 D2 v7, punto 3: antes de cada pasada de la cola (también la primera, al arrancar), los apartados de efectivo que ya no son
+     * de un flujo vivo pasan a `PENDING` con su misma llave y esta misma pasada los sube. Un fallo aquí no detiene la cola.
+     */
+    private suspend fun darPorCobradasLasAbandonadas() {
+        try {
+            // Rediseño r9: cada una entra al cajón del aparato en la MISMA escritura que la pasa a la cola (`SalidaDelApartado`).
+            cashPaymentRepository.darPorCobradasLasAbandonadas().takeIf { it > 0 }
+                ?.let { Log.d(TAG, "💵 $it cobro(s) en efectivo que nadie resolvió se dan por cobrados y suben con su llave") }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: Exception) { Log.e(TAG, "No se pudieron dar por cobrados los apartados sin dueño: ${e.message}") }
+    }
+
+    /**
+     * 🔴 Ronda 1 (M4): un flujo de cobro acaba de soltar sus apartados (otra venta, pantalla recreada, `onCleared`). Se dan por
+     * cobrados EN EL ACTO, aunque haya una vuelta corriendo (que `syncNow` se saltaría), para que no se vean «sin confirmar» hasta
+     * la siguiente. Corre en el alcance de la cola, que sobrevive a la pantalla.
+     */
+    fun darPorCobradasLasAbandonadasYa(): Job = syncScope.launch { darPorCobradasLasAbandonadas() }
+
+    /**
+     * Lo que dejó UNA pasada del drenado. [cortada] = la red, el backoff, la sesión o un error detienen la sincronización.
+     * [corrio] = la pasada recorrió la cola (no se detuvo antes de empezar por el servidor marcado caído o el servicio detenido):
+     * sin eso, la sincronización no intentó subir nada y no le cuenta un pase al cierre ([contarPaseDelCierre]).
+     */
+    private data class Drenado(val resueltos: Int, val cortada: Boolean, val corrio: Boolean = true)
+
+    /**
+     * 🔴 EL TOPE DEL CIERRE QUE ESPERA A SUS VENTAS CUENTA INTENTOS, NO MINUTOS (founder, 24-oct-2026). Cuatro rondas de Codex
+     * encontraron cuatro formas de contar tiempo sin que las ventas pudieran subir (sin red, servidor caído, app dormida o
+     * Windows suspendida, reloj cambiado), y dos más que anotar el desenlace de cada cobro en cada salida de dos colas no se
+     * puede hacer completo (r5, r6). Ahora: al terminar una sincronización cuya subida de cobros SÍ corrió, con el cierre retenido por sus
+     * ventas (la marca de la última corrida TERMINADA del replay), si la consulta de salud del servidor (con su base de datos) contesta,
+     * se le PIDE el pase al cajón ([com.avoqado.pos.cashdrawer.data.CashDrawerRepository.solicitarPaseConServidor]); lo cuenta la
+     * siguiente corrida del replay que de verdad retenga ese cierre, bajo su candado, con al menos
+     * [com.avoqado.pos.cashdrawer.data.ESPACIO_ENTRE_PASES_MS] de reloj del sistema encendido entre uno y otro (Codex apps r10–r11: así
+     * la marca compartida sólo propone, y un cierre con algo vivo delante no cuenta). A los
+     * [com.avoqado.pos.cashdrawer.data.PASES_DEL_CIERRE] pases sale igual y la venta tardía queda aparte con aviso. Sin red o
+     * con el servidor caído no cuenta nada (y el cierre tampoco podría salir).
+     */
+    private suspend fun contarPaseDelCierre(
+        retenidos: List<com.avoqado.pos.cashdrawer.data.PendingDrawerOp>,
+        corrioElDrenado: Boolean,
+        /** Una pasada real de la subida de cobros; devuelve si corrió. */
+        drenarOtraVez: suspend () -> Boolean,
+    ) {
+        if (retenidos.isEmpty()) return
+        if (!servidorContesta()) {
+            Log.d(TAG, "📡 El servidor no contestó al terminar: el cierre retenido no suma pase")
+            return
+        }
+        // 🔴 Codex apps r7 #1: un 500 de otra ruta (el outbox de Mesas) apaga la bandera del servidor y la subida no empieza; la
+        // salud sí contestó (y volvió a encenderla), así que se da una pasada real antes de contar. Sin esto, el cierre no sumaba nunca.
+        if (!corrioElDrenado && !drenarOtraVez()) return
+        cajon.solicitarPaseConServidor(retenidos)
+    }
+
+    /** La consulta real del pase del cierre. Costura de prueba. */
+    internal var servidorContesta: suspend () -> Boolean = { connectivityMonitor.elServidorContesta() }
+
+    /**
+     * La cola de cobros, FIFO, con las barreras de siempre más la de la caja de CADA fila ([elCobroPuedeSalir]). [esperan] y
+     * [bloqueadas] duran toda la sincronización (no la vuelta): cada retenida pide `/sync/recovery` a lo más una vez.
+     */
+    private suspend fun drenarCobros(
+        sinCajaPuedenSalir: Boolean,
+        cajasEsperando: Set<String>,
+        esperan: MutableSet<String>,
+        bloqueadas: MutableSet<String>,
+    ): Drenado {
+        var resueltos = 0
+        // 🔴 Adenda Q16 (founder, 16-oct) + Codex 2.ª pasada: una venta RETENIDA ya no tapa la cola. Se queda
+        // PENDIENTE con su marca y la vuelta sigue; sólo esperan, sin tocar la red, las filas de su MISMA orden
+        // (`identidadesDeOrden`, más la orden que se le adoptó o que su envío resolvió). Como iOS, cada lote lee la
+        // cola PENDIENTE entera y el tope cuenta cobros INTENTADOS: lo que espera no gasta el lote (N6). `esperan`
+        // dura la sincronización entera, vueltas incluidas ⇒ cada retenida pide `/sync/recovery` a lo más una vez. La red, el backoff, la recuperación
+        // caída y la cuenta por sincronizar siguen cortando la vuelta (FIFO, C1).
+        fun esperar(payment: PendingPaymentEntity, identidades: Set<String>) { esperan += payment.id; bloqueadas += identidades }
+        var lotes = 0
+        repeat(MAX_DRAIN_BATCHES) {
+            // Cortada antes de recorrer nada en esta pasada (el primer lote): no corrió, no es un intento para el tope del cierre.
+            if (!isStarted || !connectivityMonitor.isServerReachable.value) return Drenado(resueltos, cortada = true, corrio = lotes > 0)
+            lotes++
+
+            // ponytail: cada lote lee y decodifica toda la cola local (decenas de filas; la prueba usa 1,000). Techo:
+            // con decenas de miles pendientes cada lote pesa. Salida: paginar por cursor (createdAt, id).
+            val pending = dao.getPendingPayments(Int.MAX_VALUE).filter { it.id !in esperan }
+            if (pending.isEmpty()) {
+                Log.d(TAG, "No pending payments to sync")
+                return Drenado(resueltos, cortada = false)
+            }
+
+            Log.d(TAG, "Syncing ${pending.size} pending payments")
+            var intentados = 0
+            var soltada = false
+
+            for (payment in pending) {
+                if (!isStarted) return Drenado(resueltos, cortada = true)
+                if (intentados >= MAX_PAYMENTS_PER_SYNC) break // lote lleno: se relee la cola
+                // 🔴 BARRERA 1 POR CAJA: si la apertura de la caja de ESTE cobro todavía no llega, la fila se detiene aquí
+                // (FIFO: lo de detrás no se adelanta). Las anteriores ya salieron. No es un corte: si el cajón avanzó, la
+                // siguiente vuelta la vuelve a evaluar.
+                val cajaDeLaFila = payment.cashDrawerSessionId?.takeIf { it.isNotBlank() }
+                if (!elCobroPuedeSalir(cajaDeLaFila, sinCajaPuedenSalir, cajasEsperando)) {
+                    // Codex apps r1 #5 (como iOS): la fila SIN caja (versión anterior) espera, con su orden, pero no detiene a las
+                    // de una caja ya confirmada; si las detuviera, el cierre de esa caja esperaría a una fila que espera a la
+                    // apertura siguiente, que espera a ese cierre.
+                    if (cajaDeLaFila == null) {
+                        Log.w(TAG, "⏸️ ${payment.id}: cobro sin caja, espera a la apertura pendiente sin detener a los demás")
+                        esperar(payment, identidadesDeOrden(payment))
+                        continue
+                    }
+                    Log.w(TAG, "⏸️ ${payment.id}: la apertura de su caja ($cajaDeLaFila) aún no llega; la fila espera")
+                    return Drenado(resueltos, cortada = false)
+                }
+                val identidades = identidadesDeOrden(payment)
+                if (identidades.any { it in bloqueadas }) { esperar(payment, identidades); continue }
+
+                if (payment.q15Reason != null) {
+                    when (val recuperacion = recuperarOrdenRetenidaQ16(payment)) {
+                        // Q16: se soltó ⇒ se relee la cola y sale en esta misma vuelta, en su lugar FIFO.
+                        Recuperacion.Soltada -> { soltada = true; break }
+                        Recuperacion.Pausa -> return Drenado(resueltos, cortada = true)
+                        is Recuperacion.Retenida -> { esperar(payment, identidades + listOfNotNull(recuperacion.ordenAdoptada)); continue }
+                    }
+                }
+
+                // FIFO: si el más viejo sigue en backoff, no adelantamos
+                // cobros posteriores y esperamos el próximo trigger.
+                if (payment.retryCount > 0) {
+                    val backoff = calculateBackoff(payment.retryCount)
+                    val timeSinceLastRetry = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
+                    // Codex apps r7 #2: un último intento EN EL FUTURO (se corrigió la hora del aparato) no es una espera: se reintenta.
+                    if (timeSinceLastRetry in 0 until backoff) {
+                        Log.d(TAG, "Stopping drain at ${payment.id} — backoff not elapsed")
+                        return Drenado(resueltos, cortada = true)
+                    }
+                }
+
+                if (ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id) == null) {
+                    check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, System.currentTimeMillis()) == 1) { "No se pudo conservar el cobro por revisar" }
+                    esperar(payment, identidades); continue
+                }
+                if (requierePruebaDePrecio(payment)) {
+                    check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.PRICE_PROOF_PENDING, System.currentTimeMillis()) == 1)
+                    esperar(payment, identidades); continue
+                }
+                if (payment.orderId != null) {
+                    val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(
+                        payment.venueId, setOf(payment.orderId),
+                    )
+                    if (trabajo.enCamino > 0) {
+                        Log.d(TAG, "Stopping drain at ${payment.id} — order changes still queued")
+                        return Drenado(resueltos, cortada = true)
+                    }
+                }
+
+                intentados++
+                dao.updateStatus(payment.id, PaymentSyncStatus.SYNCING.name)
+                var resuelta: String? = null
+                if (syncPayment(payment) { resuelta = it }) {
+                    // Codex N3/N4: «retenida» lo dice la FILA (quedó PENDIENTE con su marca en la misma escritura),
+                    // no una bandera. Retenida ⇒ sólo espera su orden (más la que su envío resolvió, N1); lo demás corta.
+                    val fila = dao.findForVenue(payment.venueId, payment.id)
+                    if (fila != null && fila.syncStatus == PaymentSyncStatus.PENDING.name && fila.q15Reason != null) {
+                        esperar(payment, identidades + listOfNotNull(resuelta)); continue
+                    }
+                    return Drenado(resueltos, cortada = true)
+                }
+                resueltos++
+            }
+
+            if (!soltada && intentados < MAX_PAYMENTS_PER_SYNC) return Drenado(resueltos, cortada = false)
+        }
+        Log.w(TAG, "Drain alcanzó el límite de seguridad de $MAX_DRAIN_BATCHES batches")
+        return Drenado(resueltos, cortada = true)
     }
 
     /** Cobros que agotaron reintentos o que el servidor rechazó permanentemente. */
-    suspend fun failedPayments(): List<PendingPaymentEntity> = dao.getFailedPayments()
+    suspend fun failedPayments(): List<PendingPaymentEntity> = dao.getFailedPayments().filter(RevisionCanceladoCero::mostrarFallido)
+
+    data class PropuestaRevisionCortesia(
+        val original: PendingPaymentEntity,
+        val actor: String,
+        val rol: String,
+        val contexto: Long,
+        val expected: kotlinx.serialization.json.JsonObject,
+    )
+
+    /** Consulta la cuenta original sin modificar la fuente ni habilitar su envío. */
+    suspend fun prepararRevisionCortesia(id: String): PropuestaRevisionCortesia? {
+        val venue = secureStorage.venueId?.takeIf(String::isNotBlank) ?: return null
+        val actor = secureStorage.userId?.takeIf(String::isNotBlank) ?: return null
+        val rol = secureStorage.userRole?.uppercase() ?: return null
+        val contexto = syncOutbox.contextoDeSesionQ15()
+        fun vigente() = contextoCortesiaVigente(venue, actor, rol, contexto, false)
+        if (!vigente()) return null
+        return try {
+            val original = dao.findForVenue(venue, id)
+            if (!vigente() || original == null) return null
+            val entrada = entradaRevisionCortesia(original) ?: return null
+            val data = consultarRevisionCortesia(venue, entrada, ::vigente) ?: return null
+            if (!vigente() || data.textoCortesia("outcome") != "PREVIEW" || data.textoCortesia("originalPaymentKey") != original.id) return null
+            val snapshot = data["snapshot"] as? JsonObject ?: return null
+            if (!snapshotRevisionCortesiaValido(entrada, snapshot) || !vinculoRevisionCortesia(original, snapshot, ::vigente)) return null
+            if (!vigente() || dao.findForVenue(venue, id) != original || !vigente()) return null
+            PropuestaRevisionCortesia(original, actor, rol, contexto, snapshot)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { null }
+    }
+
+    /** true sólo habilita K; la conciliación del drenado conserva la autoridad sobre su desenlace. */
+    suspend fun confirmarRevisionCortesia(propuesta: PropuestaRevisionCortesia): Boolean {
+        val original = propuesta.original
+        fun vigente() = contextoCortesiaVigente(original.venueId, propuesta.actor, propuesta.rol, propuesta.contexto, true)
+        if (!vigente()) return false
+        return try {
+            if (dao.findForVenue(original.venueId, original.id) != original || !vigente()) return false
+            val entrada = entradaRevisionCortesia(original) ?: return false
+            if (!snapshotRevisionCortesiaValido(entrada, propuesta.expected)) return false
+            val body = JsonObject(entrada + mapOf("confirm" to JsonPrimitive(true), "expected" to propuesta.expected))
+            val data = consultarRevisionCortesia(original.venueId, body, ::vigente) ?: return false
+            if (!vigente() || data.textoCortesia("outcome") !in setOf("APPLIED", "ALREADY_APPLIED") ||
+                data.textoCortesia("originalPaymentKey") != original.id) return false
+            val snapshot = data["snapshot"] as? JsonObject ?: return false
+            if (!snapshotRevisionCortesiaValido(entrada, snapshot) ||
+                !resultadoRevisionCortesiaValido(original, propuesta.expected, snapshot) ||
+                !vinculoRevisionCortesia(original, snapshot, ::vigente) || !vigente()) return false
+            val changed = dao.reanudarCortesiaAntiguaQ4(original, ::vigente)
+            // COMMIT ya pudo ocurrir: una revocación no se representa como rollback ni despierta la sesión anterior.
+            if (changed != 1 || !vigente()) return false
+            syncNow()
+            true
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+    }
+
+    private fun contextoCortesiaVigente(venue: String, actor: String, rol: String, contexto: Long, confirmar: Boolean): Boolean {
+        if (venue.isBlank() || actor.isBlank() || secureStorage.venueId != venue || secureStorage.userId != actor ||
+            secureStorage.userRole?.uppercase() != rol || syncOutbox.contextoDeSesionQ15() != contexto ||
+            !RevisionCanceladoCero.esGerente(rol)) return false
+        val roles = com.avoqado.pos.core.domain.RoleManager(secureStorage)
+        // Lista efectiva actual; la lista antigua vacía conserva el respaldo gerente ya vigente en las revisiones.
+        return secureStorage.venuePermissions.isEmpty() || roles.hasVenuePermission(if (confirmar) "orders:comp" else "orders:read")
+    }
+
+    /** Sólo proyecta el contrato público desde el original íntegro. Nunca reserializa para persistirlo. */
+    private fun entradaRevisionCortesia(original: PendingPaymentEntity): JsonObject? {
+        if (original.syncStatus != "FAILED" || original.q15Reason != null || original.paymentType != "ORDER" ||
+            original.method != "CASH" || original.amountCents != 0 || original.tipCents != 0 ||
+            original.tenderTypeId != null || original.tenderRevision != null) return null
+        val capture = ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, original.venueId, original.id) ?: return null
+        if (capture.amountCents != 0 || capture.tipCents != 0 || capture.method != "CASH" ||
+            capture.tenderTypeId != null || capture.tenderRevision != null || capture.splitType != original.splitType ||
+            capture.customerId != original.customerId || capture.cashTenderedCents != original.cashTenderedCents ||
+            capture.changeCents != original.changeCents || capture.orderRequestJson == null ||
+            capture.orderRequestJson != original.orderRequestJson) return null
+        val pedido = runCatching { json.parseToJsonElement(capture.orderRequestJson) as? JsonObject }.getOrNull() ?: return null
+        val external = externalIdDelPedido(original.orderRequestJson) ?: return null
+        val references = listOfNotNull(original.orderId, capture.orderId, capture.localOrderId, external)
+        if (original.id.isBlank() || original.capturedOrderRef?.let { it.isBlank() || it !in references } == true) return null
+        if (pedido.enteroCortesia("total") != 0) return null
+        val items = pedido["items"] as? JsonArray ?: return null
+        if (items.size !in 1..100) return null
+        val lines = ArrayList<JsonElement>(items.size)
+        val externalIds = HashSet<String>()
+        for (raw in items) {
+            val item = raw as? JsonObject ?: return null
+            val lineId = item.textoCortesia("externalId")?.takeIf { it.isNotBlank() && it.length <= 256 } ?: return null
+            val product = item.textoCortesia("productId")?.takeIf(String::isNotBlank) ?: return null
+            val quantity = item.enteroCortesia("quantity")?.takeIf { it > 0 } ?: return null
+            val reason = item.textoCortesia("cortesiaReason")?.takeIf { it.length <= 500 && it.isNotBlank() } ?: return null
+            if (!externalIds.add(lineId) || item.booleanCortesia("isCortesia") != true ||
+                item["promotionRef"]?.let { it != JsonNull } == true) return null
+            val modifiers = if (item["modifierIds"] == null) JsonArray(emptyList()) else item["modifierIds"] as? JsonArray ?: return null
+            if (modifiers.size > 100 || modifiers.any { (it as? JsonPrimitive)?.takeIf { id -> id.isString && id.content.isNotBlank() } == null }) return null
+            lines += buildJsonObject {
+                put("externalId", lineId); put("productId", product); put("quantity", quantity)
+                put("modifierIds", modifiers); put("isCortesia", true); put("cortesiaReason", reason.trim())
+            }
+        }
+        return buildJsonObject {
+            put("originalPaymentKey", original.id); put("externalId", external)
+            put("expectedAmount", 0); put("expectedTip", 0); put("lines", JsonArray(lines)); put("confirm", false)
+        }
+    }
+
+    private suspend fun consultarRevisionCortesia(venue: String, body: JsonObject, vigente: () -> Boolean): JsonObject? {
+        if (!vigente()) return null
+        return withContext(Dispatchers.IO) {
+            // La espera del dispatcher también puede cambiar sesión/permisos. El cliente conserva su autenticación instalada.
+            if (!vigente() || !connectivityMonitor.isConnected.value || !connectivityMonitor.isServerReachable.value) return@withContext null
+            val request = Request.Builder().url("${ApiConstants.BASE_URL}/mobile/venues/$venue/orders/courtesy-review")
+                .post(body.toString().toRequestBody(JSON_MEDIA)).build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful || !vigente()) return@use null
+                val root = json.parseToJsonElement(response.body?.string() ?: return@use null) as? JsonObject ?: return@use null
+                if (!vigente() || root.booleanCortesia("success") != true) return@use null
+                root["data"] as? JsonObject
+            }
+        }
+    }
+
+    private suspend fun vinculoRevisionCortesia(original: PendingPaymentEntity, snapshot: JsonObject, vigente: () -> Boolean): Boolean {
+        val canonical = snapshot.textoCortesia("orderId") ?: return false
+        val capture = ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, original.venueId, original.id) ?: return false
+        for (bound in listOfNotNull(original.orderId, capture.orderId, capture.localOrderId).distinct()) {
+            if (!vigente() || bound.isBlank()) return false
+            if (bound != canonical) {
+                val resolved = syncOutbox.aliasDurableQ16(original.venueId, bound)
+                if (!vigente() || resolved != canonical) return false
+            }
+        }
+        return vigente()
+    }
+
+    /** Presupuesto acotado y tupla pública PESOS completa; no calcula descuentos ni el resultado financiero. */
+    private fun snapshotRevisionCortesiaValido(entrada: JsonObject, snapshot: JsonObject): Boolean {
+        if (snapshot.textoCortesia("orderId").isNullOrBlank() || snapshot.textoCortesia("externalId") != entrada.textoCortesia("externalId") ||
+            listOf("orderNumber", "status", "paymentStatus", "originSystem", "contratoDePrecio").any { snapshot.textoCortesia(it) == null } ||
+            snapshot.enteroCortesia("version")?.let { it >= 0 } != true ||
+            listOf("tableId", "servedById").any { snapshot[it] != JsonNull && snapshot.textoCortesia(it) == null }) return false
+        val money = listOf("subtotal", "discountAmount", "taxAmount", "serviceChargeAmount", "deliveryFeeAmount", "tipAmount", "total", "paidAmount", "remainingBalance")
+        if (money.any { snapshot.centavosCortesia(it) == null } || snapshot.centavosCortesia("total")!! < 0 ||
+            snapshot.centavosCortesia("paidAmount") != 0L || snapshot.centavosCortesia("tipAmount") != 0L ||
+            snapshot.textoCortesia("paymentStatus") != "PENDING" || snapshot.textoCortesia("originSystem") == "POS_SOFTRESTAURANT" ||
+            snapshot.textoCortesia("status") !in setOf("PENDING", "CONFIRMED", "PREPARING", "READY")) return false
+        val originals = (entrada["lines"] as? JsonArray)?.map { it as? JsonObject ?: return false } ?: return false
+        val actuals = snapshot["lines"] as? JsonArray ?: return false
+        if (actuals.size !in 1..100 || actuals.size != originals.size) return false
+        val source = originals.associateBy { it.textoCortesia("externalId") }
+        val lineIds = HashSet<String>(); val externalIds = HashSet<String>(); val modifierRowIds = HashSet<String>()
+        for (raw in actuals) {
+            val line = raw as? JsonObject ?: return false
+            val original = source[line.textoCortesia("externalId")] ?: return false
+            val id = line.textoCortesia("id")?.takeIf(String::isNotBlank) ?: return false
+            if (!lineIds.add(id) || !externalIds.add(line.textoCortesia("externalId")!!) ||
+                line.textoCortesia("productId") != original.textoCortesia("productId") ||
+                line.enteroCortesia("quantity") != original.enteroCortesia("quantity") ||
+                listOf("unitPrice", "total", "discountAmount", "taxAmount").any { line.centavosCortesia(it) == null } ||
+                line.booleanCortesia("isCortesia") == null ||
+                (line["cortesiaReason"] != JsonNull && line.textoCortesia("cortesiaReason") == null) ||
+                (line["appliedDiscountId"] != JsonNull && line.textoCortesia("appliedDiscountId") == null)) return false
+            if (line.textoCortesia("cortesiaReason")?.length?.let { it > 500 } == true) return false
+            if (line.booleanCortesia("isCortesia") == true &&
+                (line.textoCortesia("cortesiaReason") != original.textoCortesia("cortesiaReason") || line.centavosCortesia("total") != 0L)) return false
+            val modifierIds = line["modifierIds"] as? JsonArray ?: return false
+            val modifiers = line["modifiers"] as? JsonArray ?: return false
+            if (modifierIds.size > 100 || modifiers.size > 100) return false
+            val expanded = ArrayList<String>()
+            for (modifierRaw in modifiers) {
+                val modifier = modifierRaw as? JsonObject ?: return false
+                val rowId = modifier.textoCortesia("id")?.takeIf(String::isNotBlank) ?: return false
+                val modifierId = modifier.textoCortesia("modifierId")?.takeIf(String::isNotBlank) ?: return false
+                val quantity = modifier.enteroCortesia("quantity") ?: return false
+                if (!modifierRowIds.add(rowId) || quantity !in 1..(100 - expanded.size) || modifier.centavosCortesia("price") == null) return false
+                repeat(quantity) { expanded.add(modifierId) }
+            }
+            val declared = modifierIds.map { (it as? JsonPrimitive)?.takeIf { value -> value.isString }?.content ?: return false }.sorted()
+            val originalModifiers = (original["modifierIds"] as JsonArray).map { (it as JsonPrimitive).content }.sorted()
+            if (declared != expanded.sorted() || declared != originalModifiers) return false
+        }
+        return true
+    }
+
+    private fun resultadoRevisionCortesiaValido(original: PendingPaymentEntity, expected: JsonObject, actual: JsonObject): Boolean {
+        if (listOf("orderId", "externalId", "orderNumber", "status", "paymentStatus", "originSystem", "contratoDePrecio", "tableId", "servedById").any { expected[it] != actual[it] }) return false
+        val before = (expected["lines"] as JsonArray).map { it as JsonObject }.associateBy { it.textoCortesia("externalId") }
+        for (raw in actual["lines"] as JsonArray) {
+            val line = raw as JsonObject; val previous = before[line.textoCortesia("externalId")] ?: return false
+            if (line["id"] != previous["id"] || line.centavosCortesia("unitPrice") != previous.centavosCortesia("unitPrice") ||
+                line["modifiers"] != previous["modifiers"]) return false
+        }
+        if (actual.enteroCortesia("version")!! < expected.enteroCortesia("version")!!) return false
+        // Reutiliza la prueba existente de total/cortesías originales, adaptando sólo la respuesta temporal de revisión.
+        val evidence = buildJsonObject { put("data", buildJsonObject { put("total", actual.getValue("total")); put("items", actual.getValue("lines")) }) }
+        return CortesiaPersistida.confirmada(requireNotNull(original.orderRequestJson), evidence.toString())
+    }
+
+    private fun JsonObject.textoCortesia(key: String) = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
+    private fun JsonObject.booleanCortesia(key: String) = (get(key) as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+    private fun JsonObject.enteroCortesia(key: String) = (get(key) as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+    private fun JsonObject.centavosCortesia(key: String): Long? = (get(key) as? JsonPrimitive)?.takeUnless { it.isString }?.content?.let {
+        // aCentavos() redondea para otros flujos; aquí una fracción no representable se rechaza, nunca se redondea.
+        runCatching { it.toBigDecimal().movePointRight(2).longValueExact() }.getOrNull()
+            ?.takeIf { cents -> cents in -9_007_199_254_740_991L..9_007_199_254_740_991L }
+    }
+
+    data class PropuestaRevisionCancelada(
+        val original: PendingPaymentEntity, val actor: String, val rol: String, val contexto: Long,
+        val ordenAcreditada: String? = null,
+    )
+    private fun vigente(propuesta: PropuestaRevisionCancelada) = secureStorage.venueId == propuesta.original.venueId &&
+        secureStorage.userId == propuesta.actor && secureStorage.userRole?.uppercase() == propuesta.rol &&
+        RevisionCanceladoCero.esGerente(propuesta.rol) && syncOutbox.contextoDeSesionQ15() == propuesta.contexto
+
+    private suspend fun consultarCancelado(row: PendingPaymentEntity): String? {
+        val external = RevisionCanceladoCero.externalId(row) ?: return null
+        val body = buildJsonObject {
+            put("externalOrderIds", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(external))))
+            put("includeCancelledPaymentEvidence", true)
+        }.toString()
+        return try {
+            withContext(Dispatchers.IO) {
+                val request = Request.Builder().url("${ApiConstants.BASE_URL}/mobile/venues/${row.venueId}/sync/recovery")
+                    .post(body.toRequestBody(JSON_MEDIA)).build()
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) RevisionCanceladoCero.evidencia(row, response.body?.string().orEmpty()) else null
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { null }
+    }
+
+    private val revisionCanceladaMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** Confirmation is a new read, never permission inferred from the proposal or a timestamp. */
+    suspend fun confirmarRevisionCancelada(propuesta: PropuestaRevisionCancelada): Boolean {
+        if (!revisionCanceladaMutex.tryLock()) return false
+        try {
+            if (!vigente(propuesta) || propuesta.ordenAcreditada.isNullOrBlank()) return false
+            val original = propuesta.original
+            if (dao.findForVenue(original.venueId, original.id) != original || original.q15ReviewedAt != null) return false
+            val proof = consultarCancelado(original) ?: return false
+            if (RevisionCanceladoCero.ordenAcreditada(original, proof) != propuesta.ordenAcreditada) return false
+            return com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(original.venueId) {
+                if (!vigente(propuesta) || dao.findForVenue(original.venueId, original.id) != original) return@write false
+                dao.revisarCanceladoSinCobroQ15(original.venueId,original.id,original.orderId,
+                    original.orderRequestJson,original.q15ResultJson,original.syncStatus,original.q15CaptureJson,
+                    original.createdAt,original.capturedOrderRef,original.splitType,original.customerId,
+                    original.cashTenderedCents,original.changeCents,original.q15Reason,proof,propuesta.actor,propuesta.rol,System.currentTimeMillis()) == 1
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { return false }
+        finally { revisionCanceladaMutex.unlock() }
+    }
 
     /**
      * Reabre explícitamente un cobro fallido para conciliación. Nunca crea una
@@ -567,7 +1062,18 @@ class PaymentSyncService @Inject constructor(
         val venue = secureStorage.venueId ?: return RetryOutcome.StillQueued
         val original = dao.findForVenue(venue, id) ?: return RetryOutcome.StillQueued
         if (original.syncStatus == "SYNCED") return RetryOutcome.Applied
-        if (original.q15Reason != null) return RetryOutcome.StillQueued
+        if ((original.syncStatus == "FAILED" || (original.syncStatus == "EN_VUELO" &&
+                original.q15Reason == ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)) &&
+            original.paymentType == "ORDER" && original.amountCents == 0 && original.tipCents == 0) {
+            val actor = secureStorage.userId?.takeIf { it.isNotBlank() } ?: return RetryOutcome.StillQueued
+            val propuesta = PropuestaRevisionCancelada(original, actor, secureStorage.userRole?.uppercase().orEmpty(), syncOutbox.contextoDeSesionQ15())
+            if (!vigente(propuesta) || original.q15ReviewedAt != null) return RetryOutcome.StillQueued
+            val proof = consultarCancelado(original) ?: return RetryOutcome.ConsultaSinPrueba
+            val orderId = RevisionCanceladoCero.ordenAcreditada(original, proof) ?: return RetryOutcome.ConsultaSinPrueba
+            if (!vigente(propuesta)) return RetryOutcome.StillQueued
+            return RetryOutcome.CancelledZeroPaymentReview(propuesta.copy(ordenAcreditada = orderId))
+        }
+        if (original.syncStatus != "FAILED" || original.q15Reason != null) return RetryOutcome.StillQueued
         if (ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, original.venueId, original.id) == null) {
             check(dao.retenerPagoQ15(original.venueId, original.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, System.currentTimeMillis()) == 1)
             return RetryOutcome.StillQueued
@@ -620,13 +1126,16 @@ class PaymentSyncService @Inject constructor(
         data object Applied : RetryOutcome
         /** Sigue encolado — típicamente sin red. Se reintentará solo. */
         data object StillQueued : RetryOutcome
+        /** La consulta no acreditó cancelación sin cobros; se conserva sin replay. */
+        data object ConsultaSinPrueba : RetryOutcome
         /** El server lo rechazó otra vez. Necesita a un humano. */
         data class Rejected(val error: String?) : RetryOutcome
+        data class CancelledZeroPaymentReview(val propuesta: PropuestaRevisionCancelada) : RetryOutcome
     }
 
     /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto. */
     suspend fun blockingWorkCount(): Int =
-        dao.getUnsyncedPayments().size + dao.getFailedPayments().size +
+        dao.getUnsyncedPayments().size + dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) } +
             // Un cobro interrumpido (la app murió a media petición) tampoco puede irse con la sesión:
             // nadie ha decidido todavía si ese dinero entró.
             dao.enVueloCount()
@@ -654,10 +1163,18 @@ class PaymentSyncService @Inject constructor(
         }
 
         try {
+            // 🔴 La caja de la venta, ya traducida al id del servidor. Nula = no viaja (fila sin caja, o caja local sin alias).
+            val cajaParaElServidor = cajaDelCobroParaElServidor(payment, venueId)
             var resolvedOrderId: String? = payment.orderId
-            if (payment.paymentType == "ORDER" && resolvedOrderId == null) {
-                when (val result = resolveMissingOrderId(payment, venueId)) {
-                    is OrderResolution.Ready -> resolvedOrderId = result.orderId.also(alResolverOrden)
+            if (payment.paymentType == "ORDER" && (resolvedOrderId == null || CortesiaPersistida.solicitada(payment.orderRequestJson))) {
+                when (val result = resolveMissingOrderId(payment, venueId, cajaParaElServidor)) {
+                    is OrderResolution.Ready -> {
+                        if (resolvedOrderId != null && resolvedOrderId != result.orderId) {
+                            dao.updateStatusWithError(payment.id,PaymentSyncStatus.FAILED.name,CortesiaPersistida.AVISO)
+                            return false
+                        }
+                        resolvedOrderId = result.orderId.also(alResolverOrden)
+                    }
                     is OrderResolution.AuthExpired -> {
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                         return true
@@ -698,7 +1215,7 @@ class PaymentSyncService @Inject constructor(
                 }
                 originalId to requireNotNull(resolvedOrderId)
             } else null
-            val bodyJson = buildReplayBody(payment, venueId, esCobroDeOrden)
+            val bodyJson = buildReplayBody(payment, venueId, esCobroDeOrden, cajaParaElServidor)
 
             val request = Request.Builder()
                 .url(url)
@@ -738,13 +1255,23 @@ class PaymentSyncService @Inject constructor(
         }
     }
 
-    private suspend fun resolveMissingOrderId(payment: PendingPaymentEntity, venueId: String): OrderResolution {
+    /**
+     * La caja con la que este cobro viaja: la de la fila, traducida por el alias del cajón. Sólo se pregunta si la fila trae
+     * caja (una fila vieja no toca el cajón), y un id inválido para el servidor no se manda (sería un 400 permanente).
+     */
+    private fun cajaDelCobroParaElServidor(payment: PendingPaymentEntity, venueId: String): String? =
+        payment.cashDrawerSessionId?.takeIf { it.isNotBlank() }
+            ?.let { cajon.idDeCajaParaElServidor(it, venueId) }
+            ?.takeIf { it.isNotBlank() && it.length <= LARGO_MAXIMO_DE_LA_CAJA }
+
+    private suspend fun resolveMissingOrderId(payment: PendingPaymentEntity, venueId: String, cajaParaElServidor: String?): OrderResolution {
         val orderRequestJson = payment.orderRequestJson
             ?: return OrderResolution.PermanentFailure("Missing orderRequestJson for ORDER sync")
 
+        // La orden que la cola crea nace en el turno de la caja de la venta (el pedido congelado no cambia en disco).
         val request = Request.Builder()
             .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
-            .post(orderRequestJson.toRequestBody(JSON_MEDIA))
+            .post(pedidoConLaCaja(orderRequestJson, cajaParaElServidor).toRequestBody(JSON_MEDIA))
             .build()
 
         return try {
@@ -753,6 +1280,9 @@ class PaymentSyncService @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
 
+            if (code in 200..299 && !CortesiaPersistida.confirmada(orderRequestJson, body)) {
+                return OrderResolution.PermanentFailure(CortesiaPersistida.AVISO)
+            }
             classifyOrderCreation(code, body).also {
                 if (it is OrderResolution.Ready) {
                     Log.d(TAG, "✅ Recreated order for queued payment ${payment.id}: ${it.orderId}")
@@ -808,15 +1338,19 @@ class PaymentSyncService @Inject constructor(
                 dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                 true  // STOP batch
             }
-            code == 409 && runCatching {
-                val value = json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
-                val reason = value?.get("code") ?: (value?.get("error") as? kotlinx.serialization.json.JsonObject)?.get("code")
-                (reason as? kotlinx.serialization.json.JsonPrimitive)?.let { it.isString && it.content == ConciliacionDelCobro.PRICE_PROOF_PENDING } == true
-            }.getOrDefault(false) -> {
+            code == 409 && codigoDelCuerpo(body) == ConciliacionDelCobro.PRICE_PROOF_PENDING -> {
                 try { check(dao.registrarResultadoQ15(payment.venueId, payment.id, false,
                     ConciliacionDelCobro.PRICE_PROOF_PENDING, null, System.currentTimeMillis()) == 1) }
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (error: Exception) { Log.e(TAG, "No se pudo conservar la espera de precio", error) }
+                true
+            }
+            // 🔴 El servidor está CERRANDO el turno de este cobro (efectivo sin red en el turno correcto): dura milisegundos. Se
+            // queda PENDIENTE sin gastar un reintento —diez cierres seguidos no pueden mandar un efectivo a cuarentena— y la
+            // fila se detiene (FIFO). Es el mismo código que el cajón ya trata como transitorio.
+            code == 409 && codigoDelCuerpo(body) == CODIGO_CIERRE_EN_PROCESO -> {
+                Log.w(TAG, "⏸️ Payment ${payment.id}: el servidor está cerrando su turno ($CODIGO_CIERRE_EN_PROCESO); sigue PENDIENTE sin gastar reintento")
+                dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                 true
             }
             code == 409 -> {
@@ -866,6 +1400,13 @@ class PaymentSyncService @Inject constructor(
             }
         }
     }
+
+    /** El `code` de negocio del cuerpo de un error (`{code}` o `{error:{code}}`), o `null`. Se lee la LLAVE, nunca el texto. */
+    private fun codigoDelCuerpo(body: String): String? = runCatching {
+        val value = json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
+        val reason = value?.get("code") ?: (value?.get("error") as? kotlinx.serialization.json.JsonObject)?.get("code")
+        (reason as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    }.getOrNull()
 
     private suspend fun handleNetworkError(payment: PendingPaymentEntity, error: String) {
         if (payment.retryCount >= MAX_RETRIES) {

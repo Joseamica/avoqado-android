@@ -53,7 +53,26 @@ class KioskState @Inject constructor() {
     private val timerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var revertJob: Job? = null
 
+    /**
+     * La última lista de la clase que se enseñó, para volver a ella sin esperar a la red.
+     * Es lo que ya estaba a la vista de todos (nombre + inicial), no datos de una persona.
+     * Se olvida cuando el reloj cierra la clase.
+     */
+    var lastRoster: KioskContent.Roster? = null
+        private set
+    private var lastRosterAt = 0L
+
+    /** Reloj inyectable para las pruebas. */
+    internal var now: () -> Long = System::currentTimeMillis
+
     fun show(content: KioskContent) {
+        when (content) {
+            // La hora NO se toca aquí: una confirmación local (✓, renglón abierto) no hace más
+            // nueva la lista. Sólo la que llega del servidor ([showFromServer]) cuenta (Codex r3).
+            is KioskContent.Roster -> lastRoster = content
+            is KioskContent.Welcome -> lastRoster = null
+            else -> Unit
+        }
         _content.value = content
         revertJob?.cancel()
 
@@ -63,10 +82,14 @@ class KioskState @Inject constructor() {
         // siguiente de la fila.
         val timeoutMs = when (content) {
             is KioskContent.CheckedIn, is KioskContent.Purchased -> DONE_TIMEOUT_MS
+            // Identify también: cada tecla reinicia la cuenta (`keepAlive`), así que a quien
+            // teclea despacio no se le borra; lo que se borra es el número que alguien dejó
+            // a medias y se fue (Codex r1, 26-oct).
+            // …salvo mientras busca: vencerla ahí descartaría el «Listo» de un check-in que sí
+            // se registró (Codex r2). La búsqueda termina sola con los límites del cliente.
+            is KioskContent.Identify -> if (content.searching) null else IDENTIFIED_TIMEOUT_MS
             is KioskContent.Found, is KioskContent.Offer -> IDENTIFIED_TIMEOUT_MS
             is KioskContent.Trouble -> TROUBLE_TIMEOUT_MS
-            // Identify no caduca sola: alguien tecleando despacio no merece que
-            // se le borre el número a media captura. Se sale con el botón.
             else -> null
         }
         timeoutMs?.let { scheduleRestart(it) }
@@ -76,7 +99,11 @@ class KioskState @Inject constructor() {
         revertJob?.cancel()
         revertJob = timerScope.launch {
             delay(afterMs)
-            _content.value = KioskContent.Welcome
+            // 🔴 A la LISTA, no al reposo. Antes ponía «Bienvenida» sin avisarle a nadie y la
+            // lista sólo regresaba con el siguiente tic del reloj (~15 s, D3, 26-oct): la de
+            // atrás veía «El registro se abre antes de cada clase» con la clase abierta.
+            backToList()
+            onTimedOut?.invoke()
         }
     }
 
@@ -88,6 +115,7 @@ class KioskState @Inject constructor() {
         val c = _content.value
         val timeoutMs = when (c) {
             is KioskContent.CheckedIn, is KioskContent.Purchased -> DONE_TIMEOUT_MS
+            is KioskContent.Identify -> if (c.searching) return else IDENTIFIED_TIMEOUT_MS
             is KioskContent.Found, is KioskContent.Offer -> IDENTIFIED_TIMEOUT_MS
             is KioskContent.Trouble -> TROUBLE_TIMEOUT_MS
             else -> return
@@ -98,7 +126,42 @@ class KioskState @Inject constructor() {
     /** Vuelve al reposo YA y suelta cualquier dato de la persona anterior. */
     fun restart() {
         revertJob?.cancel()
+        lastRoster = null
         _content.value = KioskContent.Welcome
+    }
+
+    /**
+     * Terminó con alguien: vuelve a la lista de la clase abierta, limpia (sin el renglón
+     * abierto de quien ya se fue). Sin clase abierta, al reposo. Igual suelta los datos de
+     * la persona: la lista es lo que ya estaba a la vista.
+     *
+     * 🔴 Sólo una lista RECIENTE. Mientras alguien teclea el reloj no repinta, y la clase pudo
+     * cerrarse (o cambiar la sucursal): una lista vieja volvería a enseñar nombres que ya no
+     * tocan. Vieja ⇒ reposo, y quien conduce pide la lista al día enseguida (Codex r1, 26-oct).
+     */
+    fun backToList() {
+        val lista = lastRoster?.takeIf { now() - lastRosterAt < LIST_FRESH_MS }
+        if (lista == null) return restart()
+        show(lista.copy(busyId = null, justConfirmedId = null))
+    }
+
+    /** La lista recién llegada del servidor: la única que cuenta para su vigencia. */
+    fun showFromServer(roster: KioskContent.Roster) {
+        show(roster)
+        lastRosterAt = now()
+    }
+
+    /** Sube con cada cambio de sesión: una consulta que salió antes ya no puede pintar. */
+    var epoch = 0
+        private set
+
+    /**
+     * Cambió la sesión o la sucursal: lo que hay a la vista y lo guardado son de la anterior.
+     * Se borra la pantalla (no sólo la copia) y se invalidan las consultas en camino (Codex r3).
+     */
+    fun forgetRoster() {
+        epoch++
+        restart()
     }
 
     // MARK: - Lo que el cliente toca (de vuelta hacia quien conduce)
@@ -136,6 +199,9 @@ class KioskState @Inject constructor() {
     /** Empezar de nuevo / cancelar. Siempre disponible. */
     var onRestart: (() -> Unit)? = null
 
+    /** Una pantalla de persona se venció sola: quien conduce pide la lista al día. */
+    var onTimedOut: (() -> Unit)? = null
+
     /** Suelta las devoluciones de llamada al desmontar quien conducía. */
     fun clearCallbacks() {
         onStart = null
@@ -149,6 +215,7 @@ class KioskState @Inject constructor() {
         onPackToggled = null
         onBuy = null
         onRestart = null
+        onTimedOut = null
     }
 
     private companion object {
@@ -158,5 +225,7 @@ class KioskState @Inject constructor() {
         // vería el siguiente de la fila si ella se va sin cerrar.
         const val IDENTIFIED_TIMEOUT_MS = 45_000L
         const val TROUBLE_TIMEOUT_MS = 15_000L
+        // Lo que tarda alguien en teclear y elegir; más viejo que esto, mejor preguntar.
+        const val LIST_FRESH_MS = 120_000L
     }
 }

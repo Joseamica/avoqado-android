@@ -77,4 +77,18 @@ data class PendingPaymentEntity(
     val q15ReviewedBy: String? = null,
     val q15ReviewRole: String? = null,
     val capturedOrderRef: String? = null,
+    /**
+     * 🔴 LA CAJA DE LA VENTA (efectivo sin red en el turno correcto, 21-oct-2026): la caja que estaba abierta en
+     * ESTE aparato cuando el cajero confirmó el cobro, con el id que el aparato tenía en ese momento (local si la
+     * apertura no había llegado al servidor). Se escribe en la reserva, ANTES de tocar la red.
+     *
+     * Al reproducir viaja traducida al id del servidor (`CashDrawerRepository.idDeCajaParaElServidor`) como
+     * `cashDrawerSessionId`: el servidor saca de ahí el turno de la venta, y una venta cuyo turno ya cerró queda
+     * aparte con aviso en vez de caer en el turno nuevo. También es la barrera del cierre: el cierre encolado de
+     * esa caja espera a que sus cobros suban.
+     *
+     * La PRIMERA captura manda ([filaAlReemplazar]): un reemplazo posterior de la fila conserva la de disco.
+     * Nula en las filas de antes de la v17 y cuando no había caja abierta: esas suben exactamente como hoy.
+     */
+    val cashDrawerSessionId: String? = null,
 )

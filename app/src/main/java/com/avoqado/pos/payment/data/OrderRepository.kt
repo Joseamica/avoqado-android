@@ -37,6 +37,11 @@ class OrderRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
     private val capturedPayments: com.avoqado.pos.core.data.local.database.PendingPaymentDao? = null,
+    /**
+     * 🔴 D2, rediseño r9: el 2xx comprobado saca la reserva de `EN_VUELO` y anota su venta en el cajón en UNA escritura
+     * ([SalidaDelApartado]). null sólo en pruebas que no miran el cajón; Hilt y Guice lo inyectan siempre.
+     */
+    private val salida: SalidaDelApartado? = null,
 ) {
     /**
      * Cliente SOLO para la ruta del dinero (crear orden, cobrar efectivo, fast).
@@ -122,6 +127,29 @@ class OrderRepository @Inject constructor(
         message: String,
         val cambiosDePrecio: List<CambioDePrecio> = emptyList(),
     ) : Exception(message)
+
+    /**
+     * 🔴 D2 v7, punto 7 (Codex r5 #2): el servidor contestó 2xx con un cuerpo de NUESTRA API que confirma el cobro y lo LOCAL
+     * falló después (escribir el resultado Q15, leerlo). No es un error cancelable: quien la recibe lo trata como cobrado y
+     * encolado con su misma llave. A propósito NO es `IOException`: no es «sin red» ni pasa por [isQueueableError].
+     * Un 2xx que NO confirma el cobro ([ResultadoNoComprobado]) no es esto: sigue como hoy.
+     */
+    class CobroRegistradoSinGuardar(
+        causa: Throwable,
+        /**
+         * 🔴 Codex r14 A5: lo que el servidor CONFIRMÓ que entró al cajón ([importeCobradoEnEfectivo]), ya comprobado. El respaldo lo
+         * usa igual que el camino normal (cajón, pantalla y cambio). null = no se pudo leer: el total local, como antes.
+         */
+        val importeCobradoCents: Int? = null,
+    ) : Exception(causa.message, causa)
+
+    /**
+     * Un 2xx cuyo cuerpo NO confirma el cobro (`ConciliacionDelCobro.evaluar` no lo dio por aplicado): puede venir de un portal
+     * cautivo o un intermediario. Sigue como hoy (guarda Q15/H2 del 11-oct): la fila queda en la cola con «resultado no
+     * comprobado», la pantalla muestra el error y nada entra al cajón. NO se convierte en [CobroRegistradoSinGuardar].
+     */
+    class ResultadoNoComprobado(causa: Throwable? = null) :
+        IllegalStateException("El resultado del cobro está por confirmar. Se conservó para revisión; no vuelvas a cobrar.", causa)
 
     companion object {
         private const val CODIGO_PRECIO_CAMBIADO = "ORDER_PRICE_CHANGED"
@@ -375,6 +403,20 @@ class OrderRepository @Inject constructor(
         fun extractRecordedTipCentsFromResponse(responseBody: String): Int? =
             extractStrictNonNegativeCents(responseBody, "tipAmount")
 
+        /**
+         * 🔴 Codex r10 #1: lo que de verdad entró al cajón por un cobro en efectivo CONFIRMADO. Una segunda caja pudo mover la orden
+         * mientras se cobraba: el servidor recorta SÓLO el efectivo al saldo fresco y devuelve el importe y la propina que registró.
+         * Con un servidor viejo (sin esos campos) o un payload imposible (que desbordaría Int), el total local, igual que iOS.
+         * La comparten la pantalla (cambio, ticket) y la anotación del cajón ([SalidaDelApartado]): no existe dos veces.
+         * Rappi: el retenido válido incluye también dinero de terceros y manda sobre el desglose de venta y propina.
+         */
+        fun importeCobradoEnEfectivo(recordedAmountCents: Int?, recordedTipCents: Int?, totalLocalCents: Int, cashRetainedCents: Int? = null): Int {
+            cashRetainedCents?.takeIf { it >= 0 }?.let { return it }
+            if (recordedAmountCents == null || recordedTipCents == null || recordedAmountCents < 0 || recordedTipCents < 0) return totalLocalCents
+            val registrado = recordedAmountCents.toLong() + recordedTipCents.toLong()
+            return if (registrado <= Int.MAX_VALUE.toLong()) registrado.toInt() else totalLocalCents
+        }
+
         /** Cambio recalculado por el server después de releer la orden (centavos). */
         fun extractChangeCentsFromResponse(responseBody: String): Int? =
             extractStrictNonNegativeCents(responseBody, "changeCents")
@@ -582,6 +624,10 @@ class OrderRepository @Inject constructor(
                                     }
 
                                     if (promotionRef == null) {
+                                        if (item.isCortesia) {
+                                            put("isCortesia", true)
+                                            item.cortesiaReason?.trim()?.takeIf { it.isNotEmpty() }?.let { put("cortesiaReason", it) }
+                                        }
                                         item.externalId?.let { put("externalId", it) }
                                         item.serviceCourse?.let { course ->
                                             put("serviceCourse", buildJsonObject {
@@ -610,7 +656,7 @@ class OrderRepository @Inject constructor(
                                         // Va sólo en líneas sin promoción: una promoción
                                         // viaja SOLA y su precio lo resuelve el motor.
                                         item.discountId
-                                            ?.takeIf { it.isNotBlank() }
+                                            ?.takeIf { !item.isCortesia && it.isNotBlank() }
                                             ?.let { put("discountId", it) }
                                     }
                                 },
@@ -743,6 +789,9 @@ class OrderRepository @Inject constructor(
             }
 
             if (responseCode in 200..299) {
+                if (!CortesiaPersistida.confirmada(payload, responseBody)) {
+                    return Result.failure(ServerException(409, CortesiaPersistida.AVISO))
+                }
                 val orderResponse = parseCreateOrderResponse(responseBody)
                 Log.d("📦", "✅ Order created: ${orderResponse.data?.id}")
                 Result.success(orderResponse)
@@ -834,17 +883,78 @@ class OrderRepository @Inject constructor(
     private data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
 
 
-    private suspend fun guardarRespuestaDeCaptura(venueId: String, key: String, channel: CanalDelCobro, body: String, importeAceptadoCents: Int? = null) {
+    /**
+     * Guarda en la captura lo que contestó el 2xx. 🔴 D2 v7: sólo lo que falle DESPUÉS de comprobar el cobro (`aplicado`) sube como
+     * excepción genérica (y quien llama la vuelve [CobroRegistradoSinGuardar]). Lo que no se pudo comprobar —sin poder leer la
+     * captura, o un cuerpo que no confirma— lanza [ResultadoNoComprobado], también si además falla su escritura (doble fallo): un
+     * 2xx sin comprobar nunca se pinta «cobrado».
+     */
+    private suspend fun guardarRespuestaDeCaptura(
+        venueId: String,
+        key: String,
+        channel: CanalDelCobro,
+        body: String,
+        /** Lo que entró al cajón si el cobro queda comprobado ([importeCobradoEnEfectivo]). */
+        importeCobradoCents: Int,
+        importeAceptadoCents: Int? = null,
+    ) {
         val dao = capturedPayments ?: return
-        val original = dao.findForVenue(venueId, key) ?: return // Unsupported/no-reservation flows keep their existing contract.
-        if (original.syncStatus == "SYNCED") return
-        // Se compara contra lo que el cajero aceptó; lo que se guarda sigue siendo la captura original (evidencia Q15).
-        val contraQue = importeAceptadoCents?.let { aceptado ->
-            ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, venueId, key)?.let { ConciliacionDelCobro.guardarCaptura(it.copy(amountCents = aceptado)) }
-        } ?: original.q15CaptureJson
-        val result = ConciliacionDelCobro.evaluar(contraQue, venueId, key, channel, body)
-        check(dao.registrarResultadoQ15(venueId, key, result.aplicado, result.motivo, result.resultadoJson, System.currentTimeMillis()) == 1)
-        check(result.aplicado) { "El resultado del cobro está por confirmar. Se conservó para revisión; no vuelvas a cobrar." }
+        val result = try {
+            val original = dao.findForVenue(venueId, key) ?: return // Unsupported/no-reservation flows keep their existing contract.
+            if (original.syncStatus == "SYNCED") return
+            // Se compara contra lo que el cajero aceptó; lo que se guarda sigue siendo la captura original (evidencia Q15).
+            val contraQue = importeAceptadoCents?.let { aceptado ->
+                ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, venueId, key)?.let { ConciliacionDelCobro.guardarCaptura(it.copy(amountCents = aceptado)) }
+            } ?: original.q15CaptureJson
+            ConciliacionDelCobro.evaluar(contraQue, venueId, key, channel, body)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Ronda final (A4, regla única): sin leer la fila o la captura, o sin poder evaluar, no se comprobó nada.
+            Log.e("💵", "⚠️ No se pudo leer o evaluar la captura de $key tras el 2xx: ${e.message}")
+            noComprobado(dao, venueId, key, e)
+        }
+        val ahora = System.currentTimeMillis()
+        if (!result.aplicado) {
+            // Como hoy (Q15/H2, 11-oct): queda por revisar. Si su escritura falla, se dice en el log; sigue siendo «no comprobado».
+            val fallo = try {
+                check(dao.registrarResultadoQ15(venueId, key, false, result.motivo, result.resultadoJson, ahora) == 1)
+                null
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("💵", "⚠️ 2xx sin comprobar y sin poder guardar su resultado ($key): ${e.message}")
+                e
+            }
+            noComprobado(dao, venueId, key, fallo, result.motivo ?: ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)
+        }
+        // 🔴 Rediseño r9: con la reserva todavía `EN_VUELO`, el cobro queda SYNCED y su venta entra al cajón en la MISMA escritura,
+        // con el importe definitivo. Si la cola o «Sí se cobró» ya la habían sacado, ya está anotada: no se anota otra vez.
+        val escribir: suspend () -> Boolean = { dao.registrarResultadoQ15(venueId, key, true, result.motivo, result.resultadoJson, ahora) == 1 }
+        check(salida?.salir(key, conDosXx = true, delFlujo = true, importe = { importeCobradoCents }, transicion = escribir) ?: escribir())
+    }
+
+    /**
+     * 🔴 Ronda final (A4, regla única de las dos apps): todo 2xx que NO comprobó el cobro —`aplicado == false`, o no se pudo leer
+     * la fila o la captura, o evaluarla— es el error de hoy ([ResultadoNoComprobado]) MÁS la retención de respaldo
+     * «resultado no comprobado», como mejor esfuerzo (con log si falla). Con la marca, «Cancelar» sólo la suelta y la cola no la
+     * da por cobrada. [CobroRegistradoSinGuardar] queda sólo para el 2xx que `evaluar` sí dio por aplicado.
+     */
+    private suspend fun noComprobado(
+        dao: com.avoqado.pos.core.data.local.database.PendingPaymentDao,
+        venueId: String,
+        key: String,
+        causa: Throwable?,
+        motivo: String = ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,
+    ): Nothing {
+        try {
+            dao.retenerPagoQ15(venueId, key, motivo, System.currentTimeMillis())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("💵", "⚠️ No se pudo marcar por revisar el 2xx sin comprobar ($key); sigue EN_VUELO: ${e.message}")
+        }
+        throw ResultadoNoComprobado(causa)
     }
 
     // MARK: - Fast Cash Payment (no products)
@@ -907,23 +1017,35 @@ class OrderRepository @Inject constructor(
             }
 
             if (code in 200..299) {
-                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.FAST, body)
-                Log.d("💵", "✅ Fast cash payment recorded: $amount cents, body: ${body.take(200)}")
-                val paymentId = extractPaymentIdFromResponse(body)
-                val accessKey = extractReceiptAccessKeyFromResponse(body)
-                val receiptUrl = extractReceiptUrlFromResponse(body)
-                val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
-                val customerWarning = extractCustomerLinkWarningFromResponse(body)
-                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, customerWarning: ${customerWarning != null}")
-                Result.success(
-                    CashPayResult(
-                        paymentId = paymentId,
-                        receiptAccessKey = accessKey,
-                        receiptUrl = receiptUrl,
-                        inventoryWarningMessage = inventoryWarning,
-                        customerLinkWarning = customerWarning,
-                    ),
-                )
+                try {
+                    guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.FAST, body, importeCobradoCents = amount + tip)
+                    Log.d("💵", "✅ Fast cash payment recorded: $amount cents, body: ${body.take(200)}")
+                    val paymentId = extractPaymentIdFromResponse(body)
+                    val accessKey = extractReceiptAccessKeyFromResponse(body)
+                    val receiptUrl = extractReceiptUrlFromResponse(body)
+                    val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
+                    val customerWarning = extractCustomerLinkWarningFromResponse(body)
+                    Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, customerWarning: ${customerWarning != null}")
+                    Result.success(
+                        CashPayResult(
+                            paymentId = paymentId,
+                            receiptAccessKey = accessKey,
+                            receiptUrl = receiptUrl,
+                            inventoryWarningMessage = inventoryWarning,
+                            customerLinkWarning = customerWarning,
+                        ),
+                    )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: ResultadoNoComprobado) {
+                    // Como hoy: el 2xx no confirma el cobro. La causa no se calla (ronda 1, M2).
+                    Log.e("💵", "⚠️ 2xx sin comprobar ($idempotencyKey): ${e.cause?.message ?: "el cuerpo no confirma el cobro"}")
+                    Result.failure(e)
+                } catch (e: Exception) {
+                    // 2xx: el servidor ya lo tiene. Lo que falló es de este aparato (D2 v7, punto 7).
+                    Log.e("💵", "⚠️ Fast cash payment registrado (2xx) pero no se pudo guardar aquí: ${e.message}")
+                    Result.failure(CobroRegistradoSinGuardar(e, amount + tip))
+                }
             } else {
                 Log.e("💵", "❌ Fast cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago rápido ($code)"))
@@ -1055,33 +1177,54 @@ class OrderRepository @Inject constructor(
             }
 
             if (code in 200..299) {
-                guardarRespuestaDeCaptura(venueId, idempotencyKey, CanalDelCobro.ORDER, body, importeAceptadoCents)
-                Log.d("💵", "✅ Cash payment recorded for order: $orderId")
-                val paymentId = extractPaymentIdFromResponse(body)
-                val accessKey = extractReceiptAccessKeyFromResponse(body)
-                val receiptUrl = extractReceiptUrlFromResponse(body)
-                val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
-                val remainingBalance = extractRemainingBalanceCentsFromResponse(body)
-                val orderPaymentStatus = extractOrderPaymentStatusFromResponse(body)
-                val recordedAmount = extractRecordedAmountCentsFromResponse(body)
-                val recordedTip = extractRecordedTipCentsFromResponse(body)
-                val authoritativeChange = extractChangeCentsFromResponse(body)
+                // Codex r14 A5: lo que el servidor registró, una sola vez: lo usan la captura y, si lo local falla, el respaldo.
                 val cashRetained = extractCashRetainedCentsFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange, cashRetained: $cashRetained")
-                Result.success(
-                    CashPayResult(
-                        paymentId = paymentId,
-                        receiptAccessKey = accessKey,
-                        receiptUrl = receiptUrl,
-                        inventoryWarningMessage = inventoryWarning,
-                        remainingBalanceCents = remainingBalance,
-                        orderPaymentStatus = orderPaymentStatus,
-                        recordedAmountCents = recordedAmount,
-                        recordedTipCents = recordedTip,
-                        authoritativeChangeCents = authoritativeChange,
-                        cashRetainedCents = cashRetained,
-                    ),
+                val importeCobrado = importeCobradoEnEfectivo(
+                    extractRecordedAmountCentsFromResponse(body), extractRecordedTipCentsFromResponse(body), amount + tip,
+                    cashRetainedCents = cashRetained,
                 )
+                try {
+                    guardarRespuestaDeCaptura(
+                        venueId, idempotencyKey, CanalDelCobro.ORDER, body,
+                        importeCobradoCents = importeCobrado,
+                        importeAceptadoCents = importeAceptadoCents,
+                    )
+                    Log.d("💵", "✅ Cash payment recorded for order: $orderId")
+                    val paymentId = extractPaymentIdFromResponse(body)
+                    val accessKey = extractReceiptAccessKeyFromResponse(body)
+                    val receiptUrl = extractReceiptUrlFromResponse(body)
+                    val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
+                    val remainingBalance = extractRemainingBalanceCentsFromResponse(body)
+                    val orderPaymentStatus = extractOrderPaymentStatusFromResponse(body)
+                    val recordedAmount = extractRecordedAmountCentsFromResponse(body)
+                    val recordedTip = extractRecordedTipCentsFromResponse(body)
+                    val authoritativeChange = extractChangeCentsFromResponse(body)
+                    Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange, cashRetained: $cashRetained")
+                    Result.success(
+                        CashPayResult(
+                            paymentId = paymentId,
+                            receiptAccessKey = accessKey,
+                            receiptUrl = receiptUrl,
+                            inventoryWarningMessage = inventoryWarning,
+                            remainingBalanceCents = remainingBalance,
+                            orderPaymentStatus = orderPaymentStatus,
+                            recordedAmountCents = recordedAmount,
+                            recordedTipCents = recordedTip,
+                            authoritativeChangeCents = authoritativeChange,
+                            cashRetainedCents = cashRetained,
+                        ),
+                    )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: ResultadoNoComprobado) {
+                    // Como hoy: el 2xx no confirma el cobro. La causa no se calla (ronda 1, M2).
+                    Log.e("💵", "⚠️ 2xx sin comprobar ($idempotencyKey): ${e.cause?.message ?: "el cuerpo no confirma el cobro"}")
+                    Result.failure(e)
+                } catch (e: Exception) {
+                    // 2xx: el servidor ya lo tiene. Lo que falló es de este aparato (D2 v7, punto 7).
+                    Log.e("💵", "⚠️ Cash payment registrado (2xx) pero no se pudo guardar aquí: ${e.message}")
+                    Result.failure(CobroRegistradoSinGuardar(e, importeCobrado))
+                }
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
                 Result.failure(ServerException(code, mensajeDelRechazo(code, body)))
