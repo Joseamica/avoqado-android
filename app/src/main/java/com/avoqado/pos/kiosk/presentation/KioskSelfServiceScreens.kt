@@ -2,9 +2,13 @@ package com.avoqado.pos.kiosk.presentation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -57,45 +61,80 @@ internal fun Identify(
     onSearch: () -> Unit,
     onBack: () -> Unit,
 ) {
-    // Con scroll: en la cara del cliente de la D3 (800 px) el teclado no cabe entero, y sin
-    // esto su última fila —el 0, el borrar y "Buscar"— quedaba cortada fuera de la pantalla.
-    Screen(scrollable = true) {
-        Big("Tu teléfono")
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-
-        Text(
-            text = formatNational(content.national),
-            fontSize = KDigits,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-
-        // Dos fracasos DISTINTOS, y decirlo importa: "no te encontramos" manda
-        // a la persona con el mostrador; "se cayó la red" le dice que vuelva a
-        // intentar. Un mensaje genérico la deja parada sin saber qué hacer.
-        when {
-            content.notFound -> Note("No encontramos ese número. Pregunta en el mostrador.")
-            content.failed -> Note("No pudimos conectarnos. Inténtalo otra vez.")
-            else -> Sub("Con el número que usaste al reservar.")
-        }
-
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-        NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
-        // Espaciador FIJO, no `weight`: dentro de un Column con scroll la altura deja de
-        // estar acotada y `weight` no vale.
-        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-
-        if (content.searching) {
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+    // 🔴 La cara del cliente de la D3 puede estar ACOSTADA (1280×800, demo de Mindform 26-oct):
+    // en una columna el teclado ocupaba todo el alto, «Buscar» quedaba cortado abajo y al
+    // bajar a buscarlo se perdía de vista el número tecleado. Acostada va en dos mitades —el
+    // número y los botones a la izquierda, el teclado a la derecha— y todo cabe sin scroll.
+    // Sólo si hay alto para el teclado entero (la D3 da ~600 dp); una pantalla acostada más
+    // chica conserva la columna con scroll de antes (Codex r1, 26-oct).
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth > maxHeight && maxHeight >= TWO_HALVES_MIN_HEIGHT) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xl),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xl),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    IdentifyHeader(content)
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                    IdentifyActions(content, onSearch, onBack)
+                }
+                Box(Modifier.weight(1f)) {
+                    NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
+                }
+            }
         } else {
-            PrimaryAction("Buscar", enabled = content.canSearch, onClick = onSearch)
+            // Parada: con scroll, porque en 800 px de ancho el teclado no cabe entero con todo.
+            Screen(scrollable = true) {
+                IdentifyHeader(content)
+                Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+                NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
+                // Espaciador FIJO, no `weight`: dentro de un Column con scroll la altura deja de
+                // estar acotada y `weight` no vale.
+                Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+                IdentifyActions(content, onSearch, onBack)
+            }
         }
-        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
-        GhostAction("Cancelar", onClick = onBack)
     }
 }
+
+@Composable
+private fun IdentifyHeader(content: KioskContent.Identify) {
+    Big("Tu teléfono")
+    Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+
+    Text(
+        text = formatNational(content.national),
+        fontSize = KDigits,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+
+    Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+
+    // Dos fracasos DISTINTOS, y decirlo importa: "no te encontramos" manda
+    // a la persona con el mostrador; "se cayó la red" le dice que vuelva a
+    // intentar. Un mensaje genérico la deja parada sin saber qué hacer.
+    when {
+        content.notFound -> Note("No encontramos ese número. Pregunta en el mostrador.")
+        content.failed -> Note("No pudimos conectarnos. Inténtalo otra vez.")
+        else -> Sub("Con el número que usaste al reservar.")
+    }
+}
+
+@Composable
+private fun IdentifyActions(content: KioskContent.Identify, onSearch: () -> Unit, onBack: () -> Unit) {
+    if (content.searching) {
+        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+    } else {
+        PrimaryAction("Buscar", enabled = content.canSearch, onClick = onSearch)
+    }
+    Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+    // «Regresar» y no «Cancelar»: lleva de vuelta a la lista de la clase.
+    GhostAction("Regresar", onClick = onBack)
+}
+
+private val TWO_HALVES_MIN_HEIGHT = 480.dp
 
 /** "5512345678" -> "55 1234 5678". Sólo presentación. */
 private fun formatNational(digits: String): String = when {
@@ -187,7 +226,11 @@ internal fun CheckedIn(content: KioskContent.CheckedIn) {
         // El separador sólo si hay las dos partes: por el respaldo del teléfono la hora
         // llega vacía (el servidor devuelve la clase, no su etiqueta formateada) y quedaba
         // un "·" colgando al final. Se vio en la D3, de frente al cliente.
-        Sub(listOf(content.session.title, content.session.timeLabel).filter { it.isNotBlank() }.joinToString(" · "))
+        // Lugar y coach, lo mismo que dice el renglón al tocar su nombre en la lista.
+        val s = content.session
+        Sub(listOfNotNull(s.title.takeIf { it.isNotBlank() }, s.timeLabel.takeIf { it.isNotBlank() }, s.spotLabel, s.staffLabel).joinToString(" · "))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text("Puedes pasar", fontSize = KBody, fontWeight = FontWeight.SemiBold, color = Success)
         Spacer(Modifier.weight(1f))
     }
 }

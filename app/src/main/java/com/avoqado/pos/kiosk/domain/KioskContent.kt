@@ -182,6 +182,8 @@ data class KioskSession(
     val staffLabel: String?,
     /** Ya hizo check-in antes: se muestra, pero no se le vuelve a pedir. */
     val alreadyCheckedIn: Boolean = false,
+    /** «Tapete 4», o null sin acomodo. Mismo dato que [KioskPerson.spotLabel]. */
+    val spotLabel: String? = null,
 )
 
 /** Un paquete comprable, con su precio de catálogo. El kiosco nunca lo cambia. */

@@ -96,6 +96,19 @@ class AppState @Inject constructor(
     @Inject
     lateinit var customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState
 
+    /** El kiosco de check-in: al cambiar de sucursal olvida la lista de la clase (es de la anterior). */
+    @Inject
+    lateinit var kioskState: com.avoqado.pos.kiosk.domain.KioskState
+
+    /**
+     * La sucursal que el kiosco vio por última vez. Sólo un CAMBIO real lo reinicia: este aviso también corre por
+     * otras causas (pestañas, rol) y reiniciar ahí le borraría el teclado a quien está tecleando. Arranca con la sesión
+     * guardada, para que hasta el primer aviso (p. ej. cerrar sesión recién abierta la app) cuente como cambio (Codex r4).
+     */
+    private var kioskVenue: String? = sesionDelKiosco()
+
+    private fun sesionDelKiosco(): String? = if (secureStorage.isLoggedIn) secureStorage.venueId else null
+
     private fun detenerRedLocal() {
         if (::preparationDelivery.isInitialized) preparationDelivery.stop()
         if (::lanHubService.isInitialized) lanHubService.stop()
@@ -108,6 +121,11 @@ class AppState @Inject constructor(
         // tras iniciar sesión el reposo seguía con la de Avoqado. Sin sesión queda vacía ⇒ la de Avoqado, a propósito.
         if (::customerDisplayState.isInitialized) {
             customerDisplayState.setVenueBranding(secureStorage.venueDisplayName, secureStorage.venueLogo)
+        }
+        if (::kioskState.isInitialized) {
+            val venue = sesionDelKiosco()
+            if (venue != kioskVenue) kioskState.forgetRoster()
+            kioskVenue = venue
         }
         tableSyncCoordinator.onSessionChanged()
         syncOutbox.refreshQ15Observation()
