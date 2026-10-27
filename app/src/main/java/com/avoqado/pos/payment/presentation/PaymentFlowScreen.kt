@@ -59,6 +59,17 @@ fun PaymentFlowScreen(
      * carrito, que es el dueño de la venta. null = venta nueva, como siempre.
      */
     resumeOrderId: String? = null,
+    /**
+     * Quién abre el cobro. Default NORMAL (todo cobro de hoy queda igual). La bandeja «Pedidos en línea» pasa
+     * `PEDIDO_EN_LINEA`: el cobro es de [resumeOrderId] aunque una mesa haya quedado en PAYING.
+     */
+    origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
+    /**
+     * La «apertura» de este cobro cuando quien lo abre la guarda en su ViewModel (vive más que esta composición: p. ej. la
+     * superposición de «Más» se cierra al recrearse la Activity y vuelve a abrirse). null = la de siempre, en un
+     * `rememberSaveable`. Ver la nota de `aperturaDelCobro` abajo.
+     */
+    apertura: String? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     // Salir del cobro sin cobrar (calificación, propina, elegir método): si ESTE cobro ya armó la cuenta de los vales (una
@@ -100,7 +111,8 @@ fun PaymentFlowScreen(
     // el cobro se cierra y se vuelve a abrir. Sin esto, volver a la pestaña tras cobrar arrancaba
     // un cobro de $0.00 con el carrito ya vacío (D3, 29-sep) — y el reparto de un cobro dividido
     // se perdía, porque quien llama lo guarda en un `remember` que no sobrevive al cambio.
-    val aperturaDelCobro = rememberSaveable { java.util.UUID.randomUUID().toString() }
+    val aperturaGuardada = rememberSaveable { java.util.UUID.randomUUID().toString() }
+    val aperturaDelCobro = apertura ?: aperturaGuardada
 
     LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId) {
         if (viewModel.esElCobroEnCurso(aperturaDelCobro)) return@LaunchedEffect
@@ -116,6 +128,7 @@ fun PaymentFlowScreen(
             customerName = preselectedCustomerName,
             resumeOrderId = resumeOrderId,
             apertura = aperturaDelCobro,
+            origen = origen,
         )
     }
 
@@ -177,6 +190,7 @@ fun PaymentFlowScreen(
                         tenderTypes = tenderTypes,
                         onCancel = salirSinCobrar,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        saldoSinActualizar = !origen.permiteTarjeta,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -200,6 +214,7 @@ fun PaymentFlowScreen(
                         tenderTypes = tenderTypes,
                     onCancel = salirSinCobrar,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        saldoSinActualizar = !origen.permiteTarjeta,
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     onSplitImporte = onSplitImporte,

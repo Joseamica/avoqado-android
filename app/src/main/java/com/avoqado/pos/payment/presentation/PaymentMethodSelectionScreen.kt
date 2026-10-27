@@ -85,6 +85,7 @@ fun PaymentMethodSelectionScreen(
     onCashCustomSelected: ((Int) -> Unit)? = null,
     onCancel: () -> Unit,
     terminalsUnavailable: Boolean = false,
+    saldoSinActualizar: Boolean = false,
     onRetryTerminals: () -> Unit = {},
     /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
     onSplitImporte: (() -> Unit)? = null,
@@ -111,7 +112,7 @@ fun PaymentMethodSelectionScreen(
             onMethodSelected(PaymentMethod.CASH)
         }
     }
-    AtajoDeTeclado(Key.F4, activo = !terminalsUnavailable) { onMethodSelected(PaymentMethod.CARD) }
+    AtajoDeTeclado(Key.F4, activo = !terminalsUnavailable && !saldoSinActualizar) { onMethodSelected(PaymentMethod.CARD) }
     AtajoDeTeclado(Key.Escape) { onCancel() }
     val enWindows = LocalEsEscritorio.current
 
@@ -272,7 +273,7 @@ fun PaymentMethodSelectionScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(
-                        if (terminalsUnavailable) Modifier
+                        if (terminalsUnavailable || saldoSinActualizar) Modifier
                         else Modifier.clickable { onMethodSelected(PaymentMethod.CARD) },
                     )
                     .padding(vertical = AvoqadoTheme.spacing.md),
@@ -283,10 +284,13 @@ fun PaymentMethodSelectionScreen(
                         text = "Cobrar con terminal",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Medium,
-                        color = if (terminalsUnavailable) MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (terminalsUnavailable || saldoSinActualizar) MaterialTheme.colorScheme.onSurfaceVariant
                         else MaterialTheme.colorScheme.onSurface,
                     )
-                    if (terminalsUnavailable) {
+                    if (saldoSinActualizar) {
+                        Text(com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if (terminalsUnavailable) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "No hay terminales conectadas · ",
@@ -307,7 +311,7 @@ fun PaymentMethodSelectionScreen(
                 TeclaDeAtajo(
                     "F4",
                     Modifier.padding(end = AvoqadoTheme.spacing.sm),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (terminalsUnavailable) 0.4f else 1f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (terminalsUnavailable || saldoSinActualizar) 0.4f else 1f),
                 )
                 Icon(
                     Icons.Filled.ChevronRight,
@@ -322,7 +326,7 @@ fun PaymentMethodSelectionScreen(
             // "Ya me pagó de otra forma": el dinero NO pasó por Avoqado.
             // Antes el mesero sólo podía marcarlo como efectivo, y el corte
             // terminaba pidiendo dinero que nunca entró al cajón.
-            if (onManualMethodSelected != null) {
+            if (onManualMethodSelected != null && !saldoSinActualizar) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
