@@ -250,6 +250,11 @@ class SecureStorage @Inject constructor(
         get() = prefs.getBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, value).apply() }
 
+    /** Last known switch for the active venue, cleared when leaving that venue. */
+    var exchangesEnabled: Boolean
+        get() = prefs.getBoolean(KEY_EXCHANGES_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_EXCHANGES_ENABLED, value).apply() }
+
     /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
      * Server resolves these per-venue from role + custom overrides; client mirrors them
@@ -567,6 +572,7 @@ class SecureStorage @Inject constructor(
         // lleguen los ajustes de la nueva sucursal: heredar un ON ajeno pintaría
         // candados que ese local no activó, y al tocarlos saldría el 403 pelón.
         this.managerPinOverrideEnabled = false
+        this.exchangesEnabled = false
     }
 
     fun saveBiometricCredentials(
@@ -618,6 +624,7 @@ class SecureStorage @Inject constructor(
             // y vale pendiente permite recuperarlos tras volver a iniciar.
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
+            .remove(KEY_EXCHANGES_ENABLED)
             .remove(KEY_VENUE_PERMISSIONS)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
@@ -677,6 +684,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"
         private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
+        private const val KEY_EXCHANGES_ENABLED = "exchangesEnabled"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"
