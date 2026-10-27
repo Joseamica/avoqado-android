@@ -1223,6 +1223,62 @@ class OrderRepository @Inject constructor(
         }
     }
 
+    /** D7: 2 s por consulta como máximo — corre entre «la tarjeta cobró» y «Cobro exitoso» (Codex fase 1 código r1 #2). */
+    // Sin renovación de sesión (r2): un 401 aquí es «no se pudo confirmar», nunca una espera más larga por el candado y
+    // el cliente de renovación. La consulta es informativa; la siguiente petición normal renueva la sesión como siempre.
+    private val saldoClient: OkHttpClient by lazy {
+        moneyClient.newBuilder().authenticator(okhttp3.Authenticator.NONE).callTimeout(2, TimeUnit.SECONDS).build()
+    }
+
+    private suspend fun esperarSinBloquear(call: okhttp3.Call): Pair<Int, String> =
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.failure(e))
+                }
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val leido = runCatching { response.use { it.code to (it.body?.string() ?: "") } }
+                    if (cont.isActive) cont.resumeWith(leido)
+                }
+            })
+        }
+
+    /** Lo que la orden debe según el SERVIDOR (`preBillBalance`) y su estado de pago, de la MISMA respuesta. */
+    data class SaldoDeLaOrden(val remainingCents: Int, val paymentStatus: String?)
+
+    /**
+     * D7 (dividir por producto, fase 1, 27-oct): tras cobrar con TARJETA una parte de una venta partida, la terminal no dice
+     * cuánto queda; se le pregunta al SERVIDOR (`GET .../orders/:id`, el mismo que lee Pedidos en línea). 🔴 Nunca lanza:
+     * sin red, sin sesión o con una respuesta rara es null y quien llama lo DICE (nunca lo convierte en saldo cero).
+     */
+    suspend fun saldoDeLaOrden(orderId: String): SaldoDeLaOrden? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+        if (orderId.isBlank()) return null
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/orders/$orderId")
+                .header("Authorization", "Bearer $token")
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .get()
+                .build()
+            // Asíncrona y cancelable (Codex fase 1 r3): al vencerse el presupuesto del cobro se suelta YA, aunque el DNS del
+            // sistema siga bloqueado; la llamada se cancela y su hilo termina por su cuenta.
+            val (code, body) = esperarSinBloquear(saldoClient.newCall(request))
+            if (code !in 200..299) return null
+            val order = Json.parseToJsonElement(body).jsonObject["order"]?.jsonObject ?: return null
+            val saldo = order["preBillBalance"]?.jsonObject?.get("remainingBalanceCents")?.jsonPrimitive?.contentOrNull
+                ?.toDoubleOrNull()?.let { Math.round(it).toInt() } ?: return null
+            SaldoDeLaOrden(remainingCents = saldo, paymentStatus = order["paymentStatus"]?.jsonPrimitive?.contentOrNull?.uppercase())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("💵", "Saldo de la orden $orderId sin respuesta: ${e.message}")
+            null
+        }
+    }
+
     // MARK: - Send Receipt via Email
 
     suspend fun sendReceiptEmail(

@@ -355,7 +355,21 @@ fun PaymentFlowScreen(
                     // o no se pudo descontar. Ámbar, nunca bloquea ni sugiere reintentar.
                     var inventoryWarningShown by rememberSaveable(splashKey) { mutableStateOf(false) }
                     val cobroTrasCancelarAtendido = !currentState.cobroTrasCancelar || cobroTrasCancelarVisto
-                    if (!inventoryWarningShown && cobroTrasCancelarAtendido) {
+                    // D7 (27-oct): una parte con tarjeta de una venta partida cuyo saldo no se pudo confirmar con Avoqado. El
+                    // cobro SÍ quedó: ámbar, manda a revisar la venta, nunca a cobrar otra vez. Va antes que el de inventario.
+                    var avisoDeSaldoVisto by rememberSaveable(splashKey) { mutableStateOf(false) }
+                    if (!avisoDeSaldoVisto && cobroTrasCancelarAtendido) {
+                        currentState.avisoDeSaldo?.let { aviso ->
+                            AvoqadoWarningToast(
+                                message = "Revisa el saldo de la venta",
+                                subtitle = aviso,
+                                // Dinero: se queda hasta que el cajero lo cierre (no se va solo a los 2.6 s).
+                                durationMs = Long.MAX_VALUE,
+                                onDismiss = { avisoDeSaldoVisto = true },
+                            )
+                        }
+                    }
+                    if (!inventoryWarningShown && cobroTrasCancelarAtendido && (currentState.avisoDeSaldo == null || avisoDeSaldoVisto)) {
                         currentState.inventoryWarningMessage?.let { aviso ->
                             AvoqadoWarningToast(
                                 message = "Revisa tu inventario",

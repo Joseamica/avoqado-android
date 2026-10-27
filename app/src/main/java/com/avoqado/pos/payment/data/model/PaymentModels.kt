@@ -90,6 +90,11 @@ sealed class PaymentFlowState {
          */
         val inventoryWarningMessage: String? = null,
         /**
+         * D7 (27-oct): esta parte de una venta partida se cobró con tarjeta y no se pudo confirmar con el SERVIDOR cuánto
+         * queda. El cobro SÍ quedó; el aviso manda a revisar la venta en Ventas, nunca a cobrar otra vez. null = confirmado.
+         */
+        val avisoDeSaldo: String? = null,
+        /**
          * Aviso del server sobre EL CLIENTE de esta venta (`customerLink`): el id no
          * existe en este negocio, la venta ya tenía otro, o no se pudo verificar.
          * Español, listo para el toast ámbar.
