@@ -147,6 +147,11 @@ object ConciliacionDelCobro {
         } else null
         val result = buildJsonObject {
             put("paymentId", paymentId); put("orderId", orderId)
+            // D1 (26-oct): lo que la orden quedó debiendo tras ESTE pago. La parte 2 de una venta dividida que esperó a esta
+            // parte guardada sin red se cobra contra ese saldo, no contra el del carrito (el servidor valora al subir).
+            integer(payment["remainingBalanceCents"])?.let { put("saldoCents", it) }
+            // …y si la orden quedó PAGADA: el servidor perdona un centavo y aun así dice PAID (Codex D1 código r1 #3).
+            text(payment["orderPaymentStatus"])?.let { put("estadoDeLaOrden", it) }
             amount?.let { put("amountCents", it) }; tip?.let { put("tipCents", it) }
             for (field in listOf("method", "splitType", "tenderTypeId")) text(payment[field])?.let { put(field, it) }
             integer(payment["tenderRevision"])?.let { put("tenderRevision", it) }
