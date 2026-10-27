@@ -181,6 +181,35 @@ class ExchangeViewModelTest {
         assertEquals("conserva la rebaja de la talla M", vm.inheritedLabel(0))
     }
 
+    @Test fun `inherited price equal to current list hides the discount label`() {
+        val product = Product("size-27", "Sneakers 27", priceValue = 500.0, productGroupId = "shoes")
+        catalog.value = listOf(product)
+        val vm = vm(item().copy(quantity = 1, chargedTotalCents = 50000, returnedQtyOrder = 0,
+            returnedCentsOrder = 0, currentListPriceCents = 50000, productGroupId = "shoes",
+            variantOptions = listOf(VariantOption("Talla", "26", 0, 0))))
+        vm.toggleReturned("line")
+        vm.addTaken(product)
+        val piece = vm.state.value.calculation.takenPieces.single()
+        assertNotNull(piece.inheritedFrom)
+        assertEquals(50000L, piece.priceCents)
+        assertEquals(50000L, piece.listCents)
+        assertNull(vm.inheritedLabel(0))
+    }
+
+    @Test fun `inherited price below current list shows the discount label`() {
+        val product = Product("size-27", "Sneakers 27", priceValue = 500.0, productGroupId = "shoes")
+        catalog.value = listOf(product)
+        val vm = vm(item().copy(quantity = 1, chargedTotalCents = 35000, returnedQtyOrder = 0,
+            returnedCentsOrder = 0, currentListPriceCents = 50000, productGroupId = "shoes",
+            variantOptions = listOf(VariantOption("Talla", "26", 0, 0))))
+        vm.toggleReturned("line")
+        vm.addTaken(product)
+        val piece = vm.state.value.calculation.takenPieces.single()
+        assertEquals(35000L, piece.priceCents)
+        assertEquals(50000L, piece.listCents)
+        assertEquals(TextosCambio.CONSERVA_REBAJA.replace("{talla}", "26"), vm.inheritedLabel(0))
+    }
+
     @Test fun `bar shows the three exact cases`() {
         assertEquals("Diferencia $0.00 · no se cobra ni se devuelve nada", exchangeBar(0).label)
         assertEquals("Hacer cambio parejo", exchangeBar(0).action)

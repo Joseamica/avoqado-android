@@ -258,7 +258,9 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun inheritedLabel(index: Int): String? {
-        val from = _state.value.calculation.takenPieces.getOrNull(index)?.inheritedFrom ?: return null
+        val piece = _state.value.calculation.takenPieces.getOrNull(index) ?: return null
+        if (piece.priceCents >= piece.listCents) return null
+        val from = piece.inheritedFrom ?: return null
         val item = _state.value.returned.firstOrNull { it.item.id == from.orderItemId }?.item ?: return null
         val size = item.variantOptions?.firstOrNull { it.name.equals("Talla", true) }?.value
         return if (size != null) TextosCambio.CONSERVA_REBAJA.replace("{talla}", size)
