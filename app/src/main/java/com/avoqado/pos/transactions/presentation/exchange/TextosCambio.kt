@@ -6,8 +6,6 @@ object TextosCambio {
     const val ENVIO_SIN_CONFIRMAR = "No se pudo confirmar el cambio. Reintenta con los mismos datos."
     const val ELIGE_METODO = "Elige cómo se paga la diferencia"
     const val ELIGE_DEVOLUCION = "Elige cómo se devuelve la diferencia"
-    const val SIN_CAJA = "Abre la caja de este aparato para cobrar o devolver en efectivo"
-    const val CAJA_SIN_CONFIRMAR = "La apertura de esta caja aún no está confirmada. Entra a Caja con conexión antes de hacer el cambio."
     const val SIN_TERMINALES = "No hay terminales conectadas. Abre la app en la terminal e inténtalo de nuevo."
     const val PIN_EFECTIVO = "Necesitarás que un encargado autorice la devolución en efectivo con su código."
     const val EFECTIVO_SIN_PERMISO = "Devolver efectivo de un cobro con otro medio necesita permiso de un encargado"

@@ -118,14 +118,10 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
     private suspend fun send(value: ExchangeDraft, option: ExchangeSettlementOption?, terminalId: String? = null) {
         if (!allowed()) return
         val session = if (option?.method == "CASH") {
-            val opened = drawer.getOpenSession()
-            if (opened == null || opened.venueId != venue || opened.status != "OPEN") {
-                _message.value = TextosCambio.SIN_CAJA; return
-            }
-            if (!opened.id.matches(Regex("c[a-z0-9]{24}"))) {
-                _message.value = TextosCambio.CAJA_SIN_CONFIRMAR; return
-            }
-            opened.id
+            val opened = try { drawer.getOpenSession() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+            opened?.takeIf { it.venueId == venue && it.status == "OPEN" && it.id.matches(Regex("c[a-z0-9]{24}")) }?.id
         } else null
         if (!allowed()) return
         val settlement = ExchangeSettlementInput(value.settlement.kind, option?.method,

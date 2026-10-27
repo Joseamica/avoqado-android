@@ -1,6 +1,8 @@
 package com.avoqado.pos.transactions
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.transactions.data.*
@@ -8,6 +10,7 @@ import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.presentation.exchange.*
 import io.mockk.*
 import kotlinx.coroutines.test.*
+import kotlinx.serialization.json.*
 import org.junit.*
 import org.junit.Assert.*
 
@@ -18,11 +21,54 @@ class ExchangePaymentViewModelTest {
     private val store=mockk<ExchangePendingStore>()
     private val secure=mockk<SecureStorage>(relaxed=true) { every { venueId } returns "venue"; every { userId } returns "actor" }
     private val monitor=mockk<ConnectivityMonitor> { every { isOnline() } returns true }
+    private val drawer=mockk<CashDrawerRepository>(relaxed=true)
     private val overrideEnabled = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val settings = mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository> {
         every { managerPinOverrideEnabled } returns overrideEnabled
     }
-    private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor,settings)
+    private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),drawer,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor,settings)
+
+    @Test fun `cash collection and payout send with only a confirmed open drawer from this venue`() {
+        val confirmed = CashDrawerSessionEntity("c123456789012345678901234", "venue", null, "actor", "Ana", 0L, 0)
+        val cases = listOf(
+            Triple("no drawer", null, null),
+            Triple("confirmed drawer", confirmed, confirmed.id),
+            Triple("another venue", confirmed.copy(venueId = "other"), null),
+            Triple("local id", confirmed.copy(id = "local-drawer"), null),
+            Triple("closed drawer", confirmed.copy(status = "CLOSED"), null),
+            Triple("read failure", null, null),
+        )
+        for (kind in listOf("COLLECT", "PAYOUT")) for ((name, session, expectedId) in cases) {
+            clearMocks(repo, store, drawer)
+            coEvery { store.load("venue", "payment") } returns null
+            coEvery { store.save(any()) } answers { firstArg<PendingExchange>() }
+            coEvery { store.remove(any()) } just Runs
+            if (name == "read failure") coEvery { drawer.getOpenSession() } throws java.io.IOException("disk")
+            else coEvery { drawer.getOpenSession() } returns session
+            val difference = if (kind == "COLLECT") 250L else -250L
+            var sentBody: String? = null
+            coEvery { repo.create(any(), "venue") } answers {
+                sentBody = firstArg()
+                ExchangeResult("exchange", "COMPLETED", "original", "ORD-1", "new", "ORD-2", 1000, 1000 + difference,
+                    difference, ExchangeResultSettlement(kind, "CASH", 250), ExchangeResultLines(emptyList(), emptyList()))
+            }
+            val vm = vm()
+            vm.open(Transaction("payment", payoutOptions = listOf(
+                com.avoqado.pos.transactions.data.model.PayoutOption("CASH", 1000, 1000, false))))
+            val draft = ExchangeDraft("payment", emptyList(), emptyList(), ExchangeSettlementDraft(kind, difference))
+            vm.begin(draft)
+            vm.choose(vm.options(draft).single { it.method == "CASH" })
+            val label = "$kind: $name"
+            assertNotNull(label, sentBody)
+            val settlement = Json.parseToJsonElement(requireNotNull(sentBody)).jsonObject.getValue("settlement").jsonObject
+            assertEquals(label, expectedId, settlement["cashDrawerSessionId"]?.jsonPrimitive?.contentOrNull)
+            assertEquals(label, "CASH", settlement.getValue("method").jsonPrimitive.content)
+            assertEquals(label, kind, settlement.getValue("kind").jsonPrimitive.content)
+            assertEquals(label, ExchangeSendPhase.COMPLETED, vm.state.value.phase)
+            assertNull(label, vm.message.value)
+            coVerify(exactly = 1) { repo.create(any(), "venue") }
+        }
+    }
 
     @Test fun `disabled cash cannot create pending even after override changes`() {
         coEvery { store.load("venue", "payment") } returns null
