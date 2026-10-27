@@ -95,6 +95,18 @@ data class CreateCustomerResponse(
     val customer: Customer? = null,
 )
 
+/**
+ * `PUT /mobile/venues/:venueId/customers/:customerId`: sólo datos de contacto, y sólo los que cambiaron. Los `null` NO
+ * viajan (el repositorio serializa con `encodeDefaults = false`): el servidor rechaza cualquier otro campo.
+ */
+@Serializable
+data class UpdateCustomerRequest(
+    val firstName: String? = null,
+    val lastName: String? = null,
+    val phone: String? = null,
+    val email: String? = null,
+)
+
 @Serializable
 data class CreateCustomerRequest(
     val firstName: String? = null,
