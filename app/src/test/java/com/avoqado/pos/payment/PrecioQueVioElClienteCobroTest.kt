@@ -467,7 +467,8 @@ class PrecioQueVioElClienteCobroTest {
         val carrito = carritoConDosProductos(descuento = diezPorCiento)
         val (e1, e2) = carrito.cartState.value.items.map { it.id }
         cuandoSeCreaLaOrden(creada(90.0))
-        cobradoEnEfectivo(pagado(saldo = 4000, estado = "PARTIAL"))
+        // D10 (27-oct): el café paga su parte del 10 % ($45), así que quedan $45 — los mismos que muestra el té.
+        cobradoEnEfectivo(pagado(saldo = 4500, estado = "PARTIAL"))
 
         vm.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf(e1))
         vm.startPaymentFlow(carrito.getCartForPayment())

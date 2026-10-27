@@ -41,6 +41,7 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.customerdisplay.CustomerContent
+import com.avoqado.pos.payment.presentation.AVISO_SALDO_SIN_CONFIRMAR
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.payment.presentation.cobraLosValesDeLaSesion
 import com.avoqado.pos.payment.presentation.tipCentsForPercent
@@ -5077,5 +5078,222 @@ class PaymentFlowViewModelTest {
         assertEquals(PaymentFlowViewModel.TARJETA_SIN_RED, estado.message)
         assertEquals(PaymentErrorSource.NETWORK, estado.source)
         coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    // MARK: - Dividir por producto, fase 1 (27-oct): combo completo (D4), saldo real (D7), pantalla de la parte (D8)
+
+    private fun pieza(id: String, precio: Int, combo: String? = null) = CartItem(
+        id = id, type = CartItemType.ProductItem("prod-$id"), name = id, unitPrice = precio, promotionInstanceId = combo,
+    )
+
+    private fun saldoPendiente(cents: Int) = CartState(
+        items = listOf(CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = cents)),
+    )
+
+    private fun elServidorDiceTrasElEfectivo(saldo: Int, estado: String) {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(paymentId = "p-ef", receiptAccessKey = null, remainingBalanceCents = saldo, orderPaymentStatus = estado),
+        )
+    }
+
+    @Test
+    fun `D4 elegir una pieza de un combo paga el combo completo`() {
+        val cart = CartState(items = listOf(pieza("hamburguesa", 9000, "combo-1"), pieza("papas", 3000, "combo-1"), pieza("refresco", 2000)))
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("hamburguesa"))
+        viewModel.startPaymentFlow(cart)
+
+        val completion = viewModel.buildCompletion()
+        assertEquals(setOf("hamburguesa", "papas"), completion.paidItemIds)
+        assertEquals(2000, completion.remainingBalanceCents)
+        assertEquals(12000, viewModel.buildPaymentContext().totalCents)
+    }
+
+    @Test
+    fun `D8 la pantalla de una parte por producto cuadra precio, descuento y total`() {
+        val playera = pieza("playera", 10000).apply { itemDiscountType = "PERCENTAGE"; itemDiscountValue = 50.0 }
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("playera"))
+        viewModel.startPaymentFlow(CartState(items = listOf(playera, pieza("pantalon", 10000))))
+
+        val ctx = viewModel.buildPaymentContext()
+        assertEquals(10000, ctx.subtotalCents)
+        assertEquals(5000, ctx.discountCents)
+        assertEquals(5000, ctx.totalCents)
+    }
+
+    @Test
+    fun `D7 la ultima parte de una venta partida deja el saldo que el servidor dice que aun se debe`() = runTest {
+        elServidorDiceTrasElEfectivo(saldo = 2000, estado = "PARTIAL")
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        val completion = viewModel.consumeCompletion()!!
+        assertEquals(2000, completion.remainingBalanceCents)
+        assertEquals("orden-1", completion.orderId)
+    }
+
+    @Test
+    fun `D7 un centavo que el servidor dice PARTIAL no se descarta`() = runTest {
+        elServidorDiceTrasElEfectivo(saldo = 1, estado = "PARTIAL")
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 PAGADA cierra la venta aunque venga un residuo`() = runTest {
+        elServidorDiceTrasElEfectivo(saldo = 1, estado = "PAID")
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        assertEquals(0, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 el pago completo de una venta NO partida sigue como hoy`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "orden-nueva")))
+        elServidorDiceTrasElEfectivo(saldo = 2000, estado = "PARTIAL")
+        viewModel.startPaymentFlow(CartState(items = listOf(pieza("cafe", 9000))))
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        assertEquals(0, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 tras una parte con tarjeta el saldo se le pregunta al servidor antes del exito`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+        coEvery { orderRepository.saldoDeLaOrden("orden-1") } returns OrderRepository.SaldoDeLaOrden(remainingCents = 2000, paymentStatus = "PARTIAL")
+
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals(2000, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 si no se puede leer el saldo tras la tarjeta el exito lo dice y no repite el cargo`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+        coEvery { orderRepository.saldoDeLaOrden(any()) } returns null
+
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(AVISO_SALDO_SIN_CONFIRMAR, exito.avisoDeSaldo)
+        // Límite declarado (promesa, «No entra»): sin la lectura, la venta queda como la cobró la tablet y el aviso manda a
+        // revisarla en Ventas; el cargo de la tarjeta nunca se repite.
+        val completion = viewModel.consumeCompletion()!!
+        assertEquals("orden-1", completion.orderId)
+        assertFalse(completion.saldoDelServidor)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D7 una consulta de saldo lenta no detiene el exito mas de 5 segundos`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+        coEvery { orderRepository.saldoDeLaOrden(any()) } coAnswers {
+            kotlinx.coroutines.delay(60_000)
+            OrderRepository.SaldoDeLaOrden(remainingCents = 0, paymentStatus = "PAID")
+        }
+
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceTimeBy(5_001)
+        runCurrent()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(AVISO_SALDO_SIN_CONFIRMAR, exito.avisoDeSaldo)
+    }
+
+    @Test
+    fun `D7 una venta NO partida pagada con tarjeta no le pregunta el saldo a nadie`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 0) { orderRepository.saldoDeLaOrden(any()) }
+    }
+
+    // MARK: - D10 (27-oct, founder «A»): cada producto paga su parte del descuento de cuenta y del premio
+
+    @Test
+    fun `D10 cafe y pan de 100 con 10 por ciento de cuenta - el cafe paga 90 y queda 90`() {
+        val cart = CartState(
+            items = listOf(pieza("cafe", 10000), pieza("pan", 10000)),
+            orderDiscount = com.avoqado.pos.pos.data.model.Discount(id = "d10", name = "Diez", value = 10.0, type = "PERCENTAGE"),
+        )
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("cafe"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(9000, viewModel.buildPaymentContext().totalCents)
+        val completion = viewModel.buildCompletion()
+        assertEquals(setOf("cafe"), completion.paidItemIds)
+        assertEquals(9000, completion.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D10 el producto gratis del premio no reparte su premio entre los demas`() {
+        // Premio «producto gratis»: el SERVIDOR lo pone ENTERO en el artículo más caro (A). B paga lo suyo completo.
+        val premio = com.avoqado.pos.loyalty.data.PremioPorAplicar(id = "p", etiqueta = "Gratis", tipo = "FREE_PRODUCT", valor = null)
+        val cart = CartState(items = listOf(pieza("a", 10000), pieza("b", 4000)), pendingStampReward = premio)
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("b"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(4000, viewModel.buildPaymentContext().totalCents)
+        assertEquals(setOf("a", "b"), viewModel.buildCompletion().paidItemIds)
+    }
+
+    @Test
+    fun `D10 el producto gratis es el que mas regala sin pasarse de lo que cobra, como el servidor`() {
+        // Codex D10 r1 #2: A $100 con $50 propios, B $80, C $30. El SERVIDOR regala B ($80: en A sólo cabrían $50).
+        val premio = com.avoqado.pos.loyalty.data.PremioPorAplicar(id = "p", etiqueta = "Gratis", tipo = "FREE_PRODUCT", valor = null)
+        val a = pieza("a", 10000).apply { itemDiscountType = "FIXED_AMOUNT"; itemDiscountValue = 50.0 }
+        val cart = CartState(items = listOf(a, pieza("b", 8000), pieza("c", 3000)), pendingStampReward = premio)
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("c"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(8000, cart.stampRewardCents)
+        assertEquals(3000, viewModel.buildPaymentContext().totalCents)
+    }
+
+    @Test
+    fun `D10 una parte que dejaria un centavo cobra todo y se lleva todos los productos`() {
+        val cart = CartState(
+            items = listOf(pieza("a", 100), pieza("b", 100)),
+            orderDiscount = com.avoqado.pos.pos.data.model.Discount(id = "d", name = "Casi todo", value = 1.98, type = "FIXED_AMOUNT"),
+        )
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("a"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(2, viewModel.buildPaymentContext().totalCents)
+        assertEquals(setOf("a", "b"), viewModel.buildCompletion().paidItemIds)
+        assertEquals(0, viewModel.buildCompletion().remainingBalanceCents)
     }
 }

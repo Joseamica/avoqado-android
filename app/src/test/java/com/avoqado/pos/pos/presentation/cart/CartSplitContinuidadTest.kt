@@ -545,9 +545,66 @@ class CartSplitContinuidadTest {
             remainingBalanceCents = 2500,
         )
 
-        assertTrue(vm.cartState.value.isEmpty)
+        // D10 (Codex r1 #1): la deuda queda representada para poder cobrarla, en la misma venta.
+        assertEquals(listOf("Saldo pendiente"), vm.cartState.value.items.map { it.name })
+        assertEquals(2500, vm.cartState.value.totalCents)
         assertFalse(cobro.ventaTerminada)
         assertEquals("cust-ana", vm.selectedCustomer.value?.id)
+    }
+
+    @Test
+    fun `D10 por producto con descuento fijo, sin saldo del servidor, el carrito ensena lo que de verdad falta`() = runTest {
+        // Codex D10 r1 #1: $100 + $100 con $20 fijos; se paga A por $90 (su parte). Quitarlo deja B con los $20 enteros ($80),
+        // pero lo que falta son $90. Aunque la parte se haya guardado sin red, el carrito enseña $90.
+        val vm = createViewModel()
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        val a = vm.cartState.value.items.first { it.name == "A" }.id
+
+        vm.aplicarCobroConfirmado(splitType = "BYPRODUCT", paidItemIds = setOf(a), remainingBalanceCents = 9000)
+
+        assertEquals(9000, vm.cartState.value.totalCents)
+    }
+
+    // D7 (27-oct, Codex fase 1 r1 #1): tras una parte por producto, si el SERVIDOR confirma un saldo distinto de lo que valen
+    // los renglones que quedan (otra caja abonó, la terminal quitó un descuento), el carrito enseña ESE saldo, en la misma venta.
+    @Test
+    fun `D7 por producto con saldo confirmado distinto de lo que queda, el carrito ensena el saldo real`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        val a = vm.cartState.value.items.first { it.name == "A" }.id
+
+        val cobro = vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT", paidItemIds = setOf(a), remainingBalanceCents = 12000, saldoDelServidor = true,
+        )
+
+        assertEquals(12000, vm.cartState.value.totalCents)
+        assertEquals(listOf("Saldo pendiente"), vm.cartState.value.items.map { it.name })
+        assertFalse(cobro.ventaTerminada)
+    }
+
+    @Test
+    fun `D7 por producto con carrito vacio y saldo confirmado, queda el saldo para cobrarlo`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        val a = vm.cartState.value.items.single().id
+
+        vm.aplicarCobroConfirmado(splitType = "BYPRODUCT", paidItemIds = setOf(a), remainingBalanceCents = 2000, saldoDelServidor = true)
+
+        assertEquals(2000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `D7 por producto con saldo confirmado igual a lo que queda, los renglones siguen`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        val a = vm.cartState.value.items.first { it.name == "A" }.id
+
+        vm.aplicarCobroConfirmado(splitType = "BYPRODUCT", paidItemIds = setOf(a), remainingBalanceCents = 10000, saldoDelServidor = true)
+
+        assertEquals(listOf("B"), vm.cartState.value.items.map { it.name })
     }
 
     @Test
