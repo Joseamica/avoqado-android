@@ -2171,11 +2171,22 @@ class CartViewModel @Inject constructor(
 
         viewModelScope.launch {
             _referralValidation.value = ReferralCaptureUiState.Validating
-            validateReferralUseCase(
+            val resultado = validateReferralUseCase(
                 venueId = venueId,
                 referralCode = code,
                 newCustomerId = customerId,
-            ).fold(
+            )
+            // 🔴 La respuesta es del cliente y del código de ANTES: si mientras tanto quitaron al cliente (aunque lo hayan
+            // vuelto a elegir, Codex r2 #1), lo cambiaron o editaron el código, no se aplica. Quitar al cliente vacía el
+            // código (`clearReferral()`), así que una respuesta vieja nunca coincide (Codex r1 #2: el descuento volvía a una
+            // venta sin cliente).
+            if (_selectedCustomer.value?.id != customerId || _referralCode.value.trim() != code) {
+                if (_referralValidation.value is ReferralCaptureUiState.Validating) {
+                    _referralValidation.value = ReferralCaptureUiState.Idle
+                }
+                return@launch
+            }
+            resultado.fold(
                 onSuccess = { result ->
                     when (result) {
                         is ReferralValidationResult.Valid -> {

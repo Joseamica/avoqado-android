@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +36,8 @@ import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -99,6 +102,13 @@ fun CartPanelView(
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
+    /**
+     * «Quitar cliente» del menú del cliente. SIN default, por la misma lección que
+     * [onSplitPayment]: con `= {}` el carrito de teléfono dibujaría la opción muerta.
+     */
+    onCustomerRemove: () -> Unit,
+    /** false con una venta a medio cobrar: el cliente ya quedó en su orden y «Quitar» se ve apagado. */
+    clienteQuitable: Boolean = true,
     staffName: String = cartState.selectedStaffName,
     onStaffTap: () -> Unit = {},
     /**
@@ -161,6 +171,8 @@ fun CartPanelView(
                 hasItems = !cartState.isEmpty,
                 customerName = customerName,
                 onCustomerTap = onCustomerTap,
+                onCustomerRemove = onCustomerRemove,
+                clienteQuitable = clienteQuitable,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
                 useDenseTabletLayout = useDenseTabletLayout,
@@ -474,89 +486,173 @@ private fun CustomerHeader(
     hasItems: Boolean,
     customerName: String? = null,
     onCustomerTap: () -> Unit,
+    onCustomerRemove: () -> Unit,
+    clienteQuitable: Boolean,
     staffName: String,
     onStaffTap: () -> Unit,
     useDenseTabletLayout: Boolean = false,
     onMenuTap: () -> Unit,
 ) {
-    Row(
+    var showCustomerMenu by remember { mutableStateOf(false) }
+
+    // 🔴 Cliente y «Vendiendo» van en DOS renglones de dedo completo (≥ 44 dp) y separados.
+    // Antes el nombre era sólo el texto y la píldora de 4 dp quedaba pegada debajo: con dedos
+    // grandes el toque a «Cambiar cliente» abría el selector de vendedor (founder, 23-oct).
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(
                 horizontal = AvoqadoTheme.spacing.xl,
-                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg,
+                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
             ),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            // "Agregar cliente" underlined link or customer name (matching iOS)
-            Text(
-                text = customerName ?: "Agregar cliente",
-                style = if (useDenseTabletLayout) {
-                    MaterialTheme.typography.titleSmall
-                } else {
-                    MaterialTheme.typography.titleMedium
-                },
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                textDecoration = if (customerName == null) TextDecoration.Underline else null,
-                modifier = Modifier.clickable(onClick = onCustomerTap),
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-            ) {
-                if (hasItems) {
-                    Text(
-                        text = "$itemCount artículo${if (itemCount == 1) "" else "s"}",
-                        style = if (useDenseTabletLayout) {
-                            MaterialTheme.typography.bodySmall
-                        } else {
-                            MaterialTheme.typography.bodyMedium
-                        },
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f)) {
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(MaterialTheme.colorScheme.secondaryContainer)
-                        .clickable(onClick = onStaffTap)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                        .clickable {
+                            if (customerName == null) onCustomerTap() else showCustomerMenu = true
+                        },
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
                 ) {
                     Icon(
-                        Icons.Filled.Person,
+                        if (customerName == null) Icons.Filled.PersonAdd else Icons.Filled.Person,
                         contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
-                        text = "Vendiendo: $staffName",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        text = customerName ?: "Agregar cliente",
+                        style = if (useDenseTabletLayout) {
+                            MaterialTheme.typography.titleSmall
+                        } else {
+                            MaterialTheme.typography.titleMedium
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textDecoration = if (customerName == null) TextDecoration.Underline else null,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (customerName != null) {
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = "Opciones del cliente",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (showCustomerMenu) BarreraDeAtajos()   // menú abierto: F12 espera
+                DropdownMenu(
+                    expanded = showCustomerMenu,
+                    onDismissRequest = { showCustomerMenu = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Cambiar cliente") },
+                        leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
+                        onClick = {
+                            showCustomerMenu = false
+                            onCustomerTap()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    "Quitar cliente",
+                                    color = if (clienteQuitable) MaterialTheme.colorScheme.error else Color.Unspecified,
+                                )
+                                if (!clienteQuitable) {
+                                    Text(
+                                        "La venta ya se está cobrando con este cliente",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        },
+                        leadingIcon = { Icon(Icons.Filled.PersonRemove, contentDescription = null) },
+                        enabled = clienteQuitable,
+                        onClick = {
+                            showCustomerMenu = false
+                            onCustomerRemove()
+                        },
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+
+            // Three dots menu button (matching iOS: circle with gray bg)
+            Box(
+                modifier = Modifier
+                    .size(if (useDenseTabletLayout) 40.dp else 44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable(onClick = onMenuTap),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.MoreHoriz,
+                    contentDescription = "Mas opciones",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
 
-        // Three dots menu button (matching iOS: circle with gray bg)
-        Box(
-            modifier = Modifier
-                .size(if (useDenseTabletLayout) 40.dp else 44.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable(onClick = onMenuTap),
-            contentAlignment = Alignment.Center,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
-            Icon(
-                Icons.Filled.MoreHoriz,
-                contentDescription = "Mas opciones",
-                tint = MaterialTheme.colorScheme.onSurface,
-            )
+            Row(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .heightIn(min = 44.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .clickable(onClick = onStaffTap)
+                    .padding(horizontal = AvoqadoTheme.spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+            ) {
+                Icon(
+                    Icons.Filled.Person,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    text = "Vendiendo: $staffName",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            if (hasItems) {
+                Text(
+                    text = "$itemCount artículo${if (itemCount == 1) "" else "s"}",
+                    style = if (useDenseTabletLayout) {
+                        MaterialTheme.typography.bodySmall
+                    } else {
+                        MaterialTheme.typography.bodyMedium
+                    },
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
