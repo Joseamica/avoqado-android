@@ -1982,7 +1982,9 @@ class CartViewModel @Inject constructor(
                             }
                         }
                         if (cobroAbierto) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
-                        replaceAreaTicketLines(checkout, venta)
+                        if (!replaceAreaTicketLines(checkout, venta)) {
+                            return@runCatching ScannedBarcodeResult.Error("La venta cambió mientras se pedía el vale: vuelve a escanearlo.")
+                        }
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }
                 }
@@ -2032,11 +2034,11 @@ class CartViewModel @Inject constructor(
      * ella y el apartado es suyo (sin dueño, tras reiniciar, lo adopta). La respuesta atrasada de una venta que ya se fue no
      * mete sus vales en la siguiente.
      */
-    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String) {
+    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String): Boolean {
         val sesion = areaTicketRepository.session
-        if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return
+        if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
         val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
-        if (duena != venta) return
+        if (duena != venta) return false
         // 🔴 DINERO. Una sesión con abonos ya no se proyecta al carrito. Tras el primer abono el carrito quedó en «Saldo
         // pendiente» (`aplicarCobroConfirmado`), y la sesión sigue viva porque el servidor no deja cancelar una venta con
         // abono (409). Restaurarla al volver a la pantalla metía todos los vales encima del saldo y el total se inflaba
@@ -2047,7 +2049,7 @@ class CartViewModel @Inject constructor(
         // respuesta perdida) se proyectaba al volver a la pantalla encima del saldo pendiente y mezclaba las dos ventas. Se
         // queda apartado y aparece al terminar esa venta.
         val conAbonos = checkout.status == "PARTIALLY_PAID" || (checkout.order?.paidAmount?.moneyToCents() ?: 0) > 0
-        if (conAbonos || _pendingSplitOrder.value != null) return
+        if (conAbonos || _pendingSplitOrder.value != null) return false
         val ticketRows = checkout.tickets.flatMap { ticket ->
             ticket.lines.map { line ->
                 val detail = buildList {
@@ -2076,6 +2078,7 @@ class CartViewModel @Inject constructor(
                 orderTaxPercent = null,
             )
         }
+        return true
     }
 
     // MARK: - Referral capture (Plan 5B)

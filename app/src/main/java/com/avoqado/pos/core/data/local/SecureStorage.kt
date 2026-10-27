@@ -282,6 +282,17 @@ class SecureStorage @Inject constructor(
         prefs.edit().putString("drawerAdoptionNotices.$venueId", value).commit()
     }
 
+    /**
+     * Alias de las cajas de ESTE aparato, POR VENUE (JSON): «id local de la caja → id que le dio el servidor» (efectivo sin
+     * red en el turno correcto, 21-oct-2026). Un cobro guardado con el id local de su caja viaja con el del servidor. Durable
+     * y con `commit()` por lo mismo que la cola del cajón: se escribe ANTES de reapuntar la cola, y si se perdiera, el cobro
+     * subiría sin su caja. Ver `CashDrawerRepository.idDeCajaParaElServidor`.
+     */
+    fun drawerSessionAliasesJson(venueId: String): String? = prefs.getString("drawerSessionAliases.$venueId", null)
+    fun setDrawerSessionAliasesJson(venueId: String, value: String?) {
+        prefs.edit().putString("drawerSessionAliases.$venueId", value).commit()
+    }
+
     var venuePermissions: List<String>
         get() {
             val raw = prefs.getString(KEY_VENUE_PERMISSIONS, null) ?: return emptyList()

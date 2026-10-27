@@ -113,9 +113,10 @@ fun AvoqadoNavGraph(
     appState: AppState = hiltViewModel(),
 ) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var reservationObservationRevision by remember { mutableStateOf(0) }
     DisposableEffect(lifecycle, appState) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) appState.refreshPaidAccess()
+            if (event == Lifecycle.Event.ON_RESUME) { appState.refreshPaidAccess();reservationObservationRevision++ }
         }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
@@ -128,6 +129,11 @@ fun AvoqadoNavGraph(
     val avisoDeCocinaSinRed by appState.avisoDeCocinaSinRed.collectAsState()
     val avisoDeRacha by appState.avisoDeRacha.collectAsState()
     val reconciliationCount by appState.reconciliationCount.collectAsState()
+    var reservationIssueCount:Int? by remember { mutableStateOf(null) }
+    LaunchedEffect(appState,reservationObservationRevision) {
+        reservationIssueCount=null
+        com.avoqado.pos.sync.presentation.collectSalesNoticeReservations(appState.reservationQuarantinedCount) { reservationIssueCount=it }
+    }
     val q15HistoryUnavailable by appState.q15HistoryUnavailable.collectAsState()
     val sessionGuardMessage by appState.sessionGuardMessage.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
@@ -157,6 +163,7 @@ fun AvoqadoNavGraph(
                     avisoDeCocinaSinRed = avisoDeCocinaSinRed,
                     avisoDeRacha = avisoDeRacha,
                     syncIssueCount = reconciliationCount,
+                    reservationIssueCount = reservationIssueCount,
                     q15HistoryUnavailable = q15HistoryUnavailable,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
@@ -241,6 +248,7 @@ private fun MainScaffold(
     /** Ver `AppState.avisoDeRacha`: tras 3 entregas sin acuse, la pantalla que no se alcanza se DICE, con o sin red (KDS 3.5). */
     avisoDeRacha: String? = null,
     syncIssueCount: Int = 0,
+    reservationIssueCount: Int? = null,
     q15HistoryUnavailable:Boolean=false,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
@@ -274,10 +282,37 @@ private fun MainScaffold(
     val startTab = graphSnapshot.startTab
     val registeredTabs = graphSnapshot.registeredTabs
 
+    fun navigateToTab(tab: MainTab) {
+        navController.navigate(tab.route) {
+            popUpTo(navController.graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     // Cuarentena de sincronización: hoja de resolución de rechazos.
     var showQuarantineSheet by remember { mutableStateOf(false) }
+    var pendingSalesRequest by remember { mutableStateOf(0) }
+    var pendingCourtesyId by remember { mutableStateOf<String?>(null) }
+    val salesNotices:com.avoqado.pos.sync.presentation.SalesNoticesViewModel=hiltViewModel()
+    val courtesyOnline by salesNotices.courtesyOnline.collectAsState()
+    val salesSummary by salesNotices.summary.collectAsState()
+    val globalPendingSalesCount by salesNotices.globalPendingCount.collectAsState()
+    LaunchedEffect(salesNotices) { salesNotices.observeAlertChanges() }
+    LaunchedEffect(salesNotices) { salesNotices.observeContextChanges() }
+    androidx.lifecycle.compose.LifecycleResumeEffect(salesNotices) { salesNotices.refreshAlertSummary();onPauseOrDispose { } }
+    val pendingSalesCount=if(salesNotices.canRead) globalPendingSalesCount else 0
+    val salesBannerCount=com.avoqado.pos.sync.presentation.salesNoticeBannerCount(
+        salesSummary,reservationIssueCount,syncIssueCount)
     if (showQuarantineSheet) {
-        com.avoqado.pos.sync.presentation.QuarantineSheet(onDismissSheet = { showQuarantineSheet = false })
+        com.avoqado.pos.sync.presentation.QuarantineSheet(
+            onDismissSheet={ showQuarantineSheet=false },courtesyReviewOnline=courtesyOnline,courtesyCanPreview=salesNotices.canPreviewCourtesy,
+            onReviewCourtesy=if(salesNotices.opensPendingSales && MainTab.TRANSACTIONS in registeredTabs) ({ id:String ->
+                showQuarantineSheet=false;pendingCourtesyId=id;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS)
+            }) else null,
+        )
     }
 
     val context = LocalContext.current
@@ -337,16 +372,6 @@ private fun MainScaffold(
         )
     }
 
-    fun navigateToTab(tab: MainTab) {
-        navController.navigate(tab.route) {
-            popUpTo(navController.graph.findStartDestination().id) {
-                saveState = true
-            }
-            launchSingleTop = true
-            restoreState = true
-        }
-    }
-
     var showTimeClock by remember { mutableStateOf(false) }
     var moreTabReselectionTick by remember { mutableIntStateOf(0) }
 
@@ -394,7 +419,13 @@ private fun MainScaffold(
                         avisoDeRacha = avisoDeRacha,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
+                        historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
+                        actionLabel=salesNotices.bannerActionLabel) {
+                        if(salesNotices.opensPendingSales && MainTab.TRANSACTIONS in registeredTabs) {
+                            pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS)
+                        } else showQuarantineSheet=true
+                    }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
                     com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
@@ -409,6 +440,7 @@ private fun MainScaffold(
                     onTabSelected = { tab -> tocarPestana(tab) },
                     onClockTap = { showTimeClock = true },
                     pendingPaymentCount = pendingPaymentCount,
+                    pendingSalesCount = pendingSalesCount,
                 )
             },
         ) { innerPadding ->
@@ -443,7 +475,7 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
+                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true, openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -677,7 +709,13 @@ private fun MainScaffold(
                         avisoDeRacha = avisoDeRacha,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
+                        historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
+                        actionLabel=salesNotices.bannerActionLabel) {
+                        if(salesNotices.opensPendingSales && MainTab.TRANSACTIONS in registeredTabs) {
+                            pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS)
+                        } else showQuarantineSheet=true
+                    }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
                     com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
@@ -697,6 +735,11 @@ private fun MainScaffold(
                                 when {
                                     tab == MainTab.CHECKOUT && pendingPaymentCount > 0 -> {
                                         BadgedBox(badge = { Badge { Text("$pendingPaymentCount") } }) {
+                                            Icon(icon, contentDescription = tab.label)
+                                        }
+                                    }
+                                    tab == MainTab.TRANSACTIONS && pendingSalesCount > 0 -> {
+                                        BadgedBox(badge = { Badge { Text("$pendingSalesCount") } }) {
                                             Icon(icon, contentDescription = tab.label)
                                         }
                                     }
@@ -745,7 +788,7 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
+                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -986,6 +1029,7 @@ private fun TabletTabBar(
     onTabSelected: (MainTab) -> Unit,
     onClockTap: () -> Unit,
     pendingPaymentCount: Int = 0,
+    pendingSalesCount: Int = 0,
 ) {
     Box(
         modifier = Modifier
@@ -1053,7 +1097,7 @@ private fun TabletTabBar(
                         tab = tab,
                         isSelected = isSelected,
                         onClick = { onTabSelected(tab) },
-                        badgeCount = if (tab == MainTab.CHECKOUT) pendingPaymentCount else 0,
+                        badgeCount = when(tab) { MainTab.CHECKOUT->pendingPaymentCount;MainTab.TRANSACTIONS->pendingSalesCount;else->0 },
                     )
                 }
             }

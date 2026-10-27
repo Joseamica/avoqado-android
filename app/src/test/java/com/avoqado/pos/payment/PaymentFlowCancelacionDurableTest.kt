@@ -125,7 +125,7 @@ class PaymentFlowCancelacionDurableTest {
         // Un `Result<Unit>` de un mock relajado no es `Result.success(Unit)`: su `fold` revienta
         // con ClassCastException al cerrar la venta.
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
 
         // El coordinador REAL, con disco en memoria y transporte falso, corriendo en el despachador
         // de pruebas (Main). Sin `start()`: sin reloj de fondo que haga girar a `advanceUntilIdle`.
@@ -306,22 +306,33 @@ class PaymentFlowCancelacionDurableTest {
         assertTrue(viewModel.debeSalir.value)
     }
 
+    /**
+     * 🔴 Actualizada a D2 v6/v7 (punto 5, 24-oct). Antes: «Cancelar» mientras se creaba la orden de un cobro en EFECTIVO
+     * cancelaba esa orden y no registraba el pago. Ahora, mientras el efectivo viaja (crear la orden o el POST del pago) no hay
+     * «Cancelar»: la pantalla no lo ofrece y el ViewModel lo ignora, como iOS en `.processing`. Borrar el apartado no detiene un
+     * cobro que puede llegar al servidor; al terminar, la cajera decide con el desenlace a la vista.
+     */
     @Test
-    fun `P1 cancelar mientras se crea la orden en efectivo no registra el pago`() = runTest {
+    fun `P1 cancelar mientras se crea la orden en efectivo se ignora y el cobro sigue`() = runTest {
         val orden = CompletableDeferred<Result<CreateOrderResponse>>()
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers { orden.await() }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
 
         viewModel.startPaymentFlow(cardCart())
         viewModel.confirmCashPreset(2_000)
         runCurrent()
+        assertTrue((viewModel.state.value as PaymentFlowState.Processing).efectivoEnVuelo)
         viewModel.cancelarVenta()
+        assertTrue("se ignora: sigue procesando", viewModel.state.value is PaymentFlowState.Processing)
 
         orden.complete(Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1"))))
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
-        assertEquals(listOf("DELETE:order-1"), transporte.llamadas)
-        assertTrue(viewModel.debeSalir.value)
+        coVerify(exactly = 1) { orderRepository.recordCashPayment("order-1", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        assertTrue(transporte.llamadas.isEmpty())
+        assertFalse(viewModel.debeSalir.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
     }
 
     @Test

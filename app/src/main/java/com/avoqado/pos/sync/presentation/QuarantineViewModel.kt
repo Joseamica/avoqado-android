@@ -7,6 +7,7 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.payment.data.CortesiaPersistida
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
 import com.avoqado.pos.reservations.data.ReservationRepository
@@ -100,6 +101,8 @@ class QuarantineViewModel @Inject constructor(
      */
     private val _retryingPaymentId = MutableStateFlow<String?>(null)
     val retryingPaymentId: StateFlow<String?> = _retryingPaymentId.asStateFlow()
+    private val _revisionCancelada = MutableStateFlow<PaymentSyncService.PropuestaRevisionCancelada?>(null)
+    val revisionCancelada = _revisionCancelada.asStateFlow()
 
     val rejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
 
@@ -120,10 +123,18 @@ class QuarantineViewModel @Inject constructor(
 
     fun load() {
         val venueId = secureStorage.venueId ?: return
+        val actor = secureStorage.userId
+        val role = secureStorage.userRole
+        val epoch = syncOutbox.contextoDeSesionQ15()
         viewModelScope.launch {
-            _items.value = syncOutbox.rejectedIntents(venueId)
-            _failedPayments.value = paymentSyncService.failedPayments().filter {it.venueId==venueId && it.q15Reason==null}
-            _failedReservationActions.value = reservationRepository.quarantinedActions()
+            val items = syncOutbox.rejectedIntents(venueId)
+            val failed = paymentSyncService.failedPayments().filter {it.venueId==venueId}
+            val reservations = reservationRepository.quarantinedActions()
+            if (secureStorage.venueId != venueId || secureStorage.userId != actor ||
+                secureStorage.userRole != role || syncOutbox.contextoDeSesionQ15() != epoch) return@launch
+            _items.value = items
+            _failedPayments.value = failed
+            _failedReservationActions.value = reservations
         }
     }
 
@@ -150,22 +161,52 @@ class QuarantineViewModel @Inject constructor(
     fun retryPayment(id: String) {
         if (!canResolve) return
         if (_retryingPaymentId.value != null) return // ya hay uno en vuelo
+        _retryingPaymentId.value = id
         viewModelScope.launch {
-            _retryingPaymentId.value = id
             try {
             when (val outcome = paymentSyncService.retryFailedPayment(id)) {
                 is PaymentSyncService.RetryOutcome.Applied ->
                     _successMessage.value = "Cobro sincronizado"
                 is PaymentSyncService.RetryOutcome.StillQueued ->
                     _errorMessage.value = "El pago sigue guardado y su resultado no está confirmado. No vuelvas a cobrar."
+                is PaymentSyncService.RetryOutcome.ConsultaSinPrueba ->
+                    _errorMessage.value = "No se pudo comprobar que esta cuenta esté cancelada y sin cobros. El intento sigue por revisar. No vuelvas a cobrar."
                 is PaymentSyncService.RetryOutcome.Rejected ->
                     _errorMessage.value = outcome.error?.let { detalleRechazo(it) }
                         ?: "El servidor volvió a rechazar el cobro"
+                is PaymentSyncService.RetryOutcome.CancelledZeroPaymentReview -> {
+                    if (canResolve && secureStorage.venueId == outcome.propuesta.original.venueId &&
+                        secureStorage.userId == outcome.propuesta.actor && secureStorage.userRole?.uppercase() == outcome.propuesta.rol &&
+                        syncOutbox.contextoDeSesionQ15() == outcome.propuesta.contexto) _revisionCancelada.value = outcome.propuesta
+                }
             }
             load()
             } finally {
                 _retryingPaymentId.value = null
             }
+        }
+    }
+
+    fun cerrarRevisionCancelada() {
+        if (_retryingPaymentId.value == null) _revisionCancelada.value = null
+    }
+
+    fun confirmarRevisionCancelada() {
+        val proposal = _revisionCancelada.value ?: return
+        if (!canResolve || _retryingPaymentId.value != null) return
+        _retryingPaymentId.value = proposal.original.id
+        viewModelScope.launch {
+            try {
+                val saved = paymentSyncService.confirmarRevisionCancelada(proposal)
+                _revisionCancelada.value = null
+                if (saved) _successMessage.value = "Revisión guardada en el historial."
+                else _errorMessage.value = "No se pudo comprobar la revisión. El intento sigue conservado; no vuelvas a cobrar."
+                load()
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) {
+                _revisionCancelada.value = null
+                _errorMessage.value = "No se pudo guardar la revisión. El intento sigue conservado."
+            } finally { _retryingPaymentId.value = null }
         }
     }
 
@@ -284,18 +325,32 @@ class QuarantineViewModel @Inject constructor(
      * Visto el 2026-08-09: seis reintentos con ese 400 y el dinero ya estaba
      * registrado desde el primero.
      */
-    fun detalleRechazo(error: String): String = when {
+    fun detalleRechazo(error: String): String {
+        if (error == CortesiaPersistida.AVISO) return CortesiaPersistida.AVISO
+        // These are the two persisted HTTP formats from PaymentSyncService. Body amounts and folios are not codes.
+        val prefix = error.trimStart()
+        val code = Regex("""^(?:Error|HTTP)\s+([1-5]\d{2})(?=$|[\s:])""",RegexOption.IGNORE_CASE)
+            .find(prefix)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""^Order recreate (?:failed|server error)\s+\(([1-5]\d{2})\)(?=$|:)""",RegexOption.IGNORE_CASE)
+                .find(prefix)?.groupValues?.get(1)?.toIntOrNull()
+        return when {
+        code == 401 ->
+            "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
+        code == 403 ->
+            "El empleado no tenía permiso para registrar este cobro. Un gerente debe revisar el rol y reintentarlo."
+        code == 404 ->
+            "La orden vinculada ya no existe. Verifica caja y ventas antes de volver a cobrar."
         error.contains("already paid", ignoreCase = true) ->
             "El servidor informa que la cuenta está pagada. Comprueba este pago por su folio; no vuelvas a cobrar."
-        error.contains("401") ->
-            "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
-        error.contains("403") ->
-            "El empleado no tenía permiso para registrar este cobro. Un gerente debe revisar el rol y reintentarlo."
-        error.contains("404") ->
-            "La orden vinculada ya no existe. Verifica caja y ventas antes de volver a cobrar."
-        error.contains("400") ->
-            "El servidor rechazó los datos. Verifica la orden y la caja antes de reintentar."
+        code == 400 -> {
+            val fallback = "El servidor rechazó los datos. Verifica la orden y la caja antes de reintentar."
+            val start = error.indexOf('{')
+            val detail = if (start >= 0) ServerErrorText.fromResponseBody(error.substring(start),fallback) else fallback
+            detail.replace(Regex("<[^>]*>"), "").filterNot { it.isISOControl() }
+                .replace(Regex("\\s+"), " ").trim().take(500).ifBlank { fallback }
+        }
         else ->
             "El cobro no logró confirmarse. Conserva el efectivo registrado y reintenta cuando el servidor esté disponible."
+        }
     }
 }

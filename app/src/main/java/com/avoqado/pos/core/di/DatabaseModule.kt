@@ -46,6 +46,8 @@ object DatabaseModule {
             AvoqadoDatabaseMigrations.MIGRATION_13_14,
                 AvoqadoDatabaseMigrations.MIGRATION_14_15,
                 AvoqadoDatabaseMigrations.MIGRATION_15_16,
+                AvoqadoDatabaseMigrations.MIGRATION_16_17,
+                AvoqadoDatabaseMigrations.MIGRATION_17_18,
         )
             .build()
     }
@@ -96,4 +98,7 @@ object DatabaseModule {
     fun provideSyncIntentDao(database: AvoqadoDatabase): com.avoqado.pos.core.data.local.database.SyncIntentDao {
         return database.syncIntentDao()
     }
+    @Provides
+    fun provideSalesNoticeDao(database: AvoqadoDatabase): com.avoqado.pos.sync.data.SalesNoticeDao = database.salesNoticeDao()
+
 }
