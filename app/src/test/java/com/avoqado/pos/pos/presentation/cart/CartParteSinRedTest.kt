@@ -224,7 +224,7 @@ class CartParteSinRedTest {
     // ── Desenlaces sin orden ───────────────────────────────────────────────────
 
     @Test
-    fun `una venta sin productos queda fuera - el resto es otro cobro rapido como antes`() = runTest {
+    fun `una fila FAST (venta rapida de una parte o de una version vieja) queda fuera - el resto es otro cobro rapido`() = runTest {
         val vm = createViewModel()
         vm.parteGuardadaSinRed()
         parte.value = EstadoDeParte.SinOrden

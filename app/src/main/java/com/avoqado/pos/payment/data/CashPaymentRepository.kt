@@ -485,7 +485,9 @@ class CashPaymentRepository @Inject constructor(
         ventasYaEnLaCaja: List<String>? = null,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
-        val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
+        // La misma regla que crear la orden en línea: una venta rápida DIVIDIDA también es ORDER (D2 etapa 2), así su parte
+        // guardada sin red se reproduce contra la misma orden y entra a la espera de D1-B.
+        val hasOrderItems = OrderRepository.aceptaCrearOrden(orderRequest)
         val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
         val entity = PendingPaymentEntity(
             id = localId,

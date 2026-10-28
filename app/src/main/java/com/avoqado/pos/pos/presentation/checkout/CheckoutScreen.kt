@@ -683,7 +683,7 @@ fun CheckoutScreen(
                                         onAddToCart = {
                                             if (amountCents > 0) {
                                                 cartViewModel.addCustomAmount(
-                                                    name = currentNote.ifBlank { "Importe personalizado" },
+                                                    name = currentNote.ifBlank { "Otro importe" },
                                                     amountCents = amountCents,
                                                 )
                                                 amountCents = 0
@@ -923,7 +923,7 @@ fun CheckoutScreen(
                                     onAddToCart = {
                                         if (amountCents > 0) {
                                             cartViewModel.addCustomAmount(
-                                                name = currentNote.ifBlank { "Importe personalizado" },
+                                                name = currentNote.ifBlank { "Otro importe" },
                                                 amountCents = amountCents,
                                             )
                                             amountCents = 0
