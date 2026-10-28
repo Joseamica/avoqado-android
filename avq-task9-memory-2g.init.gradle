@@ -1,0 +1,9 @@
+import org.gradle.api.tasks.testing.Test
+
+gradle.projectsEvaluated {
+    gradle.allprojects {
+        tasks.withType(Test).configureEach {
+            if (name == 'testDebugUnitTest') maxHeapSize = '2g'
+        }
+    }
+}

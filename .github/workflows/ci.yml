@@ -85,8 +85,13 @@ jobs:
       - name: Sin emoji en nombres de test
         run: ./gradlew checkNoEmojiInTestNames
 
-      - name: Tests unitarios
-        run: ./gradlew testDebugUnitTest
+      - name: Control fresco de Mesas con memoria original
+        run: |
+          ./gradlew testDebugUnitTest --tests com.avoqado.pos.tables.presentation.TablesCobroDelPlanoTest --init-script avq-task9-memory.init.gradle --info --no-build-cache
+          cp app/build/test-results/testDebugUnitTest/TEST-com.avoqado.pos.tables.presentation.TablesCobroDelPlanoTest.xml app/build/task9-memory/control-Tables-512.xml
+
+      - name: Tests unitarios con trabajador de 2 GiB (experimento)
+        run: ./gradlew testDebugUnitTest --init-script avq-task9-memory.init.gradle --init-script avq-task9-memory-2g.init.gradle --info --no-build-cache
 
       - name: Compilar APK de depuración
         run: ./gradlew assembleDebug
@@ -104,6 +109,17 @@ jobs:
             echo "::error::Gradle salió en 0 pero NO corrió un solo test. Verde falso."
             exit 1
           fi
+
+      # Sólo diagnóstico en esta rama temporal; no se integra al producto.
+      - name: Memoria y JUnit del trabajador (diagnóstico temporal)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memoria-worker-privada
+          path: |
+            app/build/test-results/testDebugUnitTest/
+            app/build/task9-memory/
+          retention-days: 1
 
       - name: Reporte de tests (sólo si algo falló)
         if: failure()
