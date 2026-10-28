@@ -1,5 +1,8 @@
 package com.avoqado.pos.payment
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.cancel
+
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
@@ -39,6 +42,9 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalCoroutinesApi::class)
 class Q15OnlinePaymentTest {
     @get:Rule val main = MainDispatcherRule()
+    /** Una prueba que se cuelga FALLA con la pila del hilo atorado, en vez de colgar la corrida entera (como Q16PrecioCapturadoTest). */
+    @get:Rule val tope: org.junit.rules.Timeout = org.junit.rules.Timeout.builder()
+        .withTimeout(90, java.util.concurrent.TimeUnit.SECONDS).withLookingForStuckThread(true).build()
 
     private class Fixture : AutoCloseable {
         val directory=Files.createTempDirectory("q15-online-owned").toFile()
@@ -129,7 +135,12 @@ class Q15OnlinePaymentTest {
         suspend fun awaitRelease(id:String)=withContext(Dispatchers.Default) { withTimeout(5000) {
             assertEquals(id,released.await().id)
         } }
-        fun vm():PaymentFlowViewModel {
+        /** Los ViewModels de la prueba: al cerrar se cancela su scope, como `onCleared` al salir de la pantalla. Sin esto, lo que
+         *  sigue vivo tras la prueba (la consulta del sello de una venta completa) truena en la SIGUIENTE como
+         *  `UncaughtExceptionsBeforeTest` (D2 etapa 2: el vehículo FAST ahora es una venta completa con cliente). */
+        private val vms=mutableListOf<PaymentFlowViewModel>()
+        fun vm():PaymentFlowViewModel = crearVm().also { vms+=it }
+        private fun crearVm():PaymentFlowViewModel {
             val terminal=mockk<TerminalPaymentService>(relaxed=true)
             every { terminal.intentoEnVuelo() } returns null;every { terminal.contextoDe(any()) } returns null
             coEvery { terminal.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
@@ -143,19 +154,22 @@ class Q15OnlinePaymentTest {
                 customerDisplay=com.avoqado.pos.customerdisplay.CustomerDisplayState(),areaTicketRepository=area,cancelacionDeCobro=mockk(relaxed=true),
                 savedStateHandle=androidx.lifecycle.SavedStateHandle())
         }
-        fun TestScope.verifyNoReplayOfApplied() {
+        /** [esperadas]: lo que ya llegó al servidor antes de sincronizar; la cola no debe sumar ni una petición más. */
+        fun TestScope.verifyNoReplayOfApplied(esperadas:Int=1) {
             val network=mockk<ConnectivityMonitor>(relaxed=true)
             every { network.isConnected } returns MutableStateFlow(true);every { network.isServerReachable } returns MutableStateFlow(true)
             val drawer=mockk<CashDrawerRepository>(relaxed=true);coEvery { drawer.sincronizarCajonPrimero() } returns true
             val service=PaymentSyncService(dao,storage,client,network,drawer,mockk<SyncOutbox>(relaxed=true),cash)
             service.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
-            try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(1,server.requestCount) } finally { service.stop() }
+            try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(esperadas,server.requestCount) } finally { service.stop() }
         }
-        override fun close() { answer.countDown();server.shutdown();client.connectionPool.evictAll();client.dispatcher.executorService.shutdown();db.close();directory.deleteRecursively() }
+        override fun close() { vms.forEach { it.viewModelScope.cancel() };answer.countDown();server.shutdown();client.connectionPool.evictAll();client.dispatcher.executorService.shutdown();db.close();directory.deleteRecursively() }
     }
-    private fun open(vm:PaymentFlowViewModel,cents:Int=10000,part:Int=4000,tip:Int=500) {
-        vm.setSplitConfig("CUSTOMAMOUNT",customAmountCents=part)
-        vm.startPaymentFlow(CartState(items=listOf(CartItem(id="owned-line",type=CartItemType.CustomAmount,name="Importe de prueba",unitPrice=cents))),customerId="original-customer")
+    // D2 etapa 2 (27-oct): estas pruebas son del canal FAST. Una venta rápida DIVIDIDA ya lleva orden, así que el vehículo es una
+    // venta rápida de UNA sola parte por el importe que antes era la parte.
+    private fun open(vm:PaymentFlowViewModel,part:Int=4000,tip:Int=500) {
+        vm.setSplitType("FULLPAYMENT")
+        vm.startPaymentFlow(CartState(items=listOf(CartItem(id="owned-line",type=CartItemType.CustomAmount,name="Importe de prueba",unitPrice=part))),customerId="original-customer")
         vm.submitTip(tip);vm.selectPaymentMethod(PaymentMethod.CASH)
     }
     private suspend fun terminalState(vm:PaymentFlowViewModel)=withContext(Dispatchers.Default) { withTimeout(5000) {
@@ -186,12 +200,13 @@ class Q15OnlinePaymentTest {
         Fixture().use { f -> val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
             val http=f.arrival();val reserved=f.rows().single();assertEquals("EN_VUELO",reserved.syncStatus)
             val capture=ConciliacionDelCobro.leerCaptura(reserved.q15CaptureJson,VENUE,reserved.id)!!
-            assertEquals(4000,capture.amountCents);assertEquals(500,capture.tipCents);assertEquals("CUSTOMAMOUNT",capture.splitType)
+            assertEquals(4000,capture.amountCents);assertEquals(500,capture.tipCents);assertEquals("FULLPAYMENT",capture.splitType)
             val sent=JSONObject(http.body.readUtf8());assertEquals(reserved.id,sent.getString("idempotencyKey"));assertEquals(4000,sent.getInt("amount"));assertEquals(500,sent.getInt("tip"));assertEquals("original-customer",sent.getString("customerId"))
             f.answer.countDown();assertTrue(terminalState(vm) is PaymentFlowState.Success);runCurrent();f.awaitRelease(reserved.id)
             val applied=f.rows().single();assertEquals("SYNCED",applied.syncStatus);assertEquals(ConciliacionDelCobro.DIFERENCIA,applied.q15Reason)
             assertEquals(reserved.q15CaptureJson,applied.q15CaptureJson);assertNotNull(applied.q15ResultJson);assertEquals(1,f.releases.size)
-            with(f) { verifyNoReplayOfApplied() }
+            // D2 etapa 2: la venta ya es completa y con cliente, así que tras el cobro se consulta su sello (una petición más).
+            with(f) { verifyNoReplayOfApplied(esperadas=2) }
         }
     }
     @Test fun `fallo reserva VM es visible sin POST sin Success y permite mismo intento`() = runTest {
@@ -215,7 +230,7 @@ class Q15OnlinePaymentTest {
         Fixture().use { f -> val vm=f.vm();val a=CompletableDeferred<Unit>();val b=CompletableDeferred<Unit>()
             f.beforeInsert={ row -> if(row.venueId==VENUE) { a.await();throw java.io.IOException("A propia") } else b.await() }
             open(vm);vm.processCashPayment(5000);runCurrent();assertEquals(0,f.server.requestCount)
-            f.venue="OTHER-VENUE";f.actor="new-staff";open(vm,cents=8000,part=6000,tip=0);vm.processCashPayment(6000);runCurrent()
+            f.venue="OTHER-VENUE";f.actor="new-staff";open(vm,part=6000,tip=0);vm.processCashPayment(6000);runCurrent()
             val stateB=vm.state.value;assertTrue(stateB is PaymentFlowState.Processing)
             a.complete(Unit);runCurrent();assertEquals(stateB,vm.state.value);assertTrue(f.releases.isEmpty());assertEquals(0,f.server.requestCount)
             f.body="""{"success":true,"data":{"id":"server-B","orderId":"order-B","amount":"60.00","tipAmount":"0.00","status":"COMPLETED"}}"""
@@ -298,7 +313,7 @@ class Q15OnlinePaymentTest {
             vm.cancelarVenta();runCurrent()
             val kept=f.rows().single();assertEquals("EN_VUELO",kept.syncStatus);assertEquals(held.q15CaptureJson,kept.q15CaptureJson)
             assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,kept.q15Reason)
-            open(vm,cents=8000,part=6000,tip=0) // otra venta: suelta la propiedad
+            open(vm,part=6000,tip=0) // otra venta: suelta la propiedad
             assertEquals(0,f.cash.darPorCobradasLasAbandonadas());assertEquals("EN_VUELO",f.rows().single().syncStatus)
         }
     }
@@ -316,7 +331,7 @@ class Q15OnlinePaymentTest {
             val held=f.rows().single();assertEquals("EN_VUELO",held.syncStatus);assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,held.q15Reason)
             vm.cancelarVenta();runCurrent()
             assertEquals("«Cancelar» no la borra","EN_VUELO",f.rows().single().syncStatus)
-            open(vm,cents=8000,part=6000,tip=0)
+            open(vm,part=6000,tip=0)
             assertEquals(0,f.cash.darPorCobradasLasAbandonadas());assertEquals("EN_VUELO",f.rows().single().syncStatus)
         }
     }

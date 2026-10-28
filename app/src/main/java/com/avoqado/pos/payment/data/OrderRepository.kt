@@ -439,6 +439,16 @@ class OrderRepository @Inject constructor(
         }
 
         /**
+         * ¿Esta venta lleva ORDEN? Con mercancía, siempre. Sin ella (sólo «Otro importe»), si se cobra DIVIDIDA: la parte 1
+         * crea la orden y las siguientes le abonan, como una venta con productos (D2 etapa 2, 27-oct). Una sola parte sigue
+         * siendo cobro rápido. Deciden con ESTA regla crear la orden ([createOrder]) y la fila de la cola sin red
+         * ([CashPaymentRepository]): así la parte guardada sin red se reproduce contra la misma orden por su `externalId`.
+         */
+        fun aceptaCrearOrden(request: CreateOrderRequest): Boolean =
+            hasProductItems(request) ||
+                (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT")
+
+        /**
          * El cuerpo EXACTO que viaja en `POST /mobile/venues/:id/fast`.
          *
          * 🔴 Vive aquí, y no dentro de [recordFastCashPayment], porque este JSON se
@@ -759,7 +769,7 @@ class OrderRepository @Inject constructor(
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
-        if (!hasProductItems(request)) {
+        if (!aceptaCrearOrden(request)) {
             return Result.failure(Exception("No hay productos válidos para crear la orden"))
         }
 

@@ -296,6 +296,18 @@ class PaymentFlowViewModel @Inject constructor(
     private var currentTipCents: Int = 0
     private var createdOrderId: String? = null
     private var createdOrderNumber: String? = null  // folio real del backend
+    /**
+     * La última orden que este cobro creó o cobró, con su folio. El carrito liga la parte 2 de una venta dividida sólo por el
+     * id (`resumeOrderId`); sin esto su ticket caía a los últimos 4 del id y cada parte decía otro folio (Codex plan-r2 #2).
+     * En memoria, igual que ese vínculo: con la app cerrada entre partes se pierden los dos.
+     */
+    private var ultimoFolio: Pair<String, String>? = null
+
+    private fun recordarFolio() {
+        val orden = createdOrderId?.takeIf { it.isNotBlank() } ?: return
+        val folio = createdOrderNumber?.takeIf { it.isNotBlank() } ?: return
+        ultimoFolio = orden to folio
+    }
 
     /**
      * Etapa 3 del KDS (3.4): el `externalId` con el que se creó (o encoló) la orden de ESTA venta — la base del folio
@@ -1721,7 +1733,10 @@ class PaymentFlowViewModel @Inject constructor(
         // Quién garantiza que NO se filtre a la venta siguiente: el carrito. El
         // vínculo muere con él (`CartViewModel.clearCart`), y se revalida contra
         // el carrito real antes de cada cobro.
-        resumeOrderId?.takeIf { it.isNotBlank() }?.let { createdOrderId = it }
+        resumeOrderId?.takeIf { it.isNotBlank() }?.let { orden ->
+            createdOrderId = orden
+            createdOrderNumber = ultimoFolio?.takeIf { it.first == orden }?.second
+        }
 
         // TABLE_SERVICE (PRO) seam — a PAYING table session means this payment
         // settles the table's EXISTING order: preset its id so (a) the card path
@@ -2221,7 +2236,8 @@ class PaymentFlowViewModel @Inject constructor(
                 }
                 val hasRealProducts = hasProductItems(cart)
 
-                if (hasRealProducts) {
+                // D2 etapa 2: una venta rápida DIVIDIDA también crea su orden («Otro importe») y las partes le abonan.
+                if (hasRealProducts || esVentaRapidaDividida(cart, splitCapturado)) {
                     if (ordenCapturada == null) {
                         // Create order only once per payment session.
                         val orderRequest = requireNotNull(pedidoCapturado)
@@ -2269,6 +2285,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 }
                                 createdOrderId = orderId
                                 createdOrderNumber = response.data?.orderNumber
+                                recordarFolio()
                                 ordenCreadaPorEsteFlujo = true
                                 if (generacion != paymentGeneration) {
                                     // Se canceló mientras se creaba: ni un cobro más, y la orden
@@ -2746,7 +2763,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // TABLE_SERVICE: a preset createdOrderId (PAYING table session)
                     // routes cash through the order-based path even though the
                     // seeded cart only carries the "Cuenta Mesa N" amount line.
-                    if (hasRealProducts || (!ordenCapturada.isNullOrBlank() && cart != null)) {
+                    // D2 etapa 2: también la venta rápida DIVIDIDA (su reserva ya es ORDER, `OrderRepository.aceptaCrearOrden`).
+                    if (hasRealProducts || ((!ordenCapturada.isNullOrBlank() || esVentaRapidaDividida(cart, splitCapturado)) && cart != null)) {
                         // Order-based cash payment: create order once, then reuse it across retries.
                         val orderRequest = requireNotNull(pedidoCapturado)
                         val existingOrderId = ordenCapturada
@@ -2841,6 +2859,9 @@ class PaymentFlowViewModel @Inject constructor(
                                         return@fold
                                     }
                                     createdOrderId = orderId
+                                    // Como en la tarjeta: el folio real va en el ticket de esta parte y de las siguientes.
+                                    createdOrderNumber = orderResponse.data?.orderNumber
+                                    recordarFolio()
                                     ordenCreadaPorEsteFlujo = true
                                     if (generacion != paymentGeneration) {
                                         cancelarLoCreadoTrasCancelar(orderId)
@@ -4987,6 +5008,10 @@ class PaymentFlowViewModel @Inject constructor(
     private fun hasProductItems(cart: CartState): Boolean {
         return cart.items.any { it.type is CartItemType.ProductItem }
     }
+
+    /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
+    private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
+        cart != null && cart.items.isNotEmpty() && split != "FULLPAYMENT"
 
     /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
     private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()

@@ -154,7 +154,7 @@ class H1CapturedCashTest {
         viewModel.selectPaymentMethod(PaymentMethod.CASH)
     }
 
-    private fun captured(row: PendingPaymentEntity, amount: Int = 4000, tip: Int = 500, fullOrder: Boolean = true) {
+    private fun captured(row: PendingPaymentEntity, amount: Int = 4000, tip: Int = 500, fullOrder: Boolean? = true) {
         assertEquals(amount, row.amountCents)
         assertEquals(tip, row.tipCents)
         assertEquals("CUSTOMAMOUNT", row.splitType)
@@ -165,13 +165,14 @@ class H1CapturedCashTest {
         assertEquals(tip, body.getValue("tip").jsonPrimitive.int)
         assertEquals("CUSTOMAMOUNT", body.getValue("splitType").jsonPrimitive.content)
         assertEquals(row.id, body.getValue("idempotencyKey").jsonPrimitive.content)
-        if (fullOrder) {
+        // null = el pedido lo revisa la prueba (p. ej. el renglón «Otro importe» de la venta rápida dividida).
+        if (fullOrder == true) {
             val order = Json.parseToJsonElement(requireNotNull(row.orderRequestJson)).jsonObject
             assertEquals(10000, order.getValue("subtotal").jsonPrimitive.int)
             assertEquals(10000 + tip, order.getValue("total").jsonPrimitive.int)
             assertEquals(setOf("product-40", "product-60"), order.getValue("items").jsonArray
                 .map { it.jsonObject.getValue("productId").jsonPrimitive.content }.toSet())
-        } else assertNull(row.orderRequestJson)
+        } else if (fullOrder == false) assertNull(row.orderRequestJson)
     }
 
     @Test fun `reservation persists the captured part before creating the full order`() = runTest {
@@ -220,13 +221,19 @@ class H1CapturedCashTest {
         captured(reserved); captured(queued)
     }
 
-    @Test fun `fast cash post failure queues the captured part and original split`() = runTest {
+    // D2 etapa 2 (27-oct): una venta rápida DIVIDIDA lleva orden, así que su parte sin red se encola como ORDER con el pedido
+    // «Otro importe» (antes era FAST y la venta terminaba en dos). La venta rápida de una sola parte sigue FAST.
+    @Test fun `split quick sale post failure queues the captured part as an order with its custom line`() = runTest {
         open(products = false)
         viewModel.processCashPayment(5000)
         advanceUntilIdle()
         val queued = rows.values.single()
-        captured(queued, fullOrder = false)
-        assertEquals("FAST", queued.paymentType)
+        captured(queued, fullOrder = null)
+        assertEquals("ORDER", queued.paymentType)
+        val line = Json.parseToJsonElement(requireNotNull(queued.orderRequestJson)).jsonObject.getValue("items").jsonArray.single().jsonObject
+        assertFalse(line.containsKey("productId"))
+        assertEquals("Otro importe", line.getValue("name").jsonPrimitive.content)
+        assertEquals(10_000, line.getValue("unitPrice").jsonPrimitive.int)
     }
 
     @Test fun `existing order fallback keeps its already correct amount and now preserves the whole order`() = runTest {
