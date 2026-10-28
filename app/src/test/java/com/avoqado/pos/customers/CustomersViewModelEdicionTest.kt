@@ -244,4 +244,44 @@ class CustomersViewModelEdicionTest {
         advanceUntilIdle()
         coVerify(atLeast = 1) { repository.buscarClientes(any()) }
     }
+
+    // MARK: - D3: «Más» cierra Clientes a media guardada
+
+    @Test
+    fun `P1 si Mas cierra Clientes mientras guarda y falla, al reabrir el formulario conserva lo escrito`() = runTest {
+        // Con internet lento, tocar «Más» quita la pantalla de Clientes (y con ella lo que el formulario recordaba) pero
+        // NO llama a cerrarEdicion: el ViewModel sigue con el cliente en edición y al reabrir el formulario nace otra vez.
+        every { roleManager.canEditCustomers } returns true
+        val respuesta = CompletableDeferred<Result<Customer>>()
+        coEvery { repository.updateCustomer(any(), any()) } coAnswers { respuesta.await() }
+        val escrito = ContactoEditado("Ana", "", "+525511112222", "")
+        viewModel.onEditarTocado(soloTelefono)
+
+        viewModel.guardarEdicion(escrito) {}
+        advanceUntilIdle()
+        respuesta.complete(Result.failure(UnknownHostException("sin red")))
+        advanceUntilIdle()
+
+        assertEquals(soloTelefono, viewModel.clienteEnEdicion.value)
+        assertEquals(escrito, viewModel.borradorDeEdicion)
+    }
+
+    @Test
+    fun `el borrador no se cuela a otra edicion ni sobrevive a un guardado bueno`() = runTest {
+        every { roleManager.canEditCustomers } returns true
+        coEvery { repository.updateCustomer(any(), any()) } returns Result.failure(UnknownHostException("sin red"))
+        viewModel.onEditarTocado(soloTelefono)
+        viewModel.guardarEdicion(ContactoEditado("Ana", "", "+527351748538", "")) {}
+        advanceUntilIdle()
+
+        viewModel.cerrarEdicion()
+        assertNull(viewModel.borradorDeEdicion)
+
+        viewModel.onEditarTocado(soloTelefono)
+        assertNull(viewModel.borradorDeEdicion)
+        coEvery { repository.updateCustomer(any(), any()) } returns Result.success(soloTelefono.copy(firstName = "Ana"))
+        viewModel.guardarEdicion(ContactoEditado("Ana", "", "+527351748538", "")) {}
+        advanceUntilIdle()
+        assertNull(viewModel.borradorDeEdicion)
+    }
 }
