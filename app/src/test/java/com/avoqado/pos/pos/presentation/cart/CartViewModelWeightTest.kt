@@ -190,6 +190,41 @@ class CartViewModelWeightTest {
         assertNull(items.single().weightKg)
     }
 
+    // D7 (27-oct): un renglón por peso es UNA pesada; el SERVIDOR exige cantidad 1 con `weightQuantity`.
+    @Test
+    fun `D7 subir la cantidad de una pesada no la cambia`() {
+        val vm = createViewModel()
+        vm.addProductByWeight(jamon, 0.435)
+        vm.addProduct(burger)
+        val pesada = vm.cartState.value.items[0].id
+        val pieza = vm.cartState.value.items[1].id
+
+        vm.updateQuantity(pesada, 2)
+        vm.incrementQuantity(pesada)
+        vm.updateQuantity(pieza, 3)
+
+        val items = vm.cartState.value.items
+        assertEquals(1, items[0].quantity)
+        assertEquals(3, items[1].quantity) // un producto por pieza sí cambia
+        assertEquals(18270 + 3 * 15000, vm.cartState.value.subtotalCents)
+
+        vm.updateQuantity(pesada, 0) // bajar a 0 la quita, como hoy
+        assertNull(vm.cartState.value.items.find { it.weightKg != null })
+    }
+
+    @Test
+    fun `D7 agregar el mismo producto no se fusiona con la pesada`() {
+        val vm = createViewModel()
+        vm.addProductByWeight(jamon, 0.435)
+        vm.addProduct(jamon)
+
+        val items = vm.cartState.value.items
+        assertEquals(2, items.size)
+        assertEquals(1, items[0].quantity)
+        assertEquals(0.435, items[0].weightKg!!, 0.0)
+        assertNull(items[1].weightKg)
+    }
+
     @Test
     fun `weighted and normal lines coexist without merging`() {
         val vm = createViewModel()

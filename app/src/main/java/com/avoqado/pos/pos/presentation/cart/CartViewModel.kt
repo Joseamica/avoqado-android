@@ -1252,6 +1252,8 @@ class CartViewModel @Inject constructor(
                     it.selectedModifiers.isEmpty() &&
                     !it.isCortesia &&
                     it.promotionInstanceId == null &&
+                    // D7: tampoco con una pesada (es una venta aparte; fusionada quedaría cantidad 2 con el total de una).
+                    it.weightKg == null &&
                     it.unitPrice == product.priceInCents
             }
 
@@ -1522,6 +1524,11 @@ class CartViewModel @Inject constructor(
         return true
     }
 
+    /**
+     * 🔴 D7: un renglón por peso es UNA pesada, cantidad 1 siempre. Su total ya ignora la cantidad y el SERVIDOR rechaza
+     * `quantity ≠ 1` junto a `weightQuantity`. Dos pesadas = dos renglones ([addProductByWeight]). La pantalla ya oculta el
+     * selector; esto lo cierra para cualquier otro camino. **iOS** pone la misma regla en su `CartViewModel.items`.
+     */
     fun updateQuantity(itemId: String, newQuantity: Int) {
         if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
@@ -1531,7 +1538,7 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(quantity = newQuantity) else it
+                    if (it.id == itemId && it.weightKg == null) it.copy(quantity = newQuantity) else it
                 },
             )
         }
@@ -1542,7 +1549,8 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(quantity = it.quantity + 1) else it
+                    // D7: una pesada no sube (ver [updateQuantity]).
+                    if (it.id == itemId && it.weightKg == null) it.copy(quantity = it.quantity + 1) else it
                 },
             )
         }
