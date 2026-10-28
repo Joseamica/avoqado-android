@@ -131,19 +131,13 @@ class TransactionRepository @Inject constructor(
     /** Exchange links contain order ids; the transaction detail route requires a payment id. */
     suspend fun paymentIdForExchangeOrder(orderId: String, actorId: String?, venueId: String?): String? {
         if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
-        val token = secureStorage.accessToken ?: return null
         return try {
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/orders/${URLEncoder.encode(orderId, "UTF-8")}")
-                .header("Authorization", "Bearer $token")
                 .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
                 .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
                 .build()
-            val (code, body) = withContext(Dispatchers.IO) {
-                scopedCustomerClient(actorId, venueId, token, isRead = true).newCall(request).execute().use {
-                    it.code to it.body?.string().orEmpty()
-                }
-            }
+            val (code, body) = leerComo(actorId, venueId, request) ?: return null
             if (!sameIdentity(actorId, venueId)) return null
             if (code == 403) throw SecurityException("orders:read")
             if (code !in 200..299) return null
@@ -157,19 +151,13 @@ class TransactionRepository @Inject constructor(
 
     suspend fun fetchTransactionDetail(paymentId: String, actorId: String?, venueId: String?): Transaction? {
         if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
-        val token = secureStorage.accessToken ?: return null
         return try {
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/transactions/$paymentId")
-                .header("Authorization", "Bearer $token")
                 .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
                 .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
                 .build()
-            val (responseCode, body) = withContext(Dispatchers.IO) {
-                scopedCustomerClient(actorId, venueId, token, isRead = true).newCall(request).execute().use { response ->
-                    response.code to (response.body?.string() ?: "")
-                }
-            }
+            val (responseCode, body) = leerComo(actorId, venueId, request) ?: return null
             if (!sameIdentity(actorId, venueId)) return null
             if (responseCode in 200..299 && body.isNotEmpty()) {
                 json.decodeFromString<TransactionDetailResponse>(body).transaction?.takeIf { it.id == paymentId }
@@ -288,13 +276,36 @@ class TransactionRepository @Inject constructor(
         secureStorage.userId == actorId && secureStorage.venueId == venueId
 
     /**
-     * GET y POST históricos comparten autoridad: sin PIN, renovación, replay ni salto a otro origen.
+     * GET con la credencial de [actorId]. La sesión del POS dura 10 min (D9, 28-oct): el autenticador de la app la renueva
+     * pero no reenvía (NO_AUTO_RETRY). Se repite UNA vez con la nueva, y sólo si sigue siendo la misma persona en la misma
+     * sucursal. Sin token, null.
+     */
+    private suspend fun leerComo(actorId: String, venueId: String, request: Request): Pair<Int, String>? {
+        var token = secureStorage.accessToken ?: return null
+        for (intento in 0..1) {
+            val (code, body) = withContext(Dispatchers.IO) {
+                scopedCustomerClient(actorId, venueId, token, isRead = true).newCall(request).execute().use {
+                    it.code to it.body?.string().orEmpty()
+                }
+            }
+            val renovado = secureStorage.accessToken
+            if (code != 401 || intento == 1 || renovado == null || renovado == token || !sameIdentity(actorId, venueId)) {
+                return code to body
+            }
+            token = renovado
+        }
+        return null
+    }
+
+    /**
+     * GET y POST históricos comparten autoridad: sin PIN, replay ni salto a otro origen. El POST tampoco renueva la sesión;
+     * el GET sí la deja renovar (D9) y [leerComo] decide si repite.
      * Una conexión guardada que el servidor ya cerró tumbaba el detalle (D3, 23-oct): el GET puede
      * reintentar (leer dos veces no cambia nada); el POST no reintenta y por eso usa una conexión nueva.
      */
     private fun scopedCustomerClient(actorId: String, venueId: String, token: String, isRead: Boolean): OkHttpClient =
         client.newBuilder()
-            .authenticator(Authenticator.NONE)
+            .apply { if (!isRead) authenticator(Authenticator.NONE) }
             .retryOnConnectionFailure(isRead)
             .apply { if (!isRead) connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)) }
             .followRedirects(false)

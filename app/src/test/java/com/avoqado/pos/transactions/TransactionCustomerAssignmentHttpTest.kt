@@ -137,18 +137,18 @@ class TransactionCustomerAssignmentHttpTest {
         }
     }
 
-    @Test fun `historical detail unauthorized cannot refresh or replay under another actor`() = runBlocking {
+    // D9 (28-oct): la lectura SÍ deja renovar la sesión (dura 10 min y el detalle no abría), pero nunca reenvía
+    // como otra persona. El POST de arriba sigue sin renovar.
+    @Test fun `historical detail unauthorized never replays under another actor`() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
             server.enqueue(MockResponse().setBody("""{"transaction":{"id":"payment-a"}}"""))
-            val refreshed = AtomicInteger()
             val client = OkHttpClient.Builder().authenticator(Authenticator { _, response ->
-                refreshed.incrementAndGet()
                 every { storage.userId } returns "actor-b"
+                every { storage.accessToken } returns "token-b"
                 response.request.newBuilder().header("Authorization", "Bearer token-b").build()
             }).build()
             assertNull(repository(server, client).fetchTransactionDetail("payment-a"))
-            assertEquals(0, refreshed.get())
             assertEquals(1, server.requestCount)
         }
     }

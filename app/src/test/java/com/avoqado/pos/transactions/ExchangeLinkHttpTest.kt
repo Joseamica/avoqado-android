@@ -44,4 +44,58 @@ class ExchangeLinkHttpTest {
             assertNull(repo.paymentIdForExchangeOrder("order", "actor", "venue"))
         }
     }
+
+    // espejo de ExchangeLinkHttpTests.swift (recorrido del iPad, 27-oct): la sesión del POS dura 10 min y el primer
+    // toque decía «No se pudo abrir la venta vinculada». El autenticador de la app renueva sin reenviar (NO_AUTO_RETRY).
+    @Test fun `expired session retries once with the renewed token of the same actor`() = runBlocking {
+        val (payment, sent) = linkWithExpiredSession(switchActorDuringRefresh = false)
+        assertEquals("payment", payment)
+        assertEquals(listOf("Bearer old", "Bearer new"), sent)
+    }
+
+    @Test fun `actor switch during renewal never retries`() = runBlocking {
+        val (payment, sent) = linkWithExpiredSession(switchActorDuringRefresh = true)
+        assertNull(payment)
+        assertEquals(listOf("Bearer old"), sent)
+    }
+
+    @Test fun `sale detail also retries once after the renewal`() = runBlocking {
+        MockWebServer().use { server ->
+            var token = "old"
+            val storage = mockk<SecureStorage>(relaxed = true) {
+                every { userId } returns "actor"
+                every { venueId } returns "venue"
+                every { accessToken } answers { token }
+            }
+            val client = OkHttpClient.Builder().authenticator { _, _ -> token = "new"; null }.build()
+            val repo = TransactionRepository(storage, client).apply { baseUrl = server.url("/api/v1").toString().trimEnd('/') }
+            server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"jwt expired"}"""))
+            server.enqueue(MockResponse().setBody("""{"transaction":{"id":"payment","amount":85.0}}"""))
+            assertEquals("payment", repo.fetchTransactionDetail("payment", "actor", "venue")?.id)
+            assertEquals(listOf("Bearer old", "Bearer new"), List(2) { server.takeRequest().getHeader("Authorization") })
+        }
+    }
+
+    private fun linkWithExpiredSession(switchActorDuringRefresh: Boolean): Pair<String?, List<String?>> = runBlocking {
+        MockWebServer().use { server ->
+            var token = "old"
+            var actor = "actor"
+            val storage = mockk<SecureStorage>(relaxed = true) {
+                every { userId } answers { actor }
+                every { venueId } returns "venue"
+                every { accessToken } answers { token }
+            }
+            // Hace lo que TokenRefreshAuthenticator con NO_AUTO_RETRY: renueva la sesión y no reenvía.
+            val client = OkHttpClient.Builder().authenticator { _, _ ->
+                token = "new"
+                if (switchActorDuringRefresh) actor = "other"
+                null
+            }.build()
+            val repo = TransactionRepository(storage, client).apply { baseUrl = server.url("/api/v1").toString().trimEnd('/') }
+            server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"jwt expired"}"""))
+            server.enqueue(MockResponse().setBody("""{"order":{"id":"order","payments":[{"id":"payment","status":"COMPLETED"}]}}"""))
+            val payment = repo.paymentIdForExchangeOrder("order", "actor", "venue")
+            payment to List(server.requestCount) { server.takeRequest().getHeader("Authorization") }
+        }
+    }
 }
