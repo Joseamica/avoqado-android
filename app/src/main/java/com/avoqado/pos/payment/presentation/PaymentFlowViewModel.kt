@@ -5198,6 +5198,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun visiblePaymentItems(cart: CartState): List<PaymentItem> {
+        // D4: un pedido en línea se cobra con un renglón por el saldo, pero la cajera ve sus productos (cuadran con el saldo).
+        if (_splitType.value == "FULLPAYMENT" && cart.renglonesParaVer.isNotEmpty()) return cart.renglonesParaVer
         val sourceItems = when (_splitType.value) {
             "BYPRODUCT" -> {
                 val selected = cart.items.filter { splitSelectedItemIds.contains(it.id) }

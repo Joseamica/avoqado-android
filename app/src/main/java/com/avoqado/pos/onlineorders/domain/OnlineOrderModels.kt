@@ -43,6 +43,25 @@ data class OnlineOrder(
     val items: List<OnlineOrderItem>,
 )
 
+/**
+ * Lo que dice el servidor al tocar «Cobrar»: el saldo (lo único que mueve dinero) y el precio de cada producto del pedido, que
+ * sólo sirve para enseñar «Ver productos». [precios] es null si ya hubo un pago o si algún producto no se pudo leer completo:
+ * el saldo vale igual.
+ */
+data class SaldoDelPedido(val saldoCents: Long, val precios: List<PrecioDeRenglon>? = null)
+
+/**
+ * Un producto del detalle del pedido: nombre guardado, cantidad, lo que cobra el renglón entero (con extras) en centavos, y su
+ * nota y extras de AHORA (para no enseñar los de una bandeja vieja si otra caja los cambió).
+ */
+data class PrecioDeRenglon(
+    val name: String,
+    val quantity: Int,
+    val totalCents: Long,
+    val note: String? = null,
+    val modifierNames: List<String> = emptyList(),
+)
+
 /** [pending] y [active] vienen en TODA respuesta (conteos exactos del servidor, aunque la lista sea de otro filtro). */
 data class Inbox(
     val serverTime: Instant,
