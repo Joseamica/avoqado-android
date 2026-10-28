@@ -667,12 +667,20 @@ class CartViewModel @Inject constructor(
     /** El carrito continúa una venta cobrada a medias (tiene saldo en su orden). */
     fun hayVentaAMedias(): Boolean = _pendingSplitOrder.value != null
 
-    /** Hay un renglón que la orden no tiene, o el carrito creció en dinero (`addProduct` FUSIONA: misma línea, cantidad 2). */
+    /**
+     * Hay un renglón que la orden no tiene, uno que lleva MÁS que en su foto, o el carrito creció en dinero (`addProduct`
+     * FUSIONA: misma línea, cantidad 2). Mirar sólo el total no basta: quitar C y llevar otra B deja B×2 al mismo precio
+     * contra una orden con B+C (Codex iOS código r1 #2, 28-oct).
+     */
     private fun carritoCambioDesde(pendiente: PendingSplitOrder, cart: CartState): Boolean =
         // Exacta: renglones, descuento Y total (quitar al cliente quita su premio y sube el total sin tocar renglones, Codex r2 #1).
         if (pendiente.exacta) cart.items != pendiente.renglones || cart.orderDiscount != pendiente.descuentoDeCuenta ||
             cart.totalCents != pendiente.totalCents
-        else cart.items.any { it.id !in pendiente.itemIds } || cart.totalCents > pendiente.totalCents
+        else cart.totalCents > pendiente.totalCents || cart.items.any { item ->
+            val foto = pendiente.renglones.firstOrNull { it.id == item.id }
+            item.id !in pendiente.itemIds ||
+                (foto != null && (item.quantity > foto.quantity || item.grossPrice > foto.grossPrice))
+        }
 
     // MARK: - D1: la parte que se guardó sin red (founder «B», 26-oct)
 

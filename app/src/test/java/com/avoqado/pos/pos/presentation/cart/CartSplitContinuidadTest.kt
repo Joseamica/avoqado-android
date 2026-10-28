@@ -431,6 +431,26 @@ class CartSplitContinuidadTest {
         assertFalse("bajarla de nuevo deshace el cambio", vm.detenerCobroDeVentaCambiada())
     }
 
+    // Codex iOS código r1 #2 (28-oct): quitar un renglón y llevar otra unidad de uno que ya estaba deja el MISMO total y ningún
+    // id nuevo, pero la orden tiene B+C, no B×2: cobrarlo dejaba el recibo y el inventario distintos de lo vendido.
+    @Test
+    fun `cambiar un renglon por otra unidad de uno que ya estaba con el mismo total tambien detiene el cobro`() = runTest {
+        val vm = createViewModel()
+        val b = Product(id = "prod-b", name = "B", priceValue = 100.0)
+        vm.addProduct(b)
+        vm.addProduct(Product(id = "prod-c", name = "C", priceValue = 100.0))
+        vm.markPendingSplitOrder("order-parte-1")
+
+        vm.quitarPorElCajero(vm.cartState.value.items.last().id)
+        vm.addProduct(b)
+
+        assertEquals(1, vm.cartState.value.items.size)
+        assertEquals(2, vm.cartState.value.items.first().quantity)
+        assertEquals("montaje: vale lo mismo que al marcar el vínculo", 20000, vm.cartState.value.totalCents)
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+        assertNull("no se cobra contra la orden vieja", vm.resolvePendingSplitOrderForCharge())
+    }
+
     // Codex r9: guardar soltaba el vínculo y restaurar dejaba cobrar el saldo dentro de otra venta; pagar después hacía otra
     // cuenta con el saldo adentro. Una venta a medias no se guarda ni se difiere: primero su saldo.
     @Test
