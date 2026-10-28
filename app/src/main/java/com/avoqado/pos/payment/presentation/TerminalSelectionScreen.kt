@@ -63,12 +63,16 @@ fun TerminalSelectionScreen(
     /** B7b-5 / N6: la lista no cargó (sin red —estado normal, no error— o error del servidor) o vino vacía. Se dice con «Reintentar». */
     sinLista: String? = null,
     onReintentar: () -> Unit = {},
+    cuentaDeTarjetas: Boolean = false,
+    conectado: Boolean = true,
+    servidor: Boolean = true,
 ) {
     // Teclas del POS de Windows (founder, 19-oct): F4 otra vez = la PRIMERA terminal de la lista (F4, F4 cobra en la
     // terminal); Esc = Cancelar. Lo mismo que el clic. Números no: la pistola puede soltar un «1» suelto de un código
     // cortado y eso mandaría un cobro (Codex r1 #2); una tecla F nunca la manda una pistola.
+    val enLinea = controlDeTerminalDeTarjeta(cuentaDeTarjetas, conectado, servidor, true)
     val primera = terminals.firstOrNull()?.takeIf { sinLista == null }
-    AtajoDeTeclado(Key.F4, activo = primera != null) { primera?.let { onTerminalSelected(it.terminalId) } }
+    AtajoDeTeclado(Key.F4, activo = enLinea && primera != null) { primera?.let { onTerminalSelected(it.terminalId) } }
     AtajoDeTeclado(Key.Escape) { onCancel() }
 
     Column(
@@ -103,10 +107,13 @@ fun TerminalSelectionScreen(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
+        if (!enLinea) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
+
         // Arriba de la lista: se lee ANTES de tocar una terminal.
         listOfNotNull(avisoDeOtroCobro, segundoAviso).forEach { aviso ->
             AvisoDeOtroCobroLinea(
                 aviso = aviso,
+                enabled = aviso.yaCobrado || enLinea,
                 onClick = { if (aviso.yaCobrado) onEntendidoAviso(aviso.requestId) else onRevisarAviso(aviso.requestId) },
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -130,7 +137,7 @@ fun TerminalSelectionScreen(
                 modifier = Modifier.widthIn(max = 400.dp),
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
-            PrimaryButton(text = "Reintentar", onClick = onReintentar)
+            PrimaryButton(text = "Reintentar", enabled = enLinea, onClick = onReintentar)
             Spacer(modifier = Modifier.weight(1f))
         } else if (terminals.isEmpty()) {
             // Loading state
@@ -153,6 +160,7 @@ fun TerminalSelectionScreen(
                 itemsIndexed(terminals) { i, terminal ->
                     TerminalCard(
                         terminal = terminal,
+                        enabled = enLinea,
                         onClick = { onTerminalSelected(terminal.terminalId) },
                         tecla = if (i == 0) "F4" else null,
                     )
@@ -174,9 +182,10 @@ fun TerminalSelectionScreen(
  * «Revisar» abre la pantalla de siempre sobre ese cobro; «Entendido» cierra el de un cobro que SÍ pasó.
  */
 @Composable
-private fun AvisoDeOtroCobroLinea(aviso: AvisoDeOtroCobro, onClick: () -> Unit) {
+private fun AvisoDeOtroCobroLinea(aviso: AvisoDeOtroCobro, enabled: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
+        enabled = enabled,
         // Mismo ancho que la lista de terminales, para que se lea como parte de ella. Y se anuncia como BOTÓN: el
         // lector de pantalla tiene que saber que tocarla hace algo.
         modifier = Modifier.widthIn(max = 400.dp).fillMaxWidth().semantics { role = Role.Button },
@@ -215,6 +224,7 @@ private fun TerminalCard(
     terminal: OnlineTerminal,
     onClick: () -> Unit,
     tecla: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
@@ -226,7 +236,7 @@ private fun TerminalCard(
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
             )
             .sinTeclasDeClic(LocalEsEscritorio.current)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(AvoqadoTheme.spacing.lg),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
@@ -259,3 +269,5 @@ private fun TerminalCard(
         )
     }
 }
+
+internal fun controlDeTerminalDeTarjeta(cuenta: Boolean, conectado: Boolean, servidor: Boolean, disponible: Boolean): Boolean = disponible && (!cuenta || conectado && servidor)

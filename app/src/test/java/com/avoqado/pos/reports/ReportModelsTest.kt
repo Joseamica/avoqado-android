@@ -58,4 +58,15 @@ class ReportModelsTest {
         val breakdown = PaymentMethodBreakdown(method = "CRYPTO")
         assertEquals("CRYPTO", breakdown.label)
     }
+    @Test
+    fun `GIFT_CARD se llama Tarjeta de regalo con su icono`() {
+        val breakdown = PaymentMethodBreakdown(method = "GIFT_CARD")
+        assertEquals("Tarjeta de regalo", breakdown.label)
+        assertEquals("giftcard", breakdown.iconName)
+    }
+
+    @Test
+    fun `PaymentMethodDisplay nombra GIFT_CARD`() {
+        assertEquals("Tarjeta de regalo", com.avoqado.pos.transactions.data.model.PaymentMethodDisplay.label("GIFT_CARD"))
+    }
 }

@@ -3,6 +3,7 @@ package com.avoqado.pos.pos.presentation.checkout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import kotlinx.serialization.encodeToString
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -131,12 +132,30 @@ fun CheckoutScreen(
     isTablet: Boolean,
     roleManager: RoleManager? = null,
     cartViewModel: CartViewModel = hiltViewModel(),
+    onResultadoDeTarjetas: (String) -> Unit = {},
 ) {
     val creditsViewModel: com.avoqado.pos.customers.presentation.CustomerCreditsViewModel = hiltViewModel()
     // Membresías cobradas que NO se entregaron: dinero adentro sin su
     // contraparte. Se avisa aquí, en el mostrador, no sólo en el log.
     val membresiasSinEntregar by creditsViewModel.undeliveredGrants.collectAsState()
     val cartState by cartViewModel.cartState.collectAsState()
+    val tarjetasViewModel: com.avoqado.pos.giftcards.presentation.TarjetasDeRegaloViewModel = hiltViewModel()
+    val hojaDeTarjetas by tarjetasViewModel.hoja.collectAsState()
+    var mostrarHojaDeTarjetas by remember { mutableStateOf(false) }
+    var consultaDeTarjeta by remember { mutableStateOf<Pair<String, com.avoqado.pos.giftcards.data.PruebaDeTarjeta?>?>(null) }
+    var aperturaDeTarjetas by rememberSaveable { mutableStateOf<String?>(null) }
+    val ventaDeTarjetas = aperturaDeTarjetas?.let { raw -> runCatching {
+        kotlinx.serialization.json.Json.decodeFromString<Triple<String, com.avoqado.pos.giftcards.data.AjustesDeTarjetas, String>>(raw)
+    }.getOrNull() }
+    var cuentaDeTarjetasCancelada by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(cartState.isEmpty) { tarjetasViewModel.alAbrir(cartState.isEmpty) }
+    LaunchedEffect(hojaDeTarjetas.mosaicoVisible) {
+        if (!hojaDeTarjetas.mosaicoVisible) mostrarHojaDeTarjetas = false
+    }
+    val abrirTarjetas: (() -> Unit)? = if (hojaDeTarjetas.mosaicoVisible) ({
+        tarjetasViewModel.alAbrir(cartViewModel.cartState.value.isEmpty)
+        mostrarHojaDeTarjetas = true
+    }) else null
     val isLoading by cartViewModel.isLoading.collectAsState()
     val staffOptions by cartViewModel.staffOptions.collectAsState()
     val isStaffLoading by cartViewModel.isStaffLoading.collectAsState()
@@ -326,6 +345,9 @@ fun CheckoutScreen(
     // cobro vive en disco (ver SecureStorage.pendingCardChargesJson), pero además la
     // pantalla debe seguir ahí al volver.
     var showPaymentFlow by rememberSaveable { mutableStateOf(false) }
+    var tarjetaPreseleccionada by remember { mutableStateOf<com.avoqado.pos.giftcards.data.TarjetaIdentificada?>(null) }
+    var cuentaConSaldoPendiente by remember { mutableStateOf<String?>(null) }
+    var cuentaConSaldoVisible by remember { mutableStateOf<String?>(null) }
     // Desenlace de un cobro que quedó pendiente de OTRA venta. Vive aquí —y no en el flujo
     // de pago— porque el mensaje tiene que sobrevivir al cierre de ese flujo.
     var previousChargeNotice by rememberSaveable { mutableStateOf<String?>(null) }
@@ -490,6 +512,7 @@ fun CheckoutScreen(
         // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
         // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
         if (cartViewModel.hayConsultasDeCodigo) return
+        cartViewModel.bloqueoDeEntrega()?.let { savedCartError = it; return }
         if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
             savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
             return
@@ -696,6 +719,7 @@ fun CheckoutScreen(
                                             handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                                         },
                                         canCreateProducts = roleManager?.canCreateProducts ?: true,
+                                        onTarjetaDeRegalo = abrirTarjetas,
                                     )
                                 }
                                 InputTab.PRODUCTS -> {
@@ -789,6 +813,7 @@ fun CheckoutScreen(
                 ) {
                     CartPanelView(
                         cartState = cartState,
+                        onTarjetaDeRegalo = abrirTarjetas,
                         onItemTap = { item -> selectedCartItem = item },
                         onOrderTypeChange = { cartViewModel.setOrderType(it) },
                         onCharge = {
@@ -925,6 +950,7 @@ fun CheckoutScreen(
                                         handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                                     },
                                     canCreateProducts = roleManager?.canCreateProducts ?: true,
+                                    onTarjetaDeRegalo = abrirTarjetas,
                                 )
                             }
                             InputTab.PRODUCTS -> {
@@ -1082,6 +1108,75 @@ fun CheckoutScreen(
         )
     }
 
+    if (mostrarHojaDeTarjetas && hojaDeTarjetas.mosaicoVisible) {
+        com.avoqado.pos.giftcards.presentation.HojaDeTarjetaDeRegalo(
+            hoja = hojaDeTarjetas,
+            onVender = vender@{
+                if (cartViewModel.hayConsultasDeCodigo || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@vender
+                tarjetasViewModel.alAbrir(cartViewModel.cartState.value.isEmpty)
+                val venue = tarjetasViewModel.venueActual
+                val ajustes = venue?.let(tarjetasViewModel::ajustesParaVender)
+                if (venue != null && ajustes != null) {
+                    cartViewModel.abrirCobro()
+                    mostrarHojaDeTarjetas = false
+                    aperturaDeTarjetas = kotlinx.serialization.json.Json.encodeToString(Triple(venue, ajustes, java.util.UUID.randomUUID().toString()))
+                }
+            },
+            onConsultar = consultar@{
+                if (cartViewModel.hayConsultasDeCodigo || cartViewModel.cobroAbierto || !tarjetasViewModel.hoja.value.consultar.habilitada) return@consultar
+                val venue = tarjetasViewModel.venueActual ?: return@consultar
+                com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abrir()
+                mostrarHojaDeTarjetas = false
+                consultaDeTarjeta = venue to null
+            },
+            onDismiss = { mostrarHojaDeTarjetas = false },
+        )
+    }
+
+    LaunchedEffect(consultaDeTarjeta) {
+        if (consultaDeTarjeta != null) {
+            paymentFlowViewModel.startPaymentFlow(cartViewModel.getCartForPayment(), resumeOrderId = cartViewModel.cuentaLigada())
+            paymentFlowViewModel.configurarSaldo(ventaViva = { cartViewModel.cartState.value })
+            paymentFlowViewModel.actualizarFilaDeSaldo(refrescar = true)
+        }
+    }
+    com.avoqado.pos.giftcards.presentation.VentaPorRecuperar(cartViewModel)
+    cuentaConSaldoVisible?.let { id ->
+        com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
+    }
+
+    consultaDeTarjeta?.let { (venue, prueba) ->
+        androidx.compose.ui.window.Dialog(onDismissRequest = { consultaDeTarjeta = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            com.avoqado.pos.designsystem.components.ImmersiveWindow()
+            com.avoqado.pos.giftcards.presentation.ConsultarSaldoScreen(
+                venueId = venue, ajustes = tarjetasViewModel.ajustesParaConsultar(venue), prueba = prueba,
+                hayVentaAbierta = paymentFlowViewModel.conductaDelSaldo.collectAsState().value.habilitada,
+                onCerrar = { consultaDeTarjeta = null }, onCobrarConEsta = { tarjeta ->
+                    checkoutScope.launch { paymentFlowViewModel.abrirSaldoDesdeConsultar(tarjeta) {
+                        tarjetaPreseleccionada = it; consultaDeTarjeta = null; proceedToPayment()
+                    } }
+                })
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { com.avoqado.pos.giftcards.domain.LectorParaTarjetas.cerrar() } }
+
+    ventaDeTarjetas?.let { (venue, ajustes, apertura) ->
+        androidx.compose.ui.window.Dialog(onDismissRequest = { aperturaDeTarjetas = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            com.avoqado.pos.designsystem.components.ImmersiveWindow()
+            com.avoqado.pos.giftcards.presentation.VenderTarjetaScreen(venue, ajustes, apertura,
+                onSalir = { aperturaDeTarjetas = null },
+                onCuentaCancelada = { cuentaDeTarjetasCancelada = true },
+                onResultadoPendiente = { orderId ->
+                    aperturaDeTarjetas = null
+                    onResultadoDeTarjetas(orderId)
+                })
+        }
+    }
+    if (cuentaDeTarjetasCancelada) com.avoqado.pos.designsystem.components.AvoqadoSuccessToast(
+        message = "Cuenta cancelada", onDismiss = { cuentaDeTarjetasCancelada = false })
+
     // Cart item detail overlay (matching iOS: side panel on tablet, sheet on phone)
     selectedCartItem?.let { item ->
         BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
@@ -1117,6 +1212,10 @@ fun CheckoutScreen(
     if (showIPhoneCart) {
         IPhoneCartSheet(
             cartState = cartState,
+            onTarjetaDeRegalo = abrirTarjetas?.let { abrir -> {
+                showIPhoneCart = false
+                abrir()
+            } },
             onItemTap = { item -> selectedCartItem = item },
             onOrderTypeChange = { cartViewModel.setOrderType(it) },
             onCharge = {
@@ -1204,16 +1303,28 @@ fun CheckoutScreen(
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
     val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
-        if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)) return@manejar
+        if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@manejar
+        if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
         checkoutScope.launch {
             val entra = {
-                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto, emitiendoVale = areaOperationsState.issuing)
+                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)
             }
             val result = cartViewModel.resolveScannedBarcode(barcode)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
-            if (!entra()) return@launch
+            if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
             when (result) {
+                is ScannedBarcodeResult.GiftCardFound -> {
+                    val venue = tarjetasViewModel.venueActual
+                    val hoja = tarjetasViewModel.hoja.value
+                    if (!hoja.mosaicoVisible) barcodeError = "Producto no encontrado"
+                    else if (!hoja.consultar.habilitada) barcodeError = hoja.consultar.motivo
+                    else if (venue != null) {
+                        com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abrir()
+                        mostrarHojaDeTarjetas = false
+                        consultaDeTarjeta = venue to result.prueba
+                    }
+                }
                 is ScannedBarcodeResult.ProductFound ->
                     handleProductTap(
                         result.product,
@@ -1255,7 +1366,9 @@ fun CheckoutScreen(
     }
     // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
     // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
-    LaunchedEffect(showPaymentFlow) { if (showPaymentFlow) cartViewModel.abrirCobro() else cartViewModel.cerrarCobro() }
+    LaunchedEffect(showPaymentFlow, aperturaDeTarjetas) {
+        if (showPaymentFlow || aperturaDeTarjetas != null) cartViewModel.abrirCobro() else cartViewModel.cerrarCobro()
+    }
 
     // Barcode scanner overlay
     if (showBarcodeScanner) {
@@ -1646,6 +1759,19 @@ fun CheckoutScreen(
             )
             PaymentFlowScreen(
                 cartState = paymentCart,
+                ventaViva = { cartViewModel.cartState.value }, fotoDeLaVenta = cartViewModel::fotoDeLaVenta,
+                vaciarVenta = cartViewModel::clearCart,
+                restaurarVenta = { foto -> if (cartViewModel.restaurarFoto(foto)) cartViewModel.getCartForPayment() else null },
+                registrarRecuperacionDeFoto = cartViewModel::observarRestauracionDeFoto,
+                alRestaurarSnapshot = { paymentCartSnapshot = it.paymentSnapshot() },
+                pruebaPreseleccionada = tarjetaPreseleccionada,
+                onCuentaConSaldo = { id ->
+                    showPaymentFlow = false; cartViewModel.cerrarCobro(); paymentCartSnapshot = null
+                    cartViewModel.releaseChargingOrder(); pendingSplitConfig = SplitConfig(); tarjetaPreseleccionada = null
+                    cuentaConSaldoVisible = id
+                },
+                onCreacionIncierta = cartViewModel::marcarCreacionIncierta,
+                onCreacionResuelta = cartViewModel::limpiarCreacionIncierta,
                 // El cliente del encabezado del carrito se lleva al cobro: la
                 // orden nace con `customerId` y la pantalla de recibo ya lo
                 // muestra puesto en vez de pedirlo de nuevo.
@@ -1658,6 +1784,10 @@ fun CheckoutScreen(
                 preselectedCustomerId = clienteDelCobro?.id,
                 preselectedCustomerName = clienteDelCobro?.name,
                 onPaymentCommitted = { completion ->
+                    if (completion.conSaldo) {
+                        cuentaConSaldoPendiente = completion.orderId?.takeIf { completion.remainingBalanceCents > 0 }
+                        return@PaymentFlowScreen
+                    }
                     // 🔴 DINERO. Quedó saldo ⇒ la venta SIGUE VIVA contra la MISMA
                     // orden, y la parte que falta se cobra ahí. Antes esto se
                     // perdía: el carrito se sustituía por "Saldo pendiente" y la
@@ -1771,6 +1901,7 @@ fun CheckoutScreen(
                     completion.orderId?.let { upsellViewModel.onOrderPaid(it) }
                 },
                 onDone = {
+                    cuentaConSaldoVisible = cuentaConSaldoPendiente; cuentaConSaldoPendiente = null; tarjetaPreseleccionada = null
                     showPaymentFlow = false
                     cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
@@ -1784,6 +1915,7 @@ fun CheckoutScreen(
                     cartViewModel.refreshCustomerDisplay()
                 },
                 onCancel = {
+                    tarjetaPreseleccionada = null
                     showPaymentFlow = false
                     cartViewModel.cerrarCobro()
                     paymentCartSnapshot = null
@@ -2150,6 +2282,7 @@ private fun IPhoneCartSheet(
     onClearCart: () -> Unit,
     onSaveCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
+    onTarjetaDeRegalo: (() -> Unit)?,
     onRemoveItem: (String) -> Unit,
     /** Descuento de la cuenta completa. 🔴 SIN default, misma lección que `onSplitPayment`. */
     onDiscountTap: () -> Unit,
@@ -2231,6 +2364,7 @@ private fun IPhoneCartSheet(
                 onClearCart = onClearCart,
                 onSaveCart = onSaveCart,
                 onAddCustomAmount = onAddCustomAmount,
+                onTarjetaDeRegalo = onTarjetaDeRegalo,
                 onRemoveItem = onRemoveItem,
                 onDiscountTap = onDiscountTap,
                 customerName = customerName,

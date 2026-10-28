@@ -8,6 +8,9 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+fun puedeCobrarseDesdeLaLista(cobrosConSaldo: Int?, detalle: OrderDetail, porTerminarAqui: Boolean = false): Boolean =
+    (cobrosConSaldo ?: 0) >= 1 || porTerminarAqui || detalle.payments.orEmpty().none { it.status == "COMPLETED" }
+
 // MARK: - Enums
 
 enum class OrderStatus(val label: String) {
@@ -74,6 +77,9 @@ internal fun refundBadgeLabelFor(state: RefundState, refundedAmount: Double): St
 @Serializable
 data class OrderSummary(
     val id: String,
+    val esCuentaDeTarjetas: Boolean = false,
+    val esDeMesa: Boolean? = null,
+    val cobrosConSaldo: Int? = null,
     val orderNumber: String = "",
     val status: String = "",
     val paymentStatus: String = "",
@@ -143,6 +149,9 @@ data class OrderSummary(
 @Serializable
 data class OrderDetail(
     val id: String,
+    val esCuentaDeTarjetas: Boolean = false,
+    val esDeMesa: Boolean? = null,
+    val cobrosConSaldo: Int? = null,
     val orderNumber: String = "",
     val status: String = "",
     val paymentStatus: String = "",
@@ -237,6 +246,7 @@ data class OrderItemModifier(
 @Serializable
 data class OrderPaymentInfo(
     val id: String,
+    val esSaldoDeTarjeta: Boolean? = null,
     val amount: Double = 0.0,
     val tipAmount: Double = 0.0,
     val method: String = "",
@@ -245,7 +255,7 @@ data class OrderPaymentInfo(
     val processedBy: String? = null,
 ) {
     @Transient
-    val methodLabel: String = when (method.uppercase()) {
+    val methodLabel: String = if (esSaldoDeTarjeta == true) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.FILA_COBRO else when (method.uppercase()) {
         "CASH" -> "Efectivo"
         "CARD", "CREDIT_CARD", "DEBIT_CARD" -> "Tarjeta"
         // El server manda BANK_TRANSFER (enum PaymentMethod); sin esto el detalle lo mostraba crudo.

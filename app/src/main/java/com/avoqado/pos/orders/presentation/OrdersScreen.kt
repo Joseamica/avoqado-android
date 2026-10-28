@@ -1,6 +1,7 @@
 package com.avoqado.pos.orders.presentation
 
 import androidx.compose.foundation.background
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +55,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -152,11 +155,14 @@ fun OrdersScreen(
         onPauseOrDispose { }
     }
 
+    var cuentaCancelada by rememberSaveable { mutableStateOf(false) }
     if (isTablet) {
-        TabletOrdersLayout(viewModel = viewModel, onDismiss = onDismiss)
+        TabletOrdersLayout(viewModel = viewModel, onDismiss = onDismiss, onCuentaCancelada = { cuentaCancelada = true })
     } else {
-        PhoneOrdersLayout(viewModel = viewModel, onDismiss = onDismiss)
+        PhoneOrdersLayout(viewModel = viewModel, onDismiss = onDismiss, onCuentaCancelada = { cuentaCancelada = true })
     }
+    if (cuentaCancelada) com.avoqado.pos.designsystem.components.AvoqadoSuccessToast(
+        message = "Cuenta cancelada", onDismiss = { cuentaCancelada = false })
 }
 
 /**
@@ -193,6 +199,7 @@ internal fun applyInitialStatusFilter(viewModel: OrdersViewModel, initialStatusF
 private fun TabletOrdersLayout(
     viewModel: OrdersViewModel,
     onDismiss: () -> Unit,
+    onCuentaCancelada: () -> Unit,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val listWidth = maxWidth * 0.4f
@@ -219,10 +226,48 @@ private fun TabletOrdersLayout(
             // Right panel: detail (60%)
             OrderDetailPanel(
                 viewModel = viewModel,
+                onCuentaCancelada = onCuentaCancelada,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
             )
+        }
+    }
+}
+
+internal enum class HostDelDetalle { TELEFONO, TABLETA }
+
+internal sealed interface EstadoDelDetalle {
+    data object Lista : EstadoDelDetalle
+    data object Vacio : EstadoDelDetalle
+    data object Cargando : EstadoDelDetalle
+    data class Detalle(val pedido: OrderDetail) : EstadoDelDetalle
+    data class Fallo(val mensaje: String) : EstadoDelDetalle
+}
+
+internal fun estadoDelDetalle(
+    host: HostDelDetalle,
+    selectedOrderId: String?,
+    isLoadingDetail: Boolean,
+    selectedOrder: OrderDetail?,
+    errorMessage: String?,
+): EstadoDelDetalle = when {
+    selectedOrderId == null -> if (host == HostDelDetalle.TELEFONO) EstadoDelDetalle.Lista else EstadoDelDetalle.Vacio
+    isLoadingDetail -> EstadoDelDetalle.Cargando
+    selectedOrder?.id == selectedOrderId -> EstadoDelDetalle.Detalle(selectedOrder)
+    else -> EstadoDelDetalle.Fallo(errorMessage ?: "No se pudo cargar el pedido")
+}
+
+@Composable
+private fun FalloDelDetalle(mensaje: String, onReintentar: () -> Unit, onBack: (() -> Unit)? = null) {
+    Column(Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg)) {
+        if (onBack != null) CircleBackButton(onClick = onBack)
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
+                Text(mensaje, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+                PrimaryButton(text = "Reintentar", onClick = onReintentar)
+            }
         }
     }
 }
@@ -233,34 +278,51 @@ private fun TabletOrdersLayout(
 private fun PhoneOrdersLayout(
     viewModel: OrdersViewModel,
     onDismiss: () -> Unit,
+    onCuentaCancelada: () -> Unit,
 ) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
+    val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
-    if (selectedOrderId != null && selectedOrder != null) {
-        // Show detail full screen on phone
-        OrderDetailView(
-            order = selectedOrder!!,
-            onBack = { viewModel.clearSelection() },
-            modifier = Modifier.fillMaxSize(),
-            isReimprimiendoComanda = isReimprimiendoComanda,
-            mensajeDeReimpresion = mensajeDeReimpresion,
-            onReimprimirComanda = { viewModel.reimprimirComanda(selectedOrder!!.id) },
-        )
-    } else if (selectedOrderId != null && selectedOrder == null) {
-        // Loading detail
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            AvoqadoBrandLoader(size = 72.dp)
+    when (val estado = estadoDelDetalle(HostDelDetalle.TELEFONO, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage)) {
+        is EstadoDelDetalle.Detalle -> {
+            val pedido = estado.pedido
+            // Show detail full screen on phone
+            if (pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID) {
+                com.avoqado.pos.giftcards.presentation.CuentaDeTarjetasScreen(pedido.id,onSalir={
+                    viewModel.clearSelection();viewModel.invalidateAndRefresh()
+                })
+            } else OrderDetailView(
+                order = pedido,
+                onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                onCuentaCancelada = onCuentaCancelada,
+                onBack = { viewModel.clearSelection() },
+                modifier = Modifier.fillMaxSize(),
+                isReimprimiendoComanda = isReimprimiendoComanda,
+                mensajeDeReimpresion = mensajeDeReimpresion,
+                onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
+            )
         }
-    } else {
-        OrderListView(
-            viewModel = viewModel,
-            isTablet = false,
-            onBack = onDismiss,
-            modifier = Modifier.fillMaxSize(),
-        )
+        EstadoDelDetalle.Cargando -> {
+            // Loading detail
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                AvoqadoBrandLoader(size = 72.dp)
+            }
+        }
+        is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
+            onReintentar = { selectedOrderId?.let(viewModel::selectOrder) },
+            onBack = viewModel::clearSelection)
+        else -> {
+            OrderListView(
+                viewModel = viewModel,
+                isTablet = false,
+                onBack = onDismiss,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 
@@ -403,33 +465,45 @@ private fun OrderListView(
 @Composable
 private fun OrderDetailPanel(
     viewModel: OrdersViewModel,
+    onCuentaCancelada: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
+    val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
     Box(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
     ) {
-        when {
-            isLoadingDetail -> {
+        when (val estado = estadoDelDetalle(HostDelDetalle.TABLETA, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage)) {
+            EstadoDelDetalle.Cargando -> {
                 AvoqadoBrandLoader(
                     modifier = Modifier.align(Alignment.Center),
                     size = 72.dp,
                 )
             }
-            selectedOrder != null -> {
-                OrderDetailView(
-                    order = selectedOrder!!,
+            is EstadoDelDetalle.Detalle -> {
+                val pedido = estado.pedido
+                if (pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID) {
+                    com.avoqado.pos.giftcards.presentation.CuentaDeTarjetasScreen(pedido.id,onSalir={
+                        viewModel.clearSelection();viewModel.invalidateAndRefresh()
+                    })
+                } else OrderDetailView(
+                    order = pedido,
+                    onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                    onCuentaCancelada = onCuentaCancelada,
                     onBack = null,
                     modifier = Modifier.fillMaxSize(),
                     isReimprimiendoComanda = isReimprimiendoComanda,
                     mensajeDeReimpresion = mensajeDeReimpresion,
-                    onReimprimirComanda = { viewModel.reimprimirComanda(selectedOrder!!.id) },
+                    onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                 )
             }
+            is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
+                onReintentar = { selectedOrderId?.let(viewModel::selectOrder) })
             else -> {
                 // Empty state (tablet right panel)
                 Column(
@@ -460,6 +534,8 @@ private fun OrderDetailPanel(
 fun OrderDetailView(
     order: OrderDetail,
     onBack: (() -> Unit)?,
+    onCuentaActualizada: () -> Unit,
+    onCuentaCancelada: () -> Unit,
     modifier: Modifier = Modifier,
     // Reimpresión de comanda (mostrador, Task 6) — defaults para no romper otros
     // llamadores: sin `onReimprimirComanda` la sección simplemente no se dibuja.
@@ -489,7 +565,7 @@ fun OrderDetailView(
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
             }
             Text(
-                text = "Pedido #${order.orderNumber}",
+                text = if (order.esCuentaDeTarjetas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.NOMBRE_EN_CUENTAS else "Pedido #${order.orderNumber}",
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
@@ -510,6 +586,7 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
+            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada)
 
             // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
             // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.
@@ -965,6 +1042,12 @@ private fun OrderRow(
     isSelected: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val diario: com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel = hiltViewModel(key = "diario-cuentas-abiertas")
+    val solicitudes by diario.solicitudes.collectAsState()
+    val porTerminar = order.status !in listOf("CANCELLED", "DELETED") && order.orderPaymentStatus != PaymentStatus.PAID &&
+        ((order.cobrosConSaldo ?: 0) >= 1 || solicitudes.any {
+            it.venueId == diario.venueActual && it.orderId == order.id && it.porTerminar
+        })
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1006,7 +1089,7 @@ private fun OrderRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "#${order.orderNumber}",
+                    text = if (order.esCuentaDeTarjetas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.NOMBRE_EN_CUENTAS else "#${order.orderNumber}",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -1031,7 +1114,7 @@ private fun OrderRow(
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = order.formattedTotal,
+                    text = if (porTerminar) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.POR_TERMINAR else order.formattedTotal,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

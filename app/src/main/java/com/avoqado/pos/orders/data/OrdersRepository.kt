@@ -40,6 +40,7 @@ class OrdersRepository @Inject constructor(
 
     private val _selectedOrder = MutableStateFlow<OrderDetail?>(null)
     val selectedOrder: StateFlow<OrderDetail?> = _selectedOrder.asStateFlow()
+    private var detalleSolicitado: Pair<String, Any>? = null
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -204,24 +205,30 @@ class OrdersRepository @Inject constructor(
     }
 
     suspend fun loadOrderDetail(orderId: String) {
+        val solicitud = orderId to Any()
+        detalleSolicitado = solicitud
         _isLoadingDetail.value = true
         _errorMessage.value = null
 
         try {
             val detail = fetchOrderDetail(orderId)
+            if (detalleSolicitado != solicitud) return
             _selectedOrder.value = detail
             if (detail == null) {
                 _errorMessage.value = "No se encontró la orden"
             }
         } catch (e: Exception) {
+            if (detalleSolicitado != solicitud) return
             Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
             _errorMessage.value = "Error al cargar detalle de orden"
         } finally {
-            _isLoadingDetail.value = false
+            if (detalleSolicitado == solicitud) _isLoadingDetail.value = false
         }
     }
 
     fun clearSelectedOrder() {
+        detalleSolicitado = null
         _selectedOrder.value = null
+        _isLoadingDetail.value = false
     }
 }

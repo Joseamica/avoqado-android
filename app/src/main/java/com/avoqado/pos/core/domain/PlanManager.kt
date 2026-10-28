@@ -105,6 +105,8 @@ class PlanManager @Inject constructor(
         // Todo código que la app consulte con hasFeature() TIENE que estar aquí: uno ausente
         // se permite en cualquier plan. PlanManagerTest barre el código fuente y lo exige.
         val FEATURE_REQUIRED_TIER: Map<String, PlanTier> = mapOf(
+            // Sólo para la etiqueta Pro: quién vende lo decide settings.sale del servidor.
+            "GIFT_CARDS" to PlanTier.PRO,
             "RESERVATIONS" to PlanTier.PRO,
             "PROMOTIONS" to PlanTier.PRO,
             "REFERRAL_PROGRAM" to PlanTier.PRO,

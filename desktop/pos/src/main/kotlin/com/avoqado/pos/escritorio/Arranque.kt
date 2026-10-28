@@ -70,6 +70,7 @@ object Arranque {
         VenueTimeZone.set(inyector.getInstance(SecureStorage::class.java).venueTimezone)
         inyector.getInstance(ReservationActionsRetrier::class.java).start(appScope)
         inyector.getInstance(CancelacionDeCobroCoordinator::class.java).start()
+        inyector.getInstance(com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta::class.java).start()
         // «La impresora que se encuentra sola» (Android 3cef2f4, 2-oct): al abrir, al volver la red y cada 10 min revisa que
         // cada impresora de red siga en su dirección y avisa al servidor si se movió. En Windows corre igual (red 9100).
         inyector.getInstance(VigilanteDeImpresoras::class.java).start()

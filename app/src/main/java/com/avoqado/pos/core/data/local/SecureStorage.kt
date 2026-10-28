@@ -278,6 +278,13 @@ class SecureStorage @Inject constructor(
             prefs.edit().putString(KEY_VENUE_PERMISSIONS, json.encodeToString(value)).apply()
         }
 
+    /** Ajustes sin secretos por negocio; "null" distingue un 404 de una caché que nunca existió. */
+    fun leerAjustesDeTarjetas(venueId: String): String? = plainPrefs.getString("giftCardSettings.$venueId", null)
+
+    fun guardarAjustesDeTarjetas(venueId: String, json: String?) {
+        plainPrefs.edit().putString("giftCardSettings.$venueId", json ?: "null").apply()
+    }
+
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_ACCESS_TOKEN, value).apply()
@@ -355,6 +362,31 @@ class SecureStorage @Inject constructor(
     }
 
     // MARK: - Biometric Data (NOT cleared on logout)
+
+    private var solicitudesCargadas = false
+    private var solicitudesConfirmadas: String? = null
+    private var respaldoSolicitudesConfirmado: String? = null
+    val giftCardRequestsJson: String?
+        @Synchronized get() {
+            if (!solicitudesCargadas) {
+                solicitudesConfirmadas = prefs.getString(KEY_GIFT_CARD_REQUESTS, null)
+                respaldoSolicitudesConfirmado = prefs.getString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, null)
+                solicitudesCargadas = true
+            }
+            return solicitudesConfirmadas
+        }
+    @Synchronized
+    fun escribirSolicitudesDeTarjeta(nueva: (String?) -> String?): Boolean {
+        val raw = giftCardRequestsJson
+        val siguiente = nueva(raw) ?: return false
+        val editor = prefs.edit().putString(KEY_GIFT_CARD_REQUESTS, siguiente)
+        val ilegible = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.ilegible(raw)
+        ilegible?.let { editor.putString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, it) }
+        if (!editor.commit()) return false
+        solicitudesConfirmadas = siguiente
+        if (ilegible != null) respaldoSolicitudesConfirmado = ilegible
+        return true
+    }
 
     var isBiometricLoginEnabled: Boolean
         get() = plainPrefs.getBoolean(KEY_BIOMETRIC_ENABLED, false)
@@ -621,14 +653,22 @@ class SecureStorage @Inject constructor(
             .apply()
     }
 
+    @Synchronized
     fun clearAll() {
+        val solicitudes = giftCardRequestsJson
+        val respaldo = respaldoSolicitudesConfirmado
         clearSession()
         clearBiometricCredentials()
-        prefs.edit().clear().apply()
+        prefs.edit().clear().apply {
+            solicitudes?.let { putString(KEY_GIFT_CARD_REQUESTS, it) }
+            respaldo?.let { putString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, it) }
+        }.commit()
         plainPrefs.edit().clear().apply()
     }
 
     companion object {
+        private const val KEY_GIFT_CARD_REQUESTS = "giftCardRequests"
+        private const val KEY_GIFT_CARD_REQUESTS_ILEGIBLE = "giftCardRequestsIlegible"
         // Session
         private const val KEY_USER_ID = "userId"
         private const val KEY_USER_EMAIL = "userEmail"

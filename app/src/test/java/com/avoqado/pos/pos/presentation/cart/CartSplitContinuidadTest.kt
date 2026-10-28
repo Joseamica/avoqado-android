@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.cart
 
+import com.avoqado.pos.giftcards.domain.aCartState
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -720,4 +721,147 @@ class CartSplitContinuidadTest {
         // venta sí lo lleva.
         assertEquals("Cliente", vm.selectedCustomer.value?.name)
     }
+    @Test fun marcaAntesDelPostYSoloLaLimpiaRespuestaDeSuLlave() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount("Venta", 10000)
+        val id = vm.cartState.value.identidadDeVenta
+        vm.marcarCreacionIncierta("otra-venta", "ajena")
+        assertNull(vm.cartState.value.creacionIncierta)
+        vm.marcarCreacionIncierta(id, "propia")
+        assertEquals("propia", vm.cartState.value.creacionIncierta)
+        vm.limpiarCreacionIncierta("ajena")
+        assertEquals("propia", vm.cartState.value.creacionIncierta)
+        vm.limpiarCreacionIncierta("propia")
+        assertNull(vm.cartState.value.creacionIncierta)
+    }
+
+    @Test fun parcialConservaIdentidadT4YOrigenGuardado() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(SavedCart(id = "copia", name = "Venta", items = listOf(SavedCartItem(productId = null, name = "Venta", unitPrice = 10000, quantity = 1))))
+        val id = vm.cartState.value.identidadDeVenta
+        vm.marcarCreacionIncierta(id, "creacion")
+        vm.aplicarCobroConfirmado(null, emptySet(), 4000)
+        assertEquals(id, vm.cartState.value.identidadDeVenta)
+        assertEquals("creacion", vm.cartState.value.creacionIncierta)
+        assertTrue(vm.cartState.value.vinoDeCarritoGuardado)
+        assertNull(vm.cartState.value.carritoGuardadoId)
+        vm.finalizarVenta()
+        assertFalse(vm.cartState.value.vinoDeCarritoGuardado)
+        assertNull(vm.cartState.value.creacionIncierta)
+    }
+
+    @Test fun restaurarFotoSoloVacioConIdentidadNuevaSinVinculo() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount("Venta", 10000)
+        vm.setSelectedCustomer("cliente", "Nombre")
+        val id = vm.cartState.value.identidadDeVenta
+        val foto = vm.fotoDeLaVenta()
+        assertEquals(10000, foto.aCartState().totalCents)
+        assertFalse(vm.restaurarFoto(foto))
+        vm.clearCart()
+        vm.markPendingSplitOrder("vieja")
+        assertTrue(vm.restaurarFoto(foto))
+        assertEquals(10000, vm.cartState.value.totalCents)
+        assertTrue(vm.cartState.value.identidadDeVenta != id)
+        assertNull(vm.resolvePendingSplitOrderForCharge())
+        assertEquals("cliente", vm.selectedCustomer.value?.id)
+    }
+
+    private fun createPayLaterViewModel(repository: OrderRepository): CartViewModel = CartViewModel(
+        productsRepository = productsRepository,
+        discountsRepository = discountsRepository,
+        savedCartsRepository = savedCartsRepository,
+        authRepository = authRepository,
+        secureStorage = secureStorage,
+        activeCartState = mockk<ActiveCartState>(relaxed = true),
+        orderRepository = repository,
+        staffRepository = staffRepository,
+        classCheckoutSeed = mockk<ClassCheckoutSeed>(relaxed = true).also { every { it.consume() } returns null },
+        validateReferralUseCase = mockk(relaxed = true),
+        captureReferralUseCase = mockk(relaxed = true),
+        planManager = PlanManager(secureStorage),
+        tableSession = com.avoqado.pos.tables.data.TableSession(),
+        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+        areaTicketRepository = mockk(relaxed = true),
+        walletScanRepository = mockk(relaxed = true),
+    )
+
+    @Test fun pagarDespuesSiNoSueltaCNoMarcaNiCrea() = runTest {
+        val repository = mockk<OrderRepository>(relaxed = true)
+        coEvery { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(Exception("rechazo"))
+        val vm = createPayLaterViewModel(repository)
+        vm.restoreSavedCart(SavedCart(id = "copia", name = "Venta", items = listOf(SavedCartItem(productId = "p", name = "Venta", unitPrice = 10000, quantity = 1))))
+        every { savedCartsRepository.deleteCart("copia") } returns false
+        assertTrue(vm.createPayLaterOrder("cliente").isFailure)
+        assertEquals("copia", vm.cartState.value.carritoGuardadoId)
+        assertNull(vm.cartState.value.creacionIncierta)
+        io.mockk.coVerify(exactly = 0) { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun pagarDespuesSueltaCMarcaAntesDelPostYRechazoDefinitivoLimpia() = runTest {
+        val repository = mockk<OrderRepository>()
+        val vm = createPayLaterViewModel(repository)
+        vm.restoreSavedCart(SavedCart(id = "copia", name = "Venta", items = listOf(SavedCartItem(productId = "p", name = "Venta", unitPrice = 10000, quantity = 1))))
+        every { savedCartsRepository.deleteCart("copia") } returns true
+        var enviado = false
+        coEvery { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            enviado = true
+            assertNull(vm.cartState.value.carritoGuardadoId)
+            assertFalse(vm.cartState.value.vinoDeCarritoGuardado)
+            assertEquals(arg<String>(4), vm.cartState.value.creacionIncierta)
+            Result.failure(OrderRepository.ServerException(403,"rechazo"))
+        }
+        assertTrue(vm.createPayLaterOrder("cliente").isFailure)
+        assertTrue(enviado)
+        assertNull(vm.cartState.value.creacionIncierta)
+        assertNull(vm.cartState.value.carritoGuardadoId)
+        assertFalse(vm.cartState.value.vinoDeCarritoGuardado)
+        assertEquals(10000, vm.cartState.value.totalCents)
+    }
+
+    @Test fun pagarDespuesRespuestaSinIdYTimeoutConservanSuLlave() = runTest {
+        for (sinRespuesta in listOf(true, false)) {
+            val repository = mockk<OrderRepository>()
+            val vm = createPayLaterViewModel(repository)
+            vm.addCustomAmount("Venta", 10000)
+            var llave: String? = null
+            coEvery { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+                llave = arg<String>(4)
+                if (sinRespuesta) Result.failure(java.net.SocketTimeoutException())
+                else Result.success(com.avoqado.pos.payment.data.model.CreateOrderResponse())
+            }
+            assertTrue(vm.createPayLaterOrder("cliente").isFailure)
+            assertNotNull(llave)
+            assertEquals(llave, vm.cartState.value.creacionIncierta)
+        }
+    }
+
+    @Test fun entregaSinConfirmarNoSeVaciaNiSeGuardaNiPagaDespues() = runTest {
+        val vm = createViewModel(); vm.addCustomAmount("Venta", 10000)
+        val antes = vm.cartState.value
+        val fila = com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo="GIFT_CARD_REDEEM",llave="entrega",
+            venueId="venue-1",creadaEn=1,cuerpo="",nuevaCuenta=true,porRecuperar=true,foto="{}")
+        val raw = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservarEntrega(
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.agregar(null,fila),"entrega")
+        assertNotNull(raw)
+        every { secureStorage.giftCardRequestsJson } returns raw
+        vm.clearCart()
+        assertEquals("No debe vaciar una entrega pendiente", antes, vm.cartState.value)
+        assertFalse(vm.saveCurrentCart())
+        assertTrue(vm.createPayLaterOrder("cliente").isFailure)
+        assertEquals(antes,vm.cartState.value)
+    }
+
+    @Test fun entregaSinConfirmarNoSueltaElCliente() = runTest {
+        val vm = createViewModel(); vm.addCustomAmount("Venta",10000); vm.setSelectedCustomer("cliente","Ana")
+        val antes = vm.selectedCustomer.value
+        val fila = com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo="GIFT_CARD_REDEEM",llave="entrega",
+            venueId="venue-1",creadaEn=1,cuerpo="",nuevaCuenta=true,porRecuperar=true,foto="{}")
+        val raw=com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservarEntrega(
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.agregar(null,fila),"entrega")
+        every { secureStorage.giftCardRequestsJson } returns raw
+        vm.finalizarVenta()
+        assertEquals("Una salida bloqueada conserva también al cliente",antes,vm.selectedCustomer.value)
+    }
+
 }

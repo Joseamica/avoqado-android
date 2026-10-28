@@ -910,6 +910,7 @@ class OrderRequestPromotionTest {
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
         every { savedCartsRepository.savedCarts } returns MutableStateFlow<List<SavedCart>>(emptyList())
+        every { savedCartsRepository.deleteCart("saved-1") } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
         every { authRepository.venueSwitched } returns venueSwitchedFlow
         every { classCheckoutSeed.consume() } returns null

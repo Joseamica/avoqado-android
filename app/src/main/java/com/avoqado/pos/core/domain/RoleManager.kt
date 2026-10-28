@@ -225,6 +225,11 @@ class RoleManager @Inject constructor(
     val canConfigureTables: Boolean
         get() = hasVenuePermission("tables:configure", fallbackRoles = MANAGER_UP)
 
+    val canReadGiftCards: Boolean get() = hasVenuePermission("giftCards:read", GIFT_CARDS_PISO)
+    val canSellGiftCards: Boolean get() = hasVenuePermission("giftCards:sell", GIFT_CARDS_PISO)
+    val canRedeemGiftCards: Boolean get() = hasVenuePermission("giftCards:redeem", GIFT_CARDS_PISO)
+    val canManageGiftCards: Boolean get() = hasVenuePermission("giftCards:manage", MANAGER_UP)
+
     /**
      * Resolver la CUARENTENA de sincronización: MANAGER, ADMIN, OWNER, SUPERADMIN
      *
@@ -370,6 +375,7 @@ class RoleManager @Inject constructor(
     }
 
     private companion object {
+        val GIFT_CARDS_PISO = setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
         /** El respaldo histórico de todo lo administrativo. */
         val MANAGER_UP = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 

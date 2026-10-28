@@ -43,6 +43,7 @@ object PaymentMethodDisplay {
             "DIGITAL_WALLET" -> "Cartera digital"
             "BANK_TRANSFER", "TRANSFER" -> "Transferencia"
             "CRYPTOCURRENCY" -> "Criptomoneda"
+            "GIFT_CARD" -> "Tarjeta de regalo"
             "OTHER" -> "Otro"
             null -> "—"
             else -> method.replace("_", " ").replaceFirstChar { it.uppercase() }
@@ -126,6 +127,8 @@ data class Transaction(
      */
     val orderType: String? = null,
     val tableNumber: String? = null,
+    val refundToGiftCardBalance: Boolean? = null,
+    val esSaldoDeTarjeta: Boolean? = null,
 ) {
     val paymentMethod: String? get() = method
 
@@ -139,7 +142,7 @@ data class Transaction(
 
     /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. */
     val methodDescription: String
-        get() = PaymentMethodDisplay.label(method, cardBrand, maskedPan)
+        get() = if (esSaldoDeTarjeta == true) "Tarjeta de regalo" else PaymentMethodDisplay.label(method, cardBrand, maskedPan)
 
     val statusDisplay: String
         get() = when (status) {

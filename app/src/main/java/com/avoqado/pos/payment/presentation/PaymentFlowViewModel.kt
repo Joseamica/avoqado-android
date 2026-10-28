@@ -1,5 +1,8 @@
 package com.avoqado.pos.payment.presentation
 
+import com.avoqado.pos.giftcards.data.*
+import com.avoqado.pos.giftcards.domain.*
+import kotlinx.serialization.json.*
 import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
 import com.avoqado.pos.payment.domain.CajonDeDinero
 import android.util.Log
@@ -78,6 +81,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import com.avoqado.pos.pos.data.model.CambioDePrecio
 import com.avoqado.pos.pos.data.model.MENSAJE_RESERVA_SIN_RETIRAR
@@ -88,6 +92,7 @@ import javax.inject.Inject
 data class PaymentCompletion(
     val splitType: String,
     val remainingBalanceCents: Int,
+    val conSaldo: Boolean = false,
     val paidItemIds: Set<String> = emptySet(),
     /**
      * La orden que quedó cobrada, cuando la hubo (una venta rápida sin orden la
@@ -172,7 +177,29 @@ class PaymentFlowViewModel @Inject constructor(
      * Guice en Windows) inyecta siempre el singleton real.
      */
     private val refrescoDelCatalogo: com.avoqado.pos.pos.data.RefrescoDelCatalogo? = null,
+    private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
+    private val cobroConSaldo: com.avoqado.pos.giftcards.data.CobroConSaldoCoordinator? = null,
+    private val tarjetasRepository: com.avoqado.pos.giftcards.data.GiftCardsRepository? = null,
+    private val rolesDeSaldo: com.avoqado.pos.core.domain.RoleManager? = null,
+    private val cobrosLocalesDeSaldo: com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta? = null,
 ) : ViewModel() {
+    private val cuentaDeTarjetas = MutableStateFlow(false)
+    val metodosHabilitados: StateFlow<Boolean> by lazy {
+        combine(cuentaDeTarjetas, connectivityMonitor?.isConnected ?: flowOf(false),
+            connectivityMonitor?.isServerReachable ?: flowOf(false)) { cuenta, ruta, servidor ->
+            !cuenta || (ruta && servidor)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, !cuentaDeTarjetas.value ||
+            (connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value))
+    }
+
+    private fun bloquearCuentaSinRed(): Boolean {
+        if (bloqueoDelSaldoActual()) return true
+        if (!cuentaDeTarjetas.value || (connectivityMonitor?.isConnected?.value == true &&
+                connectivityMonitor.isServerReachable.value)) return false
+        _state.value = PaymentFlowState.Error(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED,
+            PaymentErrorSource.NETWORK)
+        return true
+    }
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
     val state: StateFlow<PaymentFlowState> = _state.asStateFlow()
@@ -588,6 +615,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        desvincularRecuperacionDeFoto?.invoke()
+        desvincularRecuperacionDeFoto = null
         // La pantalla se fue con un cobro en efectivo en vuelo: el desenlace es incierto, así que se
         // queda guardado y aparece «sin confirmar» en vez de esconderse hasta reiniciar la app.
         reservaDeEfectivo?.let { cashPaymentRepository.olvidarReservaEnMemoria(it) }
@@ -1331,12 +1360,288 @@ class PaymentFlowViewModel @Inject constructor(
      *   perderlo es exactamente el bug que esto cierra. Lo resuelve el carrito,
      *   que es el dueño de la venta (`CartViewModel.resolvePendingSplitOrderForCharge`).
      */
+    private var ventaVivaDeSaldo: (() -> CartState)? = null
+    private var fotoDeSaldo: (() -> com.avoqado.pos.giftcards.domain.FotoDeLaVenta)? = null
+    private var vaciarDeSaldo: (() -> Unit)? = null
+    private var restaurarDeSaldo: ((com.avoqado.pos.giftcards.domain.FotoDeLaVenta) -> CartState?)? = null
+    private var desdeCuentasDeSaldo = false
+    private var alRestaurarSnapshotDeSaldo: (CartState) -> Unit = {}
+    private var ultimoCobroConSaldo: CobroConSaldo? = null
+    val cuentaDelResultadoDeSaldo: String? get() = ultimoCobroConSaldo?.orderId
+    val llaveDeLaSolicitudDeSaldo: String? get() = llaveDelSaldo
+    fun configurarSaldo(ventaViva: () -> CartState, foto: (() -> com.avoqado.pos.giftcards.domain.FotoDeLaVenta)? = null,
+        vaciar: (() -> Unit)? = null, restaurar: ((com.avoqado.pos.giftcards.domain.FotoDeLaVenta) -> CartState?)? = null, desdeCuentas: Boolean = false,
+        alRestaurarSnapshot: (CartState) -> Unit = {}) {
+        ventaVivaDeSaldo = ventaViva; fotoDeSaldo = foto; vaciarDeSaldo = vaciar; restaurarDeSaldo = restaurar; desdeCuentasDeSaldo = desdeCuentas
+        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot
+    }
+    private var desvincularRecuperacionDeFoto: (() -> Unit)? = null
+    private var otrosDuenosPermitenCobrar: () -> Boolean = { true }
+    private var restaurandoFotoDeEsteCobro = false
+    private var aperturaInvalidadaPorFoto = false
+
+    fun vincularRecuperacionDeFoto(registrar: ((() -> Boolean, () -> Boolean, () -> Unit) -> Pair<() -> Unit, () -> Boolean>)?) {
+        desvincularRecuperacionDeFoto?.invoke()
+        val dueno = java.lang.ref.WeakReference(this)
+        val vinculo = registrar?.invoke({ dueno.get()?.puedeSoltarLaFoto() ?: true },
+            { dueno.get()?.puedeEmpezarOtroCobro() ?: true }, { dueno.get()?.invalidarPorFotoRecuperada() })
+        desvincularRecuperacionDeFoto = vinculo?.first
+        otrosDuenosPermitenCobrar = vinculo?.second ?: { true }
+    }
+
+    private fun dineroEnCurso(): Boolean = isProcessingPayment || cobrandoSaldo || saldoEnVuelo.value ||
+        reservaDeEfectivo != null || llavePorRetirar != null || undeterminedRequestId != null
+
+    private fun esDuenoLocalDeFotoT1(): Boolean = viewModelScope.isActive && venueDelSaldo == secureStorage.venueId &&
+        createdOrderId == null && cartState?.let(::hasProductItems) == true
+
+    // Tener orden permite recuperar otra foto, pero no iniciar otro cobro sobre los mismos artículos.
+    private fun puedeSoltarLaFoto(): Boolean = restaurandoFotoDeEsteCobro || !esDuenoLocalDeFotoT1() || !dineroEnCurso()
+
+    private fun puedeEmpezarOtroCobro(): Boolean = !viewModelScope.isActive || venueDelSaldo != secureStorage.venueId ||
+        cartState?.identidadDeVenta != ventaVivaDeSaldo?.invoke()?.identidadDeVenta || !dineroEnCurso()
+
+    private fun invalidarPorFotoRecuperada() {
+        if (restaurandoFotoDeEsteCobro || !esDuenoLocalDeFotoT1()) return
+        paymentGeneration++
+        aperturaEnCurso = null; aperturaInvalidadaPorFoto = true; completionConsumed = true
+        cartState = null; createdOrderId = null; createdOrderNumber = null; paymentIdempotencyKey = null
+        llaveDelSaldo = null
+        _state.value = PaymentFlowState.Error(TextosDeTarjetas.NO_SE_PUDO_RECUPERAR, PaymentErrorSource.SERVER)
+    }
+
+    private var regresoDeSaldo: Triple<String, String, String>? = null
+    private var regresandoSaldo = false
+    private var mesaDelRegreso: Pair<com.avoqado.pos.tables.data.TableSession.Active, Long>? = null
+    fun ofreceRegresarSaldo(cobrosConSaldo: Int, pagada: Boolean): Boolean =
+        cobrosConSaldo > 0 && !pagada && rolesDeSaldo?.canRedeemGiftCards == true
+    fun prepararRegresoDeSaldo(orderId: String, cobrosConSaldo: Int, pagada: Boolean): Boolean {
+        if (regresandoSaldo || orderId.isBlank() || !ofreceRegresarSaldo(cobrosConSaldo, pagada)) return false
+        val venue = secureStorage.venueId ?: return false
+        regresoDeSaldo = Triple(venue, orderId, java.util.UUID.randomUUID().toString())
+        mesaDelRegreso = tableSession.current()?.takeIf { it.orderId == orderId }?.let { it to tableSession.contextoActual() }
+        _cancelFailure.value = null
+        return true
+    }
+    suspend fun regresarSaldoYCancelar(): Boolean {
+        val (venue, orderId, key) = regresoDeSaldo ?: return false
+        if (regresandoSaldo || secureStorage.venueId != venue || rolesDeSaldo?.canRedeemGiftCards != true) return false
+        mesaDelRegreso?.let { (original, epoch) ->
+            val actual = tableSession.current()
+            if (tableSession.contextoActual() != epoch || actual?.tableId != original.tableId ||
+                actual.orderId != original.orderId) return false
+        }
+        if (connectivityMonitor?.isConnected?.value != true || connectivityMonitor.isServerReachable.value != true) {
+            _cancelFailure.value = TextosDeTarjetas.SIN_RED; return false
+        }
+        if (cobroConSaldo?.cuentaTrabada(orderId) == true) { _cancelFailure.value = TextosDeTarjetas.COMPROBANDO_COBRO; return false }
+        regresandoSaldo = true
+        return try {
+            when (val r = tarjetasRepository?.regresarSaldoYCancelar(venue, orderId, key)) {
+                is Respuesta.Ok -> { regresoDeSaldo = null; secureStorage.venueId == venue }
+                is Respuesta.Rechazo -> { _cancelFailure.value = when {
+                    r.fallo.http == 404 -> TextosDeTarjetas.CUENTA_NO_ENCONTRADA
+                    r.fallo.http == 403 -> TextosDeTarjetas.SIN_PERMISO_COBRAR
+                    else -> r.fallo.message ?: TextosDeTarjetas.SIN_RED
+                }; false }
+                else -> { _cancelFailure.value = TextosDeTarjetas.SIN_RED; false }
+            }
+        } finally { regresandoSaldo = false }
+    }
+
+    private var venueDelSaldo: String? = null
+    private var cobrandoSaldo = false
+    private var llaveDelSaldo: String? = null
+    private var volverAIntentarSaldoEn = 0L
+    private val resultadoDeSaldo = MutableStateFlow<DesenlaceDeCobro?>(null)
+    val desenlaceDeSaldo = resultadoDeSaldo.asStateFlow()
+    fun descartarSaldoInsuficienteAlIdentificar() {
+        // El 409 no identifica tarjeta; una identificación fresca no debe heredar ese saldo.
+        if (resultadoDeSaldo.value is DesenlaceDeCobro.SaldoInsuficiente) resultadoDeSaldo.value = null
+    }
+    private val saldoEnVuelo = MutableStateFlow(false)
+    val procesandoSaldo = saldoEnVuelo.asStateFlow()
+    private val filaDeSaldo = MutableStateFlow(ConductaDeTarjeta(FilaDeLaCaja.T12,false,false,null))
+    val conductaDelSaldo = filaDeSaldo.asStateFlow()
+    val conexionDelSaldo: StateFlow<Boolean> = connectivityMonitor?.isConnected ?: MutableStateFlow(false)
+    val servidorDelSaldo: StateFlow<Boolean> = connectivityMonitor?.isServerReachable ?: MutableStateFlow(false)
+    init {
+        viewModelScope.launch {
+            combine(conexionDelSaldo, servidorDelSaldo) { _, _ -> Unit }.collect { actualizarFilaDeSaldo() }
+        }
+    }
+    private fun ajustesParaSaldo(): EstadoDeAjustes = secureStorage.venueId?.let { secureStorage.leerAjustesDeTarjetas(it) }?.let {
+        if (it == "null") EstadoDeAjustes.NoDisponible else runCatching { EstadoDeAjustes.Disponible(GiftCardsApi.parsearAjustes(it)) }.getOrNull()
+    } ?: EstadoDeAjustes.Desconocido
+    suspend fun conductaDeSaldo(): ConductaDeTarjeta {
+        val cart = ventaVivaDeSaldo?.invoke() ?: cartState ?: return ConductaDeTarjeta(FilaDeLaCaja.T12,false,false,null)
+        val id = createdOrderId
+        val venue = secureStorage.venueId
+        val pendiente = if (venue != null && id != null) try { cobrosLocalesDeSaldo?.hayPendiente(venue,id) ?: true }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true } else false
+        return estadoDeLaVenta(ajustesParaSaldo(),
+            connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value,
+            rolesDeSaldo?.canRedeemGiftCards == true,cuentaDeTarjetas.value,
+            cart.items.any { it.areaTicketId != null },cart.items.any { it.type is CartItemType.CreditPack },
+            id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.isProvisional == true,
+            cart.creacionIncierta != null,cart.vinoDeCarritoGuardado,cobroConSaldo?.cuentaTrabada(id) == true,
+            mesaDelCobro != null,desdeCuentasDeSaldo,id != null,pendiente,
+            rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true)
+    }
+    suspend fun abrirSaldoDesdeConsultar(tarjeta: TarjetaIdentificada, onAbrir: (TarjetaIdentificada) -> Unit): Boolean {
+        val fila = conductaDeSaldo()
+        filaDeSaldo.value = fila
+        if (!fila.habilitada || !tarjeta.tarjeta.usable || venueDelSaldo != secureStorage.venueId) return false
+        onAbrir(tarjeta)
+        return true
+    }
+    suspend fun actualizarFilaDeSaldo(refrescar: Boolean = false) {
+        val venue = secureStorage.venueId
+        if (refrescar && venue != null && connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value)
+            tarjetasRepository?.refrescarAjustes(venue)
+        if (venue == secureStorage.venueId) filaDeSaldo.value = conductaDeSaldo()
+    }
+    suspend fun cobrarConSaldo(identificada: TarjetaIdentificada, montoCents: Int): DesenlaceDeCobro {
+        if (bloqueoDeEntregaDeSaldo()) return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_RECUPERAR).also { resultadoDeSaldo.value = it }
+        if (!otrosDuenosPermitenCobrar()) return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.COMPROBANDO_COBRO).also { resultadoDeSaldo.value = it }
+        if (cobrandoSaldo || llaveDelSaldo != null) return resultadoDeSaldo.value ?: DesenlaceDeCobro.Incierto
+        cobrandoSaldo = true; saldoEnVuelo.value = true
+        val venue = venueDelSaldo
+        val epoch = paymentGeneration
+        try {
+            val fila = conductaDeSaldo()
+            if (!fila.habilitada) return DesenlaceDeCobro.NoSalio(fila.motivo ?: TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
+                .also { resultadoDeSaldo.value = it }
+            if (venue == null || venue != secureStorage.venueId || epoch != paymentGeneration)
+                return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO).also {resultadoDeSaldo.value=it}
+            val snapshot = cartState ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
+            if (ventaVivaDeSaldo?.invoke()?.let { it != snapshot } == true)
+                return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO).also {resultadoDeSaldo.value=it}
+            val monto = montoParaSaldo(identificada)
+            if (!identificada.tarjeta.usable || montoCents <= 0 || montoCents > monto.montoCents)
+                return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO).also {resultadoDeSaldo.value=it}
+            val coordinator = cobroConSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
+            val anteriores = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).map {it.llave}.toSet()
+            val resultado = if (fila.fila == FilaDeLaCaja.T1) {
+                val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
+                val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
+                val payload = Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(buildOrderRequest(snapshot),selectedStaffId(),attachedCustomerId,
+                    orderType=snapshot.orderType,stampRewardId=snapshot.pendingStampReward?.id,
+                    stampRewardExpectedDiscount=snapshot.stampRewardCents)).jsonObject
+                var identidadEntregada: String? = null
+                coordinator.cobrarNuevaCuenta(venue,payload,foto,identificada.prueba,montoCents,monto.propinaCents,vaciar,
+                    destinoVigente = { viewModelScope.isActive && identidadEntregada != null && ventaVivaDeSaldo?.invoke()?.identidadDeVenta == identidadEntregada }) { photo ->
+                    restaurarEnEsteCobro(photo, venue, epoch)?.also { identidadEntregada = it.identidadDeVenta } != null
+                }
+            } else {
+                val id = createdOrderId ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.CUENTA_NO_ENCONTRADA)
+                coordinator.cobrar(venue,id,identificada.prueba,montoCents,monto.propinaCents,
+                    vaciarCarrito=if(fila.fila==FilaDeLaCaja.T2) vaciarDeSaldo else null,deMostrador=fila.fila==FilaDeLaCaja.T2)
+            }
+            if (venue == secureStorage.venueId && epoch == paymentGeneration) {
+                llaveDelSaldo = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).firstOrNull {
+                    it.venueId==venue && it.tipo=="GIFT_CARD_REDEEM" && it.llave !in anteriores && it.mandado && !it.porRecuperar && !it.porTerminar
+                }?.llave
+                resultadoDeSaldo.value=resultado
+                if (resultado is DesenlaceDeCobro.Cobrado) mostrarCobroConSaldo(resultado.cobro)
+                if (resultado is DesenlaceDeCobro.Reintentable) volverAIntentarSaldoEn=System.currentTimeMillis()+(resultado.retryAfterSeg ?: 0)*1000L
+            }
+            return resultado
+        } finally { cobrandoSaldo=false;saldoEnVuelo.value=false }
+    }
+
+    private fun restaurarEnEsteCobro(photo: com.avoqado.pos.giftcards.domain.FotoDeLaVenta, venue: String, epoch: Int): CartState? {
+        if (!viewModelScope.isActive || venue != secureStorage.venueId || epoch != paymentGeneration) return null
+        restaurandoFotoDeEsteCobro = true
+        val nueva = try { restaurarDeSaldo?.invoke(photo) } finally { restaurandoFotoDeEsteCobro = false } ?: return null
+        if (venue != secureStorage.venueId || epoch != paymentGeneration) return null
+        alRestaurarSnapshotDeSaldo(nueva)
+        cartState=nueva;createdOrderId=null;createdOrderNumber=null;paymentIdempotencyKey=null
+        _state.value=PaymentFlowState.SelectingPaymentMethod(nueva.totalCents)
+        return nueva
+    }
+
+    fun puedeReintentarSaldo(ahora: Long = System.currentTimeMillis()): Boolean =
+        !aperturaInvalidadaPorFoto && otrosDuenosPermitenCobrar() && !cobrandoSaldo && llaveDelSaldo != null && ahora >= volverAIntentarSaldoEn
+    suspend fun reintentarSaldo(): DesenlaceDeCobro? {
+        if (!puedeReintentarSaldo()) return resultadoDeSaldo.value
+        val llave = llaveDelSaldo ?: return resultadoDeSaldo.value
+        val venue = venueDelSaldo ?: return resultadoDeSaldo.value
+        val epoch=paymentGeneration
+        if (venue != secureStorage.venueId || connectivityMonitor?.isConnected?.value != true || connectivityMonitor.isServerReachable.value != true)
+            return resultadoDeSaldo.value
+        cobrandoSaldo=true;saldoEnVuelo.value=true
+        try {
+            var identidadEntregada: String? = null
+            val result=cobroConSaldo?.resolver(llave,
+                destinoVigente = { viewModelScope.isActive && identidadEntregada != null && ventaVivaDeSaldo?.invoke()?.identidadDeVenta == identidadEntregada }) { photo ->
+                restaurarEnEsteCobro(photo, venue, epoch)?.also { identidadEntregada = it.identidadDeVenta } != null
+            } ?: DesenlaceDeCobro.Incierto
+            if(venue==secureStorage.venueId && epoch==paymentGeneration) {
+                resultadoDeSaldo.value=result
+                if (result is DesenlaceDeCobro.Cobrado) mostrarCobroConSaldo(result.cobro)
+                if(result is DesenlaceDeCobro.Cobrado || SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).none { it.llave==llave }) llaveDelSaldo=null
+                if(result is DesenlaceDeCobro.Reintentable) volverAIntentarSaldoEn=System.currentTimeMillis()+(result.retryAfterSeg ?: 0)*1000L
+            }
+            return result
+        } finally {cobrandoSaldo=false;saldoEnVuelo.value=false}
+    }
+    fun montoParaSaldo(identificada: TarjetaIdentificada): MontoOfrecido =
+        montoOfrecido(currentBaseAmount(), ((resultadoDeSaldo.value as? DesenlaceDeCobro.SaldoInsuficiente)?.saldoDisponible ?: identificada.tarjeta.balance).toString().moneyToCents(), currentTipCents)
+    val cuentaParaContinuarConSaldo: String? get() = createdOrderId?.takeIf {
+        mesaDelCobro == null && (resultadoDeSaldo.value is DesenlaceDeCobro.Rechazado || resultadoDeSaldo.value is DesenlaceDeCobro.SaldoInsuficiente)
+    }
+    val venueParaSaldo: String? get() = venueDelSaldo
+    fun ajustesDelSaldo(): AjustesDeTarjetas? = (ajustesParaSaldo() as? EstadoDeAjustes.Disponible)?.ajustes
+    private fun mostrarCobroConSaldo(r: CobroConSaldo) {
+        ultimoCobroConSaldo = r
+        createdOrderId = r.orderId; createdOrderNumber = r.orderNumber; lastPaymentId = r.paymentId
+        lastReceiptAccessKey = r.receiptAccessKey; lastReceiptUrl = r.receiptUrl
+        currentTipCents = r.tipAmount.toString().moneyToCents()
+        if (r.orderRemaining > 0) {
+            _splitType.value = "CUSTOMAMOUNT"; splitCustomAmountCents = r.amount.toString().moneyToCents()
+        }
+        _state.value = PaymentFlowState.Success(totalAmount = (r.amount + r.tipAmount).toString().moneyToCents(),
+            method = PaymentMethod.CARD, paymentId = r.paymentId, receiptAccessKey = r.receiptAccessKey, receiptUrl = r.receiptUrl)
+    }
+    private fun bloqueoDeEntregaDeSaldo(): Boolean = aperturaInvalidadaPorFoto || (!desdeCuentasDeSaldo && mesaDelCobro == null &&
+        SolicitudesDeTarjeta.reservas(secureStorage.giftCardRequestsJson).any { it.venueId == secureStorage.venueId })
+    private fun bloqueoDelSaldoActual(): Boolean {
+        if (bloqueoDeEntregaDeSaldo()) {
+            _state.value = PaymentFlowState.Error(TextosDeTarjetas.NO_SE_PUDO_RECUPERAR, PaymentErrorSource.SERVER)
+            return true
+        }
+        if (!otrosDuenosPermitenCobrar()) {
+            _state.value = PaymentFlowState.Error(TextosDeTarjetas.COMPROBANDO_COBRO, PaymentErrorSource.SERVER)
+            return true
+        }
+        val rows=SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson)
+        if(!cobrandoSaldo && !saldoEnVuelo.value && rows.none {it.venueId==secureStorage.venueId && it.tipo=="GIFT_CARD_REDEEM" && it.mandado && !it.porTerminar && !it.porRecuperar &&
+            (it.llave==llaveDelSaldo || createdOrderId!=null && it.orderId==createdOrderId)}) {
+            val snapshot = cartState
+            if (!desdeCuentasDeSaldo && mesaDelCobro == null && createdOrderId == null && snapshot != null &&
+                ventaVivaDeSaldo?.invoke()?.identidadDeVenta?.let { it != snapshot.identidadDeVenta } == true) {
+                _state.value = PaymentFlowState.Error(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO, PaymentErrorSource.SERVER)
+                return true
+            }
+            return false
+        }
+        _state.value=PaymentFlowState.Error(TextosDeTarjetas.COMPROBANDO_COBRO,PaymentErrorSource.SERVER)
+        return true
+    }
+
+    private var onCreacionIncierta: (String, String) -> Unit = { _, _ -> }
+    private var onCreacionResuelta: (String) -> Unit = {}
+
     fun startPaymentFlow(
         cart: CartState,
         customerId: String? = null,
         customerName: String? = null,
         resumeOrderId: String? = null,
         apertura: String? = null,
+        cuentaDeTarjetas: Boolean = false,
+        onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
+        onCreacionResuelta: (String) -> Unit = {},
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -1347,12 +1652,17 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
         aperturaEnCurso = apertura
+        aperturaInvalidadaPorFoto = false
+        this.onCreacionIncierta = onCreacionIncierta
+        this.onCreacionResuelta = onCreacionResuelta
+        this.cuentaDeTarjetas.value = cuentaDeTarjetas
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
         flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
         cartState = cart
+        venueDelSaldo = secureStorage.venueId; llaveDelSaldo = null; resultadoDeSaldo.value = null; volverAIntentarSaldoEn = 0
         mesaDelCobro = tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
         nombreDelNegocioDelCobro = secureStorage.venueName ?: "Avoqado"
         nombreDeLaSesionDelCobro = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim()
@@ -1376,6 +1686,7 @@ class PaymentFlowViewModel @Inject constructor(
         serverTotalOverrideCents = null
         serverOrderTotalCents = null
         serverRemainingBalanceCents = null
+        ultimoCobroConSaldo = null
         _avisoDelPremio.value = null
         premioConfirmadoCents = null
         // Las correcciones de precio eran de la venta anterior. `llavePorRetirar` NO: es una fila en disco por retirar.
@@ -1503,7 +1814,9 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** Primer paso del cobro según la configuración de la TPV (calificación → propina → método). */
     private fun enterInitialState(amount: Int) {
-        if (settings.showReviewScreen) {
+        if (cuentaDeTarjetas.value) {
+            _state.value = PaymentFlowState.SelectingPaymentMethod(amount)
+        } else if (settings.showReviewScreen) {
             _state.value = PaymentFlowState.CollectingRating(amount)
         } else if (settings.showTipScreen) {
             _state.value = PaymentFlowState.CollectingTip(amount, null)
@@ -1543,6 +1856,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
+        if (bloquearCuentaSinRed()) return
         selectedMethod = method
         val baseAmount = currentBaseAmount()
         val total = baseAmount + currentTipCents
@@ -1587,7 +1901,7 @@ class PaymentFlowViewModel @Inject constructor(
      * cambio: el monto es exactamente el total, así que se cobra de una.
      */
     /** Etiqueta del cobro manual para la pantalla de éxito y el recibo. */
-    val manualMethodLabel: String? get() = selectedTender?.name ?: manualMethod?.label
+    val manualMethodLabel: String? get() = if (ultimoCobroConSaldo != null) "Tarjeta de regalo" else selectedTender?.name ?: manualMethod?.label
 
     /**
      * Catálogo del negocio para la hoja de "¿cómo pagó el cliente?".
@@ -1602,6 +1916,7 @@ class PaymentFlowViewModel @Inject constructor(
         tenderTypeRepository.tenderTypes
 
     fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
+        if (isProcessingPayment || bloquearCuentaSinRed()) return
         when (choice) {
             is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
                 manualMethod = choice.method
@@ -1842,6 +2157,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun confirmPayment() {
         if (isProcessingPayment) return
+        if (bloquearCuentaSinRed()) return
         if (primeroRetirarLaReservaPendiente { confirmPayment() }) return
         val cart = cartState ?: return
         isProcessingPayment = true
@@ -1891,6 +2207,7 @@ class PaymentFlowViewModel @Inject constructor(
                         val orderRequest = requireNotNull(pedidoCapturado)
                         val orderExternalId = llaveCapturada
                         externalIdDeLaVenta = orderExternalId
+                        onCreacionIncierta(cart.identidadDeVenta, orderExternalId)
                         val orderResult = orderRepository.createOrder(
                             orderRequest,
                             staffId = empleadoCapturado,
@@ -1917,6 +2234,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     )
                                     return@fold
                                 }
+                                onCreacionResuelta(orderExternalId)
                                 createdOrderId = orderId
                                 createdOrderNumber = response.data?.orderNumber
                                 ordenCreadaPorEsteFlujo = true
@@ -1944,6 +2262,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     cancelarLoCreadoTrasCancelar(orderId = null)
                                     return@fold
                                 }
+                                if (error is OrderRepository.ServerException && error.code in 400..499) onCreacionResuelta(orderExternalId)
                                 // 409 de precio: nada se creó ni se cobró. Antes de mirar si es encolable.
                                 val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
                                 if (cambios.isNotEmpty()) {
@@ -2082,6 +2401,7 @@ class PaymentFlowViewModel @Inject constructor(
                 val ordenEnCero = ordenCapturada
                 if (total <= 0 && !ordenEnCero.isNullOrBlank() && pedidoCapturado != null) {
                     recordCashPaymentForOrder(
+                        generacionCapturada = generacion,
                         orderId = ordenEnCero,
                         total = 0,
                         cashReceivedCents = 0,
@@ -2103,6 +2423,7 @@ class PaymentFlowViewModel @Inject constructor(
                     )
                     return
                 }
+                if (bloqueoDelSaldoActual()) { isProcessingPayment = false; return }
                 _state.value = PaymentFlowState.SentToTerminal(total)
                 val generation = paymentGeneration
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
@@ -2253,6 +2574,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun processCashPayment(cashReceivedCents: Int) {
         if (isProcessingPayment) return
+        if (bloquearCuentaSinRed()) return
         if (primeroRetirarLaReservaPendiente { processCashPayment(cashReceivedCents) }) return
         isProcessingPayment = true
         lastCashTenderedCents = cashReceivedCents
@@ -2284,11 +2606,13 @@ class PaymentFlowViewModel @Inject constructor(
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
             is CashPaymentResult.Success -> {
                 viewModelScope.launch {
+                    if (bloqueoDelSaldoActual()) { isProcessingPayment = false; return@launch }
                     _state.value = PaymentFlowState.Processing(total)
 
                     if (cart != null && !permiteColaCapturada) {
                         if (!materializeAreaTicketCheckout(cart)) return@launch
                         recordCashPaymentForOrder(
+                            generacionCapturada = generacion,
                             orderId = createdOrderId!!,
                             total = total,
                             cashReceivedCents = cashReceivedCents,
@@ -2336,6 +2660,7 @@ class PaymentFlowViewModel @Inject constructor(
                         val existingOrderId = ordenCapturada
                         if (!existingOrderId.isNullOrBlank()) {
                             recordCashPaymentForOrder(
+                                generacionCapturada = generacion,
                                 orderId = existingOrderId,
                                 total = total,
                                 cashReceivedCents = cashReceivedCents,
@@ -2358,6 +2683,7 @@ class PaymentFlowViewModel @Inject constructor(
                         } else {
                             val orderExternalId = llaveCapturada
                             externalIdDeLaVenta = orderExternalId
+                        onCreacionIncierta(cart.identidadDeVenta, orderExternalId)
                             val orderResult = orderRepository.createOrder(
                                 orderRequest,
                                 staffId = empleadoCapturado,
@@ -2381,7 +2707,8 @@ class PaymentFlowViewModel @Inject constructor(
                                         )
                                         return@fold
                                     }
-                                    createdOrderId = orderId
+                                    onCreacionResuelta(orderExternalId)
+                                createdOrderId = orderId
                                     ordenCreadaPorEsteFlujo = true
                                     if (generacion != paymentGeneration) {
                                         cancelarLoCreadoTrasCancelar(orderId)
@@ -2421,6 +2748,7 @@ class PaymentFlowViewModel @Inject constructor(
                                         publicarAvisoDePrecio(totalNuevoCents = totalFinal, cambioDeMasCents = (total - totalFinal).coerceAtLeast(0))
                                     }
                                     recordCashPaymentForOrder(
+                                        generacionCapturada = generacion,
                                         orderId = orderId,
                                         total = totalFinal,
                                         cashReceivedCents = cashReceivedCents,
@@ -2452,7 +2780,8 @@ class PaymentFlowViewModel @Inject constructor(
                                         cancelarLoCreadoTrasCancelar(orderId = null)
                                         return@fold
                                     }
-                                    // 409 de precio: nada se creó ni se cobró. Antes de mirar si es encolable.
+                                    if (error is OrderRepository.ServerException && error.code in 400..499) onCreacionResuelta(orderExternalId)
+                                // 409 de precio: nada se creó ni se cobró. Antes de mirar si es encolable.
                                     val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
                                     if (cambios.isNotEmpty()) {
                                         volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
@@ -2629,6 +2958,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private suspend fun recordCashPaymentForOrder(
+        generacionCapturada: Int,
         orderId: String,
         total: Int,
         cashReceivedCents: Int,
@@ -2650,6 +2980,7 @@ class PaymentFlowViewModel @Inject constructor(
         /** El servidor cambió el precio EN LÍNEA y el cajero ya vio el aviso: ese importe no es alerta para el gerente. */
         precioAceptadoEnPantalla: Boolean = false,
     ) {
+        fun sigueEnEstaApertura() = generacionCapturada == paymentGeneration
         // Send amount WITHOUT tip, tip separately
         val subtotal = total - tipCapturado
 
@@ -2685,6 +3016,7 @@ class PaymentFlowViewModel @Inject constructor(
                     restanteEsperadoCents = mesaDelCobro?.takeIf { it.orderId == orderId }?.let { (it.totalCents - subtotal).coerceAtLeast(0) },
                 )
                 recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                if (!sigueEnEstaApertura()) return
                 _state.value = PaymentFlowState.Success(
                     totalAmount = total,
                     method = PaymentMethod.CASH,
@@ -2710,9 +3042,6 @@ class PaymentFlowViewModel @Inject constructor(
         )
         payResult.fold(
             onSuccess = { result ->
-                lastPaymentId = result.paymentId
-                // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
-                adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
                 // Una segunda caja pudo mover la orden mientras cobrábamos. En
                 // ese caso el server recorta SÓLO efectivo de cajón al saldo
                 // fresco y devuelve el importe/cambio que de verdad registró.
@@ -2748,11 +3077,15 @@ class PaymentFlowViewModel @Inject constructor(
                 // fresco): al restar sobre el total REALMENTE cobrado, el sobrante
                 // recortado ya queda dentro del cambio, sin sumar dos fuentes.
                 val finalChange = (cashReceivedCents - authoritativeTotal).coerceAtLeast(0)
+                recordCashSale(authoritativeTotal, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                if (!sigueEnEstaApertura()) return@fold
+                lastPaymentId = result.paymentId
+                // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
+                adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
-                recordCashSale(authoritativeTotal, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(
                     totalAmount = authoritativeTotal,
                     method = PaymentMethod.CASH,
@@ -2786,6 +3119,7 @@ class PaymentFlowViewModel @Inject constructor(
                         venueId = venueCapturado,
                     )
                     recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
+                    if (!sigueEnEstaApertura()) return@fold
                     _state.value = PaymentFlowState.Success(
                         totalAmount = total,
                         method = PaymentMethod.CASH,
@@ -2795,6 +3129,7 @@ class PaymentFlowViewModel @Inject constructor(
                     )
                     autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 } else {
+                    if (!sigueEnEstaApertura()) return@fold
                     _state.value = PaymentFlowState.Error(
                         message = mensajeDelCobroFallido(error),
                         source = PaymentErrorSource.SERVER,
@@ -3999,6 +4334,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun buildCompletion(): PaymentCompletion {
+        ultimoCobroConSaldo?.let { r -> return PaymentCompletion(splitType = "FULLPAYMENT",
+            remainingBalanceCents = r.orderRemaining.toString().moneyToCents(), orderId = r.orderId, conSaldo = true) }
         val cart = cartState
         val splitTypeValue = _splitType.value
         if (cart == null) {

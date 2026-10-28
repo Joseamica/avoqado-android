@@ -1349,7 +1349,14 @@ fun TableOrderScreen(
     }
 
     if (showAnularDialog) {
-        AnularCuentaDialog(
+        if ((check?.cobrosConSaldo ?: 0) > 0 && check?.paymentStatus != "PAID") {
+            com.avoqado.pos.payment.presentation.DialogoDeRegresoDeSaldo(active.orderId, check?.cobrosConSaldo ?: 0, false,
+                onDismiss = { showAnularDialog = false }, onCancelada = {
+                    showAnularDialog = false
+                    viewModel.regresoDeSaldoConfirmado(active.orderId)
+                    exitOnce()
+                })
+        } else AnularCuentaDialog(
             tableNumber = active.tableNumber,
             onDismiss = { showAnularDialog = false },
             onConfirm = { reason ->

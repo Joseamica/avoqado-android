@@ -16,6 +16,7 @@ import javax.inject.Inject
 @HiltAndroidApp
 class AvoqadoApp : Application() {
     @Inject lateinit var secureStorage: SecureStorage
+    @Inject lateinit var solicitudesDeTarjeta: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
     @Inject lateinit var reservationActionsRetrier: ReservationActionsRetrier
     @Inject lateinit var kioskDriver: com.avoqado.pos.kiosk.domain.KioskDriver
     @Inject lateinit var kioskPrefs: com.avoqado.pos.kiosk.domain.KioskPrefs
@@ -56,6 +57,7 @@ class AvoqadoApp : Application() {
         VenueTimeZone.set(secureStorage.venueTimezone)
         reservationActionsRetrier.start(appScope)
         cancelacionDeCobroCoordinator.start()
+        solicitudesDeTarjeta.start()
         vigilanteDeImpresoras.start()
 
         // El kiosco: el interruptor del aparato manda, y el motor sólo se

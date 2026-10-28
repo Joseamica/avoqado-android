@@ -12,6 +12,7 @@ import kotlin.math.roundToInt
  * y pago dividido ven el mismo número. Al crear la venta manda lo que el servidor CONFIRMA
  * (`stampReward.discountAmount`), no este estimado — ver `totalACobrarCents`.
  */
+@kotlinx.serialization.Serializable
 data class PremioPorAplicar(
     val id: String,
     val etiqueta: String,
