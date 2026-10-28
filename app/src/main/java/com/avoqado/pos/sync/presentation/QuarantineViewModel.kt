@@ -306,6 +306,7 @@ class QuarantineViewModel @Inject constructor(
         "RESCHEDULE" -> "Reagendar"
         "CREATE" -> "Crear reserva"
         "UPDATE" -> "Editar reserva"
+        com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Llegada en el kiosco (sin conexión)"
         else -> action
     }
 
@@ -324,6 +325,8 @@ class QuarantineViewModel @Inject constructor(
         "RESCHEDULE" -> "El cambio de horario no se aplicó. La reserva sigue en su hora original — reagéndala o avisa al cliente."
         "NO_SHOW" -> "No quedó marcada como no presentado. Si aplica un cargo, revísalo antes de descartarla."
         "CHECK_IN" -> "La llegada no quedó registrada. Márcala a mano si el cliente sí llegó."
+        // El texto del servidor (renglón de arriba) ya dice quién llegó, a qué hora y qué pasó; aquí sólo a dónde ir.
+        com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Revisa la reserva en Reservaciones."
         else -> "La operación nunca llegó al servidor. Revisa la reserva y vuelve a hacerla si sigue aplicando."
     }
 

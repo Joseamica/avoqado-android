@@ -269,6 +269,28 @@ class AppStateVenueRecoveryTest {
         refresco.soltar.complete(Unit)
     }
 
+    /**
+     * Modo Autoservicio 0.e: las llegadas del kiosco guardadas sin red sólo se mandan con SU sucursal activa. Cerrar
+     * sesión y entrar a otra las dejaría varadas, igual que los cobros sin red.
+     */
+    @Test
+    fun `cerrar sesion se bloquea con llegadas del kiosco pendientes`() = runTest {
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = { every { clearSession() } answers { cerro = true } },
+            llegadasDelKiosco = 1,
+        )
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertFalse(cerro)
+        val aviso = appState.sessionGuardMessage.value.orEmpty()
+        org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
     @Test
     fun `onLogout limpia los ajustes y cancela el refresco`() = runTest {
         val refresco = RefrescoQueNoTermina()
@@ -315,6 +337,7 @@ class AppStateVenueRecoveryTest {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
             },
         configurarSesion: SecureStorage.() -> Unit = {},
+        llegadasDelKiosco: Int = 0,
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -341,6 +364,7 @@ class AppStateVenueRecoveryTest {
         }
         val reservationRepository = mockk<ReservationRepository>(relaxed = true) {
             every { quarantinedCount } returns MutableStateFlow(0)
+            coEvery { pendingKioskArrivals(any()) } returns llegadasDelKiosco
         }
         val posModeManager = mockk<PosModeManager>(relaxed = true) {
             every { currentMode } returns MutableStateFlow(PosMode.RETAIL)
