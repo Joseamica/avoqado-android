@@ -1,0 +1,43 @@
+import org.gradle.api.tasks.testing.Test
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+
+gradle.projectsEvaluated {
+    gradle.allprojects {
+        tasks.withType(Test).configureEach { task ->
+            if (task.name == 'testDebugUnitTest') {
+                def out = new File(task.project.buildDir, 'task9-memory')
+                doFirst {
+                    out.mkdirs()
+                    println('TASK9_WORKER ' + [task:task.path, maxHeapSize:task.maxHeapSize, forkEvery:task.forkEvery, maxParallelForks:task.maxParallelForks, executable:task.javaLauncher.get().executablePath.asFile.absolutePath, jvmArgs:task.allJvmArgs].toString())
+                }
+                jvmArgs('-Xlog:gc*:file=' + new File(out, 'gc-%p.log').absolutePath + ':time,uptime,level,tags', '-XX:+HeapDumpOnOutOfMemoryError', '-XX:HeapDumpPath=' + new File(out, 'worker-%p.hprof').absolutePath)
+                beforeSuite { suite ->
+                    if (suite.className != null) println('TASK9_CLASS_START ' + System.currentTimeMillis() + ' ' + suite.className)
+                }
+                afterSuite { suite, result ->
+                    if (suite.className != null) println('TASK9_CLASS_END ' + System.currentTimeMillis() + ' ' + suite.className + ' ' + result.resultType + ' tests=' + result.testCount + ' failures=' + result.failedTestCount)
+                }
+            }
+        }
+    }
+}
+
+gradle.buildFinished {
+    def base = gradle.rootProject.projectDir
+    def bytes = new ByteArrayOutputStream()
+    def zip = new ZipOutputStream(bytes)
+    def files = gradle.rootProject.fileTree(base) {
+        include '**/build/test-results/testDebugUnitTest/TEST-*.xml'
+        include '**/build/task9-memory/gc-*.log'
+    }.files.sort { it.absolutePath }
+    files.each { f ->
+        zip.putNextEntry(new ZipEntry(base.toPath().relativize(f.toPath()).toString()))
+        zip.write(f.bytes)
+        zip.closeEntry()
+    }
+    zip.close()
+    println('TASK9_DIAGNOSTIC_FILES ' + files.size())
+    println('TASK9_DIAGNOSTIC_ZIP_BASE64=' + bytes.toByteArray().encodeBase64().toString())
+    gradle.rootProject.fileTree(base) { include '**/build/task9-memory/*.hprof' }.files.each { f -> println('TASK9_HEAP_PRESERVED ' + f.absolutePath + ' bytes=' + f.length()) }
+}
