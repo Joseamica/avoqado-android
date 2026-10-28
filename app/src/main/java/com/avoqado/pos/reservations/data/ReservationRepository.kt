@@ -70,6 +70,10 @@ class ReservationRepository @Inject constructor(
 
     suspend fun quarantinedActions(): List<PendingReservationActionEntity> = pendingDao.exhausted(MAX_ATTEMPTS)
 
+    /** Llegadas del kiosco guardadas sin red que todavía se van a mandar con esta sucursal (Modo Autoservicio 0.e). */
+    suspend fun pendingKioskArrivals(venueId: String?): Int =
+        com.avoqado.pos.kiosk.data.KioskTap.pendingFor(pendingDao.all(), venueId, MAX_ATTEMPTS)
+
     /** El gerente la resolvió a mano (volvió a agendar, llamó al cliente) y la descarta. */
     suspend fun dismissQuarantined(rowId: Long) = pendingDao.delete(rowId)
 

@@ -6,10 +6,10 @@
 # (Windows)») truena y dice cuál. Entonces: lee el cambio (`git log -p -- app/src/main/java/<ruta>`), pon al día el
 # reemplazo (o anota lo que escritorio todavía no tiene) y SÓLO DESPUÉS corre `./gradlew -p desktop :pos:actualizarHuellas`.
 # Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
-com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 718fe43f3ebb64f7a6e776443f48a5d42caa504b6f30924238894f219019ac29
+com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: a573e61bcfae757aafe73c4ea874a65a8e798a69951372a8856708ad04c209c3
 com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 58bea02fbd39aaa815d6d6e484956aeffe6a4e6d62b4e027f1c66979b81eb3b1
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: 9048af0c6480c4e09530def9a51ddb11e90736a6504492898e330c488e8ce06b
-com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 9d77ee128ab6ce7793b8f3a68b2443d64de86b2b0ae23f20aec63b80d741d72a
+com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 7279c695aaf32507a57661b37cc5e806e511a2877630a2ed18438e7f576da2d8
 com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: c0ecd1f81c84848f417d60649ceb7ebd62d2d6bdd0d556dd23d8c6d5db6a252b
 com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: 11df26b11f4afbf4f0328c125b8d81da089b86d6564951af474eea5190d1a84a
 com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio | huella: e0ccd4d268b356bb4d0b4765510c62ebaa8f53252ec3fae247808c7679723cb2
