@@ -19,7 +19,7 @@ com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: la 
 com/avoqado/pos/customerdisplay/CashierDisplayGuard.kt          # reemplazo: DisplayManager/Activity en otro display | huella: 5a075646fb8e24d65733154fec879a615d20e88f915cdaa66dbf4782e83fd01c
 com/avoqado/pos/customerdisplay/CustomerTouchBridge.kt          # sin reemplazo: InputManager de Android; sólo lo usa CustomerDisplayManager | huella: 4a0f2bd67fff71fe80d09dd1599b3d0eac0d797e200c1297f6c7d3f8bfe94d74
 com/avoqado/pos/customerdisplay/DisplayRoles.kt                 # reemplazo: roles de displays de Android | huella: 1cbaafe6086cd2ff3aba87af3fecf20c6526f30adf4474a46dcd781e9e8eae04
-com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: impresora interna Sunmi (hardware) | huella: f20cb3509b758e9d789f40d9a90f092ff0fe0dd6b2f6c720f100d319ea78888f
+com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: impresora interna Sunmi (hardware) | huella: f1fecddf0fb27930673ad7c838b4bc8fc2558f376cfd4a414466ddb99b075c9a
 com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android | huella: a91806bea6913f760a45292b9688addfe140c9fa03bac212e1c20b49de1320ca
 com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf | huella: 935f87860dde7da3bb81d337d84f4c9293870f0ac995cc46e5208ee9be3aaeee
 com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por un puerto COM de Windows (escritorio/bascula/), misma lógica de tramas | huella: cabd0b26eccb941d6a13653e652af981e1f7328627a2ebe20f9a8e447cc1bc63
