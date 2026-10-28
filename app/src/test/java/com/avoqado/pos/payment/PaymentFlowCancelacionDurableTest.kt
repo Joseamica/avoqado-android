@@ -488,6 +488,34 @@ class PaymentFlowCancelacionDurableTest {
         assertFalse(viewModel.debeSalir.value)
     }
 
+    @Test
+    fun `D9 si el cobro que si paso se confirma con otra venta en pantalla, no paga la venta nueva`() = runTest {
+        stubOrdenCreada()
+        cobroEnVuelo()
+        transporte.programarEstados(ChargeStatusProbe.Known("COMPLETED", false, paymentId = "pay-1"))
+        // La consulta del desenlace tarda: mientras tanto el cajero sale y abre la venta B.
+        coEvery { terminalPaymentService.resolveOutcome("req-1") } coAnswers {
+            kotlinx.coroutines.delay(10_000)
+            TerminalPaymentResult.Success(paymentId = "pay-1", requestId = "req-1")
+        }
+        every { terminalPaymentService.aplicarDesenlaceTardio(any(), any(), any()) } returns true
+
+        cobrarConTarjeta()
+        advanceTimeBy(1_000)
+        viewModel.cancelarVenta()
+        advanceTimeBy(5_000)
+        runCurrent()
+        viewModel.startPaymentFlow(
+            CartState(items = listOf(CartItem(id = "line-b", type = CartItemType.ProductItem("prod-b"), name = "Café", unitPrice = 900))),
+        )
+        advanceTimeBy(20_000)
+        runCurrent()
+
+        assertFalse("la venta B no queda pagada con el dinero de A", viewModel.state.value is PaymentFlowState.Success)
+        assertNull("la venta B no consume el carrito", viewModel.consumeCompletion())
+        io.mockk.verify { terminalPaymentService.aplicarDesenlaceTardio("req-1", any(), any()) }
+    }
+
     // MARK: - Pendiente: ámbar, con salida
 
     @Test

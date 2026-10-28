@@ -4100,8 +4100,16 @@ class PaymentFlowViewModel @Inject constructor(
         val requestId = cancelacionObservada?.takeIf { it == id } ?: id
         dejarDeObservarLaCancelacion()
         val total = currentBaseAmount() + currentTipCents
+        // D9 (27-oct): la consulta tarda; si mientras tanto el cajero abrió otra venta, este dinero no puede pagarla. Va por
+        // el desenlace tardío (la lista durable), como los demás caminos que comparan la generación.
+        val generacion = paymentGeneration
         viewModelScope.launch {
-            when (val outcome = terminalPaymentService.resolveOutcome(requestId)) {
+            val outcome = terminalPaymentService.resolveOutcome(requestId)
+            if (generacion != paymentGeneration) {
+                handleStaleCardResult(outcome)
+                return@launch
+            }
+            when (outcome) {
                 is TerminalPaymentResult.Success -> {
                     cobroAplicadoTrasCancelar = requestId
                     cancelacionDeCobro.cobroAplicado(id)
