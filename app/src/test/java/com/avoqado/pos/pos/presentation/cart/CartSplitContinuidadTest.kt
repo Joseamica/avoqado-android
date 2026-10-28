@@ -440,7 +440,7 @@ class CartSplitContinuidadTest {
         vm.addProduct(refresco)
 
         assertFalse(vm.saveCurrentCart("Para luego"))
-        assertEquals(VENTA_A_MEDIAS_NO_SE_GUARDA, vm.createPayLaterOrder("cliente-1").exceptionOrNull()?.message)
+        assertEquals(ResultadoPagarDespues.Error(VENTA_A_MEDIAS_NO_SE_GUARDA), vm.createPayLaterOrder("cliente-1"))
         assertTrue("la venta sigue en el carrito", vm.hayVentaAMedias())
         assertEquals(2, vm.cartState.value.items.size)
     }

@@ -1,0 +1,633 @@
+package com.avoqado.pos.pos.presentation.cart
+
+import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.payment.PrefsEnMemoria
+import com.avoqado.pos.payment.data.OrderRepository
+import com.avoqado.pos.payment.data.PayLaterQueue
+import com.avoqado.pos.payment.data.PayLaterRow
+import com.avoqado.pos.pos.data.ActiveCartState
+import com.avoqado.pos.pos.data.ClassCheckoutSeed
+import com.avoqado.pos.pos.data.DiscountsRepository
+import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.SavedCartsRepository
+import com.avoqado.pos.pos.data.StaffRepository
+import com.avoqado.pos.pos.data.model.Discount
+import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.ProductCategory
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+
+/**
+ * «Pagar después» sin red (27-oct; promesa v4 en `docs/audit/2026-10-27-pagar-despues-sin-red/promesa.md`). La venta SALE del
+ * carrito al mandarla (R3-2): lo que llega mientras es otra venta; si el servidor la rechaza vuelve completa (o a «Carritos
+ * guardados» si ya hay otra); sin red queda en la fila y se dice; el premio nunca entra a la fila (R8); la llave es de la venta.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class PagarDespuesCarritoTest {
+
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
+    private val productsRepository = mockk<ProductsRepository>(relaxed = true)
+    private val discountsRepository = mockk<DiscountsRepository>(relaxed = true)
+    private val authRepository = mockk<AuthRepository>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val staffRepository = mockk<StaffRepository>(relaxed = true)
+    private val ordenes = mockk<OrderRepository>(relaxed = true)
+    private val disco = PrefsEnMemoria()
+    private val copias = PrefsEnMemoria()
+    private val guardados by lazy { SavedCartsRepository(copias.context) }
+    private val fila by lazy {
+        PayLaterQueue(disco.context, ordenes, secureStorage, guardados, mockk(relaxed = true)).apply { io = Dispatchers.Unconfined }
+    }
+
+    private val cafe = Product(id = "p-cafe", name = "Café", priceValue = 100.0)
+    private val pan = Product(id = "p-pan", name = "Pan", priceValue = 20.0)
+
+    @Before
+    fun setup() {
+        every { productsRepository.products } returns MutableStateFlow<List<Product>>(emptyList())
+        every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
+        every { productsRepository.isLoading } returns MutableStateFlow(false)
+        every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
+        every { authRepository.venueSwitched } returns MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        every { secureStorage.venueId } returns "venue-1"
+        every { secureStorage.accessToken } returns "token"
+        every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-1"
+        coEvery { staffRepository.getActiveStaff() } returns Result.success(emptyList())
+    }
+
+    private fun createViewModel(): CartViewModel = CartViewModel(
+        productsRepository = productsRepository,
+        discountsRepository = discountsRepository,
+        savedCartsRepository = guardados,
+        authRepository = authRepository,
+        secureStorage = secureStorage,
+        activeCartState = mockk<ActiveCartState>(relaxed = true),
+        orderRepository = ordenes,
+        staffRepository = staffRepository,
+        classCheckoutSeed = mockk<ClassCheckoutSeed>(relaxed = true).also { every { it.consume() } returns null },
+        validateReferralUseCase = mockk(relaxed = true),
+        captureReferralUseCase = mockk(relaxed = true),
+        planManager = PlanManager(secureStorage),
+        tableSession = com.avoqado.pos.tables.data.TableSession(),
+        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+        areaTicketRepository = mockk(relaxed = true),
+        walletScanRepository = mockk(relaxed = true),
+        payLaterQueue = fila,
+    )
+
+    private val enviados = mutableListOf<String>()
+
+    private fun responde(code: Int, body: String) {
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } answers {
+            enviados += secondArg<String>()
+            OrderRepository.RespuestaCruda(code, "application/json", null, body)
+        }
+    }
+
+    private fun sinRed() {
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } answers {
+            enviados += secondArg<String>()
+            throw java.io.IOException("sin red")
+        }
+    }
+
+    private fun creada(total: Double) = """{"success":true,"order":{"id":"ord-1","total":$total}}"""
+
+    /** Una venta de Ana con un café ($100) que vino de un carrito guardado. */
+    private fun ventaDeAna(vm: CartViewModel) {
+        vm.addProduct(cafe)
+        assertTrue(vm.saveCurrentCart("Mesa de Ana"))
+        vm.restoreSavedCart(guardados.savedCarts.value.single())
+        vm.setSelectedCustomer("cli-1", "Ana")
+    }
+
+    @Test
+    fun `la venta sale del carrito al mandarla, y lo que llega mientras tanto es otra venta`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+
+        assertTrue("la venta ya no está en el carrito", vm.cartState.value.isEmpty)
+        assertNull(vm.selectedCustomer.value)
+        assertEquals(EnvioPagarDespues("Ana", 10000), vm.pagarDespuesEnCurso.value)
+        assertEquals(PayLaterRow.Estado.EN_VUELO, fila.filas.value.single().estado)
+        vm.addProduct(pan) // el lector, mientras se manda
+
+        respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null, creada(100.0)))
+
+        assertEquals(ResultadoPagarDespues.Creada, resultado.await())
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+        assertTrue(fila.filas.value.isEmpty())
+        assertTrue("la copia guardada se retira al aceptar la cuenta", guardados.savedCarts.value.isEmpty())
+        assertNull(vm.pagarDespuesEnCurso.value)
+    }
+
+    @Test
+    fun `sin red la cuenta queda guardada en el aparato, se dice, y la copia guardada se retira`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        sinRed()
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(
+            ResultadoPagarDespues.Aviso("Sin conexión: la cuenta de Ana quedó guardada en el aparato y se sube sola."),
+            resultado,
+        )
+        assertTrue(vm.cartState.value.isEmpty)
+        assertTrue(guardados.savedCarts.value.isEmpty())
+        val guardada = fila.filas.value.single()
+        assertEquals(PayLaterRow.Estado.PENDIENTE, guardada.estado)
+        assertEquals(10000, guardada.totalEsperadoCents)
+        assertEquals("Ana", guardada.customerName)
+        // En línea va SIN isOfflineReplay (se respeta el 409 de precio); el reenvío lleva la MISMA llave, con isOfflineReplay.
+        val enLinea = JSONObject(enviados.single())
+        val reenvio = JSONObject(guardada.cuerpo)
+        assertFalse(enLinea.has("isOfflineReplay"))
+        assertTrue(reenvio.getBoolean("isOfflineReplay"))
+        assertTrue(reenvio.has("createdAtLocal"))
+        assertEquals(guardada.id, enLinea.getString("externalId"))
+        assertEquals(guardada.id, reenvio.getString("externalId"))
+        assertTrue(guardada.id.startsWith("pay-later:"))
+        assertEquals("PAY_LATER", reenvio.getString("paymentMethod"))
+        assertEquals("cli-1", reenvio.getString("customerId"))
+    }
+
+    @Test
+    fun `un rechazo con el carrito vacio devuelve la venta completa con su cliente, y la copia se queda`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        responde(404, """{"message":"Cliente no encontrado"}""")
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(ResultadoPagarDespues.Error("Cliente no encontrado"), resultado)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("Ana", vm.selectedCustomer.value?.name)
+        assertTrue(fila.filas.value.isEmpty())
+        assertEquals("la copia guardada no se retira con un rechazo (R3-1)", 1, guardados.savedCarts.value.size)
+    }
+
+    @Test
+    fun `un rechazo con otra venta en el carrito guarda la de Ana en Carritos guardados, sin mezclarlas`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        respuesta.complete(OrderRepository.RespuestaCruda(400, "application/json", null, """{"message":"Producto inválido"}"""))
+
+        assertEquals(
+            ResultadoPagarDespues.Error("La venta de Ana no se pudo dejar para después: quedó en Carritos guardados."),
+            resultado.await(),
+        )
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+        val deAna = guardados.savedCarts.value.single()
+        assertEquals("Ana", deAna.name)
+        assertEquals("cli-1", deAna.attachedCustomerId)
+        assertEquals(listOf("Café"), deAna.items.map { it.name })
+    }
+
+    @Test
+    fun `la venta con premio nunca entra a la fila, y sin red se queda en el carrito`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Café gratis", "FIXED_AMOUNT", 30.0))
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        assertTrue("ni siquiera mientras se manda", disco.guardado.isEmpty())
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+
+        assertEquals(
+            ResultadoPagarDespues.Error("Sin conexión: el premio de sellos necesita internet. Quita el premio o espera la red."),
+            resultado.await(),
+        )
+        assertTrue(disco.guardado.isEmpty())
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("rw1", vm.cartState.value.pendingStampRewardId)
+        assertEquals("Ana", vm.selectedCustomer.value?.name)
+    }
+
+    @Test
+    fun `la llave es de la venta - el siguiente intento de la misma venta manda la misma`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        responde(409, """{"message":"Algo cambió"}""")
+        vm.createPayLaterOrder("cli-1")
+        responde(201, creada(100.0))
+
+        assertEquals(ResultadoPagarDespues.Creada, vm.createPayLaterOrder("cli-1"))
+
+        val (primera, segunda) = enviados.map { JSONObject(it).getString("externalId") }
+        assertEquals(primera, segunda)
+        // La venta siguiente estrena la suya.
+        vm.addProduct(pan)
+        vm.setSelectedCustomer("cli-2", "Beto")
+        vm.createPayLaterOrder("cli-2")
+        assertFalse(JSONObject(enviados.last()).getString("externalId") == primera)
+    }
+
+    @Test
+    fun `la cuenta creada por otro importe se dice en ese momento`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        responde(201, creada(90.0))
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(
+            ResultadoPagarDespues.Aviso("La cuenta de Ana quedó por \$90.00, no por \$100.00. Revísala en el panel."),
+            resultado,
+        )
+        assertTrue(vm.cartState.value.isEmpty)
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    // MARK: - Codex ANDROID r1
+
+    @Test
+    fun `A-3 la venta no sale del carrito hasta estar en disco, y lo que entra mientras se queda`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        responde(201, creada(100.0))
+        var alEscribirEnDisco: List<Pair<String, Int>>? = null
+        disco.alEscribir = {
+            if (alEscribirEnDisco == null) {
+                alEscribirEnDisco = vm.cartState.value.items.map { it.name to it.quantity }
+                vm.addProduct(cafe) // el lector, mientras se escribe: se junta con la línea del café
+                vm.addProduct(pan)
+            }
+        }
+
+        assertEquals(ResultadoPagarDespues.Creada, vm.createPayLaterOrder("cli-1"))
+
+        assertEquals("al escribirse la cuenta, la venta seguía en el carrito", listOf("Café" to 1), alEscribirEnDisco)
+        assertEquals(listOf("Café" to 1, "Pan" to 1), vm.cartState.value.items.map { it.name to it.quantity })
+        assertNull("el cliente era de la venta que se fue", vm.selectedCustomer.value)
+        assertEquals(1, JSONObject(enviados.single()).getJSONArray("items").getJSONObject(0).getInt("quantity"))
+    }
+
+    @Test
+    fun `A-2 si la cuenta no se puede escribir, la venta se queda y nada se manda`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        disco.discoSano = false
+
+        assertEquals(ResultadoPagarDespues.Error("No se pudo guardar la cuenta en el aparato. Intenta de nuevo."), vm.createPayLaterOrder("cli-1"))
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("Ana", vm.selectedCustomer.value?.name)
+        assertTrue(disco.guardado.isEmpty())
+        assertTrue(fila.filas.value.isEmpty())
+        coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
+    }
+
+    @Test
+    fun `A-4 rechazo con otra venta y Carritos guardados que no escribe - queda por revisar y se dice`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        copias.discoSano = false
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+
+        assertEquals(
+            ResultadoPagarDespues.Error("La venta de Ana no se pudo dejar para después ni guardar: quedó en Pendientes por revisar."),
+            resultado.await(),
+        )
+        val porRecuperar = fila.filas.value.single()
+        assertEquals(PayLaterRow.Estado.RECUPERAR, porRecuperar.estado)
+        assertEquals("El precio cambió.", porRecuperar.motivo)
+        // Nunca se reenvía: como venta sin red se saltaría el rechazo de precio.
+        fila.drenar()
+        assertEquals(1, enviados.size)
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `A-4 rechazo con otra venta - la fila se borra sólo cuando la venta ya quedó en Carritos guardados`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        var filasAlGuardarLaCopia: List<PayLaterRow.Estado>? = null
+        copias.alEscribir = { filasAlGuardarLaCopia = fila.filas.value.map { it.estado } }
+
+        respuesta.complete(OrderRepository.RespuestaCruda(400, "application/json", null, """{"message":"Producto inválido"}"""))
+
+        assertEquals(ResultadoPagarDespues.Error("La venta de Ana no se pudo dejar para después: quedó en Carritos guardados."), resultado.await())
+        assertEquals("al guardar la copia, la cuenta seguía en disco", listOf(PayLaterRow.Estado.RECUPERAR), filasAlGuardarLaCopia)
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `A-5 la copia de una cuenta viva no se restaura, y si su retiro falla la fila espera a retirarla`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        val copia = guardados.savedCarts.value.single()
+
+        // Mientras se manda: ligada a la fila EN_VUELO. Ni confirmando se restaura.
+        assertEquals(Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(copia))
+        assertEquals(Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(copia, confirmado = true))
+        assertEquals("la copia lleva la llave de la venta", JSONObject(enviados.single()).getString("externalId"), copia.llavePagarDespues)
+        assertNotNull(copia.cobroIniciadoEn)
+
+        copias.discoSano = false // el retiro de la copia no se escribe (archivo ocupado en WINDOWS)
+        respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null, creada(100.0)))
+        assertEquals(ResultadoPagarDespues.Creada, resultado.await())
+
+        val esperando = fila.filas.value.single()
+        assertEquals(PayLaterRow.Estado.RETIRO_PENDIENTE, esperando.estado)
+        assertEquals(0, fila.porSubir.first())
+        assertEquals(0, fila.porRevisar.first())
+        assertEquals(Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(guardados.savedCarts.value.single(), confirmado = true))
+
+        copias.discoSano = true
+        fila.mantenimientoLocal() // al arrancar y en cada pasada, sin red
+
+        assertTrue(guardados.savedCarts.value.isEmpty())
+        assertTrue(fila.filas.value.isEmpty())
+        assertEquals("nada se volvió a mandar", 1, enviados.size)
+    }
+
+    // MARK: - Codex ANDROID r2
+
+    /** Rechazo de la venta de Ana con un Pan ya en el carrito; el borrado de la fila falla justo después de guardar la venta. */
+    private suspend fun kotlinx.coroutines.test.TestScope.rechazoConBorradoFallido(vm: CartViewModel) {
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        copias.alEscribir = { copias.alEscribir = null; disco.discoSano = false }
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+        assertEquals(ResultadoPagarDespues.Error("La venta de Ana no se pudo dejar para después: quedó en Carritos guardados."), resultado.await())
+        assertEquals("el borrado falló: queda la fila", PayLaterRow.Estado.RECUPERAR, fila.filas.value.single().estado)
+        disco.discoSano = true
+    }
+
+    @Test
+    fun `r2-1 si el borrado de la fila falla tras guardar la venta, la recuperacion automatica no deja dos carritos`() = runTest {
+        val vm = createViewModel()
+        rechazoConBorradoFallido(vm)
+
+        fila.mantenimientoLocal()
+
+        assertEquals(1, guardados.savedCarts.value.size)
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `r2-1 lo mismo con Pasar a carritos guardados a mano`() = runTest {
+        val vm = createViewModel()
+        rechazoConBorradoFallido(vm)
+
+        assertEquals(true, fila.pasarACarritosGuardados(fila.filas.value.single().id))
+        fila.mantenimientoLocal()
+
+        assertEquals(1, guardados.savedCarts.value.size)
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `r2-3 rechazo sin poder marcar ni borrar la fila - la venta no vuelve, el aviso lo dice y este proceso no la reenvia`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        disco.discoSano = false
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+
+        assertEquals(ResultadoPagarDespues.Error("No se pudo guardar la cuenta en el aparato. Intenta de nuevo."), resultado.await())
+        assertTrue("la venta sigue en la fila, no en el carrito", vm.cartState.value.isEmpty)
+        assertEquals(PayLaterRow.Estado.EN_VUELO, fila.filas.value.single().estado)
+        disco.discoSano = true
+        fila.drenar()
+        assertEquals(1, enviados.size)
+    }
+
+    @Test
+    fun `r2-4 con premio la venta no sale del carrito - si falla, siguen el premio y el total con lo escaneado`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0))
+        val antes = vm.cartState.value.totalCents
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        assertEquals("mientras se manda, la venta y su premio siguen en el carrito", listOf("Café"), vm.cartState.value.items.map { it.name })
+        vm.addProduct(pan)
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+
+        assertEquals(ResultadoPagarDespues.Error("Sin conexión: el premio de sellos necesita internet. Quita el premio o espera la red."), resultado.await())
+        assertEquals(listOf("Café", "Pan"), vm.cartState.value.items.map { it.name })
+        assertEquals("rw1", vm.cartState.value.pendingStampRewardId)
+        assertEquals(antes + 2000, vm.cartState.value.totalCents)
+        assertEquals("Ana", vm.selectedCustomer.value?.name)
+        assertTrue(fila.filas.value.isEmpty())
+        assertTrue(disco.guardado.isEmpty())
+    }
+
+    @Test
+    fun `r2-4 con premio, si la cuenta se crea sale sólo lo capturado y queda lo escaneado`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0))
+        val anunciado = vm.cartState.value.totalCents
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null,
+            """{"success":true,"order":{"id":"ord-1","total":${anunciado / 100.0},"stampReward":{"applied":true,"discountAmount":30.0}}}"""))
+
+        assertEquals(ResultadoPagarDespues.Creada, resultado.await())
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+        assertNull(vm.cartState.value.pendingStampRewardId)
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `r2-5 con premio, si la cuenta se crea y su copia no se puede retirar, la copia no se vende ni confirmando`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0))
+        val anunciado = vm.cartState.value.totalCents
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        copias.discoSano = false
+        disco.discoSano = false
+        respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null,
+            """{"success":true,"order":{"id":"ord-1","total":${anunciado / 100.0},"stampReward":{"applied":true,"discountAmount":30.0}}}"""))
+        assertEquals(ResultadoPagarDespues.Creada, resultado.await())
+        copias.discoSano = true
+        disco.discoSano = true
+
+        val copia = guardados.savedCarts.value.single()
+        assertEquals(Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(copia))
+        assertEquals(Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(copia, confirmado = true))
+        fila.drenar()
+        assertEquals(1, enviados.size)
+    }
+
+    @Test
+    fun `r3 mientras se manda un Pagar despues con premio, cobrar, guardar y vaciar esa venta se detienen y lo dicen`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0))
+        val total = vm.cartState.value.totalCents
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+
+        // La entrada del cobro (botón Cobrar y F12 en WINDOWS), de Dividir y de los atajos.
+        assertTrue(vm.detenerPorPagarDespues())
+        assertEquals("Se está dejando esta venta para pagar después: espera a que termine.", vm.avisoDeVales.value)
+        assertFalse(vm.saveCurrentCart())
+        vm.vaciar()
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("rw1", vm.cartState.value.pendingStampRewardId)
+        assertEquals(total, vm.cartState.value.totalCents)
+        assertEquals("sólo la copia de antes", 1, guardados.savedCarts.value.size)
+        coVerify(exactly = 0) { ordenes.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) }
+
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+        resultado.await()
+        assertFalse("al terminar, ya se puede cobrar", vm.detenerPorPagarDespues())
+    }
+
+    @Test
+    fun `A-4 la venta por recuperar pasa sola a Carritos guardados con su llave, sin mandar nada`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        copias.discoSano = false
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+        resultado.await()
+        val llave = fila.filas.value.single().id
+
+        fila.mantenimientoLocal()
+        assertEquals("sin disco sigue por recuperar", PayLaterRow.Estado.RECUPERAR, fila.filas.value.single().estado)
+        copias.discoSano = true
+        fila.mantenimientoLocal()
+
+        assertTrue(fila.filas.value.isEmpty())
+        val deAna = guardados.savedCarts.value.single()
+        assertEquals(listOf("Café"), deAna.items.map { it.name })
+        assertEquals("cli-1", deAna.attachedCustomerId)
+        assertEquals(llave, deAna.llavePagarDespues)
+        assertEquals(1, enviados.size)
+    }
+
+    @Test
+    fun `A-5 si la llave no se puede escribir en la copia, no se sigue`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        copias.discoSano = false
+
+        assertEquals(ResultadoPagarDespues.Error("No se pudo guardar la cuenta en el aparato. Intenta de nuevo."), vm.createPayLaterOrder("cli-1"))
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `A-7 con premio, una cuenta por otro importe tambien se dice`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0))
+        val anunciado = vm.cartState.value.totalCents
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":80.0,"stampReward":{"applied":true,"discountAmount":30.0}}}""")
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(ResultadoPagarDespues.Aviso(pagarDespuesOtroImporte("Ana", 8000, anunciado)), resultado)
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `los paquetes no se dejan para despues`() = runTest {
+        val vm = createViewModel()
+        vm.addCreditPack(com.avoqado.pos.articles.data.model.CreditPack(id = "pack-1", name = "10 clases", price = 500.0))
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(
+            ResultadoPagarDespues.Error("Los paquetes se cobran en el momento: no se pueden dejar para pagar después."),
+            resultado,
+        )
+        assertEquals(2, vm.cartState.value.items.size)
+        coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
+        assertNotNull(vm.selectedCustomer.value)
+    }
+}

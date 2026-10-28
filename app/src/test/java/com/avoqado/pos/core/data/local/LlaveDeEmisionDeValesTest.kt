@@ -94,4 +94,90 @@ class LlaveDeEmisionDeValesTest {
         LlaveDeEmisionDeVales.soltar(p.prefs, "venue-1") // «Vaciar»: sin condición
         assertNull(LlaveDeEmisionDeVales.leer(p.prefs, "venue-1"))
     }
+
+    // ── D5: el vale a medias vive y muere con su llave ───────────────────────────────────────────────────────────────
+
+    private fun intento(producto: String, copia: String? = null) = com.avoqado.pos.areatickets.data.IntentoDeVale(
+        lineas = listOf(com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest("linea-$producto", producto, "1")),
+        carritoGuardadoId = copia,
+    )
+
+    @Test
+    fun `D5 lo pedido y nunca confirmado pasa a sin confirmar con SU llave al volver a abrir la app`() {
+        val p = Prefs()
+        assertEquals(LlaveDeEmisionDeVales.Guardado.SI, LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado")))
+
+        val tras = p.reiniciar()
+        assertTrue(LlaveDeEmisionDeVales.alArrancar(tras.prefs, "venue-1"))
+        val sinConfirmar = LlaveDeEmisionDeVales.valeSinConfirmar(tras.prefs, "venue-1")
+        assertEquals("llave-A", sinConfirmar?.llave)
+        assertEquals(listOf(intento("helado")), sinConfirmar?.intentos)
+        // El negocio se queda sin llave viva: lo siguiente sale con otra, y la de la versión anterior tampoco vuelve.
+        assertNull(LlaveDeEmisionDeVales.leer(tras.prefs, "venue-1"))
+        // Sigue ahí aunque la app se vuelva a cerrar.
+        assertEquals("llave-A", LlaveDeEmisionDeVales.valeSinConfirmar(tras.reiniciar().prefs, "venue-1")?.llave)
+    }
+
+    @Test
+    fun `D5 un contenido distinto con la misma llave se agrega y nunca pisa el que pudo crear el vale`() {
+        // Codex r1 #3: el servidor creó el vale con «helado»; el cajero cambió a «paleta» y reintentó (409).
+        val p = Prefs()
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado"))
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("paleta"))
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado")) // repetido: no se duplica
+
+        val tras = p.reiniciar()
+        LlaveDeEmisionDeVales.alArrancar(tras.prefs, "venue-1")
+        assertEquals(listOf(intento("helado"), intento("paleta")), LlaveDeEmisionDeVales.valeSinConfirmar(tras.prefs, "venue-1")?.intentos)
+    }
+
+    @Test
+    fun `D5 la copia guardada va en cada intento`() {
+        // Codex r2 #1: sólo se retira la copia del intento que el servidor confirme.
+        val p = Prefs()
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado", copia = "S1"))
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado", copia = "S2"))
+        LlaveDeEmisionDeVales.alArrancar(p.prefs, "venue-1")
+        assertEquals(listOf("S1", "S2"), LlaveDeEmisionDeVales.valeSinConfirmar(p.prefs, "venue-1")?.intentos?.map { it.carritoGuardadoId })
+    }
+
+    @Test
+    fun `D5 un sexto contenido distinto no se guarda ni se manda`() {
+        val p = Prefs()
+        (1..LlaveDeEmisionDeVales.TOPE_DE_INTENTOS).forEach {
+            assertEquals(LlaveDeEmisionDeVales.Guardado.SI, LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("p$it")))
+        }
+        assertEquals(LlaveDeEmisionDeVales.Guardado.TOPE, LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("p6")))
+        // Uno que ya estaba sí pasa: es el mismo pedido.
+        assertEquals(LlaveDeEmisionDeVales.Guardado.SI, LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("p3")))
+    }
+
+    @Test
+    fun `D5 si el disco no lo guarda el vale no se pide`() {
+        val p = Prefs().apply { commitFalla = true }
+        assertEquals(LlaveDeEmisionDeVales.Guardado.NO, LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado")))
+    }
+
+    @Test
+    fun `D5 confirmado no queda nada a medias`() {
+        val p = Prefs()
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado"))
+        LlaveDeEmisionDeVales.soltar(p.prefs, "venue-1", siEs = "llave-A")
+        val tras = p.reiniciar()
+        assertFalse(LlaveDeEmisionDeVales.alArrancar(tras.prefs, "venue-1"))
+        assertNull(LlaveDeEmisionDeVales.valeSinConfirmar(tras.prefs, "venue-1"))
+    }
+
+    @Test
+    fun `D5 cada negocio tiene el suyo y olvidarlo pide su llave`() {
+        val p = Prefs()
+        LlaveDeEmisionDeVales.guardar(p.prefs, "venue-1", "llave-A", intento("helado"))
+        val tras = p.reiniciar()
+        assertFalse("otro negocio no lo ve", LlaveDeEmisionDeVales.alArrancar(tras.prefs, "venue-2"))
+        assertTrue(LlaveDeEmisionDeVales.alArrancar(tras.prefs, "venue-1"))
+        LlaveDeEmisionDeVales.olvidarSinConfirmar(tras.prefs, "venue-1", "otra-llave")
+        assertEquals("llave-A", LlaveDeEmisionDeVales.valeSinConfirmar(tras.prefs, "venue-1")?.llave)
+        LlaveDeEmisionDeVales.olvidarSinConfirmar(tras.prefs, "venue-1", "llave-A")
+        assertNull(LlaveDeEmisionDeVales.valeSinConfirmar(tras.reiniciar().prefs, "venue-1"))
+    }
 }

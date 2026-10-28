@@ -509,13 +509,19 @@ class PrecioQueVioElClienteCobroTest {
     fun `pagar después con 409 - corrige el carrito sin congelar y el fallo dice el aviso`() = runTest {
         val carrito = carritoConDosProductos(soloUno = true, precio = 100.0, descuento = diezPorCiento)
         val e1 = carrito.cartState.value.items.single().id
-        coEvery {
-            ordenesDelCarrito.createOrder(any(), any(), any(), any(), any(), any(), any(), any())
-        } returns Result.failure(OrderRepository.ServerException(409, "El precio cambió.", listOf(CambioDePrecio(e1, "p1", "Café", catalogo, 10000, 12500))))
+        coEvery { ordenesDelCarrito.enviarPagarDespues(any(), any()) } returns OrderRepository.RespuestaCruda(
+            409, "application/json", null,
+            """{"code":"ORDER_PRICE_CHANGED","message":"El precio cambió.","details":{"priceChanges":[""" +
+                """{"externalId":"$e1","productId":"p1","productName":"Café","catalogAt":"$catalogo","displayedUnitPriceCents":10000,"unitPriceCents":12500}]}}""",
+        )
 
         val resultado = carrito.createPayLaterOrder("cliente-1")
 
-        assertEquals("Café cambió de precio: ahora cuesta \$125.00.\nTotal nuevo: \$112.50.", resultado.exceptionOrNull()?.message)
+        // 27-oct: la venta salió del carrito al mandarla y, como el servidor NO la creó, vuelve corregida al carrito vacío.
+        assertEquals(
+            com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Error("Café cambió de precio: ahora cuesta \$125.00.\nTotal nuevo: \$112.50."),
+            resultado,
+        )
         assertEquals(12500, carrito.cartState.value.items.single().unitPrice)
         assertNull(carrito.cartState.value.descuentoDeCuentaCongelado)
         assertEquals(11250, carrito.cartState.value.totalCents)
@@ -720,6 +726,9 @@ class PrecioQueVioElClienteCobroTest {
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = mockk(relaxed = true),
             walletScanRepository = mockk(relaxed = true),
+            payLaterQueue = com.avoqado.pos.payment.data.PayLaterQueue(
+                PrefsEnMemoria().context, ordenesDelCarrito, secureStorage, savedCartsRepository, mockk(relaxed = true),
+            ).apply { io = kotlinx.coroutines.Dispatchers.Unconfined },
         ).apply {
             addProduct(Product(id = "p1", name = "Café", priceValue = precio, catalogAt = catalogo))
             if (!soloUno) addProduct(Product(id = "p2", name = "Té", priceValue = precio, catalogAt = catalogo))

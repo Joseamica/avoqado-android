@@ -54,6 +54,8 @@ class AppState @Inject constructor(
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
     private val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository,
+    /** «Pagar después» sin red (27-oct): su fila arranca y para con la de los cobros. Default para las pruebas de JVM. */
+    private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
 ) : ViewModel() {
 
     /**
@@ -128,6 +130,8 @@ class AppState @Inject constructor(
             kioskVenue = venue
         }
         tableSyncCoordinator.onSessionChanged()
+        // Codex ANDROID r1 A-8: los contadores y la cuarentena de «Pagar después» siguen a la sucursal de la sesión.
+        payLaterQueue?.alCambiarLaSesion()
         syncOutbox.refreshQ15Observation()
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()
@@ -246,11 +250,12 @@ class AppState @Inject constructor(
 
     val failedPaymentCount: StateFlow<Int> = paymentSyncService.failedCount
 
-    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos. */
+    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos + cuentas de «Pagar después» por subir. */
     val offlinePendingCount: StateFlow<Int> = combine(
         syncOutbox.pendingCount,
         paymentSyncService.pendingCount,
-    ) { intents, payments -> intents + payments }
+        payLaterQueue?.porSubir ?: kotlinx.coroutines.flow.flowOf(0),
+    ) { intents, payments, cuentas -> intents + payments + cuentas }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -343,6 +348,8 @@ class AppState @Inject constructor(
             interrumpidos,
             syncOutbox.q15ReviewCount,
         ) { rejected, failed, reservas, cobros, revisiones -> rejected + failed + reservas + cobros + revisiones }
+            // «Pagar después» rechazadas o creadas por otro importe: una persona las ve y decide.
+            .combine(payLaterQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0)) { otras, cuentas -> otras + cuentas }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5_000),
@@ -436,6 +443,7 @@ class AppState @Inject constructor(
                 authRepository.repairCurrentVenueBinding()
                 startInventorySyncIfNeeded()
                 paymentSyncService.start()
+                payLaterQueue?.start()
                 startOfflineOutbox()
                 refreshPlanAndSettings()
             }
@@ -470,6 +478,7 @@ class AppState @Inject constructor(
         _isLoggedIn.value = true
         notifyDeviceSessionChanged()
         paymentSyncService.start()
+        payLaterQueue?.start()
         startOfflineOutbox()
         // refreshTabs rearma una sola generación de inventario para esta sesión/venue.
         refreshTabs()
@@ -501,6 +510,7 @@ class AppState @Inject constructor(
                 wasteSyncCoordinator.vaciarAntesDeCerrarSesion(secureStorage.userId)
             }
             paymentSyncService.stop()
+            payLaterQueue?.stop()
             stopInventorySync()
             syncOutbox.stop()
             detenerRedLocal()
