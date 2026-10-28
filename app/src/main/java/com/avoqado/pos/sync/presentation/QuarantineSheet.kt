@@ -90,6 +90,9 @@ fun QuarantineSheet(
     val retryingPaymentId by viewModel.retryingPaymentId.collectAsState()
     val revisionCancelada by viewModel.revisionCancelada.collectAsState()
     val cobrosInterrumpidos by viewModel.cobrosInterrumpidos.collectAsState()
+    val cuentasPagarDespues by viewModel.cuentasPagarDespues.collectAsState()
+    val reintentandoCuenta by viewModel.reintentandoCuenta.collectAsState()
+    var cuentaPorDescartar by androidx.compose.runtime.remember { mutableStateOf<com.avoqado.pos.payment.data.PayLaterRow?>(null) }
     // Cancelaciones de cobro que no se pudieron confirmar: viven fuera del flujo de pago, así que
     // sin esta sección el cajero salía de la venta y nadie volvía a enterarse.
     val cancelacionesViewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
@@ -148,7 +151,7 @@ fun QuarantineSheet(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = AvoqadoTheme.spacing.xxl, vertical = AvoqadoTheme.spacing.lg),
                 ) {
-                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty()))) {
+                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty()))) {
                         item {
                             Text(
                                 if (revisadas) "No hay cobros revisados." else "No hay operaciones pendientes de revisión.",
@@ -216,6 +219,27 @@ fun QuarantineSheet(
                                     )
                                 }
                                 if (abierto) Text("Folio ${cobro.id}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            HorizontalDivider()
+                        }
+                        // 27-oct: «Pagar después» que el servidor rechazó o creó por otro importe. Nunca se descartan solas.
+                        if (cuentasPagarDespues.isNotEmpty()) item { SeccionDeRevision("Pagar después") }
+                        items(cuentasPagarDespues, key = { "pagar-despues-${it.id}" }) { cuenta ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                                Text(com.avoqado.pos.payment.data.tituloDePagarDespues(cuenta), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(formatTime(cuenta.creadaEn), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                com.avoqado.pos.payment.data.detalleDePagarDespues(cuenta)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                                if (viewModel.canResolve) {
+                                    if (cuenta.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.RECHAZADA) {
+                                        AccionDeRevision(text = "Reintentar", onClick = { viewModel.reintentarCuenta(cuenta.id) },
+                                            enabled = reintentandoCuenta == null, isLoading = reintentandoCuenta == cuenta.id, principal = true)
+                                    }
+                                    // Nunca «Reintentar» aquí: como venta sin red se saltaría el rechazo de precio.
+                                    if (cuenta.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR) {
+                                        AccionDeRevision(text = "Pasar a carritos guardados", onClick = { viewModel.pasarACarritosGuardados(cuenta.id) }, principal = true)
+                                    }
+                                    AccionDeRevision(text = "Descartar", onClick = { cuentaPorDescartar = cuenta }, enabled = reintentandoCuenta != cuenta.id)
+                                }
                             }
                             HorizontalDivider()
                         }
@@ -297,7 +321,7 @@ fun QuarantineSheet(
                             HorizontalDivider()
                         }
                     }
-                    if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty() || cobrosInterrumpidos.isNotEmpty())) {
+                    if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty() || cobrosInterrumpidos.isNotEmpty() || cuentasPagarDespues.isNotEmpty())) {
                         item { Text("Pide a un gerente que revise y resuelva estas operaciones.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.lg)) }
                     }
                 }
@@ -317,6 +341,25 @@ fun QuarantineSheet(
                     isLoading=retryingPaymentId!=null)
             },
         ) { Text("El intento permanecerá en el historial con su folio y la comprobación del servidor.",style=MaterialTheme.typography.bodyMedium) }
+    }
+
+    // Descartar pide confirmación: una RECHAZADA no existe en el servidor y se pierde; una REVISAR sí existe.
+    cuentaPorDescartar?.let { cuenta ->
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = "Descartar",
+            onDismiss = { cuentaPorDescartar = null },
+            description = if (cuenta.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR) {
+                "La cuenta ya está en el servidor: descartarla sólo la quita de este aparato."
+            } else {
+                "Esta cuenta no llegó al servidor: si la descartas, se borra de este aparato."
+            },
+            actionButton = {
+                com.avoqado.pos.designsystem.components.PrimaryButton(text = "Descartar", onClick = {
+                    viewModel.descartarCuenta(cuenta.id)
+                    cuentaPorDescartar = null
+                })
+            },
+        ) {}
     }
 
     successMessage?.let {
