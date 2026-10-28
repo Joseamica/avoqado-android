@@ -87,6 +87,7 @@ import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.presentation.cart.CartPanelView
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues
 import com.avoqado.pos.pos.presentation.cart.ScannedBarcodeResult
 import com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet
 import com.avoqado.pos.pos.presentation.product.CreateProductView
@@ -385,8 +386,8 @@ fun CheckoutScreen(
     var showStaffSelector by remember { mutableStateOf(false) }
     var pendingSplitConfig by remember { mutableStateOf(SplitConfig()) }
     var customerSelectionContext by remember { mutableStateOf(CustomerSelectionContext.GENERAL) }
-    var isSubmittingPayLater by remember { mutableStateOf(false) }
     var payLaterError by remember { mutableStateOf<String?>(null) }
+    var payLaterAviso by remember { mutableStateOf<String?>(null) }
     var showPayLaterSuccessToast by remember { mutableStateOf(false) }
     var reopenPayLaterToken by remember { mutableIntStateOf(0) }
     val checkoutScope = rememberCoroutineScope()
@@ -450,7 +451,6 @@ fun CheckoutScreen(
         showCustomersSheet = true
     }
     fun confirmPayLaterOrder() {
-        if (isSubmittingPayLater) return
         // Del FLUJO, no de la variable capturada por `collectAsState()`: es el
         // mismo criterio que `proceedToPayment` con el carrito — en la ruta que
         // manda un id al server se lee el valor de AHORA, no el de la última
@@ -460,23 +460,27 @@ fun CheckoutScreen(
             openPayLaterCustomerPicker()
             return
         }
-        checkoutScope.launch {
-            isSubmittingPayLater = true
-            val payLaterResult = cartViewModel.createPayLaterOrder(customerId)
-            isSubmittingPayLater = false
-            payLaterResult.fold(
-                onSuccess = {
-                    // La venta se fue a "pagar después" a nombre de este cliente:
-                    // aquí termina, así que el cliente se suelta con el carrito.
-                    cartViewModel.finalizarVenta()
-                    customerSelectionContext = CustomerSelectionContext.GENERAL
-                    showPayLaterSuccessToast = true
-                },
-                onFailure = { error ->
-                    payLaterError = error.message ?: "No se pudo registrar la venta como pagar después"
-                },
-            )
+        // 27-oct (R7): el envío vive en el CARRITO, no en esta pantalla. La venta sale del carrito al mandarla y el
+        // desenlace llega por `resultadoPagarDespues`, aunque la pantalla se recree.
+        cartViewModel.pagarDespues(customerId)
+    }
+
+    val resultadoPagarDespues by cartViewModel.resultadoPagarDespues.collectAsState()
+    LaunchedEffect(resultadoPagarDespues) {
+        when (val resultado = resultadoPagarDespues ?: return@LaunchedEffect) {
+            // La venta se fue a «pagar después» a nombre de este cliente: el carrito ya la soltó con su cliente.
+            ResultadoPagarDespues.Creada -> {
+                customerSelectionContext = CustomerSelectionContext.GENERAL
+                showPayLaterSuccessToast = true
+            }
+            // Sin red, o creada por otro importe: la venta ya salió, y se dice en ámbar (nunca como error).
+            is ResultadoPagarDespues.Aviso -> {
+                customerSelectionContext = CustomerSelectionContext.GENERAL
+                payLaterAviso = resultado.texto
+            }
+            is ResultadoPagarDespues.Error -> payLaterError = resultado.texto
         }
+        cartViewModel.consumirResultadoPagarDespues()
     }
 
     /**
@@ -489,6 +493,8 @@ fun CheckoutScreen(
      * lo borraría después — el negocio regala el producto y la orden ni lo registra.
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
+        // Codex iOS r3 #1: mientras «Pagar después» manda esta venta, no se cobra (botón, F12, upsell, dividir).
+        if (cartViewModel.detenerPorPagarDespues()) return
         // Mientras se consulta un código leído, el cobro no se abre: lo leído entra ANTES de fotografiar el carrito, y un
         // vale no queda en la sesión de vales sin cobrarse. Lo cuenta el CARRITO, que sobrevive a que esta pantalla se
         // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
@@ -570,6 +576,7 @@ fun CheckoutScreen(
     }
 
     fun runPrimaryAction(closePhoneCart: Boolean = false) {
+        if (cartViewModel.detenerPorPagarDespues()) return
         if (areaOperationsState.issueWorkspace) {
             // D1: como el cobro, la copia guardada se marca justo antes de pedir el vale (si la app muere, restaurarla pregunta) y se
             // retira al quedar emitido.
@@ -613,7 +620,7 @@ fun CheckoutScreen(
     ) {
         runPrimaryAction(closePhoneCart = true)
     }
-    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch) { showSearch = true }
+    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch) { if (!cartViewModel.detenerPorPagarDespues()) showSearch = true }
     // Esc regresa, como en el cobro: cierra la búsqueda que abrió F3 (prueba en Windows real, 19-oct).
     AtajoDeTeclado(Key.Escape, activo = showSearch && !showPaymentFlow) { showSearch = false }
 
@@ -703,7 +710,6 @@ fun CheckoutScreen(
                                         reopenPayLaterToken = reopenPayLaterToken,
                                         selectedPayLaterCustomerName = selectedCustomer?.name,
                                         onConfirmPayLater = ::confirmPayLaterOrder,
-                                        isConfirmingPayLater = isSubmittingPayLater,
                                         onCreateItem = { showCreateProduct = true },
                                         onProductTap = { product ->
                                             handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
@@ -813,6 +819,8 @@ fun CheckoutScreen(
                         onSaveCart = {
                             if (cartViewModel.saveCurrentCart()) {
                                 showSavedSnackbar = true
+                            } else if (cartViewModel.pagarDespuesEnCurso.value != null) {
+                                Unit // el aviso «Se está dejando esta venta para pagar después» ya salió
                             } else if (cartViewModel.vaciarBloqueadoPorAbono()) {
                                 savedCartError = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
                             } else if (cartViewModel.hayVentaAMedias()) {
@@ -837,9 +845,11 @@ fun CheckoutScreen(
                         onRemoveStampReward = { cartViewModel.setPendingStampReward(null) },
                         premioEditable = cartViewModel.puedeCambiarPremio(),
                         onSplitPayment = {
+                            // Codex iOS r3 #1: mientras «Pagar después» manda esta venta, no se divide.
+                            if (cartViewModel.detenerPorPagarDespues()) Unit
                             // Membresías grant only on FULL payment — a split sale
                             // charged the pack without ever granting credits.
-                            if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                            else if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
                             // D1 (founder «B»): en tienda, dividir pide conexión con Avoqado.
                             else if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) Unit
                             else showSplitPayment = true
@@ -943,7 +953,6 @@ fun CheckoutScreen(
                                     reopenPayLaterToken = reopenPayLaterToken,
                                     selectedPayLaterCustomerName = selectedCustomer?.name,
                                     onConfirmPayLater = ::confirmPayLaterOrder,
-                                    isConfirmingPayLater = isSubmittingPayLater,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
                                         handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
@@ -1152,6 +1161,8 @@ fun CheckoutScreen(
             onSaveCart = {
                 if (cartViewModel.saveCurrentCart()) {
                     showSavedSnackbar = true
+                } else if (cartViewModel.pagarDespuesEnCurso.value != null) {
+                    Unit // el aviso «Se está dejando esta venta para pagar después» ya salió
                 } else if (cartViewModel.vaciarBloqueadoPorAbono()) {
                     savedCartError = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
                 } else if (cartViewModel.hayVentaAMedias()) {
@@ -1181,7 +1192,9 @@ fun CheckoutScreen(
             premioEditable = cartViewModel.puedeCambiarPremio(),
             onSplitPayment = {
                 // Membresías grant only on FULL payment — mismo guard que en tablet.
-                if (cartViewModel.hasCreditPack) {
+                if (cartViewModel.detenerPorPagarDespues()) {
+                    // Codex iOS r3 #1: mientras «Pagar después» manda esta venta, no se divide (lo dice el aviso).
+                } else if (cartViewModel.hasCreditPack) {
                     showPackNoSplitAlert = true
                 } else if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) {
                     // D1 (founder «B»): en tienda, dividir pide conexión con Avoqado.
@@ -1965,6 +1978,15 @@ fun CheckoutScreen(
         AvoqadoSuccessToast(
             message = "¡Venta enviada a pagar después!",
             onDismiss = { showPayLaterSuccessToast = false },
+        )
+    }
+
+    payLaterAviso?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Pagar después",
+            subtitle = aviso,
+            onDismiss = { payLaterAviso = null },
+            secondaryLabel = "Entendido",
         )
     }
 

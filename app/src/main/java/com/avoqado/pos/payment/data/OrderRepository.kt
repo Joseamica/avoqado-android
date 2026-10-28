@@ -88,6 +88,40 @@ class OrderRepository @Inject constructor(
         }
         .build()
 
+    /**
+     * «Pagar después» (27-oct, R2-2): el cliente de [moneyClient] SIN reenvíos propios. Si OkHttp reenviara solo un POST cuya
+     * respuesta se perdió, un 4xx del segundo envío «probaría» que no se creó la cuenta que el primero sí creó. Sin reenvío, un
+     * corte es «sin respuesta» y la fila conserva su llave.
+     *
+     * 🔴 Y sin conexiones reusadas (`ConnectionPool(0, …)`): apagar el reenvío también apaga la reconexión de una conexión
+     * keep-alive que el servidor ya cerró, y en un aparato real el POST fallaba casi siempre («unexpected end of stream»,
+     * medido en la D3 el 21-sep; memoria `reintento-de-conexion-no-es-reenvio-de-peticion`). Una conexión nueva por cuenta
+     * cuesta un saludo TLS; una rancia costaba un «Sin conexión» falso.
+     */
+    private val payLaterClient: OkHttpClient = moneyClient.newBuilder()
+        .retryOnConnectionFailure(false)
+        .connectionPool(okhttp3.ConnectionPool(0, 1, TimeUnit.SECONDS))
+        .build()
+
+    /**
+     * POST de una cuenta de «Pagar después» con el cuerpo YA armado (la llave de la venta adentro). Lee el código y el cuerpo
+     * crudos: aquí no pasa el `ServerException(409)` sintético de [createOrder] tras un 201 (Codex r1 #2). Sin respuesta ⇒
+     * `IOException`. Sin sesión ⇒ un 401 sin cuerpo: es lo que diría el servidor.
+     */
+    suspend fun enviarPagarDespues(venueId: String, cuerpo: String): RespuestaCruda {
+        val token = secureStorage.accessToken ?: return RespuestaCruda(401, null, null, "")
+        val request = Request.Builder()
+            .url("$baseUrl/mobile/venues/$venueId/orders")
+            .header("Authorization", "Bearer $token")
+            .post(cuerpo.toRequestBody("application/json".toMediaType()))
+            .build()
+        return withContext(Dispatchers.IO) {
+            payLaterClient.newCall(request).execute().use {
+                RespuestaCruda(it.code, it.header("content-type"), it.header("ngrok-error-code"), it.body?.string().orEmpty())
+            }
+        }
+    }
+
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /**
@@ -703,6 +737,31 @@ class OrderRepository @Inject constructor(
          */
         fun mensajeDelRechazo(code: Int, body: String): String = extractErrorMessage(body) ?: "Error al registrar pago ($code)"
 
+        /**
+         * Cómo se lee la respuesta al crear una cuenta de «Pagar después». PURA. Un 2xx sólo es la cuenta si trae `order.id`
+         * (R2-1): la página 200 de un portal no prueba nada y la fila sigue con su llave. El total va en pesos y se compara en
+         * centavos; ilegible ⇒ null («importe desconocido»), nunca otra llave.
+         */
+        fun leerPagarDespues(code: Int, contentType: String?, ngrokError: String?, body: String): DesenlacePagarDespues {
+            if (code in 200..299) {
+                val raiz = runCatching { errorParserJson.parseToJsonElement(body) as? JsonObject }.getOrNull()
+                val orden = (raiz?.get("data") as? JsonObject) ?: (raiz?.get("order") as? JsonObject)
+                val id = (orden?.get("id") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+                    ?: return DesenlacePagarDespues.Pendiente("Respuesta $code sin cuenta")
+                val total = (orden["total"] as? JsonPrimitive)?.content?.toBigDecimalOrNull()
+                    ?.movePointRight(2)?.setScale(0, java.math.RoundingMode.HALF_UP)?.toInt()?.takeIf { it >= 0 }
+                val datos = runCatching { errorParserJson.decodeFromJsonElement(OrderData.serializer(), orden) }.getOrNull()
+                return DesenlacePagarDespues.Creada(id, total, datos)
+            }
+            val mensaje = extractErrorMessage(body) ?: "Error al crear orden ($code)"
+            if (code == 401) return DesenlacePagarDespues.SesionVencida(mensaje)
+            // 5xx, una redirección que no se siguió, 408/429 o un intermediario: nada de eso dice algo de la cuenta.
+            if (code !in 400..499 || isTransient4xx(code, contentType, ngrokError, body)) {
+                return DesenlacePagarDespues.Pendiente("Error $code")
+            }
+            return DesenlacePagarDespues.Rechazada(code, mensaje, leerCambiosDePrecio(body))
+        }
+
         private fun extractErrorMessage(responseBody: String): String? {
             return try {
                 val root = errorParserJson.parseToJsonElement(responseBody).jsonObject
@@ -880,7 +939,8 @@ class OrderRepository @Inject constructor(
         }
     }
 
-    private data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
+    /** Lo que contestó el servidor, tal cual (cancelar una orden, crear una de «Pagar después»). */
+    data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
 
 
     /**

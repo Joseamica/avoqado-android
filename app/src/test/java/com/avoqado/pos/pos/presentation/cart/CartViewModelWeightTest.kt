@@ -562,7 +562,7 @@ class CartViewModelWeightTest {
 
         val resultado = vm.createPayLaterOrder("cliente-1")
 
-        assertEquals(VALES_NO_PAGAR_DESPUES, resultado.exceptionOrNull()?.message)
+        assertEquals(ResultadoPagarDespues.Error(VALES_NO_PAGAR_DESPUES), resultado)
     }
 
     @Test
@@ -574,7 +574,7 @@ class CartViewModelWeightTest {
 
         val resultado = vm.createPayLaterOrder("cliente-1")
 
-        assertEquals(com.avoqado.pos.payment.presentation.VALES_CON_ABONO, resultado.exceptionOrNull()?.message)
+        assertEquals(ResultadoPagarDespues.Error(com.avoqado.pos.payment.presentation.VALES_CON_ABONO), resultado)
     }
 
     @Test

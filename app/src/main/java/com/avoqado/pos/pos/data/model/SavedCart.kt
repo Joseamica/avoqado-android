@@ -16,6 +16,14 @@ data class SavedCart(
     val attachedCustomerId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val cobroIniciadoEn: Long? = null,
+    /** La llave de «Pagar después» de esta venta, si ya la tenía (`CartState.llavePagarDespues`): viaja con ella. */
+    val llavePagarDespues: String? = null,
+    /**
+     * Codex r2 #5: una venta CON PREMIO salió de esta copia a «Pagar después» y todavía no se sabe su desenlace (no tiene fila
+     * en la cola). Mientras sea true no se restaura, ni confirmando. Se suelta si la cuenta no se creó; si se creó, la copia
+     * se retira (y si el retiro falla, sigue bloqueada: la cuenta ya existe).
+     */
+    val pagarDespuesSinDesenlace: Boolean = false,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }
