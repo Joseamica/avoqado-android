@@ -5296,4 +5296,21 @@ class PaymentFlowViewModelTest {
         assertEquals(setOf("a", "b"), viewModel.buildCompletion().paidItemIds)
         assertEquals(0, viewModel.buildCompletion().remainingBalanceCents)
     }
+
+    // MARK: - D4 (28-oct): «Ver productos» de un pedido en línea enseña sus productos, no «Pedido #XXXX»
+
+    @Test
+    fun `D4 Ver productos de un pedido en linea lista sus productos y el cobro sigue siendo el saldo`() {
+        val tacos = com.avoqado.pos.payment.data.model.PaymentItem(name = "Tacos de Pollo", quantity = 2, unitPrice = 3950, lineTotal = 7900)
+        val cart = CartState(
+            items = listOf(CartItem(id = "pedido-en-linea-o1", type = CartItemType.CustomAmount, name = "Pedido #WUFUR", unitPrice = 7900)),
+            renglonesParaVer = listOf(tacos),
+        )
+        viewModel.startPaymentFlow(cart)
+
+        val ctx = viewModel.buildPaymentContext()
+        assertEquals(listOf(tacos), ctx.items)
+        assertEquals("lo que se cobra no cambia", 7900, ctx.totalCents)
+    }
 }
+

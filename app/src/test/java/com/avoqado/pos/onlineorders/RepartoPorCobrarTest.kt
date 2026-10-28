@@ -9,6 +9,7 @@ import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
+import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
@@ -195,7 +196,9 @@ class RepartoPorCobrarTest {
 
     @Test
     fun `cobrarDeReparto opens a cash only charge with the server balance`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("r1") } returns Result.success(20500L)
+        // Aunque el servidor mande precios que cuadran, Rappi sigue diciendo «Rappi #folio» en «Ver productos» (D4, Codex r1 #2).
+        coEvery { repo.saldoDelPedido("r1") } returns Result.success(
+            SaldoDelPedido(20500L, listOf(com.avoqado.pos.onlineorders.domain.PrecioDeRenglon("Tacos", 1, 20500))))
         val vm = armar()
 
         vm.cobrarDeReparto(rappi())
@@ -206,11 +209,12 @@ class RepartoPorCobrarTest {
         assertEquals(20500, cobro.saldoCents)
         assertFalse(cobro.origen.permiteTarjeta)
         assertEquals("Rappi #881655210", carritoDelCobro(cobro).items.single().name)
+        assertTrue(carritoDelCobro(cobro).renglonesParaVer.isEmpty())
     }
 
     @Test
     fun `offline it charges the saved balance as a prior capture`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("r1") } returns Result.failure(IOException("sin red"))
+        coEvery { repo.saldoDelPedido("r1") } returns Result.failure(IOException("sin red"))
         val vm = armar()
 
         vm.cobrarDeReparto(rappi(saldo = 10500))
@@ -235,12 +239,12 @@ class RepartoPorCobrarTest {
 
         assertNull(vm.cobroAbierto.value)
         assertEquals(TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO, vm.aviso.value)
-        coVerify(exactly = 0) { repo.saldoCents(any()) }
+        coVerify(exactly = 0) { repo.saldoDelPedido(any()) }
     }
 
     @Test
     fun `already paid elsewhere shows Pagado and rereads`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("r1") } returns Result.success(0L)
+        coEvery { repo.saldoDelPedido("r1") } returns Result.success(SaldoDelPedido(0L))
         paginas[null] = Result.success(lista())
         val vm = armar()
 

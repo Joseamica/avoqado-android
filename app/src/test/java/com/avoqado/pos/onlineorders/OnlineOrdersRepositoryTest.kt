@@ -13,6 +13,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
+import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -244,9 +245,9 @@ class OnlineOrdersRepositoryTest {
     }
 
     @Test
-    fun `saldoCents reads preBillBalance remainingBalanceCents from the order detail`() = runTest {
+    fun `saldoDelPedido reads preBillBalance remainingBalanceCents from the order detail`() = runTest {
         server.enqueue(MockResponse().setBody("""{"success":true,"order":{"id":"o1","preBillBalance":{"orderTotalCents":20000,"totalPaidCents":5000,"remainingBalanceCents":15000,"tipAmountCents":0}}}"""))
-        assertEquals(15000L, repo.saldoCents("o1").getOrThrow())
+        assertEquals(15000L, repo.saldoDelPedido("o1").getOrThrow().saldoCents)
         val pedida = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/orders/o1", pedida.requestUrl!!.encodedPath)
         // 🔴 DINERO (PR #53): un 403 con PIN de gerente no se espera DENTRO de la llamada de 8 s; si no, muere como `IOException`
@@ -329,5 +330,50 @@ class OnlineOrdersRepositoryTest {
     @Test
     fun `porCobrarGuardado is null when nothing was ever saved`() = runTest {
         assertNull(repo.porCobrarGuardado())
+    }
+
+    // MARK: - D4 (28-oct): el precio de cada producto, sólo para «Ver productos»
+
+    private fun detalle(saldo: Int, items: String, pagado: Int = 0) =
+        """{"success":true,"order":{"id":"o1","preBillBalance":{"orderTotalCents":${saldo + pagado},"totalPaidCents":$pagado,"remainingBalanceCents":$saldo,"tipAmountCents":0},"items":[$items]}}"""
+
+    @Test
+    fun `saldoDelPedido trae el precio de cada producto`() = runTest {
+        server.enqueue(MockResponse().setBody(detalle(10850,
+            """{"productName":"Tacos de Pollo","quantity":2,"unitPrice":39.5,"total":79,"weightQuantity":null,"notes":"sin cebolla","modifiers":[]},""" +
+            """{"productName":"Agua de Jamaica","quantity":1,"unitPrice":25,"total":29.5,"weightQuantity":null,"notes":null,"modifiers":[{"name":"Grande","price":4.5}]}""")))
+        val leido = repo.saldoDelPedido("o1").getOrThrow()
+        assertEquals(10850L, leido.saldoCents)
+        assertEquals(
+            listOf(PrecioDeRenglon("Tacos de Pollo", 2, 7900, "sin cebolla"), PrecioDeRenglon("Agua de Jamaica", 1, 2950, null, listOf("Grande"))),
+            leido.precios,
+        )
+    }
+
+    @Test
+    fun `saldoDelPedido con un abono previo no trae precios aunque cuadren`() = runTest {
+        // Codex r2 #2: cargo por servicio de $20 y abono de $20 dejan el saldo igual a los productos por casualidad.
+        server.enqueue(MockResponse().setBody(detalle(10000, """{"productName":"A","quantity":1,"total":100,"weightQuantity":null}""", pagado = 2000)))
+        val leido = repo.saldoDelPedido("o1").getOrThrow()
+        assertEquals(10000L, leido.saldoCents)
+        assertNull(leido.precios)
+    }
+
+    @Test
+    fun `saldoDelPedido sin el total de un producto no inventa un cero y el saldo sale igual`() = runTest {
+        // Codex r1 #3: un `total` ausente se leía como $0 y un renglón gratis cuadraba la suma.
+        server.enqueue(MockResponse().setBody(detalle(10000,
+            """{"productName":"A","quantity":1,"total":100,"weightQuantity":null},{"productName":"B","quantity":1,"weightQuantity":null}""")))
+        val leido = repo.saldoDelPedido("o1").getOrThrow()
+        assertEquals(10000L, leido.saldoCents)
+        assertNull(leido.precios)
+    }
+
+    @Test
+    fun `saldoDelPedido con un producto ilegible sigue dando el saldo`() = runTest {
+        server.enqueue(MockResponse().setBody(detalle(7900, """{"quantity":"x"}""")))
+        val leido = repo.saldoDelPedido("o1").getOrThrow()
+        assertEquals(7900L, leido.saldoCents)
+        assertNull(leido.precios)
     }
 }
