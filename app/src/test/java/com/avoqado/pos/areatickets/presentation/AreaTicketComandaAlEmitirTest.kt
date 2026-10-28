@@ -47,7 +47,7 @@ class AreaTicketComandaAlEmitirTest {
 
     private val repository = mockk<AreaTicketRepository>()
     private val printerService = mockk<PrinterService>(relaxed = true)
-    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true } // D2: el disco guarda la llave
     private val comandaDispatcher = mockk<ComandaDispatcher>()
     private val lineas = slot<List<RoutableItem>>()
 

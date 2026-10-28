@@ -194,7 +194,7 @@ class AreaTicketOperationsStateTest {
     fun `issued ticket consumes cart even when no printer is configured`() = runTest {
         val repository = mockk<AreaTicketRepository>()
         val printerService = mockk<PrinterService>()
-        val secureStorage = mockk<SecureStorage>(relaxed = true)
+        val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true } // D2: el disco guarda la llave
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
         coEvery { repository.issue(any(), any()) } returns ticket()
         coEvery { printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } returns null
@@ -240,6 +240,11 @@ class AreaTicketOperationsStateTest {
         val repository = mockk<AreaTicketRepository>()
         val printerService = mockk<PrinterService>()
         val secureStorage = mockk<SecureStorage>(relaxed = true)
+        // D2 (vales-ciclo): la llave se lee del aparato en cada emisión, así que el disco tiene que recordarla.
+        var llaveGuardada: String? = null
+        every { secureStorage.llaveDeEmisionDeVales(any()) } answers { llaveGuardada }
+        every { secureStorage.guardarLlaveDeEmisionDeVales(any(), any()) } answers { llaveGuardada = secondArg(); true }
+        every { secureStorage.soltarLlaveDeEmisionDeVales(any(), any()) } answers { llaveGuardada = null }
         val issuedKeys = mutableListOf<String>()
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
         coEvery { repository.issue(any(), any()) } coAnswers {

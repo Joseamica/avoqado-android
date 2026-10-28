@@ -1516,7 +1516,7 @@ private fun SavedCartsSubView(
         val hora = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(copia.cobroIniciadoEn!!))
         AvoqadoDialog(
             title = "¿Restaurar este carrito?",
-            description = "Este carrito ya se mandó a cobrar a las $hora. Revisa en Ventas que no se haya cobrado.",
+            description = "Este carrito ya se mandó a cobrar o a emitir como vale a las $hora. Revisa que no se haya cobrado ni emitido su vale.",
             onDismiss = { confirmarRestauracion = null },
             actionButton = {
                 PrimaryButton(text = "Restaurar de todos modos", fullWidth = true, onClick = {
