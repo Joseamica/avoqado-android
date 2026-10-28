@@ -43,6 +43,18 @@ class CustomersRepository @Inject constructor(
     private val guardados = LinkedHashMap<String, Customer>()
     private var negocioDeGuardados: String? = null
 
+    /** Cuenta que sólo sube: cada búsqueda toma la suya al SALIR y cada edición al GUARDAR. */
+    private var reloj = 0L
+
+    /**
+     * Por id, el [reloj] de su última edición: una búsqueda que salió antes trae el dato viejo y no lo pisa (D4). No se
+     * borra al cambiar de sucursal: una búsqueda vieja puede llegar al volver (los ids no se repiten entre sucursales).
+     */
+    private val editadoEn = HashMap<String, Long>()
+
+    @Synchronized
+    private fun tic(): Long = ++reloj
+
     /** Sólo la lista: para quien no pinta el total (selectores de cliente de reservas). */
     suspend fun fetchCustomers(search: String? = null): Result<List<Customer>> = buscarClientes(search).map { it.clientes }
 
@@ -55,6 +67,7 @@ class CustomersRepository @Inject constructor(
     suspend fun buscarClientes(search: String? = null): Result<PaginaDeClientes> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
 
+        val salida = tic()
         return try {
             val url = "$baseUrl/mobile/venues/$venueId/customers".toHttpUrl().newBuilder()
                 .addQueryParameter("pageSize", PAGE_SIZE.toString())
@@ -71,7 +84,7 @@ class CustomersRepository @Inject constructor(
             if (code in 200..299) {
                 val decoded = json.decodeFromString<CustomersResponse>(body)
                 Log.d("👤", "Fetched ${decoded.data.size} of ${decoded.totalDelServidor ?: "?"} customers")
-                guardar(venueId, decoded.data)
+                guardar(venueId, decoded.data, salida)
                 Result.success(
                     PaginaDeClientes(
                         clientes = decoded.data,
@@ -100,8 +113,12 @@ class CustomersRepository @Inject constructor(
         return if (venueId == negocioDeGuardados) guardados.values.toList() else emptyList()
     }
 
+    /**
+     * [salida]: el [reloj] con que salió la petición; `null` = una edición (manda siempre; lleno, saca al más viejo).
+     * Un alta manda 0: si su respuesta llega tarde, una edición del mismo cliente ya es más nueva.
+     */
     @Synchronized
-    private fun guardar(venueId: String, lista: List<Customer>) {
+    private fun guardar(venueId: String, lista: List<Customer>, salida: Long?) {
         // Una respuesta que llega después de cambiar de sucursal no se mezcla con la sucursal nueva.
         if (venueId != secureStorage.venueId) return
         if (venueId != negocioDeGuardados) {
@@ -109,7 +126,12 @@ class CustomersRepository @Inject constructor(
             negocioDeGuardados = venueId
         }
         lista.forEach { cliente ->
-            if (guardados.containsKey(cliente.id) || guardados.size < TOPE_GUARDADOS) guardados[cliente.id] = cliente
+            if (salida != null && (editadoEn[cliente.id] ?: Long.MIN_VALUE) > salida) return@forEach
+            if (!guardados.containsKey(cliente.id) && guardados.size >= TOPE_GUARDADOS) {
+                if (salida != null) return@forEach
+                guardados.remove(guardados.keys.first()) // la edición entra; sale el más viejo (sigue el tope)
+            }
+            guardados[cliente.id] = cliente
         }
     }
 
@@ -135,7 +157,7 @@ class CustomersRepository @Inject constructor(
                 val customer = decoded.customer
                 if (customer != null) {
                     Log.d("👤", "Customer created: ${customer.fullName}")
-                    guardar(venueId, listOf(customer))
+                    guardar(venueId, listOf(customer), salida = 0L)
                     Result.success(customer)
                 } else {
                     Result.failure(Exception("Respuesta inválida del servidor"))
@@ -182,7 +204,10 @@ class CustomersRepository @Inject constructor(
                     email = contacto.email,
                 )
                 Log.d("👤", "Customer updated: ${actualizado.id}")
-                guardar(venueId, listOf(actualizado))
+                synchronized(this) {
+                    guardar(venueId, listOf(actualizado), salida = null)
+                    editadoEn[actualizado.id] = tic()
+                }
                 Result.success(actualizado)
             } else {
                 Log.e("👤", "Update customer failed: $code - $body")
