@@ -62,11 +62,13 @@ fun EditCustomerView(
     val isSaving by viewModel.isSaving.collectAsState()
     val errorDeEdicion by viewModel.errorDeEdicion.collectAsState()
 
-    // rememberSaveable: girar la tablet no borra lo escrito.
-    var nombre by rememberSaveable(cliente.id) { mutableStateOf(cliente.firstName.orEmpty()) }
-    var apellido by rememberSaveable(cliente.id) { mutableStateOf(cliente.lastName.orEmpty()) }
-    var telefono by rememberSaveable(cliente.id) { mutableStateOf(cliente.phone.orEmpty()) }
-    var correo by rememberSaveable(cliente.id) { mutableStateOf(cliente.email.orEmpty()) }
+    // rememberSaveable: girar la tablet no borra lo escrito. Si «Más» cerró Clientes a media guardada, se reabre con lo
+    // que se mandó a guardar (D3).
+    val borrador = viewModel.borradorDeEdicion
+    var nombre by rememberSaveable(cliente.id) { mutableStateOf(borrador?.nombre ?: cliente.firstName.orEmpty()) }
+    var apellido by rememberSaveable(cliente.id) { mutableStateOf(borrador?.apellido ?: cliente.lastName.orEmpty()) }
+    var telefono by rememberSaveable(cliente.id) { mutableStateOf(borrador?.telefono ?: cliente.phone.orEmpty()) }
+    var correo by rememberSaveable(cliente.id) { mutableStateOf(borrador?.correo ?: cliente.email.orEmpty()) }
 
     val editado = ContactoEditado(nombre, apellido, telefono, correo)
     val errores = remember(editado, cliente) { erroresDeContacto(cliente, editado) }

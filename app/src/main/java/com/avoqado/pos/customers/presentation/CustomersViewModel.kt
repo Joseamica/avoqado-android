@@ -250,9 +250,18 @@ class CustomersViewModel @Inject constructor(
     /** Esta edición entró con PIN de gerente (decide si un 403 se reintenta para que el teclado vuelva a salir). */
     private var edicionConPin = false
 
+    /**
+     * Lo que se mandó a guardar en ESTA edición. Si «Más» (o cambiar de pestaña) quita la pantalla de Clientes a media
+     * guardada, el formulario pierde lo que recordaba pero este ViewModel no: al reabrirlo nace con esto y no con el
+     * dato viejo (D3, 27-oct). null = el formulario arranca con los datos del cliente.
+     */
+    var borradorDeEdicion: ContactoEditado? = null
+        private set
+
     private fun abrirEdicion(cliente: Customer, conPin: Boolean) {
         edicionVigente++
         edicionConPin = conPin
+        borradorDeEdicion = null
         _clienteEnEdicion.value = cliente
     }
 
@@ -263,6 +272,7 @@ class CustomersViewModel @Inject constructor(
     fun cerrarEdicion() {
         edicionVigente++
         _clienteEnEdicion.value = null
+        borradorDeEdicion = null
         _errorDeEdicion.value = null
         _isSaving.value = false
         // El PIN pedido para ESTE cliente no autoriza al siguiente (Codex r2 #1).
@@ -280,6 +290,7 @@ class CustomersViewModel @Inject constructor(
         val cambios = cambiosDeContacto(original, editado) ?: return
         val estaEdicion = edicionVigente
         val conPin = edicionConPin
+        borradorDeEdicion = editado
         viewModelScope.launch {
             _isSaving.value = true
             _errorDeEdicion.value = null
@@ -294,6 +305,7 @@ class CustomersViewModel @Inject constructor(
             resultado.fold(
                 onSuccess = { actualizado ->
                     _clienteEnEdicion.value = null
+                    borradorDeEdicion = null
                     onGuardado(actualizado)
                 },
                 onFailure = { e ->
