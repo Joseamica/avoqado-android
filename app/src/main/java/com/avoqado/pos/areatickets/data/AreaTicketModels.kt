@@ -145,6 +145,8 @@ data class AreaTicket(
     val lines: List<AreaTicketLine> = emptyList(),
     /** Ruta CONGELADA al emitir ("AVOQADO" | "EXTERNAL"). Un vale viejo no la trae: se lee como AVOQADO. */
     val settlementRoute: String = "AVOQADO",
+    /** D5: vencimiento (ISO); nulo si el negocio no usa duración fija. Un vale ISSUED con la fecha pasada ya no sirve. */
+    val expiresAt: String? = null,
 )
 
 @Serializable
@@ -237,6 +239,49 @@ data class IssueAreaTicketLineRequest(
 data class IssueAreaTicketRequest(
     val idempotencyKey: String,
     val lines: List<IssueAreaTicketLineRequest>,
+)
+
+/** D5 (vales-ciclo): un renglón de la comanda de un vale, con su `categoryId` para rutearlo igual que el carrito vivo. */
+@Serializable
+data class RenglonDeComandaDeVale(
+    val id: String,
+    val productId: String? = null,
+    val categoryId: String? = null,
+    val nombre: String,
+    val cantidad: Int,
+    val modificadores: List<String> = emptyList(),
+    val notas: String? = null,
+)
+
+/**
+ * 🔴 D5 (vales-ciclo): lo que se mandó al pedir un vale, TAL CUAL (las líneas del POST), para pedirlo otra vez igual si la
+ * app se cierra antes de saber si salió. [carritoGuardadoId]: la copia guardada (D1) de la que vino ESTE intento.
+ */
+@Serializable
+data class IntentoDeVale(
+    val lineas: List<IssueAreaTicketLineRequest>,
+    val comanda: List<RenglonDeComandaDeVale> = emptyList(),
+    val carritoGuardadoId: String? = null,
+    val hora: Long = 0,
+) {
+    /** El mismo pedido (la hora no cuenta): no se guarda dos veces. */
+    fun mismoQue(otro: IntentoDeVale): Boolean = lineas == otro.lineas && carritoGuardadoId == otro.carritoGuardadoId
+
+    /**
+     * D5 (Codex r6): la MISMA mercancía que [otras] —productos, cantidades, peso, extras, notas y descuentos—, sin importar los ids
+     * de renglón ni el orden (un carrito armado otra vez trae ids nuevos). Igual en iOS (`mismaMercancia`).
+     */
+    fun mismaMercanciaQue(otras: List<IssueAreaTicketLineRequest>): Boolean = mercancia(lineas) == mercancia(otras)
+}
+
+private fun mercancia(lineas: List<IssueAreaTicketLineRequest>) =
+    lineas.map { it.copy(clientLineId = "", modifierIds = it.modifierIds.sorted()) }.sortedBy { it.toString() }
+
+/** 🔴 D5: un vale pedido en una vez anterior de la app cuya respuesta nunca llegó. Se queda su llave: «Recuperar» la reusa. */
+@Serializable
+data class ValeSinConfirmar(
+    val llave: String,
+    val intentos: List<IntentoDeVale>,
 )
 
 @Serializable
