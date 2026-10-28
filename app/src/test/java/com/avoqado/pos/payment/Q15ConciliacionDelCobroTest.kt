@@ -99,6 +99,27 @@ class Q15ConciliacionDelCobroTest {
         assertEquals(ConciliacionDelCobro.DIFERENCIA, changed.motivo)
         assertTrue(changed.camposDiferentes.contains("tenderTypeId"))
     }
+    // D2 (25-oct): `/fast` guarda siempre FULLPAYMENT, así que una venta rápida dividida daba la alarma falsa «reparto».
+    @Test fun d2_venta_rapida_dividida_no_avisa_por_reparto_y_queda_sin_confirmar() {
+        val parte = capture.copy(splitType = "EQUALPARTS")
+        fun fast(amount: String = "100.05") =
+            """{"success":true,"data":{"id":"server-p1","venueId":"FULLTEST-A","orderId":"o1","status":"COMPLETED","amount":"$amount","tipAmount":"5.00","method":"CASH","splitType":"FULLPAYMENT"}}"""
+        val dividida = evaluate(fast(), CanalDelCobro.FAST, original = parte)
+        assertTrue(dividida.aplicado)
+        assertNull(dividida.motivo)
+        assertFalse(dividida.camposDiferentes.contains("splitType"))
+        assertTrue(dividida.camposNoComprobados.contains("splitType"))
+        // La venta rápida entera no tiene reparto que confirmar.
+        val entera = evaluate(fast(), CanalDelCobro.FAST, original = capture.copy(splitType = "FULLPAYMENT"))
+        assertNull(entera.motivo)
+        assertFalse(entera.camposNoComprobados.contains("splitType"))
+        // El dinero de la venta rápida se sigue comparando.
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, evaluate(fast("90.00"), CanalDelCobro.FAST, original = parte).motivo)
+        // Y en una orden el reparto se sigue comparando.
+        val orden = evaluate(order(extra = ",\"splitType\":\"FULLPAYMENT\""), original = parte)
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, orden.motivo)
+        assertTrue(orden.camposDiferentes.contains("splitType"))
+    }
     @Test fun prueba_original_exacta_no_se_reconstruye_del_catalogo() {
         val original = capture.copy(orderRequestJson = "{\"items\":[{\"productId\":\"sku1\",\"unitPrice\":110}]}",
             intentoPayloadJson = "{\"localOrderId\":\"L1\",\"amountCents\":10005}")

@@ -357,7 +357,11 @@ class CustomerDisplayState @Inject constructor() {
 
     private fun scheduleRevert() {
         revertJob?.cancel()
-        revertJob = timerScope.launch {
+        // UNDISPATCHED: el `delay` se apunta en Main AQUÍ, dentro de `show`, y no en una vuelta posterior de la cola.
+        // En la app es lo mismo (se llama desde Main y regresa a los mismos DONE_TIMEOUT_MS). En las pruebas, encolado,
+        // el cuerpo podía correr después de que la prueba quitara `Dispatchers.Main` y su excepción caía en la
+        // siguiente prueba con `runTest` (D5, CI de `main` 27-oct).
+        revertJob = timerScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
             _content.value = CustomerContent.Idle
             promotePendingDesign()
@@ -375,6 +379,9 @@ class CustomerDisplayState @Inject constructor() {
 
     /** Carrito vacío = volver a la marca (no dejar un carrito fantasma). */
     fun showCart(state: com.avoqado.pos.pos.presentation.cart.CartState) {
+        // El carrito VACÍO no quita el "Gracias": al cobrar, el carrito se vacía en el mismo instante y el gracias (con
+        // el texto propio del negocio) duraba ~0.1 s (tablero D2, 21-oct). Lo quitan su tiempo o una venta nueva.
+        if (state.items.isEmpty() && _content.value is CustomerContent.Done) return
         // Una venta nueva cancela el timer del "Gracias": si no, el timer viejo
         // borraría este carrito 30 s después.
         revertJob?.cancel()

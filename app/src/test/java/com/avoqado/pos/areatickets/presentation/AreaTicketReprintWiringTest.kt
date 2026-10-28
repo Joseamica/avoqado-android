@@ -44,7 +44,7 @@ class AreaTicketReprintWiringTest {
     private val repository = mockk<AreaTicketRepository>()
     private val printerService = mockk<PrinterService>()
     private val pdfGenerator = mockk<AreaTicketPdfGenerator>()
-    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true } // D2: el disco guarda la llave
     private val impreso = slot<AreaTicketData>()
 
     @Before

@@ -170,6 +170,8 @@ fun CheckoutScreen(
         areaTicketOperations.retryPendingPrintRecords()
         onPauseOrDispose { }
     }
+    // Regla 10 (vales, r7): la venta con abono que el carrito no trae, para el aviso fijo «Cobrar saldo».
+    val saldoDeVales by cartViewModel.saldoDeVales.collectAsState()
     val scaleCaptureViewModel: ScaleCaptureViewModel = hiltViewModel()
     val scaleState by scaleCaptureViewModel.state.collectAsState()
 
@@ -285,7 +287,7 @@ fun CheckoutScreen(
     var promocionAQuitar by remember { mutableStateOf<CartItem?>(null) }
     val quitarLineaDelCarrito: (String) -> Unit = { itemId ->
         val linea = cartState.items.firstOrNull { it.id == itemId }
-        if (linea?.promotionInstanceId != null) promocionAQuitar = linea else cartViewModel.removeItem(itemId)
+        if (linea?.promotionInstanceId != null) promocionAQuitar = linea else cartViewModel.quitarPorElCajero(itemId)
     }
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
@@ -379,6 +381,8 @@ fun CheckoutScreen(
     // `CartViewModel.pendingPackGrant`.
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    /** Sube cada vez que se ABRE el alta: la respuesta de un formulario descartado no es la del que está abierto. */
+    var aperturaDelAlta by remember { mutableIntStateOf(0) }
     var createCustomerSearchText by remember { mutableStateOf("") }
     var showSavedSnackbar by remember { mutableStateOf(false) }
     var savedCartError by remember { mutableStateOf<String?>(null) }
@@ -427,9 +431,9 @@ fun CheckoutScreen(
                 }
                 result
                     .onSuccess {
-                        areaTicketOperations.confirmPendingPdfSaved {
-                            // Fin de venta: el vale quedó emitido y guardado.
-                            cartViewModel.finalizarVenta()
+                        areaTicketOperations.confirmPendingPdfSaved { ventaQueEmitio ->
+                            // J7: sólo termina la venta que emitió el vale; otra venta en pantalla no se toca.
+                            cartViewModel.finalizarVentaSiEs(ventaQueEmitio)
                         }
                     }
                     .onFailure { error ->
@@ -513,6 +517,11 @@ fun CheckoutScreen(
         // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
         if (cartViewModel.hayConsultasDeCodigo) return
         cartViewModel.bloqueoDeEntrega()?.let { savedCartError = it; return }
+        // D1 (26-oct): la primera parte de esta venta se guardó sin red; el resto se cobra en la MISMA venta cuando suba.
+        if (!isTablePaying && cartViewModel.detenerCobroPorParteEnEspera()) return
+        // Regla 11 (vales) y tablero D3 (venta normal): una venta a medio cobrar sólo se cobra por su saldo; el carrito dice
+        // qué quitar. Antes lo agregado se cobraba como venta nueva llevándose el saldo de la vieja.
+        if (cartViewModel.detenerCobroDeVentaCambiada()) return
         if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
             savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
             return
@@ -585,9 +594,13 @@ fun CheckoutScreen(
 
     fun runPrimaryAction(closePhoneCart: Boolean = false) {
         if (areaOperationsState.issueWorkspace) {
-            areaTicketOperations.issue(cartState) {
-                // Fin de venta: el vale se emitió.
-                cartViewModel.finalizarVenta()
+            // D1: como el cobro, la copia guardada se marca justo antes de pedir el vale (si la app muere, restaurarla pregunta) y se
+            // retira al quedar emitido.
+            val copiaDelVale = cartState.carritoGuardadoId
+            areaTicketOperations.issue(cartState, antesDeEmitir = { cartViewModel.prepararCobroDelCarritoGuardado() }) { ventaQueEmitio ->
+                cartViewModel.retirarCopiaDelVale(copiaDelVale)
+                // Fin de venta: el vale se emitió (J7: sólo la venta que lo emitió).
+                cartViewModel.finalizarVentaSiEs(ventaQueEmitio)
                 if (closePhoneCart) showIPhoneCart = false
             }
             return
@@ -693,7 +706,7 @@ fun CheckoutScreen(
                                         onAddToCart = {
                                             if (amountCents > 0) {
                                                 cartViewModel.addCustomAmount(
-                                                    name = currentNote.ifBlank { "Importe personalizado" },
+                                                    name = currentNote.ifBlank { "Otro importe" },
                                                     amountCents = amountCents,
                                                 )
                                                 amountCents = 0
@@ -806,11 +819,13 @@ fun CheckoutScreen(
                 }
 
                 // Right panel - Cart
-                Box(
+                Column(
                     modifier = Modifier
                         .weight(if (modoPanelPromos == PanelMode.SIDE_PANEL) 0.25f else 0.5f)
                         .fillMaxHeight(),
                 ) {
+                    saldoDeVales?.let { AvisoSaldoDeVales(it, onCobrar = cartViewModel::cobrarSaldoDeVales) }
+                    Box(modifier = Modifier.weight(1f)) {
                     CartPanelView(
                         cartState = cartState,
                         onTarjetaDeRegalo = abrirTarjetas,
@@ -823,6 +838,10 @@ fun CheckoutScreen(
                         onSaveCart = {
                             if (cartViewModel.saveCurrentCart()) {
                                 showSavedSnackbar = true
+                            } else if (cartViewModel.vaciarBloqueadoPorAbono()) {
+                                savedCartError = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+                            } else if (cartViewModel.hayVentaAMedias()) {
+                                savedCartError = com.avoqado.pos.pos.presentation.cart.VENTA_A_MEDIAS_NO_SE_GUARDA
                             } else if (!cartState.isEmpty && cartState.items.none { it.locked }) {
                                 savedCartError = "No se pudo guardar el carrito. Sigue aquí; intenta de nuevo."
                             }
@@ -833,6 +852,8 @@ fun CheckoutScreen(
                         customerName = selectedCustomer?.name,
                         customerId = selectedCustomer?.id,
                         onCustomerTap = openGeneralCustomerPicker,
+                        onCustomerRemove = { cartViewModel.setSelectedCustomer(null) },
+                        clienteQuitable = !cartViewModel.hayVentaAMedias(),
                         staffName = cartState.selectedStaffName,
                         onStaffTap = {
                             cartViewModel.fetchStaff()
@@ -844,6 +865,8 @@ fun CheckoutScreen(
                             // Membresías grant only on FULL payment — a split sale
                             // charged the pack without ever granting credits.
                             if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                            // D1 (founder «B»): en tienda, dividir pide conexión con Avoqado.
+                            else if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) Unit
                             else showSplitPayment = true
                         },
                         referralCode = referralCodeState,
@@ -862,6 +885,7 @@ fun CheckoutScreen(
                         primaryActionEnabled = !areaOperationsState.issuing,
                         teclaCobrar = "F12",
                     )
+                    }
                 }
             }
         }
@@ -924,7 +948,7 @@ fun CheckoutScreen(
                                     onAddToCart = {
                                         if (amountCents > 0) {
                                             cartViewModel.addCustomAmount(
-                                                name = currentNote.ifBlank { "Importe personalizado" },
+                                                name = currentNote.ifBlank { "Otro importe" },
                                                 amountCents = amountCents,
                                             )
                                             amountCents = 0
@@ -987,6 +1011,8 @@ fun CheckoutScreen(
                             }
                         }
                     }
+
+                    saldoDeVales?.let { AvisoSaldoDeVales(it, onCobrar = cartViewModel::cobrarSaldoDeVales) }
 
                     // Bottom cart bar (iPhone only)
                     if (!cartState.isEmpty) {
@@ -1225,6 +1251,10 @@ fun CheckoutScreen(
             onSaveCart = {
                 if (cartViewModel.saveCurrentCart()) {
                     showSavedSnackbar = true
+                } else if (cartViewModel.vaciarBloqueadoPorAbono()) {
+                    savedCartError = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+                } else if (cartViewModel.hayVentaAMedias()) {
+                    savedCartError = com.avoqado.pos.pos.presentation.cart.VENTA_A_MEDIAS_NO_SE_GUARDA
                 } else if (!cartState.isEmpty && cartState.items.none { it.locked }) {
                     savedCartError = "No se pudo guardar el carrito. Sigue aquí; intenta de nuevo."
                 }
@@ -1252,6 +1282,8 @@ fun CheckoutScreen(
                 // Membresías grant only on FULL payment — mismo guard que en tablet.
                 if (cartViewModel.hasCreditPack) {
                     showPackNoSplitAlert = true
+                } else if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) {
+                    // D1 (founder «B»): en tienda, dividir pide conexión con Avoqado.
                 } else {
                     // 🔴 El carrito de teléfono ocupa la pantalla completa: hay que
                     // cerrarlo ANTES de abrir la hoja de dividir, o la hoja queda
@@ -1264,6 +1296,8 @@ fun CheckoutScreen(
             customerName = selectedCustomer?.name,
             customerId = selectedCustomer?.id,
             onCustomerTap = openGeneralCustomerPicker,
+            onCustomerRemove = { cartViewModel.setSelectedCustomer(null) },
+            clienteQuitable = !cartViewModel.hayVentaAMedias(),
             referralCode = referralCodeState,
             referralUiState = referralUiState,
             customerSelectedForReferral = selectedCustomer != null,
@@ -1310,6 +1344,9 @@ fun CheckoutScreen(
             val entra = {
                 codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)
             }
+            // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
+            // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
+            val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
             val result = cartViewModel.resolveScannedBarcode(barcode)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
@@ -1336,7 +1373,7 @@ fun CheckoutScreen(
                     cartViewModel.addProductByWeight(result.product, result.weightKg)
                 is ScannedBarcodeResult.AreaTicketsAdded ->
                     areaTicketAddedCount = result.ticketCount
-                is ScannedBarcodeResult.CustomerCardFound -> {
+                is ScannedBarcodeResult.CustomerCardFound -> if (cartViewModel.selectedCustomer.value?.id == clienteAlEscanear) {
                     // 🔴 Escanear la tarjeta LIGA la venta al cliente, y eso es lo
                     // que hace que el sello suba solo al cobrar. Sin esta línea el
                     // cajero vería el nombre pero la compra no contaría para su
@@ -1536,6 +1573,17 @@ fun CheckoutScreen(
         )
     }
 
+    // Vales (D5 y rediseño r7): por qué no se dejó algo, o qué hacer para cobrar el saldo.
+    val avisoDeVales by cartViewModel.avisoDeVales.collectAsState()
+    avisoDeVales?.let { aviso ->
+        AvoqadoWarningToast(
+            message = com.avoqado.pos.pos.presentation.cart.tituloDelAviso(aviso),
+            subtitle = aviso,
+            durationMs = 6000L,
+            onDismiss = cartViewModel::consumeAvisoDeVales,
+        )
+    }
+
     // D13 (IVA por producto, plan 7a): un carrito guardado que sumaba impuesto aparte se restauró sin él. Aviso ámbar, nunca bloqueo.
     val avisoDelCarrito by cartViewModel.avisoDelCarrito.collectAsState()
     avisoDelCarrito?.let { aviso ->
@@ -1681,9 +1729,9 @@ fun CheckoutScreen(
                 PrimaryButton(
                     text = if (areaOperationsState.submitting) "Reimprimiendo…" else "Reimprimir",
                     onClick = {
-                        areaTicketOperations.reprintPending {
-                            // Fin de venta: el vale se reimprimió y queda emitido.
-                            cartViewModel.finalizarVenta()
+                        areaTicketOperations.reprintPending { ventaQueEmitio ->
+                            // J7: la emisión ya terminó la venta del vale; reimprimirlo nunca vacía otra venta en pantalla.
+                            cartViewModel.finalizarVentaSiEs(ventaQueEmitio)
                         }
                     },
                     enabled = !areaOperationsState.submitting && !areaOperationsState.preparingPdf,
@@ -1812,6 +1860,7 @@ fun CheckoutScreen(
                         // El carrito de la caja queda con el precio de la orden (y su descuento de cuenta como quedó en ella).
                         cambiosDePrecio = completion.cambiosDePrecio,
                         descuentoDeCuentaCongelado = completion.descuentoDeCuentaCongelado,
+                        saldoDelServidor = completion.saldoDelServidor,
                     )
                     if (!cobro.aplicadoAlCarritoActual) return@PaymentFlowScreen
                     when (cobro.rama) {
@@ -1846,6 +1895,12 @@ fun CheckoutScreen(
                     // final. Con `null` cierra la venta: el cobro completo no deja
                     // nada vivo y el siguiente arranca su propia orden.
                     cartViewModel.markPendingSplitOrder(ordenQueSigueViva)
+                    // 🔴 DINERO (D1, 26-oct). Esta parte quedó en la cola sin red y queda saldo: el resto espera a que SUBA y
+                    // se cobra contra la orden que le dé el servidor (una sola venta). Aunque ya hubiera orden (falló sólo el
+                    // pago, Codex r2 #3): mientras su dinero no suba, el saldo del servidor no lo cuenta. Mesas: su sesión.
+                    completion.parteEnCola
+                        ?.takeIf { !isTablePaying && completion.remainingBalanceCents > 0 }
+                        ?.let(cartViewModel::esperarParteEnCola)
                     // Referral is real now: capture on actual payment success
                     // (a cancelled payment no longer leaves a dangling referral).
                     //
@@ -1930,6 +1985,26 @@ fun CheckoutScreen(
                     upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                 },
+                // «Dividir importe» también en tienda (founder, 26-oct: IQ cobró dos tarjetas como dos
+                // cobros manuales porque en Cobrar no lo encontró; sólo estaba en el «⋯» del carrito).
+                // Como Square («Split Amount» en la pantalla de cobro). Sólo existe en «Elegir método»,
+                // donde no hay cobro en vuelo: se suelta el cobro como la X y se abre la MISMA hoja del
+                // «⋯», con su mismo guard de membresías. El upsell se suelta como en la X (Codex r1 #1):
+                // su conversión no sabe de qué venta es, y si el cajero cierra la hoja y cobra otra venta
+                // se la llevaría ésa. Costo: un upsell cobrado en partes no cuenta como convertido.
+                onSplitImporte = onSplitImporte@{
+                    // D1 (founder «B»): sin conexión no se divide; el cobro sigue abierto para cobrar todo junto.
+                    if (!isTablePaying && cartViewModel.detenerDividirSinConexion()) return@onSplitImporte
+                    showPaymentFlow = false
+                    cartViewModel.cerrarCobro()
+                    paymentCartSnapshot = null
+                    cartViewModel.releaseChargingOrder()
+                    pendingSplitConfig = SplitConfig()
+                    upsellViewModel.cancelPendingConversion()
+                    cartViewModel.refreshCustomerDisplay()
+                    if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                    else showSplitPayment = true
+                },
                 // Se resolvió un cobro que había quedado de OTRA venta: el flujo se cierra y
                 // el cajero vuelve a su carrito intacto. El aviso lo pinta ESTA pantalla,
                 // que es la que se queda — antes lo mostraba la que se iba, y se desvanecía
@@ -1951,23 +2026,6 @@ fun CheckoutScreen(
                 resumeOrderId = resumeOrderId,
             )
         }
-    }
-
-    // 🔴 DINERO. Se agregó mercancía a una venta que quedó a medio cobrar: NO se
-    // bloquea (un POS jamás impide vender), pero tampoco se cobra en silencio
-    // contra la orden vieja. Va DESPUÉS del overlay de pago a propósito — lo que
-    // se compone después se dibuja encima, y este aviso sale justo al abrirse el
-    // cobro; detrás del overlay no lo vería nadie.
-    val splitWarning by cartViewModel.splitWarning.collectAsState()
-    splitWarning?.let { aviso ->
-        AvoqadoWarningToast(
-            message = "Venta anterior a medio cobrar",
-            subtitle = aviso,
-            // Más que el default de 2.6 s: esto tiene consecuencia en el dinero
-            // (una orden queda abierta) y hay que darle tiempo de leerlo.
-            durationMs = 6000L,
-            onDismiss = cartViewModel::consumeSplitWarning,
-        )
     }
 
     // ── Upsell "¿Algo más?" — la tira del cajero ──────────────────────────────
@@ -2006,6 +2064,7 @@ fun CheckoutScreen(
             // (`allowPerProduct`), que exigía >1 renglón para ofrecer dividir
             // siquiera — corregido el mismo día.
             allowByProduct = cartState.items.none { it.locked } && cartState.items.size > 1,
+            porProductoApagado = cartState.razonSinPorProducto,
             onDismiss = { showSplitPayment = false },
             onConfirm = { splitConfig ->
                 showSplitPayment = false
@@ -2059,13 +2118,18 @@ fun CheckoutScreen(
                     ),
             )
             if (showCreateCustomer) {
+                val aperturaDeEsteAlta = aperturaDelAlta
                 CreateCustomerView(
                     viewModel = customersViewModel,
                     // «81 2944 0042» es un teléfono aunque traiga espacios: antes caía en el NOMBRE y nacía un
                     // cliente llamado «81 2944 0042» sin teléfono (la clase de dato roto de C3).
                     initialPhone = createCustomerSearchText.takeIf { esTextoDeTelefono(it) },
                     initialName = createCustomerSearchText.takeIf { it.isNotBlank() && !esTextoDeTelefono(it) },
-                    onCustomerCreated = { customer ->
+                    onCustomerCreated = creado@{ customer ->
+                        // El alta respondió tarde y el cajero ya cerró el formulario (y quizá quitó al cliente), o lo
+                        // cerró y abrió OTRO: el cliente queda creado, pero no se liga solo a la venta (Codex, cliente en
+                        // cobrar r3 #1 y r4 #2).
+                        if (!showCustomersSheet || !showCreateCustomer || aperturaDeEsteAlta != aperturaDelAlta) return@creado
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
                         cartViewModel.setSelectedCustomer(customer.id, customer.fullName)
                         showCreateCustomer = false
@@ -2099,6 +2163,7 @@ fun CheckoutScreen(
                     },
                     onCreateCustomer = { searchText ->
                         createCustomerSearchText = searchText
+                        aperturaDelAlta += 1
                         showCreateCustomer = true
                     },
                     canCreateCustomer = roleManager?.canManageCustomers ?: true,
@@ -2128,7 +2193,19 @@ fun CheckoutScreen(
     }
 
     // Note dialog for keypad custom amount
-    if (showClearCartConfirm) {
+    // 🔴 D5 (20-oct): una venta de vales con abono no se vacía (como Toast y Clover): el abono ya está en la caja. Se dice
+    // por qué y qué hacer, en vez de un botón que no hace nada.
+    if (showClearCartConfirm && cartViewModel.vaciarBloqueadoPorAbono()) {
+        AvoqadoDialog(
+            title = "No se puede vaciar",
+            description = com.avoqado.pos.payment.presentation.VALES_CON_ABONO,
+            onDismiss = { showClearCartConfirm = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { showClearCartConfirm = false })
+            },
+            content = {},
+        )
+    } else if (showClearCartConfirm) {
         AvoqadoDialog(
             title = "¿Vaciar carrito?",
             description = if (cartState.reservationId != null)
@@ -2139,8 +2216,8 @@ fun CheckoutScreen(
                 PrimaryButton(text = "Vaciar", onClick = {
                     // 🔴 Vaciar a mano ES terminar la venta: si sólo se vacía el
                     // carrito, el cliente se queda en el encabezado y la venta
-                    // siguiente se le atribuye a él.
-                    cartViewModel.finalizarVenta()
+                    // siguiente se le atribuye a él. D2: también suelta la llave de emisión de vales.
+                    cartViewModel.vaciar()
                     showClearCartConfirm = false
                 })
             },
@@ -2300,6 +2377,8 @@ private fun IPhoneCartSheet(
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
+    onCustomerRemove: () -> Unit,
+    clienteQuitable: Boolean,
     referralCode: String = "",
     referralUiState: com.avoqado.pos.referrals.presentation.ReferralCaptureUiState =
         com.avoqado.pos.referrals.presentation.ReferralCaptureUiState.Idle,
@@ -2370,6 +2449,8 @@ private fun IPhoneCartSheet(
                 customerName = customerName,
                 customerId = customerId,
                 onCustomerTap = onCustomerTap,
+                onCustomerRemove = onCustomerRemove,
+                clienteQuitable = clienteQuitable,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
                 onSplitPayment = onSplitPayment,
@@ -2900,4 +2981,29 @@ private fun IPhoneCartBar(
  * al confirmarlo y lo escaneado se perdía sin cobrarse (pendiente del 19-oct); iOS ya lo ignora así (`CheckoutView`,
  * `guard !showPaymentFlow`). Mientras se emite un vale, tampoco: al terminar se vacía el carrito (Codex final #3).
  */
+/**
+ * 🔴 DINERO (regla 10, rediseño r7, 21-oct). Una venta de vales con abono que el carrito ya no trae (salió por cualquier
+ * puerta: cambiar usuario, reimprimir, reiniciar…). Fijo hasta que se cobre su saldo, como Toast deja la cuenta abierta.
+ * Mismo texto en iOS.
+ */
+@Composable
+private fun AvisoSaldoDeVales(saldo: com.avoqado.pos.pos.presentation.cart.SaldoDeVales, onCobrar: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(com.avoqado.pos.designsystem.theme.Warning.copy(alpha = 0.15f))
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Venta de vales con saldo pendiente: ${com.avoqado.pos.core.util.formatMoneyFromCents(saldo.saldoCents)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+        PrimaryButton(text = "Cobrar saldo", onClick = onCobrar)
+    }
+}
+
 internal fun codigoEntraALaVenta(cobroAbierto: Boolean, emitiendoVale: Boolean): Boolean = !cobroAbierto && !emitiendoVale

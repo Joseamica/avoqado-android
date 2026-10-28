@@ -17,6 +17,7 @@ import com.avoqado.pos.kiosk.domain.KioskDriver
 import com.avoqado.pos.kiosk.domain.KioskPrefs
 import com.avoqado.pos.kiosk.domain.KioskState
 import com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
+import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.pos.data.RefrescoDelCatalogo
 import com.avoqado.pos.printing.data.VigilanteDeImpresoras
 import com.avoqado.pos.reservations.data.ReservationActionsRetrier
@@ -67,6 +68,8 @@ object Arranque {
         ciclo.addObserver(inyector.getInstance(DeviceCapabilitySyncCoordinator::class.java))
         // «Se cobra el precio que vio el cliente»: el catálogo se baja solo al volver a primer plano, cada 5 min y al volver la red.
         ciclo.addObserver(inyector.getInstance(RefrescoDelCatalogo::class.java))
+        // «Pedidos en línea»: el vigilante global (insignia, banner y sonido que insiste), espejo de AvoqadoApp.onCreate.
+        ciclo.addObserver(inyector.getInstance(VigilanteDePedidosEnLinea::class.java))
         VenueTimeZone.set(inyector.getInstance(SecureStorage::class.java).venueTimezone)
         inyector.getInstance(ReservationActionsRetrier::class.java).start(appScope)
         inyector.getInstance(CancelacionDeCobroCoordinator::class.java).start()

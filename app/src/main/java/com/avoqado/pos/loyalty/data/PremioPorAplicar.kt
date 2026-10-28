@@ -30,6 +30,27 @@ fun ScannedReward.comoPremioPorAplicar(): PremioPorAplicar =
  *
  * [baseCents] es la cuenta ya descontada (subtotal − descuentos), igual que en el servidor.
  */
+/**
+ * El renglón al que el SERVIDOR le regala el «producto gratis» y cuánto (`redeemStampReward.calcularDescuento`): UNA pieza del
+ * que más le regala al cliente, sin pasar de lo que ese renglón cobra (su neto); empate ⇒ el de mayor precio. D10 (27-oct,
+ * Codex r1 #2): antes se tomaba el `unitPrice` más alto aunque su renglón cobrara menos (un descuento propio).
+ */
+fun renglonDelProductoGratis(items: List<CartItem>): Pair<String, Int>? =
+    items.map { Triple(it.id, it.unitPrice, minOf(it.unitPrice, it.totalPrice.coerceAtLeast(0))) }
+        .filter { it.third > 0 }
+        .sortedWith(compareByDescending<Triple<String, Int, Int>> { it.third }.thenByDescending { it.second })
+        .firstOrNull()?.let { it.first to it.third }
+
+/**
+ * D10 (Codex r2 #1): dos renglones empatan como «producto gratis» (mismo regalo y mismo precio). El SERVIDOR desempata por
+ * el id de SU renglón, que la tablet no conoce antes de crear la orden: no se puede saber a cuál le tocará.
+ */
+fun productoGratisEmpatado(items: List<CartItem>): Boolean {
+    val (id, premio) = renglonDelProductoGratis(items) ?: return false
+    val precio = items.first { it.id == id }.unitPrice
+    return items.count { it.id != id && it.unitPrice == precio && minOf(it.unitPrice, it.totalPrice.coerceAtLeast(0)) == premio } > 0
+}
+
 fun premioEstimadoCents(premio: PremioPorAplicar, items: List<CartItem>, baseCents: Int): Int {
     if (baseCents <= 0) return 0
     val valor = premio.valor
@@ -43,7 +64,7 @@ fun premioEstimadoCents(premio: PremioPorAplicar, items: List<CartItem>, baseCen
         // 🔴 Con promociones en la cuenta NO se estima: una línea de promoción guarda su precio ya
         // repartido y el servidor usa el de lista (2 cafés de $50 en 2×1: $25 contra $50). Lo
         // calcula el servidor al cobrar.
-        "FREE_PRODUCT" -> if (items.any { it.promotionInstanceId != null }) 0 else items.maxOfOrNull { it.unitPrice } ?: 0
+        "FREE_PRODUCT" -> if (items.any { it.promotionInstanceId != null }) 0 else renglonDelProductoGratis(items)?.second ?: 0
         // Un tipo que esta versión no conoce: no se inventa un descuento. El servidor lo
         // confirma al cobrar y ese número manda.
         else -> 0

@@ -711,4 +711,59 @@ class RoleManagerTest {
         every { secureStorage.userRole } returns "MANAGER"
         assertTrue(roleManager.canManagePrinters)
     }
+
+    @Test
+    fun `historical customer attachment needs managerial floor and effective permission`() {
+        listOf("VIEWER", "HOST", "KITCHEN", "WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN").forEach { role ->
+            every { secureStorage.userRole } returns role
+            every { secureStorage.venuePermissions } returns listOf("*:*")
+            val expected = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+            assertEquals(role, expected, roleManager.canAttachCustomer)
+            every { secureStorage.venuePermissions } returns emptyList()
+            assertFalse("$role cannot infer a new permission from an empty cache", roleManager.canAttachCustomer)
+        }
+    }
+
+    // MARK: - Pedidos en línea (A3): nombres EXACTOS del server
+
+    @Test
+    fun `pedidos en linea espeja orders update, cancel-unpaid y online-orders pause con la lista REAL`() {
+        fun con(rol: String, lista: List<String>): RoleManager {
+            every { secureStorage.userRole } returns rol
+            every { secureStorage.venuePermissions } returns lista
+            return roleManager
+        }
+        // orders:update — todos menos VIEWER y HOST
+        assertTrue(con("WAITER", PermisosRealesDelServer.WAITER).canOperateOnlineOrders)
+        assertTrue(con("CASHIER", PermisosRealesDelServer.CASHIER).canOperateOnlineOrders)
+        assertTrue(con("KITCHEN", PermisosRealesDelServer.KITCHEN).canOperateOnlineOrders)
+        assertFalse(con("VIEWER", PermisosRealesDelServer.VIEWER).canOperateOnlineOrders)
+        assertFalse(con("HOST", PermisosRealesDelServer.HOST).canOperateOnlineOrders)
+        // orders:cancel-unpaid — WAITER, CASHIER, MANAGER (+ ADMIN/OWNER por *:*); no KITCHEN
+        assertTrue(con("WAITER", PermisosRealesDelServer.WAITER).canCancelOnlineOrders)
+        assertTrue(con("CASHIER", PermisosRealesDelServer.CASHIER).canCancelOnlineOrders)
+        assertTrue(con("MANAGER", PermisosRealesDelServer.MANAGER).canCancelOnlineOrders)
+        assertTrue(con("OWNER", PermisosRealesDelServer.OWNER).canCancelOnlineOrders)
+        assertFalse(con("KITCHEN", PermisosRealesDelServer.KITCHEN).canCancelOnlineOrders)
+        // online-orders:pause — MANAGER, ADMIN, OWNER; el mesero y el cajero no
+        assertTrue(con("MANAGER", PermisosRealesDelServer.MANAGER).canPauseOnlineOrders)
+        assertTrue(con("ADMIN", PermisosRealesDelServer.ADMIN).canPauseOnlineOrders)
+        assertTrue(con("OWNER", PermisosRealesDelServer.OWNER).canPauseOnlineOrders)
+        assertFalse(con("WAITER", PermisosRealesDelServer.WAITER).canPauseOnlineOrders)
+        assertFalse(con("CASHIER", PermisosRealesDelServer.CASHIER).canPauseOnlineOrders)
+    }
+
+    @Test
+    fun `pedidos en linea sin lista cae al respaldo por rol`() {
+        every { secureStorage.venuePermissions } returns emptyList()
+        every { secureStorage.userRole } returns "CASHIER"
+        assertTrue(roleManager.canOperateOnlineOrders)
+        assertTrue(roleManager.canCancelOnlineOrders)
+        assertFalse(roleManager.canPauseOnlineOrders)
+        every { secureStorage.userRole } returns "OWNER"
+        assertTrue(roleManager.canPauseOnlineOrders)
+        every { secureStorage.userRole } returns "VIEWER"
+        assertFalse(roleManager.canOperateOnlineOrders)
+        assertFalse(roleManager.canCancelOnlineOrders)
+    }
 }

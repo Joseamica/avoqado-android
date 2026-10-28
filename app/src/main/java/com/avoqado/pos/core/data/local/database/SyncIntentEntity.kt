@@ -116,15 +116,40 @@ data class SyncSequenceStateEntity(
  */
 internal const val Q16_COBRO_QUE_RETIENE = "status!='ACKED' AND NOT (status='PENDING' AND q15CaptureJson IS NOT NULL)"
 
-internal const val Q16_CAPTURED_UNRESOLVED_REFS_SQL = "SELECT capturedOrderRef FROM pending_payments WHERE venueId=:venueId AND capturedOrderRef IN (:refs) AND syncStatus!='SYNCED' UNION SELECT capturedOrderRef FROM pos_sync_intents WHERE venue_id=:venueId AND capturedOrderRef IN (:refs) AND type='PAY_CASH' AND $Q16_COBRO_QUE_RETIENE LIMIT 100"
+internal const val Q16_CAPTURED_UNRESOLVED_REFS_SQL = "SELECT capturedOrderRef FROM pending_payments WHERE venueId=:venueId AND capturedOrderRef IN (:refs) AND syncStatus!='SYNCED' AND NOT ($Q15_CANCELLED_CANDIDATE_SQL) UNION SELECT capturedOrderRef FROM pos_sync_intents WHERE venue_id=:venueId AND capturedOrderRef IN (:refs) AND type='PAY_CASH' AND $Q16_COBRO_QUE_RETIENE LIMIT 100"
 
 @Dao
 interface SyncIntentDao {
     @Query(Q16_VENUE_CAPTURE_UNRESOLVED_SQL)
-    suspend fun hayCapturaSinResolverQ16(venueId: String): Boolean
+    suspend fun hayCapturaSinResolverSqlQ16(venueId: String): Boolean
+    @Query(Q15_CANCELLED_PAGE_SQL)
+    suspend fun canceladosCandidatosQ16(venueId: String, cursor: String): List<PendingPaymentEntity>
+    suspend fun hayCapturaSinResolverQ16(venueId: String): Boolean {
+        if (hayCapturaSinResolverSqlQ16(venueId)) return true
+        var cursor = ""
+        do {
+            val page = canceladosCandidatosQ16(venueId, cursor)
+            if (page.any { !RevisionCanceladoCero.revisado(it) }) return true
+            if (page.size < 50) return false
+            cursor = page.last().id
+        } while (true)
+    }
 
     @Query(Q16_CAPTURED_UNRESOLVED_REFS_SQL)
-    suspend fun referenciasSinResolverQ16(venueId: String, refs: List<String>): List<String>
+    suspend fun referenciasSinResolverSqlQ16(venueId: String, refs: List<String>): List<String>
+    @Query("SELECT * FROM pending_payments WHERE venueId=:venueId AND capturedOrderRef IN (:refs) AND $Q15_CANCELLED_CANDIDATE_SQL AND id>:cursor ORDER BY id LIMIT 50")
+    suspend fun canceladosPorReferenciaQ16(venueId: String, refs: List<String>, cursor: String): List<PendingPaymentEntity>
+    suspend fun referenciasSinResolverQ16(venueId: String, refs: List<String>): List<String> {
+        require(refs.size <= 100)
+        val result = referenciasSinResolverSqlQ16(venueId, refs).toMutableSet()
+        var cursor = ""
+        do {
+            val page = canceladosPorReferenciaQ16(venueId, refs, cursor)
+            page.filterNot(RevisionCanceladoCero::revisado).mapNotNullTo(result) { it.capturedOrderRef }
+            if (page.size < 50 || result.containsAll(refs)) return result.toList()
+            cursor = page.last().id
+        } while (true)
+    }
 
     @Query(SEED_SYNC_SEQUENCE_SQL)
     suspend fun seedSequenceState()
@@ -326,4 +351,4 @@ interface SyncIntentDao {
     suspend fun deleteOldAcked(olderThan: Long)
 }
 
-internal const val Q16_VENUE_CAPTURE_UNRESOLVED_SQL = "SELECT (EXISTS(SELECT 1 FROM pending_payments WHERE venueId=:venueId AND syncStatus!='SYNCED' LIMIT 1) OR EXISTS(SELECT 1 FROM pos_sync_intents WHERE venue_id=:venueId AND type='PAY_CASH' AND $Q16_COBRO_QUE_RETIENE LIMIT 1))"
+internal const val Q16_VENUE_CAPTURE_UNRESOLVED_SQL = "SELECT (EXISTS(SELECT 1 FROM pending_payments WHERE venueId=:venueId AND syncStatus!='SYNCED' AND NOT ($Q15_CANCELLED_CANDIDATE_SQL) LIMIT 1) OR EXISTS(SELECT 1 FROM pos_sync_intents WHERE venue_id=:venueId AND type='PAY_CASH' AND $Q16_COBRO_QUE_RETIENE LIMIT 1))"

@@ -1069,7 +1069,7 @@ private fun VoidItemsSubView(
                     onClick = {
                         if (voidReason.isNotBlank()) {
                             selectedItemIds.forEach { id ->
-                                cartViewModel.removeItem(id)
+                                cartViewModel.quitarPorElCajero(id)
                             }
                             onBack()
                         }
@@ -1450,6 +1450,7 @@ private fun SavedCartsSubView(
 ) {
     val savedCarts by cartViewModel.savedCarts.collectAsState()
     var confirmarRestauracion by remember { mutableStateOf<SavedCart?>(null) }
+    var restaurarBloqueadoPorAbono by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Carritos guardados", onBack = onBack)
@@ -1490,6 +1491,7 @@ private fun SavedCartsSubView(
                             when (cartViewModel.restoreSavedCart(cart)) {
                                 Restauracion.Hecha -> onBack()
                                 is Restauracion.PideConfirmacion -> confirmarRestauracion = cart
+                                Restauracion.BloqueadaPorAbono -> restaurarBloqueadoPorAbono = true
                             }
                         },
                         onDelete = {
@@ -1501,11 +1503,22 @@ private fun SavedCartsSubView(
         }
     }
 
+    if (restaurarBloqueadoPorAbono) {
+        AvoqadoDialog(
+            title = "No se puede restaurar",
+            description = com.avoqado.pos.payment.presentation.VALES_CON_ABONO,
+            onDismiss = { restaurarBloqueadoPorAbono = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", fullWidth = true, onClick = { restaurarBloqueadoPorAbono = false })
+            },
+        ) {}
+    }
+
     confirmarRestauracion?.let { copia ->
         val hora = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(copia.cobroIniciadoEn!!))
         AvoqadoDialog(
             title = "¿Restaurar este carrito?",
-            description = "Este carrito ya se mandó a cobrar a las $hora. Revisa en Ventas que no se haya cobrado.",
+            description = "Este carrito ya se mandó a cobrar o a emitir como vale a las $hora. Revisa que no se haya cobrado ni emitido su vale.",
             onDismiss = { confirmarRestauracion = null },
             actionButton = {
                 PrimaryButton(text = "Restaurar de todos modos", fullWidth = true, onClick = {

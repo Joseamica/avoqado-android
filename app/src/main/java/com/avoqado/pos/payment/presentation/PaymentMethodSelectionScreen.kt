@@ -88,8 +88,11 @@ fun PaymentMethodSelectionScreen(
     onCashCustomSelected: ((Int) -> Unit)? = null,
     onCancel: () -> Unit,
     terminalsUnavailable: Boolean = false,
+    saldoSinActualizar: Boolean = false,
+    /** Por qué sólo efectivo (con [saldoSinActualizar]): el saldo sin actualizar, o un pedido de plataforma (Rappi 2b). */
+    textoSoloEfectivo: String = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
     onRetryTerminals: () -> Unit = {},
-    /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
+    /** Link "Dividir importe" arriba (Mesas y tienda, como Square) — null lo oculta. */
     onSplitImporte: (() -> Unit)? = null,
     /** Cobro que NO pasó por Avoqado (terminal ajena, transferencia). */
     onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit)? = null,
@@ -124,7 +127,7 @@ fun PaymentMethodSelectionScreen(
             onMethodSelected(PaymentMethod.CASH)
         }
     }
-    AtajoDeTeclado(Key.F4, activo = metodosHabilitados && !terminalsUnavailable) { if (metodosVigentes) onMethodSelected(PaymentMethod.CARD) }
+    AtajoDeTeclado(Key.F4, activo = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar) { if (metodosVigentes) onMethodSelected(PaymentMethod.CARD) }
     AtajoDeTeclado(Key.Escape) { onCancel() }
     val enWindows = LocalEsEscritorio.current
 
@@ -293,8 +296,8 @@ fun PaymentMethodSelectionScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = metodosHabilitados && !terminalsUnavailable) {
-                        if (metodosVigentes && !terminalsUnavailable) onMethodSelected(PaymentMethod.CARD)
+                    .clickable(enabled = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar) {
+                        if (metodosVigentes && !terminalsUnavailable && !saldoSinActualizar) onMethodSelected(PaymentMethod.CARD)
                     }
                     .padding(vertical = AvoqadoTheme.spacing.md),
                 verticalAlignment = Alignment.CenterVertically,
@@ -304,10 +307,13 @@ fun PaymentMethodSelectionScreen(
                         text = "Cobrar con terminal",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Medium,
-                        color = if (!metodosHabilitados) gris else if (terminalsUnavailable) MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (!metodosHabilitados) gris else if (terminalsUnavailable || saldoSinActualizar) MaterialTheme.colorScheme.onSurfaceVariant
                         else MaterialTheme.colorScheme.onSurface,
                     )
-                    if (terminalsUnavailable && metodosHabilitados) {
+                    if (saldoSinActualizar && metodosHabilitados) {
+                        Text(textoSoloEfectivo,
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if (terminalsUnavailable && metodosHabilitados) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "No hay terminales conectadas · ",
@@ -328,7 +334,7 @@ fun PaymentMethodSelectionScreen(
                 TeclaDeAtajo(
                     "F4",
                     Modifier.padding(end = AvoqadoTheme.spacing.sm),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (!metodosHabilitados || terminalsUnavailable) 0.4f else 1f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (!metodosHabilitados || terminalsUnavailable || saldoSinActualizar) 0.4f else 1f),
                 )
                 Icon(
                     Icons.Filled.ChevronRight,
@@ -353,7 +359,7 @@ fun PaymentMethodSelectionScreen(
             // "Ya me pagó de otra forma": el dinero NO pasó por Avoqado.
             // Antes el mesero sólo podía marcarlo como efectivo, y el corte
             // terminaba pidiendo dinero que nunca entró al cajón.
-            if (onManualMethodSelected != null) {
+            if (onManualMethodSelected != null && !saldoSinActualizar) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

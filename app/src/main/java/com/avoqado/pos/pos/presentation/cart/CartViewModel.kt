@@ -5,6 +5,7 @@ import com.avoqado.pos.giftcards.domain.aCartState
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.areatickets.data.tieneAbono
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.moneyToCents
@@ -60,6 +61,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -243,6 +246,23 @@ data class CartState(
     val totalCents: Int get() = (subtotalCents - discountCents - stampRewardCents + taxCents).coerceAtLeast(0)
     val isEmpty: Boolean get() = items.isEmpty()
 
+    /**
+     * D10 (27-oct, founder «Sí, gris en esos casos»): por qué «Por producto» sale en gris, o null si se puede. En estas dos
+     * ventas la tablet no puede saber el reparto exacto del SERVIDOR (Codex D10 r2): una promoción guarda sus piezas
+     * redondeadas, y el producto gratis empatado lo desempata el SERVIDOR por un id que aquí no existe todavía.
+     */
+    val razonSinPorProducto: String?
+        get() = when {
+            items.any { it.promotionInstanceId != null } &&
+                (orderDiscount != null || descuentoDeCuentaCongelado != null || (pendingStampReward != null && premioAplica)) ->
+                POR_PRODUCTO_CON_PROMOCION
+            // Codex D10 r3: con «producto gratis» el SERVIDOR pone el regalo ENTERO en un renglón que la tablet no puede
+            // seguir con certeza (empates por un id que aquí no existe, precios que el SERVIDOR corrige, y tras la primera
+            // parte el premio ya sólo es un monto). Siempre en gris, no sólo con empate.
+            pendingStampReward?.takeIf { premioAplica && it.tipo?.uppercase() == "FREE_PRODUCT" } != null -> POR_PRODUCTO_PREMIO_EMPATADO
+            else -> null
+        }
+
     val subtotalDisplay: String get() = formatCents(subtotalCents)
     val discountDisplay: String get() = formatCents(discountCents)
     /** Los dos descuentos por separado: se pintan en renglones distintos, con su
@@ -263,7 +283,71 @@ internal const val AVISO_CARRITO_SIN_IMPUESTO =
 sealed interface Restauracion {
     data object Hecha : Restauracion
     data class PideConfirmacion(val cobroIniciadoEn: Long) : Restauracion
+    /** D5: este carrito es una venta de vales con abono; restaurar otro la vaciaría. */
+    data object BloqueadaPorAbono : Restauracion
 }
+
+/** Mismo texto en iOS (`AreaTicketCartError.noPagarDespues`). */
+const val VALES_NO_PAGAR_DESPUES = "Los vales se cobran en la caja: no se pueden dejar para pagar después."
+
+/** D4 (20-oct). Mismo texto en iOS (`AreaTicketCartError.ventaAMedias`). */
+const val VALE_CON_VENTA_A_MEDIAS = "Termina de cobrar el saldo pendiente de esta venta antes de escanear un vale."
+
+// Rediseño r7 (21-oct). Mismos textos en iOS.
+const val VALES_ABONO_CAMBIADA = "Esta venta de vales ya tiene un abono: cobra sólo su saldo pendiente. Quita lo que agregaste."
+const val VALES_SOLTAR_ANTERIOR = "No se pudo soltar la venta de vales anterior. Revisa la conexión y vuelve a escanear el vale."
+const val VALES_SALDO_CON_OTRA_VENTA = "Termina, guarda o vacía la venta del carrito para cobrar el saldo pendiente."
+const val VALES_SALDO_YA_COBRADO = "Esa venta de vales ya se terminó de cobrar."
+
+/** J5 (vales-ciclo, 26-oct): el cajero empezó otra venta mientras se consultaba el vale. Mismo texto en iOS. */
+const val VALES_VENTA_CAMBIO_AL_LEER = "La venta cambió mientras se leía el vale: vuelve a escanearlo."
+
+/** Tablero D3 (Codex r9): guardar o diferir una venta a medias se llevaba su saldo a otra venta. Mismo texto en iOS. */
+const val VENTA_A_MEDIAS_NO_SE_GUARDA =
+    "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. No se puede guardar ni dejar para pagar después."
+
+/** Tablero D3 (21-oct). Mismo texto en iOS. */
+const val VENTA_A_MEDIAS_CAMBIADA =
+    "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. Quita lo que agregaste y véndelo aparte."
+
+// D1 (26-oct, founder «B»): dividir en tienda pide conexión; una parte guardada sin red hace esperar al resto. Mismos textos en iOS.
+/** D10: «Por producto» en gris — promoción + descuento de toda la cuenta (o premio). */
+const val POR_PRODUCTO_CON_PROMOCION =
+    "Esta venta tiene una promoción y un descuento de toda la cuenta: divídela por monto o en partes iguales."
+
+/** D10: «Por producto» en gris — la venta lleva un premio de «producto gratis». */
+const val POR_PRODUCTO_PREMIO_EMPATADO =
+    "Esta venta lleva un producto gratis del premio de sellos: divídela por monto o en partes iguales."
+
+const val DIVIDIR_SIN_CONEXION =
+    "Dividir necesita conexión con Avoqado. Cobra todo junto o espera a que vuelva la conexión."
+const val PARTE_SIN_RED_SUBIENDO =
+    "La primera parte de esta venta se guardó sin conexión. El resto se cobra en esta misma venta en cuanto se suba."
+const val PARTE_SIN_RED_POR_REVISAR =
+    "La primera parte de esta venta se guardó sin conexión y quedó por revisar. Revísala en «Operaciones por revisar»: " +
+        "el resto se cobra en esta misma venta cuando se resuelva."
+const val PARTE_SIN_RED_YA_NO_ESTA =
+    "La primera parte de esta venta ya no está en este aparato: el resto se cobra como venta aparte."
+const val PARTE_SIN_RED_VENTA_PAGADA =
+    "Al subir la primera parte, esta venta quedó pagada: no queda saldo por cobrar."
+const val PARTE_SIN_RED_PAGADA_CON_ALGO_MAS =
+    "Al subir la primera parte, esa venta quedó pagada. Lo que hay en el carrito se cobra como venta aparte."
+
+/** El título del aviso ámbar del carrito: el de vales sólo para vales (D1 reusa el mismo aviso). */
+fun tituloDelAviso(aviso: String): String = when {
+    aviso == DIVIDIR_SIN_CONEXION -> "Sin conexión"
+    aviso == VENTA_A_MEDIAS_CAMBIADA || aviso.startsWith("La primera parte de esta venta") ||
+        aviso.startsWith("Al subir la primera parte") -> "Venta a medio cobrar"
+    else -> "Venta de vales"
+}
+
+fun parteSinRedSaldoDistinto(carritoCents: Int, servidorCents: Int): String =
+    "Al subir la primera parte, Avoqado dice que esta venta debe ${com.avoqado.pos.core.util.formatMoneyFromCents(servidorCents)} " +
+        "y el carrito dice ${com.avoqado.pos.core.util.formatMoneyFromCents(carritoCents)}. Revísala en «Ventas» antes de cobrar; " +
+        "si vacías el carrito, el resto se cobra como venta aparte."
+
+/** Regla 10: una venta de vales con abono que el carrito no trae. Lo pinta el aviso fijo «Cobrar saldo». */
+data class SaldoDeVales(val orderId: String, val saldoCents: Int)
 
 @HiltViewModel
 class CartViewModel @Inject constructor(
@@ -290,6 +374,10 @@ class CartViewModel @Inject constructor(
      */
     private val lectorHidBus: com.avoqado.pos.pos.data.LectorHidBus = com.avoqado.pos.pos.data.LectorHidBus(),
     private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+    /** D1 (26-oct): la parte de una venta dividida que se guardó sin red. Default para las pruebas que no la usan. */
+    private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
+    /** D1 (26-oct): «Dividir» en tienda pide conexión con Avoqado. Sin monitor (pruebas) se da por conectado. */
+    private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -365,9 +453,17 @@ class CartViewModel @Inject constructor(
      * @param totalCents  cuánto valía el carrito al quedar el saldo.
      */
     private data class PendingSplitOrder(
-        val orderId: String,
+        /** null mientras espera a que suba su parte guardada sin red ([parteEnCola]). */
+        val orderId: String?,
         val itemIds: Set<String>,
         val totalCents: Int,
+        /** Foto exacta de los renglones y del descuento de cuenta al quedar el saldo (regla 11: venta de vales con abono). */
+        val renglones: List<CartItem> = emptyList(),
+        val descuentoDeCuenta: Discount? = null,
+        /** D1: la llave en `pending_payments` de la parte que se guardó sin red; mientras no suba, el resto no se cobra. */
+        val parteEnCola: String? = null,
+        /** D1: nació de una parte sin red ⇒ el carrito tiene que seguir EXACTO (un descuento lo abarataría, Codex r2 #5). */
+        val exacta: Boolean = false,
     )
 
     private val _pendingSplitOrder = MutableStateFlow<PendingSplitOrder?>(null)
@@ -455,18 +551,6 @@ class CartViewModel @Inject constructor(
     }
 
     /**
-     * Aviso ámbar (no bloqueante) de que la continuidad con la venta a medio
-     * cobrar se rompió. Mismo patrón que [stockWarning]: la UI lo pinta y lo
-     * consume. NUNCA impide cobrar.
-     */
-    private val _splitWarning = MutableStateFlow<String?>(null)
-    val splitWarning: StateFlow<String?> = _splitWarning.asStateFlow()
-
-    fun consumeSplitWarning() {
-        _splitWarning.value = null
-    }
-
-    /**
      * Marca el carrito TAL COMO ESTÁ AHORA como la continuación de [orderId].
      * Se llama desde el checkout justo después de dejar el saldo en el carrito
      * (o de quitar los artículos ya cobrados, en el split por artículos).
@@ -484,11 +568,244 @@ class CartViewModel @Inject constructor(
             orderId = id,
             itemIds = cart.items.map { it.id }.toSet(),
             totalCents = cart.totalCents,
+            renglones = cart.items,
+            descuentoDeCuenta = cart.orderDiscount,
         )
         // Si es la orden de la sesión de vales, ya tiene un abono aunque su copia no lo diga: que no vuelva a proyectarse
-        // aunque luego se vacíe el carrito (D3, Codex r1).
-        areaTicketRepository.session.marcarConAbono(id)
+        // aunque luego se vacíe el carrito (D3, Codex r1). El saldo es lo que quedó en el carrito (regla 10).
+        areaTicketRepository.session.marcarConAbono(id, saldoCents = cart.totalCents)
         Log.d("🛒", "Split de mostrador a medias: la venta sigue contra la orden $id")
+    }
+
+    /** La venta de vales con abono vigente, si hay una (su orden ya armada). */
+    private fun ventaDeValesConAbono(): AreaTicketCheckout? =
+        areaTicketRepository.session.current()?.takeIf { it.tieneAbono() && it.order != null }
+
+    /**
+     * 🔴 DINERO (regla 10). El carrito trae la venta de vales con abono: continúa su orden y conserva sus renglones tal como
+     * quedaron. Si salió por cualquier puerta (cambiar usuario, reimprimir, reemplazar el carrito…), no la trae y el aviso
+     * fijo «Cobrar saldo» la ofrece de nuevo.
+     */
+    private fun traeLaVentaDeVales(venta: AreaTicketCheckout, cart: CartState = _cartState.value): Boolean {
+        val pendiente = _pendingSplitOrder.value ?: return false
+        if (pendiente.orderId != venta.order?.id) return false
+        return pendiente.renglones.all { foto -> cart.items.any { it == foto } }
+    }
+
+    /**
+     * 🔴 D5 (20-oct). El carrito trae una venta de vales que ya tiene un abono: «Vaciar» no se deja. El servidor no la
+     * cancela (409), así que vaciar sólo escondía la venta y el abono quedaba en la caja sin venta que lo explique. El
+     * mercado tampoco lo deja (Toast, Clover); la salida es cobrar el saldo o devolver el abono. Si el carrito ya no la trae,
+     * vaciar se deja: la venta sigue a salvo en el aviso «Cobrar saldo».
+     */
+    fun vaciarBloqueadoPorAbono(): Boolean = ventaDeValesConAbono()?.let(::traeLaVentaDeVales) == true
+
+    /**
+     * 🔴 DINERO (regla 11, Codex r6 #1 y #2). La venta de vales con abono sólo se cobra por su saldo: si el carrito la trae
+     * con algo agregado, otro descuento o un renglón cambiado, el cobro no se abre (y el vínculo NO se rompe: romperlo apagaba
+     * todos los candados de D5). Devuelve `true` y avisa cuando hay que detenerse.
+     */
+    fun detenerCobroDeVentaCambiada(): Boolean {
+        val pendiente = _pendingSplitOrder.value ?: return false
+        val cart = _cartState.value
+        val venta = ventaDeValesConAbono()?.takeIf { it.order?.id == pendiente.orderId }
+        if (venta != null) {
+            val igual = cart.items == pendiente.renglones && cart.orderDiscount == pendiente.descuentoDeCuenta
+            if (igual) return false
+            _avisoDeVales.value = VALES_ABONO_CAMBIADA
+            return true
+        }
+        // 🔴 Tablero D3 (21-oct, founder «arréglalo de una vez»): una venta normal a medio cobrar con algo agregado se cobraba
+        // como venta NUEVA llevándose adentro su «Saldo pendiente» (o sus renglones sin cobrar): el cliente pagaba el saldo y la
+        // orden vieja seguía debiéndolo. Ahora no se abre el cobro: primero su saldo, lo nuevo aparte (como vales, regla 11).
+        if (!carritoCambioDesde(pendiente, cart)) return false
+        _avisoDeVales.value = VENTA_A_MEDIAS_CAMBIADA
+        return true
+    }
+
+    /** El carrito continúa una venta cobrada a medias (tiene saldo en su orden). */
+    fun hayVentaAMedias(): Boolean = _pendingSplitOrder.value != null
+
+    /** Hay un renglón que la orden no tiene, o el carrito creció en dinero (`addProduct` FUSIONA: misma línea, cantidad 2). */
+    private fun carritoCambioDesde(pendiente: PendingSplitOrder, cart: CartState): Boolean =
+        // Exacta: renglones, descuento Y total (quitar al cliente quita su premio y sube el total sin tocar renglones, Codex r2 #1).
+        if (pendiente.exacta) cart.items != pendiente.renglones || cart.orderDiscount != pendiente.descuentoDeCuenta ||
+            cart.totalCents != pendiente.totalCents
+        else cart.items.any { it.id !in pendiente.itemIds } || cart.totalCents > pendiente.totalCents
+
+    // MARK: - D1: la parte que se guardó sin red (founder «B», 26-oct)
+
+    private var observadorDeParte: kotlinx.coroutines.Job? = null
+    private val _estadoDeParte = MutableStateFlow<com.avoqado.pos.payment.data.EstadoDeParte?>(null)
+
+    /**
+     * 🔴 DINERO (D1). La parte de una venta dividida se cobró en efectivo y se guardó SIN RED: todavía no tiene orden en el
+     * servidor. El carrito queda con su saldo ligado a ESA parte y no se cobra hasta que suba; al subir, el vínculo pasa a la
+     * orden que le dio el servidor (con la foto de ahora) y el resto se cobra contra ella, como cualquier parte 2. Antes el
+     * resto salía como venta rápida suelta: dos registros y el inventario sin bajar.
+     */
+    fun esperarParteEnCola(colaId: String) {
+        val repo = cashPaymentRepository ?: return
+        val cart = _cartState.value
+        _pendingSplitOrder.value = PendingSplitOrder(
+            orderId = null,
+            itemIds = cart.items.map { it.id }.toSet(),
+            totalCents = cart.totalCents,
+            renglones = cart.items,
+            descuentoDeCuenta = cart.orderDiscount,
+            parteEnCola = colaId,
+            exacta = true,
+        )
+        _estadoDeParte.value = com.avoqado.pos.payment.data.EstadoDeParte.Subiendo
+        observadorDeParte?.cancel()
+        observadorDeParte = viewModelScope.launch {
+            repo.observarParte(colaId).collect { estado ->
+                // El carrito ya es otra venta (se vació, se cobró, se cambió de venta): se deja de mirar.
+                val vigente = _pendingSplitOrder.value?.takeIf { it.parteEnCola == colaId }
+                if (vigente == null) {
+                    _estadoDeParte.value = null
+                    observadorDeParte?.cancel()
+                    return@collect
+                }
+                when (estado) {
+                    is com.avoqado.pos.payment.data.EstadoDeParte.Subida -> adoptarOrdenDeLaParte(vigente, estado)
+                    com.avoqado.pos.payment.data.EstadoDeParte.SinOrden -> {
+                        // Venta sin productos: el servidor la cerró con lo cobrado; el resto es un cobro rápido, como antes.
+                        _pendingSplitOrder.value = null
+                        _estadoDeParte.value = null
+                    }
+                    com.avoqado.pos.payment.data.EstadoDeParte.NoEsta -> {
+                        _pendingSplitOrder.value = null
+                        _estadoDeParte.value = null
+                        _avisoDeVales.value = PARTE_SIN_RED_YA_NO_ESTA
+                    }
+                    else -> _estadoDeParte.value = estado
+                }
+            }
+        }
+    }
+
+    /**
+     * La parte subió. Sólo se sigue SOLA cuando el servidor y el carrito dicen lo mismo; nada se ajusta ni se borra solo
+     * (Codex D1 código r1 #2-#6: ajustar el saldo, vaciar el carrito o soltar al cliente en automático cobraba de más, borraba
+     * mercancía agregada o dejaba pegado al cliente).
+     */
+    private fun adoptarOrdenDeLaParte(vigente: PendingSplitOrder, subida: com.avoqado.pos.payment.data.EstadoDeParte.Subida) {
+        observadorDeParte?.cancel()
+        val cart = _cartState.value
+        val sinCambios = !carritoCambioDesde(vigente, cart)
+        val saldo = subida.saldoCents
+        when {
+            // Ya quedó pagada al subir: con el carrito como estaba, la venta termina (como cualquier cobro completo); si se
+            // le agregó algo, eso es otra venta y se queda en el carrito.
+            subida.pagada || (saldo != null && saldo <= 0) -> {
+                _pendingSplitOrder.value = null
+                _estadoDeParte.value = null
+                if (sinCambios) finalizarVenta()
+                _avisoDeVales.value = if (sinCambios) PARTE_SIN_RED_VENTA_PAGADA else PARTE_SIN_RED_PAGADA_CON_ALGO_MAS
+            }
+            // El servidor dice lo mismo que el carrito (un centavo de tolerancia): el resto se cobra contra esa orden.
+            saldo == null || kotlin.math.abs(saldo - vigente.totalCents) <= 1 -> {
+                _pendingSplitOrder.value = vigente.copy(orderId = subida.orderId, parteEnCola = null)
+                _estadoDeParte.value = null
+            }
+            // Debe otra cosa: no se cobra solo. El cajero lo ve y decide (vaciar ⇒ el resto es otra venta).
+            else -> {
+                _pendingSplitOrder.value = vigente.copy(orderId = subida.orderId)
+                _estadoDeParte.value = com.avoqado.pos.payment.data.EstadoDeParte.SaldoDistinto(subida.orderId, saldo)
+            }
+        }
+        Log.d("🛒", "D1: la parte sin red subió (orden ${subida.orderId}, saldo $saldo, pagada ${subida.pagada})")
+    }
+
+    /**
+     * D1: el mensaje que ve el cajero al tocar Cobrar mientras la parte guardada sin red no sube. null = se puede cobrar.
+     * «Por revisar» no se arregla esperando: lo resuelve un gerente (Codex r2 #6).
+     */
+    fun mensajeDeParteEnEspera(): String? {
+        val pendiente = _pendingSplitOrder.value ?: return null
+        if (pendiente.parteEnCola == null) return null
+        return when (val estado = _estadoDeParte.value) {
+            com.avoqado.pos.payment.data.EstadoDeParte.PorRevisar -> PARTE_SIN_RED_POR_REVISAR
+            is com.avoqado.pos.payment.data.EstadoDeParte.SaldoDistinto -> parteSinRedSaldoDistinto(pendiente.totalCents, estado.saldoCents)
+            else -> PARTE_SIN_RED_SUBIENDO
+        }
+    }
+
+    /** D1: el cobro no se abre mientras la parte guardada sin red no sube; lo dice el aviso. true = detenerse. */
+    fun detenerCobroPorParteEnEspera(): Boolean {
+        val mensaje = mensajeDeParteEnEspera() ?: return false
+        _avisoDeVales.value = mensaje
+        return true
+    }
+
+    /** D1: «Dividir» en tienda sin conexión no abre la hoja; lo dice el aviso. true = detenerse. */
+    fun detenerDividirSinConexion(): Boolean {
+        if (hayConexionConAvoqado()) return false
+        _avisoDeVales.value = DIVIDIR_SIN_CONEXION
+        return true
+    }
+
+    /** D1: «Dividir» en tienda pide conexión con Avoqado (founder «B»). Sin monitor (pruebas) se da por conectado. */
+    fun hayConexionConAvoqado(): Boolean =
+        connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
+
+    /** Aviso de vales (rojo, no el de impuesto): un candado de D5 o del rediseño r7 que el cajero tiene que leer. */
+    private val _avisoDeVales = MutableStateFlow<String?>(null)
+    val avisoDeVales: StateFlow<String?> = _avisoDeVales.asStateFlow()
+
+    fun consumeAvisoDeVales() {
+        _avisoDeVales.value = null
+    }
+
+    /** Regla 10: la venta de vales con abono que el carrito no trae (el aviso fijo «Cobrar saldo»), o `null`. */
+    val saldoDeVales: StateFlow<SaldoDeVales?> by lazy {
+        kotlinx.coroutines.flow.combine(
+            areaTicketRepository.session.checkout,
+            _pendingSplitOrder,
+            _cartState,
+        ) { sesion, _, cart ->
+            val venta = sesion?.takeIf { it.tieneAbono() } ?: return@combine null
+            val orden = venta.order ?: return@combine null
+            if (traeLaVentaDeVales(venta, cart)) return@combine null
+            val saldo = orden.remainingBalance.moneyToCents().takeIf { it > 0 }
+                ?: (orden.total.moneyToCents() - orden.paidAmount.moneyToCents()).coerceAtLeast(0)
+            SaldoDeVales(orderId = orden.id, saldoCents = saldo)
+        }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+    }
+
+    /**
+     * Regla 10. «Cobrar saldo»: relee la venta (si hay red) y, con el carrito vacío, la siembra como «Saldo pendiente» que
+     * continúa su orden. Con otra venta en el carrito pide terminarla primero; nunca la mezcla ni la borra.
+     */
+    fun cobrarSaldoDeVales() {
+        viewModelScope.launch {
+            if (!_cartState.value.isEmpty) {
+                _avisoDeVales.value = VALES_SALDO_CON_OTRA_VENTA
+                return@launch
+            }
+            // F3 (vales-ciclo, Codex r3): la venta y el negocio de ESTE toque. Si mientras se relee el cajero agrega algo y vacía, el
+            // carrito vuelve a estar vacío pero ya es otra venta: el saldo no se siembra en ella (el aviso sigue para tocarlo otra vez).
+            val ventaAlTocar = _cartState.value.identidadDeVenta
+            val negocioAlTocar = secureStorage.venueId
+            val releida = runCatching { areaTicketRepository.refresh() }.getOrNull()
+            if (releida != null && releida.status == "PAID") {
+                _avisoDeVales.value = VALES_SALDO_YA_COBRADO
+                return@launch
+            }
+            val venta = ventaDeValesConAbono() ?: return@launch
+            val orden = venta.order ?: return@launch
+            if (!_cartState.value.isEmpty) {
+                _avisoDeVales.value = VALES_SALDO_CON_OTRA_VENTA
+                return@launch
+            }
+            if (_cartState.value.identidadDeVenta != ventaAlTocar || secureStorage.venueId != negocioAlTocar) return@launch
+            val saldo = orden.remainingBalance.moneyToCents().takeIf { it > 0 }
+                ?: (orden.total.moneyToCents() - orden.paidAmount.moneyToCents()).coerceAtLeast(0)
+            if (saldo <= 0) return@launch
+            addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
+            markPendingSplitOrder(orden.id)
+        }
     }
 
     /**
@@ -505,30 +822,23 @@ class CartViewModel @Inject constructor(
      * mirar sólo los ids dejaría pasar una cantidad que subió de 1 a 2 y
      * cobraríamos dos artículos contra una orden que sólo tiene uno.
      *
-     * Cuando se rompe NO se bloquea nada: la venta arranca su propia orden y el
-     * cajero se entera por el aviso ámbar. Lo que no puede pasar —y esto lo
-     * impide— es que se cobre en silencio contra la orden vieja.
+     * 🔴 Tablero D3 (21-oct): el vínculo ya NO se rompe. Romperlo cobraba lo agregado como venta nueva llevándose el saldo
+     * de la vieja, que seguía debiéndolo. La pantalla no abre el cobro ([detenerCobroDeVentaCambiada]); si algo llegara
+     * aquí con el carrito cambiado, el cobro no continúa ninguna orden y el vínculo sigue para cuando se quite lo agregado.
      */
     fun resolvePendingSplitOrderForCharge(): String? {
         val pending = _pendingSplitOrder.value
-        if (pending == null) {
+        // D1: mientras su parte sin red no sube (o el saldo no cuadró), no hay orden que continuar (Codex r2 #2).
+        if (pending == null || pending.parteEnCola != null) {
             chargingAgainstOrderId = null
             return null
         }
-        val cart = _cartState.value
-        val hayRenglonNuevo = cart.items.any { it.id !in pending.itemIds }
-        val crecioElImporte = cart.totalCents > pending.totalCents
-        if (!hayRenglonNuevo && !crecioElImporte) {
+        if (!carritoCambioDesde(pending, _cartState.value)) {
             chargingAgainstOrderId = pending.orderId
             return pending.orderId
         }
-
         chargingAgainstOrderId = null
-        _pendingSplitOrder.value = null
-        _splitWarning.value =
-            "Agregaste artículos después de un cobro parcial: esto se cobra como una venta NUEVA " +
-            "y la anterior queda con su saldo abierto. Para cerrarla, cobra primero el saldo pendiente."
-        Log.w("🛒", "Split de mostrador: el carrito cambió, se rompe el vínculo con ${pending.orderId}")
+        Log.w("🛒", "Split de mostrador: el carrito cambió; el cobro no se abre y el vínculo con ${pending.orderId} sigue")
         return null
     }
 
@@ -598,6 +908,18 @@ class CartViewModel @Inject constructor(
     val referralValidation: StateFlow<ReferralCaptureUiState> = _referralValidation.asStateFlow()
 
     init {
+        // 🔴 DINERO (D1, 20-oct). Los renglones de vale son la copia del apartado del servidor: cuando el apartado se suelta
+        // («Cancelar» en el cobro, vencido o pagado), salen del carrito. Si se quedaban, el siguiente cobro los vendía como
+        // importe libre y el vale quedaba sin pagar. Sólo la transición vivo → nada: al abrir no hay apartado todavía.
+        var habiaApartado = false
+        areaTicketRepository.session.checkout
+            .onEach { apartado ->
+                if (habiaApartado && apartado == null) {
+                    _cartState.update { state -> state.copy(items = state.items.filter { it.areaTicketId == null }) }
+                }
+                habiaApartado = apartado != null
+            }
+            .launchIn(viewModelScope)
         serviceCoursesRepository?.let { repository -> viewModelScope.launch {
             repository.courses.collect { freezePreparationForPendingProducts() }
         } }
@@ -1113,9 +1435,16 @@ class CartViewModel @Inject constructor(
         }
         val areaTicketId = _cartState.value.items.firstOrNull { it.id == itemId }?.areaTicketId
         if (areaTicketId != null) {
+            // Sin apartado no hay nada que soltar en el servidor: el vale se quita aquí. Si no, el borrado fallaba y el
+            // renglón se quedaba para siempre después de que el cobro pidiera volver a escanearlo (D1, 20-oct).
+            if (areaTicketRepository.session.current() == null) {
+                _cartState.update { state -> state.copy(items = state.items.filter { it.areaTicketId != areaTicketId }) }
+                return
+            }
+            val venta = _cartState.value.identidadDeVenta
             viewModelScope.launch {
                 runCatching { areaTicketRepository.removeTicket(areaTicketId) }
-                    .onSuccess(::replaceAreaTicketLines)
+                    .onSuccess { replaceAreaTicketLines(it, venta) }
                     .onFailure { Log.e("🎟️", "No se pudo quitar el vale: ${it.message}") }
             }
             return
@@ -1143,10 +1472,25 @@ class CartViewModel @Inject constructor(
     private fun esLineaFija(itemId: String): Boolean =
         _cartState.value.items.any { it.id == itemId && (it.locked || it.isPromotionLine) }
 
+    /**
+     * Quitar un renglón a mano (deslizar, «Anular artículos», cantidad a cero). 🔴 D5 (Codex r5 #3): en una venta de vales con
+     * abono, quitar su «Saldo pendiente» la vaciaba igual que «Vaciar»: no se deja y se dice por qué. Los cobros por artículo
+     * quitan lo pagado con [removeItem], sin pasar por aquí.
+     */
+    fun quitarPorElCajero(itemId: String): Boolean {
+        // Lo que se agregó encima sí se quita (es la salida de la regla 11); lo de la venta con abono, no.
+        if (vaciarBloqueadoPorAbono() && _pendingSplitOrder.value?.itemIds?.contains(itemId) == true) {
+            _avisoDeVales.value = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+            return false
+        }
+        removeItem(itemId)
+        return true
+    }
+
     fun updateQuantity(itemId: String, newQuantity: Int) {
         if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
-            removeItem(itemId)
+            quitarPorElCajero(itemId)
             return
         }
         _cartState.update { state ->
@@ -1171,6 +1515,11 @@ class CartViewModel @Inject constructor(
 
     fun decrementQuantity(itemId: String) {
         if (esLineaFija(itemId)) return
+        // Bajar de 1 es quitar el renglón: pasa por el mismo candado que deslizar (D5).
+        if ((_cartState.value.items.find { it.id == itemId }?.quantity ?: 0) <= 1) {
+            quitarPorElCajero(itemId)
+            return
+        }
         _cartState.update { state ->
             val item = state.items.find { it.id == itemId } ?: return@update state
             if (item.quantity <= 1) {
@@ -1259,6 +1608,10 @@ class CartViewModel @Inject constructor(
         if (bloqueoDeEntrega() != null) return false
         val state = _cartState.value
         if (state.isEmpty || state.items.any { it.locked }) return false
+        // D5 (Codex r3 #5): guardar también vaciaba la venta de vales con abono (y su saldo guardado se cobraba aparte).
+        if (vaciarBloqueadoPorAbono()) return false
+        // Tablero D3 (Codex r9): guardar soltaba el vínculo y, al restaurarlo, el saldo se cobraba dentro de otra venta.
+        if (hayVentaAMedias()) return false
 
         val cartName = name ?: "Carrito ${
             com.avoqado.pos.core.util.VenueTimeZone.now()
@@ -1270,6 +1623,8 @@ class CartViewModel @Inject constructor(
             cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn,
             items = state.items.map { item ->
                 SavedCartItem(
+                    lineId = item.id,
+                    weightKg = item.weightKg,
                     productId = when (val type = item.type) {
                         is CartItemType.ProductItem -> type.productId
                         is CartItemType.CustomAmount -> null
@@ -1378,6 +1733,24 @@ class CartViewModel @Inject constructor(
         setSelectedCustomer(null)
     }
 
+    /**
+     * El botón «Vaciar»: termina la venta y, 🔴 D2 (vales-ciclo), suelta la llave de emisión de vales. Es la salida que da el
+     * aviso del 409 («… o vacíalo»), y sólo aquí: guardar el carrito o pagar después la conservan, así un vale cuya respuesta
+     * se perdió vuelve con el mismo contenido y el servidor devuelve ESE vale en vez de crear otro.
+     */
+    fun vaciar() {
+        secureStorage.venueId?.let { secureStorage.soltarLlaveDeEmisionDeVales(it) }
+        finalizarVenta()
+    }
+
+    /**
+     * J7 (vales-ciclo r0): termina la venta [venta] —la que emitió el vale— sólo si el carrito sigue siendo ella. Reimprimir o
+     * guardar el PDF de un vale anterior con otra venta en pantalla no la vacía; sin venta conocida (tras reiniciar), nada.
+     */
+    fun finalizarVentaSiEs(venta: String?) {
+        if (venta != null && venta == _cartState.value.identidadDeVenta) finalizarVenta()
+    }
+
     /** En qué quedó la venta tras un cobro confirmado. Espeja 1:1 los tres caminos. */
     enum class RamaCobro {
         /** Split por producto: se pagaron renglones sueltos. */
@@ -1438,6 +1811,8 @@ class CartViewModel @Inject constructor(
         cambiosDePrecio: List<CambioDePrecio> = emptyList(),
         /** El descuento de cuenta como quedó en la orden (fijo tras un 201 con cambios; null tras un 409 o sin descuento). */
         descuentoDeCuentaCongelado: DescuentoCongelado? = null,
+        /** D7: `remainingBalanceCents` lo confirmó el SERVIDOR (no es la resta local). */
+        saldoDelServidor: Boolean = false,
     ): CobroAplicado {
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
@@ -1482,6 +1857,16 @@ class CartViewModel @Inject constructor(
                 // orden PAGADA (pasa con un premio mayor que la parte cobrada). Dejarlo permitía cobrarlo
                 // otra vez en una orden nueva (hallazgo P1 de Codex, ronda 2).
                 if (remainingBalanceCents <= 0 && !_cartState.value.isEmpty) clearCart()
+                // D7 (27-oct): el SERVIDOR confirmó un saldo que no es lo que valen los renglones que quedan (otra caja
+                // abonó, la terminal quitó un descuento) o ya no queda renglón: el carrito enseña ESE saldo, en la misma
+                // venta, para que se pueda cobrar. Sin confirmación (resta local) no se toca: es la de siempre.
+                // D10 (Codex r1 #1): también con el saldo LOCAL: con la parte proporcional, saldo − parte ya es lo que falta, y
+                // un descuento fijo de toda la cuenta se quedaría entero en los renglones que quedan.
+                if (remainingBalanceCents > 0 && _cartState.value.totalCents != remainingBalanceCents) {
+                    clearCart()
+                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal) }
+                    addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
+                }
                 RamaCobro.RENGLONES_PAGADOS
             }
             remainingBalanceCents > 0 -> {
@@ -1529,8 +1914,9 @@ class CartViewModel @Inject constructor(
             //
             // iOS ya lo hacía bien con `try?` (CheckoutView.swift): esto es el
             // espejo, con log para que el fallo no quede invisible.
-            runCatching { areaTicketRepository.restore() }
-                .onSuccess { checkout -> checkout?.let(::replaceAreaTicketLines) }
+            val venta = _cartState.value.identidadDeVenta
+            runCatching { areaTicketRepository.restore(venta) }
+                .onSuccess { checkout -> checkout?.let { proyectarOSoltar(it, venta) } }
                 .onFailure { Log.w("🎟️", "No se pudo restaurar la sesión de vales: ${it.message}") }
         }
     }
@@ -1541,7 +1927,35 @@ class CartViewModel @Inject constructor(
      * Esa parada sólo ocurre sin abonos en la orden, así que nunca regresa al carrito algo ya pagado.
      */
     fun traerValesDeLaSesion() {
-        areaTicketRepository.session.current()?.let(::replaceAreaTicketLines)
+        areaTicketRepository.session.current()?.let { replaceAreaTicketLines(it, _cartState.value.identidadDeVenta) }
+    }
+
+    /**
+     * 🔴 DINERO (regla 8). Al restaurar: el apartado de ESTA venta (o sin dueño, tras reiniciar) se proyecta; uno sin abono que
+     * era de otra venta quedó soltado y se suelta en el servidor en vez de reaparecer aquí. Con abono no se proyecta (D3): lo
+     * ofrece el aviso «Cobrar saldo».
+     */
+    private suspend fun proyectarOSoltar(checkout: AreaTicketCheckout, venta: String) {
+        if (checkout.tieneAbono()) return
+        // J12 (vales-ciclo, Codex r1): una restauración que tardó compara contra la venta de CUANDO se pidió. Si el carrito ya es
+        // otra venta, el apartado que trae puede ser el de esa venta nueva: ni se proyecta ni se suelta.
+        if (_cartState.value.identidadDeVenta != venta) {
+            // J13 (Codex r2): el que la restauración instaló SIN dueño (venía del disco) es de la venta de cuando se pidió; así la
+            // regla 8 lo suelta al siguiente escaneo de la venta nueva, en vez de que ésta lo adopte con sus vales viejos.
+            val sesion = areaTicketRepository.session
+            if (sesion.ventaDuena == null && sesion.current()?.id == checkout.id) sesion.anotarVentaDuena(venta)
+            return
+        }
+        val duena = areaTicketRepository.session.ventaDuena
+        if (duena != null && duena != venta) {
+            runCatching { areaTicketRepository.cancel(soloSi = checkout.id) }
+                .onFailure {
+                    Log.w("🎟️", "No se pudo soltar el apartado de una venta anterior: ${it.message}")
+                    releerSiTieneAbono(it)
+                }
+            return
+        }
+        replaceAreaTicketLines(checkout, venta)
     }
 
     /**
@@ -1552,7 +1966,8 @@ class CartViewModel @Inject constructor(
      * pero tampoco queremos tragarnos el error en silencio aquí.
      */
     suspend fun heartbeatAreaTicketSession() {
-        areaTicketRepository.heartbeat()?.let(::replaceAreaTicketLines)
+        val venta = _cartState.value.identidadDeVenta
+        areaTicketRepository.heartbeat()?.let { replaceAreaTicketLines(it, venta) }
     }
 
     suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
@@ -1618,6 +2033,11 @@ class CartViewModel @Inject constructor(
         }
 
         return runCatching {
+            // J5 (vales-ciclo r0): la venta y el negocio de ESTE escaneo, antes del primer viaje. Si el cajero vacía y empieza
+            // otra venta (o cambia de negocio) mientras se consulta, el vale leído para A nunca cae en B.
+            val venta = _cartState.value.identidadDeVenta
+            val negocio = secureStorage.venueId
+            fun sigueLaVenta() = _cartState.value.identidadDeVenta == venta && secureStorage.venueId == negocio
             val resolved = areaTicketRepository.resolveCheckoutScan(code)
             when (resolved.type) {
                 "PRODUCT" -> localProduct?.let(ScannedBarcodeResult::ProductFound)
@@ -1625,10 +2045,21 @@ class CartViewModel @Inject constructor(
                 "AREA_TICKET" -> {
                     val settings = areaTicketRepository.settings()
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
-                    if (!settings.areaTickets.allowMixedCart && hasNormalItems) {
+                    if (!sigueLaVenta()) {
+                        ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                    } else if (_pendingSplitOrder.value != null) {
+                        // 🔴 D4 (20-oct). Con una venta cobrada a medias, el vale armaba una orden NUEVA con lo que faltaba y la
+                        // venta de antes se quedaba con su saldo abierto para siempre. Primero se termina esa venta.
+                        ScannedBarcodeResult.Error(VALE_CON_VENTA_A_MEDIAS)
+                    } else if (!settings.areaTickets.allowMixedCart && hasNormalItems) {
                         ScannedBarcodeResult.Error("Este local cobra los vales en un carrito separado.")
                     } else if (cobroAbierto) {
                         ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
+                    } else if (!soltarApartadoDeOtraVenta(venta)) {
+                        ScannedBarcodeResult.Error(VALES_SOLTAR_ANTERIOR)
+                    } else if (!sigueLaVenta()) {
+                        // Soltar el apartado anterior pudo esperar a la red.
+                        ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
                     } else {
                         // Pedir el vale CAMBIA el servidor: una vez pedido se termina aunque la pantalla se vaya (cambiar
                         // de pestaña, girar la tablet). Si no, el servidor quedaba con el vale y el carrito sin él, y el
@@ -1637,10 +2068,26 @@ class CartViewModel @Inject constructor(
                         // (guardar la configuración en disco) y `NonCancellable` la ignoraría (Codex r6).
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         val checkout = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                            areaTicketRepository.addTicket(code)
+                            areaTicketRepository.addTicket(code).also { abierto ->
+                                // Regla 8: el apartado es de la venta que escaneó, aunque el carrito haya cambiado mientras;
+                                // así nunca aparece en otra venta (queda soltado y se suelta).
+                                if (areaTicketRepository.session.current()?.id == abierto.id) {
+                                    areaTicketRepository.session.anotarVentaDuena(venta)
+                                }
+                            }
                         }
                         if (cobroAbierto) return@runCatching ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear el vale al terminar.")
-                        replaceAreaTicketLines(checkout)
+                        if (!sigueLaVenta()) {
+                            // El apartado quedó a nombre de A (regla 8): se suelta ya, por el mismo camino que al restaurar,
+                            // en vez de esperar al siguiente escaneo. Otro negocio: su sesión ya se olvidó al cambiar.
+                            if (secureStorage.venueId == negocio && areaTicketRepository.session.ventaDuena == venta) {
+                                proyectarOSoltar(checkout, _cartState.value.identidadDeVenta)
+                            }
+                            return@runCatching ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                        }
+                        if (!replaceAreaTicketLines(checkout, venta)) {
+                            return@runCatching ScannedBarcodeResult.Error("La venta cambió mientras se pedía el vale: vuelve a escanearlo.")
+                        }
                         ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
                     }
                 }
@@ -1655,16 +2102,59 @@ class CartViewModel @Inject constructor(
         }
     }
 
-    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout) {
+    /**
+     * Regla 8 al escanear: un apartado sin abono que era de OTRA venta (el cajero la vació o la cobró y no se pudo soltar)
+     * se suelta antes de abrir uno nuevo; si no se puede, no se escanea (el vale nuevo se le colgaría a esa venta).
+     */
+    private suspend fun soltarApartadoDeOtraVenta(venta: String): Boolean {
+        val sesion = areaTicketRepository.session
+        val previo = sesion.current()
+        val duena = sesion.ventaDuena
+        if (previo != null && duena != null && duena != venta && !previo.tieneAbono()) {
+            runCatching { areaTicketRepository.cancel(soloSi = previo.id) }
+                .onFailure { releerSiTieneAbono(it) }
+            // Sigue ahí sin soltar: no se escanea. Si resultó tener abono, el escaneo lo dice (cobra su saldo primero).
+            if (sesion.current()?.let { it.id == previo.id && !it.tieneAbono() } == true) return false
+        }
+        // F2 (vales-ciclo, Codex r3): soltar pudo esperar a la red. Si la venta ya cambió, no se preparan dueño ni llaves para la que
+        // se fue (pisaría la creación de la venta nueva): el llamador ve el cambio y lo dice.
+        if (_cartState.value.identidadDeVenta != venta) return true
+        // El dueño se anota ANTES de pedir: si la respuesta se pierde, el apartado ya sabe de qué venta es (Codex r7 #3).
+        sesion.prepararCreacionPara(venta)
+        return true
+    }
+
+    /**
+     * Soltar devolvió 409 porque la venta ya tiene un abono que esta copia no sabía (su relectura tras cobrar falló): se relee
+     * para que el aviso «Cobrar saldo» la muestre (Codex r7 #1).
+     */
+    private suspend fun releerSiTieneAbono(error: Throwable) {
+        if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_HAS_PAYMENT") {
+            runCatching { areaTicketRepository.refresh() }
+        }
+    }
+
+    /**
+     * 🔴 DINERO (regla 8, Codex r6 #5). Sólo se proyecta a la venta [venta] que pidió la respuesta, si el carrito sigue en
+     * ella y el apartado es suyo (sin dueño, tras reiniciar, lo adopta). La respuesta atrasada de una venta que ya se fue no
+     * mete sus vales en la siguiente.
+     */
+    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String): Boolean {
+        val sesion = areaTicketRepository.session
+        if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
+        val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
+        if (duena != venta) return false
         // 🔴 DINERO. Una sesión con abonos ya no se proyecta al carrito. Tras el primer abono el carrito quedó en «Saldo
         // pendiente» (`aplicarCobroConfirmado`), y la sesión sigue viva porque el servidor no deja cancelar una venta con
         // abono (409). Restaurarla al volver a la pantalla metía todos los vales encima del saldo y el total se inflaba
         // (D3, Codex r7). La copia del aparato puede no saber del abono si su relectura falló: por eso también cuenta que el
         // carrito continúe ESA orden y que el carrito ya la haya anotado (`marcarConAbono`). iOS no lo necesita: conserva
         // los vales y cobra el saldo del servidor.
+        // D4 (20-oct): tampoco sobre una venta cobrada a medias de OTRA orden. Un vale apartado antes (o escaneado con su
+        // respuesta perdida) se proyectaba al volver a la pantalla encima del saldo pendiente y mezclaba las dos ventas. Se
+        // queda apartado y aparece al terminar esa venta.
         val conAbonos = checkout.status == "PARTIALLY_PAID" || (checkout.order?.paidAmount?.moneyToCents() ?: 0) > 0
-        val continuaEsaOrden = checkout.order?.id?.let { it == _pendingSplitOrder.value?.orderId } == true
-        if (conAbonos || continuaEsaOrden) return
+        if (conAbonos || _pendingSplitOrder.value != null) return false
         val ticketRows = checkout.tickets.flatMap { ticket ->
             ticket.lines.map { line ->
                 val detail = buildList {
@@ -1693,6 +2183,7 @@ class CartViewModel @Inject constructor(
                 orderTaxPercent = null,
             )
         }
+        return true
     }
 
     // MARK: - Referral capture (Plan 5B)
@@ -1788,11 +2279,22 @@ class CartViewModel @Inject constructor(
 
         viewModelScope.launch {
             _referralValidation.value = ReferralCaptureUiState.Validating
-            validateReferralUseCase(
+            val resultado = validateReferralUseCase(
                 venueId = venueId,
                 referralCode = code,
                 newCustomerId = customerId,
-            ).fold(
+            )
+            // 🔴 La respuesta es del cliente y del código de ANTES: si mientras tanto quitaron al cliente (aunque lo hayan
+            // vuelto a elegir, Codex r2 #1), lo cambiaron o editaron el código, no se aplica. Quitar al cliente vacía el
+            // código (`clearReferral()`), así que una respuesta vieja nunca coincide (Codex r1 #2: el descuento volvía a una
+            // venta sin cliente).
+            if (_selectedCustomer.value?.id != customerId || _referralCode.value.trim() != code) {
+                if (_referralValidation.value is ReferralCaptureUiState.Validating) {
+                    _referralValidation.value = ReferralCaptureUiState.Idle
+                }
+                return@launch
+            }
+            resultado.fold(
                 onSuccess = { result ->
                     when (result) {
                         is ReferralValidationResult.Valid -> {
@@ -1946,15 +2448,29 @@ class CartViewModel @Inject constructor(
         )
     }
 
+    /**
+     * D1 (vales-ciclo, 26-oct): el vale de un carrito guardado quedó emitido en el servidor. Se retira la copia de la que vino,
+     * como hace el cobro confirmado; si no, restaurarla permitía emitir otro vale por la misma mercancía.
+     */
+    fun retirarCopiaDelVale(copia: String?) {
+        val id = copia ?: return
+        if (!savedCartsRepository.deleteCart(id)) Log.w("🛒", "No se confirmó el retiro de la copia $id del vale emitido")
+        if (_cartState.value.carritoGuardadoId == id) _cartState.update { it.copy(carritoGuardadoId = null) }
+    }
+
     fun prepararCobroDelCarritoGuardado(): Boolean =
         _cartState.value.carritoGuardadoId?.let { savedCartsRepository.marcarCobroIniciado(it) } ?: true
 
     fun restoreSavedCart(savedCart: SavedCart, confirmado: Boolean = false): Restauracion {
+        // D5 (Codex r3 #5): restaurar reemplaza el carrito; con una venta de vales con abono la escondía.
+        if (vaciarBloqueadoPorAbono()) return Restauracion.BloqueadaPorAbono
         savedCart.cobroIniciadoEn?.let {
             if (!confirmado || !savedCartsRepository.quitarMarca(savedCart.id)) return Restauracion.PideConfirmacion(it)
         }
         val items = savedCart.items.map { savedItem ->
             CartItem(
+                id = savedItem.lineId ?: UUID.randomUUID().toString(),
+                weightKg = savedItem.weightKg,
                 type = when {
                     savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId)
                     savedItem.productId != null -> CartItemType.ProductItem(savedItem.productId)
@@ -2039,6 +2555,16 @@ class CartViewModel @Inject constructor(
         val currentCart = _cartState.value
         if (currentCart.isEmpty) {
             return Result.failure(Exception("No hay artículos en el carrito"))
+        }
+        // D5 (Codex r4 #2): pagar después creaba OTRA cuenta y vaciaba la venta de vales con abono.
+        if (vaciarBloqueadoPorAbono()) {
+            return Result.failure(Exception(com.avoqado.pos.payment.presentation.VALES_CON_ABONO))
+        }
+        // Tablero D3: la cuenta nueva se llevaba el saldo de la venta a medias y la vieja lo seguía debiendo.
+        if (hayVentaAMedias()) return Result.failure(Exception(VENTA_A_MEDIAS_NO_SE_GUARDA))
+        // D1 por otra puerta: un vale se cobra por su apartado; diferido se iba como importe libre y el vale quedaba sin pagar.
+        if (currentCart.items.any { it.areaTicketLineId != null }) {
+            return Result.failure(Exception(VALES_NO_PAGAR_DESPUES))
         }
         if (customerId.isBlank()) {
             return Result.failure(Exception("Selecciona un cliente para diferir el pago"))

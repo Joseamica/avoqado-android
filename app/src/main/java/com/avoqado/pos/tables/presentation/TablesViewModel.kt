@@ -56,6 +56,11 @@ class TablesViewModel @Inject constructor(
     private val floorPlanRepository: FloorPlanRepository,
     private val roleManager: com.avoqado.pos.core.domain.RoleManager,
     versionSource: ApiFuenteDeVersiones,
+    /**
+     * La caja abierta al abrir una mesa SIN red (efectivo sin red en el turno correcto, 21-oct-2026): su `OPEN_TABLE` la
+     * lleva para que la cuenta nazca en el turno de esa caja aunque suba tarde. Ver [openTableOffline].
+     */
+    private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
 ) : ViewModel() {
 
     private var generacion = 0L
@@ -357,6 +362,11 @@ class TablesViewModel @Inject constructor(
         original: TableSession.Active?, sessionEpoch: Long,
         onActivated: (TableSession.Active) -> Unit, sigueOriginal: () -> Boolean): TableSession.Active? {
         val localOrderId = java.util.UUID.randomUUID().toString()
+        // 🔴 La caja abierta AHORA va en el `OPEN_TABLE` (efectivo sin red en el turno correcto, Codex r4 #1): la cuenta nace en
+        // el turno de esa caja aunque suba tarde. Leerla no puede impedir abrir la mesa: si falla, sale sin caja, como hoy.
+        val caja = try {
+            cashDrawerRepository.getOpenSession()?.id?.takeIf { it.isNotBlank() }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
         val folio = syncOutbox.nextLocalFolio(vId)
         if (!sigueOriginal()) return null
         syncOutbox.enqueue(
@@ -366,6 +376,7 @@ class TablesViewModel @Inject constructor(
                 put("tableId", kotlinx.serialization.json.JsonPrimitive(table.id))
                 put("covers", kotlinx.serialization.json.JsonPrimitive(covers))
                 put("localOrderId", kotlinx.serialization.json.JsonPrimitive(localOrderId))
+                caja?.let { put("cashDrawerSessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
             },
         )
         val opened = TableSession.Active(

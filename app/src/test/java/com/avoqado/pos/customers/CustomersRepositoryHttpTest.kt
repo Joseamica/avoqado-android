@@ -4,6 +4,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.data.model.PaginaDeClientes
+import com.avoqado.pos.customers.data.model.UpdateCustomerRequest
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -158,5 +159,49 @@ class CustomersRepositoryHttpTest {
         server.enqueue(MockResponse().setBody(lista("c1", "c2")))
 
         assertEquals(listOf("c1", "c2"), repository.fetchCustomers().getOrThrow().map { it.id })
+    }
+
+    // MARK: - Editar cliente (26-oct-2026)
+
+    @Test
+    fun `P1 editar hace PUT a la ruta del cliente, manda solo lo cambiado y conserva visitas y gasto`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"message":"Cliente actualizado","customer":{"id":"c1","firstName":"Ana","lastName":null,"phone":"+527351748538","email":null}}""",
+            ),
+        )
+        val original = Customer(id = "c1", phone = "+527351748538", totalVisits = 1, totalSpent = 65.0)
+
+        val resultado = repository.updateCustomer(original, UpdateCustomerRequest(firstName = "Ana")).getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/customers/c1", request.requestUrl!!.encodedPath)
+        assertEquals("""{"firstName":"Ana"}""", request.body.readUtf8())
+        assertEquals("Ana", resultado.firstName)
+        assertEquals(1, resultado.totalVisits)
+        assertEquals(65.0, resultado.totalSpent!!, 0.0)
+        // Queda guardado para buscar sin red.
+        assertEquals("Ana", repository.clientesGuardados().single().firstName)
+    }
+
+    @Test
+    fun `los repetidos se traducen por codigo, no por el texto en ingles`() {
+        assertEquals(
+            "Ese teléfono ya es de otro cliente.",
+            repository.errorAlEditar(400, """{"message":"Customer with phone 5512345678 already exists","code":"CUSTOMER_PHONE_TAKEN"}"""),
+        )
+        assertEquals(
+            "Ese correo ya es de otro cliente.",
+            repository.errorAlEditar(400, """{"message":"Customer with email a@b.mx already exists","code":"CUSTOMER_EMAIL_TAKEN"}"""),
+        )
+        assertEquals("No tienes permiso para editar clientes.", repository.errorAlEditar(403, """{"error":"Forbidden"}"""))
+        assertEquals("Este cliente ya no existe en el negocio.", repository.errorAlEditar(404, "{}"))
+        assertEquals("No se pudo guardar el cliente. Intenta de nuevo.", repository.errorAlEditar(500, "<html>"))
+        // Un 400 de validación dice QUÉ dato está mal (el servidor ya lo manda en español).
+        assertEquals(
+            "El correo no es válido",
+            repository.errorAlEditar(400, """{"message":"Error de validación: email: El correo no es válido"}"""),
+        )
     }
 }

@@ -126,8 +126,18 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private val _state = MutableStateFlow(AreaTicketOperationsState())
     val state: StateFlow<AreaTicketOperationsState> = _state.asStateFlow()
     private var refreshRequestId = 0L
-    private var issueIdempotencyKey = secureStorage.pendingAreaTicketIssueKey
-        ?: UUID.randomUUID().toString().also { secureStorage.pendingAreaTicketIssueKey = it }
+
+    /**
+     * 🔴 D2 (vales-ciclo): la llave de emisión vive en el aparato, una por negocio (`SecureStorage.llaveDeEmisionDeVales`), no
+     * en esta pantalla. Se suelta sólo ① al confirmar el servidor el vale de ESA llave (abajo, en [issue]; si otra pantalla ya
+     * la cambió, no se toca) y ② al vaciar el carrito a mano (`CartViewModel.vaciar`); sin llave, se crea y se guarda en disco
+     * ANTES del POST, y si el disco no la confirmó (Codex r6 #1, r7 #2) da null y el vale no se pide. Un 409, reimprimir o el PDF no la tocan: con llave nueva, el carrito
+     * cambiado tras una respuesta perdida era un SEGUNDO vale. Antes había una copia en memoria que quedaba vieja.
+     */
+    private fun llaveDeEmision(venueId: String): String? =
+        // r8 #2: también la que ya estaba se vuelve a guardar: tras un commit fallido sólo vive en la memoria del proceso.
+        (secureStorage.llaveDeEmisionDeVales(venueId) ?: UUID.randomUUID().toString())
+            .takeIf { secureStorage.guardarLlaveDeEmisionDeVales(venueId, it) }
 
     // D12. Antes del `init`: su `refresh()` ya manda los registros pendientes.
     private val pendingRecordsJson = Json { ignoreUnknownKeys = true }
@@ -142,6 +152,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
      * (emitir, reimprimir, PDF) usan `message = consumeOutputWarning() ?: "<su mensaje de siempre>"`.
      */
     private var outputWarning: String? = null
+
+    /**
+     * J7 (vales-ciclo r0): la venta del carrito que emitió el vale pendiente de papel. Reimprimir o guardar su PDF sólo puede
+     * terminar ESA venta. Sólo en memoria: tras reiniciar no se sabe y no se termina ninguna.
+     */
+    private var ventaDelValePendiente: String? = null
 
     init {
         _state.value = _state.value.copy(
@@ -210,7 +226,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
         }
     }
 
-    fun issue(cart: CartState, onIssued: () -> Unit) {
+    fun issue(
+        cart: CartState,
+        /** D1: corre ya validado, justo antes de pedir el vale (marca la copia guardada). `false` = no se emite. */
+        antesDeEmitir: () -> Boolean = { true },
+        onIssued: (ventaQueEmitio: String?) -> Unit,
+    ) {
         if (_state.value.submitting) return
         val invalid = cart.items.any { it.locked || it.type !is CartItemType.ProductItem }
         if (cart.items.isEmpty() || invalid) {
@@ -223,10 +244,23 @@ class AreaTicketOperationsViewModel @Inject constructor(
             _state.value = _state.value.copy(error = motivo)
             return
         }
+        // D1 (vales-ciclo, Codex r4): ya validado y ANTES de pedir. Marcar antes de validar dejaba «ya se mandó a cobrar» en una
+        // copia cuyo vale nunca se pidió.
+        if (!antesDeEmitir()) {
+            _state.value = _state.value.copy(error = "No se pudo preparar el vale del carrito guardado. Intenta de nuevo.")
+            return
+        }
         // El negocio de ESTE vale, leído al tocar: la sesión puede cerrarse desde el hilo de OkHttp mientras sale el papel.
         val venueId = secureStorage.venueId
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
+            // D2 (Codex r10 #1): la llave se toma (y se guarda) AL TOCAR, antes de esperar lo pendiente. Si mientras tanto otra
+            // pantalla recupera el vale y la suelta, este reintento sale con ELLA y el servidor compara; con una nueva, otro vale.
+            val llave = llaveDeEmision(venueId.orEmpty())
+            if (llave == null) {
+                _state.value = _state.value.copy(submitting = false, error = "No se pudo preparar el vale. Intenta de nuevo.")
+                return@launch
+            }
             // Codex r2 #3: DESPUÉS de `submitting`; si no, mientras esto espera a la red un segundo toque emitiría otro vale.
             runCatching { flushWithinBudget() }
             // Task 13: si en esa espera se cambió de negocio, el vale nacería en el NUEVO y su registro y su reimpresión
@@ -250,21 +284,21 @@ class AreaTicketOperationsViewModel @Inject constructor(
                         discountId = item.itemDiscountId,
                     )
                 }
-                val ticket = repository.issue(lines, issueIdempotencyKey)
+                val ticket = repository.issue(lines, llave)
                 // Primero persiste la recuperación: si la app muere al limpiar el
                 // carrito, el mismo vale todavía puede reimprimirse al volver.
                 secureStorage.pendingAreaTicketPrintCode = ticket.code
                 secureStorage.pendingAreaTicketPrintVenueId = venueId
                 _state.value = _state.value.copy(pendingReprintCode = ticket.code)
+                ventaDelValePendiente = cart.identidadDeVenta
                 // La llave protege la creación, no la impresión. Una vez que el
                 // servidor aceptó este vale, el siguiente carrito necesita otra
                 // llave aunque todavía quede pendiente reimprimir el papel.
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
+                secureStorage.soltarLlaveDeEmisionDeVales(venueId.orEmpty(), siEs = llave)
                 // El vale ya quedó emitido en servidor. Desde este punto el carrito no
                 // puede seguir cobrable aunque falle la salida en papel: imprimir es una
                 // recuperación secundaria del mismo vale, no parte de su creación.
-                onIssued()
+                onIssued(cart.identidadDeVenta)
                 try {
                     printAndRecord(ticket, reprint = false, venueId)
                 } finally {
@@ -281,13 +315,10 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pendingReprintCode = null,
                     message = consumeOutputWarning() ?: "Vale ${ticket.code} emitido correctamente.",
                 )
+                ventaDelValePendiente = null
             }.onFailure { error ->
-                if ((error as? AreaTicketException)?.code == "AREA_TICKET_IDEMPOTENCY_CONFLICT") {
-                    // Esta llave ya creó un vale con OTRO carrito (respuesta perdida o la app murió y el
-                    // carrito se rearmó). Sin rotarla, ningún vale nuevo saldría jamás (spec §4.2).
-                    issueIdempotencyKey = UUID.randomUUID().toString()
-                    secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
-                }
+                // D2: un 409 `AREA_TICKET_IDEMPOTENCY_CONFLICT` NO rota la llave (antes sí: segundo vale con todo). El aviso
+                // dice cómo salir: el carrito como estaba recupera ESE vale, y «Vaciar» suelta la llave.
                 _state.value = _state.value.copy(
                     submitting = false,
                     error = areaTicketIssueFailureMessage(
@@ -299,7 +330,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
         }
     }
 
-    fun reprintPending(onIssued: () -> Unit = {}) {
+    fun reprintPending(onIssued: (ventaQueEmitio: String?) -> Unit = {}) {
         val code = _state.value.pendingReprintCode ?: return
         if (_state.value.submitting || _state.value.preparingPdf) return
         val venueId = secureStorage.venueId
@@ -312,8 +343,6 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 printAndRecord(ticket, reprint = true, venueId)
                 ticket
             }.onSuccess { ticket ->
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
                 secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
@@ -321,7 +350,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pendingReprintCode = null,
                     message = consumeOutputWarning() ?: "Vale ${ticket.code} reimpreso correctamente.",
                 )
-                onIssued()
+                onIssued(ventaDelValePendiente.also { ventaDelValePendiente = null })
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     submitting = false,
@@ -378,7 +407,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
         )
     }
 
-    fun confirmPendingPdfSaved(onIssued: () -> Unit) {
+    fun confirmPendingPdfSaved(onIssued: (ventaQueEmitio: String?) -> Unit) {
         val export = _state.value.pdfExport ?: return
         if (_state.value.submitting) return
         viewModelScope.launch {
@@ -386,8 +415,6 @@ class AreaTicketOperationsViewModel @Inject constructor(
             runCatching {
                 recordOutput(export.venueId, export.ticketId, export.code, reprint = false, reason = "Vale guardado como PDF por el operador.")
             }.onSuccess {
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
                 secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
@@ -396,7 +423,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pdfExport = null,
                     message = consumeOutputWarning() ?: "Vale ${export.code} guardado como PDF.",
                 )
-                onIssued()
+                onIssued(ventaDelValePendiente.also { ventaDelValePendiente = null })
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     submitting = false,
@@ -790,9 +817,9 @@ internal fun areaTicketIssueBlocker(cart: CartState): String? {
 internal fun areaTicketIssueFailureMessage(error: Throwable, externalArea: Boolean): String {
     val code = (error as? AreaTicketException)?.code
     return when {
+        // D2: la llave ya creó un vale con otro contenido (su respuesta se perdió y el carrito cambió). Mismo texto en iOS.
         code == "AREA_TICKET_IDEMPOTENCY_CONFLICT" ->
-            "Un vale anterior pudo quedar creado sin imprimirse. Revísalo en el dashboard antes de cobrarlo " +
-                "otra vez; ya puedes emitir este de nuevo."
+            "Este vale ya se creó con otro contenido. Deja el carrito como estaba para recuperarlo, o vacíalo."
         // Sin red en caja externa: decir qué hacer, no prometer «el POS normal» (ahí cobra otra caja).
         externalArea && code == "AREA_TICKETS_REQUIRE_CONNECTION" ->
             "Sin conexión con Avoqado no se puede emitir el vale. Reintenta cuando vuelva la conexión; " +

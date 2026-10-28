@@ -34,7 +34,10 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.PersonAddAlt1
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Lock
@@ -71,6 +74,12 @@ import com.avoqado.pos.core.domain.ActionVisibility
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionRefund
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.material3.rememberModalBottomSheetState
+import com.avoqado.pos.customers.presentation.CustomersViewModel
+import com.avoqado.pos.customers.presentation.CustomersView
+import com.avoqado.pos.customers.presentation.CreateCustomerView
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Responsive metrics
 //
@@ -373,6 +382,9 @@ private fun LoadedDetailView(
                 )
                 Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
             }
+
+            // MARK: - Cliente Section
+            CustomerAssignmentSection(transaction, viewModel)
 
             // MARK: - Pago Section
             PaymentSection(transaction)
@@ -991,5 +1003,126 @@ private fun PhoneReceiptDialog(
                 color = MaterialTheme.colorScheme.error,
             )
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CustomerAssignmentSection(transaction: Transaction, viewModel: TransactionsViewModel) {
+    val candidate by viewModel.customerCandidate.collectAsState()
+    val picker by viewModel.customerPickerVisible.collectAsState()
+    val busy by viewModel.isAssigningCustomer.collectAsState()
+    val message by viewModel.customerAssignmentMessage.collectAsState()
+    val succeeded by viewModel.customerAssignmentSucceeded.collectAsState()
+    val connected by viewModel.customerConnection.collectAsState()
+    val reachable by viewModel.customerServerReachable.collectAsState()
+    val online = connected && reachable
+    var createSearch by remember(transaction.id) { mutableStateOf<String?>(null) }
+
+    // Misma forma que «Pago» y «Artículos»: título, línea y un renglón con ícono. Sin cliente y con
+    // permiso, el renglón ES el botón (como «Agregar cliente» del carrito); con cliente, sólo lo muestra.
+    val metrics = LocalDetailMetrics.current
+    val hasCustomer = transaction.customerId != null
+    val canTap = !hasCustomer && viewModel.canAssignCustomer
+    val enabled = canTap && online && !busy
+    Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
+        Text("Cliente", fontSize = metrics.sectionTitleSize, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.height(12.dp))
+        ThinDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (canTap) Modifier.clickable(enabled = enabled, onClick = viewModel::openCustomerPicker) else Modifier)
+                .padding(vertical = metrics.iconRowVerticalPadding),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            val tint = if (canTap && !enabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            Icon(if (canTap) Icons.Filled.PersonAddAlt1 else Icons.Filled.AccountCircle, contentDescription = null,
+                modifier = Modifier.size(metrics.iconSize), tint = tint)
+            Text(
+                text = when {
+                    hasCustomer -> transaction.customerName ?: "Cliente asignado"
+                    canTap -> "Agregar cliente"
+                    else -> "Sin cliente"
+                },
+                fontSize = metrics.bodySize,
+                fontWeight = if (canTap) FontWeight.SemiBold else FontWeight.Normal,
+                color = when {
+                    canTap && !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    hasCustomer -> MaterialTheme.colorScheme.onSurface
+                    canTap -> MaterialTheme.colorScheme.onSurface
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.weight(1f),
+            )
+            if (canTap) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
+                modifier = Modifier.size(metrics.iconSize), tint = tint)
+        }
+        ThinDivider()
+        val nota = message ?: if (canTap && !online) "Necesitas conexión para asignar un cliente a esta venta" else null
+        nota?.let {
+            Text(it, fontSize = metrics.smallSize, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm))
+        }
+    }
+
+    if (picker && viewModel.canAssignCustomer) {
+        val customers: CustomersViewModel = hiltViewModel()
+        AvoqadoModalBottomSheet(
+            onDismissRequest = { createSearch = null; viewModel.cancelCustomerAssignment() },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            conXPropia = true,
+            dragHandle = null,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                if (createSearch != null && viewModel.canCreateCustomerForAssignment) {
+                    val search = createSearch.orEmpty()
+                    CreateCustomerView(
+                        viewModel = customers,
+                        initialPhone = search.takeIf { it.any(Char::isDigit) },
+                        initialName = search.takeUnless { it.any(Char::isDigit) },
+                        onCustomerCreated = { createSearch = null; viewModel.chooseCustomer(it) },
+                        onBack = { createSearch = null },
+                    )
+                } else {
+                    CustomersView(
+                        viewModel = customers,
+                        onCustomerSelected = viewModel::chooseCustomer,
+                        onDismiss = viewModel::cancelCustomerAssignment,
+                        onCreateCustomer = { createSearch = it },
+                        canCreateCustomer = viewModel.canCreateCustomerForAssignment && online,
+                    )
+                }
+            }
+        }
+    }
+    if (candidate != null && viewModel.canAssignCustomer) {
+        AvoqadoDialog(
+            title = "Confirmar cliente",
+            description = "El cliente quedará asociado a esta venta. No se puede reemplazar después.",
+            onDismiss = viewModel::cancelCustomerAssignment,
+            dismissOnClickOutside = !busy,
+            actionButton = {
+                PrimaryButton(
+                    text = if (message != null) "Reintentar" else "Agregar cliente",
+                    onClick = viewModel::confirmCustomerAssignment,
+                    enabled = online && !busy,
+                    isLoading = busy,
+                    fullWidth = true,
+                )
+            },
+        ) {
+            Text("Agregar a ${candidate!!.fullName}", style = MaterialTheme.typography.titleMedium)
+            if (!online) Text("Necesitas conexión para asignar un cliente a esta venta",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+    if (succeeded) {
+        AvoqadoSuccessToast(message = "Cliente asignado", onDismiss = viewModel::clearCustomerAssignmentSuccess)
     }
 }

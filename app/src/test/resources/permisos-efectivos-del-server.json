@@ -2,7 +2,7 @@
   "generatedFrom": {
     "repo": "avoqado-server",
     "fn": "getEffectiveRolePermissions(role, null)",
-    "digest": "9ce8b5d32322d646"
+    "digest": "4388a75a52b506fe"
   },
   "roles": {
     "SUPERADMIN": {
@@ -709,6 +709,7 @@
         "notifications:send",
         "online-orders:manage",
         "online-orders:pause",
+        "orders:attach-customer",
         "orders:cancel",
         "orders:create",
         "orders:merge",
@@ -855,6 +856,7 @@
         "notifications:send",
         "online-orders:manage",
         "online-orders:pause",
+        "orders:attach-customer",
         "orders:cancel",
         "orders:cancel-unpaid",
         "orders:comp",

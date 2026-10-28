@@ -1,5 +1,8 @@
 package com.avoqado.pos.payment
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.cancel
+
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
@@ -39,6 +42,9 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalCoroutinesApi::class)
 class Q15OnlinePaymentTest {
     @get:Rule val main = MainDispatcherRule()
+    /** Una prueba que se cuelga FALLA con la pila del hilo atorado, en vez de colgar la corrida entera (como Q16PrecioCapturadoTest). */
+    @get:Rule val tope: org.junit.rules.Timeout = org.junit.rules.Timeout.builder()
+        .withTimeout(90, java.util.concurrent.TimeUnit.SECONDS).withLookingForStuckThread(true).build()
 
     private class Fixture : AutoCloseable {
         val directory=Files.createTempDirectory("q15-online-owned").toFile()
@@ -78,6 +84,10 @@ class Q15OnlinePaymentTest {
                 if(r!=null) released.complete(r)
                 deleted
             }
+            // D2 v7: la SQL de producción, sobre el mismo SQLite.
+            coEvery { dao.descartarReservaRechazada(any()) } answers { sql(DESCARTAR_RESERVA_RECHAZADA_SQL,mapOf("id" to firstArg<String>())) }
+            coEvery { dao.enVueloAPendiente(any()) } answers { sql(EN_VUELO_A_PENDIENTE_SQL,mapOf("id" to firstArg<String>())) }
+            coEvery { dao.enVueloDelVenue(any()) } answers { rows().filter { it.venueId==firstArg<String>() && it.syncStatus=="EN_VUELO" } }
             coEvery { dao.getPendingPayments(any()) } answers { rows().filter { it.syncStatus=="PENDING" }.take(firstArg()) }
             coEvery { dao.deleteSynced(any()) } answers { sql(Q15_PAYMENT_TTL_SQL,mapOf("olderThan" to firstArg<Long>()));Unit }
             every { dao.getPendingCount() } returns flowOf(0);every { dao.getFailedCount() } returns flowOf(0)
@@ -125,7 +135,12 @@ class Q15OnlinePaymentTest {
         suspend fun awaitRelease(id:String)=withContext(Dispatchers.Default) { withTimeout(5000) {
             assertEquals(id,released.await().id)
         } }
-        fun vm():PaymentFlowViewModel {
+        /** Los ViewModels de la prueba: al cerrar se cancela su scope, como `onCleared` al salir de la pantalla. Sin esto, lo que
+         *  sigue vivo tras la prueba (la consulta del sello de una venta completa) truena en la SIGUIENTE como
+         *  `UncaughtExceptionsBeforeTest` (D2 etapa 2: el vehículo FAST ahora es una venta completa con cliente). */
+        private val vms=mutableListOf<PaymentFlowViewModel>()
+        fun vm():PaymentFlowViewModel = crearVm().also { vms+=it }
+        private fun crearVm():PaymentFlowViewModel {
             val terminal=mockk<TerminalPaymentService>(relaxed=true)
             every { terminal.intentoEnVuelo() } returns null;every { terminal.contextoDe(any()) } returns null
             coEvery { terminal.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
@@ -139,19 +154,22 @@ class Q15OnlinePaymentTest {
                 customerDisplay=com.avoqado.pos.customerdisplay.CustomerDisplayState(),areaTicketRepository=area,cancelacionDeCobro=mockk(relaxed=true),
                 savedStateHandle=androidx.lifecycle.SavedStateHandle())
         }
-        fun TestScope.verifyNoReplayOfApplied() {
+        /** [esperadas]: lo que ya llegó al servidor antes de sincronizar; la cola no debe sumar ni una petición más. */
+        fun TestScope.verifyNoReplayOfApplied(esperadas:Int=1) {
             val network=mockk<ConnectivityMonitor>(relaxed=true)
             every { network.isConnected } returns MutableStateFlow(true);every { network.isServerReachable } returns MutableStateFlow(true)
             val drawer=mockk<CashDrawerRepository>(relaxed=true);coEvery { drawer.sincronizarCajonPrimero() } returns true
-            val service=PaymentSyncService(dao,storage,client,network,drawer,mockk<SyncOutbox>(relaxed=true))
+            val service=PaymentSyncService(dao,storage,client,network,drawer,mockk<SyncOutbox>(relaxed=true),cash)
             service.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
-            try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(1,server.requestCount) } finally { service.stop() }
+            try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(esperadas,server.requestCount) } finally { service.stop() }
         }
-        override fun close() { answer.countDown();server.shutdown();client.connectionPool.evictAll();client.dispatcher.executorService.shutdown();db.close();directory.deleteRecursively() }
+        override fun close() { vms.forEach { it.viewModelScope.cancel() };answer.countDown();server.shutdown();client.connectionPool.evictAll();client.dispatcher.executorService.shutdown();db.close();directory.deleteRecursively() }
     }
-    private fun open(vm:PaymentFlowViewModel,cents:Int=10000,part:Int=4000,tip:Int=500) {
-        vm.setSplitConfig("CUSTOMAMOUNT",customAmountCents=part)
-        vm.startPaymentFlow(CartState(items=listOf(CartItem(id="owned-line",type=CartItemType.CustomAmount,name="Importe de prueba",unitPrice=cents))),customerId="original-customer")
+    // D2 etapa 2 (27-oct): estas pruebas son del canal FAST. Una venta rápida DIVIDIDA ya lleva orden, así que el vehículo es una
+    // venta rápida de UNA sola parte por el importe que antes era la parte.
+    private fun open(vm:PaymentFlowViewModel,part:Int=4000,tip:Int=500) {
+        vm.setSplitType("FULLPAYMENT")
+        vm.startPaymentFlow(CartState(items=listOf(CartItem(id="owned-line",type=CartItemType.CustomAmount,name="Importe de prueba",unitPrice=part))),customerId="original-customer")
         vm.submitTip(tip);vm.selectPaymentMethod(PaymentMethod.CASH)
     }
     private suspend fun terminalState(vm:PaymentFlowViewModel)=withContext(Dispatchers.Default) { withTimeout(5000) {
@@ -182,12 +200,13 @@ class Q15OnlinePaymentTest {
         Fixture().use { f -> val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
             val http=f.arrival();val reserved=f.rows().single();assertEquals("EN_VUELO",reserved.syncStatus)
             val capture=ConciliacionDelCobro.leerCaptura(reserved.q15CaptureJson,VENUE,reserved.id)!!
-            assertEquals(4000,capture.amountCents);assertEquals(500,capture.tipCents);assertEquals("CUSTOMAMOUNT",capture.splitType)
+            assertEquals(4000,capture.amountCents);assertEquals(500,capture.tipCents);assertEquals("FULLPAYMENT",capture.splitType)
             val sent=JSONObject(http.body.readUtf8());assertEquals(reserved.id,sent.getString("idempotencyKey"));assertEquals(4000,sent.getInt("amount"));assertEquals(500,sent.getInt("tip"));assertEquals("original-customer",sent.getString("customerId"))
             f.answer.countDown();assertTrue(terminalState(vm) is PaymentFlowState.Success);runCurrent();f.awaitRelease(reserved.id)
             val applied=f.rows().single();assertEquals("SYNCED",applied.syncStatus);assertEquals(ConciliacionDelCobro.DIFERENCIA,applied.q15Reason)
             assertEquals(reserved.q15CaptureJson,applied.q15CaptureJson);assertNotNull(applied.q15ResultJson);assertEquals(1,f.releases.size)
-            with(f) { verifyNoReplayOfApplied() }
+            // D2 etapa 2: la venta ya es completa y con cliente, así que tras el cobro se consulta su sello (una petición más).
+            with(f) { verifyNoReplayOfApplied(esperadas=2) }
         }
     }
     @Test fun `fallo reserva VM es visible sin POST sin Success y permite mismo intento`() = runTest {
@@ -197,7 +216,12 @@ class Q15OnlinePaymentTest {
             val error=vm.state.value as? PaymentFlowState.Error;assertNotNull(error);assertTrue(error!!.message.contains("No se pudo guardar el cobro"))
             assertEquals(0,f.server.requestCount);assertTrue(f.rows().isEmpty());assertTrue(f.releases.isEmpty())
             f.beforeInsert={};vm.processCashPayment(5000);runCurrent();val http=f.arrival();val row=f.rows().single()
-            assertEquals(failed!!.id,row.id);assertEquals(failed!!.q15CaptureJson,row.q15CaptureJson)
+            assertEquals(failed!!.id,row.id)
+            // Codex r11 #1: la captura es la misma salvo `primeraCapturaEn`, que es la hora del primer intento que llegó al disco (el
+            // primero se cayó antes de guardar y antes del POST: no pudo dejar gemela en el servidor). No es evidencia: `evaluar` no la mira.
+            fun sinHora(json:String?)=ConciliacionDelCobro.leerCaptura(json,VENUE,row.id)!!.copy(primeraCapturaEn=null)
+            assertEquals(sinHora(failed!!.q15CaptureJson),sinHora(row.q15CaptureJson))
+            assertTrue(ConciliacionDelCobro.leerCaptura(row.q15CaptureJson,VENUE,row.id)!!.primeraCapturaEn!! <= row.createdAt)
             assertEquals(4000,row.amountCents);assertEquals(500,row.tipCents);assertEquals(row.id,JSONObject(http.body.readUtf8()).getString("idempotencyKey"))
             f.answer.countDown();assertTrue(terminalState(vm) is PaymentFlowState.Success);runCurrent();f.awaitRelease(row.id)
         }
@@ -206,7 +230,7 @@ class Q15OnlinePaymentTest {
         Fixture().use { f -> val vm=f.vm();val a=CompletableDeferred<Unit>();val b=CompletableDeferred<Unit>()
             f.beforeInsert={ row -> if(row.venueId==VENUE) { a.await();throw java.io.IOException("A propia") } else b.await() }
             open(vm);vm.processCashPayment(5000);runCurrent();assertEquals(0,f.server.requestCount)
-            f.venue="OTHER-VENUE";f.actor="new-staff";open(vm,cents=8000,part=6000,tip=0);vm.processCashPayment(6000);runCurrent()
+            f.venue="OTHER-VENUE";f.actor="new-staff";open(vm,part=6000,tip=0);vm.processCashPayment(6000);runCurrent()
             val stateB=vm.state.value;assertTrue(stateB is PaymentFlowState.Processing)
             a.complete(Unit);runCurrent();assertEquals(stateB,vm.state.value);assertTrue(f.releases.isEmpty());assertEquals(0,f.server.requestCount)
             f.body="""{"success":true,"data":{"id":"server-B","orderId":"order-B","amount":"60.00","tipAmount":"0.00","status":"COMPLETED"}}"""
@@ -217,15 +241,129 @@ class Q15OnlinePaymentTest {
             assertEquals(reserved.id,f.releases.single().id);assertEquals("OTHER-VENUE",f.releases.single().venueId)
         }
     }
+    /** Codex r14 A5: el 2xx de la orden se comprobó y lo local falló después: el respaldo conoce lo que el servidor registró. */
+    @Test fun `2xx confirmado de la orden con el guardado local fallido trae el importe que registro el servidor`() = runTest {
+        Fixture().use { f -> val key="order-result-store-failure"
+            val request=CreateOrderRequest(emptyList(),subtotal=4000,tip=500,total=4500,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",5000,500,null,orderId="original-order",idempotencyKey=key,amountCents=4000,tipCents=500,venueId=VENUE)
+            f.sql("CREATE TRIGGER result_failure BEFORE UPDATE OF q15ResultJson ON pending_payments BEGIN SELECT RAISE(FAIL,'owned store failure'); END")
+            f.body="""{"success":true,"payment":{"paymentId":"server-payment","orderId":"original-order","amount":3000,"tipAmount":500,"status":"COMPLETED","splitType":"FULLPAYMENT"}}"""
+            val payment=async { f.order.recordCashPayment("original-order",4000,"original-staff",500,"FULLPAYMENT",key,capturedVenueId=VENUE) }
+            runCurrent();f.arrival();f.answer.countDown();val outcome=payment.await()
+            val error=outcome.exceptionOrNull() as? OrderRepository.CobroRegistradoSinGuardar
+            assertNotNull("es cobrado, no un error cancelable",error)
+            assertEquals("lo que el servidor registró: 30.00 + 5.00",3500,error!!.importeCobradoCents)
+        }
+    }
     @Test fun `fallo al conservar respuesta online no pierde captura ni afirma exito`() = runTest {
         Fixture().use { f -> val key="result-store-failure";val request=CreateOrderRequest(emptyList(),subtotal=4000,tip=500,total=4500,paymentMethod="CASH")
             f.cash.reservarCobro(request,"original-staff",5000,500,null,idempotencyKey=key,amountCents=4000,tipCents=500,venueId=VENUE)
             val original=f.row(VENUE,key)!!
             f.sql("CREATE TRIGGER result_failure BEFORE UPDATE OF q15ResultJson ON pending_payments BEGIN SELECT RAISE(FAIL,'owned store failure'); END")
             val payment=async { f.order.recordFastCashPayment(4000,"original-staff",tip=500,idempotencyKey=key,capturedVenueId=VENUE) }
-            runCurrent();f.arrival();f.answer.countDown();assertTrue(payment.await().isFailure)
+            runCurrent();f.arrival();f.answer.countDown();val outcome=payment.await();assertTrue(outcome.isFailure)
+            // D2 v7 punto 7: el servidor contestó 2xx. No es un error cancelable: el VM lo trata como cobrado y encolado.
+            assertTrue(outcome.exceptionOrNull() is OrderRepository.CobroRegistradoSinGuardar)
             val preserved=f.row(VENUE,key)!!;assertEquals("EN_VUELO",preserved.syncStatus);assertEquals(original.q15CaptureJson,preserved.q15CaptureJson)
             assertNull(preserved.q15ResultJson);assertTrue(f.releases.isEmpty());assertEquals(1,f.server.requestCount)
+        }
+    }
+    /**
+     * Guarda Q15/H2 (11-oct) que D2 v7 NO cambia (ruling del coordinador, 24-oct; espejo de iOS
+     * `testIncompleteTwoHundredKeepsCaptureVisibleAndCreatesNoDrawerEvent`): un 2xx cuyo cuerpo NO confirma el cobro puede venir
+     * de un intermediario. No es «2xx = cobrado»: la fila queda en la cola con «resultado no comprobado», la pantalla muestra el
+     * error de hoy y «Cancelar» no la borra (ya no está EN_VUELO). Sólo un 2xx confirmado con lo local fallido es cobrado.
+     */
+    @Test fun `2xx que no confirma el cobro sigue como hoy - error visible, en la cola por revisar y Cancelar no la borra`() = runTest {
+        Fixture().use { f -> f.body="""{"success":true}"""
+            val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
+            f.arrival();f.answer.countDown()
+            val error=terminalState(vm) as? PaymentFlowState.Error;assertNotNull(error)
+            assertTrue(error!!.message.contains("por confirmar"))
+            val held=f.rows().single();assertEquals("PENDING",held.syncStatus);assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,held.q15Reason)
+            vm.cancelarVenta();runCurrent()
+            val after=f.rows().single();assertEquals("PENDING",after.syncStatus);assertEquals(held.q15CaptureJson,after.q15CaptureJson)
+        }
+    }
+    /** D2 v7 punto 7, de punta a punta: un 2xx CONFIRMADO cuyo resultado no se pudo escribir es cobrado (encolado), nunca un error cancelable. */
+    @Test fun `VM 2xx confirmado con el guardado local fallido muestra cobrado encolado y la fila pasa a PENDING`() = runTest {
+        Fixture().use { f ->
+            f.sql("CREATE TRIGGER result_failure BEFORE UPDATE OF q15ResultJson ON pending_payments BEGIN SELECT RAISE(FAIL,'owned store failure'); END")
+            val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
+            f.arrival();f.answer.countDown()
+            val exito=terminalState(vm) as? PaymentFlowState.Success;assertNotNull(exito);assertTrue(exito!!.isQueued)
+            val row=f.rows().single();assertEquals("PENDING",row.syncStatus);assertEquals(ColaDelCobro.Pagos(row.id),exito.colaDelCobro)
+            vm.cancelarVenta();runCurrent();assertEquals("PENDING",f.rows().single().syncStatus)
+        }
+    }
+    /**
+     * Decisión del coordinador (24-oct): el DOBLE fallo —2xx que no confirma el cobro Y su escritura también falla— no es «cobrado».
+     * Sigue como hoy: error visible y marca «resultado no comprobado» (aquí por la retención de respaldo), y la cola no la da por
+     * cobrada aunque quede EN_VUELO y sin dueño.
+     */
+    @Test fun `doble fallo - 2xx sin comprobar cuyo guardado tambien falla sigue como no comprobado y la cola no lo da por cobrado`() = runTest {
+        Fixture().use { f -> f.body="""{"success":true}"""
+            f.sql("CREATE TRIGGER result_failure BEFORE UPDATE OF q15ResultJson ON pending_payments BEGIN SELECT RAISE(FAIL,'owned store failure'); END")
+            val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
+            f.arrival();f.answer.countDown()
+            val error=terminalState(vm) as? PaymentFlowState.Error;assertNotNull("no se pinta «cobrado»",error)
+            assertTrue(error!!.message.contains("por confirmar"))
+            val held=f.rows().single();assertEquals("EN_VUELO",held.syncStatus);assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,held.q15Reason)
+            // Ronda 1 (I1): «Cancelar» NO borra la evidencia de un 2xx no comprobado: se suelta y queda en la revisión Q15, como hoy.
+            vm.cancelarVenta();runCurrent()
+            val kept=f.rows().single();assertEquals("EN_VUELO",kept.syncStatus);assertEquals(held.q15CaptureJson,kept.q15CaptureJson)
+            assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,kept.q15Reason)
+            open(vm,part=6000,tip=0) // otra venta: suelta la propiedad
+            assertEquals(0,f.cash.darPorCobradasLasAbandonadas());assertEquals("EN_VUELO",f.rows().single().syncStatus)
+        }
+    }
+    /**
+     * Ronda final (A4, regla única): un 2xx cuya captura no se pudo LEER tampoco comprobó el cobro. Error de hoy y retención de
+     * respaldo con «resultado no comprobado»: «Cancelar» sólo la suelta (no la borra) y el barrido no la toma.
+     */
+    @Test fun `2xx con la captura ilegible - error, retenida por revisar y Cancelar no la borra`() = runTest {
+        Fixture().use { f ->
+            val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
+            f.arrival()
+            coEvery { f.dao.findForVenue(any(),any()) } throws IllegalStateException("disco ilegible")
+            f.answer.countDown()
+            val error=terminalState(vm) as? PaymentFlowState.Error;assertNotNull("no se pinta «cobrado»",error)
+            val held=f.rows().single();assertEquals("EN_VUELO",held.syncStatus);assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,held.q15Reason)
+            vm.cancelarVenta();runCurrent()
+            assertEquals("«Cancelar» no la borra","EN_VUELO",f.rows().single().syncStatus)
+            open(vm,part=6000,tip=0)
+            assertEquals(0,f.cash.darPorCobradasLasAbandonadas());assertEquals("EN_VUELO",f.rows().single().syncStatus)
+        }
+    }
+    @Test fun `doble fallo en el repositorio devuelve ResultadoNoComprobado, nunca CobroRegistradoSinGuardar`() = runTest {
+        Fixture().use { f -> val key="double-failure";val request=CreateOrderRequest(emptyList(),subtotal=4000,tip=500,total=4500,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",5000,500,null,idempotencyKey=key,amountCents=4000,tipCents=500,venueId=VENUE)
+            f.sql("CREATE TRIGGER result_failure BEFORE UPDATE OF q15ResultJson ON pending_payments BEGIN SELECT RAISE(FAIL,'owned store failure'); END")
+            f.body="""{"success":true}"""
+            val payment=async { f.order.recordFastCashPayment(4000,"original-staff",tip=500,idempotencyKey=key,capturedVenueId=VENUE) }
+            runCurrent();f.arrival();f.answer.countDown();val outcome=payment.await()
+            assertTrue(outcome.exceptionOrNull() is OrderRepository.ResultadoNoComprobado)
+            assertFalse(outcome.exceptionOrNull() is OrderRepository.CobroRegistradoSinGuardar)
+        }
+    }
+    /** El 2xx SÍ comprobó el cobro y su escritura no quedó (0 filas): es cobrado sin guardar, no un error cancelable. */
+    @Test fun `2xx comprobado cuya escritura no queda devuelve CobroRegistradoSinGuardar`() = runTest {
+        Fixture().use { f -> val key="result-not-written";val request=CreateOrderRequest(emptyList(),subtotal=4000,tip=500,total=4500,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",5000,500,null,idempotencyKey=key,amountCents=4000,tipCents=500,venueId=VENUE)
+            coEvery { f.dao.registrarResultadoQ15(any(),any(),any(),any(),any(),any()) } returns 0
+            val payment=async { f.order.recordFastCashPayment(4000,"original-staff",tip=500,idempotencyKey=key,capturedVenueId=VENUE) }
+            runCurrent();f.arrival();f.answer.countDown()
+            assertTrue(payment.await().exceptionOrNull() is OrderRepository.CobroRegistradoSinGuardar)
+        }
+    }
+    @Test fun `2xx que no confirma el cobro no es CobroRegistradoSinGuardar en el repositorio`() = runTest {
+        Fixture().use { f -> val key="result-unverified";val request=CreateOrderRequest(emptyList(),subtotal=4000,tip=500,total=4500,paymentMethod="CASH")
+            f.cash.reservarCobro(request,"original-staff",5000,500,null,idempotencyKey=key,amountCents=4000,tipCents=500,venueId=VENUE)
+            f.body="""{"success":true}"""
+            val payment=async { f.order.recordFastCashPayment(4000,"original-staff",tip=500,idempotencyKey=key,capturedVenueId=VENUE) }
+            runCurrent();f.arrival();f.answer.countDown();val outcome=payment.await()
+            assertTrue(outcome.exceptionOrNull() is OrderRepository.ResultadoNoComprobado)
+            assertFalse(outcome.exceptionOrNull() is OrderRepository.CobroRegistradoSinGuardar)
         }
     }
     // Q16 ronda 1 (controlador): la regla del TOTAL es SÓLO de la cola sin red. El efectivo EN LÍNEA de mostrador reserva su

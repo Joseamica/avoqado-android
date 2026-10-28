@@ -17,6 +17,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -33,6 +34,8 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.pos.data.model.TITULO_AVISO_DE_PRECIO
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.EstadoDeComanda
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 
 @Composable
 fun PaymentFlowScreen(
@@ -48,7 +51,7 @@ fun PaymentFlowScreen(
      */
     onPreviousChargeResolved: (String) -> Unit,
     splitConfig: SplitConfig = SplitConfig(),
-    /** Mesas (Square): link "Dividir importe" en la selección de método. */
+    /** Link "Dividir importe" en la selección de método (Mesas y tienda, como Square). */
     onSplitImporte: (() -> Unit)? = null,
     /**
      * Cliente que el cajero ya eligió ANTES de cobrar (encabezado del carrito o
@@ -64,6 +67,17 @@ fun PaymentFlowScreen(
      * carrito, que es el dueño de la venta. null = venta nueva, como siempre.
      */
     resumeOrderId: String? = null,
+    /**
+     * Quién abre el cobro. Default NORMAL (todo cobro de hoy queda igual). La bandeja «Pedidos en línea» pasa
+     * `PEDIDO_EN_LINEA`: el cobro es de [resumeOrderId] aunque una mesa haya quedado en PAYING.
+     */
+    origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
+    /**
+     * La «apertura» de este cobro cuando quien lo abre la guarda en su ViewModel (vive más que esta composición: p. ej. la
+     * superposición de «Más» se cierra al recrearse la Activity y vuelve a abrirse). null = la de siempre, en un
+     * `rememberSaveable`. Ver la nota de `aperturaDelCobro` abajo.
+     */
+    apertura: String? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
     cuentaDeTarjetas: Boolean = false,
     onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
@@ -97,6 +111,9 @@ fun PaymentFlowScreen(
         viewModel.configurarSaldo(ventaViva, fotoDeLaVenta, vaciarVenta, restaurarVenta, desdeCuentasAbiertas, alRestaurarSnapshot)
         viewModel.vincularRecuperacionDeFoto(registrarRecuperacionDeFoto)
     }
+    // Salir del cobro sin cobrar (calificación, propina, elegir método): si ESTE cobro ya armó la cuenta de los vales (una
+    // tarjeta rechazada, por ejemplo), se suelta, igual que con «Cancelar» (Codex r4 #6).
+    val salirSinCobrar: () -> Unit = { viewModel.alSalirSinCobrar(); onCancel() }
     val state by viewModel.state.collectAsState()
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
@@ -134,8 +151,19 @@ fun PaymentFlowScreen(
     // el cobro se cierra y se vuelve a abrir. Sin esto, volver a la pestaña tras cobrar arrancaba
     // un cobro de $0.00 con el carrito ya vacío (D3, 29-sep) — y el reparto de un cobro dividido
     // se perdía, porque quien llama lo guarda en un `remember` que no sobrevive al cambio.
-    val aperturaDelCobro = rememberSaveable { java.util.UUID.randomUUID().toString() }
+    val aperturaGuardada = rememberSaveable { java.util.UUID.randomUUID().toString() }
+    val aperturaDelCobro = apertura ?: aperturaGuardada
     var aperturaIniciada by remember { mutableStateOf(false) }
+
+    // 🔴 D2 v7: «Cancelar» (la X, Esc) es la decisión de la cajera sobre esta venta. Primero se borran —y se espera— sus
+    // apartados de efectivo (p. ej. el del 409 de precio); si no se pudo, el aviso lo dice y la pantalla no se cierra. Sin
+    // apartados sale en el mismo toque, como siempre.
+    val alcanceDelCancelar = rememberCoroutineScope()
+    val cancelarElCobro: () -> Unit = {
+        alcanceDelCancelar.launch(start = CoroutineStart.UNDISPATCHED) {
+            if (viewModel.descartarApartadosDeEstaVenta()) salirSinCobrar()
+        }
+    }
 
     LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId, cuentaDeTarjetas) {
         if (viewModel.esElCobroEnCurso(aperturaDelCobro)) { aperturaIniciada = true; return@LaunchedEffect }
@@ -154,6 +182,7 @@ fun PaymentFlowScreen(
             cuentaDeTarjetas = cuentaDeTarjetas,
             onCreacionIncierta = onCreacionIncierta,
             onCreacionResuelta = onCreacionResuelta,
+            origen = origen,
         )
         aperturaIniciada = true
     }
@@ -228,13 +257,13 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin calificación",
                         onSkip = { viewModel.submitRating(null) },
-                        onCancel = onCancel,
+                        onCancel = cancelarElCobro,
                     )
                 } else {
                     RatingScreen(
                         onRatingSubmitted = { viewModel.submitRating(it) },
                         onSkip = { viewModel.submitRating(null) },
-                        onCancel = onCancel,
+                        onCancel = cancelarElCobro,
                     )
                 }
             }
@@ -249,7 +278,7 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin propina",
                         onSkip = { viewModel.submitTip(0) },
-                        onCancel = onCancel,
+                        onCancel = cancelarElCobro,
                     )
                 } else {
                     // Sin pantalla de cliente: método de pago con la hoja de
@@ -263,8 +292,10 @@ fun PaymentFlowScreen(
                         onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
-                        onCancel = onCancel,
+                        onCancel = cancelarElCobro,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        saldoSinActualizar = !origen.permiteTarjeta,
+                        textoSoloEfectivo = textoSoloEfectivoDe(origen),
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -288,12 +319,15 @@ fun PaymentFlowScreen(
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
-                    onCancel = onCancel,
+                    onCancel = cancelarElCobro,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        saldoSinActualizar = !origen.permiteTarjeta,
+                        textoSoloEfectivo = textoSoloEfectivoDe(origen),
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     onSplitImporte = onSplitImporte,
-                    conductaDeSaldo = filaDeSaldo,
+                    // La tarjeta de regalo sólo en el cobro de siempre: un pedido en línea o de plataforma no la ofrece.
+                    conductaDeSaldo = filaDeSaldo.takeIf { !origen.esPedidoEnLinea },
                     onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
                 )
             }
@@ -302,7 +336,7 @@ fun PaymentFlowScreen(
                 CashPaymentScreen(
                     totalCents = currentState.total,
                     onCashReceived = { viewModel.processCashPayment(it) },
-                    onCancel = onCancel,
+                    onCancel = cancelarElCobro,
                 )
             }
             is PaymentFlowState.Confirming -> {
@@ -312,7 +346,7 @@ fun PaymentFlowScreen(
                     totalCents = currentState.amount + currentState.tip,
                     rating = currentState.rating,
                     onConfirm = { viewModel.confirmPayment() },
-                    onCancel = onCancel,
+                    onCancel = cancelarElCobro,
                 )
             }
             is PaymentFlowState.SelectingTerminal -> {
@@ -339,7 +373,9 @@ fun PaymentFlowScreen(
                     // 🔴 Ya NO se cierra la pantalla aquí: la cancelación tiene que esperar el
                     // desenlace del cobro antes de cancelar la venta. El flujo se cierra cuando el
                     // coordinador dice que terminó (ver `debeSalir`).
-                    onCancel = { viewModel.cancelarVenta() },
+                    // 🔴 D2 v6 punto 5: con el efectivo viajando no hay «Cancelar» (como iOS en `.processing`).
+                    onCancel = { viewModel.cancelarVenta() }
+                        .takeIf { (currentState as? PaymentFlowState.Processing)?.efectivoEnVuelo != true },
                 )
             }
             is PaymentFlowState.CancelandoCobro -> {
@@ -436,7 +472,21 @@ fun PaymentFlowScreen(
                     // o no se pudo descontar. Ámbar, nunca bloquea ni sugiere reintentar.
                     var inventoryWarningShown by rememberSaveable(splashKey) { mutableStateOf(false) }
                     val cobroTrasCancelarAtendido = !currentState.cobroTrasCancelar || cobroTrasCancelarVisto
-                    if (!inventoryWarningShown && cobroTrasCancelarAtendido) {
+                    // D7 (27-oct): una parte con tarjeta de una venta partida cuyo saldo no se pudo confirmar con Avoqado. El
+                    // cobro SÍ quedó: ámbar, manda a revisar la venta, nunca a cobrar otra vez. Va antes que el de inventario.
+                    var avisoDeSaldoVisto by rememberSaveable(splashKey) { mutableStateOf(false) }
+                    if (!avisoDeSaldoVisto && cobroTrasCancelarAtendido) {
+                        currentState.avisoDeSaldo?.let { aviso ->
+                            AvoqadoWarningToast(
+                                message = "Revisa el saldo de la venta",
+                                subtitle = aviso,
+                                // Dinero: se queda hasta que el cajero lo cierre (no se va solo a los 2.6 s).
+                                durationMs = Long.MAX_VALUE,
+                                onDismiss = { avisoDeSaldoVisto = true },
+                            )
+                        }
+                    }
+                    if (!inventoryWarningShown && cobroTrasCancelarAtendido && (currentState.avisoDeSaldo == null || avisoDeSaldoVisto)) {
                         currentState.inventoryWarningMessage?.let { aviso ->
                             AvoqadoWarningToast(
                                 message = "Revisa tu inventario",
@@ -654,3 +704,8 @@ private fun SplitType.toApiSplitType(): String {
         SplitType.CUSTOM_AMOUNT -> "CUSTOMAMOUNT"
     }
 }
+
+/** Rappi 2b: por qué el cobro es sólo efectivo, según quién lo abrió. */
+private fun textoSoloEfectivoDe(origen: com.avoqado.pos.payment.domain.OrigenDelCobro): String =
+    if (origen.esDePlataforma) com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.REPARTO_SOLO_EFECTIVO
+    else com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO

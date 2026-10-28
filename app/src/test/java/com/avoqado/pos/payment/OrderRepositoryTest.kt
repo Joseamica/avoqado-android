@@ -370,7 +370,8 @@ class OrderRepositoryTest {
         assertTrue(payload.contains("\"notes\":\"Sin cebolla\""))
         assertTrue(payload.contains("\"name\":\"Custom amount\""))
         assertTrue(payload.contains("\"unitPrice\":5000"))
-        assertFalse(payload.contains("\"paymentMethod\""))
+        // El método viaja para que el SERVIDOR distinga «Pagar después» de un cobro que falló (hz:898a8a42:D1).
+        assertTrue(payload.contains("\"paymentMethod\":\"CARD\""))
     }
 
     @Test

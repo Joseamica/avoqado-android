@@ -126,6 +126,8 @@ object CancelacionDeCobro {
                 "Tu nombre queda en el registro."
         }
     const val NO_SE_PUDO_GUARDAR = "No se pudo guardar la cancelación en este equipo. Inténtalo de nuevo."
+    /** D2 v7: «Cancelar» no pudo borrar los apartados de efectivo de la venta (disco). La pantalla no se cierra. Igual en iOS. */
+    const val NO_SE_PUDO_CANCELAR_EL_COBRO = "No se pudo cancelar el cobro. Intenta de nuevo."
     const val SE_COBRO_AL_FINAL = "La terminal sí cobró este pago: la venta queda pagada."
     const val RECHAZO_TERMINAL_NO_CONECTADA = "La terminal no está conectada. Este cobro NO se envió; no se cobró nada."
     const val RECHAZO_CUENTA_CANCELADA = "La cuenta está cancelada: este cobro NO se envió, no se cobró nada."

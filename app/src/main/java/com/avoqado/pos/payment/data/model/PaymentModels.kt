@@ -63,7 +63,11 @@ sealed class PaymentFlowState {
      *   error del servidor (N6) o que no hay terminales conectadas (paridad con iOS). El aviso de otras ventas sigue arriba.
      */
     data class SelectingTerminal(val totalAmount: Int, val sinLista: String? = null) : PaymentFlowState()
-    data class Processing(val totalAmount: Int) : PaymentFlowState()
+    /**
+     * @param efectivoEnVuelo 🔴 D2 v6 punto 5: es un cobro en EFECTIVO que viaja (crear la orden o el POST del pago). No se ofrece
+     *   «Cancelar» ni el ViewModel lo acepta: borrar su apartado no detendría un cobro que puede llegar al servidor.
+     */
+    data class Processing(val totalAmount: Int, val efectivoEnVuelo: Boolean = false) : PaymentFlowState()
     data class SentToTerminal(val totalAmount: Int) : PaymentFlowState()
     data class Success(
         val totalAmount: Int,
@@ -89,6 +93,11 @@ sealed class PaymentFlowState {
          * el toast ámbar. null = sin faltantes.
          */
         val inventoryWarningMessage: String? = null,
+        /**
+         * D7 (27-oct): esta parte de una venta partida se cobró con tarjeta y no se pudo confirmar con el SERVIDOR cuánto
+         * queda. El cobro SÍ quedó; el aviso manda a revisar la venta en Ventas, nunca a cobrar otra vez. null = confirmado.
+         */
+        val avisoDeSaldo: String? = null,
         /**
          * Aviso del server sobre EL CLIENTE de esta venta (`customerLink`): el id no
          * existe en este negocio, la venta ya tenía otro, o no se pudo verificar.
@@ -266,6 +275,7 @@ data class OrderItemRequest(
     val displayedUnitPrice: Int? = null,
     /** El `catalogAt` del catálogo con que se agregó ESTA línea. Viaja sólo junto con [displayedUnitPrice]. */
     val catalogAt: String? = null,
+    val cortesiaReason: String? = null,
 ) {
     /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
     companion object {
@@ -415,6 +425,7 @@ data class OrderData(
      * cliente», 17-oct): la caja las corrige y lo dice. Ausente = cada línea se cobró como se mostró (o servidor anterior).
      */
     val priceChanges: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList(),
+    val items: List<CreatedOrderItemData> = emptyList(),
 ) {
     /**
      * El total de la orden en CENTAVOS, que es la unidad en la que cobra el POS.
@@ -424,6 +435,13 @@ data class OrderData(
     val totalCents: Int?
         get() = total?.let { kotlin.math.round(it * 100).toInt() } ?: totalAmount
 }
+
+@Serializable
+data class CreatedOrderItemData(
+    val externalId: String? = null,
+    val isCortesia: Boolean? = null,
+    val cortesiaReason: String? = null,
+)
 
 /**
  * El premio de cartilla, según el servidor (`StampRewardOnOrderResult`). `discountAmount` va en

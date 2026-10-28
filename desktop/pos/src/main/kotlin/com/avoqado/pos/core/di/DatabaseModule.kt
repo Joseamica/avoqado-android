@@ -95,4 +95,7 @@ object DatabaseModule {
     fun provideSyncIntentDao(database: AvoqadoDatabase): com.avoqado.pos.core.data.local.database.SyncIntentDao {
         return database.syncIntentDao()
     }
+    @Provides
+    fun provideSalesNoticeDao(database: AvoqadoDatabase): com.avoqado.pos.sync.data.SalesNoticeDao = database.salesNoticeDao()
+
 }

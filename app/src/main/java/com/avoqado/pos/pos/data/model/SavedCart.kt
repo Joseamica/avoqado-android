@@ -53,6 +53,12 @@ data class SavedCartItem(
     val serviceCourse: ServiceCourseSnapshot? = null,
     /// La hora del catálogo con que se agregó la línea (`CartItem.catalogAt`). Nula en carritos viejos.
     val catalogAt: String? = null,
+    /// D2 (vales-ciclo): el id de la línea (`CartItem.id`). El SERVIDOR reconoce un vale por su llave y sus `clientLineId`:
+    /// con ids nuevos, el carrito restaurado «como estaba» ya no recuperaba el vale cuya respuesta se perdió. Nulo en viejos.
+    val lineId: String? = null,
+    /// D2 (vales-ciclo, Codex r7 #3) y tablero D3: el peso de la báscula. Sin él la línea volvía a precio de 1 kg y el
+    /// SERVIDOR no reconocía el vale restaurado. Nulo en carritos viejos y en líneas que no son por peso.
+    val weightKg: Double? = null,
 )
 
 @Serializable

@@ -701,7 +701,17 @@ class PrinterService @Inject constructor(
      */
     suspend fun sendPrintData(data: ByteArray, printer: SavedPrinter) = sendData(data, printer)
 
-    private suspend fun sendData(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean = true) {
+    /**
+     * Un trabajo a la vez por impresora. Todos comparten el socket de [wifiConnections] y cada uno lo cierra al terminar:
+     * en paralelo, el primero le cerraba el socket a los demás («Socket is closed»). D2, 27-oct: 4 comandas atrasadas a la
+     * EPSON y salió una; las otras esperaron 3 minutos cada una.
+     */
+    private val turnoPorImpresora = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    private suspend fun sendData(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean = true) =
+        turnoPorImpresora.computeIfAbsent(configurada.id) { Mutex() }.withLock { sendDataEnSuTurno(data, configurada, requierePapel) }
+
+    private suspend fun sendDataEnSuTurno(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean) {
         // Si esta impresora ya se encontró en otra dirección, se intenta directo ahí.
         var printer = conDireccionVigente(configurada)
         // Auto-connect if not connected, or if the cached socket is stale: the

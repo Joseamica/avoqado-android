@@ -156,6 +156,9 @@ private fun TabletCashDrawerLayout(
                 reportEvents = emptyList()
             },
         )
+        // El `return` de abajo se salta el diálogo del final: sin esta línea, «Imprimir corte»
+        // sin impresora (o con ella apagada) no decía nada.
+        PrintCorteResultDialog(viewModel)
         return
     }
 
@@ -413,6 +416,9 @@ private fun PhoneCashDrawerLayout(
                 reportEvents = emptyList()
             },
         )
+        // El `return` de abajo se salta el diálogo del final: sin esta línea, «Imprimir corte»
+        // sin impresora (o con ella apagada) no decía nada.
+        PrintCorteResultDialog(viewModel)
         return
     }
 

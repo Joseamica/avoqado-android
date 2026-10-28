@@ -45,7 +45,7 @@ class PaymentSyncServiceBarreraTest {
         coEvery { dao.getFailedCount() } returns flowOf(0)
         coEvery { dao.getPendingPayments(any()) } returns payments
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
-        return PaymentSyncService(dao, storage, mockk<OkHttpClient>(relaxed = true), red, cajon, outbox).also {
+        return PaymentSyncService(dao, storage, mockk<OkHttpClient>(relaxed = true), red, cajon, outbox, io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true)).also {
             it.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
         }
     }
