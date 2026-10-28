@@ -4721,6 +4721,7 @@ class PaymentFlowViewModel @Inject constructor(
             note = cart.orderNote,
             splitType = _splitType.value,
             reservationId = cart.reservationId,
+            orderType = cart.orderType,
         )
     }
 

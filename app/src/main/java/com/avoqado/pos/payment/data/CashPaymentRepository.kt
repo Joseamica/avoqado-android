@@ -522,6 +522,8 @@ class CashPaymentRepository @Inject constructor(
                     request = orderRequest,
                     staffId = staffId,
                     customerId = customerId,
+                    // D16: el tipo del carrito, igual que la orden en línea. Sin él, «En tienda» subía como TAKEOUT.
+                    orderType = orderRequest.orderType ?: "TAKEOUT",
                     externalId = orderExternalId ?: "offline-order:$localId",
                     // «La venta ya ocurrió»: el servidor nunca la rechaza por precio (contrato del precio que vio el cliente).
                     isOfflineReplay = true,
