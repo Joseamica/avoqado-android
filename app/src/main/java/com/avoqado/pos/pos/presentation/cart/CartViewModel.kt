@@ -2100,6 +2100,11 @@ class CartViewModel @Inject constructor(
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
                     if (!sigueLaVenta()) {
                         ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                    } else if (pagarDespuesTomoLaFoto) {
+                        // 🔴 D10: con «Pagar después» en camino la venta sale conservando lo que entró; este vale pasaba a la
+                        // venta siguiente con su apartado a nombre de la anterior. Sólo el vale: lo que el SERVIDOR dice que es
+                        // un producto (aunque su código parezca de vale) sí entra. Igual en iOS.
+                        ScannedBarcodeResult.Error(PAGAR_DESPUES_EN_CURSO)
                     } else if (_pendingSplitOrder.value != null) {
                         // 🔴 D4 (20-oct). Con una venta cobrada a medias, el vale armaba una orden NUEVA con lo que faltaba y la
                         // venta de antes se quedaba con su saldo abierto para siempre. Primero se termina esa venta.
@@ -2193,6 +2198,9 @@ class CartViewModel @Inject constructor(
      * mete sus vales en la siguiente.
      */
     private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String): Boolean {
+        // 🔴 D10 (Codex r1 #1): tampoco por la restauración al entrar a Cobrar. Mientras «Pagar después» manda esta venta, sus
+        // vales se quedan apartados (sin dueño nuevo) y siguen la regla 8 cuando termine.
+        if (pagarDespuesTomoLaFoto) return false
         val sesion = areaTicketRepository.session
         if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
         val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
@@ -2668,6 +2676,12 @@ class CartViewModel @Inject constructor(
     )
 
     private val _pagarDespuesEnCurso = MutableStateFlow<EnvioPagarDespues?>(null)
+
+    /**
+     * 🔴 D10: «Pagar después» ya tomó la foto de la venta (después de esperar los escaneos en curso). Desde ahí un vale no entra;
+     * antes sí, y la venta se rechaza con [VALES_NO_PAGAR_DESPUES] como siempre (Codex D10 r2). Igual en iOS.
+     */
+    private var pagarDespuesTomoLaFoto = false
     /** No-null mientras se manda: la pantalla de «Pagar después» no se puede cerrar y dice «Guardando la cuenta…». */
     val pagarDespuesEnCurso: StateFlow<EnvioPagarDespues?> = _pagarDespuesEnCurso.asStateFlow()
 
@@ -2727,6 +2741,7 @@ class CartViewModel @Inject constructor(
         try {
             // Como el cobro (`hayConsultasDeCodigo`): lo leído antes del toque entra ANTES de capturar la venta.
             consultasDeCodigo.first { it == 0 }
+            pagarDespuesTomoLaFoto = true
             val venta = _cartState.value
             motivoParaNoDiferir(venta, customerId)?.let { return ResultadoPagarDespues.Error(it) }
             val venueId = secureStorage.venueId ?: return ResultadoPagarDespues.Error("No venue selected")
@@ -2789,6 +2804,7 @@ class CartViewModel @Inject constructor(
                 diferirConFila(cola, s, fila, venueId, cuerpo(reenvio = false))
             }
         } finally {
+            pagarDespuesTomoLaFoto = false
             _pagarDespuesEnCurso.value = null
         }
     }
