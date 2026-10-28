@@ -138,6 +138,12 @@ data class CartState(
      * intento de la misma venta: si uno anterior sí creó la cuenta, el servidor devuelve ésa en vez de crear otra.
      */
     val llavePagarDespues: String? = null,
+    /**
+     * D4 (28-oct): lo que enseña «Ver productos» en vez de [items], SÓLO en pantalla. Un cobro de una cuenta que ya existe
+     * (pedido en línea) cobra con UN renglón de importe por el saldo; aquí van sus productos de verdad para que la cajera vea
+     * qué entrega. Nunca entra al dinero, a la orden ni al ticket.
+     */
+    val renglonesParaVer: List<com.avoqado.pos.payment.data.model.PaymentItem> = emptyList(),
 ) {
     /**
      * 🔴 DINERO. Las líneas con el precio que decidió el servidor ([aplicarCambiosDePrecio]). Con [cambios] vacío devuelve el

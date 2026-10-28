@@ -14,6 +14,8 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.domain.OnlineOrderModifier
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
+import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
+import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -311,11 +313,35 @@ class OnlineOrdersRepository @Inject constructor(
 
     // MARK: - Saldo
 
-    /** El saldo a cobrar lo dice el servidor (`preBillBalance.remainingBalanceCents`); la app nunca lo recalcula desde renglones. */
-    suspend fun saldoCents(orderId: String): Result<Long> {
+    /**
+     * El saldo a cobrar lo dice el servidor (`preBillBalance.remainingBalanceCents`); la app nunca lo recalcula desde renglones.
+     * D4 (28-oct): de la MISMA respuesta sale el precio de cada producto, sólo para «Ver productos». Un producto incompleto
+     * (sin nombre, sin `total`, por peso) o un pago previo dejan [SaldoDelPedido.precios] en null; el saldo se cobra igual.
+     */
+    suspend fun saldoDelPedido(orderId: String): Result<SaldoDelPedido> {
         val (venueId, token) = sesion() ?: return sinSesion()
         return ejecutar(get(ruta(venueId, "orders/$orderId"), token, rapida = true), clienteDelCobro).mapCatching {
-            JSONObject(it).getJSONObject("order").getJSONObject("preBillBalance").getLong("remainingBalanceCents")
+            val orden = JSONObject(it).getJSONObject("order")
+            val balance = orden.getJSONObject("preBillBalance")
+            val saldo = balance.getLong("remainingBalanceCents")
+            // Con cualquier pago previo la lista no se enseña: un abono y un cargo iguales cuadrarían la suma por casualidad.
+            val sinPagos = balance.optLong("totalPaidCents", -1L) == 0L
+            SaldoDelPedido(saldo, if (sinPagos) runCatching { precios(orden) }.getOrNull() else null)
+        }
+    }
+
+    private fun precios(orden: JSONObject): List<PrecioDeRenglon> {
+        val items = orden.getJSONArray("items")
+        return (0 until items.length()).map { i ->
+            val o = items.getJSONObject(i)
+            require(o.isNull("weightQuantity") && !o.isNull("total")) { "renglón sin precio o por peso" }
+            PrecioDeRenglon(
+                name = o.textoONulo("productName") ?: error("sin nombre"),
+                quantity = o.getInt("quantity"),
+                totalCents = pesosACentavos(o, "total"),
+                note = o.textoONulo("notes"),
+                modifierNames = o.optJSONArray("modifiers")?.let { m -> (0 until m.length()).map { m.getJSONObject(it).getString("name") } }.orEmpty(),
+            )
         }
     }
 
