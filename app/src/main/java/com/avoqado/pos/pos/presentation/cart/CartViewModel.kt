@@ -1252,6 +1252,8 @@ class CartViewModel @Inject constructor(
                     it.selectedModifiers.isEmpty() &&
                     !it.isCortesia &&
                     it.promotionInstanceId == null &&
+                    // D7: tampoco con una pesada (es una venta aparte; fusionada quedaría cantidad 2 con el total de una).
+                    it.weightKg == null &&
                     it.unitPrice == product.priceInCents
             }
 
@@ -1522,6 +1524,11 @@ class CartViewModel @Inject constructor(
         return true
     }
 
+    /**
+     * 🔴 D7: un renglón por peso es UNA pesada, cantidad 1 siempre. Su total ya ignora la cantidad y el SERVIDOR rechaza
+     * `quantity ≠ 1` junto a `weightQuantity`. Dos pesadas = dos renglones ([addProductByWeight]). La pantalla ya oculta el
+     * selector; esto lo cierra para cualquier otro camino. **iOS** pone la misma regla en su `CartViewModel.items`.
+     */
     fun updateQuantity(itemId: String, newQuantity: Int) {
         if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
@@ -1531,7 +1538,7 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(quantity = newQuantity) else it
+                    if (it.id == itemId && it.weightKg == null) it.copy(quantity = newQuantity) else it
                 },
             )
         }
@@ -1542,7 +1549,8 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(quantity = it.quantity + 1) else it
+                    // D7: una pesada no sube (ver [updateQuantity]).
+                    if (it.id == itemId && it.weightKg == null) it.copy(quantity = it.quantity + 1) else it
                 },
             )
         }
@@ -1666,7 +1674,12 @@ class CartViewModel @Inject constructor(
         SavedCart(
             id = state.carritoGuardadoId ?: UUID.randomUUID().toString(),
             name = cartName,
-            cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn,
+            // 🔴 D5 (Codex r6): se guarda con un vale de ESTA mercancía pedido sin respuesta: la copia nace marcada (D1) y
+            // restaurarla pregunta; si no, después de «Recuperar» salía como segundo vale.
+            cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn
+                ?: System.currentTimeMillis().takeIf {
+                    secureStorage.venueId?.let { v -> lineasDeValeEnPantalla()?.let { secureStorage.mercanciaDeValeEnDuda(v, it) } } == true
+                },
             items = state.items.map { item ->
                 SavedCartItem(
                     lineId = item.id,
@@ -2486,11 +2499,60 @@ class CartViewModel @Inject constructor(
      * D1 (vales-ciclo, 26-oct): el vale de un carrito guardado quedó emitido en el servidor. Se retira la copia de la que vino,
      * como hace el cobro confirmado; si no, restaurarla permitía emitir otro vale por la misma mercancía.
      */
-    fun retirarCopiaDelVale(copia: String?) {
-        val id = copia ?: return
-        if (!savedCartsRepository.deleteCart(id)) Log.w("🛒", "No se confirmó el retiro de la copia $id del vale emitido")
+    fun retirarCopiaDelVale(copia: String?): Boolean {
+        val id = copia ?: return true
+        val retirada = savedCartsRepository.deleteCart(id)
+        if (!retirada) Log.w("🛒", "No se confirmó el retiro de la copia $id del vale emitido")
         if (_cartState.value.carritoGuardadoId == id) _cartState.update { it.copy(carritoGuardadoId = null) }
+        return retirada
     }
+
+    /**
+     * 🔴 D5: «Recuperar» confirmó el vale de [intento]. Se retira su copia (D1), como al emitir, y si el carrito en pantalla es la
+     * MISMA mercancía del vale, esa venta se termina: ya quedó en el vale (Codex r6 #2: si no, «Emitir» sacaba otro). Las copias
+     * guardadas DESPUÉS de perder la respuesta no se borran (r6 #1: borrar por parecido se llevaba otra mercancía): nacen marcadas
+     * ([saveCurrentCart]) y restaurarlas pregunta. `false` si la copia no se pudo retirar (el vale sigue sin confirmar).
+     */
+    fun alRecuperarVale(intento: com.avoqado.pos.areatickets.data.IntentoDeVale): Boolean {
+        // Codex r7 #1: la copia se retira sólo si SIGUE siendo esa mercancía. Si la volvieron a guardar con otra, se queda: trae la
+        // marca del D1 (se puso al emitir y guardar la conserva) y restaurarla pregunta.
+        val copia = intento.carritoGuardadoId?.let { id -> savedCartsRepository.savedCarts.value.firstOrNull { it.id == id } }
+        if (copia != null && lineasDeVale(copia)?.let { intento.mismaMercanciaQue(it) } == true && !retirarCopiaDelVale(copia.id)) {
+            return false
+        }
+        // Codex r7 #2: nunca una venta a medio cobrar (su saldo vive en otra orden), aunque traiga lo mismo.
+        if (!hayVentaAMedias()) lineasDeValeEnPantalla()?.takeIf { intento.mismaMercanciaQue(it) }?.let { finalizarVenta() }
+        return true
+    }
+
+    /** Lo que mandaría «Emitir vale» con una copia guardada, o null si trae algo que un vale no lleva (Codex r8, igual que arriba). */
+    private fun lineasDeVale(guardado: SavedCart): List<com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest>? =
+        guardado.items.takeIf { items ->
+            guardado.orderDiscount == null && guardado.orderTaxPercent == null && items.isNotEmpty() && items.all {
+                it.productId != null && it.packId == null && !it.isCortesia && it.priceAdjustment == null && it.promotionInstanceId == null
+            }
+        }?.map { item ->
+            com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest(
+                clientLineId = item.lineId.orEmpty(),
+                productId = item.productId!!,
+                quantity = item.quantity.toString(),
+                weightKg = item.weightKg?.let { String.format(java.util.Locale.US, "%.3f", it) },
+                notes = item.note,
+                modifierIds = item.modifiers.map { it.modifierId },
+                discountId = item.itemDiscountId,
+            )
+        }
+
+    /**
+     * Lo que mandaría «Emitir vale» con el carrito en pantalla, o null si trae algo que un vale no lleva (no producto, cortesía,
+     * precio a mano, promoción, descuento de cuenta…: `areaTicketIssueBlocker`). Codex r8: sin eso, «misma mercancía» confundía
+     * una cortesía con el producto a precio normal.
+     */
+    private fun lineasDeValeEnPantalla(): List<com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest>? =
+        _cartState.value.takeIf { s ->
+            s.items.isNotEmpty() && s.items.all { it.type is CartItemType.ProductItem } &&
+                com.avoqado.pos.areatickets.presentation.areaTicketIssueBlocker(s) == null
+        }?.let { com.avoqado.pos.areatickets.presentation.intentoDeVale(it).lineas }
 
     fun prepararCobroDelCarritoGuardado(): Boolean =
         _cartState.value.carritoGuardadoId?.let { savedCartsRepository.marcarCobroIniciado(it) } ?: true

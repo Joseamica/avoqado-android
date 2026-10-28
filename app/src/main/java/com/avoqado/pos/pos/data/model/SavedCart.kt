@@ -67,7 +67,14 @@ data class SavedCartItem(
     /// D2 (vales-ciclo, Codex r7 #3) y tablero D3: el peso de la báscula. Sin él la línea volvía a precio de 1 kg y el
     /// SERVIDOR no reconocía el vale restaurado. Nulo en carritos viejos y en líneas que no son por peso.
     val weightKg: Double? = null,
-)
+) {
+    /**
+     * Renglón en la lista de «Carritos guardados». D6: la línea por peso va con `quantity = 1` y decía «x1»; ahora dice
+     * el peso con el mismo formato que el carrito («0.435 kg × $50.00/kg»).
+     */
+    val resumenEnLista: String
+        get() = weightKg?.let { "$name ${formatWeightKg(it)} kg" } ?: "$name x$quantity"
+}
 
 @Serializable
 data class SavedModifier(

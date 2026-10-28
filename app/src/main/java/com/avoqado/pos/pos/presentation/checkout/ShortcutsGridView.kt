@@ -1586,7 +1586,7 @@ private fun SavedCartCard(
 
         cart.items.take(3).forEach { item ->
             Text(
-                text = "${item.name} x${item.quantity}",
+                text = item.resumenEnLista,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

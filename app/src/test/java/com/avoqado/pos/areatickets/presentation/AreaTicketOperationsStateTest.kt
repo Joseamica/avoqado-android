@@ -14,6 +14,7 @@ import com.avoqado.pos.areatickets.data.DeliveryResolutionData
 import com.avoqado.pos.areatickets.data.AreaTicketFulfillmentResult
 import com.avoqado.pos.areatickets.data.PendingFulfillmentData
 import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
+import com.avoqado.pos.core.data.local.LlaveDeEmisionDeVales
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -194,7 +195,7 @@ class AreaTicketOperationsStateTest {
     fun `issued ticket consumes cart even when no printer is configured`() = runTest {
         val repository = mockk<AreaTicketRepository>()
         val printerService = mockk<PrinterService>()
-        val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true } // D2: el disco guarda la llave
+        val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true; every { guardarIntentoDeVale(any(), any(), any()) } returns LlaveDeEmisionDeVales.Guardado.SI } // D2: el disco guarda la llave
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
         coEvery { repository.issue(any(), any()) } returns ticket()
         coEvery { printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } returns null
@@ -243,7 +244,7 @@ class AreaTicketOperationsStateTest {
         // D2 (vales-ciclo): la llave se lee del aparato en cada emisión, así que el disco tiene que recordarla.
         var llaveGuardada: String? = null
         every { secureStorage.llaveDeEmisionDeVales(any()) } answers { llaveGuardada }
-        every { secureStorage.guardarLlaveDeEmisionDeVales(any(), any()) } answers { llaveGuardada = secondArg(); true }
+        every { secureStorage.guardarIntentoDeVale(any(), any(), any()) } answers { llaveGuardada = secondArg(); LlaveDeEmisionDeVales.Guardado.SI }
         every { secureStorage.soltarLlaveDeEmisionDeVales(any(), any()) } answers { llaveGuardada = null }
         val issuedKeys = mutableListOf<String>()
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")

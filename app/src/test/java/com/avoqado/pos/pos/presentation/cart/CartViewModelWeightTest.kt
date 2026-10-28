@@ -22,6 +22,7 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.data.model.SavedCart
+import com.avoqado.pos.pos.data.model.SavedCartItem
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import io.mockk.coEvery
@@ -187,6 +188,41 @@ class CartViewModelWeightTest {
         assertEquals(1, items.size)
         assertEquals(2, items.single().quantity)
         assertNull(items.single().weightKg)
+    }
+
+    // D7 (27-oct): un renglón por peso es UNA pesada; el SERVIDOR exige cantidad 1 con `weightQuantity`.
+    @Test
+    fun `D7 subir la cantidad de una pesada no la cambia`() {
+        val vm = createViewModel()
+        vm.addProductByWeight(jamon, 0.435)
+        vm.addProduct(burger)
+        val pesada = vm.cartState.value.items[0].id
+        val pieza = vm.cartState.value.items[1].id
+
+        vm.updateQuantity(pesada, 2)
+        vm.incrementQuantity(pesada)
+        vm.updateQuantity(pieza, 3)
+
+        val items = vm.cartState.value.items
+        assertEquals(1, items[0].quantity)
+        assertEquals(3, items[1].quantity) // un producto por pieza sí cambia
+        assertEquals(18270 + 3 * 15000, vm.cartState.value.subtotalCents)
+
+        vm.updateQuantity(pesada, 0) // bajar a 0 la quita, como hoy
+        assertNull(vm.cartState.value.items.find { it.weightKg != null })
+    }
+
+    @Test
+    fun `D7 agregar el mismo producto no se fusiona con la pesada`() {
+        val vm = createViewModel()
+        vm.addProductByWeight(jamon, 0.435)
+        vm.addProduct(jamon)
+
+        val items = vm.cartState.value.items
+        assertEquals(2, items.size)
+        assertEquals(1, items[0].quantity)
+        assertEquals(0.435, items[0].weightKg!!, 0.0)
+        assertNull(items[1].weightKg)
     }
 
     @Test
@@ -714,6 +750,84 @@ class CartViewModelWeightTest {
     // D2 (vales-ciclo): la llave de emisión de vales se suelta al VACIAR a mano, la salida que da el aviso del 409 («… o
     // vacíalo»). Terminar la venta por otro camino (guardar el carrito, pagar después) la conserva: si el vale cuya respuesta
     // se perdió vuelve con el mismo contenido, el servidor devuelve ESE vale en vez de crear otro.
+    @Test
+    fun `D5 guardar el carrito con un vale de esa mercancia en duda marca la copia`() {
+        // Codex r6: se perdió la respuesta y el cajero guardó el carrito; restaurarlo después de «Recuperar» tiene que preguntar.
+        every { secureStorage.mercanciaDeValeEnDuda(any(), any()) } returns true
+        every { savedCartsRepository.saveCart(any()) } returns true
+        val vm = createViewModel()
+        vm.addProduct(burger)
+
+        assertTrue(vm.saveCurrentCart())
+        verify { savedCartsRepository.saveCart(match { it.cobroIniciadoEn != null }) }
+
+        every { secureStorage.mercanciaDeValeEnDuda(any(), any()) } returns false
+        vm.addProduct(burger)
+        assertTrue(vm.saveCurrentCart())
+        verify { savedCartsRepository.saveCart(match { it.cobroIniciadoEn == null }) }
+    }
+
+    @Test
+    fun `D5 al recuperar se termina la venta en pantalla si es la misma mercancia y no si es otra`() {
+        // Codex r6 #2: tras «Recuperar», el carrito con lo mismo seguía en pantalla y «Emitir» sacaba otro vale.
+        every { savedCartsRepository.deleteCart(any()) } returns true
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        val linea = com.avoqado.pos.areatickets.presentation.intentoDeVale(vm.cartState.value).lineas.single()
+        // El vale se pidió con OTRO id de renglón (el carrito se armó otra vez): es la misma mercancía.
+        val mismo = com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea.copy(clientLineId = "otro-id")))
+        val otro = com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea.copy(quantity = "2")))
+
+        assertTrue(vm.alRecuperarVale(otro))
+        assertFalse("otra cantidad: la venta sigue", vm.cartState.value.isEmpty)
+        assertTrue(vm.alRecuperarVale(mismo))
+        assertTrue("la misma mercancía: ya quedó en el vale", vm.cartState.value.isEmpty)
+
+        // Codex r7 #1: la copia S1 sigue siendo esa mercancía ⇒ se retira; si no se pudo, el vale sigue sin confirmar.
+        fun copia(cantidad: Int) = SavedCart(
+            id = "S1", name = "S1",
+            items = listOf(SavedCartItem(productId = linea.productId, name = "Burger", unitPrice = 1, quantity = cantidad, lineId = "x")),
+        )
+        every { savedCartsRepository.savedCarts } returns MutableStateFlow(listOf(copia(1)))
+        every { savedCartsRepository.deleteCart("S1") } returns false
+        assertFalse("si la copia no se retira, el vale sigue sin confirmar", vm.alRecuperarVale(mismo.copy(carritoGuardadoId = "S1")))
+        // …y si la volvieron a guardar con OTRA mercancía, no se toca (conserva su marca D1).
+        every { savedCartsRepository.savedCarts } returns MutableStateFlow(listOf(copia(2)))
+        assertTrue(vm.alRecuperarVale(mismo.copy(carritoGuardadoId = "S1")))
+        // Codex r8: una cortesía tampoco es el producto a precio normal.
+        val cortesia = copia(1).let { it.copy(items = it.items.map { item -> item.copy(isCortesia = true) }) }
+        every { savedCartsRepository.savedCarts } returns MutableStateFlow(listOf(cortesia))
+        assertTrue(vm.alRecuperarVale(mismo.copy(carritoGuardadoId = "S1")))
+        verify(exactly = 1) { savedCartsRepository.deleteCart("S1") }
+    }
+
+    @Test
+    fun `D5 al recuperar no se termina una venta en pantalla que trae cortesia`() {
+        // Codex r8: el carrito trae lo mismo pero como cortesía: no es la mercancía del vale.
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        val linea = com.avoqado.pos.areatickets.presentation.intentoDeVale(vm.cartState.value).lineas.single()
+        vm.markItemAsCortesia(vm.cartState.value.items.single().id, "prueba")
+
+        assertTrue(vm.alRecuperarVale(com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea))))
+
+        assertFalse(vm.cartState.value.isEmpty)
+    }
+
+    @Test
+    fun `D5 al recuperar nunca se termina una venta a medio cobrar aunque traiga lo mismo`() {
+        // Codex r7 #2: P quedó en pantalla ligado al saldo de OTRA orden; vaciarlo perdía esa continuación.
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        vm.markPendingSplitOrder("orden-B")
+        val linea = com.avoqado.pos.areatickets.presentation.intentoDeVale(vm.cartState.value).lineas.single()
+
+        assertTrue(vm.alRecuperarVale(com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea))))
+
+        assertFalse("la venta a medias sigue", vm.cartState.value.isEmpty)
+        assertTrue(vm.hayVentaAMedias())
+    }
+
     @Test
     fun `D2 vaciar a mano suelta la llave de emision y terminar la venta por otro camino no`() {
         val vm = createViewModel()

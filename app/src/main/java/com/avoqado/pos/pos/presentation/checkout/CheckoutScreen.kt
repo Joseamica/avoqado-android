@@ -1616,6 +1616,34 @@ fun CheckoutScreen(
         ) {}
     }
 
+    // 🔴 D5: el vale que se pidió antes de que la app se cerrara y nunca se confirmó. Fuera del carrito: no lo llena ni lo vacía.
+    // Se ve aunque haya un error (lo lleva adentro) y aunque no haya configuración de vales (sin red; Codex r3 #3).
+    if (areaOperationsState.valeSinConfirmarVisible) {
+        AvoqadoDialog(
+            title = "Vale sin confirmar",
+            description = listOfNotNull(areaTicketOperations.avisoDeValeSinConfirmar(), areaOperationsState.error).joinToString("\n\n"),
+            onDismiss = {
+                if (!areaOperationsState.submitting) areaTicketOperations.ocultarValeSinConfirmar()
+            },
+            actionButton = {
+                PrimaryButton(
+                    text = if (areaOperationsState.submitting) "Recuperando…" else "Recuperar",
+                    onClick = {
+                        areaTicketOperations.recuperarValeSinConfirmar { intento -> cartViewModel.alRecuperarVale(intento) }
+                    },
+                    enabled = !areaOperationsState.submitting,
+                    fullWidth = true,
+                )
+            },
+        ) {
+            TextButton(
+                onClick = areaTicketOperations::descartarValeSinConfirmar,
+                enabled = !areaOperationsState.submitting,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Descartar") }
+        }
+    }
+
     if (areaOperationsState.error == null && areaOperationsState.pendingReprintCode != null) {
         AvoqadoDialog(
             title = "Vale pendiente de impresión",
