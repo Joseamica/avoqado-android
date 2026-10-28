@@ -20,7 +20,7 @@ class ReservationActionsRetrierTest {
     private val api: ReservationApi = mockk()
     private val connectivity: ConnectivityMonitor = mockk()
     private val reservationRepository: ReservationRepository = mockk(relaxed = true)
-    private val retrier = ReservationActionsRetrier(dao, api, connectivity, reservationRepository)
+    private val retrier = ReservationActionsRetrier(dao, api, connectivity, reservationRepository, mockk(), mockk())
 
     init {
         every { connectivity.isOnlineFlow } returns MutableStateFlow(false)

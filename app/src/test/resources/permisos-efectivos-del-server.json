@@ -2,7 +2,7 @@
   "generatedFrom": {
     "repo": "avoqado-server",
     "fn": "getEffectiveRolePermissions(role, null)",
-    "digest": "4388a75a52b506fe"
+    "digest": "9dcaeae740c29ac2"
   },
   "roles": {
     "SUPERADMIN": {
@@ -96,6 +96,7 @@
         "sale-verifications:reopen",
         "sale-verifications:review",
         "scale:*",
+        "self-service:check-in",
         "serialized-inventory:change-category",
         "serialized-inventory:create",
         "serialized-inventory:sell",
@@ -247,6 +248,7 @@
         "sale-verifications:reopen",
         "sale-verifications:review",
         "scale:*",
+        "self-service:check-in",
         "serialized-inventory:change-category",
         "serialized-inventory:create",
         "serialized-inventory:sell",
@@ -422,6 +424,7 @@
         "role-config:*",
         "sale-verifications:review",
         "scale:*",
+        "self-service:check-in",
         "serialized-inventory:*",
         "serialized-inventory:change-category",
         "settings:manage",
@@ -561,6 +564,7 @@
         "role-config:*",
         "sale-verifications:review",
         "scale:*",
+        "self-service:check-in",
         "serialized-inventory:*",
         "serialized-inventory:change-category",
         "serialized-inventory:create",
@@ -741,6 +745,7 @@
         "sale-verifications:review",
         "scale:configure",
         "scale:use",
+        "self-service:check-in",
         "serialized-inventory:create",
         "serialized-inventory:sell",
         "settlements:read",
@@ -892,6 +897,7 @@
         "sale-verifications:review",
         "scale:configure",
         "scale:use",
+        "self-service:check-in",
         "serialized-inventory:create",
         "serialized-inventory:sell",
         "settlements:read",
@@ -1266,6 +1272,7 @@
         "reservations:create",
         "reservations:read",
         "reservations:update",
+        "self-service:check-in",
         "tables:read",
         "tables:update",
         "teams:read"
@@ -1273,7 +1280,8 @@
       "implicit": [
         "analytics:read",
         "payments:read",
-        "products:read"
+        "products:read",
+        "self-service:check-in"
       ]
     },
     "VIEWER": {
@@ -1337,6 +1345,7 @@
       "creditPacks:sell",
       "customers:create",
       "customers:read",
+      "customers:update",
       "delivery-channels:snooze",
       "discounts:apply",
       "discounts:create",
@@ -1353,12 +1362,14 @@
       "inventory:log-waste",
       "inventory:read",
       "inventory:update",
+      "loyalty:adjust",
       "loyalty:read",
       "menu:create",
       "menu:delete",
       "menu:read",
       "menu:update",
       "orders:cancel-unpaid",
+      "orders:comp",
       "orders:create",
       "orders:merge",
       "orders:read",
@@ -1369,8 +1380,8 @@
       "payments:refund-to-cash",
       "printers:manage",
       "reports:read",
-      "reservations:update",
       "scale:use",
+      "self-service:check-in",
       "tables:read",
       "tables:update",
       "teams:read",

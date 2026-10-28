@@ -55,6 +55,8 @@ class MoreMenuViewModel @Inject constructor(
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
     private val vigilanteDePedidos: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea,
     private val pedidosEnLineaRepository: com.avoqado.pos.onlineorders.data.OnlineOrdersRepository,
+    /** Las llegadas del kiosco guardadas sin red (Modo Autoservicio 0.e): también bloquean el cambio de sucursal. */
+    private val pendingReservationDao: com.avoqado.pos.reservations.data.PendingReservationActionDao,
 ) : ViewModel() {
 
     // MARK: - Pedidos en línea (A3)
@@ -241,7 +243,13 @@ class MoreMenuViewModel @Inject constructor(
             val currentVenueId = secureStorage.venueId
             val blocking = paymentSyncService.blockingWorkCount() +
                 (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
-                secureStorage.areaTicketRecoveryCount(currentVenueId)
+                secureStorage.areaTicketRecoveryCount(currentVenueId) +
+                // Cada llegada guarda su sucursal y sólo se manda con esa sucursal activa: cambiar la dejaría esperando.
+                com.avoqado.pos.kiosk.data.KioskTap.pendingFor(
+                    pendingReservationDao.all(),
+                    currentVenueId,
+                    com.avoqado.pos.reservations.data.ReservationRepository.MAX_ATTEMPTS,
+                )
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."

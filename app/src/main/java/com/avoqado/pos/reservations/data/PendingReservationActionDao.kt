@@ -57,4 +57,27 @@ interface PendingReservationActionDao {
 
     @Query("UPDATE pending_reservation_action SET attemptCount = attemptCount + 1, lastError = :error WHERE rowId = :rowId")
     suspend fun incrementAttempt(rowId: Long, error: String? = null)
+
+    // MARK: - Llegadas del kiosco (Modo Autoservicio 0.e)
+
+    /** Las reservas con una fila [action] que todavía se va a mandar (no está en cuarentena). */
+    @Query("SELECT reservationId FROM pending_reservation_action WHERE action = :action AND attemptCount < :maxAttempts")
+    suspend fun pendingIds(action: String, maxAttempts: Int): List<String>
+
+    @Query("SELECT COUNT(*) FROM pending_reservation_action WHERE action = :action AND attemptCount < :maxAttempts")
+    suspend fun countPending(action: String, maxAttempts: Int): Int
+
+    /** Un rechazo definitivo (4xx) va a cuarentena de una vez, con el texto del servidor. */
+    @Query("UPDATE pending_reservation_action SET attemptCount = :maxAttempts, lastError = :lastError WHERE rowId = :rowId")
+    suspend fun quarantine(rowId: Long, maxAttempts: Int, lastError: String?)
+
+    @Query("SELECT * FROM pending_reservation_action WHERE rowId = :rowId")
+    suspend fun byId(rowId: Long): PendingReservationActionEntity?
+
+    /** La reserva ya quedó registrada: sus cuarentenas [action] viejas están resueltas (Codex, código r3). */
+    @Query(
+        "DELETE FROM pending_reservation_action WHERE action = :action AND reservationId = :reservationId " +
+            "AND attemptCount >= :maxAttempts",
+    )
+    suspend fun deleteQuarantined(action: String, reservationId: String, maxAttempts: Int)
 }

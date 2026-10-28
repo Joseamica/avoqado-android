@@ -62,8 +62,11 @@ class KioskState @Inject constructor() {
         private set
     private var lastRosterAt = 0L
 
-    /** Reloj inyectable para las pruebas. */
-    internal var now: () -> Long = System::currentTimeMillis
+    /**
+     * Reloj inyectable para las pruebas. MONÓTONO, en ms: sólo mide intervalos (la frescura de la lista). Con la hora de
+     * pared, un reloj que retrocede congelaba la lista horas (Codex 0.e r2 R1-2).
+     */
+    internal var now: () -> Long = { System.nanoTime() / 1_000_000 }
 
     fun show(content: KioskContent) {
         when (content) {
@@ -90,6 +93,7 @@ class KioskState @Inject constructor() {
             is KioskContent.Identify -> if (content.searching) null else IDENTIFIED_TIMEOUT_MS
             is KioskContent.Found, is KioskContent.Offer -> IDENTIFIED_TIMEOUT_MS
             is KioskContent.Trouble -> TROUBLE_TIMEOUT_MS
+            is KioskContent.Paying -> payingTimeout(content)
             else -> null
         }
         timeoutMs?.let { scheduleRestart(it) }
@@ -118,10 +122,18 @@ class KioskState @Inject constructor() {
             is KioskContent.Identify -> if (c.searching) return else IDENTIFIED_TIMEOUT_MS
             is KioskContent.Found, is KioskContent.Offer -> IDENTIFIED_TIMEOUT_MS
             is KioskContent.Trouble -> TROUBLE_TIMEOUT_MS
+            is KioskContent.Paying -> payingTimeout(c)
             else -> return
         }
         scheduleRestart(timeoutMs)
     }
+
+    /**
+     * 🔴 El QR no se queda para siempre (D3): antes «Paying» no vencía y, si la persona se iba sin
+     * pagar, la entrada quedaba con su QR y sin la lista de la clase. 5 min alcanzan para sacar el
+     * teléfono y pagar; si paga después, el servidor entrega igual. Sin enlace (falló), como un error.
+     */
+    private fun payingTimeout(c: KioskContent.Paying): Long = if (c.failed) TROUBLE_TIMEOUT_MS else PAYING_TIMEOUT_MS
 
     /** Vuelve al reposo YA y suelta cualquier dato de la persona anterior. */
     fun restart() {
@@ -151,6 +163,16 @@ class KioskState @Inject constructor() {
         lastRosterAt = now()
     }
 
+    /**
+     * Cerró la ventana de la clase: la lista CADUCA. Se borra la copia que «Cancelar» recupera y, si la lista está en
+     * pantalla, se pone la bienvenida. Nada más (Modo Autoservicio 0.e, Codex r3 #2): no sube [epoch] ni llama
+     * [restart], así que no borra a quien teclea en «¿No apareces?», paga un paquete o lee su confirmación.
+     */
+    fun expireRoster() {
+        lastRoster = null
+        if (_content.value is KioskContent.Roster) show(KioskContent.Welcome)
+    }
+
     /** Sube con cada cambio de sesión: una consulta que salió antes ya no puede pintar. */
     var epoch = 0
         private set
@@ -172,7 +194,11 @@ class KioskState @Inject constructor() {
     /** Un dígito del teclado propio. La ventana del cliente NO recibe el del sistema. */
     var onDigit: ((String) -> Unit)? = null
     var onDelete: (() -> Unit)? = null
+    /** Abrió el selector de país (sólo cuenta como toque: el selector vive en la pantalla). */
     var onPickCountry: (() -> Unit)? = null
+
+    /** Eligió su país en el selector: cambia la lada con la que se compone su teléfono. */
+    var onCountry: ((com.avoqado.pos.designsystem.components.Country) -> Unit)? = null
 
     /** Buscar con el número tecleado. */
     var onSearch: (() -> Unit)? = null
@@ -208,6 +234,7 @@ class KioskState @Inject constructor() {
         onDigit = null
         onDelete = null
         onPickCountry = null
+        onCountry = null
         onSearch = null
         onCheckIn = null
         onCheckInSession = null
@@ -225,6 +252,7 @@ class KioskState @Inject constructor() {
         // vería el siguiente de la fila si ella se va sin cerrar.
         const val IDENTIFIED_TIMEOUT_MS = 45_000L
         const val TROUBLE_TIMEOUT_MS = 15_000L
+        const val PAYING_TIMEOUT_MS = 300_000L
         // Lo que tarda alguien en teclear y elegir; más viejo que esto, mejor preguntar.
         const val LIST_FRESH_MS = 120_000L
     }
