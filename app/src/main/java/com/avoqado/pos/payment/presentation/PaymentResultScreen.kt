@@ -111,6 +111,14 @@ fun PaymentResultScreen(
     canPrintOnTerminal: Boolean = false,
     onPrintOnTerminalReceipt: (() -> Unit)? = null,
     onClearPrintResult: (() -> Unit)? = null,
+    /**
+     * D2 (founder, 28-oct): sin impresora de recibos la fila lo dice ANTES de tocarla («Sin impresora · Configurar») y al
+     * tocarla ofrece imprimir en la terminal (si hay) y «Configurar impresora», que abre «Impresoras y cajón».
+     */
+    hayImpresoraDeRecibos: Boolean = true,
+    onConfigurarImpresora: (() -> Unit)? = null,
+    /** Se revisa al entrar a la pantalla: la impresora pudo agregarse o quitarse desde la venta anterior. */
+    onRevisarImpresora: (() -> Unit)? = null,
     customerName: String? = null,
     customerResultMessage: String? = null,
     onClearCustomerResult: (() -> Unit)? = null,
@@ -140,6 +148,8 @@ fun PaymentResultScreen(
         resultMessage == "Recibo impreso" ||
         resultMessage == "Recibo impreso en TPV" ||
         resultMessage?.startsWith("Cliente agregado") == true
+
+    androidx.compose.runtime.LaunchedEffect(Unit) { onRevisarImpresora?.invoke() }
 
     androidx.compose.runtime.LaunchedEffect(printResultMessage, canPrintOnTerminal) {
         if (printResultMessage == LOCAL_PRINTER_UNAVAILABLE && canPrintOnTerminal) {
@@ -335,9 +345,12 @@ fun PaymentResultScreen(
                 ReceiptOptionRow(
                     icon = rememberVectorPainter(Icons.Filled.Print),
                     title = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir recibo",
+                    detalle = if (!hayImpresoraDeRecibos && !isPrintingReceipt) "Sin impresora · Configurar" else null,
                     enabled = !isPrintingReceipt,
                     onClick = {
-                        if (onPrintReceipt != null) {
+                        if (!hayImpresoraDeRecibos && onConfigurarImpresora != null) {
+                            showNoPrinterDialog = true
+                        } else if (onPrintReceipt != null) {
                             onClearCustomerResult?.invoke()
                             onClearPrintResult?.invoke()
                             onClearWhatsAppResult?.invoke()
@@ -458,16 +471,43 @@ fun PaymentResultScreen(
 
     // No printer configured dialog
     if (showNoPrinterDialog) {
+        val enTerminal = canPrintOnTerminal && onPrintOnTerminalReceipt != null
         AvoqadoDialog(
-            title = "Sin impresora configurada",
-            description = "No hay una impresora de recibos configurada. Ve a Configuración > Impresoras para conectar una.",
+            title = "Sin impresora de recibos",
+            description = if (enTerminal) {
+                "Esta caja no tiene impresora de recibos. Imprímelo en la terminal o configura una impresora."
+            } else {
+                "Esta caja no tiene impresora de recibos. Configura una para imprimir tickets y abrir el cajón."
+            },
             onDismiss = { showNoPrinterDialog = false },
             actionButton = {
-                PrimaryButton(
-                    text = "Entendido",
-                    onClick = { showNoPrinterDialog = false },
-                    fullWidth = true,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    if (enTerminal) {
+                        PrimaryButton(
+                            text = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir en la terminal",
+                            onClick = {
+                                showNoPrinterDialog = false
+                                onClearPrintResult?.invoke()
+                                onPrintOnTerminalReceipt?.invoke()
+                            },
+                            enabled = !isPrintingReceipt,
+                            fullWidth = true,
+                        )
+                    }
+                    if (onConfigurarImpresora != null) {
+                        val configurar = {
+                            showNoPrinterDialog = false
+                            onConfigurarImpresora()
+                        }
+                        if (enTerminal) {
+                            OutlinedButton(onClick = configurar, modifier = Modifier.fillMaxWidth()) { Text("Configurar impresora") }
+                        } else {
+                            PrimaryButton(text = "Configurar impresora", onClick = configurar, fullWidth = true)
+                        }
+                    } else {
+                        PrimaryButton(text = "Entendido", onClick = { showNoPrinterDialog = false }, fullWidth = true)
+                    }
+                }
             },
         ) {
             Icon(
@@ -599,6 +639,8 @@ private fun ReceiptOptionRow(
     title: String,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    /** D2: a la derecha, en ámbar (p. ej. «Sin impresora · Configurar»). */
+    detalle: String? = null,
 ) {
     val contentColor = if (enabled) {
         MaterialTheme.colorScheme.onSurfaceVariant
@@ -630,6 +672,9 @@ private fun ReceiptOptionRow(
             color = titleColor,
             modifier = Modifier.weight(1f),
         )
+        if (detalle != null) {
+            Text(text = detalle, style = MaterialTheme.typography.bodySmall, color = Warning)
+        }
         Icon(
             imageVector = Icons.Filled.ChevronRight,
             contentDescription = null,

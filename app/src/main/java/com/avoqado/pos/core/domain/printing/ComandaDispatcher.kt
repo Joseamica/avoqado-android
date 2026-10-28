@@ -364,6 +364,7 @@ class ComandaDispatcher @Inject constructor(
                     "No hay ninguna impresora de cocina configurada.",
                     orderNumber,
                     trabajo = null,
+                    sinImpresoraDeCocina = true,
                 )
             } else {
                 EstadoDeComanda.NoSalio(
