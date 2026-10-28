@@ -357,7 +357,11 @@ class CustomerDisplayState @Inject constructor() {
 
     private fun scheduleRevert() {
         revertJob?.cancel()
-        revertJob = timerScope.launch {
+        // UNDISPATCHED: el `delay` se apunta en Main AQUÍ, dentro de `show`, y no en una vuelta posterior de la cola.
+        // En la app es lo mismo (se llama desde Main y regresa a los mismos DONE_TIMEOUT_MS). En las pruebas, encolado,
+        // el cuerpo podía correr después de que la prueba quitara `Dispatchers.Main` y su excepción caía en la
+        // siguiente prueba con `runTest` (D5, CI de `main` 27-oct).
+        revertJob = timerScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
             _content.value = CustomerContent.Idle
             promotePendingDesign()
