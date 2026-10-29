@@ -149,6 +149,7 @@ fun AvoqadoNavGraph(
             // montan de cero y recargan datos del contexto NUEVO. Antes las
             // pantallas ya montadas seguían con los datos del venue anterior.
             key(mainNavigation.contentKey) {
+                val payLaterReviewCount by appState.payLaterReviewCount.collectAsState(initial = 0)
                 MainScaffold(
                     isTablet = isTablet,
                     onLogout = { appState.onLogout() },
@@ -163,6 +164,7 @@ fun AvoqadoNavGraph(
                     avisoDeCocinaSinRed = avisoDeCocinaSinRed,
                     avisoDeRacha = avisoDeRacha,
                     syncIssueCount = reconciliationCount,
+                    payLaterReviewCount = payLaterReviewCount,
                     reservationIssueCount = reservationIssueCount,
                     q15HistoryUnavailable = q15HistoryUnavailable,
                     onTabsShouldRefresh = { appState.refreshTabs() },
@@ -248,6 +250,7 @@ private fun MainScaffold(
     /** Ver `AppState.avisoDeRacha`: tras 3 entregas sin acuse, la pantalla que no se alcanza se DICE, con o sin red (KDS 3.5). */
     avisoDeRacha: String? = null,
     syncIssueCount: Int = 0,
+    payLaterReviewCount: Int = 0,
     reservationIssueCount: Int? = null,
     q15HistoryUnavailable:Boolean=false,
     onTabsShouldRefresh: () -> Unit = {},
@@ -305,7 +308,9 @@ private fun MainScaffold(
     androidx.lifecycle.compose.LifecycleResumeEffect(salesNotices) { salesNotices.refreshAlertSummary();onPauseOrDispose { } }
     val pendingSalesCount=if(salesNotices.canRead) globalPendingSalesCount else 0
     val salesBannerCount=com.avoqado.pos.sync.presentation.salesNoticeBannerCount(
-        salesSummary,reservationIssueCount,syncIssueCount)
+        salesSummary,reservationIssueCount,syncIssueCount,payLaterReviewCount)
+    val salesBannerActionLabel=com.avoqado.pos.sync.presentation.salesNoticeBannerActionLabel(
+        salesNotices.opensPendingSales,payLaterReviewCount)
     if (showQuarantineSheet) {
         com.avoqado.pos.sync.presentation.QuarantineSheet(
             onDismissSheet={ showQuarantineSheet=false },courtesyReviewOnline=courtesyOnline,courtesyCanPreview=salesNotices.canPreviewCourtesy,
@@ -421,10 +426,12 @@ private fun MainScaffold(
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
-                        actionLabel=salesNotices.bannerActionLabel) {
-                        if(salesNotices.opensPendingSales && MainTab.TRANSACTIONS in registeredTabs) {
-                            pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS)
-                        } else showQuarantineSheet=true
+                        actionLabel=salesBannerActionLabel) {
+                        com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
+                            salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
+                            onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
+                            onQuarantine={ showQuarantineSheet=true },
+                        )
                     }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
@@ -711,10 +718,12 @@ private fun MainScaffold(
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
-                        actionLabel=salesNotices.bannerActionLabel) {
-                        if(salesNotices.opensPendingSales && MainTab.TRANSACTIONS in registeredTabs) {
-                            pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS)
-                        } else showQuarantineSheet=true
+                        actionLabel=salesBannerActionLabel) {
+                        com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
+                            salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
+                            onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
+                            onQuarantine={ showQuarantineSheet=true },
+                        )
                     }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.

@@ -58,6 +58,7 @@ class SalesNoticesCourtesyObservationTest {
             coEvery { store.summary(any()) } coAnswers { disk.dao.summary(VENUE,emptySet()) }
             every { store.changes() } returns changes
             coEvery { payments.prepararRevisionCortesia(KEY) } returns proposal
+            coEvery { payments.prepararRevisionCancelada(KEY) } returns null
             subject=SalesNoticesViewModel(store,storage,RoleManager(storage),session,payments,network)
         }
         override fun close() { subject.viewModelScope.cancel();disk.close() }
