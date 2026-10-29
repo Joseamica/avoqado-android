@@ -94,6 +94,10 @@ class Q15OnlinePaymentTest {
             every { dao.observarEstado(any()) } answers { flowOf(rows().singleOrNull { it.id==firstArg<String>() }?.syncStatus) }
             server.dispatcher=object:Dispatcher() {
                 override fun dispatch(request:RecordedRequest):MockResponse {
+                    // D7 (28-oct): tras cobrar, la pantalla pide sola el sello de lealtad. Si esa consulta esperaba el
+                    // `answer` de la prueba, terminaba después del @After de MainDispatcherRule y su regreso al Main ya
+                    // reseteado tumbaba la prueba SIGUIENTE (UncaughtExceptionsBeforeTest). El sello no es de Q15: 404 al instante.
+                    if (request.path?.endsWith("/loyalty") == true) return MockResponse().setResponseCode(404)
                     entered.complete(request)
                     check(answer.await(5,TimeUnit.SECONDS)) { "El test no liberó su respuesta HTTP" }
                     return MockResponse().setResponseCode(200).setBody(body)
@@ -163,7 +167,13 @@ class Q15OnlinePaymentTest {
             service.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
             try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(esperadas,server.requestCount) } finally { service.stop() }
         }
-        override fun close() { vms.forEach { it.viewModelScope.cancel() };answer.countDown();server.shutdown();client.connectionPool.evictAll();client.dispatcher.executorService.shutdown();db.close();directory.deleteRecursively() }
+        override fun close() {
+            vms.forEach { it.viewModelScope.cancel() };answer.countDown();server.shutdown()
+            // D7: ninguna llamada HTTP sigue en vuelo cuando MainDispatcherRule quita el Main de prueba.
+            val tope=System.currentTimeMillis()+2_000
+            while (client.dispatcher.runningCallsCount()>0 && System.currentTimeMillis()<tope) Thread.sleep(10)
+            client.connectionPool.evictAll();client.dispatcher.executorService.shutdown();db.close();directory.deleteRecursively()
+        }
     }
     // D2 etapa 2 (27-oct): estas pruebas son del canal FAST. Una venta rápida DIVIDIDA ya lleva orden, así que el vehículo es una
     // venta rápida de UNA sola parte por el importe que antes era la parte.
