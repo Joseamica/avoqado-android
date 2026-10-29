@@ -199,6 +199,11 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private val tableServiceRepository: com.avoqado.pos.tables.data.TableServiceRepository? = null,
     private val lanHub: com.avoqado.pos.core.data.lan.LanHubService? = null,
+    /**
+     * D2 (founder, 28-oct): «Configurar impresora» abre «Impresoras y cajón» desde el cobro, y esa hoja necesita la config del
+     * panel (sus impresoras y estaciones). Default por el mismo patrón que [refrescoDelCatalogo].
+     */
+    val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -1258,6 +1263,22 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun clearPrintResult() {
         _printResult.value = null
+    }
+
+    /**
+     * D2 (founder, 28-oct): «Imprimir recibo» dice «Sin impresora · Configurar» ANTES de tocarlo. `true` hasta revisarlo:
+     * mientras no se sabe, la fila se ve como siempre. La misma regla que [PrinterService.manualPrintReceipt].
+     */
+    private val _hayImpresoraDeRecibos = MutableStateFlow(true)
+    val hayImpresoraDeRecibos: StateFlow<Boolean> = _hayImpresoraDeRecibos.asStateFlow()
+
+    /** La hoja «Impresoras y cajón» abierta desde el cobro. */
+    val impresoras: PrinterService get() = printerService
+
+    fun revisarImpresoraDeRecibos() {
+        viewModelScope.launch {
+            _hayImpresoraDeRecibos.value = runCatching { printerService.hayImpresoraDeRecibos() }.getOrDefault(true)
+        }
     }
 
     // Customer attachment state
@@ -4490,6 +4511,9 @@ class PaymentFlowViewModel @Inject constructor(
         /** La venta de la comanda (Codex r10 #3). null = no es de una venta en particular. */
         venta: Int? = null,
     ) {
+        // D2 (founder, 28-oct): un negocio sin ninguna impresora de cocina (una tienda) no tiene comanda que avisar. Una
+        // impresora de cocina que FALLA sí se sigue avisando (no trae la marca).
+        if (estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina) return
         // 🔴 Familia B: un «Insistiendo» de la comanda de una venta que ya no está en pantalla no se pinta sobre la nueva (describe
         // algo en curso de otra venta). El veredicto final SÍ se dice, con su folio: una comanda que no salió nunca se esconde
         // (P1 #6 de Codex, 7-sep; ver `startPaymentFlow`).
