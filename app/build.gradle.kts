@@ -141,7 +141,12 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
-        unitTests.all { it.maxHeapSize = "2g" }
+        // Un solo proceso para toda la suite junta memoria de clase en clase (154 MB → 562 MB medido el 28-oct, y
+        // creciendo con cada prueba nueva): reiniciarlo cada 150 clases la acota, por grande que sea la suite.
+        unitTests.all {
+            it.maxHeapSize = "2g"
+            it.forkEvery = 150
+        }
     }
 }
 
