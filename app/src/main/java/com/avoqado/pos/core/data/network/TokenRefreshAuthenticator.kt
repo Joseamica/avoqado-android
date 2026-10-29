@@ -130,6 +130,10 @@ class TokenRefreshAuthenticator @Inject constructor(
          *  token ya no sirve. El ÚNICO caso (junto con no tener refresh
          *  token guardado) que cierra sesión. */
         data class Rejected(val httpCode: Int) : RefreshOutcome()
+
+        /** La renovación salió bien, pero mientras viajaba la sesión cambió (otra persona entró con su PIN, o se
+         *  cerró): sus llaves no se guardan ni se reenvía nada con ellas (Codex, D9 del Cambio, 29-oct). */
+        object SesionCambiada : RefreshOutcome()
     }
 
     /**
@@ -243,7 +247,13 @@ class TokenRefreshAuthenticator @Inject constructor(
                     // de red, es una sesión que ya no existe localmente.
                     RefreshOutcome.Rejected(httpCode = 0)
                 } else {
-                    refreshTokens(refreshToken)
+                    // Se guarda aquí, comparando con la llave que se mandó: si la sesión ya es otra, no se pisa.
+                    when (val r = refreshTokens(refreshToken)) {
+                        is RefreshOutcome.Success ->
+                            if (secureStorage.updateTokensSiSigue(refreshToken, r.accessToken, r.refreshToken)) r
+                            else RefreshOutcome.SesionCambiada
+                        else -> r
+                    }
                 }
             }
             lastRefreshOutcome = outcome
@@ -262,10 +272,6 @@ class TokenRefreshAuthenticator @Inject constructor(
     private fun applyOutcome(response: Response, outcome: RefreshOutcome): Request? {
         return when (outcome) {
             is RefreshOutcome.Success -> {
-                secureStorage.updateTokens(
-                    accessToken = outcome.accessToken,
-                    refreshToken = outcome.refreshToken,
-                )
                 Log.d("🔐", "Token refreshed successfully")
                 if (noReenviar(response)) null else buildRetry(response, outcome)
             }
@@ -285,6 +291,10 @@ class TokenRefreshAuthenticator @Inject constructor(
                 // IGUAL que NetworkFailure: nunca cierra sesión.
                 Log.e("🔐", "Token refresh failed: error transitorio del servidor (${outcome.httpCode}) - la sesion sigue viva")
                 fallarSinRed(response, outcome, reportar = true)
+            }
+            RefreshOutcome.SesionCambiada -> {
+                Log.w("🔐", "La sesión cambió mientras se renovaba: no se guarda ni se reenvía")
+                null
             }
             is RefreshOutcome.Rejected -> {
                 // El servidor respondió 401/403: dijo explícitamente que el

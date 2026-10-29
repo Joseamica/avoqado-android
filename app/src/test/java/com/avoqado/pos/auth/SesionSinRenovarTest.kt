@@ -50,6 +50,7 @@ class SesionSinRenovarTest {
         server.start()
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
         authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
         authenticator.reportarFallo = { reportes.add(it) }
@@ -102,7 +103,7 @@ class SesionSinRenovarTest {
         assertTrue("debe contar como sin red para la UI", ServerErrorText.isOffline(e))
         assertTrue("debe encolarse como cualquier corte de red", OrderRepository.isQueueableError(e))
         verify(exactly = 0) { secureStorage.clearSession() }
-        verify(exactly = 0) { secureStorage.updateTokens(any(), any()) }
+        verify(exactly = 0) { secureStorage.updateTokensSiSigue(any(), any(), any()) }
     }
 
     @Test

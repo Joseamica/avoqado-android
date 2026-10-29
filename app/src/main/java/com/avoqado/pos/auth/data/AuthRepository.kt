@@ -266,11 +266,15 @@ class AuthRepository @Inject constructor(
             // 🔴 El refresh token se relee DENTRO del candado: si el autenticador acaba de
             // rotarlo mientras esperábamos turno, el de fuera ya está consumido y mandarlo
             // sería exactamente el doble refresco que este candado existe para evitar.
-            val tokens = enExclusiva {
+            val (vigente, tokens) = enExclusiva {
                 val vigente = secureStorage.refreshToken?.takeIf { it.isNotBlank() } ?: refresh
-                apiService.refreshToken(RefreshRequest(vigente, venueId = venueId))
+                vigente to apiService.refreshToken(RefreshRequest(vigente, venueId = venueId))
             }
-            secureStorage.updateTokens(tokens.accessToken, tokens.refreshToken)
+            // Si mientras tanto entró otra persona o se cerró la sesión, no se pisa (Codex, D9 del Cambio, 29-oct).
+            if (!secureStorage.updateTokensSiSigue(vigente, tokens.accessToken, tokens.refreshToken)) {
+                Log.w("🔄", "La sesión cambió mientras se ligaba al venue: no se guarda")
+                return false
+            }
             Log.d("🔄", "✅ Token ligado al venue actual")
             true
         } catch (e: Exception) {

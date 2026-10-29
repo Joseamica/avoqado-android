@@ -598,6 +598,7 @@ class SecureStorage @Inject constructor(
     val isLoggedIn: Boolean
         get() = accessToken != null && userId != null
 
+    @Synchronized
     fun saveLogin(
         userId: String,
         email: String,
@@ -626,9 +627,23 @@ class SecureStorage @Inject constructor(
         this.venuePermissions = venuePermissions
     }
 
+    @Synchronized
     fun updateTokens(accessToken: String, refreshToken: String) {
         this.accessToken = accessToken
         this.refreshToken = refreshToken
+    }
+
+    /**
+     * Guarda una sesión RENOVADA sólo si sigue siendo la que se mandó a renovar ([refreshUsado]). Mientras la renovación
+     * viajaba, otra persona pudo entrar con su PIN o cerrarse la sesión: pisarla dejaba el nombre y los permisos de B con
+     * las llaves de A (Codex, D9 del Cambio, 29-oct). Comparar y escribir van bajo el mismo candado que [saveLogin] y
+     * [clearSession].
+     */
+    @Synchronized
+    fun updateTokensSiSigue(refreshUsado: String, accessToken: String, refreshToken: String): Boolean {
+        if (this.refreshToken != refreshUsado) return false
+        updateTokens(accessToken, refreshToken)
+        return true
     }
 
     fun switchVenue(venue: StoredVenue) {
@@ -674,6 +689,7 @@ class SecureStorage @Inject constructor(
         return true
     }
 
+    @Synchronized
     fun clearSession() {
         _sessionInvalidated.tryEmit(Unit)
         prefs.edit()

@@ -45,6 +45,7 @@ class TokenRefreshSingleFlightTest {
         server.start()
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
         authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
     }
@@ -135,7 +136,7 @@ class TokenRefreshSingleFlightTest {
         assertEquals(1, server.requestCount)
         assertEquals("Bearer access-nuevo", leaderResult.get()?.header("Authorization"))
         assertEquals("Bearer access-nuevo", followerResult?.header("Authorization"))
-        verify(exactly = 1) { secureStorage.updateTokens("access-nuevo", "refresh-nuevo") }
+        verify(exactly = 1) { secureStorage.updateTokensSiSigue("refresh-viejo", "access-nuevo", "refresh-nuevo") }
     }
 
     @Test
@@ -189,6 +190,45 @@ class TokenRefreshSingleFlightTest {
         // Un solo cierre de sesión — el del líder. El seguidor no repite el
         // trabajo del líder ni dispara uno propio.
         verify(exactly = 1) { secureStorage.clearSession() }
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `si otra persona entro mientras se renovaba, no se pisan sus llaves ni se reenvia (Codex D9)`() {
+        // A pidió algo con la llave vencida; mientras su renovación viajaba, B entró con su PIN y guardó su sesión.
+        // La renovación de A llega tarde: guardarla dejaba a B en pantalla con las llaves de A.
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"accessToken":"access-de-A","refreshToken":"refresh-de-A"}"""),
+        )
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns false // la sesión ya es otra
+
+        val retry = authenticator.authenticate(null, original401())
+
+        assertNull("con la sesión de otra persona, la petición de A no se reenvía", retry)
+        verify(exactly = 1) { secureStorage.updateTokensSiSigue("refresh-viejo", "access-de-A", "refresh-de-A") }
+        verify(exactly = 0) { secureStorage.updateTokens(any(), any()) }
+        verify(exactly = 0) { secureStorage.clearSession() } // la sesión de B sigue
+    }
+
+    @Test
+    fun `los que esperaban esa renovacion descartada tampoco reenvian con la llave de A`() {
+        server.enqueue(
+            MockResponse()
+                .setBodyDelay(400, TimeUnit.MILLISECONDS)
+                .setResponseCode(200)
+                .setBody("""{"accessToken":"access-de-A","refreshToken":"refresh-de-A"}"""),
+        )
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns false
+
+        val leaderThread = Thread { authenticator.authenticate(null, original401()) }
+        leaderThread.start()
+        assertTrue("el lider debio mandar su peticion", server.takeRequest(5, TimeUnit.SECONDS) != null)
+
+        val followerResult = authenticator.authenticate(null, original401())
+        leaderThread.join(5_000)
+
+        assertNull("el seguidor no reenvía con una llave que no se guardó", followerResult)
         assertEquals(1, server.requestCount)
     }
 }

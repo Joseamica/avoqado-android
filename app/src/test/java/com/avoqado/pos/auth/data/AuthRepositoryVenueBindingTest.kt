@@ -19,6 +19,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -44,6 +45,7 @@ class AuthRepositoryVenueBindingTest {
     fun `repairCurrentVenueBinding reissues the token for the locally selected venue`() = runTest {
         every { secureStorage.venueId } returns "venue-atole"
         every { secureStorage.refreshToken } returns "refresh-old"
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
         coEvery {
             apiService.refreshToken(RefreshRequest("refresh-old", venueId = "venue-atole"))
         } returns RefreshResponse(
@@ -58,7 +60,20 @@ class AuthRepositoryVenueBindingTest {
             apiService.refreshToken(RefreshRequest("refresh-old", venueId = "venue-atole"))
         }
         verify(exactly = 1) {
-            secureStorage.updateTokens("access-atole", "refresh-atole")
+            secureStorage.updateTokensSiSigue("refresh-old", "access-atole", "refresh-atole")
         }
+    }
+
+    @Test
+    fun `si la sesion cambio mientras se ligaba al venue, no se pisa y no cuenta como reparada`() = runTest {
+        every { secureStorage.venueId } returns "venue-atole"
+        every { secureStorage.refreshToken } returns "refresh-old"
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns false
+        coEvery {
+            apiService.refreshToken(RefreshRequest("refresh-old", venueId = "venue-atole"))
+        } returns RefreshResponse(accessToken = "access-atole", refreshToken = "refresh-atole")
+
+        assertFalse(repository.repairCurrentVenueBinding())
+        verify(exactly = 0) { secureStorage.updateTokens(any(), any()) }
     }
 }

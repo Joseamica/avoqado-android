@@ -44,6 +44,7 @@ class AccessVencidoSinRedTest {
         server.start()
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
         authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
     }
@@ -85,7 +86,7 @@ class AccessVencidoSinRedTest {
         // tropiezo de transporte. El outbox no es responsabilidad de esta
         // clase, pero vive exactamente de esto — de que la sesión no muera.
         verify(exactly = 0) { secureStorage.clearSession() }
-        verify(exactly = 0) { secureStorage.updateTokens(any(), any()) }
+        verify(exactly = 0) { secureStorage.updateTokensSiSigue(any(), any(), any()) }
     }
 
     @Test
@@ -152,7 +153,7 @@ class AccessVencidoSinRedTest {
 
         assertEquals("Bearer access-nuevo", retry?.header("Authorization"))
         assertEquals("true", retry?.header("X-Retry-After-Refresh"))
-        verify(exactly = 1) { secureStorage.updateTokens("access-nuevo", "refresh-nuevo") }
+        verify(exactly = 1) { secureStorage.updateTokensSiSigue("refresh-viejo", "access-nuevo", "refresh-nuevo") }
         verify(exactly = 0) { secureStorage.clearSession() }
     }
 
