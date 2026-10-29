@@ -27,7 +27,11 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restoreSavedCart:_cartState.value =" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restoreSavedCart:CartState" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restaurarFoto:_cartState.value =" to 1,
-            "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:confirmPayLaterOrder:finalizarVenta" to 1,
+            // «Pagar después» de develop (27-oct): la venta sale del carrito al mandarse y vuelve entera si se rechaza.
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:separarDelCarrito:finalizarVenta" to 1,
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:devolverVenta:_cartState.value =" to 1,
+            // D5 de vales: «Recuperar» termina la venta en pantalla si es la misma mercancía del vale.
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:alRecuperarVale:finalizarVenta" to 1,
             "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:CheckoutScreen:saveCurrentCart" to 2,
             "com/avoqado/pos/pos/presentation/checkout/ShortcutsGridView.kt:SavedCartsSubView:restoreSavedCart" to 2,
             // OnlineOrdersViewModel.carritoDelCobro: saldo excluido por origen (decisión 5 de ROOT).
@@ -61,7 +65,10 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restoreSavedCart:_cartState.value =" to "borra / borra / marca-T6",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restoreSavedCart:CartState" to "borra / borra / marca-T6",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restaurarFoto:_cartState.value =" to "regresa-foto / sin-vinculo / origen-de-foto-T1",
-            "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:confirmPayLaterOrder:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:separarDelCarrito:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
+            // Regresa la MISMA venta capturada (rechazo definitivo: no se creó); a medias no se difiere, así que no trae vínculo.
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:devolverVenta:_cartState.value =" to "regresa-la-venta / sin-vinculo / conserva-su-origen",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:alRecuperarVale:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:CheckoutScreen:saveCurrentCart" to "guarda-sin-marca-y-finaliza / no-persiste / no-persiste",
             "com/avoqado/pos/pos/presentation/checkout/ShortcutsGridView.kt:SavedCartsSubView:restoreSavedCart" to "borra / borra / marca-T6",
             "com/avoqado/pos/onlineorders/presentation/OnlineOrdersViewModel.kt:<fuera>:CartState" to "ninguna / vínculo-en-origen-pedido / ninguna",

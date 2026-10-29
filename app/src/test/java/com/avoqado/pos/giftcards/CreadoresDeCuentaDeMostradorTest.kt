@@ -21,6 +21,9 @@ class CreadoresDeCuentaDeMostradorTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:diferirConPremio:mandar" to "C3",
             "com/avoqado/pos/payment/data/PayLaterQueue.kt:procesar:mandar" to "C4",
             "com/avoqado/pos/payment/data/PayLaterQueue.kt:mandar:enviarPagarDespues" to "C4",
+            // `mandar` también nombra la impresión de etiquetas: no crea cuentas.
+            "com/avoqado/pos/inventory/presentation/PriceLabelViewModel.kt:imprimirComprobante:mandar" to "NO_CREA",
+            "com/avoqado/pos/inventory/presentation/PriceLabelViewModel.kt:imprimirLista:mandar" to "NO_CREA",
             "com/avoqado/pos/tables/data/TableServiceRepository.kt:openTable:openTable" to "T8",
             "com/avoqado/pos/tables/data/TableServiceRepository.kt:mergeOrders:mergeOrders" to "T8",
             "com/avoqado/pos/tables/data/TableServiceRepository.kt:splitOrderBySeat:splitOrderBySeat" to "T8",

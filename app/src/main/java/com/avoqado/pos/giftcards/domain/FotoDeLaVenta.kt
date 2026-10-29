@@ -21,6 +21,8 @@ data class FotoDeLaVenta(
     val vinoDeCarritoGuardado: Boolean = false,
     val descuentoDeCuentaCongelado: DescuentoCongelado? = null,
     val creacionIncierta: String? = null,
+    /** La llave de «Pagar después» viaja: el siguiente intento de la venta recuperada reusa la misma y no crea otra cuenta. */
+    val llavePagarDespues: String? = null,
     val clienteId: String? = null,
     val clienteNombre: String? = null,
 )
@@ -33,7 +35,7 @@ fun CartState.aFoto(cliente: CartViewModel.SelectedCustomer?): FotoDeLaVenta = F
     selectedStaffId = selectedStaffId, selectedStaffName = selectedStaffName,
     reservationId = reservationId, carritoGuardadoId = carritoGuardadoId, vinoDeCarritoGuardado = vinoDeCarritoGuardado,
     descuentoDeCuentaCongelado = descuentoDeCuentaCongelado?.copy(huellas = descuentoDeCuentaCongelado.huellas.toMap()),
-    creacionIncierta = creacionIncierta, clienteId = cliente?.id, clienteNombre = cliente?.name,
+    creacionIncierta = creacionIncierta, llavePagarDespues = llavePagarDespues, clienteId = cliente?.id, clienteNombre = cliente?.name,
 )
 
 fun FotoDeLaVenta.aCartState(): CartState = CartState(
@@ -44,5 +46,5 @@ fun FotoDeLaVenta.aCartState(): CartState = CartState(
     selectedStaffId = selectedStaffId, selectedStaffName = selectedStaffName,
     reservationId = reservationId, carritoGuardadoId = carritoGuardadoId, vinoDeCarritoGuardado = vinoDeCarritoGuardado,
     descuentoDeCuentaCongelado = descuentoDeCuentaCongelado?.copy(huellas = descuentoDeCuentaCongelado.huellas.toMap()),
-    creacionIncierta = creacionIncierta,
+    creacionIncierta = creacionIncierta, llavePagarDespues = llavePagarDespues,
 )
