@@ -213,6 +213,13 @@ class PaymentSyncService @Inject constructor(
             // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con
             // `isOfflineReplay`, que este cuerpo siempre lleva. Al final y sólo si viene: sin caja, el cuerpo es el de hoy.
             cajaParaElServidor?.let { put("cashDrawerSessionId", it) }
+            // D1 «fotocopia del ticket»: la copia del papel de esta parte, sólo en `/pay` (el contrato no la lleva a `/fast`). Una
+            // columna ilegible no viaja: es texto del ticket y nunca puede frenar el cobro. Sin copia, el cuerpo es el de hoy.
+            if (esCobroDeOrden) {
+                payment.lineasDelTicketJson
+                    ?.let { runCatching { RESPONSE_JSON.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull() }
+                    ?.let { put("lineasDelTicket", it) }
+            }
         }.toString()
 
         /**

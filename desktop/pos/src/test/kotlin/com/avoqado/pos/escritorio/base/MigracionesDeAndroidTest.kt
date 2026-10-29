@@ -163,4 +163,54 @@ class MigracionCajaDeLaVentaTest {
     }
 }
 
+/** La fila completa de v18 (33 columnas): la de v16 con su caja de la venta. */
+internal val SIEMBRA_V18 = SIEMBRA_V16
+    .replace("capturedOrderRef) ", "capturedOrderRef, cashDrawerSessionId) ")
+    .replace("'MANAGER', 'orden-9')", "'MANAGER', 'orden-9', 'caja-9')")
+
+class MigracionCopiaDelTicketTest {
+    /** v19 (D1 «fotocopia del ticket», 28-oct): una columna nula, nada que migrar. La fila vieja NO recibe una copia inventada. */
+    @Test fun `un cobro sin internet guardado en v18 llega idéntico a v19 con la copia del ticket en nulo`() {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val ayudante = ayudanteDeMigraciones(carpeta.resolve("base"))
+            val antes = ayudante.createDatabase(18).use { v18 ->
+                v18.execSQL(SIEMBRA_V18)
+                v18.volcar("pending_payments")
+            }
+            assertEquals(33, antes.single().size)
+            ayudante.runMigrationsAndValidate(19, migracionesDeAndroid().map { it.paraRoom() }).use { v19 ->
+                val despues = v19.volcar("pending_payments")
+                assertEquals(34, despues.single().size)
+                assertEquals(antes, despues.map { it.take(33) }, "Las 33 columnas de antes no cambian")
+                v19.prepare("SELECT lineasDelTicketJson FROM pending_payments WHERE id='pago-16'").use { q ->
+                    q.step(); assertEquals(true, q.isNull(0))
+                }
+            }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+
+    /** Por el DAO real de Room: el encolado tras el fallo sin copia conserva la de la reserva; uno con copia trae la suya. */
+    @Test fun `el reemplazo de la reserva conserva la copia del ticket en el DAO real`() = runBlocking {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
+            try {
+                val dao = DatabaseModule.providePendingPaymentDao(base)
+                val copia = "{\"lineas\":[{\"nombre\":\"Café\",\"cantidad\":1,\"unitarioCents\":3000,\"totalCents\":3000}],\"subtotalCents\":3000,\"descuentoCents\":300}"
+                val reserva = com.avoqado.pos.core.data.local.database.PendingPaymentEntity(
+                    id = "llave-D1", venueId = "venue-1", staffId = "staff-1", amountCents = 2700, tipCents = 0,
+                    method = "CASH", paymentType = "ORDER", orderId = "orden-1", syncStatus = "EN_VUELO", createdAt = 1L,
+                    splitType = "BYPRODUCT", lineasDelTicketJson = copia,
+                )
+                dao.insert(reserva)
+                dao.insert(reserva.copy(syncStatus = "PENDING", lineasDelTicketJson = null))
+                assertEquals(copia, dao.findForVenue("venue-1", "llave-D1")?.lineasDelTicketJson)
+                assertEquals("PENDING", dao.findForVenue("venue-1", "llave-D1")?.syncStatus)
+                assertEquals(null, dao.findForVenue("venue-1", "llave-D1")?.itemsJson)
+            } finally { base.close() }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+}
+
 internal fun SQLiteConnection.leerLargo(sql: String): Long = prepare(sql).use { it.step(); it.getLong(0) }

@@ -15,7 +15,7 @@ import java.io.File
 
 /**
  * 🔴 LA MIGRACIÓN 12→13 CREA LAS TABLAS EXACTAMENTE COMO ROOM LAS ESPERA (patrón `WasteMigracionTest`): se lee el
- * esquema MÁS RECIENTE que Room exporta al compilar (`app/schemas/…/18.json`, que se COMMITEA) y se compara su
+ * esquema MÁS RECIENTE que Room exporta al compilar (`app/schemas/…/19.json`, que se COMMITEA) y se compara su
  * `createSql` con la constante que ejecuta la migración. Si difieren, la app revienta al abrir la base en el aparato.
  */
 class KdsLanMigracionTest {
@@ -43,8 +43,8 @@ class KdsLanMigracionTest {
     }
 
     @Test
-    fun `el esquema exportado es la version 18`() {
-        assertEquals("18", esquema.nameWithoutExtension)
+    fun `el esquema exportado es la version 19`() {
+        assertEquals("19", esquema.nameWithoutExtension)
     }
 
     @Test

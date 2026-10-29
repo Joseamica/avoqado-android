@@ -349,6 +349,8 @@ internal fun filaAlReemplazar(old: PendingPaymentEntity?, payment: PendingPaymen
         q15Reason = old.q15Reason, q15DetectedAt = old.q15DetectedAt,
         q15ReviewedAt = old.q15ReviewedAt, q15ReviewedBy = old.q15ReviewedBy, q15ReviewRole = old.q15ReviewRole,
         cashDrawerSessionId = old.cashDrawerSessionId,
+        // D1: la copia sigue al importe de ESTA escritura (la fila toma el de `payment`); si ésta no la trae, se conserva la de disco.
+        lineasDelTicketJson = payment.lineasDelTicketJson ?: old.lineasDelTicketJson,
     )
 
 /** «Sí se cobró» y «se da por cobrado» (D2 v7): la reserva pasa a la cola con su MISMA llave. */

@@ -288,6 +288,16 @@ object AvoqadoDatabaseMigrations {
         }
     }
 
+    /**
+     * v19 — D1 «fotocopia del ticket» (28-oct): la copia de los renglones del papel de una parte, en columna propia y nula. Nada que
+     * migrar: una fila vieja no recibe una copia inventada y sube como hoy.
+     */
+    val MIGRATION_18_19 = object : Migration(18, 19) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE pending_payments ADD COLUMN lineasDelTicketJson TEXT")
+        }
+    }
+
     /** Identity-only legacy link, inside the migration transaction. Evidence and monetary fields stay NULL. */
     fun restaurarReferenciasQ15(db: SupportSQLiteDatabase) {
         fun tabla(nombre: String, venueCol: String, originalCol: String, payload: Boolean) {

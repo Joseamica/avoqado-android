@@ -132,7 +132,7 @@ class PrecioQueVioElClienteCobroTest {
     private fun cobradoEnEfectivo(vararg respuestas: Respuesta<OrderRepository.CashPayResult>): MutableList<Int> {
         val cobrados = mutableListOf<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrados), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = captureNullable(importesAceptados))
+            orderRepository.recordCashPayment(any(), capture(cobrados), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = captureNullable(importesAceptados), lineasDelTicket = any())
         } returnsMany respuestas.map { it.r }.ifEmpty { listOf(pagado().r) }
         return cobrados
     }
@@ -534,7 +534,7 @@ class PrecioQueVioElClienteCobroTest {
     fun `sin red se encola como hoy y no hay aviso de precio`() = runTest {
         cuandoSeCreaLaOrden(sinRed())
         coEvery {
-            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
         } returns "cola-1"
 
         vm.startPaymentFlow(dosCafes)
@@ -568,7 +568,7 @@ class PrecioQueVioElClienteCobroTest {
         cuandoSeCreaLaOrden(sinRed(), pedidos = pedidos)
         val encolado = slot<CreateOrderRequest>()
         coEvery {
-            cashPaymentRepository.queueCashPayment(capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
+            cashPaymentRepository.queueCashPayment(capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
         } returns "cola-1"
 
         val antes = System.currentTimeMillis()

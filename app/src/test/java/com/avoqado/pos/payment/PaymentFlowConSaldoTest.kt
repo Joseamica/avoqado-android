@@ -1251,7 +1251,7 @@ class PaymentFlowConSaldoTest {
             assertEquals(if (encolable) 10000 else 8000, evento.amountCents)
             coVerify(exactly = if (encolable) 1 else 0) {
                 efectivo.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(),
-                    any(), any(), any(), any(), any(), any(), any(), any(), cajaDelCobro = caja.id)
+                    any(), any(), any(), any(), any(), any(), any(), any(), cajaDelCobro = caja.id, lineasDelTicket = any())
             }
             val request = server.takeRequest(1, TimeUnit.SECONDS)!!
             assertTrue(request.path!!.contains("/venues/a/orders/o/pay"))

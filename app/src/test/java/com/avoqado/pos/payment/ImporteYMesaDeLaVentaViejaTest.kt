@@ -138,7 +138,7 @@ class ImporteYMesaDeLaVentaViejaTest {
             ))),
         )
         val enDiscoAlCobrar = mutableListOf<Int?>()
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers {
             enDiscoAlCobrar += filas.values.single().amountCents
             Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
         }
@@ -162,7 +162,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "orden-A", total = 100.0)))
         val enDiscoAlCobrar = mutableListOf<Pair<String?, Int>>()
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers {
             enDiscoAlCobrar += filas.values.single().let { it.orderId to it.amountCents }
             Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
         }
@@ -189,7 +189,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         advanceUntilIdle()
 
         assertTrue((vm.state.value as PaymentFlowState.Error).message.contains("No se pudo guardar el cobro"))
-        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
     }
 
     @Test
@@ -207,7 +207,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         advanceUntilIdle()
 
         assertTrue((vm.state.value as PaymentFlowState.Error).message.contains("No se pudo guardar el cobro"))
-        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
     }
 
     // MARK: - Familia B: la mesa de la venta vieja
@@ -218,7 +218,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         val mesa8 = TableSession.Active("mesa-8", "8", null, "orden-mesa-8", "M8", 1, 5_000, TableSession.Mode.PAYING)
         tableSession.start(mesa5, VENUE)
         val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>().also { respuestaPendiente = it }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { respuesta.await() }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { respuesta.await() }
 
         vm.startPaymentFlow(otroImporte(10_000)) // el cobro de la mesa 5
         vm.selectPaymentMethod(PaymentMethod.CASH)
@@ -243,7 +243,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         val mesa8 = TableSession.Active("mesa-8", "8", null, "orden-mesa-8", "M8", 1, 5_000, TableSession.Mode.PAYING)
         tableSession.start(mesa5, VENUE)
         val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>().also { respuestaPendiente = it }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { respuesta.await() }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { respuesta.await() }
 
         vm.startPaymentFlow(otroImporte(10_000)) // el cobro de la mesa 5, por «Confirmar» en efectivo
         vm.selectPaymentMethod(PaymentMethod.CASH)

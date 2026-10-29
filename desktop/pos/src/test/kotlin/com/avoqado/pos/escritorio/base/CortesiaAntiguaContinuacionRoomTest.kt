@@ -40,7 +40,7 @@ import kotlin.test.assertTrue
  * No acredita confirmación HTTP, permisos del servicio, SQLITE_BUSY entre handles ni aparatos.
  */
 class CortesiaAntiguaContinuacionRoomTest {
-    @Test fun fuenteExactaSoloReiniciaRetryYConservaLos33CamposCajaYAckAlReabrirRoom() = runBlocking {
+    @Test fun fuenteExactaSoloReiniciaRetryYConservaLos34CamposCajaYAckAlReabrirRoom() = runBlocking {
         Fixture().use { f ->
             val original = f.sembrar()
             val ack = f.reconocimientos()
@@ -49,7 +49,7 @@ class CortesiaAntiguaContinuacionRoomTest {
 
             assertEquals(1, f.pagos.reanudarCortesiaAntiguaQ4(original) { true })
             val esperado = original.copy(syncStatus = "PENDING", retryCount = 0, lastError = null, lastRetryAt = null)
-            assertEquals(esperado, f.fuente(), "La igualdad de la entidad cubre sus 33 columnas, incluidos los JSON y NULL")
+            assertEquals(esperado, f.fuente(), "La igualdad de la entidad cubre sus 34 columnas, incluidos los JSON y NULL")
             assertEquals(ack, f.reconocimientos(), "El ACK físico completo permanece, aunque su versión sea histórica")
             assertEquals(eventos, f.db.cashDrawerDao().getSessionEvents(id(70)))
             assertEquals(sesiones, f.filas("cash_drawer_sessions"))
@@ -201,7 +201,7 @@ class CortesiaAntiguaContinuacionRoomTest {
             pagos.insertRaw(original)
             assertEquals(original, fuente())
             BundledSQLiteDriver().open(carpeta.resolve("databases/avoqado_db").toString()).use {
-                assertEquals(18L, it.leerLargo("PRAGMA user_version"))
+                assertEquals(19L, it.leerLargo("PRAGMA user_version"))
             }
             return original
         }

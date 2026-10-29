@@ -43,12 +43,14 @@ class EfectivoVentasRoom18Test {
                     room.salesNoticeDao().page(id(90), "", null, emptySet())
                 } finally { room.close() }
                 BundledSQLiteDriver().open(archivo.toString()).use { db ->
-                    assertEquals(18L, db.leerLargo("PRAGMA user_version"), "$variante debe actualizar a Room18")
+                    // v19 (D1, 28-oct) sólo agrega la copia del ticket, nula: lo de la v18 llega igual.
+                    assertEquals(19L, db.leerLargo("PRAGMA user_version"), "$variante debe actualizar a la versión de la app")
                     antes.forEach { (tabla, foto) ->
                         assertEquals(foto, fotografiar(db, tabla, foto.columnas), "$variante perdió datos de $tabla")
                     }
                     val columnas = columnas(db, "pending_payments")
-                    assertEquals(33, columnas.size)
+                    assertEquals(34, columnas.size)
+                    assertTrue("lineasDelTicketJson" in columnas)
                     assertTrue("cashDrawerSessionId" in columnas)
                     assertEquals(if (variante == "d2") 8L else 0L,
                         db.leerLargo("SELECT COUNT(*) FROM pending_payments WHERE cashDrawerSessionId IS NOT NULL"))

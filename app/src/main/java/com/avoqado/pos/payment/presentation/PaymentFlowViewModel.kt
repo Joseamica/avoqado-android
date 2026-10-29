@@ -495,6 +495,8 @@ class PaymentFlowViewModel @Inject constructor(
         /** Agregado 2 de la ronda corta: quién cobra (la sesión al confirmar). La venta que el flujo anote va a su nombre. */
         actorCapturado: String,
         nombreActorCapturado: String,
+        /** D1: el papel de esta parte ([papelDeLaParte]). Null = la reserva no lleva copia. */
+        papel: PapelDelCobro? = null,
     ): Apartado {
         if (cart == null || pedido == null) return Apartado.NINGUNO
         if (!permiteColaCapturada) return Apartado.NINGUNO
@@ -521,6 +523,8 @@ class PaymentFlowViewModel @Inject constructor(
                 tenderType = tenderCapturado,
                 venueId = venueCapturado,
                 cajaDelCobro = cajaCapturada,
+                // D1: la copia del papel viaja con la reserva, ANTES de la red: si la app muere, la cola la reenvía.
+                lineasDelTicket = papel?.copia(total - tipCapturado),
                 // Si la venta ya cambió, este intento guarda SU captura sin borrar nada.
                 enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
             )
@@ -2534,6 +2538,8 @@ class PaymentFlowViewModel @Inject constructor(
         val total = currentBaseAmount() + tipCapturado
         // La hora de la venta se captura UNA vez, con el pedido (igual que en `processCashPayment`): la cola la hereda.
         val pedidoCapturado = buildOrderRequest(cart).copy(createdAtLocal = System.currentTimeMillis())
+        // D1: el papel de esta parte, con lo demás capturado (null si no es parte de una venta dividida).
+        val papelCapturado = papelDeLaParte()
         val ordenCapturada = createdOrderId
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
@@ -2569,7 +2575,7 @@ class PaymentFlowViewModel @Inject constructor(
                         return@launch
                     }
                     if (!otraVenta(venta) && conBilleteEnMano) _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = true)
-                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeLosVales, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
+                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeLosVales, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada, papelCapturado)
                     return@launch
                 }
                 val hasRealProducts = hasProductItems(cart)
@@ -2607,7 +2613,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     if (conBilleteEnMano && !ordenDeEstaVenta.isNullOrBlank()) {
                                         // Corrección del agregado 4: el efectivo ya está en la mano: su orden se cobra con el contexto de esta
                                         // venta (el total que vio la cajera; el del servidor no se adopta: escribiría en la nueva).
-                                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeEstaVenta, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
+                                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeEstaVenta, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada, papelCapturado)
                                     } else {
                                         // N1: con tarjeta nadie la va a cobrar: se cancela por la vía durable, sin escribir nada en la nueva.
                                         cancelarLaOrdenDeOtraVenta(ordenDeEstaVenta, response.data?.orderNumber, total, venueCapturado, empleadoCapturado)
@@ -2642,7 +2648,8 @@ class PaymentFlowViewModel @Inject constructor(
                                 // estimado del carrito. Ver `totalACobrarCents`.
                                 val adoptado = adoptarTotalDelServer(orderRequest, response, estimado)
                                 if (cambios.isNotEmpty() || totalAntesDelRechazoDePrecio != null) publicarAvisoDePrecio(totalNuevoCents = adoptado)
-                                processPaymentMethod(adoptado, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
+                                // D1: el papel se vuelve a tomar: sigue siendo ESTA venta, y el servidor pudo corregir sus precios.
+                                processPaymentMethod(adoptado, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada, papelDeLaParte())
                             },
                             onFailure = { error ->
                                 // Ronda final (A3): con otra venta en pantalla nada de ésta se escribe en ella. Agregado 7 de la ronda
@@ -2693,6 +2700,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             tenderType = tenderCapturado,
                                             venueId = venueCapturado,
                                             cajaDelCobro = cajaCapturada,
+                                            lineasDelTicket = papelCapturado?.copia(total - tipCapturado),
                                         )
                                         // Record cash sale in drawer (defensive: same fix as B4)
                                         recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
@@ -2740,12 +2748,12 @@ class PaymentFlowViewModel @Inject constructor(
                         // mostrador— la parte 2 de una venta por artículos, donde el
                         // carrito conserva productos reales y crear una segunda orden
                         // duplicaría esas líneas en base.
-                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
+                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada, papelCapturado)
                     }
                 } else {
                     // Custom amount only — use Fast Payment endpoint
                     Log.d("💰", "Custom amount payment (fast) - total: $total")
-                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada)
+                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada, papelCapturado)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -2783,6 +2791,8 @@ class PaymentFlowViewModel @Inject constructor(
         cajaCapturada: String?,
         /** La mesa de esta venta, fotografiada al empezar el cobro (familia B). */
         mesaCapturada: MesaCapturada?,
+        /** D1: el papel de esta parte ([papelDeLaParte]); su copia viaja en el `/pay` y en la cola. Null = no viaja. */
+        papel: PapelDelCobro? = null,
     ) {
         when (metodoCapturado) {
             PaymentMethod.CARD -> {
@@ -2831,6 +2841,7 @@ class PaymentFlowViewModel @Inject constructor(
                         cajaCapturada = cajaCapturada,
                         conApartado = false, // confirmPayment no aparta efectivo
                         mesaCapturada = mesaCapturada,
+                        papel = papel,
                     )
                     return
                 }
@@ -2901,6 +2912,7 @@ class PaymentFlowViewModel @Inject constructor(
                         manualMethod = manualCapturado,
                         tenderType = tenderCapturado,
                         capturedVenueId = venueCapturado,
+                        lineasDelTicket = papel?.copia(subtotal),
                     )
                     payResult.fold(
                         onSuccess = { result ->
@@ -2958,6 +2970,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     tenderType = tenderCapturado,
                                     venueId = venueCapturado,
                                     cajaDelCobro = cajaCapturada,
+                                    lineasDelTicket = papel?.copia(total - tipCapturado),
                                 )
                                 recordCashSale(cobrado, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = false)
                                 if (generacion != paymentGeneration) return@fold // ronda 1b: otra venta en pantalla
@@ -3024,6 +3037,8 @@ class PaymentFlowViewModel @Inject constructor(
         val total = currentBaseAmount() + tipCapturado
         // La hora de la venta se captura UNA vez, con el pedido: la reserva y la cola la heredan (`createdAtLocal`).
         val pedidoCapturado = cart?.let(::buildOrderRequest)?.copy(createdAtLocal = System.currentTimeMillis())
+        // D1: el papel de esta parte, con lo demás capturado y ANTES de la reserva (null si no es parte de una venta dividida).
+        val papelCapturado = papelDeLaParte()
         val ordenCapturada = createdOrderId
         val provisionalCapturada = tableSession.current()?.let {
             it.isProvisional && it.orderId == ordenCapturada
@@ -3080,13 +3095,14 @@ class PaymentFlowViewModel @Inject constructor(
                             cajaCapturada = cajaCapturada,
                             conApartado = false, // vales: su cobro no se encola ni se aparta
                             mesaCapturada = mesaCapturada,
+                            papel = papelCapturado,
                         )
                         return@launch
                     }
                     // 🔴 Antes de la primera llamada de red (crear la orden o registrar el cobro).
                     // Rediseño r9: con apartado de efectivo puro, la venta en el cajón la anota su salida de `EN_VUELO`, no este intento.
                     val apartadoDelCobro = try {
-                        reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado)
+                        reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado)
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -3136,6 +3152,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 cajaCapturada = cajaCapturada,
                                 conApartado = apartado,
                                 mesaCapturada = mesaCapturada,
+                                papel = papelCapturado,
                             )
                         } else {
                             val orderExternalId = llaveCapturada
@@ -3191,6 +3208,7 @@ class PaymentFlowViewModel @Inject constructor(
                                                 cajaCapturada = cajaCapturada,
                                                 conApartado = false,
                                                 mesaCapturada = mesaCapturada,
+                                                papel = papelCapturado,
                                             )
                                         }
                                         return@fold
@@ -3293,6 +3311,8 @@ class PaymentFlowViewModel @Inject constructor(
                                         cajaCapturada = cajaCapturada,
                                         conApartado = apartado,
                                         mesaCapturada = mesaCapturada,
+                                        // D1: el papel se vuelve a tomar: sigue siendo ESTA venta, y el servidor pudo corregir sus precios.
+                                        papel = papelDeLaParte(),
                                         // Founder 18-oct («A»): con red, el aviso ya se lo dijo al cajero; sin red sí es alerta.
                                         precioAceptadoEnPantalla = cambios.isNotEmpty() && totalFinal != total,
                                     )
@@ -3338,6 +3358,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             tenderType = tenderCapturado,
                                             venueId = venueCapturado,
                                             cajaDelCobro = cajaCapturada,
+                                            lineasDelTicket = papelCapturado?.copia(total - tipCapturado),
                                         )
                                         // FIX B4: Record cash sale in drawer even on offline queue
                                         recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = apartado)
@@ -3529,6 +3550,8 @@ class PaymentFlowViewModel @Inject constructor(
         mesaCapturada: MesaCapturada?,
         /** El servidor cambió el precio EN LÍNEA y el cajero ya vio el aviso: ese importe no es alerta para el gerente. */
         precioAceptadoEnPantalla: Boolean = false,
+        /** D1: el papel de esta parte ([papelDeLaParte]); su copia viaja en el `/pay` y en la cola. Null = no viaja. */
+        papel: PapelDelCobro? = null,
     ) {
         // Send amount WITHOUT tip, tip separately
         val subtotal = total - tipCapturado
@@ -3592,6 +3615,8 @@ class PaymentFlowViewModel @Inject constructor(
             capturedVenueId = venueCapturado,
             importeAceptadoCents = subtotal.takeIf { precioAceptadoEnPantalla },
             capturaPrevia = origenDelCobro.esCapturaPrevia,
+            // D1: la copia del papel de esta parte. Nunca en el intent PAY_CASH de arriba (mesa provisional): queda fuera de la promesa.
+            lineasDelTicket = papel?.copia(subtotal),
         )
         payResult.fold(
             onSuccess = { result ->
@@ -3683,6 +3708,7 @@ class PaymentFlowViewModel @Inject constructor(
                         tenderType = tenderCapturado,
                         venueId = venueCapturado,
                         cajaDelCobro = cajaCapturada,
+                        lineasDelTicket = papel?.copia(total - tipCapturado),
                     )
                     recordCashSale(cobrado, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
                     if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
@@ -4874,12 +4900,13 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    private fun buildReceiptSnapshot(method: PaymentMethod? = null, changeCents: Int? = null): ReceiptData? {
+    /**
+     * Los renglones que imprime el papel de ESTE cobro y lo que su total necesita (bruto, cargo e IVA aparte). Una sola regla para el
+     * ticket ([buildReceiptSnapshot]) y para su copia (D1 «fotocopia del ticket», [papelDeLaParte]): la copia ES el papel.
+     * @param cobrado lo cobrado sin propina (sólo decide si la mesa separa su cargo).
+     */
+    private fun papelDelCobro(baseAmount: Int, cobrado: Int): PapelDelCobro {
         val cart = cartState
-        val successState = _state.value as? PaymentFlowState.Success
-        val resolvedMethod = method ?: successState?.method ?: selectedMethod
-        val baseAmount = currentBaseAmount()
-        val receiptTotal = successState?.totalAmount ?: (baseAmount + currentTipCents)
 
         fun com.avoqado.pos.pos.data.model.CartItem.toReceiptItem(): ReceiptItem {
             val modifierUnitTotal = selectedModifiers.sumOf { it.priceInCents }
@@ -4960,10 +4987,11 @@ class PaymentFlowViewModel @Inject constructor(
             ?.takeIf { !it.isProvisional && it.orderId == createdOrderId && isFullPayment && splitBaseAmountOverride == null && cart != null &&
                 cart.items.singleOrNull()?.let { item -> item.type == com.avoqado.pos.pos.data.model.CartItemType.CustomAmount && item.quantity == 1 } == true &&
                 cart.taxCents == 0 && cart.subtotalCents == it.totalCents }
-            ?.serviceChargeCents?.takeIf { it > 0 && it <= (cart?.subtotalCents ?: 0) && it <= receiptTotal - currentTipCents } ?: 0
-        val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
-            cobrado = receiptTotal - currentTipCents,
-            propina = currentTipCents,
+            ?.serviceChargeCents?.takeIf { it > 0 && it <= (cart?.subtotalCents ?: 0) && it <= cobrado } ?: 0
+        return PapelDelCobro(
+            renglones = if (cargoDeLaMesa > 0) receiptItems.map {
+                it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa)
+            } else receiptItems,
             subtotalBruto = when {
                 cart != null && isFullPayment -> cart.subtotalCents
                 // D8 (27-oct): lo elegido a precio de lista; el papel imprime su descuento (bruto − cobrado) y cuadra.
@@ -4973,9 +5001,50 @@ class PaymentFlowViewModel @Inject constructor(
             cargo = cargoDeLaMesa,
             impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
         )
-        val renglones = if (cargoDeLaMesa > 0) receiptItems.map {
-            it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa)
-        } else receiptItems
+    }
+
+    /** Lo que [papelDelCobro] imprime. [copia] es el D1: la fotocopia de estos renglones para lo que de verdad se cobra. */
+    private class PapelDelCobro(val renglones: List<ReceiptItem>, val subtotalBruto: Int, val cargo: Int, val impuestoAgregado: Int) {
+        /** El JSON de `lineasDelTicket` para [cobradoSinPropina] (lo que viaja en ESE `/pay`), o null si no cabe en los topes. */
+        fun copia(cobradoSinPropina: Int): String? =
+            com.avoqado.pos.printing.data.model.CopiaDelTicket.armar(renglones, subtotalBruto, cobradoSinPropina, cargo, impuestoAgregado)
+    }
+
+    /**
+     * D1 «fotocopia del ticket» (28-oct): el papel de ESTE cobro si es una parte de una venta dividida, para mandar su copia en
+     * `/pay` y guardarla con la fila de la cola. Null = no viaja copia y el ticket de la venta queda como hoy.
+     *
+     * Es parte: la elegida al dividir (por producto, partes iguales o importe) y todo cobro que CONTINÚA en el mostrador una venta
+     * que ya tiene un abono ([continuaVentaPartida]: la última parte también lleva la suya, Codex plan r1 #3). 🔴 No cuentan como
+     * «ya tiene abono» la bandeja de pedidos en línea ni «Cuentas abiertas»: también llegan con su orden, pero ahí la cuenta puede
+     * no tener ningún pago todavía, y una venta de un solo cobro no manda copia.
+     *
+     * Se toma con lo demás que el cobro captura ANTES de su primera suspensión: si otra venta empieza mientras viaja, la copia sigue
+     * siendo la de ESTA venta.
+     */
+    private fun papelDeLaParte(): PapelDelCobro? {
+        val esParte = _splitType.value in PARTES_DE_UNA_VENTA_DIVIDIDA ||
+            (continuaVentaPartida && !origenDelCobro.esPedidoEnLinea && !desdeCuentasDeSaldo)
+        if (!esParte) return null
+        val base = currentBaseAmount()
+        return papelDelCobro(base, cobrado = base)
+    }
+
+    private fun buildReceiptSnapshot(method: PaymentMethod? = null, changeCents: Int? = null): ReceiptData? {
+        val cart = cartState
+        val successState = _state.value as? PaymentFlowState.Success
+        val resolvedMethod = method ?: successState?.method ?: selectedMethod
+        val baseAmount = currentBaseAmount()
+        val receiptTotal = successState?.totalAmount ?: (baseAmount + currentTipCents)
+        val delPapel = papelDelCobro(baseAmount, cobrado = receiptTotal - currentTipCents)
+        val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
+            cobrado = receiptTotal - currentTipCents,
+            propina = currentTipCents,
+            subtotalBruto = delPapel.subtotalBruto,
+            cargo = delPapel.cargo,
+            impuestoAgregado = delPapel.impuestoAgregado,
+        )
+        val renglones = delPapel.renglones
         val resolvedChange = changeCents ?: successState?.changeAmount
 
         // Folio real del backend; solo si falta cae a los últimos 4 del id (mejor
@@ -5660,6 +5729,9 @@ class PaymentFlowViewModel @Inject constructor(
 
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
+
+        /** D1: los `splitType` de la parte elegida al dividir; su cobro manda la copia del papel ([papelDeLaParte]). */
+        private val PARTES_DE_UNA_VENTA_DIVIDIDA = setOf("BYPRODUCT", "EQUALPARTS", "CUSTOMAMOUNT")
 
         /** Sellos tardíos: si la lealtad de la venta aún se procesa (PENDING), se vuelve a preguntar UNA vez, a los 2 s. */
         internal const val REINTENTO_DEL_SELLO_MS = 2_000L

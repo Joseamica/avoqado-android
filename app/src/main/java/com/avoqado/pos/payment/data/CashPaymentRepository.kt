@@ -117,6 +117,8 @@ class CashPaymentRepository @Inject constructor(
          * aparato tenía entonces. Si este cobro ya tenía reserva, manda la de la reserva ([filaAlReemplazar]).
          */
         cajaDelCobro: String? = null,
+        /** D1: la copia del papel de esta parte (`CopiaDelTicket`), para el reenvío. null = no viaja (venta de un solo cobro). */
+        lineasDelTicket: String? = null,
     ): String {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -126,7 +128,7 @@ class CashPaymentRepository @Inject constructor(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId ?: original?.orderId,
             orderExternalId ?: original?.externalOriginal(),
             customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING, amountCents, tipCents, splitType, venue, hora,
-            cajaDelCobro,
+            cajaDelCobro, lineasDelTicket = lineasDelTicket,
         )
         // REPLACE: si este cobro se había reservado (`reservarCobro`, misma llave) la reserva se
         // vuelve la fila de la cola, con los datos finales del intento. 🔴 Rediseño r9: si esa reserva seguía `EN_VUELO`, su
@@ -198,6 +200,8 @@ class CashPaymentRepository @Inject constructor(
          * reintento con la misma llave (reemplaza su propia fila y no borra nada).
          */
         enLugarDe: Collection<String> = emptyList(),
+        /** D1: la copia del papel de esta parte, guardada con la reserva ANTES de la red (la cola la reenvía si la app muere). */
+        lineasDelTicket: String? = null,
     ) {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -214,6 +218,7 @@ class CashPaymentRepository @Inject constructor(
             // D15: lo que la caja ya trae ANTES del POST no puede ser la gemela de este cobro. Un reintento conserva la foto del primero;
             // una llave que ya se apartó (Codex r19: «Cancelar» y volver a cobrar) no toma otra.
             ventasYaEnLaCaja = if (primeraVez) salida?.ventasDelServidorEnLaCaja(cajaDelCobro, venue, hora) else null,
+            lineasDelTicket = lineasDelTicket,
         )
         val anteriores = enLugarDe.filter { it != entity.id }
         // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
@@ -483,6 +488,8 @@ class CashPaymentRepository @Inject constructor(
         cajaDelCobro: String?,
         /** D15: sólo la reserva la toma ([SalidaDelApartado.ventasDelServidorEnLaCaja]). */
         ventasYaEnLaCaja: List<String>? = null,
+        /** D1: la copia del papel de esta parte; columna propia, nunca `itemsJson` (ése es de `/fast`). */
+        lineasDelTicket: String? = null,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         // La misma regla que crear la orden en línea: una venta rápida DIVIDIDA también es ORDER (D2 etapa 2), así su parte
@@ -537,6 +544,7 @@ class CashPaymentRepository @Inject constructor(
             createdAt = capturadaEn,
             // 🔴 La caja de la venta viaja en la fila desde la PRIMERA escritura (la reserva, antes de la red).
             cashDrawerSessionId = cajaDelCobro?.takeIf { it.isNotBlank() },
+            lineasDelTicketJson = lineasDelTicket,
         )
         val capture = CapturaDelCobro(
             venueId = entity.venueId, key = entity.id, orderId = entity.orderId,
