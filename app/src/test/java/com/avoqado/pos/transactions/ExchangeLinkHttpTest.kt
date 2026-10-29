@@ -61,6 +61,11 @@ class ExchangeLinkHttpTest {
                     fail("Expected ExchangeOrderNotCharged")
                 } catch (e: com.avoqado.pos.transactions.data.ExchangeOrderNotCharged) { assertEquals(cancelled, e.cancelled) }
             }
+            // Un pago PROCESSING o REFUNDED no prueba que no se cobró: sigue siendo «no se pudo abrir» (Codex f4-r2).
+            for (status in listOf("PROCESSING", "REFUNDED")) {
+                server.enqueue(MockResponse().setBody("""{"order":{"id":"order","status":"CANCELLED","payments":[{"id":"p","status":"$status"}]}}"""))
+                assertNull(repo.paymentIdForExchangeOrder("order", "actor", "venue"))
+            }
         }
     }
 

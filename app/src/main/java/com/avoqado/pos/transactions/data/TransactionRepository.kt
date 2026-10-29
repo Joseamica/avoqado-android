@@ -147,7 +147,8 @@ class TransactionRepository @Inject constructor(
             val order = json.decodeFromString<com.avoqado.pos.tables.data.OrderDetailResponse>(body).order ?: return null
             if (order.id != orderId) return null
             order.payments.firstOrNull { it.status == "COMPLETED" && it.id.isNotBlank() }?.id
-                ?: throw ExchangeOrderNotCharged(cancelled = order.status == "CANCELLED")
+                // Sólo SIN ningún pago se puede afirmar que no se cobró: PROCESSING o REFUNDED no lo prueban (Codex f4-r2).
+                ?: if (order.payments.isEmpty()) throw ExchangeOrderNotCharged(cancelled = order.status == "CANCELLED") else null
         } catch (e: CancellationException) { throw e }
         catch (e: SecurityException) { throw e }
         catch (e: ExchangeOrderNotCharged) { throw e }
