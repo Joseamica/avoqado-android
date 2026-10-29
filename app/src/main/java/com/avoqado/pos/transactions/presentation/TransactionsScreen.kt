@@ -93,6 +93,7 @@ fun TransactionsScreen(
     reviewCourtesyPaymentId:String? = null,
     onCourtesyNavigationConsumed:()->Unit = {},
     notices: com.avoqado.pos.sync.presentation.SalesNoticesViewModel = hiltViewModel(),
+    onOpenExchange: () -> Unit = {},
 ) {
     var pending by remember { mutableStateOf(openPendingsRequest > 0) }
     var legacy by remember { mutableStateOf(false) }
@@ -123,7 +124,7 @@ fun TransactionsScreen(
         Box(Modifier.weight(1f)) {
             if(pending && notices.canRead) com.avoqado.pos.sync.presentation.SalesNoticesContent(
                 isTablet=isTablet,onOpenLegacyReview={legacy=true},viewModel=notices)
-            else RegisteredTransactionsScreen(isTablet=isTablet)
+            else RegisteredTransactionsScreen(isTablet=isTablet, onOpenExchange=onOpenExchange)
         }
     }
     if(legacy) com.avoqado.pos.sync.presentation.QuarantineSheet(
