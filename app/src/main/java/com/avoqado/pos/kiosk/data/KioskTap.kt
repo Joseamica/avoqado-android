@@ -3,7 +3,11 @@ package com.avoqado.pos.kiosk.data
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.IOException
+import java.time.Instant
 
 /**
  * Una llegada tocada en el kiosco, guardada en `pending_reservation_action` ANTES de cualquier red (Modo Autoservicio
@@ -21,12 +25,52 @@ object KioskTap {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** [name]: el nombre corto que vio la persona en la lista (D4: para decir en la franja quién llegó). Opcional. */
     @Serializable
-    data class Saved(val venueId: String, val closesAt: String, val msBeforeClose: Long)
+    data class Saved(val venueId: String, val closesAt: String, val msBeforeClose: Long, val name: String? = null) {
+        /** La hora del toque en hora del SERVIDOR (lo mismo que reconstruye él): el cierre menos lo que faltaba. */
+        fun tappedAt(): String? = runCatching { Instant.parse(closesAt).minusMillis(msBeforeClose).toString() }.getOrNull()
+    }
 
-    /** `{"venueId":"…","closesAt":"…","msBeforeClose":N}` */
-    fun payload(venueId: String, closesAt: String, msBeforeClose: Long): String =
-        json.encodeToString(Saved.serializer(), Saved(venueId, closesAt, msBeforeClose))
+    /** `{"venueId":"…","closesAt":"…","msBeforeClose":N}` (+ `"name"` si se sabe) */
+    fun payload(venueId: String, closesAt: String, msBeforeClose: Long, name: String? = null): String =
+        json.encodeToString(Saved.serializer(), Saved(venueId, closesAt, msBeforeClose, name))
+
+    // MARK: - D4 · el aviso de la franja
+
+    /**
+     * El SERVIDOR corrigió solo un «No asistió» con esta llegada y dejó algo pendiente. Vive en la MISMA tabla, ya en
+     * cuarentena (`attemptCount = MAX_ATTEMPTS`): así sale en «Operaciones por revisar» y el reintentador nunca lo manda.
+     * No es un valor de `ReservationAction` (rompería los `when` exhaustivos).
+     */
+    const val CORRECTION = "KIOSK_NO_SHOW_CORRECTION"
+
+    /**
+     * La `correction` de la respuesta del kiosco (`{id, pending}`), más quién, a qué hora y de qué sucursal (la de la
+     * llegada: «Marcar resuelta» va contra ELLA aunque la sesión ande en otra; un aviso viejo sin ella usa la de la sesión).
+     */
+    @Serializable
+    data class Correction(
+        val id: String,
+        val pending: List<String> = emptyList(),
+        val name: String? = null,
+        val tappedAt: String? = null,
+        val venueId: String? = null,
+    )
+
+    fun correctionPayload(c: Correction): String = json.encodeToString(Correction.serializer(), c)
+
+    fun parseCorrection(payloadJson: String?): Correction? =
+        payloadJson?.let { runCatching { json.decodeFromString(Correction.serializer(), it) }.getOrNull() }
+
+    /**
+     * La sucursal de una fila del kiosco en la franja (la llegada rechazada o el aviso de la corrección): TODO lo que nace
+     * de ella va contra ésta, aunque la sesión ande en otra. null (un aviso viejo que no la guardó) = la de la sesión.
+     */
+    fun venueOf(payloadJson: String?): String? =
+        payloadJson
+            ?.let { runCatching { json.parseToJsonElement(it).jsonObject["venueId"]?.jsonPrimitive?.contentOrNull }.getOrNull() }
+            ?.takeIf { it.isNotBlank() }
 
     /** null si falta algo o `msBeforeClose ≤ 0` (la ventana ya había cerrado: el servidor tampoco lo acepta). */
     fun parse(payloadJson: String?): Saved? =

@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -12,13 +13,19 @@ import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.ReservationApiException
+import com.avoqado.pos.reservations.data.model.NoShowCorrection
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.domain.ReservationAction
 import com.avoqado.pos.reservations.domain.ReservationsCapability
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowFlow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -33,6 +40,7 @@ class ReservationDetailViewModel @Inject constructor(
     private val comandaPrinter: ComandaPrinter,
     private val productsRepository: ProductsRepository,
     savedStateHandle: SavedStateHandle,
+    connectivity: ConnectivityMonitor,
 ) : ViewModel() {
 
     private val reservationId: String = checkNotNull(savedStateHandle["reservationId"])
@@ -43,6 +51,22 @@ class ReservationDetailViewModel @Inject constructor(
     private val _overCapacityConfirmation = MutableStateFlow<String?>(null)
     val overCapacityConfirmation: StateFlow<String?> = _overCapacityConfirmation.asStateFlow()
     private var pendingOverCapacityReschedule: ReservationRepository.ActionPayload.Reschedule? = null
+
+    /** Con red Y con servidor: «Sí llegó» y «Marcar resuelto» son sólo en línea (el botón queda en gris sin ella). */
+    val isOnline: StateFlow<Boolean> = combine(connectivity.isConnected, connectivity.isServerReachable) { red, servidor -> red && servidor }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, connectivity.isFullyConnected)
+
+    /** D4 · «Sí llegó». Al corregirse, la reserva queda «Llegó» con su pendiente a la vista (la recarga trae el resto). */
+    val undo = UndoNoShowFlow(repository, viewModelScope, { secureStorage.venueTimezone }) { result ->
+        _state.update {
+            it.copy(
+                reservation = result.reservation.copy(
+                    noShowCorrection = result.reservation.noShowCorrection
+                        ?: NoShowCorrection(pending = result.correction.pending, resolvedAt = result.correction.resolvedAt),
+                ),
+            )
+        }
+    }
 
     init {
         reload()
@@ -120,6 +144,39 @@ class ReservationDetailViewModel @Inject constructor(
             }
         }
     }
+
+    fun undoNoShow() {
+        val r = _state.value.reservation ?: return
+        if (!_state.value.canUndoNoShow) return
+        undo.start(r.id, UndoNoShowTexts.title(r, secureStorage.venueTimezone))
+    }
+
+    /** «Marcar resuelto» del pendiente: mismo permiso que «Sí llegó», sólo en línea, un solo POST. */
+    fun resolvePending() {
+        val s = _state.value
+        if (s.resolvingPending || !s.capability.canUpdate || s.reservation?.noShowCorrection?.isOpen != true) return
+        _state.update { it.copy(resolvingPending = true, error = null, resolveNotice = null) }
+        viewModelScope.launch {
+            val r = repository.resolveNoShowCorrection(reservationId)
+            _state.update { cur ->
+                r.fold(
+                    onSuccess = { at ->
+                        cur.copy(
+                            resolvingPending = false,
+                            notice = UndoNoShowTexts.RESOLVED,
+                            reservation = cur.reservation?.let { res ->
+                                res.copy(noShowCorrection = res.noShowCorrection?.copy(resolvedAt = at ?: java.time.Instant.now().toString()))
+                            },
+                        )
+                    },
+                    onFailure = { e -> cur.copy(resolvingPending = false, resolveNotice = UndoNoShowFlow.resolveFailure(e)) },
+                )
+            }
+        }
+    }
+
+    fun consumeNotice() = _state.update { it.copy(notice = null) }
+    fun consumeResolveNotice() = _state.update { it.copy(resolveNotice = null) }
 
     fun confirmOverCapacityReschedule() {
         val payload = pendingOverCapacityReschedule ?: return

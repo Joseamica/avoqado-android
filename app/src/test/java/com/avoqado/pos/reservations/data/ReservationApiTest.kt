@@ -184,6 +184,134 @@ class ReservationApiTest {
         )
     }
 
+    // MARK: - D4 · «Sí llegó» (deshacer un «No se presentó»)
+
+    private val reserva get() = File("src/test/resources/fixtures/reservation_single.json").readText()
+
+    @Test
+    fun `vista previa de Si llego - GET a no-show undo con montos y paquete, aunque el dinero venga como texto`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"plan":{"creditToReconsume":1,"clearFee":true,"restoreDeposit":true,"pending":["FEE_CAPTURED"],"feeAmount":"50","depositAmount":100,"packName":"5 clases de yoga"}}"""))
+
+        val plan = api.previewUndoNoShow("res-1").getOrThrow()
+
+        val req = server.takeRequest()
+        assertEquals("GET", req.method)
+        assertTrue(req.path!!.endsWith("/dashboard/venues/v1/reservations/res-1/no-show/undo"))
+        assertEquals(1, plan.creditToReconsume)
+        assertTrue(plan.clearFee && plan.restoreDeposit)
+        assertEquals(listOf("FEE_CAPTURED"), plan.pending)
+        assertEquals(50.0, plan.feeAmount!!, 0.0)
+        assertEquals(100.0, plan.depositAmount!!, 0.0)
+        assertEquals("5 clases de yoga", plan.packName)
+    }
+
+    @Test
+    fun `vista previa sin los montos nuevos - se decodifica con nulos`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"plan":{"creditToReconsume":0,"clearFee":false,"restoreDeposit":false,"pending":["CLASS_UNPAID"]}}"""))
+
+        val plan = api.previewUndoNoShow("res-1").getOrThrow()
+
+        assertNull(plan.feeAmount)
+        assertNull(plan.depositAmount)
+        assertNull(plan.packName)
+        assertEquals(listOf("CLASS_UNPAID"), plan.pending)
+    }
+
+    @Test
+    fun `Si llego - POST a no-show undo con el motivo y lee resultado, reserva y correccion`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"outcome":"UNDONE","reservation":$reserva,"plan":{"creditToReconsume":0,"clearFee":false,"restoreDeposit":false,"pending":["CREDIT_NOT_RECONSUMED"]},"correction":{"id":"c1","pending":["CREDIT_NOT_RECONSUMED"],"resolvedAt":null}}"""))
+
+        val r = api.undoNoShow("res-1", reason = "Sí vino").getOrThrow()
+
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertTrue(req.path!!.endsWith("/reservations/res-1/no-show/undo"))
+        assertEquals("""{"reason":"Sí vino"}""", req.body.readUtf8())
+        assertEquals("UNDONE", r.outcome)
+        assertFalse(r.alreadyUndone)
+        assertEquals("res_01H8K2X9P", r.reservation.id)
+        assertEquals("c1", r.correction.id)
+        assertEquals(listOf("CREDIT_NOT_RECONSUMED"), r.correction.pending)
+    }
+
+    @Test
+    fun `Marcar resuelto - POST a no-show undo resolve con la nota`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"resolvedAt":"2026-10-28T16:00:00.000Z"}"""))
+
+        val resolvedAt = api.resolveNoShowCorrection("res-1", note = "Cobrada en caja").getOrThrow()
+
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertTrue(req.path!!.endsWith("/reservations/res-1/no-show/undo/resolve"))
+        assertEquals("""{"note":"Cobrada en caja"}""", req.body.readUtf8())
+        assertEquals("2026-10-28T16:00:00.000Z", resolvedAt)
+    }
+
+    @Test
+    fun `Marcar resuelto de un aviso de otra sucursal va a ESA sucursal, no a la de la sesion`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"resolvedAt":"2026-10-28T16:00:00.000Z"}"""))
+
+        api.resolveNoShowCorrection("res-1", venueId = "vA").getOrThrow()
+
+        assertTrue(server.takeRequest().path!!.endsWith("/dashboard/venues/vA/reservations/res-1/no-show/undo/resolve"))
+    }
+
+    @Test
+    fun `el detalle lee una reserva de CLASE - lo que abre Ver reserva de la campanita`() = runTest {
+        // La forma de `RESERVATION_INCLUDE` del SERVIDOR: la sesión trae su clase, su cupo y su instructor.
+        val deClase = reserva
+            .replace("\"classSessionId\": null", "\"classSessionId\": \"cs1\"")
+            .replace(
+                "\"classSession\": null",
+                """"classSession": {"id":"cs1","capacity":12,"assignedStaff":{"id":"stf_9","firstName":"Sofía","lastName":"R"},"product":{"id":"p9","name":"Yoga"}}""",
+            )
+        server.enqueue(MockResponse().setBody(deClase))
+
+        val r = api.get("res-1").getOrThrow()
+
+        assertEquals("cs1", r.classSession?.id)
+        assertEquals("Sofía", r.classSession?.assignedStaff?.firstName)
+        assertEquals(12, r.classSession?.capacity)
+    }
+
+    @Test
+    fun `Si llego de un aviso de otra sucursal - vista previa, POST y relectura van a ESA sucursal`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"plan":{"creditToReconsume":0,"clearFee":false,"restoreDeposit":false,"pending":[]}}"""))
+        server.enqueue(MockResponse().setBody("""{"outcome":"UNDONE","reservation":$reserva,"plan":{"creditToReconsume":0,"clearFee":false,"restoreDeposit":false,"pending":[]},"correction":{"id":"c1","pending":[],"resolvedAt":null}}"""))
+        server.enqueue(MockResponse().setBody(reserva))
+
+        api.previewUndoNoShow("res-1", venueId = "vA").getOrThrow()
+        api.undoNoShow("res-1", venueId = "vA").getOrThrow()
+        api.get("res-1", venueId = "vA").getOrThrow()
+
+        assertTrue(server.takeRequest().path!!.endsWith("/dashboard/venues/vA/reservations/res-1/no-show/undo"))
+        assertTrue(server.takeRequest().path!!.endsWith("/dashboard/venues/vA/reservations/res-1/no-show/undo"))
+        assertTrue(server.takeRequest().path!!.endsWith("/dashboard/venues/vA/reservations/res-1"))
+    }
+
+    @Test
+    fun `reserva de un pase - el 409 conserva su codigo`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"message":"Esta reserva vino de un pase (TotalPass/Wellhub); corrígela desde su app","code":"NO_SHOW_UNDO_PASS_BOOKING"}"""))
+
+        val error = api.previewUndoNoShow("res-1").exceptionOrNull() as ReservationApiException
+
+        assertEquals("NO_SHOW_UNDO_PASS_BOOKING", error.code)
+    }
+
+    @Test
+    fun `el detalle trae la correccion con quien la hizo - y una reserva vieja sin ella sigue leyendose`() = runTest {
+        val conCorreccion = reserva.trimEnd().removeSuffix("}") +
+            ""","noShowCorrection":{"pending":["CLASS_UNPAID"],"resolvedAt":null,"source":"KIOSK","createdAt":"2026-10-28T15:40:00.000Z","actorName":null}}"""
+        server.enqueue(MockResponse().setBody(conCorreccion))
+        server.enqueue(MockResponse().setBody(reserva))
+
+        val c = api.get("res-1").getOrThrow().noShowCorrection!!
+        assertTrue(c.isOpen)
+        assertEquals("KIOSK", c.source)
+        assertNull(c.actorName)
+        assertNull(api.get("res-1").getOrThrow().noShowCorrection)
+    }
+
     @Test
     fun `structured business error keeps status code and details`() = runTest {
         server.enqueue(MockResponse().setResponseCode(409).setBody("""{"message":"Confirma sobrecupo","code":"OVER_CAPACITY_CONFIRMATION_REQUIRED","details":{"preview":"2 de 1"}}"""))

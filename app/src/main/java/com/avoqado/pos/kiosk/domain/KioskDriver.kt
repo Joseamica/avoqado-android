@@ -549,7 +549,7 @@ class KioskDriver @Inject constructor(
                     PendingReservationActionEntity(
                         reservationId = person.reservationId,
                         action = KioskTap.ACTION,
-                        payloadJson = KioskTap.payload(venueId, v.closesAt, msBeforeClose),
+                        payloadJson = KioskTap.payload(venueId, v.closesAt, msBeforeClose, name = person.displayName),
                     ),
                 )
             }

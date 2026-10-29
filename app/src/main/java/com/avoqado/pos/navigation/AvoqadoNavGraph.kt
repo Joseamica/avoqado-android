@@ -488,6 +488,8 @@ private fun MainScaffold(
                                 restoreState = true
                             }
                         },
+                        // «Ver reserva»: la misma ruta del detalle que abre el calendario.
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
                     )
                 }
                 composable(MainTab.MORE.route) {
@@ -801,6 +803,8 @@ private fun MainScaffold(
                                 restoreState = true
                             }
                         },
+                        // «Ver reserva»: la misma ruta del detalle que abre el calendario.
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
                     )
                 }
                 composable(MainTab.MORE.route) {
