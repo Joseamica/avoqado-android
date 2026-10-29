@@ -702,15 +702,37 @@ internal fun Transaction.toReceiptData(
     // se cae a importe y propina del pago, en magnitud, con la devolución deducida de los signos.
     val comprobante = ticketTotals
     val esDevolucion = comprobante?.let { it.kind == "DEVOLUCION" } ?: (amount < 0 || (amount == 0.0 && tipAmount < 0))
-    val subtotal = comprobante?.let { cents(it.subtotal) } ?: cents(kotlin.math.abs(amount))
+    // D1 «fotocopia del ticket»: la copia del papel de ESTA parte manda (ya cuadró al guardarse, no depende de `parcial`). Se toman
+    // JUNTOS sus renglones, su subtotal y su «Descuento»; sin cargo ni IVA aparte, porque la copia ya es lo cobrado sin propina. La
+    // propina y el total siguen siendo los del comprobante. Sin copia, todo como hoy.
+    val copia = lineasDelTicket?.takeIf { !esDevolucion }
+    val subtotal = copia?.subtotalCents ?: comprobante?.let { cents(it.subtotal) } ?: cents(kotlin.math.abs(amount))
     // Subtotal BRUTO + su descuento cuando el servidor desglosa (A7-R6): el mismo papel que el del cobro.
-    val descuento = comprobante?.discount?.let { cents(it) }?.takeIf { it > 0 } ?: 0
-    val cargo = if (esDevolucion) 0 else comprobante?.let { cents(it.serviceCharge) }?.takeIf { it > 0 } ?: 0
-    val impuestoAgregado = if (esDevolucion) 0 else comprobante?.let { cents(it.addedTax) }?.takeIf { it > 0 } ?: 0
+    val descuento = (copia?.descuentoCents ?: comprobante?.discount?.let { cents(it) })?.takeIf { it > 0 } ?: 0
+    val cargo = if (esDevolucion || copia != null) 0 else comprobante?.let { cents(it.serviceCharge) }?.takeIf { it > 0 } ?: 0
+    val impuestoAgregado = if (esDevolucion || copia != null) 0 else comprobante?.let { cents(it.addedTax) }?.takeIf { it > 0 } ?: 0
     val propina = comprobante?.let { cents(it.tip) } ?: cents(kotlin.math.abs(tipAmount))
     val total = comprobante?.let { cents(it.total) } ?: (cents(kotlin.math.abs(amount)) + propina)
 
-    val receiptItems = if (comprobante?.parcial == true && items.isNotEmpty()) {
+    val receiptItems = if (copia != null) {
+        // Los renglones del papel de la parte, con el peso, la nota y el área donde el papel los pinta. La pieza de un combo va en $0
+        // y el renglón que la precede es el del combo (en negritas, como en el papel: `ComboPrintLines`).
+        copia.lineas.mapIndexed { i, l ->
+            ReceiptItem(
+                name = l.nombre,
+                quantity = kotlin.math.round(l.cantidad).toInt().coerceAtLeast(1),
+                unitPrice = l.unitarioCents,
+                totalPrice = l.totalCents,
+                modifiers = l.modificadores?.filter { it.isNotEmpty() }?.ifEmpty { null },
+                note = l.nota,
+                isCortesia = l.cortesia == true,
+                weightSummary = l.peso,
+                areaSourceLabel = l.area,
+                isComboHeader = l.pieza != true && copia.lineas.getOrNull(i + 1)?.pieza == true,
+                isComboComponent = l.pieza == true,
+            )
+        }
+    } else if (comprobante?.parcial == true && items.isNotEmpty()) {
         // D15: UNA parte de una venta dividida (lo marca el servidor): un renglón «Pago parcial» con lo que cobró, como el papel
         // del cobro (`PaymentFlowViewModel.buildReceiptSnapshot`). Enumerar toda la venta daba renglones que no suman el total.
         listOf(ReceiptItem(name = "Pago parcial", quantity = 1, unitPrice = subtotal, totalPrice = subtotal))

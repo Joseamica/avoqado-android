@@ -91,6 +91,57 @@ internal object TicketTotalsTolerante : KSerializer<TicketTotalsDto?> {
     override fun serialize(encoder: Encoder, value: TicketTotalsDto?) = encoder.encodeSerializableValue(estricto.nullable, value)
 }
 
+/**
+ * D1 «fotocopia del ticket» (servidor, aditivo, 28-oct): los renglones que imprimió el cobro de UNA parte de una venta dividida, tal
+ * cual los mandó la app en `/pay` (`CopiaDelTicket`). El SERVIDOR sólo la guarda si cuadra exacto con lo que registró:
+ * `subtotalCents − descuentoCents` = el importe del pago sin propina. Centavos enteros.
+ */
+@Serializable
+data class LineasDelTicketDto(
+    val lineas: List<LineaDelTicketDto>,
+    val subtotalCents: Int,
+    val descuentoCents: Int,
+)
+
+@Serializable
+data class LineaDelTicketDto(
+    val nombre: String,
+    /** Número del contrato (`> 0`); las apps mandan enteros. */
+    val cantidad: Double,
+    val unitarioCents: Int,
+    val totalCents: Int,
+    val modificadores: List<String>? = null,
+    val cortesia: Boolean? = null,
+    /** Componente de un combo, en $0 (el combo lleva el precio). */
+    val pieza: Boolean? = null,
+    /** Resumen impreso de un producto pesado («0.435 kg × $420.00/kg»). */
+    val peso: String? = null,
+    val nota: String? = null,
+    /** Etiqueta del área de un vale. */
+    val area: String? = null,
+)
+
+/**
+ * La copia se lee TOLERANTE, como el comprobante ([TicketTotalsTolerante]): una copia rara o sin renglones cuenta como AUSENTE y
+ * la reimpresión queda como hoy, en vez de tumbar el detalle de la venta (sin detalle no se reimprime ni se devuelve).
+ */
+internal object LineasDelTicketTolerante : KSerializer<LineasDelTicketDto?> {
+    private val estricto = LineasDelTicketDto.serializer()
+    override val descriptor: SerialDescriptor = estricto.nullable.descriptor
+
+    override fun deserialize(decoder: Decoder): LineasDelTicketDto? {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeSerializableValue(estricto.nullable)
+        val elemento = json.decodeJsonElement()
+        return try {
+            json.json.decodeFromJsonElement(estricto, elemento).takeIf { it.lineas.isNotEmpty() }
+        } catch (e: IllegalArgumentException) { // SerializationException y NumberFormatException lo son
+            null
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: LineasDelTicketDto?) = encoder.encodeSerializableValue(estricto.nullable, value)
+}
+
 @Serializable
 data class Transaction(
     val id: String,
@@ -125,6 +176,9 @@ data class Transaction(
     /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior (o comprobante raro, A7-R8): se cae a importe y propina del pago. */
     @Serializable(with = TicketTotalsTolerante::class)
     val ticketTotals: TicketTotalsDto? = null,
+    /** D1: la copia del papel de esta parte, APARTE de [ticketTotals]. Null = sin copia (app vieja, tarjeta, cobro de antes). */
+    @Serializable(with = LineasDelTicketTolerante::class)
+    val lineasDelTicket: LineasDelTicketDto? = null,
     /**
      * D4 (mesas40), aditivos: el tipo de la orden (DINE_IN, TAKEOUT…) y el número de su mesa, para que la reimpresión diga
      * «Mesa 5» / «Para llevar» como el ticket del cobro. 🔴 El servidor todavía no los manda: sin ellos, «En tienda».
