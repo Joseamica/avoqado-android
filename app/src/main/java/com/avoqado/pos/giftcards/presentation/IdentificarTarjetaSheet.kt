@@ -33,11 +33,15 @@ fun IdentificarTarjetaSheet(
         LaunchedEffect(viewModel, venueId) { viewModel.cerrar(); onCerrar() }
         return
     }
-    // G2 (Codex unión r4): el techo va en el estado guardado. Girar, volver del fondo o restaurar la app reconstruyen la hoja sin
-    // decisión del cajero y lo conservan; un llamador que la quita y la vuelve a poner abre otra apertura.
-    val capacidadesDeApertura = androidx.compose.runtime.saveable.rememberSaveable(viewModel, venueId) {
-        ArrayList((ajustes ?: ajustesVigentes).capacidades.intersect(ajustesVigentes.capacidades))
-    }.toSet()
+    // G2 (Codex unión r4/r5): el techo va en el estado guardado. Girar, volver del fondo o restaurar la app reconstruyen la hoja sin
+    // decisión del cajero y lo conservan. Cada montaje lo cruza con lo que hoy permiten el argumento y los ajustes, y guarda el
+    // cruce: nunca queda más amplio que la apertura anterior ni que una nueva.
+    // ponytail: lo guardado que hereda la primera apertura tras girar puede dejarla MÁS angosta; sólo si las capacidades varían.
+    val alMontar = (ajustes ?: ajustesVigentes).capacidades.intersect(ajustesVigentes.capacidades)
+    val techo = androidx.compose.runtime.saveable.rememberSaveable(viewModel, venueId, saver = TechoDeApertura.Guardado) {
+        TechoDeApertura(alMontar)
+    }
+    val capacidadesDeApertura = remember(techo) { techo.capacidades.intersect(alMontar).also { techo.capacidades = it } }
     val ajustesEfectivos = ajustesVigentes.copy(
         capacidades = capacidadesDeApertura.intersect(ajustesVigentes.capacidades))
     BarreraDeAtajos()
@@ -121,5 +125,13 @@ fun IdentificarTarjetaSheet(
         onDismiss = { camara = false }, cameraHint = TextosDeTarjetas.ESCANEAR, manualTitle = TextosDeTarjetas.ESCANEAR,
         manualLabel = TextosDeTarjetas.TECLEAR_CODIGO, actionText = TextosDeTarjetas.VERIFICAR,
         lectorIntegrado = remember { com.avoqado.pos.pos.data.LectorIntegradoSunmi.hay() })
+    }
+}
+
+/** El límite de capacidades de UNA apertura de la hoja; se guarda con el estado de la pantalla (G2). */
+private class TechoDeApertura(var capacidades: Set<String>) {
+    companion object {
+        val Guardado = androidx.compose.runtime.saveable.Saver<TechoDeApertura, ArrayList<String>>(
+            save = { ArrayList(it.capacidades) }, restore = { TechoDeApertura(it.toSet()) })
     }
 }

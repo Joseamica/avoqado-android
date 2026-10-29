@@ -957,4 +957,33 @@ class AtajosDelCobroEnLaEscenaTest {
             runOnIdle { assertEquals(1, q.consultas.size); assertTrue(q.consultas.single().endsWith("/lookup")) }
         } }
     }
+
+    /**
+     * G2 (Codex unión r5 #2): tras girar, el llamador real vuelve a `muestraSaldo = false` (remember) y lo guardado de la hoja queda
+     * esperando. La cajera abre OTRA identificación cuando «Teléfono» ya no está: esa apertura no puede heredar el techo de la
+     * anterior, y un refresco que lo devuelve no lo enseña.
+     */
+    @Test fun `union G2 una apertura nueva tras girar no hereda el techo de la anterior`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "TELEFONO")).use { q ->
+            var registro by mutableStateOf(androidx.compose.runtime.saveable.SaveableStateRegistry(null) { true })
+            var montada by mutableStateOf(true)
+            setContent { EnWindows { androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.runtime.saveable.LocalSaveableStateRegistry provides registro) {
+                if (montada) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertExists()
+            // Gira: se guarda, se desmonta y el padre ya no la enseña (su `muestraSaldo` no se guarda).
+            runOnIdle {
+                val guardado = registro.performSave()
+                montada = false
+                registro = androidx.compose.runtime.saveable.SaveableStateRegistry(guardado) { true }
+            }
+            waitForIdle(); q.refrescar(setOf("ENTREGA")); waitForIdle()
+            runOnIdle { montada = true }; waitForIdle()  // la cajera abre otra
+            q.refrescar(setOf("ENTREGA", "TELEFONO")); waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertDoesNotExist()
+        } }
+    }
 }
