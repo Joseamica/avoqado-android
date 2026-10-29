@@ -646,6 +646,24 @@ class SecureStorage @Inject constructor(
         return true
     }
 
+    /** Cierra la sesión sólo si sigue siendo la de [refreshUsado]: un rechazo de la renovación que llega tarde no
+     *  expulsa a quien entró después con su PIN (Codex, D9 del Cambio r2, 29-oct). */
+    @Synchronized
+    fun clearSessionSiSigue(refreshUsado: String?): Boolean {
+        if (this.refreshToken != refreshUsado) return false
+        clearSession()
+        return true
+    }
+
+    /** Igual, para una petición ya reintentada que vuelve 401: cierra sólo si la sesión sigue con el access con que
+     *  salió [accessUsado]. Sin access no se sabe de quién es, y no se cierra. */
+    @Synchronized
+    fun clearSessionSiSigueElAccess(accessUsado: String?): Boolean {
+        if (accessUsado == null || this.accessToken != accessUsado) return false
+        clearSession()
+        return true
+    }
+
     fun switchVenue(venue: StoredVenue) {
         this.venueId = venue.id
         this.venueName = venue.name

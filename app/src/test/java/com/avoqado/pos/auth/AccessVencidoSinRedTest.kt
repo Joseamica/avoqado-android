@@ -45,6 +45,8 @@ class AccessVencidoSinRedTest {
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
         every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
+        every { secureStorage.clearSessionSiSigue(any()) } returns true
+        every { secureStorage.clearSessionSiSigueElAccess(any()) } returns true
         authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
     }
@@ -85,7 +87,7 @@ class AccessVencidoSinRedTest {
         // La sesión local sigue viva: nunca se limpia el storage por un
         // tropiezo de transporte. El outbox no es responsabilidad de esta
         // clase, pero vive exactamente de esto — de que la sesión no muera.
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
         verify(exactly = 0) { secureStorage.updateTokensSiSigue(any(), any(), any()) }
     }
 
@@ -102,7 +104,7 @@ class AccessVencidoSinRedTest {
         val retry = authenticator.authenticate(null, original401())
 
         assertNull(retry)
-        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { secureStorage.clearSessionSiSigue("refresh-viejo") }
     }
 
     @Test
@@ -119,7 +121,7 @@ class AccessVencidoSinRedTest {
         )
 
         assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -129,7 +131,7 @@ class AccessVencidoSinRedTest {
         )
 
         assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -139,7 +141,7 @@ class AccessVencidoSinRedTest {
         )
 
         assertThrows(SesionSinRenovar::class.java) { authenticator.authenticate(null, original401()) }
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -154,7 +156,7 @@ class AccessVencidoSinRedTest {
         assertEquals("Bearer access-nuevo", retry?.header("Authorization"))
         assertEquals("true", retry?.header("X-Retry-After-Refresh"))
         verify(exactly = 1) { secureStorage.updateTokensSiSigue("refresh-viejo", "access-nuevo", "refresh-nuevo") }
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -164,7 +166,7 @@ class AccessVencidoSinRedTest {
         val retry = authenticator.authenticate(null, original401())
 
         assertNull(retry)
-        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { secureStorage.clearSessionSiSigue(null) }
     }
 
     @Test
@@ -174,6 +176,7 @@ class AccessVencidoSinRedTest {
         // que esta rama es siempre un rechazo de negocio de verdad.
         val alreadyRetried = Request.Builder()
             .url(server.url("/mobile/venues/v1/orders"))
+            .header("Authorization", "Bearer access-nuevo")
             .header("X-Retry-After-Refresh", "true")
             .build()
         val response = Response.Builder()
@@ -186,7 +189,7 @@ class AccessVencidoSinRedTest {
         val retry = authenticator.authenticate(null, response)
 
         assertNull(retry)
-        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { secureStorage.clearSessionSiSigueElAccess("access-nuevo") }
     }
 
     @Test
@@ -205,6 +208,31 @@ class AccessVencidoSinRedTest {
 
         assertNull(retry)
         assertEquals(0, server.requestCount)
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
+    }
+
+    @Test
+    fun `un rechazo que llega tarde no expulsa a quien entro despues (Codex D9 r2)`() {
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"invalid refresh token"}"""))
+        every { secureStorage.clearSessionSiSigue(any()) } returns false // B ya guardó su sesión
+
+        assertNull(authenticator.authenticate(null, original401()))
+        verify(exactly = 1) { secureStorage.clearSessionSiSigue("refresh-viejo") }
+        verify(exactly = 0) { secureStorage.clearSession() }
+    }
+
+    @Test
+    fun `un reintento que vuelve 401 con la sesion ya de otra persona no la cierra (Codex D9 r2)`() {
+        every { secureStorage.clearSessionSiSigueElAccess(any()) } returns false
+        val alreadyRetried = Request.Builder()
+            .url(server.url("/mobile/venues/v1/orders"))
+            .header("Authorization", "Bearer access-de-A")
+            .header("X-Retry-After-Refresh", "true")
+            .build()
+        val response = Response.Builder().request(alreadyRetried).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized").build()
+
+        assertNull(authenticator.authenticate(null, response))
+        verify(exactly = 1) { secureStorage.clearSessionSiSigueElAccess("access-de-A") }
         verify(exactly = 0) { secureStorage.clearSession() }
     }
 }

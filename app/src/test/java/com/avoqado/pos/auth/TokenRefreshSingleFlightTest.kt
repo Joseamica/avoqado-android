@@ -46,6 +46,8 @@ class TokenRefreshSingleFlightTest {
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
         every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
+        every { secureStorage.clearSessionSiSigue(any()) } returns true
+        every { secureStorage.clearSessionSiSigueElAccess(any()) } returns true
         authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
     }
@@ -189,7 +191,7 @@ class TokenRefreshSingleFlightTest {
         assertTrue("el seguidor no debe colgarse: tardo ${elapsedMs}ms", elapsedMs < 3_000)
         // Un solo cierre de sesión — el del líder. El seguidor no repite el
         // trabajo del líder ni dispara uno propio.
-        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { secureStorage.clearSessionSiSigue("refresh-viejo") }
         assertEquals(1, server.requestCount)
     }
 
@@ -208,7 +210,7 @@ class TokenRefreshSingleFlightTest {
         assertNull("con la sesión de otra persona, la petición de A no se reenvía", retry)
         verify(exactly = 1) { secureStorage.updateTokensSiSigue("refresh-viejo", "access-de-A", "refresh-de-A") }
         verify(exactly = 0) { secureStorage.updateTokens(any(), any()) }
-        verify(exactly = 0) { secureStorage.clearSession() } // la sesión de B sigue
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) } // la sesión de B sigue
     }
 
     @Test

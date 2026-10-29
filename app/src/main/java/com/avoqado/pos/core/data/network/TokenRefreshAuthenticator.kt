@@ -194,8 +194,10 @@ class TokenRefreshAuthenticator @Inject constructor(
             // 401. Un fallo de RED nunca produce un reintento, así que esta
             // rama sólo se alcanza con una respuesta HTTP real del servidor:
             // es rechazo de negocio de verdad.
-            Log.e("🔐", "Token refresh failed - logging out")
-            secureStorage.clearSession()
+            // Sólo si la sesión sigue con el access con que salió: si mientras tanto entró otra persona, no se la expulsa.
+            val accessUsado = response.request.header("Authorization")?.removePrefix("Bearer ")
+            if (secureStorage.clearSessionSiSigueElAccess(accessUsado)) Log.e("🔐", "Token refresh failed - logging out")
+            else Log.w("🔐", "401 tras renovar, pero la sesión ya es otra: no se cierra")
             return null
         }
 
@@ -245,13 +247,17 @@ class TokenRefreshAuthenticator @Inject constructor(
                 if (refreshToken == null) {
                     // Sin refresh token no hay nada que intentar: no es un fallo
                     // de red, es una sesión que ya no existe localmente.
-                    RefreshOutcome.Rejected(httpCode = 0)
+                    if (secureStorage.clearSessionSiSigue(null)) RefreshOutcome.Rejected(httpCode = 0)
+                    else RefreshOutcome.SesionCambiada
                 } else {
                     // Se guarda aquí, comparando con la llave que se mandó: si la sesión ya es otra, no se pisa.
                     when (val r = refreshTokens(refreshToken)) {
                         is RefreshOutcome.Success ->
                             if (secureStorage.updateTokensSiSigue(refreshToken, r.accessToken, r.refreshToken)) r
                             else RefreshOutcome.SesionCambiada
+                        // El rechazo cierra sólo la sesión que se renovó: uno tardío no expulsa a quien entró después.
+                        is RefreshOutcome.Rejected ->
+                            if (secureStorage.clearSessionSiSigue(refreshToken)) r else RefreshOutcome.SesionCambiada
                         else -> r
                     }
                 }
@@ -302,8 +308,8 @@ class TokenRefreshAuthenticator @Inject constructor(
                 // reutilización detectada y la familia entera fue
                 // revocada), o no había refresh token guardado. Eso SÍ es
                 // logout real.
+                // La sesión ya se cerró al decidir (bajo el candado de SecureStorage, sólo si era la renovada).
                 Log.e("🔐", "Token refresh rejected by server (${outcome.httpCode}) - logging out")
-                secureStorage.clearSession()
                 null
             }
         }
