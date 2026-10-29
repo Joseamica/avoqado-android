@@ -116,13 +116,20 @@ class ExchangePinGateTest {
         assertEquals(com.avoqado.pos.transactions.presentation.exchange.TextosCambio.VINCULO_NO_DISPONIBLE,
             vm.exchangeMessage.value)
     }
-    @Test fun `a link waiting for the charge says so without opening`() = runTest(scheduler) {
+    // F4 (iPhone, 28-oct; Codex f3f4): la venta nueva sin pago no es «sin conexión». Y un vínculo «pendiente» viejo que ya se
+    // cobró abre la venta: la decisión es del SERVIDOR, no de la foto del detalle.
+    @Test fun `linked sale without charge says why instead of blaming the connection`() = runTest(scheduler) {
         val vm = vm(canRefund = true)
-        vm.openExchangeOrder("linked", esperaCobro = true)
-        advanceUntilIdle()
+        coEvery { repository.paymentIdForExchangeOrder("linked", "actor", "venue") } throws
+            com.avoqado.pos.transactions.data.ExchangeOrderNotCharged(cancelled = false)
+        vm.openExchangeOrder("linked"); advanceUntilIdle()
         assertEquals("Esta venta todavía no se cobra: el cambio espera la diferencia en la terminal.", vm.exchangeMessage.value)
+        vm.clearExchangeMessage()
+        coEvery { repository.paymentIdForExchangeOrder("linked", "actor", "venue") } throws
+            com.avoqado.pos.transactions.data.ExchangeOrderNotCharged(cancelled = true)
+        vm.openExchangeOrder("linked"); advanceUntilIdle()
+        assertEquals("Este cambio se canceló: la venta nueva no se cobró.", vm.exchangeMessage.value)
         assertEquals(sale, vm.selectedTransaction.value)
-        coVerify(exactly = 0) { repository.paymentIdForExchangeOrder(any(), any(), any()) }
     }
     @Test fun `closing exchange discards real PIN token on every exit`() = runTest(scheduler) {
         for (exit in listOf("dismiss", "select", "clear")) {

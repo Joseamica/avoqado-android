@@ -45,6 +45,25 @@ class ExchangeLinkHttpTest {
         }
     }
 
+    // F4 (iPhone, 28-oct): el SERVIDOR contestó y la venta nueva no tiene pago cobrado: se distingue de una falla de red.
+    @Test fun `order without charge says whether it was cancelled`() = runBlocking {
+        MockWebServer().use { server ->
+            val storage = mockk<SecureStorage>(relaxed = true) {
+                every { userId } returns "actor"
+                every { venueId } returns "venue"
+                every { accessToken } returns "token"
+            }
+            val repo = TransactionRepository(storage, OkHttpClient()).apply { baseUrl = server.url("/api/v1").toString().trimEnd('/') }
+            for ((status, cancelled) in listOf("CONFIRMED" to false, "CANCELLED" to true)) {
+                server.enqueue(MockResponse().setBody("""{"order":{"id":"order","status":"$status","payments":[]}}"""))
+                try {
+                    repo.paymentIdForExchangeOrder("order", "actor", "venue")
+                    fail("Expected ExchangeOrderNotCharged")
+                } catch (e: com.avoqado.pos.transactions.data.ExchangeOrderNotCharged) { assertEquals(cancelled, e.cancelled) }
+            }
+        }
+    }
+
     // espejo de ExchangeLinkHttpTests.swift (recorrido del iPad, 27-oct): la sesión del POS dura 10 min y el primer
     // toque decía «No se pudo abrir la venta vinculada». El autenticador de la app renueva sin reenviar (NO_AUTO_RETRY).
     @Test fun `expired session retries once with the renewed token of the same actor`() = runBlocking {

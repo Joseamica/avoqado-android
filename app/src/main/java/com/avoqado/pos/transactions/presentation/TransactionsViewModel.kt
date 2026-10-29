@@ -15,6 +15,7 @@ import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
+import com.avoqado.pos.transactions.data.ExchangeOrderNotCharged
 import com.avoqado.pos.transactions.data.RefundItem
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
@@ -223,16 +224,19 @@ class TransactionsViewModel @Inject constructor(
         return detail
     }
 
-    fun openExchangeOrder(orderId: String, esperaCobro: Boolean = false) {
+    fun openExchangeOrder(orderId: String) {
         val scope = detailScope ?: return
         if (!current(scope)) return
-        if (esperaCobro) { _exchangeMessage.value = TextosCambio.VINCULO_ESPERA_COBRO; return }
         if (!connectivityMonitor.isOnline()) { _exchangeMessage.value = TextosCambio.SIN_CONEXION; return }
         viewModelScope.launch {
             val paymentId = try {
                 repository.paymentIdForExchangeOrder(orderId, scope.actorId, scope.venueId)
             } catch (_: SecurityException) {
                 if (current(scope)) _exchangeMessage.value = TextosCambio.VINCULO_SIN_PERMISO
+                return@launch
+            } catch (e: ExchangeOrderNotCharged) {
+                if (current(scope)) _exchangeMessage.value =
+                    if (e.cancelled) TextosCambio.VINCULO_CANCELADO else TextosCambio.VINCULO_ESPERA_COBRO
                 return@launch
             }
             if (!current(scope)) return@launch

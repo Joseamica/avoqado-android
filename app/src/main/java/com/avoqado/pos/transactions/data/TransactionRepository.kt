@@ -36,6 +36,9 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** El SERVIDOR contestó y la venta nueva de un cambio no tiene pago cobrado: espera la diferencia o se canceló (F4, 28-oct). */
+class ExchangeOrderNotCharged(val cancelled: Boolean) : Exception()
+
 @Singleton
 class TransactionRepository @Inject constructor(
     private val secureStorage: SecureStorage,
@@ -144,8 +147,10 @@ class TransactionRepository @Inject constructor(
             val order = json.decodeFromString<com.avoqado.pos.tables.data.OrderDetailResponse>(body).order ?: return null
             if (order.id != orderId) return null
             order.payments.firstOrNull { it.status == "COMPLETED" && it.id.isNotBlank() }?.id
+                ?: throw ExchangeOrderNotCharged(cancelled = order.status == "CANCELLED")
         } catch (e: CancellationException) { throw e }
         catch (e: SecurityException) { throw e }
+        catch (e: ExchangeOrderNotCharged) { throw e }
         catch (_: Exception) { null }
     }
 

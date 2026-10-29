@@ -50,8 +50,6 @@ class ExchangeEntryTest {
             assertEquals(listOf("Cambiada en ORD-2 · $label", "Cambio de ORD-0 · $label"),
                 ExchangeEntry.links(reopened).map { it.label })
             assertEquals(listOf("new", "old"), ExchangeEntry.links(reopened).map { it.orderId })
-            // La venta nueva de un cambio apartado no tiene pago que abrir: el vínculo lo sabe sin ir a la red (F4, 28-oct).
-            assertEquals(listOf(status == "PENDING_PAYMENT", false), ExchangeEntry.links(reopened).map { it.esperaCobro })
         }
     }
 }
