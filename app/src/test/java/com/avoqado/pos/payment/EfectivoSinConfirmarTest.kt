@@ -88,7 +88,7 @@ class EfectivoSinConfirmarTest {
             arg<String?>(8) ?: "sin-llave"
         }
         every { cashPaymentRepository.observarEstado(any()) } returns estadoEnCola
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         every { secureStorage.userId } returns "user-456"
@@ -180,8 +180,13 @@ class EfectivoSinConfirmarTest {
         assertEquals(ColaDelCobro.Pagos(llave), exito.colaDelCobro)
     }
 
+    /**
+     * 🔴 D2 v7 (24-oct): antes un rechazo SOLTABA la reserva al instante y la fila quedaba «sin confirmar». Ahora recibir un
+     * «no» no es una decisión de la cajera: la reserva sigue del flujo (ni se suelta ni se borra) hasta que ella vuelve a cobrar
+     * o toca «Cancelar». Ver `CobroRechazadoSinConfirmarTest`.
+     */
     @Test
-    fun `P1 un rechazo del servidor suelta la reserva y no encola nada`() = runTest {
+    fun `P1 un rechazo del servidor no suelta ni borra la reserva y no encola nada`() = runTest {
         coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.failure(OrderRepository.ServerException(400, "monto inválido"))
 
@@ -190,7 +195,9 @@ class EfectivoSinConfirmarTest {
         advanceUntilIdle()
 
         val llave = llaveReservada()
-        coVerify { cashPaymentRepository.soltarReserva(llave) }
+        coVerify(exactly = 0) { cashPaymentRepository.soltarReserva(llave) }
+        coVerify(exactly = 0) { cashPaymentRepository.olvidarReservaEnMemoria(llave) }
+        coVerify(exactly = 0) { cashPaymentRepository.descartarReservaRechazada(any()) }
         coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) }
         assertTrue(viewModel.state.value is PaymentFlowState.Error)
     }
@@ -228,6 +235,96 @@ class EfectivoSinConfirmarTest {
         advanceUntilIdle()
 
         assertEquals(SincronizacionDelCobro.RECHAZADA, viewModel.sincronizacionDelCobro.value)
+    }
+
+    // MARK: - La caja de la venta (efectivo sin red en el turno correcto, A2)
+
+    private fun cajaAbierta(id: String) = com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity(
+        id = id, venueId = "venue-1", deviceName = "Otro aparato", openedByStaffId = "staff-otro", openedByName = "Otra persona",
+        openedAt = 1L, startingAmountCents = 50_000, status = "OPEN",
+    )
+
+    /**
+     * P1 — la caja se lee UNA vez, al confirmar, y es la misma en la reserva (antes de la red) y en el encolado tras el fallo,
+     * aunque la caja abierta cambie a media petición. La abierta es una caja adoptada de OTRO aparato (id del servidor): el
+     * cobro lleva el id del servidor de esa caja.
+     */
+    @Test
+    fun `P1 la caja abierta al confirmar viaja en la reserva y en el encolado aunque cambie despues`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returnsMany listOf(cajaAbierta("srv-C"), cajaAbierta("srv-D"))
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.failure(IOException("sin red"))
+
+        viewModel.startPaymentFlow(otroImporte())
+        viewModel.confirmCashCustom(10_000)
+        advanceUntilIdle()
+
+        coVerify {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                venueId = any(), capturadaEn = any(), cajaDelCobro = "srv-C")
+        }
+        coVerify {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                venueId = any(), capturadaEn = any(), cajaDelCobro = "srv-C")
+        }
+        coVerify(exactly = 1) { cashDrawerRepository.getOpenSession() }
+    }
+
+    /**
+     * 🔴 Codex apps r1 #1: la caja B de esta venta todavía espera su apertura (la cola del cajón la retiene detrás del cierre de A,
+     * que espera a sus ventas). Con red, el cobro NO va en línea —el servidor todavía ve abierta A y ahí lo sumaría—: se encola
+     * con su caja B y sube detrás de su apertura.
+     */
+    @Test
+    fun `P1 con red, si la caja de la venta espera su apertura, el efectivo se encola con su caja y no va en linea`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns cajaAbierta("B-local")
+        every { cashDrawerRepository.cajasQueEsperanSuApertura() } returns setOf("B-local")
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
+
+        viewModel.startPaymentFlow(otroImporte())
+        viewModel.confirmCashCustom(10_000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                venueId = any(), capturadaEn = any(), cajaDelCobro = "B-local")
+        }
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+    }
+
+    /** La caja de la venta ya está confirmada: el cobro va en línea, como hoy. */
+    @Test
+    fun `con red y la caja confirmada el efectivo va en linea como hoy`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns cajaAbierta("srv-A")
+        every { cashDrawerRepository.cajasQueEsperanSuApertura() } returns setOf("B-local")
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
+
+        viewModel.startPaymentFlow(otroImporte())
+        viewModel.confirmCashCustom(10_000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) }
+    }
+
+    /** Sin caja abierta al confirmar, la reserva no lleva caja: sube como hoy. */
+    @Test
+    fun `sin caja abierta al confirmar la reserva va sin caja`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns null
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
+
+        viewModel.startPaymentFlow(otroImporte())
+        viewModel.confirmCashCustom(10_000)
+        advanceUntilIdle()
+
+        coVerify {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                venueId = any(), capturadaEn = any(), cajaDelCobro = null)
+        }
     }
 
     @Test

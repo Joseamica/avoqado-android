@@ -17,6 +17,7 @@ import com.avoqado.pos.kiosk.domain.KioskDriver
 import com.avoqado.pos.kiosk.domain.KioskPrefs
 import com.avoqado.pos.kiosk.domain.KioskState
 import com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
+import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.pos.data.RefrescoDelCatalogo
 import com.avoqado.pos.printing.data.VigilanteDeImpresoras
 import com.avoqado.pos.reservations.data.ReservationActionsRetrier
@@ -67,15 +68,21 @@ object Arranque {
         ciclo.addObserver(inyector.getInstance(DeviceCapabilitySyncCoordinator::class.java))
         // «Se cobra el precio que vio el cliente»: el catálogo se baja solo al volver a primer plano, cada 5 min y al volver la red.
         ciclo.addObserver(inyector.getInstance(RefrescoDelCatalogo::class.java))
+        // «Pedidos en línea»: el vigilante global (insignia, banner y sonido que insiste), espejo de AvoqadoApp.onCreate.
+        ciclo.addObserver(inyector.getInstance(VigilanteDePedidosEnLinea::class.java))
         VenueTimeZone.set(inyector.getInstance(SecureStorage::class.java).venueTimezone)
         inyector.getInstance(ReservationActionsRetrier::class.java).start(appScope)
         inyector.getInstance(CancelacionDeCobroCoordinator::class.java).start()
+        inyector.getInstance(com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta::class.java).start()
         // «La impresora que se encuentra sola» (Android 3cef2f4, 2-oct): al abrir, al volver la red y cada 10 min revisa que
         // cada impresora de red siga en su dirección y avisa al servidor si se movió. En Windows corre igual (red 9100).
         inyector.getInstance(VigilanteDeImpresoras::class.java).start()
         inyector.getInstance(KioskDriver::class.java).attach()
         val kioskPrefs = inyector.getInstance(KioskPrefs::class.java)
         val kioskState = inyector.getInstance(KioskState::class.java)
+        // Llave propia del kiosco: en escritorio ScreenPinningManager es un reemplazo que no usa esas preferencias, así que
+        // `kiosk_enabled` allá sólo lo escribió el kiosco y se conserva tal cual.
+        kioskPrefs.migrateLegacyFlag(keepLegacy = true)
         appScope.launch { kioskPrefs.enabled.collect { kioskState.setEnabled(it) } }
     }
 

@@ -324,6 +324,8 @@ class ComandaDispatcher @Inject constructor(
         etiquetaPantalla: String? = null,
         /** El tiempo de estos renglones en la pantalla de cocina («Aperitivos»). */
         curso: String? = null,
+        /** Líneas extra del ticket en papel (pedido en línea: cliente, hora, pago, nota). `null` = la comanda de siempre. */
+        encabezado: List<String>? = null,
         /** Folios cuyo papel de respaldo NO se marca: van en más de un tiempo de la ronda ([despacharEnFondo], Codex 3.6 #1). */
         noMarcar: (String) -> Boolean = { false },
     ): EstadoDeComanda? {
@@ -345,6 +347,7 @@ class ComandaDispatcher @Inject constructor(
                     orderNumber = orderNumber,
                     orderType = orderType,
                     items = legacy.items,
+                    encabezado = encabezado,
                 ),
             )
             // 🔴 Este camino devolvía `null` SIEMPRE, y `null` no distingue «salió» de «tronó».
@@ -361,6 +364,7 @@ class ComandaDispatcher @Inject constructor(
                     "No hay ninguna impresora de cocina configurada.",
                     orderNumber,
                     trabajo = null,
+                    sinImpresoraDeCocina = true,
                 )
             } else {
                 EstadoDeComanda.NoSalio(
@@ -380,7 +384,7 @@ class ComandaDispatcher @Inject constructor(
         // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
         // GUARDA antes de conectar; el acuse por ESTACIÓN es lo que decide el papel de las «sólo pantalla».
         val entregas = if (servidorLaTiene != null && venueId != null && origenDelFolio != null) {
-            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio, etiquetaPantalla, curso)
+            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio, etiquetaPantalla, curso, encabezado)
         } else {
             emptyList()
         }
@@ -416,6 +420,7 @@ class ComandaDispatcher @Inject constructor(
                 venueId = venueId,
                 orderId = orderId,
                 alCambiarEstado = alCambiarEstado,
+                encabezado = encabezado,
             )
         } catch (e: CancellationException) {
             withContext(NonCancellable) { soltarSinPapel(entregas, acusadas) }
@@ -466,6 +471,7 @@ class ComandaDispatcher @Inject constructor(
         origen: String,
         etiquetaPantalla: String? = null,
         curso: String? = null,
+        encabezado: List<String>? = null,
     ): List<EntregaKds> {
         val deviceId = entregaPorWifi?.deviceId ?: return emptyList()
         val ahora = System.currentTimeMillis()
@@ -484,6 +490,7 @@ class ComandaDispatcher @Inject constructor(
                         config = KitchenDeliveryPolicy.conRespaldo(config, listOf(stationId)),
                         orderNumber = orderNumber, orderType = orderType, serverName = serverName,
                         comboNames = comboNames, venueId = venueId, orderId = orderId,
+                        encabezado = encabezado,
                     )
                 } else {
                     null

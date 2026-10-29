@@ -1,6 +1,7 @@
 package com.avoqado.pos.tables.data
 
 import kotlinx.serialization.Serializable
+import com.avoqado.pos.core.util.aCentavos
 
 /**
  * TABLE_SERVICE (PRO) — floor-plan tables with live status, mirror of the
@@ -315,6 +316,9 @@ data class OrderDetailResponse(val success: Boolean = true, val order: OrderDeta
 @Serializable
 data class OrderDetail(
     val id: String,
+    val esCuentaDeTarjetas: Boolean = false,
+    val esDeMesa: Boolean? = null,
+    val cobrosConSaldo: Int? = null,
     val orderNumber: String = "",
     val status: String = "",
     val paymentStatus: String = "",
@@ -344,7 +348,7 @@ data class OrderDetail(
     val items: List<OrderDetailItem> = emptyList(),
     /** IVA cobrado aparte, en pesos; ausencia en servidores antiguos conserva 0. */
     val addedTaxAmount: Double = 0.0,
-    /** Saldo autoritativo opcional; sus cuatro importes son centavos y no se reconstruyen aquí. */
+    /** Saldo autoritativo opcional; importes en centavos, propina ausente conserva cero. */
     val preBillBalance: PreBillBalance? = null,
 )
 
@@ -353,8 +357,14 @@ data class PreBillBalance(
     val orderTotalCents: Int,
     val totalPaidCents: Int,
     val remainingBalanceCents: Int,
-    val tipAmountCents: Int,
+    val tipAmountCents: Int = 0,
 )
+
+fun restanteCents(detalle: OrderDetail): Int? {
+    detalle.preBillBalance?.let { return it.remainingBalanceCents }
+    if (detalle.payments.any { it.status == "COMPLETED" }) return null
+    return detalle.total.aCentavos()
+}
 
 @Serializable
 data class AppliedOrderDiscount(

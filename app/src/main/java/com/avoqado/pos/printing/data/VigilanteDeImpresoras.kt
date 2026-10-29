@@ -71,6 +71,8 @@ class VigilanteDeImpresoras @Inject constructor(
         printerService.venueActual = { secureStorage.venueId }
         printerService.alEncolarAviso = { programarAvisos() }
         escucharLaRed()
+        // D2 (founder, 28-oct): la integrada de la D3 se configura sola como «Recibos y cajón» (una vez).
+        scope.launch { runCatching { printerService.autoconfigurarIntegrada() } }
         scope.launch {
             delay(PRIMERA_RONDA_MS)
             while (true) {

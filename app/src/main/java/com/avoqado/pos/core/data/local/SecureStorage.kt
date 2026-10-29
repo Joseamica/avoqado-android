@@ -5,11 +5,15 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.avoqado.pos.areatickets.data.IntentoDeVale
+import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
+import com.avoqado.pos.areatickets.data.ValeSinConfirmar
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import com.avoqado.pos.core.domain.PlanSnapshot
 import com.avoqado.pos.core.domain.retainNewestPlan
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -146,9 +150,36 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_AREA_TICKET_MATERIALIZE_KEY, null)
         set(value) = prefs.edit().putString(KEY_AREA_TICKET_MATERIALIZE_KEY, value).apply()
 
-    var pendingAreaTicketIssueKey: String?
-        get() = prefs.getString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, null)
-        set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, value).apply()
+    /** 🔴 D2 (vales-ciclo): la llave de emisión de vales de [venueId]; ver [LlaveDeEmisionDeVales]. */
+    fun llaveDeEmisionDeVales(venueId: String): String? = LlaveDeEmisionDeVales.leer(prefs, venueId)
+
+    /** `true` sólo si la llave quedó en disco. */
+    fun guardarLlaveDeEmisionDeVales(venueId: String, llave: String): Boolean = LlaveDeEmisionDeVales.guardar(prefs, venueId, llave)
+
+    /** Suelta la llave de [venueId] (y lo que se mandó con ella); con [siEs], sólo si sigue siendo ésa. */
+    fun soltarLlaveDeEmisionDeVales(venueId: String, siEs: String? = null) {
+        LlaveDeEmisionDeVales.soltar(prefs, venueId, siEs)
+    }
+
+    /** 🔴 D5: llave + lo que se manda, juntos en disco ANTES del POST. Ver [LlaveDeEmisionDeVales.guardar]. */
+    internal fun guardarIntentoDeVale(venueId: String, llave: String, intento: IntentoDeVale) =
+        LlaveDeEmisionDeVales.guardar(prefs, venueId, llave, intento)
+
+    /** 🔴 D5: primera vez de [venueId] en este proceso. Ver [LlaveDeEmisionDeVales.alArrancar]. */
+    fun revisarValeAMedias(venueId: String): Boolean = LlaveDeEmisionDeVales.alArrancar(prefs, venueId)
+
+    fun valeSinConfirmar(venueId: String) = LlaveDeEmisionDeVales.valeSinConfirmar(prefs, venueId)
+
+    /** 🔴 D5: ver [LlaveDeEmisionDeVales.mercanciaEnDuda]. */
+    fun mercanciaDeValeEnDuda(venueId: String, lineas: List<IssueAreaTicketLineRequest>): Boolean =
+        LlaveDeEmisionDeVales.mercanciaEnDuda(prefs, venueId, lineas)
+
+    fun olvidarValeSinConfirmar(venueId: String, llave: String) = LlaveDeEmisionDeVales.olvidarSinConfirmar(prefs, venueId, llave)
+
+    /** 🔴 D5: papel pendiente + olvidar el vale sin confirmar, juntos. Ver [LlaveDeEmisionDeVales.recuperado]. */
+    fun valeRecuperado(venueId: String, llave: String, codigo: String): Boolean = LlaveDeEmisionDeVales.recuperado(
+        prefs, venueId, llave, codigo, KEY_PENDING_AREA_TICKET_PRINT_CODE, KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID,
+    )
 
     var pendingAreaTicketPrintCode: String?
         get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_CODE, null)
@@ -287,6 +318,17 @@ class SecureStorage @Inject constructor(
         prefs.edit().putString("drawerAdoptionNotices.$venueId", value).commit()
     }
 
+    /**
+     * Alias de las cajas de ESTE aparato, POR VENUE (JSON): «id local de la caja → id que le dio el servidor» (efectivo sin
+     * red en el turno correcto, 21-oct-2026). Un cobro guardado con el id local de su caja viaja con el del servidor. Durable
+     * y con `commit()` por lo mismo que la cola del cajón: se escribe ANTES de reapuntar la cola, y si se perdiera, el cobro
+     * subiría sin su caja. Ver `CashDrawerRepository.idDeCajaParaElServidor`.
+     */
+    fun drawerSessionAliasesJson(venueId: String): String? = prefs.getString("drawerSessionAliases.$venueId", null)
+    fun setDrawerSessionAliasesJson(venueId: String, value: String?) {
+        prefs.edit().putString("drawerSessionAliases.$venueId", value).commit()
+    }
+
     var venuePermissions: List<String>
         get() {
             val raw = prefs.getString(KEY_VENUE_PERMISSIONS, null) ?: return emptyList()
@@ -299,6 +341,13 @@ class SecureStorage @Inject constructor(
         set(value) {
             prefs.edit().putString(KEY_VENUE_PERMISSIONS, json.encodeToString(value)).apply()
         }
+
+    /** Ajustes sin secretos por negocio; "null" distingue un 404 de una caché que nunca existió. */
+    fun leerAjustesDeTarjetas(venueId: String): String? = plainPrefs.getString("giftCardSettings.$venueId", null)
+
+    fun guardarAjustesDeTarjetas(venueId: String, json: String?) {
+        plainPrefs.edit().putString("giftCardSettings.$venueId", json ?: "null").apply()
+    }
 
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
@@ -377,6 +426,31 @@ class SecureStorage @Inject constructor(
     }
 
     // MARK: - Biometric Data (NOT cleared on logout)
+
+    private var solicitudesCargadas = false
+    private var solicitudesConfirmadas: String? = null
+    private var respaldoSolicitudesConfirmado: String? = null
+    val giftCardRequestsJson: String?
+        @Synchronized get() {
+            if (!solicitudesCargadas) {
+                solicitudesConfirmadas = prefs.getString(KEY_GIFT_CARD_REQUESTS, null)
+                respaldoSolicitudesConfirmado = prefs.getString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, null)
+                solicitudesCargadas = true
+            }
+            return solicitudesConfirmadas
+        }
+    @Synchronized
+    fun escribirSolicitudesDeTarjeta(nueva: (String?) -> String?): Boolean {
+        val raw = giftCardRequestsJson
+        val siguiente = nueva(raw) ?: return false
+        val editor = prefs.edit().putString(KEY_GIFT_CARD_REQUESTS, siguiente)
+        val ilegible = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.ilegible(raw)
+        ilegible?.let { editor.putString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, it) }
+        if (!editor.commit()) return false
+        solicitudesConfirmadas = siguiente
+        if (ilegible != null) respaldoSolicitudesConfirmado = ilegible
+        return true
+    }
 
     var isBiometricLoginEnabled: Boolean
         get() = plainPrefs.getBoolean(KEY_BIOMETRIC_ENABLED, false)
@@ -645,14 +719,22 @@ class SecureStorage @Inject constructor(
             .apply()
     }
 
+    @Synchronized
     fun clearAll() {
+        val solicitudes = giftCardRequestsJson
+        val respaldo = respaldoSolicitudesConfirmado
         clearSession()
         clearBiometricCredentials()
-        prefs.edit().clear().apply()
+        prefs.edit().clear().apply {
+            solicitudes?.let { putString(KEY_GIFT_CARD_REQUESTS, it) }
+            respaldo?.let { putString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, it) }
+        }.commit()
         plainPrefs.edit().clear().apply()
     }
 
     companion object {
+        private const val KEY_GIFT_CARD_REQUESTS = "giftCardRequests"
+        private const val KEY_GIFT_CARD_REQUESTS_ILEGIBLE = "giftCardRequestsIlegible"
         // Session
         private const val KEY_USER_ID = "userId"
         private const val KEY_USER_EMAIL = "userEmail"
@@ -676,7 +758,6 @@ class SecureStorage @Inject constructor(
         private const val KEY_AREA_TICKET_CHECKOUT_VENUE_ID = "areaTicketCheckoutVenueId"
         private const val KEY_AREA_TICKET_CREATE_KEY = "areaTicketCreateKey"
         private const val KEY_AREA_TICKET_MATERIALIZE_KEY = "areaTicketMaterializeKey"
-        private const val KEY_PENDING_AREA_TICKET_ISSUE_KEY = "pendingAreaTicketIssueKey"
         private const val KEY_PENDING_AREA_TICKET_PRINT_CODE = "pendingAreaTicketPrintCode"
         private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
         private const val KEY_PENDING_AREA_TICKET_PRINT_RECORDS = "pendingAreaTicketPrintRecords"
@@ -771,5 +852,130 @@ fun roleDisplayName(role: String?): String? {
         "VIEWER" -> "Observador"
         "STAFF" -> "Staff"
         else -> normalized
+    }
+}
+
+/**
+ * 🔴 D2 (vales-ciclo): la llave de emisión de vales, POR NEGOCIO (`pendingAreaTicketIssueKey_<venueId>`), como la deduplica el
+ * SERVIDOR (negocio + llave). Todo va con `commit()`: `apply()` cambia la memoria y escribe después sin avisar si el disco
+ * falla (ANDROID), y en WINDOWS un disco que falla deja lo de antes. Aparte de [SecureStorage] para probarla sin el cifrado.
+ */
+internal object LlaveDeEmisionDeVales {
+    /** La de versiones anteriores: una sola para todo el aparato. Nunca se escribe ni se borra. */
+    private const val GLOBAL = "pendingAreaTicketIssueKey"
+    private fun clave(venueId: String) = "${GLOBAL}_$venueId"
+    private fun yaNoHereda(venueId: String) = "${GLOBAL}_sinHeredar_$venueId"
+
+    /**
+     * La llave de [venueId]. Si nunca tuvo, la global de una versión anterior (Codex r7 #1): puede ser la de un vale cuya
+     * respuesta se perdió antes de actualizar y no dice de qué negocio era, así que la ve CADA negocio hasta que ése la suelta
+     * ([soltar]). Dársela a uno solo (al primero que emitía o al activo al arrancar) fallaba cuando era otro (r8 #1, r9 #1-#3).
+     */
+    fun leer(prefs: SharedPreferences, venueId: String): String? = prefs.getString(clave(venueId), null)
+        ?: prefs.getString(GLOBAL, null)?.takeUnless { prefs.getBoolean(yaNoHereda(venueId), false) }
+
+    /** `true` sólo si [llave] quedó en disco. */
+    fun guardar(prefs: SharedPreferences, venueId: String, llave: String): Boolean =
+        prefs.edit().putString(clave(venueId), llave).commit() && prefs.getString(clave(venueId), null) == llave
+
+    /**
+     * Con [siEs] (el SERVIDOR contestó por esa llave), sólo si la de [venueId] sigue siendo ésa: una confirmación tardía no suelta
+     * la de otra emisión (r7 #4), y lo que se mandó con ella se borra. Sin [siEs] («Vaciar»), D5: lo pedido sin respuesta NO se
+     * tira en silencio; pasa a «sin confirmar» y sólo «Descartar» lo olvida (si no, el vale que sí salió quedaba ISSUED).
+     */
+    fun soltar(prefs: SharedPreferences, venueId: String, siEs: String? = null) {
+        if (siEs != null && leer(prefs, venueId) != siEs) return
+        if (siEs == null) apartarSinConfirmar(prefs, venueId)
+        prefs.edit().remove(clave(venueId)).remove(intentos(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+    }
+
+    // ── 🔴 D5 (vales-ciclo): el vale a medias. Lo que se mandó vive y muere con su llave. ──────────────────────────────────
+
+    /** Tope de contenidos distintos con una misma llave: un sexto no se podría recuperar, así que no se manda. */
+    const val TOPE_DE_INTENTOS = 5
+    private fun intentos(venueId: String) = "pendingAreaTicketIssueAttempts_$venueId"
+    private fun sinConfirmar(venueId: String) = "valeSinConfirmar_$venueId"
+    private val json = Json { ignoreUnknownKeys = true }
+    private val listaDeIntentos = ListSerializer(IntentoDeVale.serializer())
+
+    enum class Guardado { SI, NO, TOPE }
+
+    private fun leerIntentos(prefs: SharedPreferences, venueId: String): List<IntentoDeVale> =
+        prefs.getString(intentos(venueId), null)?.let { runCatching { json.decodeFromString(listaDeIntentos, it) }.getOrNull() }
+            ?: emptyList()
+
+    /**
+     * Llave + [intento] en UN `commit()` y relectura, ANTES del POST. Un contenido distinto con la misma llave se AGREGA: nunca se
+     * pisa el que pudo crear el vale (Codex r1 #3). Si la llave guardada es otra (o es la global de una versión anterior), los
+     * intentos empiezan de cero.
+     */
+    fun guardar(prefs: SharedPreferences, venueId: String, llave: String, intento: IntentoDeVale): Guardado {
+        val previos = if (prefs.getString(clave(venueId), null) == llave) leerIntentos(prefs, venueId) else emptyList()
+        val todos = if (previos.any { it.mismoQue(intento) }) previos else previos + intento
+        if (todos.size > TOPE_DE_INTENTOS) return Guardado.TOPE
+        val texto = json.encodeToString(listaDeIntentos, todos)
+        val ok = prefs.edit().putString(clave(venueId), llave).putString(intentos(venueId), texto).commit() &&
+            prefs.getString(clave(venueId), null) == llave && prefs.getString(intentos(venueId), null) == texto
+        return if (ok) Guardado.SI else Guardado.NO
+    }
+
+    /**
+     * La PRIMERA vez que este proceso usa [venueId]: lo que se pidió en la vez anterior de la app y nunca se confirmó pasa a «sin
+     * confirmar», con SU llave, y el negocio queda sin llave viva (lo siguiente sale con otra). `true` si hay uno.
+     */
+    fun alArrancar(prefs: SharedPreferences, venueId: String): Boolean {
+        if (apartarSinConfirmar(prefs, venueId)) {
+            prefs.edit().remove(clave(venueId)).remove(intentos(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+        }
+        return valeSinConfirmar(prefs, venueId) != null
+    }
+
+    /** Lo pedido con la llave viva de [venueId] y sin respuesta pasa a «sin confirmar» con SU llave. `true` si había. */
+    private fun apartarSinConfirmar(prefs: SharedPreferences, venueId: String): Boolean {
+        val llave = prefs.getString(clave(venueId), null)
+        val pedidos = leerIntentos(prefs, venueId)
+        if (llave == null || pedidos.isEmpty()) return false
+        // ponytail: ya hay uno sin confirmar ⇒ no se pisa; mientras exista, «Emitir vale» no deja pedir otro (④).
+        if (prefs.getString(sinConfirmar(venueId), null) == null) {
+            prefs.edit()
+                .putString(sinConfirmar(venueId), json.encodeToString(ValeSinConfirmar.serializer(), ValeSinConfirmar(llave, pedidos)))
+                .commit()
+        }
+        return true
+    }
+
+    /** D5 (Codex r6): ¿hay un vale de esta mercancía pedido sin respuesta (en curso o sin confirmar) en [venueId]? */
+    fun mercanciaEnDuda(prefs: SharedPreferences, venueId: String, lineas: List<IssueAreaTicketLineRequest>): Boolean =
+        (leerIntentos(prefs, venueId) + (valeSinConfirmar(prefs, venueId)?.intentos ?: emptyList())).any { it.mismaMercanciaQue(lineas) }
+
+    fun valeSinConfirmar(prefs: SharedPreferences, venueId: String): ValeSinConfirmar? =
+        prefs.getString(sinConfirmar(venueId), null)
+            ?.let { runCatching { json.decodeFromString(ValeSinConfirmar.serializer(), it) }.getOrNull() }
+            ?.takeIf { it.intentos.isNotEmpty() }
+
+    /**
+     * «Recuperar» confirmó el vale de [llave]: en UN `commit()` queda su papel pendiente (D12, claves [clavePapel] y
+     * [claveNegocioDelPapel]) y se olvida el vale sin confirmar (Codex r3 #1: con dos escrituras sueltas, en WINDOWS una podía
+     * fallar y perderse el papel, o quedar el registro y salir el original dos veces). `false` = no quedó; no se imprime.
+     */
+    fun recuperado(
+        prefs: SharedPreferences, venueId: String, llave: String, codigo: String, clavePapel: String, claveNegocioDelPapel: String,
+    ): Boolean {
+        if (valeSinConfirmar(prefs, venueId)?.llave != llave) return false
+        val antes = listOf(clavePapel, claveNegocioDelPapel, sinConfirmar(venueId)).associateWith { prefs.getString(it, null) }
+        val ok = prefs.edit().putString(clavePapel, codigo).putString(claveNegocioDelPapel, venueId).remove(sinConfirmar(venueId))
+            .commit() && prefs.getString(clavePapel, null) == codigo && prefs.getString(sinConfirmar(venueId), null) == null
+        if (!ok) {
+            // Codex r4 #3: las preferencias de ANDROID cambian la memoria ANTES de escribir; si el disco falló, la memoria
+            // decía que ya no había vale sin confirmar (el aviso se iba y «Emitir» salía con otra llave). Se regresa.
+            prefs.edit().apply { antes.forEach { (k, v) -> if (v == null) remove(k) else putString(k, v) } }.commit()
+        }
+        return ok
+    }
+
+    /** Recuperado o descartado: se olvida, sólo si sigue siendo el de [llave]. */
+    fun olvidarSinConfirmar(prefs: SharedPreferences, venueId: String, llave: String) {
+        if (valeSinConfirmar(prefs, venueId)?.llave != llave) return
+        prefs.edit().remove(sinConfirmar(venueId)).commit()
     }
 }

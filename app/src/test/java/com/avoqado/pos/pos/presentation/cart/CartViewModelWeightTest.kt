@@ -22,12 +22,14 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.data.model.SavedCart
+import com.avoqado.pos.pos.data.model.SavedCartItem
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import io.mockk.coEvery
 import org.junit.Assert.assertFalse
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import org.junit.Assert.assertTrue
 import io.mockk.verify
 import io.mockk.coVerify
@@ -186,6 +188,41 @@ class CartViewModelWeightTest {
         assertEquals(1, items.size)
         assertEquals(2, items.single().quantity)
         assertNull(items.single().weightKg)
+    }
+
+    // D7 (27-oct): un renglón por peso es UNA pesada; el SERVIDOR exige cantidad 1 con `weightQuantity`.
+    @Test
+    fun `D7 subir la cantidad de una pesada no la cambia`() {
+        val vm = createViewModel()
+        vm.addProductByWeight(jamon, 0.435)
+        vm.addProduct(burger)
+        val pesada = vm.cartState.value.items[0].id
+        val pieza = vm.cartState.value.items[1].id
+
+        vm.updateQuantity(pesada, 2)
+        vm.incrementQuantity(pesada)
+        vm.updateQuantity(pieza, 3)
+
+        val items = vm.cartState.value.items
+        assertEquals(1, items[0].quantity)
+        assertEquals(3, items[1].quantity) // un producto por pieza sí cambia
+        assertEquals(18270 + 3 * 15000, vm.cartState.value.subtotalCents)
+
+        vm.updateQuantity(pesada, 0) // bajar a 0 la quita, como hoy
+        assertNull(vm.cartState.value.items.find { it.weightKg != null })
+    }
+
+    @Test
+    fun `D7 agregar el mismo producto no se fusiona con la pesada`() {
+        val vm = createViewModel()
+        vm.addProductByWeight(jamon, 0.435)
+        vm.addProduct(jamon)
+
+        val items = vm.cartState.value.items
+        assertEquals(2, items.size)
+        assertEquals(1, items[0].quantity)
+        assertEquals(0.435, items[0].weightKg!!, 0.0)
+        assertNull(items[1].weightKg)
     }
 
     @Test
@@ -404,7 +441,7 @@ class CartViewModelWeightTest {
     fun `D3 tras un abono, volver a la pantalla no mete los vales encima del saldo pendiente`() = runTest {
         val sesion = sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.restore() } returns sesion
+        coEvery { areaTicketRepository.restore(any()) } returns sesion
         val vm = createViewModel()
         vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
         vm.markPendingSplitOrder("orden-vales")
@@ -422,7 +459,7 @@ class CartViewModelWeightTest {
     fun `D3 con la copia vieja de la sesion, el carrito que continua esa orden tampoco recibe los vales`() = runTest {
         val vieja = sesionConOrden(status = "MATERIALIZED", pagado = "0.00")
         every { areaTicketRepository.session.current() } returns vieja
-        coEvery { areaTicketRepository.restore() } returns vieja
+        coEvery { areaTicketRepository.restore(any()) } returns vieja
         val vm = createViewModel()
         vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
         vm.markPendingSplitOrder("orden-vales")
@@ -439,7 +476,7 @@ class CartViewModelWeightTest {
     fun `D3 una venta nueva no recibe los vales de una sesion con abono que quedo viva`() = runTest {
         val sesion = sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.restore() } returns sesion
+        coEvery { areaTicketRepository.restore(any()) } returns sesion
         val vm = createViewModel()
         vm.addProduct(burger)
 
@@ -454,7 +491,7 @@ class CartViewModelWeightTest {
     fun `restaurar una sesion sin abonos sigue poniendo sus vales en el carrito`() = runTest {
         val sesion = checkoutConVales("linea-a" to "50.00", "linea-b" to "100.00")
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.restore() } returns sesion
+        coEvery { areaTicketRepository.restore(any()) } returns sesion
         val vm = createViewModel()
 
         vm.restoreAreaTicketSession()
@@ -472,7 +509,7 @@ class CartViewModelWeightTest {
         val sesionReal = com.avoqado.pos.areatickets.data.AreaTicketSession(mockk(relaxed = true))
         sesionReal.update("venue-1", sesionConOrden(status = "MATERIALIZED", pagado = "0.00"))
         every { areaTicketRepository.session } returns sesionReal
-        coEvery { areaTicketRepository.restore() } coAnswers { sesionReal.current() }
+        coEvery { areaTicketRepository.restore(any()) } coAnswers { sesionReal.current() }
         val vm = createViewModel()
         vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
         vm.markPendingSplitOrder("orden-vales")
@@ -541,7 +578,7 @@ class CartViewModelWeightTest {
     fun `D4 con una venta cobrada a medias, restaurar la sesion no mete vales encima del saldo`() = runTest {
         val sesion = checkoutConVales("linea-a" to "10.00")
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.restore() } returns sesion
+        coEvery { areaTicketRepository.restore(any()) } returns sesion
         val vm = createViewModel()
         vm.addCustomAmount(name = "Saldo pendiente", amountCents = 5000)
         vm.markPendingSplitOrder("orden-normal")
@@ -561,7 +598,7 @@ class CartViewModelWeightTest {
 
         val resultado = vm.createPayLaterOrder("cliente-1")
 
-        assertEquals(VALES_NO_PAGAR_DESPUES, resultado.exceptionOrNull()?.message)
+        assertEquals(ResultadoPagarDespues.Error(VALES_NO_PAGAR_DESPUES), resultado)
     }
 
     @Test
@@ -573,7 +610,7 @@ class CartViewModelWeightTest {
 
         val resultado = vm.createPayLaterOrder("cliente-1")
 
-        assertEquals(com.avoqado.pos.payment.presentation.VALES_CON_ABONO, resultado.exceptionOrNull()?.message)
+        assertEquals(ResultadoPagarDespues.Error(com.avoqado.pos.payment.presentation.VALES_CON_ABONO), resultado)
     }
 
     @Test
@@ -611,7 +648,7 @@ class CartViewModelWeightTest {
     @Test
     fun `regla 8 los vales de una venta vaciada no aparecen en la siguiente y se intenta soltarlos`() = runTest {
         val real = sesionReal(checkoutConVales("linea-a" to "10.00"))
-        coEvery { areaTicketRepository.restore() } coAnswers { real.current() }
+        coEvery { areaTicketRepository.restore(any()) } coAnswers { real.current() }
         val vm = createViewModel()
         vm.traerValesDeLaSesion()
         assertEquals(1, vm.cartState.value.items.size)
@@ -623,6 +660,262 @@ class CartViewModelWeightTest {
 
         assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
         coVerify { areaTicketRepository.cancel(soloSi = "checkout-1") }
+    }
+
+    // MARK: - J5 (vales-ciclo r0): el vale leído para la venta A nunca cae en la venta B que el cajero empezó mientras tanto.
+
+    private fun sesionVacia(): com.avoqado.pos.areatickets.data.AreaTicketSession {
+        val real = com.avoqado.pos.areatickets.data.AreaTicketSession(mockk(relaxed = true))
+        every { areaTicketRepository.session } returns real
+        return real
+    }
+
+    @Test
+    fun `J5 si la venta cambia mientras se resuelve el codigo, el vale no se pide ni entra a la venta nueva`() = runTest {
+        val real = sesionVacia()
+        val resuelto = kotlinx.coroutines.CompletableDeferred<AreaTicketScanData>()
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } coAnswers { resuelto.await() }
+        coEvery { areaTicketRepository.addTicket("9470000015") } coAnswers {
+            checkoutConVales("linea-a" to "10.00").also { real.update("venue-1", it) }
+        }
+        val vm = createViewModel()
+
+        val consulta = async { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+        vm.finalizarVenta()
+        vm.addProduct(burger)
+        resuelto.complete(AreaTicketScanData(type = "AREA_TICKET", code = "9470000015"))
+        val result = consulta.await()
+
+        assertEquals(VALES_VENTA_CAMBIO_AL_LEER, (result as? ScannedBarcodeResult.Error)?.message)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `J5 si cambia el negocio mientras se leen los ajustes, el vale no se pide`() = runTest {
+        sesionVacia()
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        var negocio = "venue-1"
+        every { secureStorage.venueId } answers { negocio }
+        val ajustes = areaTicketRepository.settings()
+        coEvery { areaTicketRepository.settings() } coAnswers { negocio = "venue-2"; ajustes }
+        val vm = createViewModel()
+
+        val result = vm.resolveScannedBarcode("9470000015")
+
+        assertEquals(VALES_VENTA_CAMBIO_AL_LEER, (result as? ScannedBarcodeResult.Error)?.message)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
+    }
+
+    @Test
+    fun `J5 si la venta cambia mientras se aparta el vale, no entra a la venta nueva y su apartado se suelta`() = runTest {
+        val real = sesionVacia()
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val respuesta = kotlinx.coroutines.CompletableDeferred<AreaTicketCheckout>()
+        coEvery { areaTicketRepository.addTicket("9470000015") } coAnswers { respuesta.await().also { real.update("venue-1", it) } }
+        val vm = createViewModel()
+
+        val consulta = async { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+        vm.finalizarVenta()
+        vm.addProduct(burger)
+        respuesta.complete(checkoutConVales("linea-a" to "10.00").copy(status = "OPEN"))
+        val result = consulta.await()
+        runCurrent()
+
+        assertEquals(VALES_VENTA_CAMBIO_AL_LEER, (result as? ScannedBarcodeResult.Error)?.message)
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+        coVerify(exactly = 1) { areaTicketRepository.cancel(soloSi = "checkout-1") }
+    }
+
+    // J7 (vales-ciclo r0): reimprimir o guardar el PDF de un vale anterior termina SÓLO la venta que lo emitió.
+    @Test
+    fun `J7 terminar la venta que emitio el vale no vacia otra venta del carrito`() {
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        val ventaQueEmitio = vm.cartState.value.identidadDeVenta
+        vm.finalizarVenta()
+        vm.addProduct(burger)
+
+        vm.finalizarVentaSiEs(ventaQueEmitio)
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+        vm.finalizarVentaSiEs(null)
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+
+        vm.finalizarVentaSiEs(vm.cartState.value.identidadDeVenta)
+        assertTrue(vm.cartState.value.isEmpty)
+    }
+
+    // D2 (vales-ciclo): la llave de emisión de vales se suelta al VACIAR a mano, la salida que da el aviso del 409 («… o
+    // vacíalo»). Terminar la venta por otro camino (guardar el carrito, pagar después) la conserva: si el vale cuya respuesta
+    // se perdió vuelve con el mismo contenido, el servidor devuelve ESE vale en vez de crear otro.
+    @Test
+    fun `D5 guardar el carrito con un vale de esa mercancia en duda marca la copia`() {
+        // Codex r6: se perdió la respuesta y el cajero guardó el carrito; restaurarlo después de «Recuperar» tiene que preguntar.
+        every { secureStorage.mercanciaDeValeEnDuda(any(), any()) } returns true
+        every { savedCartsRepository.saveCart(any()) } returns true
+        val vm = createViewModel()
+        vm.addProduct(burger)
+
+        assertTrue(vm.saveCurrentCart())
+        verify { savedCartsRepository.saveCart(match { it.cobroIniciadoEn != null }) }
+
+        every { secureStorage.mercanciaDeValeEnDuda(any(), any()) } returns false
+        vm.addProduct(burger)
+        assertTrue(vm.saveCurrentCart())
+        verify { savedCartsRepository.saveCart(match { it.cobroIniciadoEn == null }) }
+    }
+
+    @Test
+    fun `D5 al recuperar se termina la venta en pantalla si es la misma mercancia y no si es otra`() {
+        // Codex r6 #2: tras «Recuperar», el carrito con lo mismo seguía en pantalla y «Emitir» sacaba otro vale.
+        every { savedCartsRepository.deleteCart(any()) } returns true
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        val linea = com.avoqado.pos.areatickets.presentation.intentoDeVale(vm.cartState.value).lineas.single()
+        // El vale se pidió con OTRO id de renglón (el carrito se armó otra vez): es la misma mercancía.
+        val mismo = com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea.copy(clientLineId = "otro-id")))
+        val otro = com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea.copy(quantity = "2")))
+
+        assertTrue(vm.alRecuperarVale(otro))
+        assertFalse("otra cantidad: la venta sigue", vm.cartState.value.isEmpty)
+        assertTrue(vm.alRecuperarVale(mismo))
+        assertTrue("la misma mercancía: ya quedó en el vale", vm.cartState.value.isEmpty)
+
+        // Codex r7 #1: la copia S1 sigue siendo esa mercancía ⇒ se retira; si no se pudo, el vale sigue sin confirmar.
+        fun copia(cantidad: Int) = SavedCart(
+            id = "S1", name = "S1",
+            items = listOf(SavedCartItem(productId = linea.productId, name = "Burger", unitPrice = 1, quantity = cantidad, lineId = "x")),
+        )
+        every { savedCartsRepository.savedCarts } returns MutableStateFlow(listOf(copia(1)))
+        every { savedCartsRepository.deleteCart("S1") } returns false
+        assertFalse("si la copia no se retira, el vale sigue sin confirmar", vm.alRecuperarVale(mismo.copy(carritoGuardadoId = "S1")))
+        // …y si la volvieron a guardar con OTRA mercancía, no se toca (conserva su marca D1).
+        every { savedCartsRepository.savedCarts } returns MutableStateFlow(listOf(copia(2)))
+        assertTrue(vm.alRecuperarVale(mismo.copy(carritoGuardadoId = "S1")))
+        // Codex r8: una cortesía tampoco es el producto a precio normal.
+        val cortesia = copia(1).let { it.copy(items = it.items.map { item -> item.copy(isCortesia = true) }) }
+        every { savedCartsRepository.savedCarts } returns MutableStateFlow(listOf(cortesia))
+        assertTrue(vm.alRecuperarVale(mismo.copy(carritoGuardadoId = "S1")))
+        verify(exactly = 1) { savedCartsRepository.deleteCart("S1") }
+    }
+
+    @Test
+    fun `D5 al recuperar no se termina una venta en pantalla que trae cortesia`() {
+        // Codex r8: el carrito trae lo mismo pero como cortesía: no es la mercancía del vale.
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        val linea = com.avoqado.pos.areatickets.presentation.intentoDeVale(vm.cartState.value).lineas.single()
+        vm.markItemAsCortesia(vm.cartState.value.items.single().id, "prueba")
+
+        assertTrue(vm.alRecuperarVale(com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea))))
+
+        assertFalse(vm.cartState.value.isEmpty)
+    }
+
+    @Test
+    fun `D5 al recuperar nunca se termina una venta a medio cobrar aunque traiga lo mismo`() {
+        // Codex r7 #2: P quedó en pantalla ligado al saldo de OTRA orden; vaciarlo perdía esa continuación.
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        vm.markPendingSplitOrder("orden-B")
+        val linea = com.avoqado.pos.areatickets.presentation.intentoDeVale(vm.cartState.value).lineas.single()
+
+        assertTrue(vm.alRecuperarVale(com.avoqado.pos.areatickets.data.IntentoDeVale(lineas = listOf(linea))))
+
+        assertFalse("la venta a medias sigue", vm.cartState.value.isEmpty)
+        assertTrue(vm.hayVentaAMedias())
+    }
+
+    @Test
+    fun `D2 vaciar a mano suelta la llave de emision y terminar la venta por otro camino no`() {
+        val vm = createViewModel()
+        vm.addProduct(burger)
+        vm.finalizarVenta()
+        verify(exactly = 0) { secureStorage.soltarLlaveDeEmisionDeVales(any(), any()) }
+
+        vm.addProduct(burger)
+        vm.vaciar()
+
+        assertTrue(vm.cartState.value.isEmpty)
+        verify(exactly = 1) { secureStorage.soltarLlaveDeEmisionDeVales("venue-1", null) }
+    }
+
+    // J12 (vales-ciclo, Codex r1): la restauración que tardó vuelve con el apartado de la venta B que el cajero empezó mientras
+    // tanto. Lo compara con la venta A de cuando se pidió: no es de A, pero tampoco es para soltarlo, porque B sigue en pantalla.
+    @Test
+    fun `J12 una restauracion atrasada no suelta el apartado de la venta nueva`() = runTest {
+        val real = sesionVacia()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { areaTicketRepository.restore(any()) } coAnswers { respuesta.await(); real.current() }
+        val vm = createViewModel()
+        vm.addProduct(burger)
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+        vm.finalizarVenta()
+        vm.addProduct(burger)
+        real.update("venue-1", checkoutConVales("linea-b" to "10.00").copy(status = "OPEN"))
+        real.anotarVentaDuena(vm.cartState.value.identidadDeVenta)
+        respuesta.complete(Unit)
+        runCurrent()
+
+        coVerify(exactly = 0) { areaTicketRepository.cancel(soloSi = any()) }
+        assertEquals("checkout-1", real.current()?.id)
+    }
+
+    // J13 (vales-ciclo, Codex r2): la restauración que tardó instala un apartado SIN dueño (venía del disco, tras reiniciar)
+    // cuando el carrito ya es otra venta. Queda de la venta de cuando se pidió, y la regla 8 lo suelta al siguiente escaneo:
+    // sin dueño, la venta nueva lo adoptaba con sus vales viejos.
+    @Test
+    fun `J13 una restauracion atrasada sin dueno queda de la venta de cuando se pidio y no pasa a la nueva`() = runTest {
+        val real = sesionVacia()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { areaTicketRepository.restore(any()) } coAnswers {
+            respuesta.await()
+            real.update("venue-1", checkoutConVales("linea-a" to "10.00").copy(status = "OPEN"))
+            real.current()
+        }
+        val vm = createViewModel()
+        val ventaDeCuandoSePidio = vm.cartState.value.identidadDeVenta
+
+        vm.restoreAreaTicketSession()
+        runCurrent()
+        vm.addProduct(burger)
+        vm.finalizarVenta()
+        vm.addProduct(burger)
+        respuesta.complete(Unit)
+        runCurrent()
+
+        assertEquals(ventaDeCuandoSePidio, real.ventaDuena)
+        assertEquals(listOf("Hamburguesa"), vm.cartState.value.items.map { it.name })
+    }
+
+    // F2 (vales-ciclo, Codex r3): el escaneo de A espera a que se suelte el apartado anterior; mientras, el cajero pasa a B. Al
+    // volver, la cancelación vieja no prepara dueño ni llaves para A (pisaba la creación de B) y el escaneo lo dice.
+    @Test
+    fun `F2 una cancelacion atrasada no prepara la creacion de una venta que ya se fue`() = runTest {
+        val real = sesionReal(checkoutConVales("linea-a" to "10.00"))
+        coEvery { areaTicketRepository.resolveCheckoutScan("9470000015") } returns AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { areaTicketRepository.cancel(soloSi = "checkout-1") } coAnswers { respuesta.await(); real.clearIf("checkout-1"); null }
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        vm.clearCart()
+        val ventaA = vm.cartState.value.identidadDeVenta
+
+        val consulta = async { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+        vm.addProduct(burger)
+        vm.finalizarVenta()
+        respuesta.complete(Unit)
+        val result = consulta.await()
+        runCurrent()
+
+        assertEquals(VALES_VENTA_CAMBIO_AL_LEER, (result as ScannedBarcodeResult.Error).message)
+        assertTrue(real.ventaDuena != ventaA)
+        coVerify(exactly = 0) { areaTicketRepository.addTicket(any()) }
     }
 
     // Regla 8: con un apartado de otra venta que no se pudo soltar, escanear no le cuelga el vale nuevo a esa venta.
@@ -680,6 +973,27 @@ class CartViewModelWeightTest {
         assertEquals(listOf("Saldo pendiente" to 7500), vm.cartState.value.items.map { it.name to it.unitPrice })
         assertNull(vm.saldoDeVales.value)
         assertEquals("orden-vales", vm.resolvePendingSplitOrderForCharge())
+    }
+
+    // F3 (vales-ciclo, Codex r3): «Cobrar saldo» relee la venta; mientras tanto el cajero agrega algo y vacía. El carrito vuelve a
+    // estar vacío, pero ya es OTRA venta: el saldo de la operación anterior no se siembra en ella.
+    @Test
+    fun `F3 Cobrar saldo no siembra el saldo en otra venta que quedo vacia mientras releia`() = runTest {
+        val vm = conAbonoEnElCarrito()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { areaTicketRepository.refresh() } coAnswers { respuesta.await(); areaTicketRepository.session.current() }
+        vm.finalizarVenta()
+        runCurrent()
+
+        vm.cobrarSaldoDeVales()
+        runCurrent()
+        vm.addProduct(burger)
+        vm.clearCart()
+        respuesta.complete(Unit)
+        runCurrent()
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.resolvePendingSplitOrderForCharge())
     }
 
     @Test

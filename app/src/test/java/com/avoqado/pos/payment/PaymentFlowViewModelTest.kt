@@ -41,6 +41,7 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.customerdisplay.CustomerContent
+import com.avoqado.pos.payment.presentation.AVISO_SALDO_SIN_CONFIRMAR
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.payment.presentation.cobraLosValesDeLaSesion
 import com.avoqado.pos.payment.presentation.tipCentsForPercent
@@ -143,6 +144,9 @@ class PaymentFlowViewModelTest {
 
     private lateinit var viewModel: PaymentFlowViewModel
 
+    /** La sesión de mesa REAL que ve el ViewModel (A5: una mesa en PAYING no puede capturar el cobro de un pedido web). */
+    private val sesionDeMesa = com.avoqado.pos.tables.data.TableSession()
+
     /** El espejo REAL de la pantalla del cliente: se guarda para leer lo que el ViewModel le empuja. */
     private lateinit var customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState
 
@@ -186,7 +190,7 @@ class PaymentFlowViewModelTest {
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "fast-pay-1", receiptAccessKey = null))
 
         coEvery {
-            cashDrawerRepository.addCashSale(any(), any(), any(), any(), any())
+            cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any())
         } returns null
 
         coEvery {
@@ -266,7 +270,7 @@ class PaymentFlowViewModelTest {
             // saltan en tiempo virtual; sin `advanceUntilIdle()` la coroutine queda SUSPENDIDA ahí,
             // que es justo lo que exige "el cobro nunca se frena".
             comandaDispatcher = comandaDispatcherReal,
-            tableSession = com.avoqado.pos.tables.data.TableSession(),
+            tableSession = sesionDeMesa,
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState().also { customerDisplay = it },
             areaTicketRepository = areaTicketRepository,
@@ -997,7 +1001,7 @@ class PaymentFlowViewModelTest {
         )
         every { areaTicketRepository.session.current() } returns openCheckout
         coEvery {
-            areaTicketRepository.materialize(any(), any(), any(), any())
+            areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any())
         } returns materializedCheckout
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
@@ -1127,7 +1131,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
-        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
         val estado = viewModel.state.value
         assertTrue("$estado", estado is PaymentFlowState.Error && "vuelve a escanear" in estado.message)
     }
@@ -1139,7 +1143,7 @@ class PaymentFlowViewModelTest {
     fun `cancelar un cobro de vales que fallo suelta su apartado`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } throws
             com.avoqado.pos.areatickets.data.AreaTicketException("AREA_TICKETS_REQUIRE_CONNECTION", "Sin conexión", true)
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
@@ -1160,9 +1164,9 @@ class PaymentFlowViewModelTest {
     fun `una sesion de vales que solo cambio no se olvida`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } throws
             com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "La sesión cambió o venció.", false)
-        coEvery { areaTicketRepository.refresh() } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2099-01-01T00:00:00.000Z")
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2099-01-01T00:00:00.000Z")
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
         viewModel.confirmCashCustom(100)
@@ -1177,9 +1181,9 @@ class PaymentFlowViewModelTest {
     fun `una sesion de vales que de verdad vencio si se olvida`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } throws
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } throws
             com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "La sesión cambió o venció.", false)
-        coEvery { areaTicketRepository.refresh() } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2020-01-01T00:00:00.000Z")
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion.copy(status = "OPEN", order = null, expiresAt = "2020-01-01T00:00:00.000Z")
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
         viewModel.confirmCashCustom(100)
@@ -1187,7 +1191,7 @@ class PaymentFlowViewModelTest {
 
         // Quién la olvida (o la suelta, si tenía la cuenta armada) es `restore`, con la regla 2: lo prueba
         // `AreaTicketVidaDelApartadoTest`. Aquí sólo que se le pide tras releer.
-        coVerify(exactly = 1) { areaTicketRepository.refresh() }
+        coVerify(exactly = 1) { areaTicketRepository.refresh(any(), any()) }
         coVerify(exactly = 1) { areaTicketRepository.restore() }
     }
 
@@ -1198,7 +1202,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
         val enviados = slot<List<com.avoqado.pos.areatickets.data.NormalCheckoutItem>>()
-        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val bolsa = CartItem(id = "bolsa", type = CartItemType.CustomAmount, name = "Bolsa", unitPrice = 2000)
 
@@ -1217,7 +1221,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         every { areaTicketRepository.session.current() } returns sesion
         val enviados = slot<List<com.avoqado.pos.areatickets.data.NormalCheckoutItem>>()
-        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(capture(enviados), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val regalo = CartItem(id = "regalo", type = CartItemType.CustomAmount, name = "Regalo", unitPrice = 2000, isCortesia = true)
 
@@ -1236,7 +1240,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         val armando = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers { armando.await(); sesion }
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { armando.await(); sesion }
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
@@ -1273,7 +1277,7 @@ class PaymentFlowViewModelTest {
     fun `r7 un abono de vales se marca en el apartado desde el cobro con el saldo del servidor`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(
@@ -1295,7 +1299,7 @@ class PaymentFlowViewModelTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"))
         val armando = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers {
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
             armando.await()
             throw com.avoqado.pos.areatickets.data.AreaTicketException("AREA_TICKETS_REQUIRE_CONNECTION", "Sin conexión", true)
         }
@@ -1319,7 +1323,7 @@ class PaymentFlowViewModelTest {
         var sesionActual: AreaTicketCheckout? = sesionA
         val armandoA = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } answers { sesionActual }
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } coAnswers {
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
             armandoA.await()
             // El repositorio real rechaza A si el apartado vigente ya es B.
             throw com.avoqado.pos.areatickets.data.AreaTicketException("CHECKOUT_SESSION_STALE", "Cambió el apartado", false)
@@ -1359,8 +1363,8 @@ class PaymentFlowViewModelTest {
         var sesionActual = sesionA
         val refrescandoA = CompletableDeferred<Unit>()
         every { areaTicketRepository.session.current() } answers { sesionActual }
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesionA
-        coEvery { areaTicketRepository.refresh() } coAnswers {
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesionA
+        coEvery { areaTicketRepository.refresh(any(), any()) } coAnswers {
             refrescandoA.await()
             sesionActual
         }
@@ -1393,8 +1397,8 @@ class PaymentFlowViewModelTest {
     fun `P1 si el carrito no trae los vales del servidor el cobro se detiene sin cobrar`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
-        coEvery { areaTicketRepository.refresh() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100))))
@@ -1414,7 +1418,7 @@ class PaymentFlowViewModelTest {
     fun `con los mismos vales que el servidor el cobro sigue`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 100), lineaDeVale("b", 200))))
@@ -1424,7 +1428,7 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) {
             orderRepository.recordCashPayment("order-vales", 300, any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
-        coVerify(exactly = 0) { areaTicketRepository.refresh() }
+        coVerify(exactly = 0) { areaTicketRepository.refresh(any(), any()) }
         assertFalse(viewModel.valesNoCoincidian.value)
     }
 
@@ -1434,7 +1438,7 @@ class PaymentFlowViewModelTest {
     fun `un split de vales que continua no se compara y sigue como siempre`() = runTest {
         val sesion = sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val saldo = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 200)
 
@@ -1456,8 +1460,8 @@ class PaymentFlowViewModelTest {
     fun `P1 continuar una orden normal con una sesion de vales ajena cobra contra su orden y no arma vales`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "0.50"))
         every { areaTicketRepository.session.current() } returns sesion
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns sesion
-        coEvery { areaTicketRepository.refresh() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion
         cobroDeEfectivoRegistrado()
         val pendiente = CartItem(id = "taco-2", type = CartItemType.ProductItem("taco"), name = "Taco", unitPrice = 100)
 
@@ -1465,7 +1469,7 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashCustom(100)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) {
             orderRepository.recordCashPayment("order-vales", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
@@ -1479,8 +1483,8 @@ class PaymentFlowViewModelTest {
     fun `con un abono que la copia del aparato no tenia el cobro sigue como siempre`() = runTest {
         val vieja = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         every { areaTicketRepository.session.current() } returns vieja
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns vieja
-        coEvery { areaTicketRepository.refresh() } returns sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns vieja
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
         cobroDeEfectivoRegistrado()
         val saldo = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 200)
 
@@ -1542,7 +1546,7 @@ class PaymentFlowViewModelTest {
             tickets = listOf(valeDeArea("ticket-line-b3", "1.00")),
         )
         every { areaTicketRepository.session.current() } returns openCheckout
-        coEvery { areaTicketRepository.materialize(any(), any(), any(), any()) } returns materializedCheckout
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns materializedCheckout
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
@@ -1760,6 +1764,60 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.comandaWarning.value == null)
+    }
+
+    /**
+     * D2 (founder, 28-oct): una tienda sin cocina (sin estaciones y sin ninguna impresora de cocina) veía «No salió la
+     * comanda de: Cocina» después de CADA venta (demo de Healthy Boutique en la D3). Sin cocina no hay comanda que avisar.
+     */
+    @Test
+    fun `P2 un negocio sin impresora de cocina ni estaciones no recibe aviso de comanda al cobrar`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-tienda")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-tienda", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 0, fallidas = emptyList())
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Jicafits", unitPrice = 10500),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(10500)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNull("una tienda sin cocina no debe ver aviso de comanda", viewModel.comandaWarning.value)
+    }
+
+    @Test
+    fun `P1 sin estaciones pero con impresora de cocina que falla el aviso sigue`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-resto")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-resto", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = listOf("Cocina"))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Taco", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        val aviso = viewModel.comandaWarning.value
+        assertTrue("una impresora de cocina que falla se sigue avisando: $aviso", aviso is EstadoDeComanda.NoSalio)
     }
 
     // MARK: - Task 4: el aviso trae la causa REAL del server y no frena el cobro
@@ -2885,7 +2943,7 @@ class PaymentFlowViewModelTest {
         )
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     /** El efectivo real SÍ tiene que seguir entrando al arqueo. */
@@ -2910,7 +2968,10 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashPreset(tenderedCents = 800)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(800, any(), any(), any(), any()) }
+        // Rediseño r9: con apartado de efectivo puro (el repositorio de cobros de esta prueba lo acepta) la venta entra al arqueo
+        // por su salida de `EN_VUELO` (`SalidaDelApartadoRoomTest`), no por el ViewModel.
+        coVerify(exactly = 1) { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     @Test
@@ -2950,7 +3011,9 @@ class PaymentFlowViewModelTest {
         val success = viewModel.state.value as PaymentFlowState.Success
         assertEquals(100, success.changeAmount)
         assertEquals(400, success.totalAmount)
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(400, "order-race", any(), any(), any()) }
+        // Rediseño r9: el cajón lo anota la salida de `EN_VUELO` con la MISMA función (`OrderRepository.importeCobradoEnEfectivo`),
+        // fijada con su 2xx en `CashDrawerVentaDadaPorCobradaTest`.
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     @Test
@@ -2989,7 +3052,7 @@ class PaymentFlowViewModelTest {
 
         val success = viewModel.state.value as PaymentFlowState.Success
         assertEquals(500, success.totalAmount)
-        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(500, "order-overflow", any(), any(), any()) }
+        assertEquals("la misma función que usa la anotación del cajón", 500, OrderRepository.importeCobradoEnEfectivo(Int.MAX_VALUE, Int.MAX_VALUE, 500))
     }
 
     /**
@@ -3103,6 +3166,295 @@ class PaymentFlowViewModelTest {
         )
     }
 
+    // MARK: - A5 (pedidos en línea 1c): cobrar un pedido sin mesa
+
+    /** El carrito que siembra la bandeja: un solo renglón de importe por el saldo del pedido (molde: `TableOrderScreen`). */
+    private fun carritoDelPedidoWeb(cents: Int) = CartState(
+        items = listOf(CartItem(id = "saldo-web", type = CartItemType.CustomAmount, name = "Pedido #W1", unitPrice = cents)),
+        orderType = "PICKUP",
+    )
+
+    @Test fun `cached web balance cannot start a card charge`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO)
+        advanceUntilIdle()
+        val before = viewModel.state.value
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals(before, viewModel.state.value)
+    }
+
+    private fun mesaCobrando() = com.avoqado.pos.tables.data.TableSession.Active(
+        tableId = "mesa-5", tableNumber = "5", areaName = null, orderId = "orden-de-la-mesa", orderNumber = "M5",
+        version = 1, totalCents = 30000, mode = com.avoqado.pos.tables.data.TableSession.Mode.PAYING,
+    )
+
+    private fun cobroRegistrado(amount: Int, tip: Int = 0, retenido: Int?) = Result.success(
+        OrderRepository.CashPayResult(
+            paymentId = "pay-web", receiptAccessKey = null, recordedAmountCents = amount, recordedTipCents = tip,
+            // Lo que de verdad contesta el server: lo que sobró del importe ENVIADO, casi siempre 0 (incidente del 10-sep).
+            authoritativeChangeCents = 0, remainingBalanceCents = 0, orderPaymentStatus = "PAID", cashRetainedCents = retenido,
+        ),
+    )
+
+    /**
+     * Contrato con Rappi 2b (21-oct): cambio = recibido − `cashRetainedCents` cuando la respuesta lo trae. Aquí el servidor
+     * dice que se quedan $120 en el cajón (p. ej. un PAY_IN de $20 sobre un cobro de $100): con $150 el cambio es $30, no los
+     * $50 de la fórmula de hoy (recibido − importe − propina).
+     */
+    @Test
+    fun `change uses cashRetainedCents when present`() = runTest {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 12000)
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.confirmCashPreset(tenderedCents = 15000)
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals("recibido 150.00 − retenido 120.00", 3000, exito.changeAmount)
+        // Rappi 2b (Codex plan r1 #3): un solo total para caja, pantalla y ticket: lo que se quedó en el cajón.
+        assertEquals("el total es lo retenido: recibido − cambio", 12000, exito.totalAmount)
+        assertEquals(15000 - exito.changeAmount, exito.totalAmount)
+    }
+
+    /** El ejemplo de S2: se deben $100 y el cliente da $150 ⇒ el servidor retiene $100 y el cambio es $50 (igual que hoy). */
+    @Test
+    fun `change uses cashRetainedCents on an overpayment`() = runTest {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.confirmCashPreset(tenderedCents = 15000)
+        advanceUntilIdle()
+
+        assertEquals(5000, (viewModel.state.value as PaymentFlowState.Success).changeAmount)
+    }
+
+    /** Servidor viejo, sin `cashRetainedCents`: la fórmula de hoy (recibido − importe − propina), nunca `changeCents`. */
+    // MARK: - Rappi 2b: pedido de plataforma en efectivo
+
+    private fun cobroDeRappi() = Result.success(
+        OrderRepository.CashPayResult(
+            paymentId = "pay-rappi", receiptAccessKey = null, recordedAmountCents = 17500, recordedTipCents = 2000,
+            authoritativeChangeCents = 0, remainingBalanceCents = 0, orderPaymentStatus = "PAID", cashRetainedCents = 20500,
+        ),
+    )
+
+    @Test
+    fun `P1 a Rappi cash order skips rating and tip even when both are on`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = true, showTipScreen = true)
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
+        advanceUntilIdle()
+        assertTrue(
+            "la propina ya viene en el pedido: pedir otra sumaría una segunda",
+            viewModel.state.value is PaymentFlowState.SelectingPaymentMethod,
+        )
+    }
+
+    @Test
+    fun `P1 a Rappi cash order of 205 paid with 500 keeps 205 in the drawer, screen and ticket`() = runTest {
+        every { cashPaymentRepository.processCashPayment(20500, 50000) } returns CashPaymentResult.Success(changeCents = 29500)
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
+        } returns cobroDeRappi()
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
+        viewModel.confirmCashPreset(tenderedCents = 50000)
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(29500, exito.changeAmount)
+        assertEquals("venta 175 + propina 20 + Rappi 10", 20500, exito.totalAmount)
+        // Con apartado puro, SalidaDelApartado anota los 20500 (RetenidoEnElApartadoDevelopTest); el VM no los duplica.
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
+        val llaveDelApartado = slot<String>()
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = match { it.total == 20500 && it.tip == 0 },
+                staffId = any(), cashTenderedCents = 50000, changeCents = 29500, rating = any(),
+                orderId = "rappi-1", orderExternalId = any(), customerId = any(), idempotencyKey = capture(llaveDelApartado),
+                manualMethod = null, tenderType = null, amountCents = 20500, tipCents = 0, splitType = "FULLPAYMENT",
+                venueId = "venue-1", capturadaEn = any(), cajaDelCobro = any(), enLugarDe = any(),
+            )
+        }
+        assertTrue(llaveDelApartado.captured.isNotBlank())
+        // Se manda el saldo como importe y SIN propina: el servidor reparte lo recibido. Y como efectivo YA recibido (captura
+        // previa): si Rappi canceló con el cobro abierto, el SERVIDOR lo registra y avisa, nunca lo rechaza (Codex código r1 #2).
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), llaveDelApartado.captured, capturedVenueId = any(), capturaPrevia = true)
+        }
+    }
+
+    @Test
+    fun `P1 a Rappi cash order opened with the saved balance goes as a prior capture`() = runTest {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
+        } returns cobroDeRappi()
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO)
+        viewModel.confirmCashPreset(tenderedCents = 20500)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), any(), capturedVenueId = any(), capturaPrevia = true)
+        }
+    }
+
+    @Test
+    fun `P1 a web order is never sent as a prior capture`() {
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA.esCapturaPrevia)
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO.esCapturaPrevia)
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL.esCapturaPrevia)
+    }
+
+    @Test
+    fun `P1 a Rappi cash order refuses card and other methods`() = runTest {
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
+        advanceUntilIdle()
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.confirmManualChoice(
+            com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed(com.avoqado.pos.payment.domain.ManualPaymentMethod.entries.first()),
+        )
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingPaymentMethod)
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO.permiteTarjeta)
+    }
+
+    @Test
+    fun `change keeps today's formula without it`() = runTest {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 9000, tip = 500, retenido = null)
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.confirmCashPreset(tenderedCents = 15000)
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals("recibido 150.00 − (90.00 + 5.00)", 5500, exito.changeAmount)
+        assertEquals(9500, exito.totalAmount)
+    }
+
+    /**
+     * Review Focus 7 (Codex plan r1 #1): una mesa quedó en «cobrando» (se cerró la hoja de un split) y después se cobra un
+     * pedido web desde la bandeja. El dinero va al pedido web, en efectivo y con tarjeta; la mesa no se toca.
+     */
+    @Test
+    fun `a PAYING table session does not capture the web order charge`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals(listOf("web-1"), cobradas)
+        assertEquals("la mesa sigue tal cual", mesaCobrando(), sesionDeMesa.current())
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+
+        // Con la terminal: la orden que viaja es la del pedido web.
+        val ordenALaTerminal = slot<String>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+        } returns TerminalPaymentResult.Error("Terminal timeout")
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals("web-1", ordenALaTerminal.captured)
+    }
+
+    /**
+     * Ruling 21 #1: el otro contexto global de venta, la sesión de VALES (`AreaTicketSession`), tampoco captura el cobro web.
+     * El cajero escaneó vales a medias en «Cobrar» (la venta de vales ya tiene un abono), se fue a «Más → Pedidos en línea» y
+     * cobró un pedido: antes el efectivo y la tarjeta liquidaban la orden de los vales, y al terminar se borraba su sesión.
+     */
+    @Test
+    fun `a half-scanned vales session does not capture the web order charge`() = runTest {
+        val vales = sesionDeVales("1.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.00"))
+        every { areaTicketRepository.session.current() } returns vales
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns vales
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns vales
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals("el dinero va al pedido web", listOf("web-1"), cobradas)
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+
+        // Con la terminal, igual: la orden que viaja es la del pedido web.
+        val ordenALaTerminal = slot<String>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+        } returns TerminalPaymentResult.Error("Terminal timeout")
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertEquals("web-1", ordenALaTerminal.captured)
+
+        // Y cancelar ese cobro no cancela la venta de vales.
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        // La venta de vales sigue viva: ni se materializó, ni se terminó, ni se borró, ni se canceló.
+        coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.refresh(any(), any()) }
+        coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
+        // La sesión se toma fuera del `verify`: dentro, MockK cuenta el `getSession()` de la cadena como llamada prohibida.
+        val sesionDeVales = areaTicketRepository.session
+        verify(exactly = 0) { sesionDeVales.clear() }
+        verify(exactly = 0) { sesionDeVales.clearIf(any()) }
+    }
+
+    /** Sin origen (NORMAL) nada cambia: la mesa en PAYING sigue mandando, y el split de mostrador cobra su orden. */
+    @Test
+    fun `existing table and split flows unchanged with origen NORMAL`() = runTest {
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+
+        // Split de mostrador, sin mesa: la parte 2 cobra contra la orden de la parte 1.
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "orden-parte-1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        // Mesa en PAYING: como hoy, el cobro liquida la orden de la mesa.
+        sesionDeMesa.start(mesaCobrando())
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000))
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        // Y con una orden de mostrador a medias, también como hoy: la mesa en PAYING gana (origen NORMAL).
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "orden-parte-1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals(listOf("orden-parte-1", "orden-de-la-mesa", "orden-de-la-mesa"), cobradas)
+    }
+
     /**
      * 🔴 UNA VENTA EN CERO NO MUEVE EFECTIVO, ASÍ QUE NO ENTRA AL CAJÓN.
      *
@@ -3143,7 +3495,7 @@ class PaymentFlowViewModelTest {
         viewModel.confirmCashPreset(tenderedCents = 0)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
     @Test
@@ -4781,4 +5133,238 @@ class PaymentFlowViewModelTest {
         assertEquals(PaymentErrorSource.NETWORK, estado.source)
         coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
     }
+
+    // MARK: - Dividir por producto, fase 1 (27-oct): combo completo (D4), saldo real (D7), pantalla de la parte (D8)
+
+    private fun pieza(id: String, precio: Int, combo: String? = null) = CartItem(
+        id = id, type = CartItemType.ProductItem("prod-$id"), name = id, unitPrice = precio, promotionInstanceId = combo,
+    )
+
+    private fun saldoPendiente(cents: Int) = CartState(
+        items = listOf(CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = cents)),
+    )
+
+    private fun elServidorDiceTrasElEfectivo(saldo: Int, estado: String) {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(paymentId = "p-ef", receiptAccessKey = null, remainingBalanceCents = saldo, orderPaymentStatus = estado),
+        )
+    }
+
+    @Test
+    fun `D4 elegir una pieza de un combo paga el combo completo`() {
+        val cart = CartState(items = listOf(pieza("hamburguesa", 9000, "combo-1"), pieza("papas", 3000, "combo-1"), pieza("refresco", 2000)))
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("hamburguesa"))
+        viewModel.startPaymentFlow(cart)
+
+        val completion = viewModel.buildCompletion()
+        assertEquals(setOf("hamburguesa", "papas"), completion.paidItemIds)
+        assertEquals(2000, completion.remainingBalanceCents)
+        assertEquals(12000, viewModel.buildPaymentContext().totalCents)
+    }
+
+    @Test
+    fun `D8 la pantalla de una parte por producto cuadra precio, descuento y total`() {
+        val playera = pieza("playera", 10000).apply { itemDiscountType = "PERCENTAGE"; itemDiscountValue = 50.0 }
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("playera"))
+        viewModel.startPaymentFlow(CartState(items = listOf(playera, pieza("pantalon", 10000))))
+
+        val ctx = viewModel.buildPaymentContext()
+        assertEquals(10000, ctx.subtotalCents)
+        assertEquals(5000, ctx.discountCents)
+        assertEquals(5000, ctx.totalCents)
+    }
+
+    @Test
+    fun `D7 la ultima parte de una venta partida deja el saldo que el servidor dice que aun se debe`() = runTest {
+        elServidorDiceTrasElEfectivo(saldo = 2000, estado = "PARTIAL")
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        val completion = viewModel.consumeCompletion()!!
+        assertEquals(2000, completion.remainingBalanceCents)
+        assertEquals("orden-1", completion.orderId)
+    }
+
+    @Test
+    fun `D7 un centavo que el servidor dice PARTIAL no se descarta`() = runTest {
+        elServidorDiceTrasElEfectivo(saldo = 1, estado = "PARTIAL")
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 PAGADA cierra la venta aunque venga un residuo`() = runTest {
+        elServidorDiceTrasElEfectivo(saldo = 1, estado = "PAID")
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        assertEquals(0, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 el pago completo de una venta NO partida sigue como hoy`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "orden-nueva")))
+        elServidorDiceTrasElEfectivo(saldo = 2000, estado = "PARTIAL")
+        viewModel.startPaymentFlow(CartState(items = listOf(pieza("cafe", 9000))))
+        viewModel.confirmCashCustom(9000)
+        advanceUntilIdle()
+
+        assertEquals(0, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 tras una parte con tarjeta el saldo se le pregunta al servidor antes del exito`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+        coEvery { orderRepository.saldoDeLaOrden("orden-1") } returns OrderRepository.SaldoDeLaOrden(remainingCents = 2000, paymentStatus = "PARTIAL")
+
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals(2000, viewModel.consumeCompletion()!!.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D7 si no se puede leer el saldo tras la tarjeta el exito lo dice y no repite el cargo`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+        coEvery { orderRepository.saldoDeLaOrden(any()) } returns null
+
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(AVISO_SALDO_SIN_CONFIRMAR, exito.avisoDeSaldo)
+        // Límite declarado (promesa, «No entra»): sin la lectura, la venta queda como la cobró la tablet y el aviso manda a
+        // revisarla en Ventas; el cargo de la tarjeta nunca se repite.
+        val completion = viewModel.consumeCompletion()!!
+        assertEquals("orden-1", completion.orderId)
+        assertFalse(completion.saldoDelServidor)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D7 una consulta de saldo lenta no detiene el exito mas de 5 segundos`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+        coEvery { orderRepository.saldoDeLaOrden(any()) } coAnswers {
+            kotlinx.coroutines.delay(60_000)
+            OrderRepository.SaldoDeLaOrden(remainingCents = 0, paymentStatus = "PAID")
+        }
+
+        viewModel.startPaymentFlow(saldoPendiente(9000), resumeOrderId = "orden-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceTimeBy(5_001)
+        runCurrent()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(AVISO_SALDO_SIN_CONFIRMAR, exito.avisoDeSaldo)
+    }
+
+    @Test
+    fun `D7 una venta NO partida pagada con tarjeta no le pregunta el saldo a nadie`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 0) { orderRepository.saldoDeLaOrden(any()) }
+    }
+
+    // MARK: - D10 (27-oct, founder «A»): cada producto paga su parte del descuento de cuenta y del premio
+
+    @Test
+    fun `D10 cafe y pan de 100 con 10 por ciento de cuenta - el cafe paga 90 y queda 90`() {
+        val cart = CartState(
+            items = listOf(pieza("cafe", 10000), pieza("pan", 10000)),
+            orderDiscount = com.avoqado.pos.pos.data.model.Discount(id = "d10", name = "Diez", value = 10.0, type = "PERCENTAGE"),
+        )
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("cafe"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(9000, viewModel.buildPaymentContext().totalCents)
+        val completion = viewModel.buildCompletion()
+        assertEquals(setOf("cafe"), completion.paidItemIds)
+        assertEquals(9000, completion.remainingBalanceCents)
+    }
+
+    @Test
+    fun `D10 el producto gratis del premio no reparte su premio entre los demas`() {
+        // Premio «producto gratis»: el SERVIDOR lo pone ENTERO en el artículo más caro (A). B paga lo suyo completo.
+        val premio = com.avoqado.pos.loyalty.data.PremioPorAplicar(id = "p", etiqueta = "Gratis", tipo = "FREE_PRODUCT", valor = null)
+        val cart = CartState(items = listOf(pieza("a", 10000), pieza("b", 4000)), pendingStampReward = premio)
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("b"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(4000, viewModel.buildPaymentContext().totalCents)
+        assertEquals(setOf("a", "b"), viewModel.buildCompletion().paidItemIds)
+    }
+
+    @Test
+    fun `D10 el producto gratis es el que mas regala sin pasarse de lo que cobra, como el servidor`() {
+        // Codex D10 r1 #2: A $100 con $50 propios, B $80, C $30. El SERVIDOR regala B ($80: en A sólo cabrían $50).
+        val premio = com.avoqado.pos.loyalty.data.PremioPorAplicar(id = "p", etiqueta = "Gratis", tipo = "FREE_PRODUCT", valor = null)
+        val a = pieza("a", 10000).apply { itemDiscountType = "FIXED_AMOUNT"; itemDiscountValue = 50.0 }
+        val cart = CartState(items = listOf(a, pieza("b", 8000), pieza("c", 3000)), pendingStampReward = premio)
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("c"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(8000, cart.stampRewardCents)
+        assertEquals(3000, viewModel.buildPaymentContext().totalCents)
+    }
+
+    @Test
+    fun `D10 una parte que dejaria un centavo cobra todo y se lleva todos los productos`() {
+        val cart = CartState(
+            items = listOf(pieza("a", 100), pieza("b", 100)),
+            orderDiscount = com.avoqado.pos.pos.data.model.Discount(id = "d", name = "Casi todo", value = 1.98, type = "FIXED_AMOUNT"),
+        )
+        viewModel.setSplitConfig(type = "BYPRODUCT", selectedItemIds = listOf("a"))
+        viewModel.startPaymentFlow(cart)
+
+        assertEquals(2, viewModel.buildPaymentContext().totalCents)
+        assertEquals(setOf("a", "b"), viewModel.buildCompletion().paidItemIds)
+        assertEquals(0, viewModel.buildCompletion().remainingBalanceCents)
+    }
+
+    // MARK: - D4 (28-oct): «Ver productos» de un pedido en línea enseña sus productos, no «Pedido #XXXX»
+
+    @Test
+    fun `D4 Ver productos de un pedido en linea lista sus productos y el cobro sigue siendo el saldo`() {
+        val tacos = com.avoqado.pos.payment.data.model.PaymentItem(name = "Tacos de Pollo", quantity = 2, unitPrice = 3950, lineTotal = 7900)
+        val cart = CartState(
+            items = listOf(CartItem(id = "pedido-en-linea-o1", type = CartItemType.CustomAmount, name = "Pedido #WUFUR", unitPrice = 7900)),
+            renglonesParaVer = listOf(tacos),
+        )
+        viewModel.startPaymentFlow(cart)
+
+        val ctx = viewModel.buildPaymentContext()
+        assertEquals(listOf(tacos), ctx.items)
+        assertEquals("lo que se cobra no cambia", 7900, ctx.totalCents)
+    }
 }
+

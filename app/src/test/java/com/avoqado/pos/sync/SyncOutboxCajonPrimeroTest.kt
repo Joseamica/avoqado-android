@@ -255,6 +255,109 @@ class SyncOutboxCajonPrimeroTest {
         } finally { outbox.stop() }
     }
 
+    // MARK: - La caja de la venta (efectivo sin red en el turno correcto, 21-oct-2026)
+
+    /** Un intent con la caja en su payload, como lo escriben `PaymentFlowViewModel` (PAY_CASH) y `TablesViewModel` (OPEN_TABLE). */
+    private fun intentConCaja(id: String, seq: Long, type: String, caja: String): SyncIntentEntity {
+        val base = intent(id, seq, type)
+        val payload = kotlinx.serialization.json.Json.parseToJsonElement(base.payloadJson) as JsonObject
+        val conCaja = JsonObject(payload + ("cashDrawerSessionId" to JsonPrimitive(caja)))
+        val texto = conCaja.toString()
+        return base.copy(payloadJson = texto,
+            q15CaptureJson = if (type == "PAY_CASH") requireNotNull(ConciliacionDelCobro.capturarIntent(VENUE, id, texto)) else null)
+    }
+
+    private fun cajaEnElCable(type: String): String? =
+        (pedidos.flatMap { it.intents }.single { it.type == type }.payload["cashDrawerSessionId"] as? JsonPrimitive)?.content
+
+    @Test
+    fun `P1 el PAY_CASH y el OPEN_TABLE con caja viajan con la caja traducida al id del servidor`() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+        every { cajon.idDeCajaParaElServidor("caja-A-local", any()) } returns "srv-A"
+        val outbox = outbox(listOf(intentConCaja("i1", 1, "OPEN_TABLE", "caja-A-local"), intentConCaja("i2", 2, "PAY_CASH", "caja-A-local")))
+        outbox.start(VENUE)
+
+        outbox.replayNow(VENUE)
+
+        assertEquals("srv-A", cajaEnElCable("OPEN_TABLE"))
+        assertEquals("srv-A", cajaEnElCable("PAY_CASH"))
+        outbox.stop()
+    }
+
+    @Test
+    fun `P1 una caja local sin alias se quita del cable y lo demas del payload no cambia`() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+        every { cajon.idDeCajaParaElServidor("caja-sin-alias", any()) } returns null
+        val fila = intentConCaja("i1", 1, "PAY_CASH", "caja-sin-alias")
+        val outbox = outbox(listOf(fila))
+        outbox.start(VENUE)
+
+        outbox.replayNow(VENUE)
+
+        val enviado = pedidos.flatMap { it.intents }.single()
+        val guardado = kotlinx.serialization.json.Json.parseToJsonElement(fila.payloadJson) as JsonObject
+        assertEquals(JsonObject(guardado - "cashDrawerSessionId"), enviado.payload)
+        outbox.stop()
+    }
+
+    @Test
+    fun `un intent sin caja viaja con su payload tal cual`() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+        val fila = intent("i1", 1, "PAY_CASH")
+        val outbox = outbox(listOf(fila))
+        outbox.start(VENUE)
+
+        outbox.replayNow(VENUE)
+
+        assertEquals(kotlinx.serialization.json.Json.parseToJsonElement(fila.payloadJson), pedidos.flatMap { it.intents }.single().payload)
+        coVerify(exactly = 0) { cajon.idDeCajaParaElServidor(any(), any()) }
+        outbox.stop()
+    }
+
+    /** P1 (Codex r4 #1) — el OPEN_TABLE de una mesa abierta en la caja B espera a la apertura de B; lo de detrás también. */
+    @Test
+    fun `P1 el OPEN_TABLE de una caja cuya apertura sigue pendiente espera y lo de detras tambien`() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+        every { cajon.cajasQueEsperanSuApertura() } returns setOf("caja-B-local")
+        val outbox = outbox(listOf(intent("i1", 1, "CLEAR_TABLE"), intentConCaja("i2", 2, "OPEN_TABLE", "caja-B-local"),
+            intentConCaja("i3", 3, "PAY_CASH", "caja-B-local")))
+        outbox.start(VENUE)
+
+        outbox.replayNow(VENUE)
+
+        assertEquals(listOf("CLEAR_TABLE"), tiposMandados())
+        assertEquals(listOf("i2", "i3"), pendientes.map { it.id })
+        outbox.stop()
+    }
+
+    /** P1 — un PAY_CASH de una caja ya confirmada sale aunque haya otra apertura pendiente (barrera por caja). */
+    @Test
+    fun `P1 un PAY_CASH de una caja confirmada sale aunque otra apertura siga pendiente`() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns false
+        every { cajon.cajasQueEsperanSuApertura() } returns setOf("caja-B-local")
+        every { cajon.idDeCajaParaElServidor("srv-A", any()) } returns "srv-A"
+        val outbox = outbox(listOf(intentConCaja("i1", 1, "PAY_CASH", "srv-A")))
+        outbox.start(VENUE)
+
+        outbox.replayNow(VENUE)
+
+        assertEquals(listOf("PAY_CASH"), tiposMandados())
+        outbox.stop()
+    }
+
+    @Test
+    fun `P2 el corte por caja, suelto`() {
+        val esperando = setOf("B")
+        assertEquals(3, SyncOutbox.cuantosIntentsSePuedenMandarPorCaja(
+            listOf("PAY_CASH" to "A", "OPEN_TABLE" to "A", "CLEAR_TABLE" to null), sinCajaPuedenSalir = false, cajasEsperando = esperando))
+        assertEquals(1, SyncOutbox.cuantosIntentsSePuedenMandarPorCaja(
+            listOf("ADD_ITEMS" to null, "OPEN_TABLE" to "B", "PAY_CASH" to "A"), sinCajaPuedenSalir = true, cajasEsperando = esperando))
+        assertEquals("un PAY_CASH sin caja conserva la regla global", 1, SyncOutbox.cuantosIntentsSePuedenMandarPorCaja(
+            listOf("OPEN_TABLE" to null, "PAY_CASH" to null), sinCajaPuedenSalir = false, cajasEsperando = emptySet()))
+        assertEquals("un OPEN_TABLE sin caja nunca espera", 2, SyncOutbox.cuantosIntentsSePuedenMandarPorCaja(
+            listOf("OPEN_TABLE" to null, "ADD_ITEMS" to null), sinCajaPuedenSalir = false, cajasEsperando = esperando))
+    }
+
     private companion object {
         const val VENUE = "venue-1"
     }

@@ -2,11 +2,17 @@ package com.avoqado.pos.customerdisplay
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.pos.presentation.cart.CartState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -59,6 +65,25 @@ class CustomerDisplayGraciasTest {
         advanceTimeBy(30_001)
         runCurrent()
         assertTrue(state.content.value is CustomerContent.Cart)   // el timer viejo no borra el carrito nuevo
+    }
+
+    /**
+     * D5 (CI de `main`, 27-oct): un cobro que termina en un hilo de IO pinta el «Gracias» mientras la prueba ya está
+     * cerrando. Si el temporizador quedaba ENCOLADO, su `delay` corría con `Dispatchers.Main` ya quitado y la excepción le
+     * caía a la siguiente prueba como `UncaughtExceptionsBeforeTest`. Aquí se reproduce sin hilos: `show` dentro de una
+     * corrutina de Main (sin despacho) y Main quitado antes de que esa corrutina termine.
+     */
+    @Test
+    fun `el temporizador del gracias no toca Main despues de que la prueba lo quito`() {
+        runTest { }   // prende el colector de excepciones de kotlinx-coroutines-test
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        val state = CustomerDisplayState()
+        CoroutineScope(Dispatchers.Main).launch {
+            state.show(gracias)
+            Dispatchers.resetMain()   // la prueba termina mientras el cobro sigue en su hilo
+        }
+        runTest { }   // con el temporizador encolado, aquí revienta con UncaughtExceptionsBeforeTest
+        assertEquals(gracias, state.content.value)
     }
 
     @Test

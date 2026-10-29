@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
@@ -37,6 +38,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -58,7 +60,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import java.util.Locale
@@ -88,6 +93,20 @@ fun CustomersScreen(
 
     LaunchedEffect(Unit) {
         viewModel.abrirLista()
+    }
+
+    // Quien no puede editar y el PIN de gerente está apagado: por qué no y qué hacer (nunca un botón que no hace nada).
+    val avisoSinPermiso by viewModel.avisoSinPermiso.collectAsState()
+    avisoSinPermiso?.let { aviso ->
+        AvoqadoDialog(
+            title = "No puedes editar clientes",
+            onDismiss = viewModel::cerrarAvisoSinPermiso,
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = viewModel::cerrarAvisoSinPermiso, fullWidth = true)
+            },
+        ) {
+            Text(text = aviso, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 
     if (isTablet) {
@@ -124,6 +143,23 @@ private fun TabletCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
+    var clienteActualizado by remember { mutableStateOf(false) }
+
+    // Edit Customer overlay
+    clienteEnEdicion?.let { cliente ->
+        EditCustomerView(
+            viewModel = viewModel,
+            cliente = cliente,
+            onGuardado = { actualizado ->
+                selectedCustomer = actualizado
+                clienteActualizado = true
+            },
+            onBack = viewModel::cerrarEdicion,
+        )
+        return
+    }
+    if (clienteActualizado) AvoqadoSuccessToast(message = "¡Cliente actualizado!", onDismiss = { clienteActualizado = false })
 
     // Create Customer overlay
     if (showCreateCustomer) {
@@ -338,6 +374,7 @@ private fun TabletCustomersLayout(
             if (selectedCustomer != null) {
                 CustomerDetailPanel(
                     customer = selectedCustomer!!,
+                    onEditar = { viewModel.onEditarTocado(selectedCustomer!!) },
                 )
             } else {
                 CustomerEmptyState()
@@ -363,6 +400,23 @@ private fun PhoneCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
+    var clienteActualizado by remember { mutableStateOf(false) }
+
+    // Edit Customer overlay
+    clienteEnEdicion?.let { cliente ->
+        EditCustomerView(
+            viewModel = viewModel,
+            cliente = cliente,
+            onGuardado = { actualizado ->
+                selectedCustomer = actualizado
+                clienteActualizado = true
+            },
+            onBack = viewModel::cerrarEdicion,
+        )
+        return
+    }
+    if (clienteActualizado) AvoqadoSuccessToast(message = "¡Cliente actualizado!", onDismiss = { clienteActualizado = false })
 
     // Create Customer overlay
     if (showCreateCustomer) {
@@ -407,6 +461,7 @@ private fun PhoneCustomersLayout(
 
             CustomerDetailPanel(
                 customer = selectedCustomer!!,
+                onEditar = { viewModel.onEditarTocado(selectedCustomer!!) },
             )
         }
         return
@@ -653,6 +708,7 @@ private fun CustomerListRow(
 @Composable
 private fun CustomerDetailPanel(
     customer: Customer,
+    onEditar: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -697,6 +753,13 @@ private fun CustomerDetailPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+
+            // Siempre visible (founder, 26-oct): quien no es gerente+ teclea el PIN de un gerente al tocarlo.
+            OutlinedButton(onClick = onEditar, shape = RoundedCornerShape(50)) {
+                Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+                Text("Editar", style = MaterialTheme.typography.labelLarge)
             }
         }
 

@@ -23,6 +23,7 @@ class TableAperturaIdentidadTest {
     private val storage=mockk<SecureStorage>(relaxed=true)
     private val session=TableSession()
     private val outbox=mockk<com.avoqado.pos.core.data.sync.SyncOutbox>(relaxed=true)
+    private val cajon=mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed=true)
     private var venue="FULLTEST-open-A"
     private val target=DiningTable("t-B","B")
     private fun active(id:String="A")=TableSession.Active("t-$id",id,null,"o-$id",id,1,8000,TableSession.Mode.PAYING)
@@ -34,7 +35,38 @@ class TableAperturaIdentidadTest {
         session.sincronizarContexto("actor",venue)
         coEvery { hub.acquire(any(),any(),any()) } returns LeaseOutcome.NoHub
         return TablesViewModel(repository=repository,planManager=mockk(relaxed=true),tableSession=session,
-            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true))
+            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true),cashDrawerRepository=cajon)
+    }
+    /**
+     * P1 (A2, efectivo sin red en el turno correcto, Codex plan r4 #1) — la mesa abierta SIN red se vuelve un `OPEN_TABLE` en el
+     * outbox: su payload lleva la caja abierta en ese momento, para que la cuenta nazca en el turno de esa caja aunque suba tarde.
+     */
+    @Test fun P1_la_mesa_abierta_sin_red_lleva_la_caja_abierta_en_su_OPEN_TABLE()=runTest {
+        coEvery { repository.openTable(any(),any(),any()) } returns Result.failure(java.io.IOException("sin red"))
+        coEvery { cajon.getOpenSession() } returns com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity(id="caja-B-local",
+            venueId=venue,deviceName="D3",openedByStaffId="actor",openedByName="Ana",openedAt=1L,startingAmountCents=50_000,status="OPEN")
+        val payload=slot<kotlinx.serialization.json.JsonObject>()
+        coEvery { outbox.enqueue(venue,"OPEN_TABLE",capture(payload),any(),any(),any(),any(),any(),any(),any(),any(),any()) } returns "intent-1"
+        val subject=vm()
+        try {
+            subject.openTableAndStartOrdering(target,2){};advanceUntilIdle()
+            assertTrue(payload.isCaptured)
+            assertEquals("caja-B-local",(payload.captured["cashDrawerSessionId"] as? kotlinx.serialization.json.JsonPrimitive)?.content)
+            assertEquals("t-B",(payload.captured["tableId"] as? kotlinx.serialization.json.JsonPrimitive)?.content)
+        } finally {subject.viewModelScope.cancel()}
+    }
+    /** Sin caja abierta, el `OPEN_TABLE` sale como hoy: sin el campo. */
+    @Test fun sin_caja_abierta_el_OPEN_TABLE_va_igual_que_hoy()=runTest {
+        coEvery { repository.openTable(any(),any(),any()) } returns Result.failure(java.io.IOException("sin red"))
+        coEvery { cajon.getOpenSession() } returns null
+        val payload=slot<kotlinx.serialization.json.JsonObject>()
+        coEvery { outbox.enqueue(venue,"OPEN_TABLE",capture(payload),any(),any(),any(),any(),any(),any(),any(),any(),any()) } returns "intent-1"
+        val subject=vm()
+        try {
+            subject.openTableAndStartOrdering(target,2){};advanceUntilIdle()
+            assertTrue(payload.isCaptured)
+            assertEquals(setOf("tableId","covers","localOrderId"),payload.captured.keys)
+        } finally {subject.viewModelScope.cancel()}
     }
     @Test fun apertura_B_pendiente_no_sustituye_A_que_ya_esta_cobrando()=runTest {
         val held=CompletableDeferred<Result<OpenedOrder>>()
@@ -133,7 +165,7 @@ class TableAperturaIdentidadTest {
         every {outbox.nextLocalFolio(venue)} returns "L-disk"
         coEvery {outbox.enqueue(any(),any(),any(),any(),any(),any(),any(),any())} returns "intent-preservado"
         val subject=TablesViewModel(repository=real,planManager=mockk(relaxed=true),tableSession=session,
-            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true))
+            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true),cashDrawerRepository=cajon)
         var navigation=0
         try {
             subject.openTableAndStartOrdering(target,2){navigation++};advanceUntilIdle()

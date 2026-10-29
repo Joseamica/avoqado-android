@@ -28,6 +28,11 @@ sealed interface EstadoDeComanda {
         val causa: String?,
         val orderNumber: String,
         val trabajo: TrabajoPendiente? = null,
+        /**
+         * D2 (founder, 28-oct): no salió porque el negocio no tiene NINGUNA impresora de cocina ni estaciones (una tienda).
+         * Sigue siendo `NoSalio` —cero intentos nunca es éxito—, pero el mostrador no lo avisa: sin cocina no hay comanda.
+         */
+        val sinImpresoraDeCocina: Boolean = false,
     ) : EstadoDeComanda
 }
 
@@ -75,6 +80,8 @@ data class TrabajoPendiente(
     val comboNames: Map<String, String>,
     val venueId: String?,
     val orderId: String?,
+    /** Líneas extra del ticket (pedido en línea). Con default `null`: un trabajo guardado antes de este campo se lee igual. */
+    val encabezado: List<String>? = null,
 )
 
 /**
@@ -145,11 +152,13 @@ class ReintentoDeComanda @Inject constructor(
         copiasPendientesIniciales: Map<String?, Int> = emptyMap(),
         /** Saltadas arrastradas de un ciclo ANTERIOR — ver [TrabajoPendiente.saltadas]. */
         saltadasPrevias: List<String> = emptyList(),
+        /** Líneas extra del ticket (pedido en línea). Antes de [alCambiarEstado] para no robarle el lambda final. */
+        encabezado: List<String>? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
         var ultimo = comandaPrinter.printComandas(
-            pendientes, config, orderNumber, orderType, serverName, comboNames, copiasPendientesIniciales,
+            pendientes, config, orderNumber, orderType, serverName, comboNames, copiasPendientesIniciales, encabezado,
         )
         // 🔴 Las estaciones SALTADAS se acumulan entre intentos. Un intento posterior sólo lleva
         // los planes que TRONARON, así que su resultado ya no menciona la que se saltó — y el
@@ -172,7 +181,7 @@ class ReintentoDeComanda @Inject constructor(
             // segunda falló recibía las dos otra vez al reintentar (P1 #4 de Codex).
             val copiasQueFaltan = ultimo.copiasPendientes
             ultimo = comandaPrinter.printComandas(
-                pendientes, config, orderNumber, orderType, serverName, comboNames, copiasQueFaltan,
+                pendientes, config, orderNumber, orderType, serverName, comboNames, copiasQueFaltan, encabezado,
             )
             saltadas += ultimo.skippedStations
             intentos++
@@ -203,6 +212,7 @@ class ReintentoDeComanda @Inject constructor(
                         comboNames = comboNames,
                         venueId = venueId,
                         orderId = orderId,
+                        encabezado = encabezado,
                     )
                 },
             )
@@ -271,5 +281,6 @@ class ReintentoDeComanda @Inject constructor(
         copiasPendientesIniciales = trabajo.copiasPendientes,
         saltadasPrevias = trabajo.saltadas,
         alCambiarEstado = alCambiarEstado,
+        encabezado = trabajo.encabezado,
     )
 }

@@ -23,6 +23,10 @@ package com.avoqado.pos.core.domain
  */
 object PermissionLabels {
     private val LABELS = mapOf(
+        "giftCards:read" to "consultar tarjetas de regalo",
+        "giftCards:sell" to "vender tarjetas de regalo",
+        "giftCards:redeem" to "cobrar con tarjeta de regalo",
+        "giftCards:manage" to "administrar tarjetas de regalo",
         // MARK: - Terminales de cobro (PAX)
         //
         // 🔴 `tpv:read` NO es "cobrar". Desde 2026-08-16 (server c74f6593) la
@@ -169,6 +173,8 @@ object PermissionLabels {
         "reservations:cancel" to "cancelar una reservación",
         // Fase 8 del kiosco — estrecho a propósito: SU clase, no la agenda del negocio.
         "class-sessions:read-assigned" to "ver la clase que estás dando",
+        // Modo Autoservicio 0.e — la lista y el check-in del kiosco, nada más.
+        "self-service:check-in" to "hacer check-in en el kiosco",
 
         // MARK: - Paquetes de crédito (clases, prepagos)
         "creditPacks:read" to "ver los paquetes de crédito",

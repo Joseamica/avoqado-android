@@ -43,7 +43,8 @@ sealed interface KioskContent {
      * modos — la de las 9 PM no tiene por qué salir a las 6.
      *
      * La ventana la define el servidor y él la vuelve a checar al confirmar
-     * (`CHECK_IN_OUTSIDE_WINDOW`, 422): esta pantalla es comodidad, no permiso.
+     * (`CHECK_IN_OUTSIDE_WINDOW`, 422): esta pantalla es comodidad, no permiso. Sin red la
+     * lista caduca sola al cerrar su ventana ([KioskState.expireRoster]).
      */
     data class Roster(
         val classTitle: String,
@@ -62,6 +63,11 @@ sealed interface KioskContent {
          */
         val justConfirmedId: String? = null,
         val failed: Boolean = false,
+        /**
+         * El último toque se guardó SIN RED y se manda solo (Modo Autoservicio 0.e). No es error: la persona sí llegó, ve
+         * su palomita y un aviso en gris.
+         */
+        val offline: Boolean = false,
     ) : KioskContent
 
     /**
@@ -80,15 +86,17 @@ sealed interface KioskContent {
         val notFound: Boolean = false,
         /** Falló la red o el servidor. Distinto de "no existe". */
         val failed: Boolean = false,
+        /**
+         * No nulo ⇒ el teléfono es para COMPRAR este paquete, no para buscar una reserva: con él
+         * las clases caen a su nombre (D3: sin contacto, Stripe cobraba y no se entregaba nada).
+         */
+        val forPack: KioskPack? = null,
     ) : KioskContent {
-        /** Lo mínimo para que valga la pena buscar. */
-        val canSearch: Boolean get() = national.length >= MIN_DIGITS && !searching
+        /** El número completo para su país (ver [nationalDigitsFor]). */
+        val canSearch: Boolean get() = national.length in nationalDigitsFor(country) && !searching
 
-        private companion object {
-            // 10 dígitos es el largo nacional en México; abajo de eso la
-            // búsqueda por coincidencia parcial devolvería a media colonia.
-            const val MIN_DIGITS = 10
-        }
+        /** E.164 con la lada elegida: «+12025550123», «+525512345678». */
+        val phone: String get() = "+${country.dialCode}$national"
     }
 
     /**
@@ -171,6 +179,24 @@ sealed interface KioskContent {
     ) : KioskContent
 }
 
+/**
+ * Cuántos dígitos nacionales lleva un teléfono según su lada.
+ *
+ * México (+52) y Norteamérica (+1): exactamente 10 — abajo de eso la búsqueda por coincidencia parcial devolvería a
+ * media colonia. Otra lada: de 8 en adelante, como la pantalla del cliente, sin pasar de los 15 dígitos de E.164
+ * contando la lada.
+ *
+ * 🔴 La lada la elige la persona (Codex r1, D3): fija en +52, una clienta con teléfono de EE.UU. tecleaba sus 10
+ * dígitos y sus clases podían caer en la ficha de otra persona.
+ *
+ * 🔴 Y lada + número suman AL MENOS 11 (Codex r2, D3): el SERVIDOR lee «+» + 10 dígitos como un celular mexicano mal
+ * guardado (`sinPrefijoMexicanoViejo`, 71 fichas así), así que «+49 20123456» caía en la ficha de «+52 4920123456».
+ * Un número así de corto (Cuba +53 con 8, Islandia +354 con 7) se registra en el mostrador.
+ */
+fun nationalDigitsFor(country: Country): IntRange =
+    if (country.dialCode == "52" || country.dialCode == "1") 10..10
+    else maxOf(8, 11 - country.dialCode.length)..(15 - country.dialCode.length)
+
 /** Una clase o cita de hoy, ya resuelta por el servidor. Aquí no se calcula nada. */
 data class KioskSession(
     val reservationId: String,
@@ -182,6 +208,8 @@ data class KioskSession(
     val staffLabel: String?,
     /** Ya hizo check-in antes: se muestra, pero no se le vuelve a pedir. */
     val alreadyCheckedIn: Boolean = false,
+    /** «Tapete 4», o null sin acomodo. Mismo dato que [KioskPerson.spotLabel]. */
+    val spotLabel: String? = null,
 )
 
 /** Un paquete comprable, con su precio de catálogo. El kiosco nunca lo cambia. */

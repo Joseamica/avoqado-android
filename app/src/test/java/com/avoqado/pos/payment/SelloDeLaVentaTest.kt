@@ -110,7 +110,7 @@ class SelloDeLaVentaTest {
         coEvery {
             orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         every { secureStorage.userId } returns "user-456"
@@ -468,6 +468,13 @@ class SelloDeLaVentaTest {
     @Test
     fun `P1 la parte 1 de una cuenta dividida no pregunta por el sello`() = runTest {
         // Contrato §3: con saldo pendiente el servidor respondería NOT_PAID («no está pagada completa») a media división.
+        // D2 etapa 2 (27-oct): la venta rápida DIVIDIDA lleva orden, así que la parte 1 la crea y le abona.
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(com.avoqado.pos.payment.data.model.CreateOrderResponse(success = true,
+                data = com.avoqado.pos.payment.data.model.OrderData(id = "orden-rapida")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         viewModel.setSplitConfig("CUSTOMAMOUNT", customAmountCents = 4_000)
         viewModel.startPaymentFlow(otroImporte(), customerId = "cm-dany", customerName = "Dany")
         viewModel.confirmCashCustom(4_000)
@@ -482,9 +489,9 @@ class SelloDeLaVentaTest {
     @Test
     fun `la parte 1 de una cuenta dividida encolada sin red tampoco promete el sello`() = runTest {
         every { orderRepository.programaDeSellosActivo(any()) } returns true
-        coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
-        } returns Result.failure(java.net.UnknownHostException("sin red"))
+        // D2 etapa 2 (27-oct): la venta rápida DIVIDIDA lleva orden; sin red no se crea y la parte se encola (fila ORDER).
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.failure(java.net.UnknownHostException("sin red"))
         viewModel.setSplitConfig("CUSTOMAMOUNT", customAmountCents = 4_000)
         viewModel.startPaymentFlow(otroImporte(), customerId = "cm-dany", customerName = "Dany")
         viewModel.confirmCashCustom(4_000)

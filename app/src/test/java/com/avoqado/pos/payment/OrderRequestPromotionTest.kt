@@ -321,40 +321,32 @@ class OrderRequestPromotionTest {
         paymentViewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        val diferirSlot = slot<CreateOrderRequest>()
-        coEvery {
-            orderRepository.createOrder(capture(diferirSlot), any(), any(), any(), any(), capturedVenueId = any())
-        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-2")))
+        // 27-oct: «pagar después» manda su cuerpo ya armado (con la llave de la venta) y lee la respuesta cruda.
+        val diferido = slot<String>()
+        coEvery { orderRepository.enviarPagarDespues(any(), capture(diferido)) } returns
+            OrderRepository.RespuestaCruda(201, "application/json", null, """{"success":true,"order":{"id":"order-2"}}""")
 
         val cartViewModel = createCartViewModel()
         cartViewModel.restoreSavedCart(comoCarritoGuardado(carrito))
         cartViewModel.createPayLaterOrder("cust-1")
         advanceUntilIdle()
 
-        assertEquals(
-            "cobrar y pagar-después tienen que mandar los MISMOS items",
-            cobrarSlot.captured.items,
-            diferirSlot.captured.items,
-        )
-        assertEquals(2, diferirSlot.captured.items.size)
-        assertNotNull(diferirSlot.captured.items.first().promotionRef)
+        val itemsDeCobrar = org.json.JSONObject(OrderRepository.buildCreateOrderPayload(cobrarSlot.captured, staffId = "s"))
+            .getJSONArray("items")
+        val itemsDiferidos = org.json.JSONObject(diferido.captured).getJSONArray("items")
+        assertEquals("cobrar y pagar-después tienen que mandar los MISMOS items", itemsDeCobrar.toString(), itemsDiferidos.toString())
+        assertEquals(2, itemsDiferidos.length())
+        assertTrue(itemsDiferidos.getJSONObject(0).has("promotionRef"))
     }
 
     @Test
     fun `P1 pagar despues con premio rechazado lo dice en vez de celebrar en silencio`() = runTest {
         // El carrito anunció $70 a diferir, pero el servidor rechazó el premio y la cuenta
         // abierta quedó en el precio completo (hallazgo P2 de Codex, 27-sep).
-        val premioEnviado = slot<String?>()
-        coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any(), capturedVenueId = any())
-        } returns Result.success(
-            CreateOrderResponse(
-                success = true,
-                data = OrderData(
-                    id = "order-2",
-                    stampReward = com.avoqado.pos.payment.data.model.StampRewardOnOrder(applied = false, reason = "Este premio ya venció."),
-                ),
-            ),
+        val diferido = slot<String>()
+        coEvery { orderRepository.enviarPagarDespues(any(), capture(diferido)) } returns OrderRepository.RespuestaCruda(
+            201, "application/json", null,
+            """{"success":true,"order":{"id":"order-2","stampReward":{"applied":false,"reason":"Este premio ya venció."}}}""",
         )
 
         val cartViewModel = createCartViewModel()
@@ -366,7 +358,7 @@ class OrderRequestPromotionTest {
         cartViewModel.createPayLaterOrder("cust-1")
         advanceUntilIdle()
 
-        assertEquals("rw1", premioEnviado.captured)
+        assertEquals("rw1", org.json.JSONObject(diferido.captured).getString("stampRewardId"))
         val aviso = cartViewModel.avisoDelPremio.value
         assertNotNull(aviso)
         assertTrue(aviso!!.contains("Este premio ya venció."))
@@ -895,7 +887,7 @@ class OrderRequestPromotionTest {
             )
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns
             CashPaymentResult.Success(changeCents = 0)
-        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-1"
@@ -910,6 +902,9 @@ class OrderRequestPromotionTest {
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
         every { savedCartsRepository.savedCarts } returns MutableStateFlow<List<SavedCart>>(emptyList())
+        every { savedCartsRepository.deleteCart("saved-1") } returns true
+        // «Pagar después» de un carrito restaurado deja su llave en la copia antes de mandar (Codex A-5).
+        every { savedCartsRepository.prepararPagarDespues(any(), any(), any(), any()) } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
         every { authRepository.venueSwitched } returns venueSwitchedFlow
         every { classCheckoutSeed.consume() } returns null
@@ -1001,6 +996,9 @@ class OrderRequestPromotionTest {
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
         areaTicketRepository = areaTicketRepository,
         walletScanRepository = mockk(relaxed = true),
+        payLaterQueue = com.avoqado.pos.payment.data.PayLaterQueue(
+            PrefsEnMemoria().context, orderRepository, secureStorage, savedCartsRepository, mockk(relaxed = true),
+        ).apply { io = kotlinx.coroutines.Dispatchers.Unconfined },
     )
 
 

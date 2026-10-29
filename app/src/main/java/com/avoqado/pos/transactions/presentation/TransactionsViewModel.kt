@@ -821,7 +821,11 @@ internal fun Transaction.toReceiptData(
     val propina = comprobante?.let { cents(it.tip) } ?: cents(kotlin.math.abs(tipAmount))
     val total = comprobante?.let { cents(it.total) } ?: (cents(kotlin.math.abs(amount)) + propina)
 
-    val receiptItems = if (items.isNotEmpty()) {
+    val receiptItems = if (comprobante?.parcial == true && items.isNotEmpty()) {
+        // D15: UNA parte de una venta dividida (lo marca el servidor): un renglón «Pago parcial» con lo que cobró, como el papel
+        // del cobro (`PaymentFlowViewModel.buildReceiptSnapshot`). Enumerar toda la venta daba renglones que no suman el total.
+        listOf(ReceiptItem(name = "Pago parcial", quantity = 1, unitPrice = subtotal, totalPrice = subtotal))
+    } else if (items.isNotEmpty()) {
         items.map { item ->
             ReceiptItem(
                 name = item.productName.ifEmpty { "Artículo" },

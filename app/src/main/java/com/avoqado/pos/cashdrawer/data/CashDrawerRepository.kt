@@ -1,5 +1,6 @@
 package com.avoqado.pos.cashdrawer.data
 
+import androidx.room.withTransaction
 import android.os.Build
 import android.util.Log
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
@@ -462,6 +463,14 @@ internal data class PendingDrawerOp(
      * a propósito. Mismo juez que el tope: [intentoLlegoALaRed] sobre el desenlace del intento.
      */
     val ultimoReintentoEn: Long? = null,
+    /**
+     * 🔴 Sólo para un CIERRE: cuántas sincronizaciones lo retuvieron porque su caja todavía tenía cobros por subir y, aun así, el
+     * servidor CONTESTÓ (efectivo sin red en el turno correcto, 24-oct-2026). Contra éste cuenta el tope ([PASES_DEL_CIERRE]):
+     * a la tercera, el cierre sale igual y la venta que llegue tarde queda aparte con aviso en el servidor. Lo suma
+     * [solicitarPaseConServidor] y [pasesTrasLaPeticion]; ver ahí qué cuenta y qué no. En disco, con la cola, para que sobreviva a un reinicio. Campo con
+     * default: una cola guardada por una versión anterior se lee igual.
+     */
+    val pasesConServidor: Int = 0,
 )
 
 /**
@@ -626,6 +635,110 @@ internal fun textoDeCobrosRetenidos(estado: EstadoDeLosCobros): String? = when (
         "Cobros enviados sin caja: la apertura sigue pendiente"
 }
 
+// MARK: - Efectivo sin red en el turno correcto (21-oct-2026): la caja de cada cobro
+
+/**
+ * 🔴 LA BARRERA DE LA APERTURA, POR CAJA (barrera 1). Las cajas cuya apertura sigue VIVA en la cola y dentro de su tope: un cobro
+ * de una de ellas espera; un cobro de una caja que ya está confirmada sale aunque haya otra apertura pendiente después.
+ *
+ * Antes la barrera era UNA para todos ([estadoDeLosCobros]) y con el cierre esperando a sus cobros (barrera 2) eso cerraba un
+ * ciclo: el cierre de A esperaba los cobros de A, que esperaban a la apertura de B, que va detrás del cierre de A (Codex r1 #8).
+ * La apertura rechazada no es barrera (como hoy), y la que pasó su tope tampoco: sus cobros salen sin caja, como hoy.
+ *
+ * Función PURA: el reloj entra por parámetro.
+ */
+internal fun cajasEsperandoApertura(cola: List<PendingDrawerOp>, ahora: Long): Set<String> =
+    cola.asSequence()
+        .filter { it.kind == "OPEN" && it.rechazadaEn == null }
+        // Nunca intentada CON red: su espera ni siquiera ha empezado (mismo criterio que [estadoDeLosCobros]).
+        .filter { op -> op.primerReintentoEn?.let { ahora - it < TOPE_DE_LA_BARRERA_MS } ?: true }
+        .map { it.sessionId }
+        .toSet()
+
+/** A cuántas sincronizaciones con el servidor contestando sale un cierre aunque su caja tenga cobros por subir. */
+internal const val PASES_DEL_CIERRE = 3
+
+/**
+ * El espacio mínimo entre dos pases del mismo cierre (reloj monotónico). Mayor que el reintento más largo de un cobro (30 s): entre un
+ * pase y el siguiente la cola siempre intentó subir las ventas, y diez cobros seguidos no gastan el tope en segundos.
+ */
+internal const val ESPACIO_ENTRE_PASES_MS = 5L * 60 * 1000
+
+/** Lo que decide UN intento con el servidor contestando sobre un cierre retenido: si cuenta como pase y desde cuándo se mide el siguiente. */
+internal data class PasoDelCierre(val cuenta: Boolean, val intentoEn: Long)
+
+/**
+ * Función PURA: el primer intento sólo arma la cuenta; uno a menos de [ESPACIO_ENTRE_PASES_MS] del anterior no cuenta ni la mueve; uno
+ * que llega después cuenta y desde él se mide el siguiente. Un reloj que retrocede (otro arranque del sistema) vuelve a armar.
+ */
+internal fun pasoDelCierre(anterior: Long?, ahora: Long): PasoDelCierre = when {
+    anterior == null || ahora < anterior -> PasoDelCierre(cuenta = false, intentoEn = ahora)
+    ahora - anterior >= ESPACIO_ENTRE_PASES_MS -> PasoDelCierre(cuenta = true, intentoEn = ahora)
+    else -> PasoDelCierre(cuenta = false, intentoEn = anterior)
+}
+
+/**
+ * 🔴 EL CIERRE ESPERA A SUS COBROS (barrera 2). Con un solo aparato, cerrar la caja sin red y abrir otra mandaba el cierre
+ * antes que las ventas que se hicieron en ella: el servidor firmaba un sobrante y las ventas caían en el turno nuevo. Ahora el
+ * cierre de la caja X no sale mientras X tenga cobros que todavía pueden subir ([PendingCashSales.cajasDeCobrosPorSubir]).
+ *
+ * Con TOPE: a los [PASES_DEL_CIERRE] pases con el servidor contestando el cierre sale igual. Una venta que llegue después
+ * queda aparte con aviso en el servidor, nunca en el turno nuevo. Sin cobros por subir no espera nada.
+ *
+ * 🔴 Codex apps r1–r4: el tope era TIEMPO con red (media hora) y cada ronda encontró otra forma de contar tiempo sin que las ventas
+ * pudieran subir (sin red, servidor caído, app dormida, Windows suspendida, reloj del aparato cambiado). El founder aprobó contarlo
+ * en INTENTOS (24-oct): ningún reloj entra aquí. Qué cuenta como pase: [solicitarPaseConServidor] y [pasesTrasLaPeticion].
+ *
+ * Función PURA.
+ */
+internal fun elCierreEspera(pasesConServidor: Int, cobrosPorSubir: Int): Boolean =
+    cobrosPorSubir > 0 && pasesConServidor < PASES_DEL_CIERRE
+
+/** La banda mientras la barrera 2 retiene un cierre. Texto IDÉNTICO en Android y en iOS. `null` = nada que decir. */
+internal fun textoDelCierreQueEspera(ventasPorSubir: Int): String? = when {
+    ventasPorSubir <= 0 -> null
+    ventasPorSubir == 1 -> "El cierre de caja espera a que suba 1 venta"
+    else -> "El cierre de caja espera a que suban $ventasPorSubir ventas"
+}
+
+/**
+ * «El id local de una caja → el que le dio el servidor» (efectivo sin red en el turno correcto, 21-oct-2026).
+ *
+ * Un cobro guarda la caja con el id que el aparato tenía al cobrar; si la apertura no había llegado, es el LOCAL. Cuando el
+ * servidor confirma ESA MISMA apertura, el cobro tiene que viajar con el id del servidor — aunque la reserva se haya escrito
+ * después de la adopción, o la app se reinicie entre medio. [servidor] nulo = caja local sin equivalencia (su apertura no
+ * ha llegado, o se adoptó la caja de OTRO aparato): el cobro sube sin el campo, como hoy.
+ */
+@Serializable
+internal data class AliasDeCaja(val local: String, val servidor: String? = null, val en: Long)
+
+private val jsonDeLosAlias = Json { ignoreUnknownKeys = true }
+
+/**
+ * Los alias «caja local → caja del servidor» de una sucursal. Una sola lectura para el cajón y para la salida de `EN_VUELO`
+ * (`SalidaDelApartado`), sin que ésta dependa del repositorio del cajón. Ilegibles = ninguno (queda en el log).
+ */
+internal fun leerAliasDeCajas(secureStorage: SecureStorage, sucursal: String): List<AliasDeCaja> = try {
+    secureStorage.drawerSessionAliasesJson(sucursal)?.takeIf { it.isNotBlank() }
+        ?.let { jsonDeLosAlias.decodeFromString(ListSerializer(AliasDeCaja.serializer()), it) } ?: emptyList()
+} catch (e: Exception) {
+    Log.e(TAG, "❌ Alias de cajas ilegibles: ${e.message}")
+    emptyList()
+}
+
+/** Cuántos alias SIN USO se conservan. Los que nombra algo que todavía puede subir no se podan nunca. */
+internal const val TOPE_DE_ALIAS_SIN_USO = 200
+
+/**
+ * La poda del alias: se conserva TODO alias que nombre algo que todavía se puede mandar ([referenciadas]: cobros en cualquier
+ * estado menos SYNCED —FAILED incluido, porque el gerente lo puede reintentar—, intents pendientes y operaciones de la caja,
+ * Codex r3 #4) y, de los demás, los [tope] más recientes. Función PURA; conserva el orden de la lista.
+ */
+internal fun aliasTrasPodar(lista: List<AliasDeCaja>, referenciadas: Set<String>, tope: Int = TOPE_DE_ALIAS_SIN_USO): List<AliasDeCaja> {
+    val sinUsoQueQuedan = lista.filter { it.local !in referenciadas }.sortedByDescending { it.en }.take(tope).map { it.local }.toSet()
+    return lista.filter { it.local in referenciadas || it.local in sinUsoQueQuedan }
+}
+
 /**
  * 🔴 ¿La caja que el servidor devolvió al LIGAR es la mía, que llegó por otro camino? (F2)
  *
@@ -671,6 +784,19 @@ internal fun esMiPropiaCaja(
             server.openedByStaffId == miStaffId &&
             server.startingAmountCents == op.amountCents
     }
+
+/**
+ * 🔴 ¿La caja que devolvió el servidor es LA MISMA APERTURA que ésta? (Codex apps r1 #3, como `esLaMismaApertura` de iOS.) Es la
+ * pregunta del ALIAS «caja local → caja del servidor», más estricta que [esMiPropiaCaja]: sin eco, esa es una heurística (mismo
+ * aparato, persona y fondo) y un alias equivocado mandaría los cobros de esta caja a la de otro aparato. Sólo la prueban la llave
+ * igual o una caja que el servidor CREÓ con mi POST.
+ */
+internal fun esLaMismaApertura(op: PendingDrawerOp, llaveDelServidor: String?, creadaPorMiPOST: Boolean): Boolean {
+    if (op.kind != "OPEN") return false
+    val mia = op.localId?.takeIf { it.isNotEmpty() }
+    if (llaveDelServidor != null) return mia != null && llaveDelServidor == mia
+    return creadaPorMiPOST
+}
 
 /** Los movimientos que el servidor deduplica por `localId`. Un CLOSE no lleva llave. */
 private val TIPOS_CON_LLAVE = setOf("PAY_IN", "PAY_OUT")
@@ -787,8 +913,17 @@ class CashDrawerRepository @Inject constructor(
      * o no lo decide su desenlace ([intentoLlegoALaRed]).
      */
     private val conectividad: ConnectivityMonitor,
+    /** null sólo en pruebas con DAOs falsos (sin transacción). Hilt, y Guice en Windows, inyectan siempre la base real. */
+    private val database: com.avoqado.pos.core.data.local.database.AvoqadoDatabase? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
+
+    /**
+     * 🔴 SÓLO PARA PRUEBAS: el reloj de la barrera de la apertura por caja (el cierre ya no usa reloj: cuenta pases). En producción
+     * es el del aparato; una prueba lo adelanta para vencer el tope sin esperar media hora (mismo patrón que
+     * `PaymentSyncService.usarContextoDeSincronizacion`).
+     */
+    internal var reloj: () -> Long = { System.currentTimeMillis() }
 
     private val venueId: String
         get() = secureStorage.venueId ?: ""
@@ -945,7 +1080,12 @@ class CashDrawerRepository @Inject constructor(
         if (venueId.isEmpty()) return false
         return try {
             reproducirCierresPendientes()
+            // D9: las candidatas se fijan ANTES de preguntar (Codex apps r15 #2: una caja abierta y confirmada mientras viajaba un
+            // «ninguna» viejo no es de las que cerró otro aparato).
+            val sucursal = venueId
+            val candidatas = cajasQuePudoCerrarOtroAparato()
             val caja = syncCurrentSession()
+            if (caja is CajaDelServidor.NoHayNinguna && venueId == sucursal) cerrarLasQueCerroOtroAparato(candidatas)
             syncHistory()
             caja !is CajaDelServidor.NoSeSupo
         } catch (e: Exception) {
@@ -955,6 +1095,30 @@ class CashDrawerRepository @Inject constructor(
     }
 
     private suspend fun syncCurrentSession(): CajaDelServidor = pedirCajaAbiertaAlServidor()
+
+    /**
+     * 🔴 D9 (iPad, 24-oct-2026; Codex apps r14 #1): `/current` es del NEGOCIO (`findFirst status OPEN`). Si dice que no hay
+     * ninguna, la caja que aquí sigue abierta con id del SERVIDOR la cerró otro aparato: se marca cerrada sin esperar a
+     * encontrarla en el historial, que es paginado (20) — [syncHistory] trae su corte si está entre las recientes. La provisional
+     * (id local, o con su apertura todavía en la cola) no se toca: el servidor no la conoce. Espejo de iOS.
+     *
+     * 🔴 Codex apps r15: las candidatas son las que ya tenían id del servidor ANTES de preguntar (una caja confirmada mientras
+     * viajaba la respuesta no es de ésas), sólo si la sucursal no cambió en medio, y el cierre es condicional (sigue OPEN, no pisa
+     * un conteo escrito mientras tanto).
+     */
+    private suspend fun cajasQuePudoCerrarOtroAparato(): List<String> {
+        val conAperturaEnCola = pendientes().filter { it.kind == "OPEN" }.map { it.sessionId }.toSet()
+        return dao.getOpenSessions(venueId).map { it.id }
+            .filter { runCatching { UUID.fromString(it) }.isFailure && it !in conAperturaEnCola }
+    }
+
+    private suspend fun cerrarLasQueCerroOtroAparato(candidatas: List<String>) {
+        candidatas.forEach { id ->
+            if (dao.marcarCerradaEnOtroAparato(id, System.currentTimeMillis(), "Cerrada en otro aparato") > 0) {
+                Log.w(TAG, "🔒 La caja $id ya no está abierta en el servidor: se cerró en otro aparato")
+            }
+        }
+    }
 
     /**
      * Lo que contestó `GET /cash-drawer/current`.
@@ -984,16 +1148,29 @@ class CashDrawerRepository @Inject constructor(
         data object NoSeSupo : CajaDelServidor
     }
 
+    /** Codex r14 A4: el número de cada consulta de `/current` y la última aplicada por negocio (sólo bajo [candadoDelCorte]). */
+    private val consultasDeLaCaja = java.util.concurrent.atomic.AtomicLong()
+    private val ultimaConsultaAplicada = mutableMapOf<String, Long>()
+    private val candadoDelCorte = Mutex()
+
     /**
      * `GET /cash-drawer/current`, adoptando lo que conteste.
      *
      * Propaga la excepción de red a propósito: `syncFromApi` ya la atrapa y el replay la traduce.
      */
-    private suspend fun pedirCajaAbiertaAlServidor(opDeLaApertura: PendingDrawerOp? = null): CajaDelServidor {
+    private suspend fun pedirCajaAbiertaAlServidor(
+        opDeLaApertura: PendingDrawerOp? = null,
+        /** Codex r17: cajas que la foto tiene que leer sí o sí (las de una fusión descartada). */
+        leerTambien: Set<String> = emptySet(),
+        esReconsulta: Boolean = false,
+    ): CajaDelServidor {
         val request = Request.Builder()
             .url("$baseUrl/current")
             .get()
             .build()
+        val sucursal = venueId
+        val numero = consultasDeLaCaja.incrementAndGet()
+        val fotoDeAntes = fotoDeLasCopias(listOfNotNull(opDeLaApertura?.sessionId) + leerTambien)
 
         val (code, body) = withContext(Dispatchers.IO) {
             val response = client.newCall(request).execute()
@@ -1001,6 +1178,31 @@ class CashDrawerRepository @Inject constructor(
         }
 
         if (code !in 200..299 || body.isEmpty()) return CajaDelServidor.NoSeSupo
+        // 🔴 Codex r14 A4: una respuesta más vieja que la última aplicada (de este negocio) se descarta: reabriría una caja que la
+        // nueva cerró o borraría por tipo lo que la nueva importó. Espejo de iOS. El candado ordena la decisión y la fusión.
+        return try {
+            candadoDelCorte.withLock {
+                if (numero < (ultimaConsultaAplicada[sucursal] ?: 0L)) {
+                    Log.w(TAG, "⏭️ Respuesta de la caja más vieja que la última aplicada: se descarta")
+                    return@withLock CajaDelServidor.NoSeSupo
+                }
+                ultimaConsultaAplicada[sucursal] = numero
+                leerCajaDelServidor(body, opDeLaApertura, fotoDeAntes)
+            }
+        } catch (e: FusionDescartada) {
+            // 🔴 Codex r17: la respuesta alcanzó cajas que la foto no leyó y no se aplicó nada. Se reconsulta UNA vez con esas cajas en la
+            // foto; si la reconsulta también se topa con cajas sin leer, queda para la siguiente vuelta normal (sin bucle).
+            if (esReconsulta) {
+                Log.w(TAG, "⏭️ La reconsulta de la caja también alcanzó cajas sin foto (${e.cajas}): queda para la siguiente vuelta")
+                CajaDelServidor.NoSeSupo
+            } else {
+                Log.w(TAG, "🔁 La respuesta de la caja alcanzó cajas sin foto (${e.cajas}): se descarta y se reconsulta")
+                pedirCajaAbiertaAlServidor(opDeLaApertura, leerTambien + e.cajas, esReconsulta = true)
+            }
+        }
+    }
+
+    private suspend fun leerCajaDelServidor(body: String, opDeLaApertura: PendingDrawerOp?, fotoDeAntes: FotoDeLasCopias): CajaDelServidor {
         return try {
             val root = json.decodeFromString<JsonObject>(body)
             val sessionObj = parseSessionEnvelope(root)
@@ -1012,13 +1214,23 @@ class CashDrawerRepository @Inject constructor(
                 // mudado a la caja ajena. `esMiPropiaCaja` es la decisión real y tiene que ir
                 // primero, o el aviso llega cuando el dinero ya se movió.
                 val llave = llaveDelEventoOpen((sessionObj["events"] ?: root["events"]) as? JsonArray)
-                val esLaPropia = opDeLaApertura == null ||
-                    esMiPropiaCaja(parseSessionFromApi(sessionObj), opDeLaApertura, deviceName, staffId, llave)
+                // 🔴 Codex apps r3 #2: sin apertura que reproducir (la consulta normal), la llave del eco puede nombrar una apertura
+                // MÍA que sigue en la cola —el servidor la creó y se perdió la respuesta—, aunque su caja ya esté CERRADA aquí. Se
+                // identifica en TODA la cola y se concilia ésa: si no, se «promovía» la caja local abierta de otra apertura (B) dentro
+                // de ésta (A) y B perdía su barrera.
+                val apertura = opDeLaApertura
+                    ?: llave?.let { eco -> pendientes().firstOrNull { it.kind == "OPEN" && it.localId == eco } }
+                val esLaPropia = apertura == null ||
+                    esMiPropiaCaja(parseSessionFromApi(sessionObj), apertura, deviceName, staffId, llave)
+                // Por GET nadie creó nada con mi POST: el alias sólo con la llave igual.
+                val mismaApertura = apertura != null && esLaMismaApertura(apertura, llave, creadaPorMiPOST = false)
                 // Events live inside the session payload (fallback: top-level).
-                val session = adoptServerSession(sessionObj, root["events"]?.jsonArray, opDeLaApertura?.sessionId, esLaPropia)
+                val session = adoptServerSession(sessionObj, root["events"]?.jsonArray, apertura?.sessionId, esLaPropia, mismaApertura, llave, fotoDeAntes)
                 Log.d(TAG, "✅ Caja del server sincronizada: ${session.id} (¿es mi apertura? $esLaPropia)")
                 CajaDelServidor.Adoptada(session, llave, esLaPropia)
             }
+        } catch (e: FusionDescartada) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "❌ Parse current session error: ${e.message}")
             CajaDelServidor.NoSeSupo
@@ -1108,8 +1320,42 @@ class CashDrawerRepository @Inject constructor(
          * fabricado. La identidad no se puede inferir del id local; la contesta la llave.
          */
         esLaPropia: Boolean = true,
-    ): CashDrawerSessionEntity {
+        /** La caja es la MISMA apertura ([esLaMismaApertura]): sólo entonces se escribe el alias. */
+        mismaApertura: Boolean = false,
+        /** La llave del evento OPEN de la caja del servidor (el eco, N1), para reconocer MI apertura entre las provisionales. */
+        llaveDelServidor: String? = null,
+        /** Codex r13 #1 y r14 A1: [fotoDeLasCopias] tomada justo antes de pedir esta respuesta. */
+        fotoDeAntes: FotoDeLasCopias = FotoDeLasCopias.VACIA,
+    ): CashDrawerSessionEntity = enTransaccion {
+        // 🔴 Codex r14 A2: la fusión completa de la caja (promover, insertar, retirar) es UNA transacción: otra escritura (la salida de
+        // un apartado, un cobro) espera a que termine, así que el borrado no alcanza una venta que no evaluó, la promoción no deja una
+        // venta en una caja borrada, y si la app muere a la mitad no quedan la fila del servidor y su copia a la vez.
         val parsed = parseSessionFromApi(sessionObj)
+        // 🔴 Codex r17: si esta fusión alcanza una caja que la foto NO leyó (cerrada al pedir, readoptada mientras viajaba la respuesta) y
+        // en esa caja hay una venta local que la respuesta no confirma, no se sabe si esa venta ya estaba o nació durante la petición: la
+        // fusión se DESCARTA entera, antes de escribir nada, y quien pidió reconsulta con una foto que sí la lea
+        // ([pedirCajaAbiertaAlServidor]). Sólo importa si la respuesta trae ventas (sin ellas no se borra ninguna venta local).
+        val alcanzadas = buildSet {
+            add(parsed.id)
+            sesionLocal?.let(::add)
+            if (parsed.status == CashDrawerStatus.OPEN.name && venueId.isNotEmpty()) addAll(dao.getOpenSessions(venueId).map { it.id })
+        }
+        val sinFoto = alcanzadas intersect fotoDeAntes.sinLeer
+        if (sinFoto.isNotEmpty()) {
+            val delServidor = (sessionObj["events"]?.jsonArray ?: fallbackEvents).orEmpty().mapNotNull { it as? JsonObject }
+            val traeVentas = delServidor.any { it["type"]?.jsonPrimitive?.contentOrNull == CashDrawerEventType.CASH_SALE.name }
+            val confirmadas = delServidor.mapNotNull { it["id"]?.jsonPrimitive?.contentOrNull }.toSet()
+            val enDuda = if (!traeVentas) emptySet() else sinFoto.filter { caja ->
+                dao.getSessionEvents(caja).any { it.type == CashDrawerEventType.CASH_SALE.name && it.id !in confirmadas }
+            }.toSet()
+            if (enDuda.isNotEmpty()) throw FusionDescartada(enDuda)
+        }
+        // 🔴 EL ALIAS VA ANTES DE REAPUNTAR (efectivo sin red en el turno correcto, 21-oct-2026): si el servidor confirmó ESTA
+        // apertura, «id local → id del servidor» queda en disco antes de mudar nada, así que un cobro con el id local (también
+        // una reserva escrita durante esta adopción) sale con el del servidor aunque la app muera a la mitad. Adoptar la caja de
+        // OTRO aparato NUNCA escribe alias: el cobro de A no se puede volver de B (Codex r3 #3). Y `esLaPropia` no basta: sin eco
+        // es una heurística; el alias pide la MISMA apertura (Codex apps r1 #3).
+        if (sesionLocal != null && mismaApertura && sesionLocal != parsed.id) guardarAliasDeCaja(sesionLocal, parsed.id)
         // 🔴 La cola se muda ANTES de mirar nada: así el cierre encolado de la caja local queda
         // nombrando ya a la caja del servidor y la guarda de abajo lo encuentra. Sin esto, un
         // cierre encolado con el id LOCAL no frenaba la adopción y el conteo del cajero se perdía.
@@ -1134,9 +1380,13 @@ class CashDrawerRepository @Inject constructor(
 
         // Las cajas locales que tienen que MUDARSE a la del servidor: las abiertas de siempre, más
         // —hallazgo I2— la que se está adoptando aunque ya esté CERRADA en local.
+        // 🔴 Codex apps r3 #2: si la caja del servidor es MI apertura (la misma, por la llave), otra caja local abierta que tiene su
+        // PROPIA apertura en la cola es una apertura posterior (cerré esta y abrí aquélla sin red): no se funde en ésta; espera su
+        // turno detrás del cierre. Las de antes del eco, o las de otro aparato, se promueven como siempre.
+        val conAperturaPropia = if (mismaApertura) pendientes().filter { it.kind == "OPEN" }.map { it.sessionId }.toSet() else emptySet()
         val aPromover = if (venueId.isEmpty()) emptyList() else buildList {
             if (server.status == CashDrawerStatus.OPEN.name) {
-                addAll(dao.getOpenSessions(venueId).filter { it.id != server.id })
+                addAll(dao.getOpenSessions(venueId).filter { it.id != server.id && it.id !in conAperturaPropia })
             }
             sesionLocal?.takeIf { it != server.id && none { s -> s.id == it } }
                 ?.let { id -> dao.getSession(id)?.let { add(it) } }
@@ -1145,6 +1395,14 @@ class CashDrawerRepository @Inject constructor(
             aPromover
                 .forEach { provisional ->
                     Log.d(TAG, "⬆️ Promoviendo caja provisional ${provisional.id} → ${server.id}")
+                    // 🔴 Codex apps r2 #3: la consulta normal (`/current`, sin apertura que reproducir) también puede devolver MI
+                    // caja: el servidor la creó y se perdió la respuesta. Si la apertura encolada de esta provisional tiene la llave
+                    // del eco, es la MISMA apertura: el alias va ANTES de reapuntar (si no, sus cobros con el id local suben sin
+                    // caja). Comparación estricta: sin eco no hay alias.
+                    val suApertura = pendientes().firstOrNull { it.kind == "OPEN" && it.sessionId == provisional.id }
+                    if (suApertura != null && esLaMismaApertura(suApertura, llaveDelServidor, creadaPorMiPOST = false)) {
+                        guardarAliasDeCaja(provisional.id, server.id)
+                    }
                     // 🔴 F3 (medido en la Samsung, 5-sep-2026): la provisional cuya APERTURA se está
                     // reproduciendo (`sesionLocal`) muda TODOS sus eventos — son suyos por construcción:
                     // nacieron después de tocar «Abrir caja», y el servidor los va a recibir todos (los
@@ -1255,10 +1513,64 @@ class CashDrawerRepository @Inject constructor(
                     // puede protegerle una venta a la caja de hoy (ver `sinReproducir`).
                     cobrosSinReproducir = pendingCashSales.sinReproducir(venueId, ventanaDeLaCaja(sessionObj)),
                     ventasConfirmadasPorPrimeraVez = ventasNuevasDelServer,
+                    // Codex r13 #1: una copia se protege si su K sigue vivo AHORA o lo estaba al pedir esta respuesta.
+                    paresExactos = paresExactosDe(server.id, ventasLocales) + fotoDeAntes.pares,
+                    // Codex r14 A1 y r15 #2: lo que nació mientras viajaba la petición (no estaba en la foto; también en una caja adoptada
+                    // o promovida en ese rato): esta respuesta no lo conocía. Sin foto (historial), nada. Codex r17: toda caja que esta
+                    // fusión alcanza la leyó la foto (si no, se descartó al empezar), así que «no estaba» quiere decir «nació después».
+                    nacidasDuranteLaPeticion = fotoDeAntes.ventas
+                        ?.let { antes -> ventasLocales.map { it.id }.filterNot { it in antes }.toSet() }
+                        .orEmpty(),
                 ).toList(),
             )
         }
-        return server
+        server
+    }
+
+    private suspend fun <T> enTransaccion(bloque: suspend () -> T): T =
+        if (database == null) bloque() else database.withTransaction { bloque() }
+
+    /**
+     * Rediseño r9: venta del cajón `idDeLaVentaEnEfectivo(K)` → llave `K`, para cada cobro de efectivo puro que todavía puede subir
+     * y cuya caja es [caja] (con su id local traducido por el alias de S3). Ver la pasada exacta de [PendingCashSales.ventasProtegidas].
+     */
+    /**
+     * 🔴 Codex r13 #1: la foto, JUSTO ANTES de pedirle una caja al servidor, de las copias `det(K)` de las cajas abiertas del aparato
+     * (y de [tambien]) cuyo K sigue vivo. El servidor arma la respuesta con lo que tenía al recibir la petición: si el replay sube K
+     * mientras viaja, esa respuesta no trae su reemplazo y no puede borrar su copia. La quita sólo el reclamo del servidor (pasada 0 de
+     * [PendingCashSales.ventasProtegidas]). Residuo que no se persigue: si K subió ANTES de pedir y el servidor todavía no posteaba su
+     * venta (la escribe después del commit del pago), la copia se va y vuelve con la siguiente lectura.
+     */
+    private suspend fun fotoDeLasCopias(tambien: Collection<String> = emptyList()): FotoDeLasCopias {
+        // Codex r16 #2: sólo las cajas que pueden entrar a una fusión con foto: las abiertas, las que tienen algo en la cola de la caja (un
+        // cierre sin red, una apertura) y la de esta operación, con sus alias. El historial confirmado de las cerradas no se carga; de ésas
+        // sólo se apunta cuáles no se leyeron. Una caja que nace o se adopta mientras viaja la petición no está en ninguna de las dos
+        // listas: sus ventas son nuevas (r15 #2).
+        val locales = (dao.getOpenSessions(venueId).map { it.id } + pendientes().map { it.sessionId } + tambien).distinct()
+        val alias = aliasDeCajas()
+        val cajas = (locales + alias.filter { it.local in locales }.mapNotNull { it.servidor } + alias.filter { it.servidor in locales }.map { it.local }).distinct()
+        val ventas = cajas.flatMap { dao.getSessionEvents(it) }.filter { it.type == CashDrawerEventType.CASH_SALE.name }.map { it.id }.toSet()
+        val sinLeer = dao.idsDeCajasNoAbiertas(venueId).toSet() - cajas.toSet()
+        val pares = if (cajas.isEmpty()) emptyMap() else pendingCashSales.paresExactos(venueId, cajas, ventas)
+        return FotoDeLasCopias(pares, ventas, sinLeer)
+    }
+
+    /**
+     * Codex r13 #1, r14 A1, r15 #2 y r16 #2: lo que había al pedir: las parejas `det(K)` → K vivas, las ventas de las cajas que pueden
+     * fusionarse ([ventas]) y las cajas cerradas que NO se leyeron ([sinLeer]). Una venta que no está en [ventas], de una caja que no está en
+     * [sinLeer], nació mientras viajaba la petición. [ventas] null = no hubo foto.
+     */
+    /** Codex r17: una fusión que alcanzó cajas que su foto no leyó ([cajas]); no se aplicó nada. */
+    private class FusionDescartada(val cajas: Set<String>) : Exception("La fusión alcanzó cajas sin foto: $cajas")
+
+    private class FotoDeLasCopias(val pares: Map<String, String>, val ventas: Set<String>?, val sinLeer: Set<String> = emptySet()) {
+        companion object { val VACIA = FotoDeLasCopias(emptyMap(), null) }
+    }
+
+    private suspend fun paresExactosDe(caja: String, ventasLocales: List<CashDrawerEventEntity>): Map<String, String> {
+        // Codex r11 #2: arranca de las copias locales de ESTA caja; las cajas son la del servidor y las locales con alias a ella (S3).
+        val cajas = listOf(caja) + aliasDeCajas().filter { it.servidor == caja }.map { it.local }
+        return pendingCashSales.paresExactos(venueId, cajas, ventasLocales.map { it.id }.toSet())
     }
 
     /**
@@ -1380,6 +1692,10 @@ class CashDrawerRepository @Inject constructor(
 
         Log.d(TAG, "✅ Session opened locally: ${session.id}, starting: $startingAmountCents")
 
+        // 🔴 La caja nace LOCAL y así queda anotada, ANTES de la red (efectivo sin red en el turno correcto): un cobro suyo nunca
+        // viaja con un id que el servidor no conoce. Cuando el servidor confirme ESTA apertura, la anotación se vuelve el alias.
+        guardarAliasDeCaja(session.id, null)
+
         // 🔴 LA INTENCIÓN DE ABRIR SE PERSISTE **ANTES** DE TOCAR LA RED (Task 8b, 4-sep).
         //
         // Antes se disparaba UN POST y nada más: si el proceso moría entre el toque y la
@@ -1447,6 +1763,7 @@ class CashDrawerRepository @Inject constructor(
      * ([clasificarApertura]). Es la MISMA función para `openSession` y para el replay.
      */
     private suspend fun enviarApertura(op: PendingDrawerOp): ResultadoDeLaApertura {
+        var fotoDeAntes = FotoDeLasCopias.VACIA
         val (code, body) = try {
             val requestBody = json.encodeToString(
                 OpenDrawerRequest.serializer(),
@@ -1458,6 +1775,7 @@ class CashDrawerRepository @Inject constructor(
                 ),
             ).toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url("$baseUrl/open").post(requestBody).build()
+            fotoDeAntes = fotoDeLasCopias(listOf(op.sessionId))
             withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
@@ -1473,13 +1791,13 @@ class CashDrawerRepository @Inject constructor(
         return when (clasificarApertura(code, codigoDeNegocio(body), leerCajaCreada(body))) {
             DesenlaceDeLaApertura.CREADA -> {
                 Log.d(TAG, "✅ El servidor creó la caja de esta apertura")
-                adoptarDelCuerpo(op, body, ligada = false) ?: preguntarPorLaCajaDelServidor(op)
+                adoptarDelCuerpo(op, body, ligada = false, fotoDeAntes) ?: preguntarPorLaCajaDelServidor(op)
             }
             // 🔴 El servidor LIGÓ: la caja que devuelve NO es la que se pidió abrir. Se adopta —el
             // dinero está donde debe— pero con aviso, porque el fondo tecleado no quedó registrado.
             DesenlaceDeLaApertura.LIGADA -> {
                 Log.w(TAG, "🔗 El servidor ligó esta apertura a una caja que ya estaba abierta")
-                adoptarDelCuerpo(op, body, ligada = true) ?: preguntarPorLaCajaDelServidor(op)
+                adoptarDelCuerpo(op, body, ligada = true, fotoDeAntes) ?: preguntarPorLaCajaDelServidor(op)
             }
             DesenlaceDeLaApertura.PREGUNTAR_POR_LA_SUYA -> {
                 Log.w(TAG, "🔁 El servidor ya tiene un turno de caja abierto ($code): se adopta el suyo")
@@ -1502,7 +1820,7 @@ class CashDrawerRepository @Inject constructor(
     }
 
     /** Adopta la caja que vino en el cuerpo del `POST /open`. `null` = cuerpo ilegible. */
-    private suspend fun adoptarDelCuerpo(op: PendingDrawerOp, body: String, ligada: Boolean): ResultadoDeLaApertura? {
+    private suspend fun adoptarDelCuerpo(op: PendingDrawerOp, body: String, ligada: Boolean, fotoDeAntes: FotoDeLasCopias): ResultadoDeLaApertura? {
         val llave = leerLlaveDeLaApertura(body)
         // 🔴 `CREADA` es mía por definición: el servidor dice que la creó a partir de MI POST, así
         // que no se le pregunta a la heurística —un `deviceName` que el servidor normalice distinto
@@ -1512,9 +1830,12 @@ class CashDrawerRepository @Inject constructor(
             parseSessionEnvelopeSeguro(body)
                 ?.let { esMiPropiaCaja(parseSessionFromApi(it), op, deviceName, staffId, llave) } ?: true
             )
+        val mismaApertura = esLaMismaApertura(op, llave, creadaPorMiPOST = !ligada)
         val session = try {
             parseSessionEnvelope(json.decodeFromString<JsonObject>(body))
-                ?.let { adoptServerSession(it, sesionLocal = op.sessionId, esLaPropia = esLaPropia) }
+                ?.let {
+                    adoptServerSession(it, sesionLocal = op.sessionId, esLaPropia = esLaPropia, mismaApertura = mismaApertura, llaveDelServidor = llave, fotoDeAntes = fotoDeAntes)
+                }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Parse open session error: ${e.message}")
             null
@@ -1696,13 +2017,21 @@ class CashDrawerRepository @Inject constructor(
         venueId: String? = null,
         staffId: String? = null,
         staffName: String? = null,
+        /**
+         * 🔴 D2 v7, ronda final (B): la llave del cobro. El id del movimiento se DERIVA de ella ([idDeLaVentaEnEfectivo]) y la
+         * escritura es «si no existe» (`INSERT OR IGNORE`): reintentarla nunca escribe dos. null = como antes (id al azar).
+         * Desde el rediseño r9 este camino es sólo el de los cobros SIN apartado de efectivo puro (canales sin reserva, «Ya pagó
+         * de otra forma», tipos del catálogo); la venta de un apartado la anota su salida de `EN_VUELO` (`SalidaDelApartado`).
+         */
+        llaveDelCobro: String? = null,
     ): CashDrawerEventEntity? {
         val capturedVenueId = venueId ?: this.venueId
         val capturedStaffId = staffId ?: this.staffId
         val capturedStaffName = staffName ?: this.staffName
         val session = dao.getOpenSession(capturedVenueId) ?: return null
+        val id = llaveDelCobro?.takeIf { it.isNotBlank() }?.let { idDeLaVentaEnEfectivo(it) } ?: UUID.randomUUID().toString()
         val event = CashDrawerEventEntity(
-            id = UUID.randomUUID().toString(),
+            id = id,
             sessionId = session.id,
             venueId = capturedVenueId,
             type = CashDrawerEventType.CASH_SALE.name,
@@ -1713,7 +2042,10 @@ class CashDrawerRepository @Inject constructor(
             orderId = orderId,
             createdAt = System.currentTimeMillis(),
         )
-        dao.insertEvent(event)
+        if (dao.insertarEventoSiNoExiste(event) == -1L) {
+            Log.d(TAG, "💵 La venta del cobro $llaveDelCobro ya estaba en el cajón: no se anota dos veces")
+            return dao.getEvent(id)
+        }
         Log.d(TAG, "✅ Cash sale recorded: $amountCents, order: $orderId")
 
         // Compatibility push: the server deliberately drops client CASH_SALE because the
@@ -1797,8 +2129,10 @@ class CashDrawerRepository @Inject constructor(
      */
     private val candadoDeLaCola = Any()
 
-    private fun pendientes(): MutableList<PendingDrawerOp> = try {
-        secureStorage.pendingDrawerOpsJson(venueId)
+    private fun pendientes(): MutableList<PendingDrawerOp> = pendientesDe(venueId)
+
+    private fun pendientesDe(sucursal: String): MutableList<PendingDrawerOp> = try {
+        secureStorage.pendingDrawerOpsJson(sucursal)
             ?.let { json.decodeFromString(ListSerializer(PendingDrawerOp.serializer()), it) }
             ?.toMutableList() ?: mutableListOf()
     } catch (e: Exception) {
@@ -1911,13 +2245,19 @@ class CashDrawerRepository @Inject constructor(
      * Vuelve a poner en juego una APERTURA rechazada: se le quita la marca y el siguiente replay la
      * intenta otra vez. Es lo único que el cajero puede hacer con ella, y por eso el aviso de una
      * apertura dice «Reintentar» y no «Ya lo vi» (hallazgo I4).
+     *
+     * 🔴 Espera su turno con el candado del REPLAY (Codex apps r12): si reviviera a media corrida, la corrida seguiría con su foto de la
+     * cola y mandaría lo de detrás (el cierre de otra caja, con su último pase) antes que esta apertura, rompiendo el FIFO. Sólo cambia
+     * la cola bajo el candado; el replay que sigue lo dispara quien llama (no se anidan).
      */
-    fun reintentarApertura(localKey: String) = synchronized(candadoDeLaCola) {
-        guardarPendientes(
-            pendientes().map {
-                if (it.kind == "OPEN" && llaveDe(it) == localKey) it.copy(rechazadaEn = null, motivoDelRechazo = null) else it
-            },
-        )
+    suspend fun reintentarApertura(localKey: String) = candadoDelReplay.withLock {
+        synchronized(candadoDeLaCola) {
+            guardarPendientes(
+                pendientes().map {
+                    if (it.kind == "OPEN" && llaveDe(it) == localKey) it.copy(rechazadaEn = null, motivoDelRechazo = null) else it
+                },
+            )
+        }
     }
 
     // MARK: - Avisos de adopción (hallazgo I1)
@@ -2080,13 +2420,21 @@ class CashDrawerRepository @Inject constructor(
      */
     suspend fun sincronizarCajonPrimero(): Boolean {
         runCatching { reproducirPendientes() }
-            .onFailure { Log.e(TAG, "❌ El replay del cajón falló: ${it.message}") }
-        val estado = runCatching { estadoDeLosCobros(pendientes(), System.currentTimeMillis()) }
+            .onFailure {
+                Log.e(TAG, "❌ El replay del cajón falló: ${it.message}")
+                // Se cayó a medias: no se sabe si retuvo el cierre, así que el sincronizador no le cuenta un intento.
+                cierreRetenidoEnLaUltimaCorrida = null
+            }
+        val estado = runCatching { estadoDeLosCobros(pendientes(), reloj()) }
             .getOrDefault(EstadoDeLosCobros.LIBRES)
         publicarEstadoDeLosCobros(estado)
         if (estado == EstadoDeLosCobros.ENVIADOS_SIN_CAJA) {
             Log.w(TAG, "⏱️ La apertura lleva más de 30 min sin llegar: los cobros salen SIN caja (quedarán fuera de turno)")
         }
+        // Un cobro SIN caja (versión anterior) espera a la apertura pendiente, también mientras un cierre espera a sus ventas
+        // (Codex apps r1 #5, como iOS): el sincronizador lo salta sin detener a los cobros de una caja confirmada, así que no
+        // cierra el ciclo «el cierre espera a sus cobros, que esperan detrás de éste». Los cobros CON caja los decide
+        // [cajasQueEsperanSuApertura], fila por fila.
         return estado != EstadoDeLosCobros.ESPERANDO_LA_APERTURA
     }
 
@@ -2101,6 +2449,164 @@ class CashDrawerRepository @Inject constructor(
      */
     private val _estadoDeLosCobros = MutableStateFlow(EstadoDeLosCobros.LIBRES)
     val estadoDeLosCobros: StateFlow<EstadoDeLosCobros> = _estadoDeLosCobros.asStateFlow()
+
+    /**
+     * Cuántas ventas espera el cierre de caja que la barrera 2 retiene ahora (0 = ninguno). Es la banda
+     * [textoDelCierreQueEspera]; se publica al terminar cada corrida del replay.
+     */
+    private val _cierreEsperaVentas = MutableStateFlow(0)
+    val cierreEsperaVentas: StateFlow<Int> = _cierreEsperaVentas.asStateFlow()
+
+    /**
+     * Las cajas cuya apertura todavía espera al servidor (barrera 1 por caja, [cajasEsperandoApertura]). Lo leen el
+     * sincronizador de cobros y el outbox DESPUÉS de [sincronizarCajonPrimero], para evaluar la caja de CADA fila.
+     */
+    fun cajasQueEsperanSuApertura(): Set<String> =
+        runCatching { cajasEsperandoApertura(pendientes(), reloj()) }.getOrDefault(emptySet())
+
+    /** Cuántas operaciones vivas (sin rechazo) le quedan a la cola del cajón. Lo usan las vueltas de `syncNow`. */
+    fun operacionesVivasDelCajon(): Int = runCatching { pendientes().count { it.rechazadaEn == null } }.getOrDefault(0)
+
+    /**
+     * 🔴 EL ID DE LA CAJA DE UN COBRO, COMO LO CONOCE EL SERVIDOR (efectivo sin red en el turno correcto, 21-oct-2026).
+     *
+     * - el alias, si la caja era local y el servidor confirmó ESA MISMA apertura ([AliasDeCaja]);
+     * - `null` si la caja sigue local sin alias (su apertura no ha llegado, la rechazaron, o se adoptó la caja de OTRO
+     *   aparato): el cobro sube SIN el campo, como hoy — nunca con un id que el servidor no conoce;
+     * - el mismo id si es una caja que el servidor ya conoce (abierta con red, o adoptada de otro aparato, Review Focus #5).
+     */
+    fun idDeCajaParaElServidor(id: String?, venue: String? = null): String? {
+        val caja = id?.takeIf { it.isNotBlank() } ?: return null
+        val sucursal = venue?.takeIf { it.isNotBlank() } ?: venueId
+        aliasDeCajas(sucursal).firstOrNull { it.local == caja }?.let { return it.servidor }
+        // Una caja abierta antes de esta versión no quedó anotada como local: mientras su apertura siga en la cola (o la
+        // hayan rechazado) también es local sin alias.
+        if (pendientesDe(sucursal).any { it.kind == "OPEN" && it.sessionId == caja }) return null
+        return caja
+    }
+
+    private fun aliasDeCajas(sucursal: String = venueId): List<AliasDeCaja> = leerAliasDeCajas(secureStorage, sucursal)
+
+    /** Lo que nombra a una caja y todavía puede mandarse: no se le poda el alias ([aliasTrasPodar]). */
+    private suspend fun cajasReferenciadas(): Set<String> =
+        pendingCashSales.cajasReferenciadas(venueId) + pendientes().map { it.sessionId }
+
+    /**
+     * Los cobros de [caja] que todavía pueden subir, contando los guardados con el id LOCAL de esa caja (traducidos por el
+     * alias). Un fallo al leer las colas no retiene el cierre: es la barrera de DATOS, no de errores (igual que
+     * [sincronizarCajonPrimero]); el cierre sale como hoy y lo registra el log.
+     */
+    private suspend fun cobrosPorSubirDe(caja: String): Int = try {
+        val alias = aliasDeCajas()
+        pendingCashSales.cajasDeCobrosPorSubir(venueId).count { delCobro ->
+            delCobro == caja || alias.firstOrNull { it.local == delCobro }?.servidor == caja
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ No se pudieron leer los cobros de la caja $caja; su cierre no se retiene: ${e.message}")
+        0
+    }
+
+    /**
+     * El cierre que la ÚLTIMA corrida TERMINADA del replay retuvo por sus cobros (barrera 2), o `null`. Lo escribe cada corrida al
+     * TERMINAR (nunca al empezar: el replay va en fila con el de la pantalla de Caja, y una corrida que empieza justo después de la
+     * del sincronizador borraba la marca antes de que éste la leyera —medido en la D3, 24-oct). Una corrida que se cae la limpia
+     * ([sincronizarCajonPrimero]). Lo lee
+     * [com.avoqado.pos.payment.data.PaymentSyncService] justo después de [sincronizarCajonPrimero] para saber a qué cierre
+     * pedirle el pase ([solicitarPaseConServidor]): sólo a uno que de verdad se evaluó y se retuvo, nunca a uno que espera detrás de
+     * otra operación (ése no ha empezado a esperar a sus ventas).
+     */
+    @Volatile private var cierreRetenidoEnLaUltimaCorrida: PendingDrawerOp? = null
+
+    internal fun cierreQueEspera(): PendingDrawerOp? = cierreRetenidoEnLaUltimaCorrida
+
+    /**
+     * 🔴 PIDE UN PASE para estos cierres retenidos (lo llama SÓLO el sincronizador de cobros, al terminar una sincronización con esos
+     * cierres retenidos por sus ventas, cuya subida de cobros corrió y cuya consulta de salud al servidor contestó): deja la evidencia,
+     * con su hora en reloj MONOTÓNICO. No cuenta nada aquí: lo cuenta la SIGUIENTE corrida del replay que de verdad retenga ese cierre,
+     * bajo su candado ([pasesTrasLaPeticion]); si esa corrida no llega a él (algo vivo delante, como una apertura que el cajero reintentó,
+     * o ya salió), la petición se descarta (Codex apps r10–r11).
+     */
+    internal fun solicitarPaseConServidor(cierres: Collection<PendingDrawerOp>) {
+        val ahora = relojMonotonico()
+        cierres.filter { it.kind == "CLOSE" }.forEach { paseSolicitado[llaveDelCierre(it)] = ahora }
+    }
+
+    /** Las peticiones de pase pendientes, por cierre, con su hora monotónica. En memoria: tras un reinicio no hay ninguna. */
+    private val paseSolicitado = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun llaveDelCierre(op: PendingDrawerOp) = op.localId ?: op.sessionId
+
+    /**
+     * Los pases de un cierre que ESTA corrida retiene, tras atender su petición pendiente: cuenta uno sólo si pasaron al menos
+     * [ESPACIO_ENTRE_PASES_MS] de reloj monotónico desde el intento anterior de ese cierre en este proceso ([pasoDelCierre]); el
+     * primero sólo arma. Lo cuenta en disco ([PendingDrawerOp.pasesConServidor]) y lo devuelve.
+     */
+    private fun pasesTrasLaPeticion(cierre: PendingDrawerOp): Int {
+        val llave = llaveDelCierre(cierre)
+        val cuando = paseSolicitado.remove(llave) ?: return cierre.pasesConServidor
+        val paso = pasoDelCierre(intentoAnteriorDelCierre[llave], cuando)
+        intentoAnteriorDelCierre[llave] = paso.intentoEn
+        if (!paso.cuenta) return cierre.pasesConServidor
+        val pases = cierre.pasesConServidor + 1
+        synchronized(candadoDeLaCola) {
+            val lista = pendientes()
+            guardarPendientes(lista.map { if (it.kind == "CLOSE" && mismaOperacion(it, cierre)) it.copy(pasesConServidor = maxOf(it.pasesConServidor, pases)) else it })
+        }
+        Log.d(TAG, "🔁 Cierre retenido por sus ventas: un pase más con el servidor contestando ($pases/$PASES_DEL_CIERRE)")
+        return pases
+    }
+
+    /**
+     * El último intento contado (o el que armó la cuenta) de cada cierre retenido, en reloj monotónico y en MEMORIA: después de un
+     * reinicio el primer intento vuelve a armar la cuenta (un reinicio retrasa el tope, nunca lo adelanta).
+     */
+    private val intentoAnteriorDelCierre = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * 🔴 SÓLO PARA PRUEBAS: el reloj del espacio entre pases. MONOTÓNICO (`System.nanoTime`, en milisegundos): cambiar la hora del
+     * aparato no lo mueve y, en ANDROID, no avanza con el aparato dormido.
+     */
+    internal var relojMonotonico: () -> Long = { System.nanoTime() / 1_000_000 }
+
+    /**
+     * Guarda «[local] → [servidor]» (o, con [servidor] nulo, que [local] es una caja de este aparato que todavía no tiene
+     * equivalencia) y poda ([aliasTrasPodar]). Un id local nunca cambia de caja del servidor: la primera confirmación manda.
+     */
+    internal suspend fun guardarAliasDeCaja(local: String, servidor: String?) {
+        if (local.isBlank() || local == servidor) return
+        // Se lee ANTES del candado (suspende). Si no se puede saber qué sigue en uso, no se poda nada: podar a ciegas podría tirar
+        // el alias de una venta retenida y mandarla al turno equivocado.
+        val referenciadas = try {
+            cajasReferenciadas()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ No se pudo saber qué cajas siguen en uso; no se poda ningún alias: ${e.message}")
+            null
+        }
+        try {
+            synchronized(candadoDeLaCola) {
+                val lista = aliasDeCajas()
+                val previa = lista.firstOrNull { it.local == local }
+                if (previa?.servidor != null) {
+                    if (servidor != null && servidor != previa.servidor) {
+                        Log.w(TAG, "⚠️ La caja $local ya era ${previa.servidor} en el servidor; no se vuelve $servidor")
+                    }
+                    return@synchronized
+                }
+                if (previa != null && servidor == null) return@synchronized
+                val nueva = lista.filter { it.local != local } + AliasDeCaja(local, servidor, reloj())
+                // La recién escrita es la más reciente: entra sola entre los [TOPE_DE_ALIAS_SIN_USO] que se conservan.
+                val podada = if (referenciadas == null) nueva else aliasTrasPodar(nueva, referenciadas)
+                secureStorage.setDrawerSessionAliasesJson(venueId, json.encodeToString(ListSerializer(AliasDeCaja.serializer()), podada))
+                if (servidor != null) Log.d(TAG, "🔗 Alias de la caja: $local → $servidor")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ No se pudo guardar el alias de la caja $local: ${e.message}")
+        }
+    }
 
     private fun publicarEstadoDeLosCobros(nuevo: EstadoDeLosCobros) {
         _estadoDeLosCobros.value = nuevo
@@ -2173,7 +2679,7 @@ class CashDrawerRepository @Inject constructor(
         val todas = if (ademas != null && guardadas.none { mismaOperacion(it, ademas) }) guardadas + ademas else guardadas
         // Las ya rechazadas NO se reintentan: se quedan guardadas sólo para poder avisar.
         val lista = todas.filter { it.rechazadaEn == null }.sortedBy { it.at }
-        if (lista.isEmpty()) return ResultadoDelReplay()
+        if (lista.isEmpty()) { cierreRetenidoEnLaUltimaCorrida = null; paseSolicitado.clear(); return ResultadoDelReplay() }
         var confirmados = 0
         // 🔴 Un movimiento RECHAZADO en una corrida ANTERIOR bloquea el cierre de SU caja: el
         // servidor nunca lo va a tener, así que cerrar encima firmaría un faltante falso para
@@ -2192,6 +2698,9 @@ class CashDrawerRepository @Inject constructor(
         // `adoptServerSession`.
         val renombres = mutableMapOf<String, String>()
         val adoptadas = mutableMapOf<String, CashDrawerSessionEntity>()
+        // Cuántas ventas espera el cierre que esta corrida retuvo; 0 = evaluó uno y salió; nulo = no llegó a ninguno.
+        var cierreRetenido: Int? = null
+        var cierreQueEspera: PendingDrawerOp? = null
         for (original in lista) {
             // La caja pudo cambiar de id a media corrida (la apertura acaba de adoptar la del
             // servidor). La BARRERA se evalúa con el id ORIGINAL, que es como está la lista.
@@ -2279,6 +2788,25 @@ class CashDrawerRepository @Inject constructor(
                 continue
             }
             if (op.kind == "CLOSE" && original.sessionId in cajasBloqueadas) { Log.w(TAG, "⏸️ Cierre de ${op.sessionId} en espera: hay movimientos sin confirmar"); continue }
+            // 🔴 BARRERA 2 (efectivo sin red en el turno correcto, 21-oct-2026): el cierre de esta caja espera a que suban SUS
+            // cobros, con tope de [PASES_DEL_CIERRE] pases con el servidor contestando. Ver [elCierreEspera]. Mientras espera, la corrida se
+            // DETIENE (C1): la apertura de la caja siguiente no puede adelantársele.
+            if (op.kind == "CLOSE") {
+                val porSubir = cobrosPorSubirDe(op.sessionId)
+                // 🔴 El pase se cuenta AQUÍ, en la corrida que tiene el cierre retenido de verdad y bajo su candado (Codex apps
+                // r10–r11): la petición del sincronizador sólo deja la evidencia ([solicitarPaseConServidor]).
+                val pases = if (porSubir > 0) pasesTrasLaPeticion(original) else original.pasesConServidor
+                if (elCierreEspera(pases, porSubir)) {
+                    cierreRetenido = porSubir
+                    cierreQueEspera = original
+                    Log.w(TAG, "⏸️ Cierre de ${op.sessionId} en espera: le faltan $porSubir venta(s) por subir ($pases/$PASES_DEL_CIERRE pases con el servidor)")
+                    break
+                }
+                cierreRetenido = 0
+                if (porSubir > 0) {
+                    Log.w(TAG, "⏱️ El cierre de ${op.sessionId} ya esperó $PASES_DEL_CIERRE pases con el servidor a $porSubir venta(s): sale igual (las tardías quedan aparte con aviso)")
+                }
+            }
             val destino = when (op.kind) {
                 "CLOSE" -> fireApiClose(op.sessionId, op.amountCents, op.note).also { if (it == DestinoDeLaOperacion.RECHAZADA) marcarRechazada(op, "El servidor no aceptó el cierre de esta caja.") }
                 else -> reproducirMovimiento(op)
@@ -2301,6 +2829,12 @@ class CashDrawerRepository @Inject constructor(
         if (confirmados > 0) Log.d(TAG, "✅ $confirmados movimiento(s) del cajón confirmados por el server")
         // La banda se entera en el MISMO momento en que cambia el hecho, no en el siguiente ciclo.
         publicarEstadoDeLosCobros(estadoDeLosCobros(pendientes(), System.currentTimeMillis()))
+        cierreRetenidoEnLaUltimaCorrida = cierreQueEspera
+        // Una petición de pase para un cierre que esta corrida no retuvo (no llegó a él, ya salió, o algo vivo quedó delante) no se
+        // guarda para después: el sincronizador la vuelve a pedir con evidencia nueva.
+        paseSolicitado.keys.retainAll(setOfNotNull(cierreQueEspera?.let { llaveDelCierre(it) }))
+        _cierreEsperaVentas.value = cierreRetenido
+            ?: if (pendientes().none { it.kind == "CLOSE" && it.rechazadaEn == null }) 0 else _cierreEsperaVentas.value
         return ResultadoDelReplay(adoptadas)
     }
 
@@ -2367,6 +2901,7 @@ class CashDrawerRepository @Inject constructor(
                 .url("$baseUrl/close")
                 .post(requestBody)
                 .build()
+            val fotoDeAntes = fotoDeLasCopias(listOf(sessionId))
 
             val (code, body) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
@@ -2374,7 +2909,7 @@ class CashDrawerRepository @Inject constructor(
             }
 
             clasificarRespuestaDelServer("CLOSE", code, codigoDeNegocio(body)).also {
-                if (it == DestinoDeLaOperacion.CONFIRMADA && code in 200..299) adoptarCajaCerrada(sessionId, body)
+                if (it == DestinoDeLaOperacion.CONFIRMADA && code in 200..299) adoptarCajaCerrada(sessionId, body, fotoDeAntes)
                 when (it) {
                     DestinoDeLaOperacion.CONFIRMADA -> Log.d(TAG, "✅ Cierre aceptado por el server ($sessionId, $code)")
                     DestinoDeLaOperacion.RECHAZADA -> Log.e(TAG, "🛑 Cierre RECHAZADO por el server ($code) — $body")
@@ -2398,7 +2933,7 @@ class CashDrawerRepository @Inject constructor(
      * movimientos ajenos. Si algo falla aquí el cierre sigue confirmado (ya lo aceptó el servidor);
      * el corte se queda con la copia local, que es el comportamiento de antes.
      */
-    private suspend fun adoptarCajaCerrada(sessionId: String, body: String) {
+    private suspend fun adoptarCajaCerrada(sessionId: String, body: String, fotoDeAntes: FotoDeLasCopias) {
         try {
             val caja = parseSessionEnvelope(json.decodeFromString<JsonObject>(body)) ?: return
             val id = caja["id"]?.jsonPrimitive?.contentOrNull
@@ -2406,7 +2941,7 @@ class CashDrawerRepository @Inject constructor(
                 Log.w(TAG, "⚠️ El cierre de $sessionId contestó con la caja $id: no se adopta")
                 return
             }
-            adoptServerSession(caja)
+            adoptServerSession(caja, fotoDeAntes = fotoDeAntes)
             Log.d(TAG, "✅ Corte de $sessionId tomado del servidor")
         } catch (e: Exception) {
             Log.e(TAG, "❌ No se pudo adoptar la caja cerrada $sessionId: ${e.message}")
@@ -2487,6 +3022,13 @@ class CashDrawerRepository @Inject constructor(
     }
 
     companion object {
+        /**
+         * Ronda final (B): el id del movimiento de cajón de la venta en efectivo del cobro [llave]. Determinista (UUID v3 de la
+         * llave): con forma de UUID como los demás ids locales, y el `/sync` del servidor descarta el `CASH_SALE` del cliente.
+         */
+        internal fun idDeLaVentaEnEfectivo(llave: String): String =
+            UUID.nameUUIDFromBytes("CASH_SALE:$llave".toByteArray(Charsets.UTF_8)).toString()
+
         /**
          * 🔴 Tipos que el SERVER escribe POR SU CUENTA, y de los que esta app sólo
          * guarda una copia provisional para pintar la pantalla al instante.

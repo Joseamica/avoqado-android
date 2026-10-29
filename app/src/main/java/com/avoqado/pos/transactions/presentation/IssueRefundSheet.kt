@@ -42,6 +42,8 @@ import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +75,8 @@ import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
 import com.avoqado.pos.transactions.data.model.avisoDeSoloRegistro
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
 import com.avoqado.pos.transactions.data.model.importeAjustadoAlTope
+import com.avoqado.pos.transactions.data.model.importeParaDevolver
+import com.avoqado.pos.transactions.data.model.puedeEnviarDevolucion
 import com.avoqado.pos.transactions.data.model.leyendaDeDevolucion
 import com.avoqado.pos.transactions.data.model.opcionesParaDevolver
 import com.avoqado.pos.transactions.data.model.propinaMarcadaPorDefecto
@@ -88,6 +92,20 @@ import kotlinx.coroutines.launch
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 private enum class RefundTab { ITEMS, AMOUNT }
+
+@dagger.hilt.android.lifecycle.HiltViewModel
+class ConexionDeDevolucionViewModel @javax.inject.Inject constructor(
+    red: com.avoqado.pos.core.util.ConnectivityMonitor,
+    val almacen: com.avoqado.pos.core.data.local.SecureStorage,
+) : androidx.lifecycle.ViewModel() {
+    val conectado = red.isConnected
+    val servidor = red.isServerReachable
+
+    internal suspend fun <T> iniciar(necesitaRed: Boolean, vigente: () -> Boolean, peticion: suspend () -> T): T? {
+        if (!vigente() || necesitaRed && (!conectado.value || !servidor.value)) return null
+        return peticion()
+    }
+}
 
 private data class ReasonOption(val code: String, val label: String)
 
@@ -116,14 +134,24 @@ fun IssueRefundSheet(
     codigoDeEncargadoActivo: Boolean,
     onDismiss: () -> Unit,
     onRefunded: () -> Unit,
+    soloCompleto: Boolean = false,
+    conexion: ConexionDeDevolucionViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
 ) {
     val spacing = AvoqadoTheme.spacing
     val corners = AvoqadoTheme.cornerRadius
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    val conectado by conexion.conectado.collectAsState()
+    val servidor by conexion.servidor.collectAsState()
+    val aSaldo = transaction.refundToGiftCardBalance == true
+    val necesitaRed = aSaldo || soloCompleto
+    val contexto = remember(transaction.id) { conexion.almacen.venueId to conexion.almacen.userId }
+    val montada = remember(transaction.id) { java.util.concurrent.atomic.AtomicBoolean(true) }
+    DisposableEffect(montada) { onDispose { montada.set(false) } }
+    fun vigente() = montada.get() && (!necesitaRed || contexto == (conexion.almacen.venueId to conexion.almacen.userId))
 
     var tab by remember(transaction.id) {
-        mutableStateOf(if (transaction.items.isNotEmpty()) RefundTab.ITEMS else RefundTab.AMOUNT)
+        mutableStateOf(if (!soloCompleto && transaction.items.isNotEmpty()) RefundTab.ITEMS else RefundTab.AMOUNT)
     }
     var selectedItemIds by remember(transaction.id) { mutableStateOf(emptySet<String>()) }
     var refundQtyByItem by remember(transaction.id) { mutableStateOf(emptyMap<String, Int>()) }
@@ -144,17 +172,21 @@ fun IssueRefundSheet(
     var terminalesParaElegir by remember(transaction.id) {
         mutableStateOf<List<com.avoqado.pos.payment.data.OnlineTerminal>>(emptyList())
     }
+    fun puedeEnviar() = vigente() && puedeEnviarDevolucion(aSaldo, soloCompleto, conectado && servidor, submitting || enviandoATerminal)
 
     fun mandarATerminal(terminalId: String) {
+        if (!puedeEnviar() || terminalAbierta) return
+        enviandoATerminal = true
         scope.launch {
-            enviandoATerminal = true
             terminalMsg = null
-            val resultado = terminalPaymentService.requestRefundOnTerminal(
+            val resultado = conexion.iniciar(necesitaRed, ::vigente) { terminalPaymentService.requestRefundOnTerminal(
                 terminalId = terminalId,
                 paymentId = transaction.id,
                 reason = reason?.label,
-            )
+            ) }
             enviandoATerminal = false
+            if (!vigente()) return@launch
+            if (resultado == null) { terminalMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
             resultado.fold(
                 onSuccess = {
                     // 🔴 NO se cierra como "reembolsado": todavía no se devolvió
@@ -171,10 +203,15 @@ fun IssueRefundSheet(
     }
 
     fun abrirEnTerminal() {
+        if (!puedeEnviar() || terminalAbierta) return
+        enviandoATerminal = true
         scope.launch {
-            enviandoATerminal = true
             terminalMsg = null
-            when (val lista = terminalPaymentService.fetchOnlineTerminals()) {
+            val lista = conexion.iniciar(necesitaRed, ::vigente) { terminalPaymentService.fetchOnlineTerminals() }
+            enviandoATerminal = false
+            if (!vigente()) return@launch
+            if (lista == null) { terminalMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
+            when (lista) {
                 is com.avoqado.pos.payment.data.TerminalListResult.Error -> {
                     enviandoATerminal = false
                     terminalMsg = lista.message
@@ -201,17 +238,17 @@ fun IssueRefundSheet(
     // Sólo la tarjeta que cobró NUESTRA terminal se devuelve allá; lo demás se reembolsa como el efectivo.
     val chain = refundChainRules(transaction.tenderSystemKind, transaction.chainRefundMethod,
         transaction.chainRefundLabel, transaction.chainRefundBlockedCode)
-    val enTerminal = !chain.isCredit && seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
+    val enTerminal = !chain.isCredit && !aSaldo && seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
 
     // «Devolver con»: null = por el mismo medio. Sólo hay selector si el servidor lo dice (`canChooseRefundMethod`).
     var devolverCon by remember(transaction.id) { mutableStateOf<String?>(null) }
-    val opcionesDeDevolucion = if (chain.isCredit) chain.options else if (transaction.canChooseRefundMethod == true) {
-        opcionesParaDevolver(transaction.method, transaction.tenderLabel)
+    val opcionesDeDevolucion = if (chain.isCredit) chain.options else if (aSaldo || (!soloCompleto && transaction.canChooseRefundMethod == true)) {
+        opcionesParaDevolver(transaction.method, transaction.tenderLabel, transaction.refundToGiftCardBalance)
     } else {
         emptyList()
     }
 
-    val parsedAmount = amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val parsedAmount = importeParaDevolver(amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0, maxRefundable, soloCompleto)
     val selectedItems = transaction.items.filter { item ->
         item.id != null && selectedItemIds.contains(item.id)
     }
@@ -268,7 +305,7 @@ fun IssueRefundSheet(
         chain.blockedReason == null &&
         amountToRefund > 0 &&
         amountToRefund <= topeActual + 0.001 &&
-        !submitting
+        puedeEnviar() && !(soloCompleto && enTerminal)
 
     if (terminalesParaElegir.isNotEmpty()) {
         com.avoqado.pos.designsystem.components.AvoqadoDialog(
@@ -277,12 +314,16 @@ fun IssueRefundSheet(
             onDismiss = { terminalesParaElegir = emptyList() },
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                if (necesitaRed && (!conectado || !servidor)) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
                 terminalesParaElegir.forEach { terminal ->
                     PrimaryButton(
                         text = terminal.name.ifBlank { terminal.terminalId },
+                        enabled = controlDeTerminalDeDevolucion(necesitaRed, conectado, servidor),
                         onClick = {
-                            terminalesParaElegir = emptyList()
-                            mandarATerminal(terminal.terminalId)
+                            if (controlDeTerminalDeDevolucion(necesitaRed, conexion.conectado.value, conexion.servidor.value)) {
+                                terminalesParaElegir = emptyList()
+                                mandarATerminal(terminal.terminalId)
+                            }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -375,7 +416,7 @@ fun IssueRefundSheet(
                 Spacer(modifier = Modifier.size(36.dp))
             }
 
-            Row(
+            if (!soloCompleto) Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = spacing.md),
@@ -411,7 +452,7 @@ fun IssueRefundSheet(
             // artículos, y el aviso que de verdad importa —«esto no devuelve el dinero a
             // la tarjeta»— se repite literal en el pie. Lo que NO puede desaparecer es el
             // pie, que es donde se decide y se confirma el dinero.
-            if (!apretado) {
+            if (!apretado || soloCompleto && enTerminal) {
             Box(modifier = Modifier.weight(1f, fill = false)) {
             Column(
                 modifier = Modifier
@@ -467,7 +508,7 @@ fun IssueRefundSheet(
                         PrimaryButton(
                             text = if (enviandoATerminal) "Abriendo…" else "Abrir en la terminal",
                             onClick = { abrirEnTerminal() },
-                            enabled = !enviandoATerminal && !submitting,
+                            enabled = puedeEnviar() && !terminalAbierta,
                             modifier = mod,
                         )
                     }
@@ -588,7 +629,7 @@ fun IssueRefundSheet(
             // la propina del mesero se devuelve, o sea que es DINERO. Con el teclado
             // abierto la banda se encoge tanto que la casilla salía de la pantalla y el
             // cajero confirmaba «incluir propina» sin poder verla (Sunmi, 2026-09-11).
-            if (tab == RefundTab.AMOUNT) {
+            if (tab == RefundTab.AMOUNT && !soloCompleto) {
                 AmountBody(
                     amountStr = amountStr,
                     onAmountChange = { amountStr = it },
@@ -596,7 +637,7 @@ fun IssueRefundSheet(
                 )
             }
 
-            if (tab == RefundTab.AMOUNT && paymentTipAmount > 0) {
+            if (tab == RefundTab.AMOUNT && paymentTipAmount > 0 && !soloCompleto) {
                 FilaIncluirPropina(
                     paymentTipAmount = paymentTipAmount,
                     includeTip = includeTip,
@@ -633,7 +674,7 @@ fun IssueRefundSheet(
                 FilaDevolverCon(
                     opciones = opcionesDeDevolucion,
                     escogido = devolverCon,
-                    leyenda = leyendaDeDevolucion(transaction.method, devolverCon),
+                    leyenda = if (aSaldo) "Se devuelve por el mismo medio con que se pagó." else leyendaDeDevolucion(transaction.method, devolverCon),
                     avisoDeAutorizacion = textoDeAutorizacionParaEfectivo(devolverCon, puedeDevolverEnEfectivo, codigoDeEncargadoActivo),
                     onEscoger = {
                         devolverCon = it
@@ -771,6 +812,8 @@ fun IssueRefundSheet(
             val faltaParaReembolsar = when {
                 chain.blockedReason != null -> chain.blockedReason
                 submitting -> null
+                necesitaRed && (!conectado || !servidor) -> com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED
+                soloCompleto && enTerminal -> "Abre la devolución en la terminal."
                 amountToRefund <= 0.0 -> if (tab == RefundTab.ITEMS) {
                     "Selecciona al menos un artículo."
                 } else {
@@ -804,7 +847,7 @@ fun IssueRefundSheet(
                 )
             }
 
-            if (avisoDeSoloRegistro(enTerminal, opcionesDeDevolucion.isNotEmpty(), transaction.method)) {
+            if (avisoDeSoloRegistro(enTerminal, opcionesDeDevolucion.isNotEmpty(), transaction.method, transaction.refundToGiftCardBalance)) {
                 Text(
                     text = "Esto sólo lo registra: devuélvele el dinero por el mismo medio con que pagó.",
                     style = MaterialTheme.typography.labelSmall,
@@ -831,12 +874,13 @@ fun IssueRefundSheet(
                 PrimaryButton(
                     text = "Reembolsar",
                     onClick = {
+                        if (!puedeEnviar() || soloCompleto && enTerminal) return@PrimaryButton
                         val chosenReason = reason ?: return@PrimaryButton
                         submitting = true
                         errorMsg = null
 
                         scope.launch {
-                            val result = if (tab == RefundTab.ITEMS) {
+                            val result = conexion.iniciar(necesitaRed, ::vigente) { if (tab == RefundTab.ITEMS) {
                                 refundRepository.issueAssociatedRefund(
                                     paymentId = transaction.id,
                                     reason = chosenReason.code,
@@ -871,9 +915,11 @@ fun IssueRefundSheet(
                                     tipRefundCents = tipRefundCentsParaEnvio(paymentTipAmount, includeTip),
                                     refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }),
                                 )
-                            }
+                            } }
 
                             submitting = false
+                            if (!vigente()) return@launch
+                            if (result == null) { errorMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
                             result.fold(
                                 onSuccess = {
                                     Log.d("💸", "Refund OK: $it")
@@ -1391,3 +1437,5 @@ private fun FilaIncluirPropina(
         }
     }
 }
+
+internal fun controlDeTerminalDeDevolucion(necesitaRed: Boolean, conectado: Boolean, servidor: Boolean): Boolean = !necesitaRed || conectado && servidor

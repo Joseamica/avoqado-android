@@ -137,15 +137,18 @@ fun ShortcutsGridView(
     reopenPayLaterToken: Int = 0,
     selectedPayLaterCustomerName: String? = null,
     onConfirmPayLater: () -> Unit = {},
-    isConfirmingPayLater: Boolean = false,
     onCreateItem: () -> Unit = {},
     onProductTap: (Product) -> Unit = {},
     canCreateProducts: Boolean = true,
+    onTarjetaDeRegalo: (() -> Unit)? = null,
 ) {
     val cartState by cartViewModel.cartState.collectAsState()
     val allProducts by cartViewModel.products.collectAsState()
     var currentScreen by remember { mutableStateOf(ShortcutsScreen.MAIN) }
     var showPayLaterModal by remember { mutableStateOf(false) }
+    // 27-oct (R2-4): mientras se manda, la pantalla de «Pagar después» sigue a la vista y no se puede cerrar. Lo dice el
+    // CARRITO, no esta pantalla: la venta ya salió del carrito y el envío vive en el ViewModel.
+    val payLaterEnCurso by cartViewModel.pagarDespuesEnCurso.collectAsState()
 
     LaunchedEffect(reopenPayLaterToken) {
         if (reopenPayLaterToken > 0) {
@@ -167,6 +170,7 @@ fun ShortcutsGridView(
                 },
                 onProductTap = onProductTap,
                 canCreateProducts = canCreateProducts,
+                onTarjetaDeRegalo = onTarjetaDeRegalo,
             )
         }
         ShortcutsScreen.DISCOUNTS -> {
@@ -212,13 +216,13 @@ fun ShortcutsGridView(
         }
     }
 
-    if (showPayLaterModal) {
+    if (showPayLaterModal || payLaterEnCurso != null) {
         PayLaterFullScreenModal(
             cartState = cartState,
-            selectedCustomerName = selectedPayLaterCustomerName,
-            isConfirmingPayLater = isConfirmingPayLater,
+            selectedCustomerName = payLaterEnCurso?.cliente ?: selectedPayLaterCustomerName,
+            enCurso = payLaterEnCurso,
             onDismiss = {
-                showPayLaterModal = false
+                if (payLaterEnCurso == null) showPayLaterModal = false
             },
             onCustomerSearch = {
                 showPayLaterModal = false
@@ -239,6 +243,7 @@ private fun ShortcutsMainGrid(
     onNavigate: (ShortcutsScreen) -> Unit,
     onProductTap: (Product) -> Unit = {},
     canCreateProducts: Boolean = true,
+    onTarjetaDeRegalo: (() -> Unit)? = null,
 ) {
     val hasItems = !cartState.isEmpty
     val context = LocalContext.current
@@ -250,15 +255,13 @@ private fun ShortcutsMainGrid(
     }
 
     val shortcuts = listOfNotNull(
-        ShortcutItem(
+        if (onTarjetaDeRegalo != null) ShortcutItem(
             id = "giftcard",
-            name = "Tarjeta de regalo",
+            name = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.MOSAICO,
             icon = Icons.Filled.CardGiftcard,
             color = ActionColors.giftCard,
             screen = ShortcutsScreen.MAIN,
-            enabled = false,
-            badge = "Pronto",
-        ),
+        ) else null,
         if (canCreateProducts) ShortcutItem(
             id = "createitem",
             name = "Crear artículo",
@@ -374,7 +377,8 @@ private fun ShortcutsMainGrid(
                     shortcut = shortcut,
                     onClick = {
                         if (shortcut.enabled) {
-                            onNavigate(shortcut.screen)
+                            if (shortcut.id == "giftcard") onTarjetaDeRegalo?.invoke()
+                            else onNavigate(shortcut.screen)
                         }
                     },
                 )
@@ -1254,13 +1258,15 @@ private fun PayLaterFullScreenModal(
     onCustomerSearch: () -> Unit,
     selectedCustomerName: String?,
     onConfirmPayLater: () -> Unit,
-    isConfirmingPayLater: Boolean,
+    enCurso: com.avoqado.pos.pos.presentation.cart.EnvioPagarDespues?,
 ) {
+    // Mientras se manda, Atrás y la X llegan a `onDismiss`, que no cierra (R2-4).
+    val isConfirmingPayLater = enCurso != null
     AvoqadoFullScreenModal(
         title = "Pagar después",
         onDismiss = onDismiss,
         primaryActionText = if (selectedCustomerName.isNullOrBlank()) null else {
-            if (isConfirmingPayLater) "Continuando..." else "Continuar"
+            if (isConfirmingPayLater) com.avoqado.pos.pos.presentation.cart.GUARDANDO_LA_CUENTA else "Continuar"
         },
         onPrimaryAction = if (selectedCustomerName.isNullOrBlank()) null else onConfirmPayLater,
         primaryActionEnabled = !isConfirmingPayLater,
@@ -1311,7 +1317,8 @@ private fun PayLaterFullScreenModal(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = cartState.totalDisplay,
+                    // La venta ya salió del carrito mientras se manda: su total es el de la operación.
+                    text = enCurso?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it.totalCents) } ?: cartState.totalDisplay,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -1448,7 +1455,8 @@ private fun SavedCartsSubView(
 ) {
     val savedCarts by cartViewModel.savedCarts.collectAsState()
     var confirmarRestauracion by remember { mutableStateOf<SavedCart?>(null) }
-    var restaurarBloqueadoPorAbono by remember { mutableStateOf(false) }
+    // Por qué no se puede restaurar (vales con abono, o una copia ya dejada para pagar después); null = nada que decir.
+    var restauracionBloqueada by remember { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Carritos guardados", onBack = onBack)
@@ -1489,7 +1497,9 @@ private fun SavedCartsSubView(
                             when (cartViewModel.restoreSavedCart(cart)) {
                                 Restauracion.Hecha -> onBack()
                                 is Restauracion.PideConfirmacion -> confirmarRestauracion = cart
-                                Restauracion.BloqueadaPorAbono -> restaurarBloqueadoPorAbono = true
+                                Restauracion.BloqueadaPorAbono -> restauracionBloqueada = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+                                Restauracion.YaDejadaParaDespues ->
+                                    restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
                             }
                         },
                         onDelete = {
@@ -1501,13 +1511,13 @@ private fun SavedCartsSubView(
         }
     }
 
-    if (restaurarBloqueadoPorAbono) {
+    restauracionBloqueada?.let { motivo ->
         AvoqadoDialog(
             title = "No se puede restaurar",
-            description = com.avoqado.pos.payment.presentation.VALES_CON_ABONO,
-            onDismiss = { restaurarBloqueadoPorAbono = false },
+            description = motivo,
+            onDismiss = { restauracionBloqueada = null },
             actionButton = {
-                PrimaryButton(text = "Entendido", fullWidth = true, onClick = { restaurarBloqueadoPorAbono = false })
+                PrimaryButton(text = "Entendido", fullWidth = true, onClick = { restauracionBloqueada = null })
             },
         ) {}
     }
@@ -1516,13 +1526,18 @@ private fun SavedCartsSubView(
         val hora = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(copia.cobroIniciadoEn!!))
         AvoqadoDialog(
             title = "¿Restaurar este carrito?",
-            description = "Este carrito ya se mandó a cobrar a las $hora. Revisa en Ventas que no se haya cobrado.",
+            description = "Este carrito ya se mandó a cobrar o a emitir como vale a las $hora. Revisa que no se haya cobrado ni emitido su vale.",
             onDismiss = { confirmarRestauracion = null },
             actionButton = {
                 PrimaryButton(text = "Restaurar de todos modos", fullWidth = true, onClick = {
-                    if (cartViewModel.restoreSavedCart(copia, confirmado = true) == Restauracion.Hecha) {
-                        confirmarRestauracion = null
-                        onBack()
+                    when (cartViewModel.restoreSavedCart(copia, confirmado = true)) {
+                        Restauracion.Hecha -> { confirmarRestauracion = null; onBack() }
+                        // Ni confirmando: la copia es de una cuenta de «Pagar después» viva.
+                        Restauracion.YaDejadaParaDespues -> {
+                            confirmarRestauracion = null
+                            restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
+                        }
+                        else -> Unit
                     }
                 })
             },
@@ -1573,7 +1588,7 @@ private fun SavedCartCard(
 
         cart.items.take(3).forEach { item ->
             Text(
-                text = "${item.name} x${item.quantity}",
+                text = item.resumenEnLista,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

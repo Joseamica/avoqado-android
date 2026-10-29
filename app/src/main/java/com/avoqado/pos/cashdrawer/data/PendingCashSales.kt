@@ -1,6 +1,8 @@
 package com.avoqado.pos.cashdrawer.data
 
+import androidx.room.withTransaction
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
+import com.avoqado.pos.core.data.local.database.AvoqadoDatabase
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.SyncIntentDao
@@ -23,7 +25,12 @@ import javax.inject.Singleton
  *   mismo número con el que la fila entró al arqueo (`recordCashSale(total, …)`,
  *   donde `total = base + propina`). Ver [PendingCashSales].
  */
-data class CobroSinReproducir(val orderId: String?, val totalCents: Int)
+data class CobroSinReproducir(
+    val orderId: String?,
+    val totalCents: Int,
+    /** La llave del cobro de `pending_payments` (null en el outbox): su pareja exacta en el cajón la consume (rediseño r9). */
+    val llave: String? = null,
+)
 
 /**
  * Una venta que el server confirma en ESTE sync y que llega **por primera vez**: ni es
@@ -105,6 +112,8 @@ data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: In
 class PendingCashSales @Inject constructor(
     private val intentDao: SyncIntentDao,
     private val pendingPaymentDao: PendingPaymentDao,
+    /** null sólo en pruebas con DAOs falsos (sin transacción). Hilt, y Guice en Windows, inyectan siempre la base real. */
+    private val database: AvoqadoDatabase? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -161,8 +170,44 @@ class PendingCashSales @Inject constructor(
                     // El arqueo suma el total CON propina, así que el monto que parea
                     // tiene que sumarla también o nunca coincidiría con la fila.
                     totalCents = it.amountCents + it.tipCents,
+                    llave = it.id,
                 )
             }
+
+    /**
+     * 🔴 D2, rediseño r9 (Codex r9 #2) y Codex r11 #2: la pareja exacta de las copias locales [copias] de una caja (id de la venta del
+     * cajón → llave `K`), para cada cobro de efectivo PURO de [cajas] que todavía puede subir ([todaviaPuedeSubir]), sin la ventana de
+     * la caja. Cada uno protege EXACTAMENTE su venta (`idDeLaVentaEnEfectivo(K)`) mientras el servidor no la reclame.
+     *
+     * Arranca de las copias: sin copias no se lee nada. Los ids del cajón son el UUID v3 de la llave y no se pueden invertir, así que se
+     * leen los cobros vivos de ESAS cajas, en tandas de [TANDA_DE_COBROS_VIVOS], y se recorren TODAS (antes se truncaba a los 500 más
+     * recientes del negocio y una copia vieja quedaba sin pareja: sobrante falso). Sólo se guardan las parejas de las copias.
+     */
+    suspend fun paresExactos(venueId: String, cajas: Collection<String>, copias: Set<String>): Map<String, String> {
+        if (copias.isEmpty() || cajas.isEmpty()) return emptyMap()
+        // Codex r12 #1: TODAS las tandas en UNA lectura transaccional (como iOS). Sueltas, el replay podía subir K entre una y otra:
+        // la segunda ya no lo veía y la fusión borraba su copia (sobrante falso).
+        return enTransaccion {
+            val pares = mutableMapOf<String, String>()
+            var despuesDe = Long.MIN_VALUE
+            var despuesDeId = ""
+            while (true) {
+                val tanda = pendingPaymentDao.cobrosDeEfectivoVivos(venueId, cajas.toList(), despuesDe, despuesDeId, TANDA_DE_COBROS_VIVOS)
+                for (cobro in tanda) {
+                    if (!todaviaPuedeSubir(cobro) || cobro.method != METODO_EFECTIVO || cobro.tenderTypeId != null) continue
+                    val venta = CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id)
+                    if (venta in copias) pares[venta] = cobro.id
+                }
+                if (tanda.size < TANDA_DE_COBROS_VIVOS || pares.size == copias.size) break
+                despuesDe = tanda.last().createdAt
+                despuesDeId = tanda.last().id
+            }
+            pares
+        }
+    }
+
+    private suspend fun <T> enTransaccion(bloque: suspend () -> T): T =
+        if (database == null) bloque() else database.withTransaction { bloque() }
 
     /**
      * El `PAY_CASH` del outbox trae el importe partido en `amountCents` y `tipCents`
@@ -187,6 +232,33 @@ class PendingCashSales @Inject constructor(
                 )
             }.getOrNull()
         }
+
+    /**
+     * 🔴 BARRERA DEL CIERRE (efectivo sin red en el turno correcto, 21-oct-2026): la caja de cada cobro de esta sucursal que
+     * TODAVÍA PUEDE SUBIR, una entrada por cobro, de las dos colas. El cierre encolado de una caja espera mientras su caja
+     * aparezca aquí (`CashDrawerRepository`, [elCierreEspera]).
+     *
+     * Cuenta lo que la cola o una persona todavía pueden mandar ([todaviaPuedeSubir]): pendientes, en envío, reservados sin
+     * decidir y retenidos por precio (Q16, se sueltan solos). NO cuenta el rechazo definitivo (FAILED, Review Focus #2) ni lo
+     * que ya nunca va a salir (un «no se cobró» guardado como evidencia): esperarlos detendría el cierre sin razón.
+     * Todos los métodos cuentan, no sólo efectivo: el turno firma las ventas de todos.
+     */
+    suspend fun cajasDeCobrosPorSubir(venueId: String): List<String> =
+        pendingPaymentDao.forVenue(venueId).filter { todaviaPuedeSubir(it) }.mapNotNull { it.cashDrawerSessionId?.takeIf(String::isNotBlank) } +
+            intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH).mapNotNull { cajaDelPayload(it.payloadJson) }
+
+    /**
+     * La poda del alias (`CashDrawerRepository.aliasTrasPodar`): toda caja que nombra algo que todavía se puede mandar — los
+     * cobros en cualquier estado menos SYNCED (FAILED incluido: el gerente lo reintenta, Codex r3 #4) y los `PAY_CASH` /
+     * `OPEN_TABLE` pendientes del outbox.
+     */
+    suspend fun cajasReferenciadas(venueId: String): Set<String> = buildSet {
+        pendingPaymentDao.forVenue(venueId).filter { it.syncStatus != PaymentSyncStatus.SYNCED.name }
+            .mapNotNullTo(this) { it.cashDrawerSessionId?.takeIf(String::isNotBlank) }
+        for (tipo in listOf(SyncIntentTypes.PAY_CASH, SyncIntentTypes.OPEN_TABLE)) {
+            intentDao.pendingPayloads(venueId, tipo).mapNotNullTo(this) { cajaDelPayload(it.payloadJson) }
+        }
+    }
 
     companion object {
         /**
@@ -239,8 +311,32 @@ class PendingCashSales @Inject constructor(
          */
         internal const val TOLERANCIA_DE_RELOJ_MILLIS = 5 * 60_000L
 
+        /** El campo del payload de un intent (`PAY_CASH`, `OPEN_TABLE`) con la caja de la venta. Mismo nombre que la columna. */
+        internal const val CAMPO_DE_LA_CAJA = "cashDrawerSessionId"
+
+        /** La caja que trae el payload de un intent, o `null` si no la trae (intent de antes) o no se puede leer. */
+        internal fun cajaDelPayload(payloadJson: String): String? = runCatching {
+            ((Json.parseToJsonElement(payloadJson) as? JsonObject)?.get(CAMPO_DE_LA_CAJA) as? kotlinx.serialization.json.JsonPrimitive)
+                ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+
+        /**
+         * ¿Este cobro todavía puede subir? Lo decide si espera el cierre de su caja. PENDIENTE o en envío, salvo que esté
+         * retenido para siempre (sólo la espera de precio Q16 se suelta sola); reservado SIN decidir (una persona puede decir
+         * «sí se cobró»). FAILED, SYNCED y lo que una persona ya decidió no: nunca van a salir solos.
+         */
+        internal fun todaviaPuedeSubir(fila: com.avoqado.pos.core.data.local.database.PendingPaymentEntity): Boolean = when (fila.syncStatus) {
+            PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name ->
+                fila.q15Reason == null || fila.q15Reason == com.avoqado.pos.payment.data.ConciliacionDelCobro.PRICE_PROOF_PENDING
+            PaymentSyncStatus.EN_VUELO.name -> fila.q15Reason == null
+            else -> false
+        }
+
         /** Un cobro que sigue vivo en la cola. `FAILED` (cuarentena) queda fuera. */
         private val COLA_VIVA = setOf(PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name)
+
+        /** Agregado 5 y Codex r11 #2: de cuántos en cuántos lee la pareja exacta los cobros vivos de la caja (recorre todas las tandas). */
+        internal const val TANDA_DE_COBROS_VIVOS = 500
 
         /** El nombre con el que `CashPaymentRepository` guarda el efectivo. */
         private const val METODO_EFECTIVO = "CASH"
@@ -283,11 +379,24 @@ class PendingCashSales @Inject constructor(
          * Cada cobro se consume al usarse: proteger de más reintroduce el doble conteo
          * que el barrido vino a evitar. Sin cobros pendientes se comporta como antes de
          * que este archivo existiera: no protege nada.
+         *
+         * 🔴 **Pasada exacta (rediseño r9, Codex r9 #2 y r10 #2), antes que las otras dos.** [paresExactos] = id de la
+         * venta del cajón → llave de SU cobro, para cada cobro de efectivo puro que todavía puede subir y es de esta caja.
+         * Esa venta se conserva mientras el servidor no la haya reclamado (pasada 0), SIN la ventana de 5 minutos: la
+         * pareja es por identidad, no por monto, así que no reabre la fuga que cerró la ventana. Y consume su cobro, para
+         * que no proteja además otra fila. Las ventas sin llave siguen con la ventana.
          */
         fun ventasProtegidas(
             ventasLocales: List<CashDrawerEventEntity>,
             cobrosSinReproducir: List<CobroSinReproducir>,
             ventasConfirmadasPorPrimeraVez: List<VentaConfirmadaPorPrimeraVez> = emptyList(),
+            paresExactos: Map<String, String> = emptyMap(),
+            /**
+             * 🔴 Codex r14 A1: las ventas locales que NACIERON mientras viajaba la petición de esta respuesta (no estaban en su foto).
+             * La respuesta no las conocía: no las puede borrar. Se conservan salvo que la respuesta traiga su reemplazo (pasada 0), y
+             * consumen su cobro pendiente (por llave, orden o importe) para no proteger además otra fila.
+             */
+            nacidasDuranteLaPeticion: Set<String> = emptySet(),
         ): Set<String> {
             if (ventasLocales.isEmpty()) return emptySet()
             val deLaMasRecienteHaciaAtras = ventasLocales.sortedByDescending { it.createdAt }
@@ -312,9 +421,24 @@ class PendingCashSales @Inject constructor(
                 if (porMonto != null) reclamadas += porMonto.id
             }
 
-            if (cobrosSinReproducir.isEmpty()) return emptySet()
             val pendientes = cobrosSinReproducir.toMutableList()
             val protegidas = mutableSetOf<String>()
+
+            for (venta in deLaMasRecienteHaciaAtras) {
+                val llave = paresExactos[venta.id] ?: continue
+                if (venta.id in reclamadas) continue
+                protegidas += venta.id
+                pendientes.indexOfFirst { it.llave == llave }.takeIf { it >= 0 }?.let { pendientes.removeAt(it) }
+            }
+            for (venta in deLaMasRecienteHaciaAtras) {
+                if (venta.id !in nacidasDuranteLaPeticion || venta.id in reclamadas || venta.id in protegidas) continue
+                protegidas += venta.id
+                val orderId = venta.orderId?.takeIf(String::isNotBlank)
+                val i = orderId?.let { o -> pendientes.indexOfFirst { it.orderId == o } }?.takeIf { it >= 0 }
+                    ?: pendientes.indexOfFirst { it.totalCents == venta.amountCents }.takeIf { it >= 0 }
+                i?.let { pendientes.removeAt(it) }
+            }
+            if (pendientes.isEmpty()) return protegidas
 
             for (venta in deLaMasRecienteHaciaAtras) {
                 if (venta.id in reclamadas) continue

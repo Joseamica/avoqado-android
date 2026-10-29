@@ -45,6 +45,7 @@ object PaymentMethodDisplay {
             "DIGITAL_WALLET" -> "Cartera digital"
             "BANK_TRANSFER", "TRANSFER" -> "Transferencia"
             "CRYPTOCURRENCY" -> "Criptomoneda"
+            "GIFT_CARD" -> "Tarjeta de regalo"
             "OTHER" -> "Otro"
             null -> "—"
             else -> method.replace("_", " ").replaceFirstChar { it.uppercase() }
@@ -66,6 +67,8 @@ data class TicketTotalsDto(
     val tip: Double,
     val total: Double,
     val discount: Double? = null,
+    /** D15 (servidor, aditivo): sólo viene, en `true`, en el comprobante de UNA parte de una venta dividida. */
+    val parcial: Boolean? = null,
 )
 
 /**
@@ -141,6 +144,8 @@ data class Transaction(
     val payoutOptions: List<PayoutOption>? = null,
     @Serializable(with = ExchangeLinksTolerante::class)
     val exchange: ExchangeLinks? = null,
+    val refundToGiftCardBalance: Boolean? = null,
+    val esSaldoDeTarjeta: Boolean? = null,
 ) {
     val paymentMethod: String? get() = method
 
@@ -154,7 +159,7 @@ data class Transaction(
 
     /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. */
     val methodDescription: String
-        get() = PaymentMethodDisplay.label(method, cardBrand, maskedPan)
+        get() = if (esSaldoDeTarjeta == true) "Tarjeta de regalo" else PaymentMethodDisplay.label(method, cardBrand, maskedPan)
 
     val statusDisplay: String
         get() = when (status) {

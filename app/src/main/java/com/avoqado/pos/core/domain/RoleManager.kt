@@ -150,6 +150,16 @@ class RoleManager @Inject constructor(
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
     /**
+     * Editar cliente — espejo de `customers:update` (`PUT /mobile/venues/:id/customers/:customerId`, 26-oct-2026).
+     *
+     * Lee el permiso EFECTIVO: si el dueño se lo dio al cajero en Roles y permisos, aquí ya dice que sí. El respaldo
+     * por rol es el default del server (MANAGER para arriba). Quien no lo tiene ve «Editar» igual y se le pide el PIN
+     * de un gerente (`EdicionDeCliente.kt`).
+     */
+    val canEditCustomers: Boolean
+        get() = hasVenuePermission("customers:update", fallbackRoles = MANAGER_UP)
+
+    /**
      * Ver clientes — espejo de `customers:read` (`GET /mobile/venues/:id/customers`).
      *
      * Cambia de tabla y se queda a propósito: el server le da `customers:read`
@@ -160,6 +170,32 @@ class RoleManager @Inject constructor(
      */
     val canViewCustomers: Boolean
         get() = hasVenuePermission("customers:read", fallbackRoles = FLOOR)
+
+    /** «Pedidos en línea» (bandeja y vigilante): `orders:read`, nombre EXACTO del servidor. Con o sin plan (R14). */
+    val canReadOnlineOrders: Boolean
+        get() = hasVenuePermission("orders:read", fallbackRoles = FLOOR)
+
+    /**
+     * Aceptar, rechazar, «Listo», «Entregado» y cobrar un pedido en línea — espejo EXACTO de `orders:update`. Sin él la bandeja se
+     * ve (leer es `orders:read`), pero no se muestra ni un botón de acción. Con la lista real: WAITER, CASHIER, KITCHEN, MANAGER,
+     * ADMIN, OWNER; VIEWER y HOST no. Espejo de iOS.
+     */
+    val canOperateOnlineOrders: Boolean
+        get() = hasVenuePermission("orders:update", fallbackRoles = KDS_RESPALDO)
+
+    /**
+     * Cancelar un pedido en línea que aún no tiene dinero — espejo EXACTO de `orders:cancel-unpaid`. Con la lista real: WAITER,
+     * CASHIER, MANAGER (ADMIN y OWNER por `*:*`). Sin lista, el respaldo es el piso completo. Espejo de iOS.
+     */
+    val canCancelOnlineOrders: Boolean
+        get() = hasVenuePermission("orders:cancel-unpaid", fallbackRoles = FLOOR)
+
+    /**
+     * Pausar o reanudar la tienda en línea — espejo EXACTO de `online-orders:pause` (MANAGER, ADMIN, OWNER). La bandeja deja el
+     * botón a la vista aun sin él: el 403 `overridable` del servidor pide el PIN de un gerente. Espejo de iOS.
+     */
+    val canPauseOnlineOrders: Boolean
+        get() = hasVenuePermission("online-orders:pause", fallbackRoles = MANAGER_UP)
 
     /**
      * Reportes — espejo de `reports:read` (las rutas `/mobile/venues/:id/reports`).
@@ -232,6 +268,11 @@ class RoleManager @Inject constructor(
      */
     val canConfigureTables: Boolean
         get() = hasVenuePermission("tables:configure", fallbackRoles = MANAGER_UP)
+
+    val canReadGiftCards: Boolean get() = hasVenuePermission("giftCards:read", GIFT_CARDS_PISO)
+    val canSellGiftCards: Boolean get() = hasVenuePermission("giftCards:sell", GIFT_CARDS_PISO)
+    val canRedeemGiftCards: Boolean get() = hasVenuePermission("giftCards:redeem", GIFT_CARDS_PISO)
+    val canManageGiftCards: Boolean get() = hasVenuePermission("giftCards:manage", MANAGER_UP)
 
     /**
      * Resolver la CUARENTENA de sincronización: MANAGER, ADMIN, OWNER, SUPERADMIN
@@ -378,6 +419,7 @@ class RoleManager @Inject constructor(
     }
 
     private companion object {
+        val GIFT_CARDS_PISO = setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
         /** El respaldo histórico de todo lo administrativo. */
         val MANAGER_UP = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 

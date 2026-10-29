@@ -54,6 +54,8 @@ class AppState @Inject constructor(
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
     private val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository,
+    /** «Pagar después» sin red (27-oct): su fila arranca y para con la de los cobros. Default para las pruebas de JVM. */
+    private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
 ) : ViewModel() {
 
     /**
@@ -96,6 +98,22 @@ class AppState @Inject constructor(
     @Inject
     lateinit var customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState
 
+    @Inject
+    lateinit var solicitudesDeTarjeta: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
+
+    /** El kiosco de check-in: al cambiar de sucursal olvida la lista de la clase (es de la anterior). */
+    @Inject
+    lateinit var kioskState: com.avoqado.pos.kiosk.domain.KioskState
+
+    /**
+     * La sucursal que el kiosco vio por última vez. Sólo un CAMBIO real lo reinicia: este aviso también corre por
+     * otras causas (pestañas, rol) y reiniciar ahí le borraría el teclado a quien está tecleando. Arranca con la sesión
+     * guardada, para que hasta el primer aviso (p. ej. cerrar sesión recién abierta la app) cuente como cambio (Codex r4).
+     */
+    private var kioskVenue: String? = sesionDelKiosco()
+
+    private fun sesionDelKiosco(): String? = if (secureStorage.isLoggedIn) secureStorage.venueId else null
+
     private fun detenerRedLocal() {
         if (::preparationDelivery.isInitialized) preparationDelivery.stop()
         if (::lanHubService.isInitialized) lanHubService.stop()
@@ -104,12 +122,22 @@ class AppState @Inject constructor(
     }
 
     private fun notifyDeviceSessionChanged() {
+        if (::solicitudesDeTarjeta.isInitialized) {
+            solicitudesDeTarjeta.onSessionChanged(_isLoggedIn.value)
+        }
         // La marca del negocio en la pantalla del cliente (QA F2-1): antes sólo se ponía al volver la app al frente, así que
         // tras iniciar sesión el reposo seguía con la de Avoqado. Sin sesión queda vacía ⇒ la de Avoqado, a propósito.
         if (::customerDisplayState.isInitialized) {
             customerDisplayState.setVenueBranding(secureStorage.venueDisplayName, secureStorage.venueLogo)
         }
+        if (::kioskState.isInitialized) {
+            val venue = sesionDelKiosco()
+            if (venue != kioskVenue) kioskState.forgetRoster()
+            kioskVenue = venue
+        }
         tableSyncCoordinator.onSessionChanged()
+        // Codex ANDROID r1 A-8: los contadores y la cuarentena de «Pagar después» siguen a la sucursal de la sesión.
+        payLaterQueue?.alCambiarLaSesion()
         syncOutbox.refreshQ15Observation()
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()
@@ -221,15 +249,19 @@ class AppState @Inject constructor(
         }
     }
 
-    val pendingPaymentCount: StateFlow<Int> = paymentSyncService.pendingCount
+    /** Cobrar muestra también los fallidos que siguen requiriendo revisión, aunque haya red. */
+    val pendingPaymentCount: StateFlow<Int> = combine(paymentSyncService.pendingCount, paymentSyncService.failedCount) {
+        pending, failed -> pending + failed
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     val failedPaymentCount: StateFlow<Int> = paymentSyncService.failedCount
 
-    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos. */
+    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos + cuentas de «Pagar después» por subir. */
     val offlinePendingCount: StateFlow<Int> = combine(
         syncOutbox.pendingCount,
         paymentSyncService.pendingCount,
-    ) { intents, payments -> intents + payments }
+        payLaterQueue?.porSubir ?: kotlinx.coroutines.flow.flowOf(0),
+    ) { intents, payments, cuentas -> intents + payments + cuentas }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -247,8 +279,15 @@ class AppState @Inject constructor(
      *
      * `null` = no hay nada que decir. La banda es la MISMA de siempre: ámbar, nunca roja.
      */
-    val avisoDeCobrosRetenidos: StateFlow<String?> = cashDrawerRepository.estadoDeLosCobros
-        .map { com.avoqado.pos.cashdrawer.data.textoDeCobrosRetenidos(it) }
+    val avisoDeCobrosRetenidos: StateFlow<String?> = combine(
+        cashDrawerRepository.estadoDeLosCobros,
+        // Efectivo sin red en el turno correcto: mientras un cierre espera a SUS ventas, eso es lo que se dice (es lo que el
+        // cajero puede entender: «el cierre espera a que suban N ventas»), y si no, lo de la apertura como siempre.
+        cashDrawerRepository.cierreEsperaVentas,
+    ) { estado, ventasPorSubir ->
+        com.avoqado.pos.cashdrawer.data.textoDelCierreQueEspera(ventasPorSubir)
+            ?: com.avoqado.pos.cashdrawer.data.textoDeCobrosRetenidos(estado)
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -299,6 +338,8 @@ class AppState @Inject constructor(
      * las listaría, pero nadie tendría motivo para abrirla — que es como se
      * perdían antes.
      */
+    val reservationQuarantinedCount: kotlinx.coroutines.flow.Flow<Int> get()=reservationRepository.quarantinedCount
+
     val reconciliationCount: StateFlow<Int> by lazy {
         // Los cobros en efectivo interrumpidos (la app murió a media petición) también piden a una persona.
         val interrumpidos = if (::cashPaymentRepositoryParaAvisos.isInitialized) {
@@ -313,6 +354,8 @@ class AppState @Inject constructor(
             interrumpidos,
             syncOutbox.q15ReviewCount,
         ) { rejected, failed, reservas, cobros, revisiones -> rejected + failed + reservas + cobros + revisiones }
+            // «Pagar después» rechazadas o creadas por otro importe: una persona las ve y decide.
+            .combine(payLaterQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0)) { otras, cuentas -> otras + cuentas }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5_000),
@@ -406,6 +449,7 @@ class AppState @Inject constructor(
                 authRepository.repairCurrentVenueBinding()
                 startInventorySyncIfNeeded()
                 paymentSyncService.start()
+                payLaterQueue?.start()
                 startOfflineOutbox()
                 refreshPlanAndSettings()
             }
@@ -440,6 +484,7 @@ class AppState @Inject constructor(
         _isLoggedIn.value = true
         notifyDeviceSessionChanged()
         paymentSyncService.start()
+        payLaterQueue?.start()
         startOfflineOutbox()
         // refreshTabs rearma una sola generación de inventario para esta sesión/venue.
         refreshTabs()
@@ -453,7 +498,9 @@ class AppState @Inject constructor(
             val venueId = secureStorage.venueId
             val blocking = paymentSyncService.blockingWorkCount() +
                 (venueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
-                secureStorage.areaTicketRecoveryCount()
+                secureStorage.areaTicketRecoveryCount() +
+                // Las llegadas del kiosco sólo se mandan con SU sucursal activa: entrar a otra las dejaría varadas.
+                reservationRepository.pendingKioskArrivals(venueId)
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
@@ -469,6 +516,7 @@ class AppState @Inject constructor(
                 wasteSyncCoordinator.vaciarAntesDeCerrarSesion(secureStorage.userId)
             }
             paymentSyncService.stop()
+            payLaterQueue?.stop()
             stopInventorySync()
             syncOutbox.stop()
             detenerRedLocal()

@@ -77,8 +77,8 @@ android {
         applicationId = "com.avoqado.pos"
         minSdk = 26
         targetSdk = 36
-        versionCode = 56
-        versionName = "2.25.12"
+        versionCode = 65
+        versionName = "2.25.21"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -141,6 +141,12 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        // Un solo proceso para toda la suite junta memoria de clase en clase (154 MB → 562 MB medido el 28-oct, y
+        // creciendo con cada prueba nueva): reiniciarlo cada 150 clases la acota, por grande que sea la suite.
+        unitTests.all {
+            it.maxHeapSize = "2g"
+            it.forkEvery = 150
+        }
     }
 }
 

@@ -71,6 +71,8 @@ class TableSession @Inject constructor() {
     private var activeVenue: String? = null
     private var contexto: Pair<String?, String?>? = null
     private var epoch = 0L
+    private val _contextEpoch = MutableStateFlow(0L)
+    val contextEpoch: StateFlow<Long> = _contextEpoch.asStateFlow()
     // Un ACK idéntico también invalida una lectura anterior; epoch sigue siendo identidad.
     private var revision = 0L
     fun contextoActual(): Long = synchronized(lock) { epoch }
@@ -127,6 +129,7 @@ class TableSession @Inject constructor() {
         epoch++; revision++
         _active.value = null; activeVenue = null; contexto = null
         estacionadas.clear(); finalizadas.clear()
+        _contextEpoch.value = epoch
     }
 
     fun estacionar(venueId: String, expected: Active): Boolean = synchronized(lock) {

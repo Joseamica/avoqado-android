@@ -234,6 +234,19 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    private fun bloqueoDeSaldo(vId: String, session: TableSession.Active, source: String? = null, revisarSaldo: Boolean = true): String? {
+        if (vId != venueId || tableSession.contextoActual() != contextoDeSesion || tableSession.current()?.orderId != session.orderId)
+            return "La cuenta cambió. Vuelve a abrirla."
+        return if (revisarSaldo && (session.idsDeLaOrden + listOfNotNull(source)).any {
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.cuentaTrabada(secureStorage.giftCardRequestsJson, vId, it)
+        }) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.COMPROBANDO_COBRO else null
+    }
+    private suspend fun <T> mutarCuenta(vId: String, session: TableSession.Active, source: String? = null,
+        revisarSaldo: Boolean = true, bloque: suspend () -> Result<T>): Result<T> {
+        bloqueoDeSaldo(vId, session, source, revisarSaldo)?.let { return Result.failure(IllegalStateException(it)) }
+        return bloque()
+    }
+
     private suspend fun leerTrabajo(s: TableSession.Active): TrabajoSinResolver? {
         val vId = venueId ?: return null
         val epoch = generacion
@@ -781,6 +794,7 @@ class TableOrderViewModel @Inject constructor(
         }
         _isSending.value = true
         viewModelScope.launch {
+            bloqueoDeSaldo(vId, session, revisarSaldo = false)?.let { _isSending.value = false; onDone(false, it); return@launch }
             val requests = try {
                 com.avoqado.pos.tables.data.buildTableRoundRequests(lines.map { it.item }, lines.associate { it.item.id to it.course }, lines.associate { it.item.id to it.seat })
             } catch (e: IllegalArgumentException) {
@@ -810,6 +824,7 @@ class TableOrderViewModel @Inject constructor(
             when (
                 val desenlace = RondaConLlave.enviar(
                     guardarRetenido = {
+                        bloqueoDeSaldo(vId, session, revisarSaldo = false)?.let { throw IllegalStateException(it) }
                         syncOutbox.enqueue(
                             vId,
                             com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
@@ -891,12 +906,12 @@ class TableOrderViewModel @Inject constructor(
         session: TableSession.Active,
         conLlaves: List<AddOrderItemRequest>,
     ): Result<com.avoqado.pos.tables.data.UpdatedOrder> {
-        val primero = conPresupuesto(PRESUPUESTO_RONDA_MS) { mutar { repository.addRound(vId, session.orderId, conLlaves, session.version) } }
+        val primero = conPresupuesto(PRESUPUESTO_RONDA_MS) { mutarCuenta(vId, session, revisarSaldo = false) { mutar { repository.addRound(vId, session.orderId, conLlaves, session.version)  }} }
         val error = primero.exceptionOrNull()
         if (error !is retrofit2.HttpException || error.code() != 409) return primero
         val fresca = conPresupuesto(PRESUPUESTO_VERSION_MS) { repository.getOrderDetail(vId, session.orderId) }
             .getOrNull()?.version ?: return primero
-        return conPresupuesto(PRESUPUESTO_RONDA_MS) { mutar { repository.addRound(vId, session.orderId, conLlaves, fresca) } }
+        return conPresupuesto(PRESUPUESTO_RONDA_MS) { mutarCuenta(vId, session, revisarSaldo = false) { mutar { repository.addRound(vId, session.orderId, conLlaves, fresca)  }} }
     }
 
     /**
@@ -1205,11 +1220,12 @@ class TableOrderViewModel @Inject constructor(
 
     /** "Dar de cortesía" on an already-sent line. */
     fun compSentItem(itemId: String, reason: String) {
-        if (!requireOnline("la cortesía de un artículo enviado")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (!requireOnline("la cortesía de un artículo enviado")) return
         viewModelScope.launch {
-            mutar { repository.compItem(vId, session.orderId, itemId, reason) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.compItem(vId, session.orderId, itemId, reason)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Artículo de cortesía — $reason"
                     repository.refresh(vId)
@@ -1231,7 +1247,7 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
-            mutar { repository.moveOrder(vId, session.orderId, targetTableId) }.fold(
+            mutarCuenta(vId, session, revisarSaldo = false) { mutar { repository.moveOrder(vId, session.orderId, targetTableId)  }}.fold(
                 onSuccess = {
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
@@ -1248,7 +1264,7 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
-            mutar { repository.assignOrder(vId, session.orderId, staffId) }.fold(
+            mutarCuenta(vId, session, revisarSaldo = false) { mutar { repository.assignOrder(vId, session.orderId, staffId)  }}.fold(
                 onSuccess = {
                     repository.refresh(vId)
                     _actionMessage.value = "Cuenta asignada a $staffName"
@@ -1262,8 +1278,9 @@ class TableOrderViewModel @Inject constructor(
     fun compWholeCheck(reason: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         viewModelScope.launch {
-            mutar { repository.compWholeOrder(vId, session.orderId, reason) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.compWholeOrder(vId, session.orderId, reason)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Cuenta de cortesía — $reason"
                     repository.refresh(vId)
@@ -1280,10 +1297,10 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
-            mutar { repository.updateOrderDetails(
+            mutarCuenta(vId, session, revisarSaldo = false) { mutar { repository.updateOrderDetails(
                 vId, session.orderId,
                 com.avoqado.pos.tables.data.OrderDetailsRequest(name = name, notes = notes, covers = covers, customerId = customerId, orderType = orderType),
-            ) }.fold(
+            )  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Cuenta actualizada"
                     repository.refresh(vId)
@@ -1297,8 +1314,9 @@ class TableOrderViewModel @Inject constructor(
     fun applyDiscount(discountId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         viewModelScope.launch {
-            mutar { repository.applyOrderDiscount(vId, session.orderId, discountId) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId)  }}.fold(
                 onSuccess = { _actionMessage.value = "Descuento aplicado"; repository.refresh(vId) },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento")) },
             )
@@ -1307,11 +1325,12 @@ class TableOrderViewModel @Inject constructor(
 
     /** Quita un descuento aplicado del cheque. */
     fun removeDiscount(orderDiscountId: String) {
-        if (!requireOnline("quitar un descuento aplicado")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (!requireOnline("quitar un descuento aplicado")) return
         viewModelScope.launch {
-            mutar { repository.removeOrderDiscount(vId, session.orderId, orderDiscountId) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.removeOrderDiscount(vId, session.orderId, orderDiscountId)  }}.fold(
                 onSuccess = { _actionMessage.value = "Descuento quitado"; repository.refresh(vId) },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el descuento")) },
             )
@@ -1389,8 +1408,9 @@ class TableOrderViewModel @Inject constructor(
     fun applyServiceCharge(serviceChargeId: String) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         viewModelScope.launch {
-            mutar { repository.applyServiceCharge(vId, session.orderId, serviceChargeId) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.applyServiceCharge(vId, session.orderId, serviceChargeId)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Cobro por servicio aplicado"
                     repository.refresh(vId)
@@ -1401,11 +1421,12 @@ class TableOrderViewModel @Inject constructor(
     }
 
     fun removeServiceCharge(orderServiceChargeId: String) {
-        if (!requireOnline("quitar un cargo aplicado")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (!requireOnline("quitar un cargo aplicado")) return
         viewModelScope.launch {
-            mutar { repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Cobro por servicio quitado"
                     repository.refresh(vId)
@@ -1443,12 +1464,13 @@ class TableOrderViewModel @Inject constructor(
      * devuelve los puntos solo.
      */
     fun redeemPoints(points: Int) {
-        if (!requireOnline("canjear puntos")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (!requireOnline("canjear puntos")) return
         val customerId = _check.value?.customerId ?: return
         viewModelScope.launch {
-            mutar { repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Recompensa aplicada — $points puntos"
                     loadLoyalty()
@@ -1504,9 +1526,10 @@ class TableOrderViewModel @Inject constructor(
     fun mergeFrom(sourceOrderId: String, onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session, sourceOrderId)?.let { onDone(false, it); return }
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
-            mutar { repository.mergeOrders(vId, session.orderId, sourceOrderId) }.fold(
+            mutarCuenta(vId, session, sourceOrderId) { mutar { repository.mergeOrders(vId, session.orderId, sourceOrderId)  }}.fold(
                 onSuccess = {
                     tableSession.finalizar(vId, setOf(sourceOrderId), contextoDeSesion)
                     tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
@@ -1539,12 +1562,13 @@ class TableOrderViewModel @Inject constructor(
     fun splitBySeat(onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { onDone(false, it); return }
         // Un id local por asiento con artículos: sin red, cada cheque creado
         // necesita el suyo para que un cobro posterior aterrice en el correcto.
         val seats = (_check.value?.items ?: emptyList()).mapNotNull { it.seat }.distinct().sorted()
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
-            mutar { repository.splitOrderBySeat(vId, session.orderId, seats) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.splitOrderBySeat(vId, session.orderId, seats)  }}.fold(
                 onSuccess = {
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
@@ -1586,6 +1610,7 @@ class TableOrderViewModel @Inject constructor(
     fun splitItems(itemIds: List<String>) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         if (itemIds.isEmpty()) return
         // Una línea seleccionada es "del outbox" si su id es un externalId que
         // pusimos al encolarla; si no, es un id real del server.
@@ -1599,7 +1624,7 @@ class TableOrderViewModel @Inject constructor(
         }
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
-            mutar { repository.splitOrder(vId, session.orderId, refs) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.splitOrder(vId, session.orderId, refs)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = if (offline) {
                         "Cuenta separada — ${itemIds.size} artículo(s); se sincroniza al volver la señal"
@@ -1614,13 +1639,22 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /** "Anular cuenta" — cancels the check; success means the table is free. */
+    fun regresoDeSaldoConfirmado(orderId: String) {
+        val vId = venueId ?: return
+        val session = tableSession.current() ?: return
+        if (vId != venueDeSesion || tableSession.contextoActual() != contextoDeSesion || session.orderId != orderId) return
+        tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
+        viewModelScope.launch { repository.refresh(vId) }
+    }
+
     fun anularCuenta(reason: String, onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { onDone(false, it); return }
         viewModelScope.launch {
-            mutar { repository.cancelOrder(vId, session.orderId, reason) }.fold(
+            mutarCuenta(vId, session) { mutar { repository.cancelOrder(vId, session.orderId, reason)  }}.fold(
                 onSuccess = {
-                    mutar { repository.clearTable(vId, session.tableId) }
+                    mutarCuenta(vId, session) { mutar { repository.clearTable(vId, session.tableId)  }}
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
                     onDone(true, "Cuenta anulada — Mesa ${session.tableNumber} liberada")

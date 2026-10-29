@@ -3,14 +3,26 @@ package com.avoqado.pos.customers.presentation
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.customers.data.CustomersRepository
+import com.avoqado.pos.customers.data.RechazoAlEditarCliente
 import com.avoqado.pos.customers.data.model.CreateCustomerRequest
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.domain.AVISO_SERVIDOR_FALLO_CLIENTES
+import com.avoqado.pos.customers.domain.AVISO_FALTA_PIN_EDITAR_CLIENTE
+import com.avoqado.pos.customers.domain.AVISO_SIN_PERMISO_EDITAR_CLIENTE
 import com.avoqado.pos.customers.domain.AVISO_SIN_RED_CLIENTES
+import com.avoqado.pos.customers.domain.AVISO_SIN_RED_EDITAR_CLIENTE
+import com.avoqado.pos.customers.domain.AccesoAEditarCliente
+import com.avoqado.pos.customers.domain.ContactoEditado
+import com.avoqado.pos.customers.domain.PERMISO_EDITAR_CLIENTES
+import com.avoqado.pos.customers.domain.accesoAEditarCliente
+import com.avoqado.pos.customers.domain.cambiosDeContacto
+import com.avoqado.pos.customers.domain.erroresDeContacto
 import com.avoqado.pos.customers.domain.avisoDeMasResultados
 import com.avoqado.pos.customers.domain.filtrarClientesLocal
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -26,6 +38,10 @@ import javax.inject.Inject
 class CustomersViewModel @Inject constructor(
     private val repository: CustomersRepository,
     private val roleManager: com.avoqado.pos.core.domain.RoleManager,
+    /** Para pedir el PIN de un gerente AL TOCAR «Editar», como «Emitir reembolso». */
+    private val managerOverrideCoordinator: ManagerOverrideCoordinator,
+    /** Sólo para saber si el negocio prendió el PIN de gerente: apagado, el teclado no serviría. */
+    private val tpvSettingsRepository: TpvSettingsRepository,
 ) : ViewModel() {
 
     /// Role gate for money-adjacent customer actions (create, sell/redeem
@@ -179,6 +195,133 @@ class CustomersViewModel @Inject constructor(
 
     fun clearError() {
         _error.value = null
+    }
+
+    // MARK: - Editar cliente (26-oct-2026)
+
+    private val _clienteEnEdicion = MutableStateFlow<Customer?>(null)
+    /** El cliente cuyo formulario «Editar cliente» está abierto; null = cerrado. */
+    val clienteEnEdicion: StateFlow<Customer?> = _clienteEnEdicion.asStateFlow()
+
+    private val _avisoSinPermiso = MutableStateFlow<String?>(null)
+    /** Quien no puede editar y el PIN de gerente está apagado: por qué no y qué hacer. */
+    val avisoSinPermiso: StateFlow<String?> = _avisoSinPermiso.asStateFlow()
+
+    private val _errorDeEdicion = MutableStateFlow<String?>(null)
+    /** Lo que impidió guardar (sin red o rechazo del servidor). Se pinta DENTRO del formulario, que sigue abierto. */
+    val errorDeEdicion: StateFlow<String?> = _errorDeEdicion.asStateFlow()
+
+    /**
+     * Tocaron «Editar» (siempre visible, founder 26-oct). Quien tiene `customers:update` entra directo; quien no, teclea
+     * el PIN de un gerente ANTES de llenar nada; con el PIN apagado se le explica, sin teclado que el servidor
+     * rechazaría. Si el permiso cambió en el servidor sin que la app lo sepa, el 403 de guardar abre el teclado solo
+     * (`ForbiddenInterceptor`).
+     */
+    fun onEditarTocado(cliente: Customer) {
+        // Dos toques antes de que salga el teclado no piden dos PIN (Codex r2 #3).
+        if (pidiendoPin || _clienteEnEdicion.value != null) return
+        _errorDeEdicion.value = null
+        when (accesoAEditarCliente(roleManager.canEditCustomers, tpvSettingsRepository.managerPinOverrideEnabled.value)) {
+            AccesoAEditarCliente.DIRECTO -> abrirEdicion(cliente, conPin = false)
+            AccesoAEditarCliente.CON_PIN -> {
+                pidiendoPin = true
+                viewModelScope.launch {
+                    try {
+                        if (managerOverrideCoordinator.preauthorize(PERMISO_EDITAR_CLIENTES)) abrirEdicion(cliente, conPin = true)
+                        // Canceló: no se abre nada. El teclado ya le dijo por qué.
+                    } finally {
+                        pidiendoPin = false
+                    }
+                }
+            }
+            AccesoAEditarCliente.SIN_PERMISO -> _avisoSinPermiso.value = AVISO_SIN_PERMISO_EDITAR_CLIENTE
+        }
+    }
+
+    /** Hay un teclado de PIN pedido por «Editar» que todavía no se contesta. */
+    private var pidiendoPin = false
+
+    /**
+     * Cada apertura del formulario lleva su número: una respuesta que llega TARDE (el cajero cerró y abrió a otro
+     * cliente) no cierra ni ensucia el formulario nuevo (Codex r2 #2).
+     */
+    private var edicionVigente = 0L
+
+    /** Esta edición entró con PIN de gerente (decide si un 403 se reintenta para que el teclado vuelva a salir). */
+    private var edicionConPin = false
+
+    /**
+     * Lo que se mandó a guardar en ESTA edición. Si «Más» (o cambiar de pestaña) quita la pantalla de Clientes a media
+     * guardada, el formulario pierde lo que recordaba pero este ViewModel no: al reabrirlo nace con esto y no con el
+     * dato viejo (D3, 27-oct). null = el formulario arranca con los datos del cliente.
+     */
+    var borradorDeEdicion: ContactoEditado? = null
+        private set
+
+    private fun abrirEdicion(cliente: Customer, conPin: Boolean) {
+        edicionVigente++
+        edicionConPin = conPin
+        borradorDeEdicion = null
+        _clienteEnEdicion.value = cliente
+    }
+
+    fun cerrarAvisoSinPermiso() {
+        _avisoSinPermiso.value = null
+    }
+
+    fun cerrarEdicion() {
+        edicionVigente++
+        _clienteEnEdicion.value = null
+        borradorDeEdicion = null
+        _errorDeEdicion.value = null
+        _isSaving.value = false
+        // El PIN pedido para ESTE cliente no autoriza al siguiente (Codex r2 #1).
+        managerOverrideCoordinator.descartarPreautorizado(PERMISO_EDITAR_CLIENTES)
+    }
+
+    /**
+     * «Guardar». Sólo viaja lo que cambió; con un dato vaciado o sin cambios no se llama al servidor (el botón ya está
+     * apagado, esto es la red de seguridad). Online-only: sin red el formulario sigue abierto con lo escrito.
+     */
+    fun guardarEdicion(editado: ContactoEditado, onGuardado: (Customer) -> Unit) {
+        val original = _clienteEnEdicion.value ?: return
+        if (_isSaving.value) return
+        if (erroresDeContacto(original, editado).isNotEmpty()) return
+        val cambios = cambiosDeContacto(original, editado) ?: return
+        val estaEdicion = edicionVigente
+        val conPin = edicionConPin
+        borradorDeEdicion = editado
+        viewModelScope.launch {
+            _isSaving.value = true
+            _errorDeEdicion.value = null
+            val resultado = repository.updateCustomer(original, cambios)
+            resultado.onSuccess { actualizado ->
+                // El cambio YA está en el servidor: la lista lo refleja aunque el formulario ya sea otro, y se vuelve a
+                // pedir para que una búsqueda que salió ANTES de guardar no regrese el dato viejo (Codex r3 #3).
+                _customers.value = _customers.value.map { if (it.id == actualizado.id) actualizado else it }
+                fetchCustomers()
+            }
+            if (estaEdicion != edicionVigente) return@launch
+            resultado.fold(
+                onSuccess = { actualizado ->
+                    _clienteEnEdicion.value = null
+                    borradorDeEdicion = null
+                    onGuardado(actualizado)
+                },
+                onFailure = { e ->
+                    // Cualquier corte de conexión (también un EOF a media respuesta) es «Sin conexión», nunca texto
+                    // técnico en rojo (Codex r2 #6). Una respuesta del servidor trae su propio texto.
+                    _errorDeEdicion.value = if (e !is RechazoAlEditarCliente && (e is java.io.IOException || ServerErrorText.isOffline(e))) {
+                        AVISO_SIN_RED_EDITAR_CLIENTE
+                    } else if (conPin && (e as? RechazoAlEditarCliente)?.codigo == 403) {
+                        AVISO_FALTA_PIN_EDITAR_CLIENTE
+                    } else {
+                        e.message ?: "No se pudo guardar el cliente. Intenta de nuevo."
+                    }
+                },
+            )
+            _isSaving.value = false
+        }
     }
 
     companion object {

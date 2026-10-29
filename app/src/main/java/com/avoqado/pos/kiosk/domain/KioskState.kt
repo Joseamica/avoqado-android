@@ -53,7 +53,29 @@ class KioskState @Inject constructor() {
     private val timerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var revertJob: Job? = null
 
+    /**
+     * La última lista de la clase que se enseñó, para volver a ella sin esperar a la red.
+     * Es lo que ya estaba a la vista de todos (nombre + inicial), no datos de una persona.
+     * Se olvida cuando el reloj cierra la clase.
+     */
+    var lastRoster: KioskContent.Roster? = null
+        private set
+    private var lastRosterAt = 0L
+
+    /**
+     * Reloj inyectable para las pruebas. MONÓTONO, en ms: sólo mide intervalos (la frescura de la lista). Con la hora de
+     * pared, un reloj que retrocede congelaba la lista horas (Codex 0.e r2 R1-2).
+     */
+    internal var now: () -> Long = { System.nanoTime() / 1_000_000 }
+
     fun show(content: KioskContent) {
+        when (content) {
+            // La hora NO se toca aquí: una confirmación local (✓, renglón abierto) no hace más
+            // nueva la lista. Sólo la que llega del servidor ([showFromServer]) cuenta (Codex r3).
+            is KioskContent.Roster -> lastRoster = content
+            is KioskContent.Welcome -> lastRoster = null
+            else -> Unit
+        }
         _content.value = content
         revertJob?.cancel()
 
@@ -63,10 +85,15 @@ class KioskState @Inject constructor() {
         // siguiente de la fila.
         val timeoutMs = when (content) {
             is KioskContent.CheckedIn, is KioskContent.Purchased -> DONE_TIMEOUT_MS
+            // Identify también: cada tecla reinicia la cuenta (`keepAlive`), así que a quien
+            // teclea despacio no se le borra; lo que se borra es el número que alguien dejó
+            // a medias y se fue (Codex r1, 26-oct).
+            // …salvo mientras busca: vencerla ahí descartaría el «Listo» de un check-in que sí
+            // se registró (Codex r2). La búsqueda termina sola con los límites del cliente.
+            is KioskContent.Identify -> if (content.searching) null else IDENTIFIED_TIMEOUT_MS
             is KioskContent.Found, is KioskContent.Offer -> IDENTIFIED_TIMEOUT_MS
             is KioskContent.Trouble -> TROUBLE_TIMEOUT_MS
-            // Identify no caduca sola: alguien tecleando despacio no merece que
-            // se le borre el número a media captura. Se sale con el botón.
+            is KioskContent.Paying -> payingTimeout(content)
             else -> null
         }
         timeoutMs?.let { scheduleRestart(it) }
@@ -76,7 +103,11 @@ class KioskState @Inject constructor() {
         revertJob?.cancel()
         revertJob = timerScope.launch {
             delay(afterMs)
-            _content.value = KioskContent.Welcome
+            // 🔴 A la LISTA, no al reposo. Antes ponía «Bienvenida» sin avisarle a nadie y la
+            // lista sólo regresaba con el siguiente tic del reloj (~15 s, D3, 26-oct): la de
+            // atrás veía «El registro se abre antes de cada clase» con la clase abierta.
+            backToList()
+            onTimedOut?.invoke()
         }
     }
 
@@ -88,17 +119,71 @@ class KioskState @Inject constructor() {
         val c = _content.value
         val timeoutMs = when (c) {
             is KioskContent.CheckedIn, is KioskContent.Purchased -> DONE_TIMEOUT_MS
+            is KioskContent.Identify -> if (c.searching) return else IDENTIFIED_TIMEOUT_MS
             is KioskContent.Found, is KioskContent.Offer -> IDENTIFIED_TIMEOUT_MS
             is KioskContent.Trouble -> TROUBLE_TIMEOUT_MS
+            is KioskContent.Paying -> payingTimeout(c)
             else -> return
         }
         scheduleRestart(timeoutMs)
     }
 
+    /**
+     * 🔴 El QR no se queda para siempre (D3): antes «Paying» no vencía y, si la persona se iba sin
+     * pagar, la entrada quedaba con su QR y sin la lista de la clase. 5 min alcanzan para sacar el
+     * teléfono y pagar; si paga después, el servidor entrega igual. Sin enlace (falló), como un error.
+     */
+    private fun payingTimeout(c: KioskContent.Paying): Long = if (c.failed) TROUBLE_TIMEOUT_MS else PAYING_TIMEOUT_MS
+
     /** Vuelve al reposo YA y suelta cualquier dato de la persona anterior. */
     fun restart() {
         revertJob?.cancel()
+        lastRoster = null
         _content.value = KioskContent.Welcome
+    }
+
+    /**
+     * Terminó con alguien: vuelve a la lista de la clase abierta, limpia (sin el renglón
+     * abierto de quien ya se fue). Sin clase abierta, al reposo. Igual suelta los datos de
+     * la persona: la lista es lo que ya estaba a la vista.
+     *
+     * 🔴 Sólo una lista RECIENTE. Mientras alguien teclea el reloj no repinta, y la clase pudo
+     * cerrarse (o cambiar la sucursal): una lista vieja volvería a enseñar nombres que ya no
+     * tocan. Vieja ⇒ reposo, y quien conduce pide la lista al día enseguida (Codex r1, 26-oct).
+     */
+    fun backToList() {
+        val lista = lastRoster?.takeIf { now() - lastRosterAt < LIST_FRESH_MS }
+        if (lista == null) return restart()
+        show(lista.copy(busyId = null, justConfirmedId = null))
+    }
+
+    /** La lista recién llegada del servidor: la única que cuenta para su vigencia. */
+    fun showFromServer(roster: KioskContent.Roster) {
+        show(roster)
+        lastRosterAt = now()
+    }
+
+    /**
+     * Cerró la ventana de la clase: la lista CADUCA. Se borra la copia que «Cancelar» recupera y, si la lista está en
+     * pantalla, se pone la bienvenida. Nada más (Modo Autoservicio 0.e, Codex r3 #2): no sube [epoch] ni llama
+     * [restart], así que no borra a quien teclea en «¿No apareces?», paga un paquete o lee su confirmación.
+     */
+    fun expireRoster() {
+        lastRoster = null
+        if (_content.value is KioskContent.Roster) show(KioskContent.Welcome)
+    }
+
+    /** Sube con cada cambio de sesión: una consulta que salió antes ya no puede pintar. */
+    var epoch = 0
+        private set
+
+    /**
+     * Cambió la sesión o la sucursal: lo que hay a la vista y lo guardado son de la anterior.
+     * Se borra la pantalla (no sólo la copia) y se invalidan las consultas en camino (Codex r3).
+     */
+    fun forgetRoster() {
+        epoch++
+        restart()
     }
 
     // MARK: - Lo que el cliente toca (de vuelta hacia quien conduce)
@@ -109,7 +194,11 @@ class KioskState @Inject constructor() {
     /** Un dígito del teclado propio. La ventana del cliente NO recibe el del sistema. */
     var onDigit: ((String) -> Unit)? = null
     var onDelete: (() -> Unit)? = null
+    /** Abrió el selector de país (sólo cuenta como toque: el selector vive en la pantalla). */
     var onPickCountry: (() -> Unit)? = null
+
+    /** Eligió su país en el selector: cambia la lada con la que se compone su teléfono. */
+    var onCountry: ((com.avoqado.pos.designsystem.components.Country) -> Unit)? = null
 
     /** Buscar con el número tecleado. */
     var onSearch: (() -> Unit)? = null
@@ -136,12 +225,16 @@ class KioskState @Inject constructor() {
     /** Empezar de nuevo / cancelar. Siempre disponible. */
     var onRestart: (() -> Unit)? = null
 
+    /** Una pantalla de persona se venció sola: quien conduce pide la lista al día. */
+    var onTimedOut: (() -> Unit)? = null
+
     /** Suelta las devoluciones de llamada al desmontar quien conducía. */
     fun clearCallbacks() {
         onStart = null
         onDigit = null
         onDelete = null
         onPickCountry = null
+        onCountry = null
         onSearch = null
         onCheckIn = null
         onCheckInSession = null
@@ -149,6 +242,7 @@ class KioskState @Inject constructor() {
         onPackToggled = null
         onBuy = null
         onRestart = null
+        onTimedOut = null
     }
 
     private companion object {
@@ -158,5 +252,8 @@ class KioskState @Inject constructor() {
         // vería el siguiente de la fila si ella se va sin cerrar.
         const val IDENTIFIED_TIMEOUT_MS = 45_000L
         const val TROUBLE_TIMEOUT_MS = 15_000L
+        const val PAYING_TIMEOUT_MS = 300_000L
+        // Lo que tarda alguien en teclear y elegir; más viejo que esto, mejor preguntar.
+        const val LIST_FRESH_MS = 120_000L
     }
 }

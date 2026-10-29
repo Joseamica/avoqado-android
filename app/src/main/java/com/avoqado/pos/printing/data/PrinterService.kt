@@ -162,6 +162,39 @@ internal fun shouldReconnect(
 }
 
 /**
+ * D2 (founder, 28-oct): ¿la integrada se da de alta sola como «Recibos y cajón»? Sólo UNA vez, sólo si el aparato tiene
+ * cabezal de verdad (la T3 Pro no) y sólo si no hay ya una impresora de recibos ni la integrada guardada con otro papel.
+ * Si el dueño la borra, no regresa ([yaSeHizo]).
+ */
+internal fun debeAutoconfigurarIntegrada(guardadas: List<SavedPrinter>, yaSeHizo: Boolean, hayCabezal: Boolean): Boolean =
+    !yaSeHizo && hayCabezal &&
+        guardadas.none { PrinterRole.RECEIPT in it.roleEnums } &&
+        guardadas.none { it.connectionTypeEnum == PrinterConnectionType.INTERNAL }
+
+/**
+ * La lista de guardadas con [nueva] adentro: reemplaza por id o la agrega al final. La integrada es UNA sola (dirección
+ * «internal»): guardar una integrada quita cualquier otra integrada con otro id. Codex r3 #1 (D2): el alta automática
+ * (`internal-auto-receipt`) y la manual desde «Disponibles» (un UUID) podían coincidir y dejar dos, que imprimían doble.
+ */
+internal fun conGuardada(guardadas: List<SavedPrinter>, nueva: SavedPrinter): List<SavedPrinter> {
+    val esIntegrada = nueva.connectionTypeEnum == PrinterConnectionType.INTERNAL
+    val base = if (esIntegrada) {
+        guardadas.filterNot { it.connectionTypeEnum == PrinterConnectionType.INTERNAL && it.id != nueva.id }
+    } else {
+        guardadas
+    }
+    val index = base.indexOfFirst { it.id == nueva.id }
+    return if (index >= 0) base.toMutableList().also { it[index] = nueva } else base + nueva
+}
+
+/**
+ * D2: el respaldo escondido de recibos (la integrada sin estar guardada) sólo aplica mientras la integrada NO esté guardada.
+ * Guardada, mandan sus papeles: si el dueño la dejó «sólo comandas», los recibos ya no salen ahí.
+ */
+internal fun respaldoDeIntegradaPermitido(guardadas: List<SavedPrinter>): Boolean =
+    guardadas.none { it.connectionTypeEnum == PrinterConnectionType.INTERNAL }
+
+/**
  * Selecciona la impresora por defecto sin inventar rutas de cocina. En un Sunmi
  * con cabezal físico, la integrada funciona como respaldo plug-and-play sólo
  * para recibos cuando el negocio todavía no guardó una impresora explícita.
@@ -300,6 +333,9 @@ class PrinterService @Inject constructor(
     private val reemplazoEnObservacion = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
     private val ultimaBusquedaFallida = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /** Guardar una impresora es UNA pieza: [savePrinter] y la revisión del alta automática no se intercalan. */
+    private val guardado = Any()
+
     init {
         loadSavedPrinters()
     }
@@ -354,14 +390,40 @@ class PrinterService @Inject constructor(
         else -> PrinterStatus.SinComprobar
     }
 
-    fun savePrinter(printer: SavedPrinter) {
-        val list = _savedPrinters.value.toMutableList()
-        val index = list.indexOfFirst { it.id == printer.id }
-        if (index >= 0) {
-            list[index] = printer
-        } else {
-            list.add(printer)
+    /**
+     * D2 (founder, 28-oct): en una D3 con impresora integrada y sin impresora de recibos, la integrada se da de alta SOLA
+     * como «Recibos y cajón» (de fábrica: recibo sólo a demanda, comandas apagadas). Así «Impresoras y cajón» y el cobro
+     * dicen lo mismo y el cajón abre. Una sola vez: si el dueño la borra o le cambia los papeles, se respeta. Lo llama
+     * [VigilanteDeImpresoras] al abrir la app. Sin cabezal (T3 Pro, Windows) no hace nada y lo vuelve a intentar al abrir.
+     */
+    suspend fun autoconfigurarIntegrada() {
+        if (storage.integradaAutoconfigurada()) return
+        val hayCabezal = runCatching { innerPrinter.ensureBound() && innerPrinter.hasPhysicalPrinter }.getOrDefault(false)
+        if (!hayCabezal) return
+        val ancho = innerPrinter.paperWidthMm
+        // Codex r3 #1: revisar y guardar en UNA sola pieza (el mismo candado que [savePrinter]). Si el dueño ya la agregó a
+        // mano en ese instante, aquí se ve y no se agrega otra.
+        synchronized(guardado) {
+            if (debeAutoconfigurarIntegrada(_savedPrinters.value, yaSeHizo = false, hayCabezal = true)) {
+                savePrinter(
+                    SavedPrinter(
+                        id = "internal-auto-receipt",
+                        name = "Impresora integrada",
+                        connectionType = PrinterConnectionType.INTERNAL.value,
+                        address = "internal",
+                        roles = listOf(PrinterRole.RECEIPT.value),
+                        paperWidthMm = ancho,
+                    ),
+                )
+                Log.i(TAG, "🖨️ Impresora integrada configurada sola como «Recibos y cajón»")
+            }
+            storage.marcarIntegradaAutoconfigurada()
         }
+    }
+
+
+    fun savePrinter(printer: SavedPrinter) = synchronized(guardado) {
+        val list = conGuardada(_savedPrinters.value, printer)
         _savedPrinters.value = list
         storage.savePrinters(list)
         // Ver [estadoInicial]: la integrada no nace desconectada. Éste es el
@@ -372,16 +434,20 @@ class PrinterService @Inject constructor(
 
     fun deletePrinter(printer: SavedPrinter) {
         disconnect(printer)
-        val list = _savedPrinters.value.toMutableList()
-        list.removeAll { it.id == printer.id }
-        _savedPrinters.value = list
-        storage.savePrinters(list)
+        // Codex r4 (D2): toda escritura de la lista va bajo [guardado]; si no, una edición o un borrado simultáneo con el
+        // alta automática podía deshacerla y dejarla marcada como hecha.
+        synchronized(guardado) {
+            val list = _savedPrinters.value.toMutableList()
+            list.removeAll { it.id == printer.id }
+            _savedPrinters.value = list
+            storage.savePrinters(list)
+        }
         val statuses = _printerStatuses.value.toMutableMap()
         statuses.remove(printer.id)
         _printerStatuses.value = statuses
     }
 
-    fun updatePrinter(printer: SavedPrinter) {
+    fun updatePrinter(printer: SavedPrinter) = synchronized(guardado) {
         val list = _savedPrinters.value.toMutableList()
         val index = list.indexOfFirst { it.id == printer.id }
         if (index >= 0) {
@@ -701,7 +767,17 @@ class PrinterService @Inject constructor(
      */
     suspend fun sendPrintData(data: ByteArray, printer: SavedPrinter) = sendData(data, printer)
 
-    private suspend fun sendData(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean = true) {
+    /**
+     * Un trabajo a la vez por impresora. Todos comparten el socket de [wifiConnections] y cada uno lo cierra al terminar:
+     * en paralelo, el primero le cerraba el socket a los demás («Socket is closed»). D2, 27-oct: 4 comandas atrasadas a la
+     * EPSON y salió una; las otras esperaron 3 minutos cada una.
+     */
+    private val turnoPorImpresora = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    private suspend fun sendData(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean = true) =
+        turnoPorImpresora.computeIfAbsent(configurada.id) { Mutex() }.withLock { sendDataEnSuTurno(data, configurada, requierePapel) }
+
+    private suspend fun sendDataEnSuTurno(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean) {
         // Si esta impresora ya se encontró en otra dirección, se intenta directo ahí.
         var printer = conDireccionVigente(configurada)
         // Auto-connect if not connected, or if the cached socket is stale: the
@@ -1267,6 +1343,9 @@ class PrinterService @Inject constructor(
     suspend fun printWasteReceipt(comprobante: ComprobanteDeMerma): PrintOutcome =
         imprimirEnRecibos { it.generateWasteReceipt(comprobante) }
 
+    suspend fun printGiftCardCertificate(c: CertificadoDeTarjeta): PrintOutcome =
+        imprimirEnRecibos { it.generateGiftCardCertificate(c) }
+
     private suspend fun imprimirEnRecibos(armar: (ESCPOSPrinter) -> ByteArray): PrintOutcome {
         val printer = getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
             ?: return PrintOutcome.NoPrinter
@@ -1279,6 +1358,13 @@ class PrinterService @Inject constructor(
             PrintOutcome.Failed(e.message ?: "Error al imprimir")
         }
     }
+
+    /**
+     * D2 (founder, 28-oct): ¿«Imprimir recibo» tiene a dónde imprimir? La MISMA elegibilidad que [manualPrintReceipt], para
+     * que la fila no diga «Sin impresora» y luego imprima (ni al revés).
+     */
+    suspend fun hayImpresoraDeRecibos(): Boolean =
+        getPrinters(PrinterRole.RECEIPT).isNotEmpty() || getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) != null
 
     suspend fun manualPrintReceipt(receipt: ReceiptData): PrintOutcome {
         val configured = getPrinters(PrinterRole.RECEIPT)
@@ -1680,7 +1766,8 @@ class PrinterService @Inject constructor(
                 integratedPaperWidthMm = 58,
             )
         }
-        val available = innerPrinter.ensureBound() && innerPrinter.hasPhysicalPrinter
+        val available = respaldoDeIntegradaPermitido(_savedPrinters.value) &&
+            innerPrinter.ensureBound() && innerPrinter.hasPhysicalPrinter
         return selectDefaultPrinter(
             role = role,
             configured = configured,
@@ -1708,7 +1795,7 @@ class PrinterService @Inject constructor(
      * vieja y, mientras tanto, el cajero cambió el conector o el cajón automático. Guardar la
      * copia entera los revertía en silencio (auditoría de Codex H5). Espejo de iOS.
      */
-    private fun updateLastConnected(printer: SavedPrinter) {
+    private fun updateLastConnected(printer: SavedPrinter) = synchronized(guardado) {
         val list = conUltimaConexion(_savedPrinters.value, printer.id, System.currentTimeMillis())
         if (list == _savedPrinters.value) return
         _savedPrinters.value = list
@@ -1742,6 +1829,13 @@ private class PrinterStorage(private val context: Context) {
             Log.e("PrinterStorage", "Failed to load printers: ${e.message}")
             emptyList()
         }
+    }
+
+    /** D2: la integrada ya se intentó configurar sola en este aparato (se hace una sola vez). */
+    fun integradaAutoconfigurada(): Boolean = prefs.getBoolean("integrada_autoconfigurada", false)
+
+    fun marcarIntegradaAutoconfigurada() {
+        prefs.edit().putBoolean("integrada_autoconfigurada", true).apply()
     }
 
     fun savePrinters(printers: List<SavedPrinter>) {

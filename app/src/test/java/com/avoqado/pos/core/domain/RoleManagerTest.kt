@@ -35,6 +35,23 @@ class RoleManagerTest {
         every { secureStorage.venuePermissions } returns emptyList()
     }
 
+    @Test fun `tarjetas espejo de permisos reales y respaldo por rol`() {
+        for ((role, permissions, floor, manager) in listOf(
+            listOf("CASHIER", PermisosRealesDelServer.CASHIER, true, false),
+            listOf("WAITER", PermisosRealesDelServer.WAITER, false, false),
+            listOf("MANAGER", PermisosRealesDelServer.MANAGER, true, true),
+            listOf("CASHIER", emptyList<String>(), true, false),
+        )) {
+            every { secureStorage.userRole } returns role as String
+            @Suppress("UNCHECKED_CAST")
+            every { secureStorage.venuePermissions } returns permissions as List<String>
+            assertEquals(floor, roleManager.canReadGiftCards)
+            assertEquals(floor, roleManager.canSellGiftCards)
+            assertEquals(floor, roleManager.canRedeemGiftCards)
+            assertEquals(manager, roleManager.canManageGiftCards)
+        }
+    }
+
     // MARK: - `tables:pay-any`: cobrar la mesa de otro NO es editarla
     //
     // El detalle está en `tables/CobrarMesaAjenaTest`, que mide el candado
@@ -705,5 +722,48 @@ class RoleManagerTest {
             every { secureStorage.venuePermissions } returns emptyList()
             assertFalse("$role cannot infer a new permission from an empty cache", roleManager.canAttachCustomer)
         }
+    }
+
+    // MARK: - Pedidos en línea (A3): nombres EXACTOS del server
+
+    @Test
+    fun `pedidos en linea espeja orders update, cancel-unpaid y online-orders pause con la lista REAL`() {
+        fun con(rol: String, lista: List<String>): RoleManager {
+            every { secureStorage.userRole } returns rol
+            every { secureStorage.venuePermissions } returns lista
+            return roleManager
+        }
+        // orders:update — todos menos VIEWER y HOST
+        assertTrue(con("WAITER", PermisosRealesDelServer.WAITER).canOperateOnlineOrders)
+        assertTrue(con("CASHIER", PermisosRealesDelServer.CASHIER).canOperateOnlineOrders)
+        assertTrue(con("KITCHEN", PermisosRealesDelServer.KITCHEN).canOperateOnlineOrders)
+        assertFalse(con("VIEWER", PermisosRealesDelServer.VIEWER).canOperateOnlineOrders)
+        assertFalse(con("HOST", PermisosRealesDelServer.HOST).canOperateOnlineOrders)
+        // orders:cancel-unpaid — WAITER, CASHIER, MANAGER (+ ADMIN/OWNER por *:*); no KITCHEN
+        assertTrue(con("WAITER", PermisosRealesDelServer.WAITER).canCancelOnlineOrders)
+        assertTrue(con("CASHIER", PermisosRealesDelServer.CASHIER).canCancelOnlineOrders)
+        assertTrue(con("MANAGER", PermisosRealesDelServer.MANAGER).canCancelOnlineOrders)
+        assertTrue(con("OWNER", PermisosRealesDelServer.OWNER).canCancelOnlineOrders)
+        assertFalse(con("KITCHEN", PermisosRealesDelServer.KITCHEN).canCancelOnlineOrders)
+        // online-orders:pause — MANAGER, ADMIN, OWNER; el mesero y el cajero no
+        assertTrue(con("MANAGER", PermisosRealesDelServer.MANAGER).canPauseOnlineOrders)
+        assertTrue(con("ADMIN", PermisosRealesDelServer.ADMIN).canPauseOnlineOrders)
+        assertTrue(con("OWNER", PermisosRealesDelServer.OWNER).canPauseOnlineOrders)
+        assertFalse(con("WAITER", PermisosRealesDelServer.WAITER).canPauseOnlineOrders)
+        assertFalse(con("CASHIER", PermisosRealesDelServer.CASHIER).canPauseOnlineOrders)
+    }
+
+    @Test
+    fun `pedidos en linea sin lista cae al respaldo por rol`() {
+        every { secureStorage.venuePermissions } returns emptyList()
+        every { secureStorage.userRole } returns "CASHIER"
+        assertTrue(roleManager.canOperateOnlineOrders)
+        assertTrue(roleManager.canCancelOnlineOrders)
+        assertFalse(roleManager.canPauseOnlineOrders)
+        every { secureStorage.userRole } returns "OWNER"
+        assertTrue(roleManager.canPauseOnlineOrders)
+        every { secureStorage.userRole } returns "VIEWER"
+        assertFalse(roleManager.canOperateOnlineOrders)
+        assertFalse(roleManager.canCancelOnlineOrders)
     }
 }
