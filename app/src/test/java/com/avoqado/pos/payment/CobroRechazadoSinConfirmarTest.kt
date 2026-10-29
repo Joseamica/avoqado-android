@@ -117,7 +117,7 @@ class CobroRechazadoSinConfirmarTest {
                 else { filas[fila.id] = fila.copy(syncStatus = "PENDING"); 1 }
             }
             coEvery { dao.findForVenue(any(), any()) } coAnswers { filas[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() } }
-            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any(), any()) } coAnswers {
                 val f = filas[firstArg()]?.takeIf { it.syncStatus == "EN_VUELO" } ?: return@coAnswers 0
                 filas[f.id] = f.copy(amountCents = secondArg(), orderId = thirdArg()); 1
             }

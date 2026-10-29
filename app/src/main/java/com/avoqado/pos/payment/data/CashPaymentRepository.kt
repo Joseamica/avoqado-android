@@ -350,9 +350,16 @@ class CashPaymentRepository @Inject constructor(
      * orden (la fusión la reclama por orden y la gemela compara la orden). La captura Q15 original no se toca. Lanza si el disco falla o
      * si la fila ya no está en vuelo (0 filas): el POST no sale.
      */
-    suspend fun actualizarApartado(id: String, venueId: String, amountCents: Int, orderId: String) {
+    suspend fun actualizarApartado(
+        id: String,
+        venueId: String,
+        amountCents: Int,
+        orderId: String,
+        /** D1 (Codex código r3 #1): la copia del papel con el importe NUEVO; sin ella el reenvío mandaría la vieja, que ya no cuadra. */
+        lineasDelTicket: String? = null,
+    ) {
         val escritas = com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(venueId) {
-            pendingPaymentDao.actualizarApartadoEnVuelo(id, amountCents, orderId)
+            pendingPaymentDao.actualizarApartadoEnVuelo(id, amountCents, orderId, lineasDelTicket)
         }
         check(escritas == 1) { "El apartado $id ya no está en vuelo: no se actualizó su importe ni su orden" }
     }

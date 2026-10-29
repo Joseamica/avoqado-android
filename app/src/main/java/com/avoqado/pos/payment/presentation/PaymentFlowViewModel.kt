@@ -3267,9 +3267,15 @@ class PaymentFlowViewModel @Inject constructor(
                                     // 🔴 Codex r10 #1 + agregado 1: el apartado lleva el importe que de verdad se cobra y su orden ANTES de
                                     // mandarlo. Si la app muere o la venta se suelta, el barrido lo da por cobrado (y la cola lo sube) con
                                     // ESTE importe, y su venta en el cajón lleva su orden.
+                                    // D1: el papel se vuelve a tomar: sigue siendo ESTA venta, y el servidor pudo corregir sus precios. La
+                                    // reserva lo guarda con el importe nuevo (Codex código r3 #1) y el `/pay` lo manda igual.
+                                    val papelNuevo = papelDeLaParte()
                                     if (reservado) {
                                         try {
-                                            cashPaymentRepository.actualizarApartado(llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId)
+                                            cashPaymentRepository.actualizarApartado(
+                                                llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId,
+                                                lineasDelTicket = papelNuevo?.copia(totalFinal - tipCapturado),
+                                            )
                                         } catch (e: kotlinx.coroutines.CancellationException) {
                                             throw e
                                         } catch (e: Exception) {
@@ -3311,8 +3317,7 @@ class PaymentFlowViewModel @Inject constructor(
                                         cajaCapturada = cajaCapturada,
                                         conApartado = apartado,
                                         mesaCapturada = mesaCapturada,
-                                        // D1: el papel se vuelve a tomar: sigue siendo ESTA venta, y el servidor pudo corregir sus precios.
-                                        papel = papelDeLaParte(),
+                                        papel = papelNuevo,
                                         // Founder 18-oct («A»): con red, el aviso ya se lo dijo al cajero; sin red sí es alerta.
                                         precioAceptadoEnPantalla = cambios.isNotEmpty() && totalFinal != total,
                                     )

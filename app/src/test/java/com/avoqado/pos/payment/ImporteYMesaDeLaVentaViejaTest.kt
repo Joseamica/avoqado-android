@@ -67,7 +67,7 @@ class ImporteYMesaDeLaVentaViejaTest {
     private val dao = mockk<PendingPaymentDao>(relaxed = true).also { dao ->
         coEvery { dao.insert(any()) } coAnswers { val f = firstArg<PendingPaymentEntity>(); filas[f.id] = filaAlReemplazar(filas[f.id], f) }
         coEvery { dao.findForVenue(any(), any()) } coAnswers { filas[secondArg<String>()] }
-        coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+        coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any(), any()) } coAnswers {
             if (fallaAlActualizarElImporte) throw IOException("disco lleno")
             if (actualizarNoEscribeNada) return@coAnswers 0
             val f = filas[firstArg()]?.takeIf { it.syncStatus == "EN_VUELO" } ?: return@coAnswers 0

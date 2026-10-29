@@ -237,8 +237,11 @@ interface PendingPaymentDao {
      * acaba de nacer, en el apartado que sigue `EN_VUELO`, en UNA escritura antes del `/pay`. Sólo vía
      * `CashPaymentRepository.actualizarApartado` (pasa por `AdmisionDePrecioQ16.write`). La captura no se toca.
      */
-    @Query("UPDATE pending_payments SET amountCents = :amountCents, orderId = :orderId WHERE id = :id AND syncStatus = 'EN_VUELO'")
-    suspend fun actualizarApartadoEnVuelo(id: String, amountCents: Int, orderId: String): Int
+    @Query(
+        "UPDATE pending_payments SET amountCents = :amountCents, orderId = :orderId, lineasDelTicketJson = :lineasDelTicketJson " +
+            "WHERE id = :id AND syncStatus = 'EN_VUELO'",
+    )
+    suspend fun actualizarApartadoEnVuelo(id: String, amountCents: Int, orderId: String, lineasDelTicketJson: String? = null): Int
 
     /**
      * Agregado 5 y Codex r11 #2: una TANDA de los cobros de efectivo PURO que todavía pueden subir, de UN negocio y de las cajas
