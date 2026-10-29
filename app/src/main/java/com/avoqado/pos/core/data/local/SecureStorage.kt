@@ -5,11 +5,15 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.avoqado.pos.areatickets.data.IntentoDeVale
+import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
+import com.avoqado.pos.areatickets.data.ValeSinConfirmar
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import com.avoqado.pos.core.domain.PlanSnapshot
 import com.avoqado.pos.core.domain.retainNewestPlan
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -152,10 +156,30 @@ class SecureStorage @Inject constructor(
     /** `true` sólo si la llave quedó en disco. */
     fun guardarLlaveDeEmisionDeVales(venueId: String, llave: String): Boolean = LlaveDeEmisionDeVales.guardar(prefs, venueId, llave)
 
-    /** Suelta la llave de [venueId]; con [siEs], sólo si sigue siendo ésa. */
+    /** Suelta la llave de [venueId] (y lo que se mandó con ella); con [siEs], sólo si sigue siendo ésa. */
     fun soltarLlaveDeEmisionDeVales(venueId: String, siEs: String? = null) {
         LlaveDeEmisionDeVales.soltar(prefs, venueId, siEs)
     }
+
+    /** 🔴 D5: llave + lo que se manda, juntos en disco ANTES del POST. Ver [LlaveDeEmisionDeVales.guardar]. */
+    internal fun guardarIntentoDeVale(venueId: String, llave: String, intento: IntentoDeVale) =
+        LlaveDeEmisionDeVales.guardar(prefs, venueId, llave, intento)
+
+    /** 🔴 D5: primera vez de [venueId] en este proceso. Ver [LlaveDeEmisionDeVales.alArrancar]. */
+    fun revisarValeAMedias(venueId: String): Boolean = LlaveDeEmisionDeVales.alArrancar(prefs, venueId)
+
+    fun valeSinConfirmar(venueId: String) = LlaveDeEmisionDeVales.valeSinConfirmar(prefs, venueId)
+
+    /** 🔴 D5: ver [LlaveDeEmisionDeVales.mercanciaEnDuda]. */
+    fun mercanciaDeValeEnDuda(venueId: String, lineas: List<IssueAreaTicketLineRequest>): Boolean =
+        LlaveDeEmisionDeVales.mercanciaEnDuda(prefs, venueId, lineas)
+
+    fun olvidarValeSinConfirmar(venueId: String, llave: String) = LlaveDeEmisionDeVales.olvidarSinConfirmar(prefs, venueId, llave)
+
+    /** 🔴 D5: papel pendiente + olvidar el vale sin confirmar, juntos. Ver [LlaveDeEmisionDeVales.recuperado]. */
+    fun valeRecuperado(venueId: String, llave: String, codigo: String): Boolean = LlaveDeEmisionDeVales.recuperado(
+        prefs, venueId, llave, codigo, KEY_PENDING_AREA_TICKET_PRINT_CODE, KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID,
+    )
 
     var pendingAreaTicketPrintCode: String?
         get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_CODE, null)
@@ -846,9 +870,104 @@ internal object LlaveDeEmisionDeVales {
     fun guardar(prefs: SharedPreferences, venueId: String, llave: String): Boolean =
         prefs.edit().putString(clave(venueId), llave).commit() && prefs.getString(clave(venueId), null) == llave
 
-    /** Con [siEs], sólo si la de [venueId] sigue siendo ésa: una confirmación tardía no suelta la de otra emisión (r7 #4). */
+    /**
+     * Con [siEs] (el SERVIDOR contestó por esa llave), sólo si la de [venueId] sigue siendo ésa: una confirmación tardía no suelta
+     * la de otra emisión (r7 #4), y lo que se mandó con ella se borra. Sin [siEs] («Vaciar»), D5: lo pedido sin respuesta NO se
+     * tira en silencio; pasa a «sin confirmar» y sólo «Descartar» lo olvida (si no, el vale que sí salió quedaba ISSUED).
+     */
     fun soltar(prefs: SharedPreferences, venueId: String, siEs: String? = null) {
         if (siEs != null && leer(prefs, venueId) != siEs) return
-        prefs.edit().remove(clave(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+        if (siEs == null) apartarSinConfirmar(prefs, venueId)
+        prefs.edit().remove(clave(venueId)).remove(intentos(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+    }
+
+    // ── 🔴 D5 (vales-ciclo): el vale a medias. Lo que se mandó vive y muere con su llave. ──────────────────────────────────
+
+    /** Tope de contenidos distintos con una misma llave: un sexto no se podría recuperar, así que no se manda. */
+    const val TOPE_DE_INTENTOS = 5
+    private fun intentos(venueId: String) = "pendingAreaTicketIssueAttempts_$venueId"
+    private fun sinConfirmar(venueId: String) = "valeSinConfirmar_$venueId"
+    private val json = Json { ignoreUnknownKeys = true }
+    private val listaDeIntentos = ListSerializer(IntentoDeVale.serializer())
+
+    enum class Guardado { SI, NO, TOPE }
+
+    private fun leerIntentos(prefs: SharedPreferences, venueId: String): List<IntentoDeVale> =
+        prefs.getString(intentos(venueId), null)?.let { runCatching { json.decodeFromString(listaDeIntentos, it) }.getOrNull() }
+            ?: emptyList()
+
+    /**
+     * Llave + [intento] en UN `commit()` y relectura, ANTES del POST. Un contenido distinto con la misma llave se AGREGA: nunca se
+     * pisa el que pudo crear el vale (Codex r1 #3). Si la llave guardada es otra (o es la global de una versión anterior), los
+     * intentos empiezan de cero.
+     */
+    fun guardar(prefs: SharedPreferences, venueId: String, llave: String, intento: IntentoDeVale): Guardado {
+        val previos = if (prefs.getString(clave(venueId), null) == llave) leerIntentos(prefs, venueId) else emptyList()
+        val todos = if (previos.any { it.mismoQue(intento) }) previos else previos + intento
+        if (todos.size > TOPE_DE_INTENTOS) return Guardado.TOPE
+        val texto = json.encodeToString(listaDeIntentos, todos)
+        val ok = prefs.edit().putString(clave(venueId), llave).putString(intentos(venueId), texto).commit() &&
+            prefs.getString(clave(venueId), null) == llave && prefs.getString(intentos(venueId), null) == texto
+        return if (ok) Guardado.SI else Guardado.NO
+    }
+
+    /**
+     * La PRIMERA vez que este proceso usa [venueId]: lo que se pidió en la vez anterior de la app y nunca se confirmó pasa a «sin
+     * confirmar», con SU llave, y el negocio queda sin llave viva (lo siguiente sale con otra). `true` si hay uno.
+     */
+    fun alArrancar(prefs: SharedPreferences, venueId: String): Boolean {
+        if (apartarSinConfirmar(prefs, venueId)) {
+            prefs.edit().remove(clave(venueId)).remove(intentos(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+        }
+        return valeSinConfirmar(prefs, venueId) != null
+    }
+
+    /** Lo pedido con la llave viva de [venueId] y sin respuesta pasa a «sin confirmar» con SU llave. `true` si había. */
+    private fun apartarSinConfirmar(prefs: SharedPreferences, venueId: String): Boolean {
+        val llave = prefs.getString(clave(venueId), null)
+        val pedidos = leerIntentos(prefs, venueId)
+        if (llave == null || pedidos.isEmpty()) return false
+        // ponytail: ya hay uno sin confirmar ⇒ no se pisa; mientras exista, «Emitir vale» no deja pedir otro (④).
+        if (prefs.getString(sinConfirmar(venueId), null) == null) {
+            prefs.edit()
+                .putString(sinConfirmar(venueId), json.encodeToString(ValeSinConfirmar.serializer(), ValeSinConfirmar(llave, pedidos)))
+                .commit()
+        }
+        return true
+    }
+
+    /** D5 (Codex r6): ¿hay un vale de esta mercancía pedido sin respuesta (en curso o sin confirmar) en [venueId]? */
+    fun mercanciaEnDuda(prefs: SharedPreferences, venueId: String, lineas: List<IssueAreaTicketLineRequest>): Boolean =
+        (leerIntentos(prefs, venueId) + (valeSinConfirmar(prefs, venueId)?.intentos ?: emptyList())).any { it.mismaMercanciaQue(lineas) }
+
+    fun valeSinConfirmar(prefs: SharedPreferences, venueId: String): ValeSinConfirmar? =
+        prefs.getString(sinConfirmar(venueId), null)
+            ?.let { runCatching { json.decodeFromString(ValeSinConfirmar.serializer(), it) }.getOrNull() }
+            ?.takeIf { it.intentos.isNotEmpty() }
+
+    /**
+     * «Recuperar» confirmó el vale de [llave]: en UN `commit()` queda su papel pendiente (D12, claves [clavePapel] y
+     * [claveNegocioDelPapel]) y se olvida el vale sin confirmar (Codex r3 #1: con dos escrituras sueltas, en WINDOWS una podía
+     * fallar y perderse el papel, o quedar el registro y salir el original dos veces). `false` = no quedó; no se imprime.
+     */
+    fun recuperado(
+        prefs: SharedPreferences, venueId: String, llave: String, codigo: String, clavePapel: String, claveNegocioDelPapel: String,
+    ): Boolean {
+        if (valeSinConfirmar(prefs, venueId)?.llave != llave) return false
+        val antes = listOf(clavePapel, claveNegocioDelPapel, sinConfirmar(venueId)).associateWith { prefs.getString(it, null) }
+        val ok = prefs.edit().putString(clavePapel, codigo).putString(claveNegocioDelPapel, venueId).remove(sinConfirmar(venueId))
+            .commit() && prefs.getString(clavePapel, null) == codigo && prefs.getString(sinConfirmar(venueId), null) == null
+        if (!ok) {
+            // Codex r4 #3: las preferencias de ANDROID cambian la memoria ANTES de escribir; si el disco falló, la memoria
+            // decía que ya no había vale sin confirmar (el aviso se iba y «Emitir» salía con otra llave). Se regresa.
+            prefs.edit().apply { antes.forEach { (k, v) -> if (v == null) remove(k) else putString(k, v) } }.commit()
+        }
+        return ok
+    }
+
+    /** Recuperado o descartado: se olvida, sólo si sigue siendo el de [llave]. */
+    fun olvidarSinConfirmar(prefs: SharedPreferences, venueId: String, llave: String) {
+        if (valeSinConfirmar(prefs, venueId)?.llave != llave) return
+        prefs.edit().remove(sinConfirmar(venueId)).commit()
     }
 }

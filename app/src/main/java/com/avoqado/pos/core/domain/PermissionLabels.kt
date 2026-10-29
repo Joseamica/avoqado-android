@@ -173,6 +173,8 @@ object PermissionLabels {
         "reservations:cancel" to "cancelar una reservación",
         // Fase 8 del kiosco — estrecho a propósito: SU clase, no la agenda del negocio.
         "class-sessions:read-assigned" to "ver la clase que estás dando",
+        // Modo Autoservicio 0.e — la lista y el check-in del kiosco, nada más.
+        "self-service:check-in" to "hacer check-in en el kiosco",
 
         // MARK: - Paquetes de crédito (clases, prepagos)
         "creditPacks:read" to "ver los paquetes de crédito",

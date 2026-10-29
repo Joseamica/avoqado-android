@@ -71,6 +71,9 @@ class AvoqadoApp : Application() {
         // enchufa una vez. Apagado (lo normal) esto no hace absolutamente
         // nada — la segunda pantalla sigue siendo el espejo del mostrador.
         kioskDriver.attach()
+        // Llave propia del kiosco (antes compartida con «Esconder barras»): se migra UNA vez, ANTES de observar.
+        // Sólo una pantalla de presentación (D3) conserva un kiosco que venía "prendido" por la llave vieja.
+        kioskPrefs.migrateLegacyFlag(com.avoqado.pos.kiosk.system.KioskBootReceiver.hasPresentationDisplay(this))
         // Se OBSERVA, no se lee una vez: si el negocio prende o apaga el kiosco
         // desde Ajustes, tiene que surtir efecto en el momento y no hasta el
         // siguiente arranque de la app.

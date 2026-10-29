@@ -7,6 +7,12 @@ import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
+import com.avoqado.pos.payment.data.model.PaymentItem
+import com.avoqado.pos.onlineorders.presentation.renglonesParaVer
+import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.domain.OnlineOrderModifier
+import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
 import com.avoqado.pos.onlineorders.presentation.carritoDelCobro
@@ -100,12 +106,12 @@ class CobroDePedidoEnLineaTest {
     )
 
     @Test fun `kitchen cannot open a payment without payments create`() = runTest {
-        coEvery { repo.saldoCents(any()) } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido(any()) } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar(puedeCobrar = false)
         vm.cobrar(webOrder)
         advanceUntilIdle()
         assertNull(vm.cobroAbierto.value)
-        coVerify(exactly = 0) { repo.saldoCents(any()) }
+        coVerify(exactly = 0) { repo.saldoDelPedido(any()) }
     }
 
     // MARK: - El saldo
@@ -113,7 +119,7 @@ class CobroDePedidoEnLineaTest {
     @Test
     fun `uses server balance over inbox remaining`() = runTest(dispatcher) {
         // Review Focus 4: la bandeja dice $200, pero en otro aparato le hicieron un descuento o un abono: el detalle dice $150.
-        coEvery { repo.saldoCents("web-1") } returns Result.success(15000L)
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(15000L))
         val vm = armar()
         vm.refrescar()
 
@@ -133,10 +139,53 @@ class CobroDePedidoEnLineaTest {
     }
 
     @Test
+    fun `D4 the payment shows the order products but charges the single balance line`() = runTest(dispatcher) {
+        val conTacos = webOrder.copy(items = listOf(OnlineOrderItem(null, null, "Tacos de Pollo", 2, "sin cebolla",
+            listOf(OnlineOrderModifier("Queso", 2)))))
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(20000L, listOf(PrecioDeRenglon("Tacos de Pollo", 2, 20000, "sin cebolla", listOf("Queso")))))
+        val vm = armar()
+
+        vm.cobrar(conTacos)
+        advanceUntilIdle()
+
+        val carrito = carritoDelCobro(vm.cobroAbierto.value!!)
+        assertEquals(
+            "lo mismo que dice la comanda, con su precio",
+            listOf(PaymentItem(name = "Tacos de Pollo", quantity = 2, unitPrice = 10000, lineTotal = 20000,
+                modifiers = listOf("2 × Queso"), note = "sin cebolla")),
+            carrito.renglonesParaVer,
+        )
+        assertEquals("el dinero sigue en UN renglón por el saldo", CartItemType.CustomAmount, carrito.items.single().type)
+        assertEquals(20000, carrito.totalCents)
+    }
+
+    @Test
+    fun `D4 products are shown only when they match the balance exactly`() {
+        val tacos = OnlineOrderItem(null, null, "Tacos", 1, null, emptyList())
+        val agua = OnlineOrderItem(null, null, "Agua", 1, null, emptyList())
+        val precios = listOf(PrecioDeRenglon("Tacos", 1, 7900), PrecioDeRenglon("Agua", 1, 2500))
+        assertEquals(2, renglonesParaVer(listOf(agua, tacos), precios, 10400).size)
+        assertTrue("con un abono no cuadran", renglonesParaVer(listOf(tacos, agua), precios, 5000).isEmpty())
+        assertTrue("sin precios (sin red o ilegibles)", renglonesParaVer(listOf(tacos, agua), null, 10400).isEmpty())
+        assertTrue("la caja agregó algo que la bandeja no tiene", renglonesParaVer(listOf(tacos), precios, 10400).isEmpty())
+        // Dos «Tacos ×1» con precios distintos (uno con extra): no se sabe cuál es cuál.
+        val dudosos = listOf(PrecioDeRenglon("Tacos", 1, 7900), PrecioDeRenglon("Tacos", 1, 8900))
+        assertTrue(renglonesParaVer(listOf(tacos, tacos), dudosos, 16800).isEmpty())
+        // Codex r2 #1: otra caja cambió la nota (o los extras) y la bandeja aún no se relee: se queda «Pedido #folio».
+        val conNota = OnlineOrderItem(null, null, "Tacos", 1, "sin cebolla", emptyList())
+        assertTrue("nota vieja", renglonesParaVer(listOf(conNota), listOf(PrecioDeRenglon("Tacos", 1, 7900, "con cebolla")), 7900).isEmpty())
+        val conQueso = OnlineOrderItem(null, null, "Tacos", 1, null, listOf(OnlineOrderModifier("Queso", 1)))
+        assertTrue("extras viejos", renglonesParaVer(listOf(conQueso), listOf(PrecioDeRenglon("Tacos", 1, 7900, null, listOf("Salsa"))), 7900).isEmpty())
+        assertEquals(1, renglonesParaVer(listOf(conQueso), listOf(PrecioDeRenglon("Tacos", 1, 7900, null, listOf("Queso"))), 7900).size)
+        assertTrue("un precio que no se reparte por pieza", renglonesParaVer(
+            listOf(OnlineOrderItem(null, null, "Tacos", 3, null, emptyList())), listOf(PrecioDeRenglon("Tacos", 3, 10000)), 10000).isEmpty())
+    }
+
+    @Test
     fun `offline uses last inbox remaining`() = runTest(dispatcher) {
         // Ya se abonó algo: la bandeja dice $180 de $200. Sin red, ese último saldo es lo que se cobra (contrato con Rappi 2b).
         val abonado = pedido("web-1", total = 20000, restante = 18000)
-        coEvery { repo.saldoCents("web-1") } returns Result.failure(IOException("sin red"))
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.failure(IOException("sin red"))
         val vm = armar()
 
         vm.cobrar(abonado)
@@ -150,7 +199,7 @@ class CobroDePedidoEnLineaTest {
 
     @Test
     fun `zero balance does not open payment`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("web-1") } returns Result.success(0L)
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(0L))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -164,7 +213,7 @@ class CobroDePedidoEnLineaTest {
 
     @Test
     fun `offline with a zero tray remaining does not open payment either`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("web-1") } returns Result.failure(IOException("sin red"))
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.failure(IOException("sin red"))
         val vm = armar()
 
         vm.cobrar(pedido("web-1", restante = 0))
@@ -177,7 +226,7 @@ class CobroDePedidoEnLineaTest {
     @Test
     fun `a server error reading the balance does not open payment`() = runTest(dispatcher) {
         // No es falta de red (un 404/500): no se adivina con la bandeja, se dice y se reintenta.
-        coEvery { repo.saldoCents("web-1") } returns Result.failure(IllegalStateException("Error del servidor (500)"))
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.failure(IllegalStateException("Error del servidor (500)"))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -189,7 +238,7 @@ class CobroDePedidoEnLineaTest {
 
     @Test
     fun `only one charge opens at a time`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents(any()) } returns Result.success(15000L)
+        coEvery { repo.saldoDelPedido(any()) } returns Result.success(SaldoDelPedido(15000L))
         val vm = armar()
         vm.cobrar(webOrder)
         advanceUntilIdle()
@@ -198,7 +247,7 @@ class CobroDePedidoEnLineaTest {
         advanceUntilIdle()
 
         assertEquals("web-1", vm.cobroAbierto.value?.orderId)
-        coVerify(exactly = 0) { repo.saldoCents("web-2") }
+        coVerify(exactly = 0) { repo.saldoDelPedido("web-2") }
     }
 
     // MARK: - Un cobro por pedido a la vez en este aparato (Review Focus 6)
@@ -206,7 +255,7 @@ class CobroDePedidoEnLineaTest {
     @Test
     fun `a pending queued cash for the same order blocks a second charge`() = runTest(dispatcher) {
         filas = listOf(fila("web-1", "PENDING"))
-        coEvery { repo.saldoCents(any()) } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido(any()) } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -214,14 +263,14 @@ class CobroDePedidoEnLineaTest {
 
         assertNull("no se abre un segundo cobro del mismo pedido", vm.cobroAbierto.value)
         assertEquals("Cobro en efectivo guardado: se sube al volver la conexión", vm.aviso.value)
-        coVerify(exactly = 0) { repo.saldoCents(any()) }
+        coVerify(exactly = 0) { repo.saldoDelPedido(any()) }
     }
 
     @Test
     fun `a SYNCING one too`() = runTest(dispatcher) {
         // Codex plan r2 #1: al reconectar la fila pasa a SYNCING; si la red vuelve a caer en ese envío, sigue siendo dinero.
         filas = listOf(fila("web-1", "SYNCING"))
-        coEvery { repo.saldoCents(any()) } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido(any()) } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -236,7 +285,7 @@ class CobroDePedidoEnLineaTest {
         // Ruling 21 #2: guardado antes del POST y sin desenlace (proceso que murió, o un 4xx que dejó la reserva): pudo llegar
         // al servidor, así que bloquea, pero NADA lo sube solo. Decirle «se sube al volver la conexión» le mentía al cajero.
         filas = listOf(fila("web-1", "EN_VUELO"))
-        coEvery { repo.saldoCents(any()) } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido(any()) } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -247,14 +296,14 @@ class CobroDePedidoEnLineaTest {
             "Este pedido tiene un cobro en efectivo por revisar: un gerente lo resuelve en Operaciones por revisar",
             vm.aviso.value,
         )
-        coVerify(exactly = 0) { repo.saldoCents(any()) }
+        coVerify(exactly = 0) { repo.saldoDelPedido(any()) }
     }
 
     @Test
     fun `a PENDING held for review waits for a manager too`() = runTest(dispatcher) {
         // La cola (`PaymentSyncService`) no manda una fila con motivo de revisión: espera a un gerente.
         filas = listOf(fila("web-1", "PENDING", q15Reason = "RESULTADO_NO_COMPROBADO"))
-        coEvery { repo.saldoCents(any()) } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido(any()) } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -316,7 +365,7 @@ class CobroDePedidoEnLineaTest {
         coEvery { repo.inbox(any(), any(), any()) } returns Result.success(bandeja(pedido("web-1", restante = 15000)))
         vm.refrescar()
         filas = listOf(fila("web-1", "SYNCED"))
-        coEvery { repo.saldoCents("web-1") } returns Result.failure(IOException("sin red"))
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.failure(IOException("sin red"))
 
         vm.cobrar(pedido("web-1", restante = 15000))
         advanceUntilIdle()
@@ -329,7 +378,7 @@ class CobroDePedidoEnLineaTest {
     fun `online the server balance is the truth even with uploaded cash`() = runTest(dispatcher) {
         // Con red el saldo del servidor ya cuenta lo subido: un abono anterior de este aparato no frena el resto.
         filas = listOf(fila("web-1", "SYNCED"))
-        coEvery { repo.saldoCents("web-1") } returns Result.success(5000L)
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(5000L))
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -341,7 +390,7 @@ class CobroDePedidoEnLineaTest {
     @Test
     fun `offline without uploaded cash still uses the tray`() = runTest(dispatcher) {
         filas = listOf(fila("otro-pedido", "SYNCED"))
-        coEvery { repo.saldoCents("web-1") } returns Result.failure(IOException("sin red"))
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.failure(IOException("sin red"))
         val vm = armar()
 
         vm.cobrar(pedido("web-1", restante = 15000))
@@ -354,8 +403,8 @@ class CobroDePedidoEnLineaTest {
 
     @Test
     fun `a slow second tap never replaces a charge already open`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("web-1") } returns Result.success(20000L)
-        coEvery { repo.saldoCents("web-2") } coAnswers { delay(5_000); Result.success(9000L) }
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(20000L))
+        coEvery { repo.saldoDelPedido("web-2") } coAnswers { delay(5_000); Result.success(SaldoDelPedido(9000L)) }
         val vm = armar()
 
         vm.cobrar(webOrder)
@@ -370,7 +419,7 @@ class CobroDePedidoEnLineaTest {
 
     @Test
     fun `never calls delivered after charging`() = runTest(dispatcher) {
-        coEvery { repo.saldoCents("web-1") } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar()
         vm.refrescar()
         vm.cobrar(webOrder)
@@ -390,7 +439,7 @@ class CobroDePedidoEnLineaTest {
     fun `each Cobrar is a new opening and the open one keeps its own`() = runTest(dispatcher) {
         // «El cobro se reiniciaba al volver a la pestaña»: la apertura es UNA por toque de «Cobrar». Mientras el cobro sigue
         // abierto se conserva (la pantalla puede volver a componerse); uno nuevo nace con otra.
-        coEvery { repo.saldoCents("web-1") } returns Result.success(20000L)
+        coEvery { repo.saldoDelPedido("web-1") } returns Result.success(SaldoDelPedido(20000L))
         val vm = armar()
         vm.cobrar(webOrder)
         advanceUntilIdle()

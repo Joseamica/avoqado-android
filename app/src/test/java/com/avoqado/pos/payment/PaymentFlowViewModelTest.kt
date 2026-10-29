@@ -1766,6 +1766,60 @@ class PaymentFlowViewModelTest {
         assertTrue(viewModel.comandaWarning.value == null)
     }
 
+    /**
+     * D2 (founder, 28-oct): una tienda sin cocina (sin estaciones y sin ninguna impresora de cocina) veía «No salió la
+     * comanda de: Cocina» después de CADA venta (demo de Healthy Boutique en la D3). Sin cocina no hay comanda que avisar.
+     */
+    @Test
+    fun `P2 un negocio sin impresora de cocina ni estaciones no recibe aviso de comanda al cobrar`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-tienda")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-tienda", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 0, fallidas = emptyList())
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Jicafits", unitPrice = 10500),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(10500)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNull("una tienda sin cocina no debe ver aviso de comanda", viewModel.comandaWarning.value)
+    }
+
+    @Test
+    fun `P1 sin estaciones pero con impresora de cocina que falla el aviso sigue`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-resto")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-resto", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = listOf("Cocina"))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Taco", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        val aviso = viewModel.comandaWarning.value
+        assertTrue("una impresora de cocina que falla se sigue avisando: $aviso", aviso is EstadoDeComanda.NoSalio)
+    }
+
     // MARK: - Task 4: el aviso trae la causa REAL del server y no frena el cobro
 
     /** Config con UNA estación activa ("Cocina") — fuerza el camino de ruteo, no el legado. */
@@ -5296,4 +5350,21 @@ class PaymentFlowViewModelTest {
         assertEquals(setOf("a", "b"), viewModel.buildCompletion().paidItemIds)
         assertEquals(0, viewModel.buildCompletion().remainingBalanceCents)
     }
+
+    // MARK: - D4 (28-oct): «Ver productos» de un pedido en línea enseña sus productos, no «Pedido #XXXX»
+
+    @Test
+    fun `D4 Ver productos de un pedido en linea lista sus productos y el cobro sigue siendo el saldo`() {
+        val tacos = com.avoqado.pos.payment.data.model.PaymentItem(name = "Tacos de Pollo", quantity = 2, unitPrice = 3950, lineTotal = 7900)
+        val cart = CartState(
+            items = listOf(CartItem(id = "pedido-en-linea-o1", type = CartItemType.CustomAmount, name = "Pedido #WUFUR", unitPrice = 7900)),
+            renglonesParaVer = listOf(tacos),
+        )
+        viewModel.startPaymentFlow(cart)
+
+        val ctx = viewModel.buildPaymentContext()
+        assertEquals(listOf(tacos), ctx.items)
+        assertEquals("lo que se cobra no cambia", 7900, ctx.totalCents)
+    }
 }
+

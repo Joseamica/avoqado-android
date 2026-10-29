@@ -33,7 +33,66 @@ class QuarantineViewModel @Inject constructor(
     private val reservationRepository: ReservationRepository,
     private val roleManager: RoleManager,
     private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository,
+    /** «Pagar después» sin red (27-oct). Default para las pruebas que construyen este ViewModel a mano. */
+    private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
 ) : ViewModel() {
+
+    /**
+     * Cuentas de «Pagar después» de esta sucursal que una persona tiene que ver: RECHAZADA (el servidor no la creó: «Reintentar»
+     * o «Descartar») y REVISAR (existe por otro importe, o no se pudo leer: «Descartar» sólo la quita del aparato).
+     */
+    val cuentasPagarDespues: StateFlow<List<com.avoqado.pos.payment.data.PayLaterRow>> =
+        // Sigue a la sucursal de la sesión (Codex A-8); Reintentar y Descartar la revalidan en la fila.
+        (payLaterQueue?.porRevisarEnLaSucursal ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+
+    /** La cuenta que se está reintentando ahora (el botón espera el desenlace real, hasta 15 s). */
+    private val _reintentandoCuenta = MutableStateFlow<String?>(null)
+    val reintentandoCuenta: StateFlow<String?> = _reintentandoCuenta.asStateFlow()
+
+    fun reintentarCuenta(id: String) {
+        val cola = payLaterQueue ?: return
+        if (!canResolve || _reintentandoCuenta.value != null) return
+        _reintentandoCuenta.value = id
+        viewModelScope.launch {
+            try {
+                when (val d = cola.reintentar(id)) {
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada ->
+                        if (cola.filas.value.none { it.id == id }) _successMessage.value = "Cuenta registrada"
+                        else _errorMessage.value = cola.filas.value.firstOrNull { it.id == id }
+                            ?.let { com.avoqado.pos.payment.data.detalleDePagarDespues(it) }
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value = d.mensaje
+                    null -> Unit
+                    // Sin red o sin respuesta útil: vuelve a la fila de «por subir» y se sube sola.
+                    else -> _errorMessage.value = "Sin conexión: la cuenta sigue guardada en el aparato y se sube sola."
+                }
+            } finally {
+                _reintentandoCuenta.value = null
+            }
+        }
+    }
+
+    /** Una venta que no se dejó para después ni se pudo guardar: a «Carritos guardados», sin mandar nada al servidor. */
+    fun pasarACarritosGuardados(id: String) {
+        val cola = payLaterQueue ?: return
+        if (!canResolve) return
+        viewModelScope.launch {
+            when (cola.pasarACarritosGuardados(id)) {
+                true -> _successMessage.value = "Venta pasada a carritos guardados"
+                false -> _errorMessage.value = com.avoqado.pos.pos.presentation.cart.PAGAR_DESPUES_NO_SE_GUARDO
+                null -> Unit // ya se está trasladando sola
+            }
+        }
+    }
+
+    /** Ya confirmado en la pantalla. Una REVISAR existe en el servidor: descartarla sólo la quita de este aparato. */
+    fun descartarCuenta(id: String) {
+        val cola = payLaterQueue ?: return
+        if (!canResolve) return
+        viewModelScope.launch {
+            if (cola.descartar(id)) _successMessage.value = "Cuenta descartada"
+        }
+    }
 
     /**
      * Cobros en efectivo que la app guardó ANTES de mandarlos y cuyo intento quedó interrumpido (la
@@ -247,6 +306,7 @@ class QuarantineViewModel @Inject constructor(
         "RESCHEDULE" -> "Reagendar"
         "CREATE" -> "Crear reserva"
         "UPDATE" -> "Editar reserva"
+        com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Llegada en el kiosco (sin conexión)"
         else -> action
     }
 
@@ -265,6 +325,8 @@ class QuarantineViewModel @Inject constructor(
         "RESCHEDULE" -> "El cambio de horario no se aplicó. La reserva sigue en su hora original — reagéndala o avisa al cliente."
         "NO_SHOW" -> "No quedó marcada como no presentado. Si aplica un cargo, revísalo antes de descartarla."
         "CHECK_IN" -> "La llegada no quedó registrada. Márcala a mano si el cliente sí llegó."
+        // El texto del servidor (renglón de arriba) ya dice quién llegó, a qué hora y qué pasó; aquí sólo a dónde ir.
+        com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Revisa la reserva en Reservaciones."
         else -> "La operación nunca llegó al servidor. Revisa la reserva y vuelve a hacerla si sigue aplicando."
     }
 

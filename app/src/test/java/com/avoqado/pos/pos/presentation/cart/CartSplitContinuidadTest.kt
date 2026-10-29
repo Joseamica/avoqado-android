@@ -432,6 +432,26 @@ class CartSplitContinuidadTest {
         assertFalse("bajarla de nuevo deshace el cambio", vm.detenerCobroDeVentaCambiada())
     }
 
+    // Codex iOS código r1 #2 (28-oct): quitar un renglón y llevar otra unidad de uno que ya estaba deja el MISMO total y ningún
+    // id nuevo, pero la orden tiene B+C, no B×2: cobrarlo dejaba el recibo y el inventario distintos de lo vendido.
+    @Test
+    fun `cambiar un renglon por otra unidad de uno que ya estaba con el mismo total tambien detiene el cobro`() = runTest {
+        val vm = createViewModel()
+        val b = Product(id = "prod-b", name = "B", priceValue = 100.0)
+        vm.addProduct(b)
+        vm.addProduct(Product(id = "prod-c", name = "C", priceValue = 100.0))
+        vm.markPendingSplitOrder("order-parte-1")
+
+        vm.quitarPorElCajero(vm.cartState.value.items.last().id)
+        vm.addProduct(b)
+
+        assertEquals(1, vm.cartState.value.items.size)
+        assertEquals(2, vm.cartState.value.items.first().quantity)
+        assertEquals("montaje: vale lo mismo que al marcar el vínculo", 20000, vm.cartState.value.totalCents)
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+        assertNull("no se cobra contra la orden vieja", vm.resolvePendingSplitOrderForCharge())
+    }
+
     // Codex r9: guardar soltaba el vínculo y restaurar dejaba cobrar el saldo dentro de otra venta; pagar después hacía otra
     // cuenta con el saldo adentro. Una venta a medias no se guarda ni se difiere: primero su saldo.
     @Test
@@ -441,7 +461,7 @@ class CartSplitContinuidadTest {
         vm.addProduct(refresco)
 
         assertFalse(vm.saveCurrentCart("Para luego"))
-        assertEquals(VENTA_A_MEDIAS_NO_SE_GUARDA, vm.createPayLaterOrder("cliente-1").exceptionOrNull()?.message)
+        assertEquals(ResultadoPagarDespues.Error(VENTA_A_MEDIAS_NO_SE_GUARDA), vm.createPayLaterOrder("cliente-1"))
         assertTrue("la venta sigue en el carrito", vm.hayVentaAMedias())
         assertEquals(2, vm.cartState.value.items.size)
     }
@@ -869,74 +889,8 @@ class CartSplitContinuidadTest {
         assertEquals("cliente", vm.selectedCustomer.value?.id)
     }
 
-    private fun createPayLaterViewModel(repository: OrderRepository): CartViewModel = CartViewModel(
-        productsRepository = productsRepository,
-        discountsRepository = discountsRepository,
-        savedCartsRepository = savedCartsRepository,
-        authRepository = authRepository,
-        secureStorage = secureStorage,
-        activeCartState = mockk<ActiveCartState>(relaxed = true),
-        orderRepository = repository,
-        staffRepository = staffRepository,
-        classCheckoutSeed = mockk<ClassCheckoutSeed>(relaxed = true).also { every { it.consume() } returns null },
-        validateReferralUseCase = mockk(relaxed = true),
-        captureReferralUseCase = mockk(relaxed = true),
-        planManager = PlanManager(secureStorage),
-        tableSession = com.avoqado.pos.tables.data.TableSession(),
-        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
-        areaTicketRepository = mockk(relaxed = true),
-        walletScanRepository = mockk(relaxed = true),
-    )
-
-    @Test fun pagarDespuesSiNoSueltaCNoMarcaNiCrea() = runTest {
-        val repository = mockk<OrderRepository>(relaxed = true)
-        coEvery { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(Exception("rechazo"))
-        val vm = createPayLaterViewModel(repository)
-        vm.restoreSavedCart(SavedCart(id = "copia", name = "Venta", items = listOf(SavedCartItem(productId = "p", name = "Venta", unitPrice = 10000, quantity = 1))))
-        every { savedCartsRepository.deleteCart("copia") } returns false
-        assertTrue(vm.createPayLaterOrder("cliente").isFailure)
-        assertEquals("copia", vm.cartState.value.carritoGuardadoId)
-        assertNull(vm.cartState.value.creacionIncierta)
-        io.mockk.coVerify(exactly = 0) { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) }
-    }
-
-    @Test fun pagarDespuesSueltaCMarcaAntesDelPostYRechazoDefinitivoLimpia() = runTest {
-        val repository = mockk<OrderRepository>()
-        val vm = createPayLaterViewModel(repository)
-        vm.restoreSavedCart(SavedCart(id = "copia", name = "Venta", items = listOf(SavedCartItem(productId = "p", name = "Venta", unitPrice = 10000, quantity = 1))))
-        every { savedCartsRepository.deleteCart("copia") } returns true
-        var enviado = false
-        coEvery { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
-            enviado = true
-            assertNull(vm.cartState.value.carritoGuardadoId)
-            assertFalse(vm.cartState.value.vinoDeCarritoGuardado)
-            assertEquals(arg<String>(4), vm.cartState.value.creacionIncierta)
-            Result.failure(OrderRepository.ServerException(403,"rechazo"))
-        }
-        assertTrue(vm.createPayLaterOrder("cliente").isFailure)
-        assertTrue(enviado)
-        assertNull(vm.cartState.value.creacionIncierta)
-        assertNull(vm.cartState.value.carritoGuardadoId)
-        assertFalse(vm.cartState.value.vinoDeCarritoGuardado)
-        assertEquals(10000, vm.cartState.value.totalCents)
-    }
-
-    @Test fun pagarDespuesRespuestaSinIdYTimeoutConservanSuLlave() = runTest {
-        for (sinRespuesta in listOf(true, false)) {
-            val repository = mockk<OrderRepository>()
-            val vm = createPayLaterViewModel(repository)
-            vm.addCustomAmount("Venta", 10000)
-            var llave: String? = null
-            coEvery { repository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
-                llave = arg<String>(4)
-                if (sinRespuesta) Result.failure(java.net.SocketTimeoutException())
-                else Result.success(com.avoqado.pos.payment.data.model.CreateOrderResponse())
-            }
-            assertTrue(vm.createPayLaterOrder("cliente").isFailure)
-            assertNotNull(llave)
-            assertEquals(llave, vm.cartState.value.creacionIncierta)
-        }
-    }
+    // «Pagar después» de develop (27-oct) ya no borra la copia ni crea la cuenta desde el carrito: la venta sale del carrito antes
+    // de mandarse. La marca de creación incierta (con premio) y el freno de la entrega viven en PagarDespuesCarritoTest («tarjetas - …»).
 
     @Test fun entregaSinConfirmarNoSeVaciaNiSeGuardaNiPagaDespues() = runTest {
         val vm = createViewModel(); vm.addCustomAmount("Venta", 10000)
@@ -950,7 +904,7 @@ class CartSplitContinuidadTest {
         vm.clearCart()
         assertEquals("No debe vaciar una entrega pendiente", antes, vm.cartState.value)
         assertFalse(vm.saveCurrentCart())
-        assertTrue(vm.createPayLaterOrder("cliente").isFailure)
+        assertTrue(vm.createPayLaterOrder("cliente") is ResultadoPagarDespues.Error)
         assertEquals(antes,vm.cartState.value)
     }
 

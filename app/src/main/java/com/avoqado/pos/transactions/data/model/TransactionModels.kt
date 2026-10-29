@@ -65,6 +65,8 @@ data class TicketTotalsDto(
     val tip: Double,
     val total: Double,
     val discount: Double? = null,
+    /** D15 (servidor, aditivo): sólo viene, en `true`, en el comprobante de UNA parte de una venta dividida. */
+    val parcial: Boolean? = null,
 )
 
 /**

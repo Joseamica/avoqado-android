@@ -14,6 +14,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.util.formatMoney
 
+import com.avoqado.pos.payment.data.DesenlacePagarDespues
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.pos.data.ActiveCartState
@@ -54,6 +55,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.SharingStarted
@@ -136,6 +138,17 @@ data class CartState(
      * cambios; se suelta al poner o quitar [orderDiscount] y al empezar otra venta; una edición de líneas lo deja sin efecto.
      */
     val descuentoDeCuentaCongelado: DescuentoCongelado? = null,
+    /**
+     * 🔴 «Pagar después» (27-oct, R2-2): la llave (`externalId`) de ESTA venta. Nace al primer toque y se reusa en todo
+     * intento de la misma venta: si uno anterior sí creó la cuenta, el servidor devuelve ésa en vez de crear otra.
+     */
+    val llavePagarDespues: String? = null,
+    /**
+     * D4 (28-oct): lo que enseña «Ver productos» en vez de [items], SÓLO en pantalla. Un cobro de una cuenta que ya existe
+     * (pedido en línea) cobra con UN renglón de importe por el saldo; aquí van sus productos de verdad para que la cajera vea
+     * qué entrega. Nunca entra al dinero, a la orden ni al ticket.
+     */
+    val renglonesParaVer: List<com.avoqado.pos.payment.data.model.PaymentItem> = emptyList(),
 ) {
     /**
      * 🔴 DINERO. Las líneas con el precio que decidió el servidor ([aplicarCambiosDePrecio]). Con [cambios] vacío devuelve el
@@ -285,6 +298,8 @@ sealed interface Restauracion {
     data class PideConfirmacion(val cobroIniciadoEn: Long) : Restauracion
     /** D5: este carrito es una venta de vales con abono; restaurar otro la vaciaría. */
     data object BloqueadaPorAbono : Restauracion
+    /** 27-oct (Codex): la copia está ligada a una cuenta de «Pagar después» viva; venderla otra vez la duplicaría. */
+    data object YaDejadaParaDespues : Restauracion
 }
 
 /** Mismo texto en iOS (`AreaTicketCartError.noPagarDespues`). */
@@ -305,6 +320,33 @@ const val VALES_VENTA_CAMBIO_AL_LEER = "La venta cambió mientras se leía el va
 /** Tablero D3 (Codex r9): guardar o diferir una venta a medias se llevaba su saldo a otra venta. Mismo texto en iOS. */
 const val VENTA_A_MEDIAS_NO_SE_GUARDA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. No se puede guardar ni dejar para pagar después."
+
+/** Lo que el cajero ve al terminar «Pagar después». */
+sealed interface ResultadoPagarDespues {
+    data object Creada : ResultadoPagarDespues
+    /** Ámbar, nunca rojo: quedó guardada sin red, o la cuenta existe por otro importe. */
+    data class Aviso(val texto: String) : ResultadoPagarDespues
+    /** No se dejó para después: la venta volvió al carrito (o a «Carritos guardados»). */
+    data class Error(val texto: String) : ResultadoPagarDespues
+}
+
+/** La venta que se está mandando: lo que enseña «Guardando la cuenta…» con el carrito ya vacío. */
+data class EnvioPagarDespues(val cliente: String, val totalCents: Int)
+
+// «Pagar después» sin red (27-oct). Mismos textos en iOS.
+const val GUARDANDO_LA_CUENTA = "Guardando la cuenta…"
+const val PAGAR_DESPUES_PREMIO_SIN_RED = "Sin conexión: el premio de sellos necesita internet. Quita el premio o espera la red."
+const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no se pueden dejar para pagar después."
+fun pagarDespuesGuardadaSinRed(cliente: String) = "Sin conexión: la cuenta de $cliente quedó guardada en el aparato y se sube sola."
+fun pagarDespuesOtroImporte(cliente: String, registradoCents: Int, esperadoCents: Int) =
+    "La cuenta de $cliente quedó por ${com.avoqado.pos.core.util.formatMoneyFromCents(registradoCents)}, " +
+        "no por ${com.avoqado.pos.core.util.formatMoneyFromCents(esperadoCents)}. Revísala en el panel."
+fun pagarDespuesACarritosGuardados(cliente: String) = "La venta de $cliente no se pudo dejar para después: quedó en Carritos guardados."
+const val YA_SE_DEJO_PARA_PAGAR_DESPUES = "Esta venta ya se dejó para pagar después."
+const val PAGAR_DESPUES_EN_CURSO = "Se está dejando esta venta para pagar después: espera a que termine."
+fun pagarDespuesNiGuardada(cliente: String) =
+    "La venta de $cliente no se pudo dejar para después ni guardar: quedó en Pendientes por revisar."
+const val PAGAR_DESPUES_NO_SE_GUARDO = "No se pudo guardar la cuenta en el aparato. Intenta de nuevo."
 
 /** Tablero D3 (21-oct). Mismo texto en iOS. */
 const val VENTA_A_MEDIAS_CAMBIADA =
@@ -335,6 +377,7 @@ const val PARTE_SIN_RED_PAGADA_CON_ALGO_MAS =
 
 /** El título del aviso ámbar del carrito: el de vales sólo para vales (D1 reusa el mismo aviso). */
 fun tituloDelAviso(aviso: String): String = when {
+    aviso == PAGAR_DESPUES_EN_CURSO -> "Pagar después"
     aviso == DIVIDIR_SIN_CONEXION -> "Sin conexión"
     aviso == VENTA_A_MEDIAS_CAMBIADA || aviso.startsWith("La primera parte de esta venta") ||
         aviso.startsWith("Al subir la primera parte") -> "Venta a medio cobrar"
@@ -378,6 +421,8 @@ class CartViewModel @Inject constructor(
     private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
     /** D1 (26-oct): «Dividir» en tienda pide conexión con Avoqado. Sin monitor (pruebas) se da por conectado. */
     private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
+    /** «Pagar después» sin red (27-oct). Default para las pruebas que no la usan; sin ella no se difiere. */
+    private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -401,8 +446,9 @@ class CartViewModel @Inject constructor(
         private set
     fun abrirCobro() { cobroAbierto = true }
     fun cerrarCobro() { cobroAbierto = false }
-    private val consultasDeCodigo = java.util.concurrent.atomic.AtomicInteger(0)
-    val hayConsultasDeCodigo: Boolean get() = consultasDeCodigo.get() > 0
+    /** Flujo (no un contador suelto) para que «Pagar después» pueda ESPERAR a que lleguen antes de separar la venta (R3-2). */
+    private val consultasDeCodigo = MutableStateFlow(0)
+    val hayConsultasDeCodigo: Boolean get() = consultasDeCodigo.value > 0
 
     private val _staffOptions = MutableStateFlow<List<StaffMember>>(emptyList())
     val staffOptions: StateFlow<List<StaffMember>> = _staffOptions.asStateFlow()
@@ -626,12 +672,20 @@ class CartViewModel @Inject constructor(
     /** El carrito continúa una venta cobrada a medias (tiene saldo en su orden). */
     fun hayVentaAMedias(): Boolean = _pendingSplitOrder.value != null
 
-    /** Hay un renglón que la orden no tiene, o el carrito creció en dinero (`addProduct` FUSIONA: misma línea, cantidad 2). */
+    /**
+     * Hay un renglón que la orden no tiene, uno que lleva MÁS que en su foto, o el carrito creció en dinero (`addProduct`
+     * FUSIONA: misma línea, cantidad 2). Mirar sólo el total no basta: quitar C y llevar otra B deja B×2 al mismo precio
+     * contra una orden con B+C (Codex iOS código r1 #2, 28-oct).
+     */
     private fun carritoCambioDesde(pendiente: PendingSplitOrder, cart: CartState): Boolean =
         // Exacta: renglones, descuento Y total (quitar al cliente quita su premio y sube el total sin tocar renglones, Codex r2 #1).
         if (pendiente.exacta) cart.items != pendiente.renglones || cart.orderDiscount != pendiente.descuentoDeCuenta ||
             cart.totalCents != pendiente.totalCents
-        else cart.items.any { it.id !in pendiente.itemIds } || cart.totalCents > pendiente.totalCents
+        else cart.totalCents > pendiente.totalCents || cart.items.any { item ->
+            val foto = pendiente.renglones.firstOrNull { it.id == item.id }
+            item.id !in pendiente.itemIds ||
+                (foto != null && (item.quantity > foto.quantity || item.grossPrice > foto.grossPrice))
+        }
 
     // MARK: - D1: la parte que se guardó sin red (founder «B», 26-oct)
 
@@ -1218,6 +1272,8 @@ class CartViewModel @Inject constructor(
                     it.selectedModifiers.isEmpty() &&
                     !it.isCortesia &&
                     it.promotionInstanceId == null &&
+                    // D7: tampoco con una pesada (es una venta aparte; fusionada quedaría cantidad 2 con el total de una).
+                    it.weightKg == null &&
                     it.unitPrice == product.priceInCents
             }
 
@@ -1488,6 +1544,11 @@ class CartViewModel @Inject constructor(
         return true
     }
 
+    /**
+     * 🔴 D7: un renglón por peso es UNA pesada, cantidad 1 siempre. Su total ya ignora la cantidad y el SERVIDOR rechaza
+     * `quantity ≠ 1` junto a `weightQuantity`. Dos pesadas = dos renglones ([addProductByWeight]). La pantalla ya oculta el
+     * selector; esto lo cierra para cualquier otro camino. **iOS** pone la misma regla en su `CartViewModel.items`.
+     */
     fun updateQuantity(itemId: String, newQuantity: Int) {
         if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
@@ -1497,7 +1558,7 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(quantity = newQuantity) else it
+                    if (it.id == itemId && it.weightKg == null) it.copy(quantity = newQuantity) else it
                 },
             )
         }
@@ -1508,7 +1569,8 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(quantity = it.quantity + 1) else it
+                    // D7: una pesada no sube (ver [updateQuantity]).
+                    if (it.id == itemId && it.weightKg == null) it.copy(quantity = it.quantity + 1) else it
                 },
             )
         }
@@ -1606,6 +1668,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun saveCurrentCart(name: String? = null): Boolean {
+        if (detenerPorPagarDespues()) return false
         if (bloqueoDeEntrega() != null) return false
         val state = _cartState.value
         if (state.isEmpty || state.items.any { it.locked }) return false
@@ -1618,10 +1681,26 @@ class CartViewModel @Inject constructor(
             com.avoqado.pos.core.util.VenueTimeZone.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         }"
-        val savedCart = SavedCart(
+        if (!savedCartsRepository.saveCart(comoCarritoGuardado(state, cartName, _selectedCustomer.value?.id))) return false
+        // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
+        // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
+        // venta siguiente nace con él.
+        finalizarVenta()
+        Log.d("🛒", "Cart saved as: $cartName")
+        return true
+    }
+
+    /** La copia de «Carritos guardados» de [state]. La usan guardar el carrito y «Pagar después» rechazado con otra venta. */
+    private fun comoCarritoGuardado(state: CartState, cartName: String, customerId: String?): SavedCart =
+        SavedCart(
             id = state.carritoGuardadoId ?: UUID.randomUUID().toString(),
             name = cartName,
-            cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn,
+            // 🔴 D5 (Codex r6): se guarda con un vale de ESTA mercancía pedido sin respuesta: la copia nace marcada (D1) y
+            // restaurarla pregunta; si no, después de «Recuperar» salía como segundo vale.
+            cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn
+                ?: System.currentTimeMillis().takeIf {
+                    secureStorage.venueId?.let { v -> lineasDeValeEnPantalla()?.let { secureStorage.mercanciaDeValeEnDuda(v, it) } } == true
+                },
             items = state.items.map { item ->
                 SavedCartItem(
                     lineId = item.id,
@@ -1665,16 +1744,9 @@ class CartViewModel @Inject constructor(
             orderNote = state.orderNote,
             orderTaxPercent = state.orderTaxPercent,
             reservationId = state.reservationId,
-            attachedCustomerId = _selectedCustomer.value?.id,
+            attachedCustomerId = customerId,
+            llavePagarDespues = state.llavePagarDespues,
         )
-        if (!savedCartsRepository.saveCart(savedCart)) return false
-        // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
-        // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
-        // venta siguiente nace con él.
-        finalizarVenta()
-        Log.d("🛒", "Cart saved as: $cartName")
-        return true
-    }
 
     fun clearCart() {
         bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
@@ -1740,6 +1812,7 @@ class CartViewModel @Inject constructor(
      * se perdió vuelve con el mismo contenido y el servidor devuelve ESE vale en vez de crear otro.
      */
     fun vaciar() {
+        if (detenerPorPagarDespues()) return
         secureStorage.venueId?.let { secureStorage.soltarLlaveDeEmisionDeVales(it) }
         finalizarVenta()
     }
@@ -1975,11 +2048,11 @@ class CartViewModel @Inject constructor(
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return ScannedBarcodeResult.Error("Termina la consulta de la tarjeta primero.")
         // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
-        consultasDeCodigo.incrementAndGet()
+        consultasDeCodigo.update { it + 1 }
         try {
             return resolverCodigo(rawCode)
         } finally {
-            consultasDeCodigo.decrementAndGet()
+            consultasDeCodigo.update { it - 1 }
         }
     }
 
@@ -2048,6 +2121,11 @@ class CartViewModel @Inject constructor(
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
                     if (!sigueLaVenta()) {
                         ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                    } else if (pagarDespuesTomoLaFoto) {
+                        // 🔴 D10: con «Pagar después» en camino la venta sale conservando lo que entró; este vale pasaba a la
+                        // venta siguiente con su apartado a nombre de la anterior. Sólo el vale: lo que el SERVIDOR dice que es
+                        // un producto (aunque su código parezca de vale) sí entra. Igual en iOS.
+                        ScannedBarcodeResult.Error(PAGAR_DESPUES_EN_CURSO)
                     } else if (_pendingSplitOrder.value != null) {
                         // 🔴 D4 (20-oct). Con una venta cobrada a medias, el vale armaba una orden NUEVA con lo que faltaba y la
                         // venta de antes se quedaba con su saldo abierto para siempre. Primero se termina esa venta.
@@ -2141,6 +2219,9 @@ class CartViewModel @Inject constructor(
      * mete sus vales en la siguiente.
      */
     private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String): Boolean {
+        // 🔴 D10 (Codex r1 #1): tampoco por la restauración al entrar a Cobrar. Mientras «Pagar después» manda esta venta, sus
+        // vales se quedan apartados (sin dueño nuevo) y siguen la regla 8 cuando termine.
+        if (pagarDespuesTomoLaFoto) return false
         val sesion = areaTicketRepository.session
         if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
         val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
@@ -2453,16 +2534,70 @@ class CartViewModel @Inject constructor(
      * D1 (vales-ciclo, 26-oct): el vale de un carrito guardado quedó emitido en el servidor. Se retira la copia de la que vino,
      * como hace el cobro confirmado; si no, restaurarla permitía emitir otro vale por la misma mercancía.
      */
-    fun retirarCopiaDelVale(copia: String?) {
-        val id = copia ?: return
-        if (!savedCartsRepository.deleteCart(id)) Log.w("🛒", "No se confirmó el retiro de la copia $id del vale emitido")
+    fun retirarCopiaDelVale(copia: String?): Boolean {
+        val id = copia ?: return true
+        val retirada = savedCartsRepository.deleteCart(id)
+        if (!retirada) Log.w("🛒", "No se confirmó el retiro de la copia $id del vale emitido")
         if (_cartState.value.carritoGuardadoId == id) _cartState.update { it.copy(carritoGuardadoId = null) }
+        return retirada
     }
+
+    /**
+     * 🔴 D5: «Recuperar» confirmó el vale de [intento]. Se retira su copia (D1), como al emitir, y si el carrito en pantalla es la
+     * MISMA mercancía del vale, esa venta se termina: ya quedó en el vale (Codex r6 #2: si no, «Emitir» sacaba otro). Las copias
+     * guardadas DESPUÉS de perder la respuesta no se borran (r6 #1: borrar por parecido se llevaba otra mercancía): nacen marcadas
+     * ([saveCurrentCart]) y restaurarlas pregunta. `false` si la copia no se pudo retirar (el vale sigue sin confirmar).
+     */
+    fun alRecuperarVale(intento: com.avoqado.pos.areatickets.data.IntentoDeVale): Boolean {
+        // Codex r7 #1: la copia se retira sólo si SIGUE siendo esa mercancía. Si la volvieron a guardar con otra, se queda: trae la
+        // marca del D1 (se puso al emitir y guardar la conserva) y restaurarla pregunta.
+        val copia = intento.carritoGuardadoId?.let { id -> savedCartsRepository.savedCarts.value.firstOrNull { it.id == id } }
+        if (copia != null && lineasDeVale(copia)?.let { intento.mismaMercanciaQue(it) } == true && !retirarCopiaDelVale(copia.id)) {
+            return false
+        }
+        // Codex r7 #2: nunca una venta a medio cobrar (su saldo vive en otra orden), aunque traiga lo mismo.
+        if (!hayVentaAMedias()) lineasDeValeEnPantalla()?.takeIf { intento.mismaMercanciaQue(it) }?.let { finalizarVenta() }
+        return true
+    }
+
+    /** Lo que mandaría «Emitir vale» con una copia guardada, o null si trae algo que un vale no lleva (Codex r8, igual que arriba). */
+    private fun lineasDeVale(guardado: SavedCart): List<com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest>? =
+        guardado.items.takeIf { items ->
+            guardado.orderDiscount == null && guardado.orderTaxPercent == null && items.isNotEmpty() && items.all {
+                it.productId != null && it.packId == null && !it.isCortesia && it.priceAdjustment == null && it.promotionInstanceId == null
+            }
+        }?.map { item ->
+            com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest(
+                clientLineId = item.lineId.orEmpty(),
+                productId = item.productId!!,
+                quantity = item.quantity.toString(),
+                weightKg = item.weightKg?.let { String.format(java.util.Locale.US, "%.3f", it) },
+                notes = item.note,
+                modifierIds = item.modifiers.map { it.modifierId },
+                discountId = item.itemDiscountId,
+            )
+        }
+
+    /**
+     * Lo que mandaría «Emitir vale» con el carrito en pantalla, o null si trae algo que un vale no lleva (no producto, cortesía,
+     * precio a mano, promoción, descuento de cuenta…: `areaTicketIssueBlocker`). Codex r8: sin eso, «misma mercancía» confundía
+     * una cortesía con el producto a precio normal.
+     */
+    private fun lineasDeValeEnPantalla(): List<com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest>? =
+        _cartState.value.takeIf { s ->
+            s.items.isNotEmpty() && s.items.all { it.type is CartItemType.ProductItem } &&
+                com.avoqado.pos.areatickets.presentation.areaTicketIssueBlocker(s) == null
+        }?.let { com.avoqado.pos.areatickets.presentation.intentoDeVale(it).lineas }
 
     fun prepararCobroDelCarritoGuardado(): Boolean =
         _cartState.value.carritoGuardadoId?.let { savedCartsRepository.marcarCobroIniciado(it) } ?: true
 
     fun restoreSavedCart(savedCart: SavedCart, confirmado: Boolean = false): Restauracion {
+        // 27-oct (Codex A-5): la copia de una cuenta de «Pagar después» viva no se vende otra vez, ni confirmando: el cobro
+        // normal crearía otra venta por la misma mercancía (la llave sólo protege otro «Pagar después»).
+        if (savedCart.pagarDespuesSinDesenlace || payLaterQueue?.copiaLigada(savedCart.id) == true) {
+            return Restauracion.YaDejadaParaDespues
+        }
         // D5 (Codex r3 #5): restaurar reemplaza el carrito; con una venta de vales con abono la escondía.
         if (vaciarBloqueadoPorAbono()) return Restauracion.BloqueadaPorAbono
         savedCart.cobroIniciadoEn?.let {
@@ -2524,6 +2659,7 @@ class CartViewModel @Inject constructor(
             vinoDeCarritoGuardado = true,
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
+            llavePagarDespues = savedCart.llavePagarDespues,
         )
         // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
         // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior
@@ -2551,96 +2687,325 @@ class CartViewModel @Inject constructor(
         Log.d("🛒", "Deleted saved cart: $cartId")
     }
 
-    suspend fun createPayLaterOrder(customerId: String): Result<String> {
-        bloqueoDeEntrega()?.let { return Result.failure(Exception(it)) }
-        val currentCart = _cartState.value
-        if (currentCart.isEmpty) {
-            return Result.failure(Exception("No hay artículos en el carrito"))
-        }
+    // MARK: - Pagar después (27-oct: sin red, una sola cuenta por venta)
+
+    /** La venta que salió del carrito al mandarla (R3-2), con lo que hace falta para devolverla entera si no se crea. */
+    private data class VentaSeparada(
+        val venta: CartState,
+        val cliente: SelectedCustomer,
+        val referralCode: String,
+        val referralValidation: ReferralCaptureUiState,
+    )
+
+    private val _pagarDespuesEnCurso = MutableStateFlow<EnvioPagarDespues?>(null)
+
+    /**
+     * 🔴 D10: «Pagar después» ya tomó la foto de la venta (después de esperar los escaneos en curso). Desde ahí un vale no entra;
+     * antes sí, y la venta se rechaza con [VALES_NO_PAGAR_DESPUES] como siempre (Codex D10 r2). Igual en iOS.
+     */
+    private var pagarDespuesTomoLaFoto = false
+    /** No-null mientras se manda: la pantalla de «Pagar después» no se puede cerrar y dice «Guardando la cuenta…». */
+    val pagarDespuesEnCurso: StateFlow<EnvioPagarDespues?> = _pagarDespuesEnCurso.asStateFlow()
+
+    private val _resultadoPagarDespues = MutableStateFlow<ResultadoPagarDespues?>(null)
+    /** Vive aquí y no en la pantalla: el envío termina aunque la pantalla se recree. */
+    val resultadoPagarDespues: StateFlow<ResultadoPagarDespues?> = _resultadoPagarDespues.asStateFlow()
+
+    fun consumirResultadoPagarDespues() {
+        _resultadoPagarDespues.value = null
+    }
+
+    /**
+     * 🔴 Codex iOS r3 #1: mientras «Pagar después» manda una venta (con premio sigue en el carrito), la ENTRADA de cobrar,
+     * dividir, guardar, vaciar y buscar se detiene aquí y lo dice — no sólo el botón: F12/F3 de WINDOWS llegan por el mismo
+     * camino. true = detenerse.
+     */
+    fun detenerPorPagarDespues(): Boolean {
+        if (_pagarDespuesEnCurso.value == null) return false
+        _avisoDeVales.value = PAGAR_DESPUES_EN_CURSO
+        return true
+    }
+
+    /** El «Continuar» de «Pagar después». Corre en el alcance del ViewModel, no en el de la pantalla (R7). */
+    fun pagarDespues(customerId: String) {
+        if (_pagarDespuesEnCurso.value != null) return
+        viewModelScope.launch { _resultadoPagarDespues.value = createPayLaterOrder(customerId) }
+    }
+
+    private fun motivoParaNoDiferir(venta: CartState, customerId: String): String? = when {
+        venta.isEmpty -> "No hay artículos en el carrito"
         // D5 (Codex r4 #2): pagar después creaba OTRA cuenta y vaciaba la venta de vales con abono.
-        if (vaciarBloqueadoPorAbono()) {
-            return Result.failure(Exception(com.avoqado.pos.payment.presentation.VALES_CON_ABONO))
-        }
+        vaciarBloqueadoPorAbono() -> com.avoqado.pos.payment.presentation.VALES_CON_ABONO
         // Tablero D3: la cuenta nueva se llevaba el saldo de la venta a medias y la vieja lo seguía debiendo.
-        if (hayVentaAMedias()) return Result.failure(Exception(VENTA_A_MEDIAS_NO_SE_GUARDA))
+        hayVentaAMedias() -> VENTA_A_MEDIAS_NO_SE_GUARDA
         // D1 por otra puerta: un vale se cobra por su apartado; diferido se iba como importe libre y el vale quedaba sin pagar.
-        if (currentCart.items.any { it.areaTicketLineId != null }) {
-            return Result.failure(Exception(VALES_NO_PAGAR_DESPUES))
-        }
-        if (customerId.isBlank()) {
-            return Result.failure(Exception("Selecciona un cliente para diferir el pago"))
-        }
+        venta.items.any { it.areaTicketLineId != null } -> VALES_NO_PAGAR_DESPUES
+        // Codex r2 (ajeno incluido): el cuerpo pierde el `packId` y el paquete nunca se entregaba al saldar.
+        venta.items.any { it.type is CartItemType.CreditPack } -> PAQUETES_NO_PAGAR_DESPUES
+        customerId.isBlank() -> "Selecciona un cliente para diferir el pago"
+        // Lo mismo que pedía `createOrder` antes de mandar nada.
+        venta.selectedStaffId.isBlank() -> "No staff"
+        secureStorage.accessToken == null -> "Not authenticated"
+        else -> null
+    }
 
-        if (currentCart.vinoDeCarritoGuardado && currentCart.carritoGuardadoId != null) {
-            if (!savedCartsRepository.deleteCart(currentCart.carritoGuardadoId))
-                return Result.failure(Exception(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.NO_SE_PUDO_PREPARAR_LA_CUENTA))
-            _cartState.update { if (it.identidadDeVenta == currentCart.identidadDeVenta)
-                it.copy(carritoGuardadoId = null, vinoDeCarritoGuardado = false) else it }
-        }
-        val externalId = UUID.randomUUID().toString()
-        // El MISMO mapeo que usa el cobro (`PaymentFlowViewModel.buildOrderRequest`).
-        // Estaba copiado, y una copia que se olvida deja "pagar después" cobrando
-        // el combo a precio de lista mientras el cobro normal sí lo manda.
-        val items = buildOrderItemRequests(currentCart.items)
+    /**
+     * 🔴 «Pagar después» (promesa v4, `docs/audit/2026-10-27-pagar-despues-sin-red/`; arreglos de Codex ANDROID r1).
+     *
+     * La cuenta se escribe en [PayLaterQueue] con la llave de la venta y SÓLO ENTONCES la venta sale del carrito (sus líneas;
+     * lo que entró mientras se queda). Sin red queda en la fila y se dice; creada, se compara su total con lo que vio el
+     * cliente; rechazada (no se creó) vuelve al carrito, o a «Carritos guardados» si ya hay otra venta, y su fila no se borra
+     * hasta que está a salvo. Una venta con premio de sellos nunca entra a la fila para mandarse (R8).
+     */
+    suspend fun createPayLaterOrder(customerId: String): ResultadoPagarDespues {
+        bloqueoDeEntrega()?.let { return ResultadoPagarDespues.Error(it) }
+        val cliente = _selectedCustomer.value?.takeIf { it.id == customerId } ?: SelectedCustomer(customerId, "Cliente")
+        _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents)
+        try {
+            // Como el cobro (`hayConsultasDeCodigo`): lo leído antes del toque entra ANTES de capturar la venta.
+            consultasDeCodigo.first { it == 0 }
+            pagarDespuesTomoLaFoto = true
+            val venta = _cartState.value
+            motivoParaNoDiferir(venta, customerId)?.let { return ResultadoPagarDespues.Error(it) }
+            val venueId = secureStorage.venueId ?: return ResultadoPagarDespues.Error("No venue selected")
+            val cola = payLaterQueue ?: return ResultadoPagarDespues.Error("No se pudo registrar la venta como pagar después")
 
-        val orderRequest = CreateOrderRequest(
-            items = items,
-            subtotal = currentCart.subtotalCents,
-            // SÓLO el de ORDEN — ver la misma nota en `PaymentFlowViewModel.buildOrderRequest`:
-            // el server suma los de línea por su cuenta desde el `discountId` de
-            // cada item, así que mandar el combinado los restaría dos veces.
-            discount = currentCart.orderDiscountCents,
-            tip = 0,
-            total = currentCart.totalCents,
-            paymentMethod = "PAY_LATER",
-            note = currentCart.orderNote,
-            splitType = "FULLPAYMENT",
-        )
-
-        marcarCreacionIncierta(currentCart.identidadDeVenta, externalId)
-        return orderRepository
-            .createOrder(
-                request = orderRequest,
-                externalId = externalId,
+            // El MISMO mapeo que usa el cobro (`PaymentFlowViewModel.buildOrderRequest`): una copia olvidada dejaba «pagar
+            // después» cobrando el combo a precio de lista. Descuento: SÓLO el de ORDEN (el server suma los de línea).
+            val request = CreateOrderRequest(
+                items = buildOrderItemRequests(venta.items),
+                subtotal = venta.subtotalCents,
+                discount = venta.orderDiscountCents,
+                tip = 0,
+                total = venta.totalCents,
+                paymentMethod = "PAY_LATER",
+                note = venta.orderNote,
+                splitType = "FULLPAYMENT",
+            )
+            if (!OrderRepository.hasProductItems(request)) {
+                return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")
+            }
+            // El carrito ya enseñó el total con el premio: la cuenta que queda abierta tiene que ser ésa (se canjea al crearla).
+            val premio = venta.pendingStampRewardId?.takeIf { venta.premioAplica }
+            val llave = venta.llavePagarDespues ?: "pay-later:${UUID.randomUUID()}"
+            // La llave es de la venta desde ya: cualquier intento siguiente de ESTA venta la reusa (R2-2).
+            _cartState.update { if (it.identidadDeVenta == venta.identidadDeVenta) it.copy(llavePagarDespues = llave) else it }
+            val capturadaEn = System.currentTimeMillis()
+            fun cuerpo(reenvio: Boolean) = OrderRepository.buildCreateOrderPayload(
+                request = request,
+                staffId = venta.selectedStaffId,
                 customerId = customerId,
                 orderType = "DINE_IN",
-                staffId = currentCart.selectedStaffId,
-                // El carrito ya enseñó el total con el premio: la cuenta que queda abierta tiene
-                // que ser ésa, así que el premio se canjea al crearla.
-                stampRewardId = currentCart.pendingStampRewardId?.takeIf { currentCart.premioAplica },
-                stampRewardExpectedDiscount = currentCart.stampRewardCents.takeIf { it > 0 },
+                externalId = llave,
+                stampRewardId = premio,
+                stampRewardExpectedDiscount = venta.stampRewardCents.takeIf { it > 0 },
+                isOfflineReplay = reenvio,
+                createdAtLocal = capturadaEn.takeIf { reenvio },
             )
-            .fold(
-                onSuccess = { response ->
-                    // Si el servidor no lo confirmó como lo anunció el carrito, se DICE: la cuenta que
-                    // queda abierta no es la que el cliente escuchó.
-                    if (currentCart.pendingStampRewardId != null && currentCart.premioAplica) {
-                        _avisoDelPremio.value = com.avoqado.pos.payment.data.model.cobroConPremio(
-                            currentCart.totalCents,
-                            currentCart.stampRewardCents,
-                            response.data?.stampReward,
-                        ).aviso
+            val s = VentaSeparada(venta.copy(llavePagarDespues = llave), cliente, _referralCode.value, _referralValidation.value)
+            val fila = com.avoqado.pos.payment.data.PayLaterRow(
+                id = llave,
+                venueId = venueId,
+                staffId = venta.selectedStaffId,
+                customerId = cliente.id,
+                customerName = cliente.name,
+                totalEsperadoCents = venta.totalCents,
+                cuerpo = cuerpo(reenvio = true),
+                carritoGuardadoId = venta.carritoGuardadoId,
+                creadaEn = capturadaEn,
+            )
+            _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents)
+            // Codex A-5: la copia guardada lleva la llave y la marca de cobro iniciado ANTES de mandar nada. Con premio (sin fila
+            // que la ligue) la marca además es vinculante hasta conocer el desenlace (Codex r2 #5).
+            val copia = venta.carritoGuardadoId
+            if (copia != null && !savedCartsRepository.prepararPagarDespues(copia, llave, vinculante = premio != null)) {
+                return ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO)
+            }
+            return if (premio != null) {
+                diferirConPremio(cola, s, venueId, cuerpo(reenvio = false))
+            } else {
+                diferirConFila(cola, s, fila, venueId, cuerpo(reenvio = false))
+            }
+        } finally {
+            pagarDespuesTomoLaFoto = false
+            _pagarDespuesEnCurso.value = null
+        }
+    }
+
+    /**
+     * R3-2 con el arreglo de Codex A-3: sale del carrito EXACTAMENTE la venta capturada, por id de línea. Lo que entró mientras
+     * se escribía (el lector) se queda como otra venta; si se juntó con una línea suya, se queda la diferencia. El cliente, los
+     * descuentos y la nota se sueltan sólo si el carrito sigue siendo esa venta.
+     */
+    private fun separarDelCarrito(venta: CartState) {
+        val actual = _cartState.value
+        if (actual.identidadDeVenta != venta.identidadDeVenta) return
+        val suyas = venta.items.associateBy { it.id }
+        val quedan = actual.items.mapNotNull { linea ->
+            val suya = suyas[linea.id] ?: return@mapNotNull linea
+            (linea.quantity - suya.quantity).takeIf { it > 0 }?.let { linea.copy(id = UUID.randomUUID().toString(), quantity = it) }
+        }
+        finalizarVenta()
+        if (quedan.isNotEmpty()) _cartState.update { it.copy(items = quedan) }
+    }
+
+    private suspend fun diferirConFila(
+        cola: com.avoqado.pos.payment.data.PayLaterQueue,
+        s: VentaSeparada,
+        fila: com.avoqado.pos.payment.data.PayLaterRow,
+        venueId: String,
+        enLinea: String,
+    ): ResultadoPagarDespues {
+        val llave = fila.id
+        // La marca va ANTES de escribir: el reenvío nunca ve esta fila sin ella mientras el intento vive (R7).
+        cola.marcarEnCurso(llave)
+        // Codex r2 #3: si la fila rechazada no se pudo sacar del reenvío, la marca se queda: este proceso no la reenvía.
+        var retenida = false
+        val noSeGuardo = { retenida = true; ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO) }
+        try {
+            // Codex A-2/A-3: si la cuenta no quedó en disco, la venta nunca salió del carrito.
+            if (!cola.guardar(fila)) return ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO)
+            separarDelCarrito(s.venta)
+            return when (val d = cola.mandar(venueId, enLinea)) {
+                // Aceptada (creada o por subir): su copia guardada se retira. Si el retiro no se escribe, la fila espera a
+                // confirmarlo (Codex A-5) y la copia, ligada a ella, no se restaura.
+                is DesenlacePagarDespues.Creada -> when (val total = d.totalCents) {
+                    s.venta.totalCents -> { cola.cerrarAceptada(llave); ResultadoPagarDespues.Creada }
+                    // Existe, pero no se sabe por cuánto: queda por revisar (y nunca se vuelve a crear con otra llave).
+                    null -> {
+                        cola.cambiar(llave) { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR, orderId = d.orderId) }
+                        cola.retirarCopia(s.venta.carritoGuardadoId)
+                        ResultadoPagarDespues.Aviso(com.avoqado.pos.payment.data.PAGAR_DESPUES_IMPORTE_DESCONOCIDO)
                     }
-                    val orderId = response.data?.id
-                    if (orderId.isNullOrBlank()) {
-                        Result.failure(Exception("No se pudo obtener la orden creada"))
-                    } else {
-                        limpiarCreacionIncierta(externalId)
-                        Result.success(orderId)
+                    else -> {
+                        cola.cerrarAceptada(llave)
+                        ResultadoPagarDespues.Aviso(pagarDespuesOtroImporte(s.cliente.name, total, s.venta.totalCents))
                     }
-                },
-                onFailure = { error ->
-                    if (error is OrderRepository.ServerException && error.code in 400..499) limpiarCreacionIncierta(externalId)
-                    val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
-                    if (cambios.isEmpty()) return@fold Result.failure(error)
-                    // 🔴 409 de precio: no se creó la cuenta. Se corrige SIN congelar (el reintento lleva el % recalculado), se
-                    // pide el catálogo y el fallo lo dice con el total nuevo. Un 201 con cambios no avisa: la cuenta ya quedó al
-                    // precio bajo y el carrito se vacía.
-                    _cartState.update { it.conPreciosDelServidor(cambios, congelar = false) }
-                    refreshProducts()
-                    Result.failure(Exception(avisoDeCambioDePrecio(cambios, totalNuevoCents = _cartState.value.totalCents)))
+                }
+                DesenlacePagarDespues.SinRespuesta, is DesenlacePagarDespues.Pendiente -> {
+                    cola.cambiar(llave) {
+                        it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.PENDIENTE, intentos = it.intentos + 1)
+                    }
+                    cola.retirarCopia(s.venta.carritoGuardadoId)
+                    ResultadoPagarDespues.Aviso(pagarDespuesGuardadaSinRed(s.cliente.name))
+                }
+                // Un 401 o un 4xx de la API: ESTA única petición (sin reenvíos, R2-2) no creó la cuenta.
+                is DesenlacePagarDespues.SesionVencida -> ponerASalvo(cola, s, fila, venueId, d.mensaje) ?: noSeGuardo()
+                is DesenlacePagarDespues.Rechazada -> conPreciosDelRechazo(s, d)
+                    .let { (corregida, texto) -> ponerASalvo(cola, corregida, fila, venueId, texto) ?: noSeGuardo() }
+            }
+        } finally {
+            if (!retenida) cola.soltar(llave)
+        }
+    }
+
+    /**
+     * Venta con premio (Codex r2 #4/#5): camino de hoy, sin fila. La venta y su premio se quedan en el carrito mientras se manda
+     * (la pantalla está bloqueada); sólo si la cuenta se crea sale del carrito lo capturado. Si falla, no se toca nada.
+     */
+    private suspend fun diferirConPremio(
+        cola: com.avoqado.pos.payment.data.PayLaterQueue,
+        s: VentaSeparada,
+        venueId: String,
+        enLinea: String,
+    ): ResultadoPagarDespues {
+        val copia = s.venta.carritoGuardadoId
+        // Tarjetas 1b: la venta sigue en el carrito y sin respuesta no se sabe si quedó creada: no se cobra con saldo (llave = venta).
+        val llave = checkNotNull(s.venta.llavePagarDespues)
+        marcarCreacionIncierta(s.venta.identidadDeVenta, llave)
+        val d = cola.mandar(venueId, enLinea)
+        if (d is DesenlacePagarDespues.Rechazada || d is DesenlacePagarDespues.SesionVencida) limpiarCreacionIncierta(llave)
+        if (d !is DesenlacePagarDespues.Creada) {
+            // No se creó (o, sin respuesta, no se sabe: riesgo aceptado de hoy). La copia vuelve a poderse restaurar.
+            copia?.let { savedCartsRepository.soltarPagarDespues(it) }
+            return ResultadoPagarDespues.Error(
+                when (d) {
+                    is DesenlacePagarDespues.Rechazada -> {
+                        if (d.cambios.isNotEmpty()) {
+                            // 🔴 409 de precio: se corrige SIN congelar la venta del carrito (si sigue siendo ella) y se pide el catálogo.
+                            _cartState.update {
+                                if (it.identidadDeVenta == s.venta.identidadDeVenta) it.conPreciosDelServidor(d.cambios, congelar = false) else it
+                            }
+                            refreshProducts()
+                            avisoDeCambioDePrecio(d.cambios, totalNuevoCents = _cartState.value.totalCents)
+                        } else {
+                            d.mensaje
+                        }
+                    }
+                    is DesenlacePagarDespues.SesionVencida -> d.mensaje
+                    else -> PAGAR_DESPUES_PREMIO_SIN_RED
                 },
             )
+        }
+        // Creada: si el retiro de su copia no se escribe, su marca vinculante la sigue bloqueando (la cuenta ya existe).
+        cola.retirarCopia(copia)
+        separarDelCarrito(s.venta)
+        // Si el servidor no confirmó el premio como lo anunció el carrito, se DICE.
+        _avisoDelPremio.value = com.avoqado.pos.payment.data.model.cobroConPremio(
+            s.venta.totalCents,
+            s.venta.stampRewardCents,
+            d.orden?.stampReward,
+        ).aviso
+        // Codex A-7: el premio puede salir bien y la cuenta quedar por otro importe (un extra que subió): también se dice.
+        return when (val total = d.totalCents) {
+            s.venta.totalCents -> ResultadoPagarDespues.Creada
+            null -> ResultadoPagarDespues.Aviso(com.avoqado.pos.payment.data.PAGAR_DESPUES_IMPORTE_DESCONOCIDO)
+            else -> ResultadoPagarDespues.Aviso(pagarDespuesOtroImporte(s.cliente.name, total, s.venta.totalCents))
+        }
+    }
+
+    /** 🔴 409 de precio: no se creó. Se corrige SIN congelar (el reintento lleva el % recalculado) y se pide el catálogo. */
+    private fun conPreciosDelRechazo(s: VentaSeparada, d: DesenlacePagarDespues.Rechazada): Pair<VentaSeparada, String> {
+        if (d.cambios.isEmpty()) return s to d.mensaje
+        val corregida = s.venta.conPreciosDelServidor(d.cambios, congelar = false)
+        refreshProducts()
+        return s.copy(venta = corregida) to avisoDeCambioDePrecio(d.cambios, totalNuevoCents = corregida.totalCents)
+    }
+
+    /**
+     * La venta no se dejó para después: vuelve al carrito o a «Carritos guardados». 🔴 Codex A-4: primero su fila sale del
+     * reenvío (RECUPERAR; nunca se manda, como venta sin red se saltaría el rechazo de precio) y sólo se borra cuando la venta
+     * ya está en el carrito o escrita. Si no se pudo guardar, la fila se queda a la vista y se dice que NO se guardó.
+     *
+     * Codex r2: UNA sola captura con id estable (#1) viaja en la fila y es la que se guarda: trasladarla dos veces deja un solo
+     * carrito. Si ni RECUPERAR ni el borrado se confirman (#3), la venta NO vuelve: null, y quien llama retiene la marca.
+     */
+    private suspend fun ponerASalvo(
+        cola: com.avoqado.pos.payment.data.PayLaterQueue,
+        s: VentaSeparada,
+        fila: com.avoqado.pos.payment.data.PayLaterRow,
+        venueId: String,
+        motivo: String,
+    ): ResultadoPagarDespues.Error? {
+        val captura = comoCarritoGuardado(s.venta, s.cliente.name, s.cliente.id)
+        val porRecuperar: (com.avoqado.pos.payment.data.PayLaterRow) -> com.avoqado.pos.payment.data.PayLaterRow =
+            { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR, motivo = motivo, venta = captura) }
+        val recuperable = cola.cambiar(fila.id, porRecuperar)
+        if (!recuperable && !cola.borrar(fila.id)) return null
+        devolverVenta(s, venueId, motivo, captura)?.let { texto ->
+            if (recuperable) cola.borrar(fila.id)
+            return ResultadoPagarDespues.Error(texto)
+        }
+        if (recuperable || cola.guardar(porRecuperar(fila))) return ResultadoPagarDespues.Error(pagarDespuesNiGuardada(s.cliente.name))
+        // ponytail: tres escrituras fallidas con una buena en medio; la venta sólo quedó en memoria y así se dice.
+        Log.e("🛒", "La venta de ${s.cliente.name} no se pudo guardar en ningún lado: el disco no escribe")
+        return ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO)
+    }
+
+    /**
+     * La venta vuelve al carrito si sigue vacío (y en la misma sucursal); si ya hay otra, se guarda [captura] en «Carritos
+     * guardados». Nunca se mezcla con la nueva (R3-2). null = no se pudo guardar.
+     */
+    private fun devolverVenta(s: VentaSeparada, venueId: String, motivo: String, captura: SavedCart): String? {
+        if (_cartState.value.isEmpty && _selectedCustomer.value == null && secureStorage.venueId == venueId) {
+            // Directo y en este orden: `setSelectedCustomer` le quitaría el premio a la venta que vuelve.
+            _selectedCustomer.value = s.cliente
+            _cartState.value = s.venta
+            _referralCode.value = s.referralCode
+            _referralValidation.value = s.referralValidation
+            return motivo
+        }
+        return if (savedCartsRepository.saveCart(captura)) pagarDespuesACarritosGuardados(s.cliente.name) else null
     }
 
     fun marcarCreacionIncierta(identidad: String, externalId: String) {

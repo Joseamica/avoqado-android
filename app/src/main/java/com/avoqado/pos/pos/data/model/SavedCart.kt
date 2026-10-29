@@ -16,6 +16,14 @@ data class SavedCart(
     val attachedCustomerId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val cobroIniciadoEn: Long? = null,
+    /** La llave de «Pagar después» de esta venta, si ya la tenía (`CartState.llavePagarDespues`): viaja con ella. */
+    val llavePagarDespues: String? = null,
+    /**
+     * Codex r2 #5: una venta CON PREMIO salió de esta copia a «Pagar después» y todavía no se sabe su desenlace (no tiene fila
+     * en la cola). Mientras sea true no se restaura, ni confirmando. Se suelta si la cuenta no se creó; si se creó, la copia
+     * se retira (y si el retiro falla, sigue bloqueada: la cuenta ya existe).
+     */
+    val pagarDespuesSinDesenlace: Boolean = false,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }
@@ -59,7 +67,14 @@ data class SavedCartItem(
     /// D2 (vales-ciclo, Codex r7 #3) y tablero D3: el peso de la báscula. Sin él la línea volvía a precio de 1 kg y el
     /// SERVIDOR no reconocía el vale restaurado. Nulo en carritos viejos y en líneas que no son por peso.
     val weightKg: Double? = null,
-)
+) {
+    /**
+     * Renglón en la lista de «Carritos guardados». D6: la línea por peso va con `quantity = 1` y decía «x1»; ahora dice
+     * el peso con el mismo formato que el carrito («0.435 kg × $50.00/kg»).
+     */
+    val resumenEnLista: String
+        get() = weightKg?.let { "$name ${formatWeightKg(it)} kg" } ?: "$name x$quantity"
+}
 
 @Serializable
 data class SavedModifier(

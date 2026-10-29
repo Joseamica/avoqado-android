@@ -335,6 +335,43 @@ class ComandaDispatcherTest {
         )
     }
 
+    /**
+     * D2 (founder, 28-oct): una tienda sin cocina veía «No salió la comanda de: Cocina» después de CADA venta. El veredicto
+     * sigue siendo `NoSalio` (cero intentos nunca es éxito: P2 de arriba), pero lleva la marca de que el negocio no tiene
+     * ninguna impresora de cocina, para que el mostrador no lo avise.
+     */
+    @Test
+    fun `P2 sin ninguna impresora de cocina el veredicto marca al negocio como sin cocina`() = runTest {
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 0, fallidas = emptyList())
+
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+            noStationsFallback = ticketLegado,
+        )
+
+        val noSalio = resultado as EstadoDeComanda.NoSalio
+        assertTrue("sin impresora de cocina debe venir marcado", noSalio.sinImpresoraDeCocina)
+    }
+
+    @Test
+    fun `P1 una impresora de cocina que falla NO se marca como negocio sin cocina`() = runTest {
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = listOf("Cocina"))
+
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+            noStationsFallback = ticketLegado,
+        )
+
+        val noSalio = resultado as EstadoDeComanda.NoSalio
+        assertFalse("una impresora que falla se tiene que seguir avisando", noSalio.sinImpresoraDeCocina)
+    }
+
     @Test
     fun `P1 el camino legado DICE que no salio, con el nombre de la impresora`() = runTest {
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = listOf("Cocina"))

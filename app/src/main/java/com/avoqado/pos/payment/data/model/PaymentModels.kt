@@ -210,6 +210,11 @@ data class CreateOrderRequest(
      * reserva a la cola —también si la reserva ya se soltó— y sólo sale por el cable con `isOfflineReplay`.
      */
     val createdAtLocal: Long? = null,
+    /**
+     * D16: el tipo de la venta en el carrito (DINE_IN, TAKEOUT…). Viaja con el pedido capturado para que la fila sin red
+     * suba igual que en línea. Nulo = pedido de una versión anterior: la fila usa el default de siempre.
+     */
+    val orderType: String? = null,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */

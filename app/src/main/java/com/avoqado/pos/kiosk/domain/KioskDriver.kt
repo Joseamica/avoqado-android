@@ -1,20 +1,25 @@
 package com.avoqado.pos.kiosk.domain
 
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.kiosk.data.KioskRosterDto
+import com.avoqado.pos.kiosk.data.KioskTap
+import com.avoqado.pos.kiosk.data.PackStatus
+import com.avoqado.pos.reservations.data.PendingReservationActionDao
+import com.avoqado.pos.reservations.data.PendingReservationActionEntity
+import com.avoqado.pos.reservations.data.ReservationActionsRetrier
 import com.avoqado.pos.reservations.data.ReservationRepository
-import com.avoqado.pos.reservations.data.model.Reservation
-import com.avoqado.pos.reservations.data.model.ReservationFilters
-import com.avoqado.pos.reservations.data.model.ReservationStatus
-import com.avoqado.pos.reservations.domain.ReservationAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.time.Instant
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,25 +27,28 @@ import javax.inject.Singleton
  * Quien CONDUCE el kiosco. Su idea central: **la pantalla la manda el reloj, no
  * una persona.**
  *
- * A las 5:40 se abre sola la lista de la clase de las 6:00; a las 6:15 (inicio
- * + tolerancia) se cierra sola y vuelve a la marca del negocio; a las 6:40 se
- * abre la de las 7:00. Nadie del estudio toca nada, y **la agenda del día jamás
- * aparece** — sólo quien viene a la clase de ahorita.
+ * A las 5:40 se abre sola la lista de la clase de las 6:00; al cerrar su ventana
+ * se cierra sola y vuelve a la marca del negocio; a las 6:40 se abre la de las
+ * 7:00. Nadie del estudio toca nada, y **la agenda del día jamás aparece** — sólo
+ * quien viene a la clase de ahorita.
  *
- * ```
- * inicio − 20 min   ≤   ahora   <   inicio + tolerancia
- * ```
+ * 🔴 **La ventana la decide el SERVIDOR** (Modo Autoservicio 0.e): la lista del
+ * kiosco (`…/kiosk/roster`) ya llega filtrada, con `closesAt` (cierre de su
+ * ventana, hora del servidor) y `closesInMs` (lo que le quedaba al contestar). El
+ * aparato no calcula ventanas ni usa su hora de pared, y el servidor la vuelve a
+ * checar al registrar la llegada (422 `CHECK_IN_OUTSIDE_WINDOW`).
  *
- * Esa ventana **no la inventé aquí**: es la que ya aplica el servidor
- * (`evaluateKioskWindow` en `checkIn.service.ts`), y la vuelve a checar al
- * confirmar. Si no coincide, responde 422 `CHECK_IN_OUTSIDE_WINDOW`. Esta
- * pantalla es comodidad; el permiso lo da el servidor.
- *
- * ⚠️ **Límite conocido y a propósito:** para decidir QUÉ pintar se usa el reloj
- * del aparato, porque la app no tiene hora del servidor. Un D3 con la hora
- * corrida abriría la lista a destiempo — pero **no puede producir un check-in
- * inválido**, porque el 422 sigue del otro lado. Cuando exista hora de servidor
- * en la app, este es el sitio a cambiar.
+ * **Sin red funciona igual, con ✓** (founder, 27-oct):
+ * - la llegada se GUARDA en el aparato antes de cualquier red, con el cierre que
+ *   vio la persona y lo que faltaba para él (`msBeforeClose`, contado con el reloj
+ *   MONÓTONO desde justo antes de pedir la lista: la demora de la red sólo puede
+ *   cerrar antes, nunca después); la persona ve su ✓ y «Sin conexión · Tu llegada
+ *   quedó guardada y se envía sola.» en gris;
+ * - la lista CADUCA sola al cerrar su ventana ([KioskState.expireRoster]), sin borrar
+ *   a quien teclea o paga, y esperando el ✓ de un toque en camino;
+ * - **un solo mensajero**: este conductor nunca hace su propio POST; le pide al
+ *   [ReservationActionsRetrier] que mande las filas del kiosco (bajo candado), y
+ *   cada respuesta buena de la lista también las vacía.
  *
  * Singleton y no ViewModel: la segunda pantalla sigue viva sin importar en qué
  * pantalla ande el cajero.
@@ -48,24 +56,43 @@ import javax.inject.Singleton
 @Singleton
 class KioskDriver @Inject constructor(
     private val kiosk: KioskState,
-    private val reservations: ReservationRepository,
     private val dates: VenueDateTimeFormatter,
     private val kioskCheckIn: com.avoqado.pos.kiosk.data.KioskCheckInApi,
+    private val pendingDao: PendingReservationActionDao,
+    private val retrier: ReservationActionsRetrier,
+    private val secureStorage: SecureStorage,
 ) {
+
+    /**
+     * Reloj MONÓTONO en nanos (también en WINDOWS). Las pruebas lo cambian; no va en el constructor porque Dagger y
+     * Guice no ven valores por default.
+     */
+    internal var mono: () -> Long = System::nanoTime
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var ticker: Job? = null
     private var work: Job? = null
     private var refreshJob: Job? = null
+    private var expiry: Job? = null
 
     /** Turno de cada consulta: sólo la más reciente pinta; una respuesta vieja se descarta (Codex r2). */
     private var refreshGen = 0
 
-    /** Tolerancia que configuró el admin. Se refresca con los ajustes. */
-    private var graceMin: Int = KioskWindow.DEFAULT_GRACE_MIN
+    /** Cuándo tocó alguien por última vez (ms monótonos), para no cerrarle la pantalla encima. null = nadie. */
+    private var lastTouchAt: Long? = null
 
-    /** Cuándo tocó alguien por última vez, para no cerrarle la pantalla encima. */
-    private var lastTouchAt: Long = 0L
+    /** La ventana de la lista pintada: cuándo se PIDIÓ (nanos monótonos), su cierre tal cual y lo que le quedaba. */
+    private class Ventana(val pedidaAt: Long, val closesAt: String, val closesInMs: Long)
+
+    private var ventana: Ventana? = null
+
+    /** Quién da por llegado el SERVIDOR en la última lista pintada: a ellos nunca se les quita la ✓. */
+    private var llegadosSegunServidor: Set<String> = emptySet()
+
+    /** Lo que le queda a la ventana ahora, contado desde que se pidió la lista. */
+    private fun Ventana.restaMs(): Long = closesInMs - (mono() - pedidaAt) / 1_000_000
+
+    private fun nowMs(): Long = mono() / 1_000_000
 
     /** Se enchufa una vez al arrancar la app. Idempotente. */
     fun attach() {
@@ -73,7 +100,7 @@ class KioskDriver @Inject constructor(
         // 🔴 Salir es INMEDIATO y no depende de la red.
         //
         // Antes esto sólo pedía un refresco, y el refresco puede tardar o fallar
-        // (`reservasEnVentana` devuelve null sin red y se sale sin tocar la pantalla). El
+        // (sin red la lista no llega y se sale sin tocar la pantalla). El
         // botón "Cancelar" del teclado quedaba muerto y la persona atrapada tecleando —
         // el founder se topó con eso en la D3.
         //
@@ -98,7 +125,9 @@ class KioskDriver @Inject constructor(
         kiosk.onStart = { touched(); kiosk.show(KioskContent.Identify(country = Countries.pinned.first(), national = "")) }
         kiosk.onDigit = { d -> touched(); editDigits { it + d } }
         kiosk.onDelete = { touched(); editDigits { it.dropLast(1) } }
-        kiosk.onSearch = { touched(); identify() }
+        kiosk.onSearch = { touched(); searchOrPay() }
+        kiosk.onPickCountry = { touched() }
+        kiosk.onCountry = { c -> touched(); pickCountry(c) }
 
         // Compra: el cliente elige un paquete de precio de CATÁLOGO y lo paga en SU
         // teléfono escaneando un QR. Sin PIN de empleado, por decisión del founder — un
@@ -128,10 +157,11 @@ class KioskDriver @Inject constructor(
         ticker?.cancel(); ticker = null
         work?.cancel(); work = null
         refreshJob?.cancel(); refreshJob = null
+        expiry?.cancel(); expiry = null
     }
 
     private fun touched() {
-        lastTouchAt = System.currentTimeMillis()
+        lastTouchAt = nowMs()
         kiosk.keepAlive()
     }
 
@@ -164,7 +194,8 @@ class KioskDriver @Inject constructor(
         // 🔴 Nunca le quites la pantalla a alguien que está tocando. Es lo que
         // pidió el founder tal cual, y es lo que separa un kiosco usable de uno
         // que se cierra justo cuando ibas a picar tu nombre.
-        if (!force && System.currentTimeMillis() - lastTouchAt < INTERACTION_HOLD_MS) return
+        // Con el reloj MONÓTONO: con la hora de pared, un reloj que retrocede congelaba la lista horas (0.e, r2 R1-2).
+        if (!force && lastTouchAt?.let { nowMs() - it < INTERACTION_HOLD_MS } == true) return
 
         // 🔴 Y el reloj manda sobre la LISTA, no sobre alguien a media operación.
         //
@@ -183,23 +214,57 @@ class KioskDriver @Inject constructor(
 
         val turno = ++refreshGen
         val epoca = kiosk.epoch
-        // La tolerancia la manda el admin; si el servidor no la dice, se cae al
-        // mismo default que él usa. Nunca se adivina un número distinto.
-        reservations.reservationSettings().getOrNull()
-            ?.scheduling?.noShowGraceMin
-            ?.let { graceMin = it }
+        // Justo ANTES de pedirla: contar desde aquí hace que la demora de la red sólo pueda cerrar la lista antes, nunca
+        // después (Codex 0.e r3 #1).
+        val pedidaAt = mono()
+        val roster = kioskCheckIn.roster().getOrElse { return } // Sin red: deja lo que ya estaba, no parpadea.
 
-        val candidatas = reservasEnVentana() ?: return  // Sin red: deja lo que ya estaba, no parpadea.
+        pintar(roster, pedidaAt, turno, epoca)
+
+        // 🔴 Disparador (Codex 0.e r1 #2): la cola general sólo se vacía cuando vuelve la red, y con WiFi sin datos nunca
+        // «vuelve». Una respuesta buena de la lista acaba de probar que hay red, haya clase o no.
+        if (pendingDao.countPending(KioskTap.ACTION, ReservationRepository.MAX_ATTEMPTS) > 0) {
+            retrier.drain(KioskTap.ACTION)
+            // Lo que se pintó arriba con la cola puede haber salido rechazado en este envío.
+            val quitar = rechazadas()
+            val actual = kiosk.content.value as? KioskContent.Roster
+            if (actual != null && quitar.isNotEmpty()) kiosk.show(actual.copy(people = actual.people.sinPalomita(quitar)))
+        }
+    }
+
+    /**
+     * 🔴 Con red, un rechazo no pinta ✓ (Codex código r1 #1 y r2 #1). Quién debe perderla: tiene una llegada del kiosco en
+     * CUARENTENA (el servidor la rechazó, o se agotó), ninguna otra todavía en camino, y el SERVIDOR no la da por llegada.
+     * Se lee de la tabla, así cubre el rechazo de CUALQUIER envío: el del toque, el del refresco o el de fondo.
+     */
+    private suspend fun rechazadas(): Set<String> {
+        val cuarentena = pendingDao.exhausted(ReservationRepository.MAX_ATTEMPTS)
+            .filter { it.action == KioskTap.ACTION }
+            .map { it.reservationId }
+            .toSet()
+        if (cuarentena.isEmpty()) return emptySet()
+        return cuarentena - pendingDao.pendingIds(KioskTap.ACTION, ReservationRepository.MAX_ATTEMPTS).toSet() -
+            llegadosSegunServidor
+    }
+
+    private fun List<KioskPerson>.sinPalomita(ids: Set<String>): List<KioskPerson> =
+        map { if (it.reservationId in ids && it.checkedIn) it.copy(checkedIn = false) else it }
+
+    private suspend fun pintar(roster: KioskRosterDto?, pedidaAt: Long, turno: Int, epoca: Int) {
+        // Las llegadas que siguen en la cola llevan su ✓ aunque el servidor todavía no las tenga.
+        val enCola = if (roster == null) emptyList() else pendingDao.pendingIds(KioskTap.ACTION, ReservationRepository.MAX_ATTEMPTS)
 
         // 🔴 Los guardias de arriba se miraron ANTES de la red. Si mientras esperábamos alguien
         // tocó «¿No apareces?», la respuesta llega tarde y no puede taparle el teclado
         // (Codex r1, 26-oct). Cubre también al `force`: quien pidió salir ya está en la lista.
         if (!tickerOwnsScreen(kiosk.content.value) || turno != refreshGen || epoca != kiosk.epoch) return
 
-        val activo = grupoEnVentana(candidatas)
-
-        if (activo == null) {
-            if (kiosk.content.value !is KioskContent.Welcome) kiosk.show(KioskContent.Welcome)
+        if (roster == null) {
+            val actual = kiosk.content.value
+            // Con alguien en camino o leyendo su ✓ la lista se queda: la caducidad espera a que termine y luego la quita
+            // (Codex código r1 #3: una consulta que salió antes del toque y llegó ya cerrada borraba el ✓).
+            if (actual is KioskContent.Roster && (actual.busyId != null || actual.justConfirmedId != null)) return
+            if (actual !is KioskContent.Welcome) kiosk.show(KioskContent.Welcome)
             return
         }
 
@@ -213,19 +278,15 @@ class KioskDriver @Inject constructor(
         // `busyId` viaja igual: si se perdiera, el renglón dejaría de mostrar su espera a
         // media petición y parecería que el toque no hizo nada.
         val previo = kiosk.content.value as? KioskContent.Roster
+        llegadosSegunServidor = roster.people.filter { it.checkedIn }.map { it.reservationId }.toSet()
 
         kiosk.showFromServer(
             KioskContent.Roster(
                 justConfirmedId = previo?.justConfirmedId,
                 busyId = previo?.busyId,
-                classTitle = titulo(activo.first()),
-                timeLabel = dates.formatTime(activo.first().startsAt),
-                // 🔴 En una clase el instructor vive en la SESIÓN, no en la
-                // reserva (44 de 44 contra 0 de 9, medido). Primero la sesión.
-                staffLabel = (
-                    activo.first().classSession?.assignedStaff?.firstName
-                        ?: activo.first().assignedStaff?.firstName
-                    )?.let { "con $it" },
+                classTitle = roster.classTitle,
+                timeLabel = dates.formatTime(roster.startsAt),
+                staffLabel = roster.staffFirstName?.let { "con $it" },
                 // 🔴 ORDEN ALFABÉTICO, y es una decisión de seguridad, no de estética.
                 //
                 // El servidor devuelve las reservas en su propio orden, y confirmar una
@@ -236,93 +297,58 @@ class KioskDriver @Inject constructor(
                 //
                 // Alfabético es el único orden que no se mueve cuando alguien confirma, y
                 // es como uno busca su propio nombre en una lista.
-                people = sortRoster(activo.map(::toPerson)),
+                people = sortRoster(roster.people.map { if (it.reservationId in enCola) it.copy(checkedIn = true) else it }),
             ),
         )
-    }
-
-
-    /**
-     * Las reservas que PUEDEN estar en ventana ahora mismo.
-     *
-     * Se le pide al servidor el rango exacto, no "el día":
-     *
-     * ```
-     * ahora − tolerancia   <   inicio   ≤   ahora + 20 min
-     * ```
-     *
-     * que es despejar `inicio` de la condición de ventana. Son instantes
-     * absolutos, así que no hay zona horaria de por medio.
-     *
-     * 🔴 **Pedir "hoy" estaba MAL y sólo se vio corriéndolo.** Yo mandaba
-     * `LocalDate.now(zonaDelVenue)` — "2026-08-24" en México — mientras el
-     * servidor compara contra `startsAt`, que se guarda en UTC: una clase de las
-     * 19:58 de México vive como `2026-08-25T01:58Z`. El servidor contestaba 200
-     * con la lista VACÍA y el kiosco se quedaba en "Bienvenida" sin explicar
-     * nada. Es la trampa de zona horaria de siempre, y aquí se cierra pidiendo
-     * instantes en vez de fechas.
-     *
-     * De pasada arregla el otro problema: una ventana de ~35 minutos nunca trae
-     * cientos de renglones, así que la paginación deja de importar.
-     */
-    private suspend fun reservasEnVentana(): List<Reservation>? {
-        val now = Instant.now()
-        val desde = now.minusSeconds(graceMin * 60L)
-        val hasta = now.plusSeconds(KioskWindow.EARLY_MIN * 60L)
-
-        return reservations.fetchList(
-            ReservationFilters(
-                dateFrom = desde.toString(),
-                dateTo = hasta.toString(),
-                page = 1,
-                pageSize = PAGE_SIZE,
-            ),
-            background = true,
-        ).getOrNull()?.data
+        caducarAlCerrar(Ventana(pedidaAt, roster.closesAt, roster.closesInMs))
     }
 
     /**
-     * De todo lo de hoy, el grupo cuya ventana está abierta AHORA.
-     *
-     * Se agrupa por sesión de clase; una cita suelta es su propio grupo de una
-     * persona, así que el mismo código sirve para un estudio y para un salón de
-     * belleza sin ramificar.
-     *
-     * Si dos clases se traslapan gana **la que empieza más pronto**: es la que
-     * la gente que está parada enfrente está buscando.
+     * La lista CADUCA sola al cerrar su ventana (Codex 0.e r1 #3, r2 R1-3, r3 #2). Con red, la siguiente lista la
+     * reemplaza antes; sin red, esto es lo único que la quita. Si hay un toque en camino o su ✓ a la vista, espera a que
+     * termine (Codex r4 #2): quien tocó justo antes del cierre con mala red no se queda sin su ✓.
      */
-    private fun grupoEnVentana(all: List<Reservation>): List<Reservation>? {
-        val now = Instant.now()
-        return all
-            .filter { it.status == ReservationStatus.PENDING ||
-                it.status == ReservationStatus.CONFIRMED ||
-                it.status == ReservationStatus.CHECKED_IN }
-            .filter { enVentana(it, now) }
-            .groupBy { it.classSessionId ?: it.id }
-            .entries
-            .minByOrNull { (_, rs) -> rs.first().startsAt }
-            ?.value
-    }
-
-    private fun enVentana(r: Reservation, now: Instant): Boolean {
-        val starts = runCatching { Instant.parse(r.startsAt) }.getOrNull() ?: return false
-        return KioskWindow.isOpen(starts, now, graceMin)
+    private fun caducarAlCerrar(nueva: Ventana) {
+        ventana = nueva
+        expiry?.cancel()
+        expiry = scope.launch {
+            // ponytail: en Android `delay` no cuenta el sueño profundo; el kiosco tiene la pantalla prendida.
+            delay(nueva.restaMs())
+            kiosk.content.first { it !is KioskContent.Roster || (it.busyId == null && it.justConfirmedId == null) }
+            kiosk.expireRoster()
+        }
     }
 
     // MARK: - Confirmar llegada
 
-    /**
-     * Tocó su nombre.
-     *
-     * 🔴 Se queda EN LA LISTA. En una clase se registran varias personas
-     * seguidas: mandar a cada una a un "Listo, Ana" de pantalla completa
-     * bloquearía a la siguiente de la fila durante segundos. Su renglón se marca
-     * y la de atrás toca el suyo de inmediato.
-     */
     /** Edita los dígitos sin perder el resto del estado de la pantalla. */
     private fun editDigits(transform: (String) -> String) {
         val current = kiosk.content.value as? KioskContent.Identify ?: return
-        kiosk.show(current.copy(national = transform(current.national).take(10), notFound = false, failed = false))
+        kiosk.show(
+            current.copy(
+                national = transform(current.national).take(nationalDigitsFor(current.country).last),
+                notFound = false,
+                failed = false,
+            ),
+        )
+    }
+
+    /**
+     * Cambió la lada: el número se BORRA y se teclea otra vez.
+     *
+     * 🔴 Nunca se recorta en silencio (Codex r3, D3): quien tecleaba «30123456789» con México y luego elegía Alemania
+     * mandaba «+49 3012345678» —un dígito menos, otro número— y sus clases podían caer en otra ficha.
+     */
+    private fun pickCountry(country: com.avoqado.pos.designsystem.components.Country) {
+        val current = kiosk.content.value as? KioskContent.Identify ?: return
+        kiosk.show(
+            current.copy(
+                country = country,
+                national = "",
+                notFound = false,
+                failed = false,
+            ),
+        )
     }
 
     /**
@@ -340,7 +366,8 @@ class KioskDriver @Inject constructor(
         kiosk.show(current.copy(searching = true, notFound = false, failed = false))
 
         work = scope.launch {
-            val result = kioskCheckIn.checkIn(current.national)
+            // Con la lada: el servidor compara los últimos 10, y con otra lada de 8 dígitos ésta completa la búsqueda.
+            val result = kioskCheckIn.checkIn(current.phone)
             val base = kiosk.content.value as? KioskContent.Identify ?: return@launch
 
             result.fold(
@@ -414,56 +441,146 @@ class KioskDriver @Inject constructor(
         kiosk.show(current.copy(selectedId = if (current.selectedId == id) null else id))
     }
 
+    /**
+     * «Comprar»: antes del QR se pide el teléfono, para que las clases caigan a SU nombre.
+     *
+     * 🔴 D3 del pizarrón: la sesión de pago salía sin contacto, Stripe cobraba y el servidor no
+     * podía entregar las clases — dinero cobrado, nada a cambio.
+     */
     private fun buy() {
         val current = kiosk.content.value as? KioskContent.Offer ?: return
         val pack = current.selected ?: return
+        work?.cancel()
+        kiosk.show(KioskContent.Identify(country = Countries.pinned.first(), national = "", forPack = pack))
+    }
 
+    /** El mismo teclado sirve para buscar una reserva o para comprar: lo decide [KioskContent.Identify.forPack]. */
+    private fun searchOrPay() {
+        val current = kiosk.content.value as? KioskContent.Identify ?: return
+        val pack = current.forPack ?: return identify()
+        if (!current.canSearch) return
+        pay(pack, current.phone)
+    }
+
+    /**
+     * Pide el enlace, enseña el QR y pregunta cada 3 s si ya se pagó.
+     *
+     * Sin red: crear el pago falla y se dice («Pide ayuda en el mostrador»); si la red se cae
+     * con el QR a la vista, el QR se queda — la clienta paga con la red de SU teléfono y el
+     * servidor entrega igual. Aquí no hay nada local que perder ni cola: el pago vive en Stripe y
+     * la entrega en el servidor. «Regresar» y el vencimiento de 5 min cancelan [work].
+     */
+    private fun pay(pack: KioskPack, phone: String) {
         work?.cancel()
         // Se entra a la pantalla de pago SIN enlace todavía: pinta su espera en vez de
         // dejar el botón hundido sin que pase nada visible.
-        kiosk.show(KioskContent.Paying(customerName = current.customerName, pack = pack, payUrl = null))
+        kiosk.show(KioskContent.Paying(customerName = "", pack = pack, payUrl = null))
 
         work = scope.launch {
-            kioskCheckIn.packCheckoutUrl(pack.id).fold(
-                onSuccess = { url ->
-                    val base = kiosk.content.value as? KioskContent.Paying ?: return@fold
-                    kiosk.show(base.copy(payUrl = url))
-                },
-                onFailure = {
-                    val base = kiosk.content.value as? KioskContent.Paying ?: return@fold
-                    kiosk.show(base.copy(failed = true))
-                },
-            )
+            val checkout = kioskCheckIn.packCheckout(pack.id, phone).getOrElse {
+                // Una cancelación («Regresar») también llega como falla: ésa no se pinta.
+                if (isActive) (kiosk.content.value as? KioskContent.Paying)?.let { kiosk.show(it.copy(failed = true)) }
+                return@launch
+            }
+            val base = kiosk.content.value as? KioskContent.Paying ?: return@launch
+            kiosk.show(base.copy(payUrl = checkout.url))
+
+            val outcome = waitForPackOutcome({ kioskCheckIn.packCheckoutStatus(checkout.sessionId) })
+            if (kiosk.content.value !is KioskContent.Paying) return@launch
+            when (outcome) {
+                PackStatus.PAID -> kiosk.show(KioskContent.Purchased(customerName = "", pack = pack))
+                else -> kiosk.show(
+                    KioskContent.Trouble(
+                        title = "El pago venció",
+                        message = "Vuelve a intentarlo o pide ayuda en el mostrador.",
+                    ),
+                )
+            }
         }
     }
 
+    /**
+     * Tocó su nombre.
+     *
+     * 🔴 Se queda EN LA LISTA. En una clase se registran varias personas
+     * seguidas: mandar a cada una a un "Listo, Ana" de pantalla completa
+     * bloquearía a la siguiente de la fila durante segundos. Su renglón se marca
+     * y la de atrás toca el suyo de inmediato.
+     *
+     * 🔴 Sin red funciona igual (Modo Autoservicio 0.e): la llegada se GUARDA antes de cualquier red y el
+     * [ReservationActionsRetrier] la manda — este conductor nunca hace su propio POST (un solo mensajero).
+     */
     private fun checkIn(person: KioskPerson) {
         val current = kiosk.content.value as? KioskContent.Roster ?: return
         if (person.checkedIn) return
+        val venueId = secureStorage.venueId ?: return
+        val v = ventana ?: return
 
+        // Lo que faltaba para el cierre, con el reloj monótono desde que se PIDIÓ la lista: no depende de la hora del
+        // aparato ni de reinicios. Ya cerró ⇒ la lista caduca y no se guarda nada (el servidor tampoco lo aceptaría).
+        val msBeforeClose = v.restaMs()
+        if (msBeforeClose <= 0) {
+            // Con alguien en camino o leyendo su ✓ no se caduca aquí: lo hace el trabajo de la caducidad cuando termine.
+            if (current.busyId == null && current.justConfirmedId == null) kiosk.expireRoster()
+            return
+        }
+
+        // 🔴 Si alguien sigue esperando su envío (WiFi sin datos: un timeout entero), su llegada YA está guardada —el
+        // `insert` corre al tocar y no se cancela—. Al tocar la de atrás se le deja su ✓ con el aviso en gris; si no, se
+        // quedaba sin nada, volvía a tocar y cancelaba a la siguiente (revisión de Task 7, Important 1).
+        val previo = current.busyId
+        kiosk.show(
+            current.copy(
+                busyId = person.reservationId,
+                failed = false,
+                offline = previo != null,
+                people = if (previo == null) current.people
+                else current.people.map { if (it.reservationId == previo) it.copy(checkedIn = true) else it },
+            ),
+        )
         work?.cancel()
-        kiosk.show(current.copy(busyId = person.reservationId, failed = false))
 
         work = scope.launch {
-            val result = reservations.runAction(person.reservationId, ReservationAction.CHECK_IN)
+            // 🔴 Se guarda ANTES de mandar: si el proceso muere después, la fila sigue y se manda sola con la misma hora.
+            // `insert` y no `enqueue`: `enqueue` borra filas «iguales». Sin cancelar: si la de atrás toca su nombre en
+            // este instante, esta llegada ya se aceptó y su fila la manda el siguiente drain.
+            val rowId = withContext(NonCancellable) {
+                pendingDao.insert(
+                    PendingReservationActionEntity(
+                        reservationId = person.reservationId,
+                        action = KioskTap.ACTION,
+                        payloadJson = KioskTap.payload(venueId, v.closesAt, msBeforeClose),
+                    ),
+                )
+            }
+            // Si otro drain ya la mandó, el mapa no la trae: lo dice la tabla.
+            val outcome = retrier.drain(KioskTap.ACTION)[rowId] ?: deLaTabla(pendingDao.byId(rowId))
+            // Quien tocó antes y se quedó con su ✓ pudo salir rechazado en este envío o en otro (el de fondo, el del
+            // refresco): se le quita. Su fila se queda en cuarentena, a la vista del gerente.
+            val rechazados = rechazadas()
             val base = kiosk.content.value as? KioskContent.Roster ?: return@launch
 
-            val ok = result.isSuccess ||
-                // Encolado sin red: la persona SÍ llegó y el intent ya está
-                // guardado. Pintarlo como error sería mentir al revés — la regla
-                // del repo lo prohíbe explícitamente.
-                result.exceptionOrNull() is ReservationRepository.OfflineEnqueuedException
-
+            // Sin red o con 5xx la persona SÍ llegó y su llegada está guardada: pintarlo como error sería mentir al
+            // revés — la regla del repo lo prohíbe explícitamente.
+            val ok = outcome !is KioskTap.Outcome.Refused
             kiosk.show(
                 base.copy(
                     busyId = null,
                     failed = !ok,
+                    offline = outcome == KioskTap.Outcome.Kept,
                     justConfirmedId = if (ok) person.reservationId else null,
                     people = base.people.map {
-                        if (it.reservationId == person.reservationId && ok) it.copy(checkedIn = true) else it
+                        when {
+                            it.reservationId == person.reservationId && ok -> it.copy(checkedIn = true)
+                            it.reservationId in rechazados -> it.copy(checkedIn = false)
+                            else -> it
+                        }
                     },
                 ),
             )
+            // Rechazo EN VIVO: la persona ya leyó «No se pudo confirmar. Avisa en el mostrador.»; su fila no ensucia la
+            // cuarentena. Si no estaba la lista a la vista para decírselo, la fila se queda en cuarentena (visible).
+            if (!ok) pendingDao.delete(rowId)
 
             // Se encoge solo. Si mientras tanto alguien más confirma, ese otro
             // renglón manda y este cierre ya no aplica.
@@ -477,44 +594,14 @@ class KioskDriver @Inject constructor(
         }
     }
 
-    // MARK: - Traducción de lo que manda el servidor
-
-    private fun titulo(r: Reservation): String =
-        r.classSession?.productName ?: r.product?.name ?: "Tu cita"
-
-    /**
-     * Nombre + inicial. **Nunca el apellido completo ni el teléfono**: esto se
-     * pinta de cara a la entrada, donde cualquiera que pase lo ve.
-     */
-    private fun toPerson(r: Reservation): KioskPerson {
-        val first = r.customer?.firstName?.takeIf { it.isNotBlank() }
-            ?: r.guestName?.trim()?.substringBefore(' ')?.takeIf { it.isNotBlank() }
-        val last = r.customer?.lastName?.takeIf { it.isNotBlank() }
-            ?: r.guestName?.trim()?.substringAfter(' ', "")?.takeIf { it.isNotBlank() }
-
-        val label = when {
-            first == null -> "Invitada"
-            last == null -> first
-            else -> "$first ${last.first().uppercaseChar()}."
-        }
-
-        return KioskPerson(
-            reservationId = r.id,
-            displayName = label,
-            checkedIn = r.status == ReservationStatus.CHECKED_IN,
-            // El acomodo del salón vive en el producto; la reserva sólo guarda
-            // el id del lugar. Sin acomodo configurado esto queda en null y la
-            // pantalla simplemente no lo enseña.
-            // El acomodo dice si son tapetes, bicis o camas: se usa SU palabra, no "Lugar".
-            spotLabel = r.spotIds.firstOrNull()
-                ?.let { r.product?.layoutConfig?.spotLabelFor(it) },
-        )
+    /** Sin fila ⇒ ya se mandó; agotada ⇒ cuarentena con su motivo; si no ⇒ se queda y se manda sola. */
+    private fun deLaTabla(row: PendingReservationActionEntity?): KioskTap.Outcome = when {
+        row == null -> KioskTap.Outcome.Sent
+        row.attemptCount >= ReservationRepository.MAX_ATTEMPTS -> KioskTap.Outcome.Refused(row.lastError)
+        else -> KioskTap.Outcome.Kept
     }
 
     private companion object {
-        /** Tope del servidor. Pedir más devuelve 400 de validación. */
-        const val PAGE_SIZE = 100
-
         /** Cada cuánto se pregunta "¿qué clase toca?". */
         const val POLL_MS = 15_000L
 
@@ -523,5 +610,23 @@ class KioskDriver @Inject constructor(
 
         /** Cuánto se queda abierto el renglón con el lugar y el instructor. */
         const val CONFIRMED_EXPANDED_MS = 8_000L
+    }
+}
+
+/**
+ * Pregunta por el pago cada [intervalMs] hasta que el servidor diga `PAID` o `EXPIRED`.
+ *
+ * `OPEN` y las fallas de red siguen preguntando: con la red caída el QR sigue sirviendo (la
+ * clienta paga con SU teléfono). Lo termina la cancelación de quien lo llamó («Regresar» o el
+ * vencimiento del QR), nunca un tope propio.
+ */
+internal suspend fun waitForPackOutcome(
+    poll: suspend () -> Result<PackStatus>,
+    intervalMs: Long = 3_000L,
+): PackStatus {
+    while (true) {
+        val status = poll().getOrNull()
+        if (status == PackStatus.PAID || status == PackStatus.EXPIRED) return status
+        delay(intervalMs)
     }
 }

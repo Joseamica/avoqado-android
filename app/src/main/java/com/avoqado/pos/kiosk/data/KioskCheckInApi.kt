@@ -1,13 +1,16 @@
 package com.avoqado.pos.kiosk.data
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.kiosk.domain.KioskPerson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -15,6 +18,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -39,6 +43,13 @@ class KioskCheckInApi @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val jsonMedia = "application/json".toMediaType()
 
+    /**
+     * La lista y el check-in del kiosco: el MISMO cliente de la app (sesión, `ForbiddenInterceptor`, conexiones) con un
+     * tope total de 10 s por llamada. Con WiFi sin datos la persona no espera 30 s por su ✓; el tope sale como
+     * `InterruptedIOException` (sin red): la fila se queda sin gastar intento.
+     */
+    internal val kioskClient: OkHttpClient by lazy { client.newBuilder().callTimeout(10, TimeUnit.SECONDS).build() }
+
     /** Lo mínimo para pintar la confirmación. Sólo llega DESPUÉS de un check-in bueno. */
     data class Confirmed(
         val reservationId: String?,
@@ -53,6 +64,86 @@ class KioskCheckInApi @Inject constructor(
 
     /** Demasiados intentos. El tope es del servidor y es durable. */
     class TooManyAttempts : Exception("Demasiados intentos")
+
+    /** 422 `CHECK_IN_OUTSIDE_WINDOW`: la hora del toque cae fuera de la ventana de la reserva. */
+    class OutsideWindow(message: String? = null) : Exception(message)
+
+    /** Cualquier otra respuesta HTTP que no es éxito, con el texto del SERVIDOR (lo que la cuarentena enseña). */
+    class Rejected(val status: Int, message: String, val code: String? = null) : Exception(message)
+
+    /**
+     * La clase del kiosco ahora mismo, o null si no hay ninguna en ventana. La ventana la calcula el SERVIDOR (0.e):
+     * aquí no se manda ningún rango ni se usa la hora del aparato.
+     */
+    suspend fun roster(): Result<KioskRosterDto?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val venueId = secureStorage.venueId ?: error("No venue")
+            val req = Request.Builder()
+                .url("${baseUrlProvider()}/mobile/venues/$venueId/kiosk/roster")
+                // Corre sola cada 15 s en la pantalla del cliente: un 403 no puede abrirle un diálogo al cajero.
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .get()
+                .build()
+            kioskClient.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful) throw rejected(res.code, body)
+                val roster = json.parseToJsonElement(body).jsonObject["roster"] as? JsonObject ?: return@use null
+                KioskRosterDto(
+                    classTitle = roster.text("classTitle") ?: "Tu clase",
+                    startsAt = roster.text("startsAt").orEmpty(),
+                    staffFirstName = roster.text("staffFirstName"),
+                    people = roster["people"]?.jsonArray.orEmpty().map { it.jsonObject }.map { p ->
+                        KioskPerson(
+                            reservationId = p.text("reservationId") ?: error("Persona sin reserva"),
+                            displayName = p.text("displayName") ?: "Invitada",
+                            checkedIn = p["checkedIn"]?.jsonPrimitive?.booleanOrNull == true,
+                            spotLabel = p.text("spotLabel"),
+                        )
+                    },
+                    // Sin cierre no hay forma de guardar una llegada sin red: es falla, no una lista que nunca caduca.
+                    closesAt = roster.text("closesAt") ?: error("Lista sin cierre"),
+                    closesInMs = roster["closesInMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: error("Lista sin cierre"),
+                )
+            }
+        }
+    }
+
+    /**
+     * Registra la llegada de [reservationId] en la sucursal [venueId] de la FILA (no la de la sesión: la llegada pudo
+     * guardarse en otra). Manda el cierre que vio la persona, tal cual vino del servidor, y lo que faltaba para él; el
+     * servidor reconstruye la hora del toque con eso. Sólo la llama el reintentador: un solo mensajero.
+     *
+     * Red caída ⇒ la `IOException` tal cual, sin envolver (la fila se queda y se manda sola).
+     */
+    suspend fun checkInReservation(venueId: String, reservationId: String, closesAt: String, msBeforeClose: Long): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = buildJsonObject {
+                    put("closesAt", JsonPrimitive(closesAt))
+                    put("msBeforeClose", JsonPrimitive(msBeforeClose))
+                }
+                val req = Request.Builder()
+                    .url("${baseUrlProvider()}/mobile/venues/$venueId/kiosk/reservations/$reservationId/check-in")
+                    // De fondo: lo dispara una fila, no un dedo del cajero. Un 403 va a la cuarentena, sin diálogo.
+                    .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                    .post(json.encodeToString(JsonObject.serializer(), payload).toRequestBody(jsonMedia))
+                    .build()
+                kioskClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) return@use
+                    val error = rejected(res.code, res.body?.string().orEmpty())
+                    if (res.code == 422 && error.code == "CHECK_IN_OUTSIDE_WINDOW") throw OutsideWindow(error.message)
+                    throw error
+                }
+            }
+        }
+
+    /** El error del servidor viene como `{ message, code }` en la raíz (`app.ts`, manejador de `AppError`). */
+    private fun rejected(status: Int, body: String): Rejected {
+        val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
+        return Rejected(status, root?.text("message") ?: "HTTP $status", root?.text("code"))
+    }
+
+    private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
     suspend fun checkIn(identifier: String): Result<Confirmed> = withContext(Dispatchers.IO) {
         runCatching {
@@ -118,12 +209,19 @@ class KioskCheckInApi @Inject constructor(
 
     /**
      * Enlace de pago para enseñarlo como QR. El cobro ocurre en el TELÉFONO del cliente:
-     * el kiosco nunca ve la tarjeta ni sabe quién pagó.
+     * el kiosco nunca ve la tarjeta.
+     *
+     * 🔴 Lleva el teléfono (E.164) para que las clases caigan a SU nombre: sin contacto, Stripe
+     * cobraba y el servidor no podía entregar (D3 del pizarrón). Sin `url` o sin `sessionId` es
+     * falla: nunca se pinta un QR vacío.
      */
-    suspend fun packCheckoutUrl(packId: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun packCheckout(packId: String, phone: String): Result<PackCheckout> = withContext(Dispatchers.IO) {
         runCatching {
             val venueId = secureStorage.venueId ?: error("No venue")
-            val payload = buildJsonObject { put("packId", JsonPrimitive(packId)) }
+            val payload = buildJsonObject {
+                put("packId", JsonPrimitive(packId))
+                put("phone", JsonPrimitive(phone))
+            }
             val req = Request.Builder()
                 .url("${baseUrlProvider()}/mobile/venues/$venueId/kiosk/pack-checkout")
                 .post(json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), payload).toRequestBody(jsonMedia))
@@ -131,9 +229,50 @@ class KioskCheckInApi @Inject constructor(
             client.newCall(req).execute().use { res ->
                 val body = res.body?.string().orEmpty()
                 if (!res.isSuccessful) error("HTTP ${res.code}")
-                json.parseToJsonElement(body).jsonObject["url"]?.jsonPrimitive?.contentOrNull
-                    ?: error("Sin enlace de pago")
+                val root = json.parseToJsonElement(body).jsonObject
+                PackCheckout(
+                    url = root["url"]?.jsonPrimitive?.contentOrNull ?: error("Sin enlace de pago"),
+                    sessionId = root["sessionId"]?.jsonPrimitive?.contentOrNull ?: error("Sin enlace de pago"),
+                    expiresAt = root["expiresAt"]?.jsonPrimitive?.contentOrNull,
+                )
+            }
+        }
+    }
+
+    /** ¿Ya se pagó? `PAID` sólo cuando las clases ya son suyas (el servidor ya entregó). */
+    suspend fun packCheckoutStatus(sessionId: String): Result<PackStatus> = withContext(Dispatchers.IO) {
+        runCatching {
+            val venueId = secureStorage.venueId ?: error("No venue")
+            val req = Request.Builder()
+                .url("${baseUrlProvider()}/mobile/venues/$venueId/kiosk/pack-checkout/$sessionId/status")
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful) error("HTTP ${res.code}")
+                val status = json.parseToJsonElement(body).jsonObject["status"]?.jsonPrimitive?.contentOrNull
+                PackStatus.entries.firstOrNull { it.name == status } ?: error("Estado desconocido: $status")
             }
         }
     }
 }
+
+/**
+ * La clase del kiosco, tal como la manda el servidor. [closesAt] es el cierre de su ventana en hora del SERVIDOR (texto
+ * ISO con `Z`, se devuelve tal cual) y [closesInMs] lo que le quedaba al contestar: con eso el aparato guarda una
+ * llegada sin depender de su propio reloj.
+ */
+data class KioskRosterDto(
+    val classTitle: String,
+    val startsAt: String,
+    val staffFirstName: String?,
+    val people: List<KioskPerson>,
+    val closesAt: String,
+    val closesInMs: Long,
+)
+
+/** El pago de un paquete, listo para enseñarse como QR. */
+data class PackCheckout(val url: String, val sessionId: String, val expiresAt: String?)
+
+/** Lo que dice el servidor del QR: sigue abierto, ya se entregó, o venció. */
+enum class PackStatus { OPEN, PAID, EXPIRED }

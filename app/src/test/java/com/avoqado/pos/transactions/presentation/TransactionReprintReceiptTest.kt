@@ -264,4 +264,41 @@ class TransactionReprintReceiptTest {
         assertTrue(papel.toString(), papel.any { it.contains("IVA incluido cuando aplica") })
         assertEquals(10000, r.total)
     }
+
+    // MARK: - D15 (28-oct): la reimpresión de UNA parte de una venta dividida dice «Pago parcial», como el papel del cobro
+
+    private val dosProductos = listOf(
+        com.avoqado.pos.transactions.data.model.TransactionItem(productName = "Agua", quantity = 1, unitPrice = 20.0, amount = 20.0),
+        com.avoqado.pos.transactions.data.model.TransactionItem(productName = "Café", quantity = 1, unitPrice = 10.0, amount = 10.0),
+    )
+
+    @Test
+    fun `D15 - la parte de una venta dividida se reimprime con un renglon Pago parcial y su importe`() {
+        val parte = comprobante(desglosado = false, subtotal = 15.0, tip = 2.0).copy(parcial = true)
+        val r = Transaction(id = "pay_p1", method = "CASH", amount = 15.0, tipAmount = 2.0, items = dosProductos, ticketTotals = parte)
+            .toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf("Pago parcial"), r.items.map { it.name })
+        assertEquals(1500, r.items.single().totalPrice)
+        assertEquals(1500, r.subtotal)
+        assertEquals(1700, r.total)
+        assertTrue(cuadra(r))
+    }
+
+    @Test
+    fun `D15 - sin la marca (venta completa o recibo de antes) la reimpresion enumera sus productos como hoy`() {
+        val r = Transaction(id = "pay_c", method = "CASH", amount = 30.0, items = dosProductos,
+            ticketTotals = comprobante(subtotal = 30.0)).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf("Agua", "Café"), r.items.map { it.name })
+    }
+
+    @Test
+    fun `D15 - el detalle del servidor trae la marca parcial y uno sin ella decodifica igual`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val con = json.decodeFromString<TransactionDetailResponse>(
+            """{"success":true,"transaction":{"id":"p","method":"CASH","amount":15,"ticketTotals":{"kind":"COBRO","desglosado":false,"subtotal":15,"serviceCharge":0,"addedTax":0,"tip":0,"total":15,"parcial":true}}}""")
+        assertEquals(true, con.transaction?.ticketTotals?.parcial)
+        val sin = json.decodeFromString<TransactionDetailResponse>(
+            """{"success":true,"transaction":{"id":"p","method":"CASH","amount":15,"ticketTotals":{"kind":"COBRO","desglosado":false,"subtotal":15,"serviceCharge":0,"addedTax":0,"tip":0,"total":15}}}""")
+        assertNull(sin.transaction?.ticketTotals?.parcial)
+    }
 }

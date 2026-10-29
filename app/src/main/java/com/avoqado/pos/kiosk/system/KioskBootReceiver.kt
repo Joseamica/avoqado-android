@@ -3,8 +3,10 @@ package com.avoqado.pos.kiosk.system
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.util.Log
 import com.avoqado.pos.MainActivity
+import com.avoqado.pos.kiosk.domain.KioskPrefs
 
 /**
  * Levanta la app sola cuando el aparato enciende, **si y sólo si** esta pantalla trabaja
@@ -63,13 +65,19 @@ class KioskBootReceiver : BroadcastReceiver() {
 
         private const val TAG = "KioskBoot"
 
-        /** Mismas llaves que `KioskPrefs`; si allá cambian, aquí también. */
-        private const val PREFS = "avoqado_kiosk"
-        private const val KEY_ENABLED = "kiosk_enabled"
+        /** ¿Hay una segunda pantalla (de presentación)? Es lo que distingue una D3 de una tableta con «Esconder barras». */
+        fun hasPresentationDisplay(context: Context): Boolean =
+            runCatching {
+                (context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
+                    .getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).isNotEmpty()
+            }.getOrDefault(false)
 
+        /** Las llaves y la migración son de [KioskPrefs] (una sola fuente); aquí sólo se lee sin Hilt. */
         private fun kioskEnabled(context: Context): Boolean =
             runCatching {
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
+                KioskPrefs.readOrMigrate(context.getSharedPreferences(KioskPrefs.PREFS, Context.MODE_PRIVATE)) {
+                    hasPresentationDisplay(context)
+                }
             }.getOrDefault(false)
     }
 }

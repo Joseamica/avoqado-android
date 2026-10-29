@@ -15,8 +15,12 @@ class CreadoresDeCuentaDeMostradorTest {
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:processCashPayment:createOrder" to "C1_C2",
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:processCashPayment:recordFastCashPayment" to "T10",
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:materializeAreaTicketCheckout:materialize" to "T10",
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:createPayLaterOrder:createOrder" to "C3",
-            "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:confirmPayLaterOrder:createPayLaterOrder" to "C3",
+            // «Pagar después» de develop (27-oct): sin premio la venta sale del carrito ANTES de mandarse; con premio se queda y se marca.
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:pagarDespues:createPayLaterOrder" to "C3",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:diferirConFila:mandar" to "C3_FUERA",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:diferirConPremio:mandar" to "C3",
+            "com/avoqado/pos/payment/data/PayLaterQueue.kt:procesar:mandar" to "C4",
+            "com/avoqado/pos/payment/data/PayLaterQueue.kt:mandar:enviarPagarDespues" to "C4",
             "com/avoqado/pos/tables/data/TableServiceRepository.kt:openTable:openTable" to "T8",
             "com/avoqado/pos/tables/data/TableServiceRepository.kt:mergeOrders:mergeOrders" to "T8",
             "com/avoqado/pos/tables/data/TableServiceRepository.kt:splitOrderBySeat:splitOrderBySeat" to "T8",
@@ -28,11 +32,14 @@ class CreadoresDeCuentaDeMostradorTest {
             "com/avoqado/pos/tables/presentation/TablesViewModel.kt:openTableAndStartOrdering:openTableOffline" to "T8",
             "com/avoqado/pos/tables/presentation/TablesViewModel.kt:bulkUnir:mergeOrders" to "T8"
         )
-        val reales = InventarioDeFuentes6.llamadas("\\b(createOrder|createPayLaterOrder|materialize|openTable|openTableOffline|splitOrderBySeat|splitOrder|mergeOrders|cobrarNuevaCuenta|recordFastCashPayment|vender)\\s*\\(")
+        val reales = InventarioDeFuentes6.llamadas("\\b(createOrder|createPayLaterOrder|materialize|openTable|openTableOffline|splitOrderBySeat|splitOrder|mergeOrders|cobrarNuevaCuenta|recordFastCashPayment|vender|mandar|enviarPagarDespues)\\s*\\(")
         assertEquals("Creador añadido o retirado: " + reales.joinToString { "${it.key}:${it.linea}" },creadores.keys,reales.map { it.key }.toSet())
-        for (c in reales.filter { creadores[it.key] == "C1_C2" || creadores[it.key] == "C3" && it.key.endsWith(":createOrder") }) {
+        for (c in reales.filter { creadores[it.key] == "C1_C2" || creadores[it.key] == "C3" && (it.key.endsWith(":createOrder") || it.key.endsWith(":mandar")) }) {
             val cuerpo = c.texto.substring(c.inicio,c.posicion)
             assertTrue("Marca ANTES del POST: ${c.key}:${c.linea}", cuerpo.contains(if (creadores[c.key] == "C1_C2") "onCreacionIncierta(" else "marcarCreacionIncierta("))
+        }
+        for (c in reales.filter { creadores[it.key] == "C3_FUERA" }) {
+            assertTrue("La venta sale del carrito ANTES del POST: ${c.key}:${c.linea}", c.texto.substring(c.inicio,c.posicion).contains("separarDelCarrito("))
         }
         // C4 manda el payload durable directamente: no vuelve a tomar el carrito.
         val cola = java.io.File("src/main/java/com/avoqado/pos/payment/data/PaymentSyncService.kt").readText()

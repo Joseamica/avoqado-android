@@ -80,6 +80,9 @@ object Arranque {
         inyector.getInstance(KioskDriver::class.java).attach()
         val kioskPrefs = inyector.getInstance(KioskPrefs::class.java)
         val kioskState = inyector.getInstance(KioskState::class.java)
+        // Llave propia del kiosco: en escritorio ScreenPinningManager es un reemplazo que no usa esas preferencias, así que
+        // `kiosk_enabled` allá sólo lo escribió el kiosco y se conserva tal cual.
+        kioskPrefs.migrateLegacyFlag(keepLegacy = true)
         appScope.launch { kioskPrefs.enabled.collect { kioskState.setEnabled(it) } }
     }
 

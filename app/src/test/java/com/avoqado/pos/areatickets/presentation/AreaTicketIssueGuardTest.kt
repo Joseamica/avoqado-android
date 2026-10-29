@@ -11,6 +11,7 @@ import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
 import com.avoqado.pos.areatickets.data.AreaTicketTerminalCapabilities
 import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
 import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
+import com.avoqado.pos.core.data.local.LlaveDeEmisionDeVales
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.loyalty.data.PremioPorAplicar
 import com.avoqado.pos.pos.data.model.CartItem
@@ -49,7 +50,7 @@ class AreaTicketIssueGuardTest {
 
     private val repository = mockk<AreaTicketRepository>()
     private val printerService = mockk<PrinterService>(relaxed = true)
-    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true } // D2: el disco guarda la llave
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true; every { guardarIntentoDeVale(any(), any(), any()) } returns LlaveDeEmisionDeVales.Guardado.SI } // D2: el disco guarda la llave
 
     private fun viewModel(settlementRoute: String = "AVOQADO"): AreaTicketOperationsViewModel {
         // Un negocio de verdad: el "" del mock relajado es «sin negocio» y el registro del papel no se guardaría.
@@ -186,9 +187,9 @@ class AreaTicketIssueGuardTest {
     private fun aparatoYServidor() {
         every { secureStorage.venueId } answers { negocio }
         every { secureStorage.llaveDeEmisionDeVales(any()) } answers { llavesGuardadas[firstArg()] }
-        every { secureStorage.guardarLlaveDeEmisionDeVales(any(), any()) } answers {
+        every { secureStorage.guardarIntentoDeVale(any(), any(), any()) } answers {
             if (discoGuarda) llavesGuardadas[firstArg()] = secondArg()
-            discoGuarda
+            if (discoGuarda) LlaveDeEmisionDeVales.Guardado.SI else LlaveDeEmisionDeVales.Guardado.NO
         }
         every { secureStorage.soltarLlaveDeEmisionDeVales(any(), any()) } answers {
             val siEs = secondArg<String?>()

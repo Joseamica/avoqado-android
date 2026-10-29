@@ -18,8 +18,11 @@ import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
+import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
@@ -472,6 +475,7 @@ class OnlineOrdersViewModel internal constructor(
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
         permitido = muestraTienda,
+        productos = pedido.items,
     )
 
     /**
@@ -496,6 +500,7 @@ class OnlineOrdersViewModel internal constructor(
         origenConSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
         origenSinSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
         permitido: Boolean,
+        productos: List<OnlineOrderItem> = emptyList(),
     ) {
         if (!permisoActualizar() || !permisoCobrar() || !permitido) return
         if (_cobroAbierto.value != null) return
@@ -526,13 +531,13 @@ class OnlineOrdersViewModel internal constructor(
                     }
                 }
                 val leido = try {
-                    repositorio.saldoCents(orderId)
+                    repositorio.saldoDelPedido(orderId)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Result.failure(e)
                 }
-                val saldo = leido.getOrElse { error ->
+                val saldo = leido.map { it.saldoCents }.getOrElse { error ->
                     if (error is IOException) {
                         // Sin red es un estado normal: se cobra el último saldo que dijo la bandeja. Salvo que ESTE aparato ya
                         // haya subido un efectivo de ese pedido: la bandeja vieja no sabe de él y se cobraría dos veces
@@ -572,7 +577,8 @@ class OnlineOrdersViewModel internal constructor(
                 if (_cobroAbierto.value != null) return@launch
                 _aviso.value = null
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
-                    origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma)
+                    origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
+                    renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty())
             } finally {
                 _ocupados.value = _ocupados.value - orderId
             }
@@ -653,7 +659,36 @@ data class CobroDePedido(
     /** Rappi 2b: «Rappi» en un pedido de plataforma (el renglón dice «Rappi #folio»); null en un pedido de la tienda web. */
     val plataforma: String? = null,
     val apertura: String = java.util.UUID.randomUUID().toString(),
+    /** D4: los productos del pedido, sólo para «Ver productos»; vacío sin red, en Rappi o si no cuadran ([renglonesParaVer]). */
+    val renglones: List<com.avoqado.pos.payment.data.model.PaymentItem> = emptyList(),
 )
+
+/**
+ * D4 (28-oct): lo que enseña «Ver productos» al cobrar un pedido de la tienda web. Nombre, cantidad, extras y nota salen de la
+ * bandeja (lo mismo que la comanda); el precio de cada producto, del detalle del servidor. Se empatan por nombre, cantidad,
+ * nota y nombres de extras (los del detalle son de AHORA: si otra caja los cambió, no empatan), y sólo se enseñan si TODO cuadra:
+ * mismos productos, ninguno dudoso (dos iguales con precio distinto), precio por pieza exacto y la suma igual al saldo al
+ * centavo. Si no, vacío y queda «Pedido #folio»: la lista nunca dice algo distinto de lo que se cobra. PURA.
+ */
+fun renglonesParaVer(productos: List<OnlineOrderItem>, precios: List<PrecioDeRenglon>?, saldoCents: Long): List<PaymentItem> {
+    if (precios.isNullOrEmpty() || productos.size != precios.size || precios.sumOf { it.totalCents } != saldoCents) return emptyList()
+    val porProducto = precios.groupBy { listOf(it.name, it.quantity, it.note, it.modifierNames.sorted()) }
+    if (porProducto.values.any { mismos -> mismos.map { it.totalCents }.distinct().size > 1 }) return emptyList()
+    val llave = { p: OnlineOrderItem -> listOf(p.name, p.quantity, p.note, p.modifiers.map { it.name }.sorted()) }
+    if (productos.groupingBy(llave).eachCount() != porProducto.mapValues { it.value.size }) return emptyList()
+    return productos.map { p ->
+        val total = porProducto.getValue(llave(p)).first().totalCents
+        if (p.quantity <= 0 || total % p.quantity != 0L) return emptyList()
+        PaymentItem(
+            name = p.name,
+            quantity = p.quantity,
+            unitPrice = (total / p.quantity).toInt(),
+            lineTotal = total.toInt(),
+            modifiers = p.modifiers.map { if (it.quantity > 1) "${it.quantity} × ${it.name}" else it.name },
+            note = p.note,
+        )
+    }
+}
 
 /**
  * El carrito que siembra el cobro: UN renglón de importe por el saldo, para recoger (molde: `TableOrderScreen`). El dinero
@@ -671,4 +706,5 @@ fun carritoDelCobro(cobro: CobroDePedido): CartState = CartState(
         ),
     ),
     orderType = "PICKUP",
+    renglonesParaVer = cobro.renglones,
 )

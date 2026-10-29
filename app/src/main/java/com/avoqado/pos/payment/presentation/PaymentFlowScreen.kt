@@ -411,6 +411,20 @@ fun PaymentFlowScreen(
                     val printSending by viewModel.printSending.collectAsState()
                     val printResult by viewModel.printResult.collectAsState()
                     val canPrintOnTerminal by viewModel.canPrintOnTerminal.collectAsState()
+                    val hayImpresoraDeRecibos by viewModel.hayImpresoraDeRecibos.collectAsState()
+                    // D2: «Configurar impresora» abre «Impresoras y cajón» aquí mismo; al cerrarla se vuelve a revisar.
+                    var mostrarImpresoras by remember { mutableStateOf(false) }
+                    if (mostrarImpresoras) {
+                        val configDelPanel = viewModel.printConfigRepository?.config?.collectAsState()?.value
+                        com.avoqado.pos.printing.presentation.PrinterSettingsSheet(
+                            printerService = viewModel.impresoras,
+                            onDismiss = {
+                                mostrarImpresoras = false
+                                viewModel.revisarImpresoraDeRecibos()
+                            },
+                            printConfig = configDelPanel ?: com.avoqado.pos.printing.routing.PrintConfig(),
+                        )
+                    }
                     val sincronizacion by viewModel.sincronizacionDelCobro.collectAsState()
 
                     PaymentResultScreen(
@@ -438,6 +452,9 @@ fun PaymentFlowScreen(
                         canPrintOnTerminal = canPrintOnTerminal,
                         onPrintOnTerminalReceipt = { viewModel.printReceiptOnTerminal() },
                         onClearPrintResult = { viewModel.clearPrintResult() },
+                        hayImpresoraDeRecibos = hayImpresoraDeRecibos,
+                        onConfigurarImpresora = { mostrarImpresoras = true },
+                        onRevisarImpresora = { viewModel.revisarImpresoraDeRecibos() },
                         customerName = if (customerAttachSending) "Agregando..." else attachedCustomerName,
                         customerResultMessage = customerAttachResult,
                         onClearCustomerResult = { viewModel.clearCustomerAttachResult() },
