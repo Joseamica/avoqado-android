@@ -3,7 +3,8 @@ package com.avoqado.pos.transactions.presentation.exchange
 import com.avoqado.pos.transactions.data.model.Transaction
 
 data class EntryDecision(val visible: Boolean, val blockedReason: String? = null, val requiresPin: Boolean = false)
-data class ExchangeDetailLink(val orderId: String, val label: String)
+/** [esperaCobro]: la venta nueva de un cambio apartado todavía no tiene pago que abrir (F4, 28-oct). */
+data class ExchangeDetailLink(val orderId: String, val label: String, val esperaCobro: Boolean = false)
 
 object ExchangeEntry {
     fun decide(transaction: Transaction, exchangesEnabled: Boolean, online: Boolean,
@@ -45,7 +46,8 @@ object ExchangeEntry {
     fun links(transaction: Transaction): List<ExchangeDetailLink> = buildList {
         transaction.exchange?.asOriginal.orEmpty().forEach { link ->
             link.newOrderId?.let { id -> add(ExchangeDetailLink(id,
-                TextosCambio.CAMBIADA_EN.replace("{folio}", link.newOrderNumber.orEmpty()) + " · " + status(link.status))) }
+                TextosCambio.CAMBIADA_EN.replace("{folio}", link.newOrderNumber.orEmpty()) + " · " + status(link.status),
+                esperaCobro = link.status == "PENDING_PAYMENT")) }
         }
         transaction.exchange?.asNew?.let { link ->
             link.originalOrderId?.let { id -> add(ExchangeDetailLink(id,

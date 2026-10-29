@@ -116,6 +116,14 @@ class ExchangePinGateTest {
         assertEquals(com.avoqado.pos.transactions.presentation.exchange.TextosCambio.VINCULO_NO_DISPONIBLE,
             vm.exchangeMessage.value)
     }
+    @Test fun `a link waiting for the charge says so without opening`() = runTest(scheduler) {
+        val vm = vm(canRefund = true)
+        vm.openExchangeOrder("linked", esperaCobro = true)
+        advanceUntilIdle()
+        assertEquals("Esta venta todavía no se cobra: el cambio espera la diferencia en la terminal.", vm.exchangeMessage.value)
+        assertEquals(sale, vm.selectedTransaction.value)
+        coVerify(exactly = 0) { repository.paymentIdForExchangeOrder(any(), any(), any()) }
+    }
     @Test fun `closing exchange discards real PIN token on every exit`() = runTest(scheduler) {
         for (exit in listOf("dismiss", "select", "clear")) {
             val overrideRepository = mockk<PermissionOverrideRepository> {

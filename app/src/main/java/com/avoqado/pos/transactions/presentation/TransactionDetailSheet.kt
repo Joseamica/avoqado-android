@@ -412,7 +412,7 @@ private fun LoadedDetailView(
                 ThinDivider()
                 exchangeLinks.forEach { link ->
                     Text(link.label, style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.fillMaxWidth().clickable { viewModel.openExchangeOrder(link.orderId) }
+                        modifier = Modifier.fillMaxWidth().clickable { viewModel.openExchangeOrder(link.orderId, link.esperaCobro) }
                             .padding(vertical = AvoqadoTheme.spacing.lg))
                 }
                 Spacer(Modifier.height(AvoqadoTheme.spacing.xl))

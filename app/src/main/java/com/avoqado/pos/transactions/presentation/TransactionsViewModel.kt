@@ -223,9 +223,10 @@ class TransactionsViewModel @Inject constructor(
         return detail
     }
 
-    fun openExchangeOrder(orderId: String) {
+    fun openExchangeOrder(orderId: String, esperaCobro: Boolean = false) {
         val scope = detailScope ?: return
         if (!current(scope)) return
+        if (esperaCobro) { _exchangeMessage.value = TextosCambio.VINCULO_ESPERA_COBRO; return }
         if (!connectivityMonitor.isOnline()) { _exchangeMessage.value = TextosCambio.SIN_CONEXION; return }
         viewModelScope.launch {
             val paymentId = try {

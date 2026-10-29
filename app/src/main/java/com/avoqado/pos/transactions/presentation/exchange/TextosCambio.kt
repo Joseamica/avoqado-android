@@ -35,6 +35,7 @@ object TextosCambio {
     const val DISMINUIR_CANTIDAD = "Disminuir cantidad"
     const val VINCULO_NO_DISPONIBLE = "No se pudo abrir la venta vinculada; inténtalo de nuevo con conexión"
     const val VINCULO_SIN_PERMISO = "No tienes permiso para abrir la venta vinculada"
+    const val VINCULO_ESPERA_COBRO = "Esta venta todavía no se cobra: el cambio espera la diferencia en la terminal."
     const val TODOS_PRODUCTOS = "Todos los productos"
     const val ESCANEAR = "Escanear código"
     const val CATALOGO_NO_DISPONIBLE = "No se pudo actualizar el catálogo; cierra y vuelve a abrir el cambio para reintentar"
