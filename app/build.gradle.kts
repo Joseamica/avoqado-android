@@ -141,7 +141,6 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
-        // la suite unida (develop + tarjetas) pasa de 5,200 pruebas y el heap de 512 MB por default se ahogó en Q15HistorialViewModelTest (28-oct)
         unitTests.all { it.maxHeapSize = "2g" }
     }
 }

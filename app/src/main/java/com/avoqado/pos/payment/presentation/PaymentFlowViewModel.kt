@@ -2194,7 +2194,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
-        if (method == PaymentMethod.CARD && !origenDelCobro.permiteTarjeta) return
+        if (method == PaymentMethod.CARD && (!origenDelCobro.permiteTarjeta || ventaRapidaEnCero())) return
         if (bloquearCuentaSinRed()) return
         selectedMethod = method
         val baseAmount = currentBaseAmount()
@@ -5370,6 +5370,19 @@ class PaymentFlowViewModel @Inject constructor(
         return cart.items.any { it.type is CartItemType.ProductItem }
     }
 
+    /**
+     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden, sin mesa, sin dividir) que un descuento deja en $0.
+     * No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin «Ya pagó
+     * de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la deja
+     * en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
+     * (`PaymentFlowViewModel.ventaRapidaEnCero`, mismo texto).
+     */
+    fun ventaRapidaEnCero(): Boolean {
+        val cart = cartState ?: return false
+        return cart.items.isNotEmpty() && !hasProductItems(cart) && createdOrderId == null && mesaDelCobro == null &&
+            esPagoCompleto() && currentBaseAmount() == 0
+    }
+
     /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
     private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
         cart != null && cart.items.isNotEmpty() && split != "FULLPAYMENT"
@@ -5642,6 +5655,9 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     companion object {
+        /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
+        const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."
+
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
 
