@@ -33,9 +33,11 @@ fun IdentificarTarjetaSheet(
         LaunchedEffect(viewModel, venueId) { viewModel.cerrar(); onCerrar() }
         return
     }
-    val capacidadesDeApertura = remember(viewModel, venueId) {
-        (ajustes ?: ajustesVigentes).capacidades.intersect(ajustesVigentes.capacidades)
-    }
+    // G2 (Codex unión r4): el techo va en el estado guardado. Girar, volver del fondo o restaurar la app reconstruyen la hoja sin
+    // decisión del cajero y lo conservan; un llamador que la quita y la vuelve a poner abre otra apertura.
+    val capacidadesDeApertura = androidx.compose.runtime.saveable.rememberSaveable(viewModel, venueId) {
+        ArrayList((ajustes ?: ajustesVigentes).capacidades.intersect(ajustesVigentes.capacidades))
+    }.toSet()
     val ajustesEfectivos = ajustesVigentes.copy(
         capacidades = capacidadesDeApertura.intersect(ajustesVigentes.capacidades))
     BarreraDeAtajos()

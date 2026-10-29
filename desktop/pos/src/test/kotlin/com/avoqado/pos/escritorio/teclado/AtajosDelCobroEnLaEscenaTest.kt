@@ -905,4 +905,56 @@ class AtajosDelCobroEnLaEscenaTest {
             runOnIdle { assertTrue(q.consultas.isEmpty()) }
         } }
     }
+
+    /**
+     * G2 (Codex unión r4): lo que reconstruye la hoja sin que el cajero lo decida (girar la tableta, volver del fondo, restaurar la
+     * app) pasa por el estado guardado: se guarda, se desmonta y se vuelve a montar con lo guardado, con el MISMO modelo y el mismo
+     * argumento. El argumento amplio y un refresco que amplía no pueden abrir ligas ni el modo Teléfono tras esa reconstrucción.
+     */
+    @Test fun `union G2 reconstruir la hoja con su estado guardado no amplia el techo aunque el argumento sea amplio`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            val amplio = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO"))
+            var registro by mutableStateOf(androidx.compose.runtime.saveable.SaveableStateRegistry(null) { true })
+            var montada by mutableStateOf(true)
+            setContent { EnWindows { androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.runtime.saveable.LocalSaveableStateRegistry provides registro) {
+                if (montada) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, amplio, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO")); waitForIdle()
+            runOnIdle {
+                val guardado = registro.performSave()
+                montada = false
+                registro = androidx.compose.runtime.saveable.SaveableStateRegistry(guardado) { true }
+            }
+            waitForIdle()
+            runOnIdle { montada = true }; waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertDoesNotExist()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty(), "La reconstrucción no es una apertura nueva") }
+        } }
+    }
+
+    /** G2, control: sin estado guardado (el llamador la quitó y la volvió a poner) SÍ es una apertura nueva con lo vigente. */
+    @Test fun `union G2 control quitarla sin estado guardado es una apertura nueva`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            val amplio = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO"))
+            var registro by mutableStateOf(androidx.compose.runtime.saveable.SaveableStateRegistry(null) { true })
+            var montada by mutableStateOf(true)
+            setContent { EnWindows { androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.runtime.saveable.LocalSaveableStateRegistry provides registro) {
+                if (montada) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, amplio, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO")); waitForIdle()
+            runOnIdle { montada = false }; waitForIdle()
+            runOnIdle { montada = true }; waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertExists()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            runOnIdle { assertEquals(1, q.consultas.size); assertTrue(q.consultas.single().endsWith("/lookup")) }
+        } }
+    }
 }
