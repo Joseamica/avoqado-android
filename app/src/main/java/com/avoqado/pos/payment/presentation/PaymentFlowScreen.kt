@@ -102,7 +102,7 @@ fun PaymentFlowScreen(
     val solicitudesDeSaldo = LocalSolicitudesDeSaldo.current
     val cuentasDeSaldoCerradas = LocalCuentasDeSaldoCerradas.current
     val hojaVigente = hojaDeSaldoVigente(resultadoDeSaldo, ocupadoDeSaldo, viewModel.llaveDeLaSolicitudDeSaldo,
-        viewModel.venueParaSaldo, solicitudesDeSaldo)
+        viewModel.venueParaSaldo, solicitudesDeSaldo, entradaDisponible = filaDeSaldo.visible)
     var muestraSaldo by remember { mutableStateOf(false) }
     var identificadaDeSaldo by remember { mutableStateOf<TarjetaIdentificada?>(null) }
     var preseleccionConsumida by remember { mutableStateOf(false) }

@@ -96,6 +96,8 @@ object TextosDeTarjetas {
     const val CERT_VENCE = "Vence:"
     const val CERT_SIN_VENCIMIENTO = "Sin vencimiento"
     const val CERT_ESCANEA = "Escanea el QR para ver tu saldo y los términos."
+    // iOS-PENDIENTE (R20): misma leyenda bajo las barras, sólo si caben.
+    const val CERT_BARRAS = "Mismo código en barras, para lectores de rayas."
     const val CERT_NO_EFECTIVO = "No se cambia por efectivo. Quien tenga el código puede usarla: cuídala como efectivo."
     const val COBRO_RECUPERADO = "Cobro con saldo recuperado"
     const val CONTINUAR = "Continuar"

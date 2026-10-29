@@ -40,7 +40,11 @@ class TarjetasDeRegaloViewModel @Inject constructor(
         online: Boolean = red.isConnected.value && red.isServerReachable.value,
         vacia: Boolean = ventaVacia.value,
     ) = estadoDeLaHoja(
-        if (venueObservado == almacen.venueId) ajustes else EstadoDeAjustes.Desconocido,
+        if (venueObservado != almacen.venueId) EstadoDeAjustes.Desconocido
+        else when (val actuales = repo.cambiosDeAjustes.value[venueObservado]) {
+            EstadoDeAjustes.NoDisponible, EstadoDeAjustes.Desconocido, EstadoDeAjustes.SinPermiso -> actuales
+            else -> ajustes
+        },
         online, roles.canReadGiftCards, roles.canSellGiftCards, vacia, planes.requiredTierLabel("GIFT_CARDS"),
     )
     private val estado = MutableStateFlow(calcular())
@@ -49,17 +53,17 @@ class TarjetasDeRegaloViewModel @Inject constructor(
 
     fun ajustesParaConsultar(venueId: String): com.avoqado.pos.giftcards.data.AjustesDeTarjetas? {
         if (venueId != almacen.venueId || venueId != venueObservado || !calcular().consultar.habilitada) return null
-        return (ajustesDeLaSucursal.value as? EstadoDeAjustes.Disponible)?.ajustes
+        return (cache(venueId) as? EstadoDeAjustes.Disponible)?.ajustes
     }
 
     fun ajustesParaVender(venueId: String): com.avoqado.pos.giftcards.data.AjustesDeTarjetas? {
         if (venueId != almacen.venueId || venueId != venueObservado || !calcular().vender.habilitada) return null
-        return (ajustesDeLaSucursal.value as? EstadoDeAjustes.Disponible)?.ajustes
+        return (cache(venueId) as? EstadoDeAjustes.Disponible)?.ajustes
     }
 
     init {
         viewModelScope.launch {
-            combine(ajustesDeLaSucursal, red.isConnected, red.isServerReachable, ventaVacia) { ajustes, conectado, servidor, vacia ->
+            combine(ajustesDeLaSucursal, red.isConnected, red.isServerReachable, ventaVacia, repo.cambiosDeAjustes) { ajustes, conectado, servidor, vacia, _ ->
                 calcular(ajustes, conectado && servidor, vacia)
             }.collect { estado.value = it }
         }
@@ -81,7 +85,7 @@ class TarjetasDeRegaloViewModel @Inject constructor(
             val resultado = repo.refrescarAjustes(venue)
             // También descarta la respuesta antigua si se salió de A y luego se volvió a A.
             if (venue == almacen.venueId && venue == venueObservado && apertura == generacion) {
-                ajustesDeLaSucursal.value = resultado
+                ajustesDeLaSucursal.value = repo.cambiosDeAjustes.value[venue] ?: resultado
                 estado.value = calcular()
             }
         }

@@ -32,6 +32,18 @@ class GiftCardsRepository @Inject constructor(private val client: OkHttpClient, 
     } ?: EstadoDeAjustes.Desconocido
     private val ajustes = MutableStateFlow(cache(venueObservado))
     val estadoDeAjustes = ajustes.asStateFlow()
+    private val ajustesPorSucursal = MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())
+    val cambiosDeAjustes = ajustesPorSucursal.asStateFlow()
+
+    // Una respuesta de otro negocio no autoriza ni esconde esta entrada.
+    fun ajustesParaEntrada(venueId: String): AjustesDeTarjetas? {
+        if (venueId != secureStorage.venueId) return null
+        when (ajustesPorSucursal.value[venueId]) {
+            EstadoDeAjustes.NoDisponible, EstadoDeAjustes.Desconocido, EstadoDeAjustes.SinPermiso -> return null
+            else -> Unit
+        }
+        return (cache(venueId) as? EstadoDeAjustes.Disponible)?.ajustes?.takeIf { it.capacidades.isNotEmpty() }
+    }
 
     private fun baseSinLogs() = client.newBuilder().apply {
         interceptors().removeAll { it is HttpLoggingInterceptor }
@@ -51,11 +63,16 @@ class GiftCardsRepository @Inject constructor(private val client: OkHttpClient, 
         val result = pedir(venueId, null, listOf("gift-cards", "settings"), parsear = GiftCardsApi::parsearAjustes)
         return synchronized(candadoDeAjustes) {
             // B no invalida la caché de A; sólo un refresco más nuevo de A puede hacerlo.
-            if (turnosDeAjustes[venueId] != turno) return@synchronized ajustes.value
+            if (turnosDeAjustes[venueId] != turno) return@synchronized ajustesPorSucursal.value[venueId] ?: cache(venueId)
             val nuevo = when (result) {
                 is Respuesta.Ok -> {
-                    secureStorage.guardarAjustesDeTarjetas(venueId, GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), result.valor))
-                    EstadoDeAjustes.Disponible(result.valor)
+                    if (result.valor.capacidades.isEmpty()) {
+                        secureStorage.guardarAjustesDeTarjetas(venueId, null)
+                        EstadoDeAjustes.NoDisponible
+                    } else {
+                        secureStorage.guardarAjustesDeTarjetas(venueId, GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), result.valor))
+                        EstadoDeAjustes.Disponible(result.valor)
+                    }
                 }
                 is Respuesta.Rechazo -> when {
                     result.fallo.http == 404 && result.fallo.code == null -> {
@@ -66,8 +83,9 @@ class GiftCardsRepository @Inject constructor(private val client: OkHttpClient, 
                 }
                 Respuesta.SinRespuesta -> null
             }
+            if (nuevo != null) ajustesPorSucursal.value = ajustesPorSucursal.value + (venueId to nuevo)
             if (venueObservado == venueId && nuevo != null) ajustes.value = nuevo
-            ajustes.value
+            ajustesPorSucursal.value[venueId] ?: cache(venueId)
         }
     }
     suspend fun vender(venueId: String, cuerpo: String): Respuesta<VentaDeTarjetas> = pedir(venueId, cuerpo, listOf("gift-cards", "orders"), parsear = GiftCardsApi::parsearVenta)

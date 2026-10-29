@@ -27,10 +27,19 @@ fun IdentificarTarjetaSheet(
     viewModel: IdentificarTarjetaViewModel = hiltViewModel(),
     saldo: (@Composable (ConsultaDeSaldo, Boolean) -> Unit)? = null,
 ) {
+    val cambioDeAjustes by viewModel.cambiosDeAjustes.collectAsState()
+    val ajustesVigentes = cambioDeAjustes.let { viewModel.ajustesVigentes(venueId) }
+    if (ajustesVigentes == null) {
+        LaunchedEffect(viewModel, venueId) { viewModel.cerrar(); onCerrar() }
+        return
+    }
+    val capacidadesDeApertura = remember(viewModel, venueId) {
+        (ajustes ?: ajustesVigentes).capacidades.intersect(ajustesVigentes.capacidades)
+    }
+    val ajustesEfectivos = ajustesVigentes.copy(
+        capacidades = capacidadesDeApertura.intersect(ajustesVigentes.capacidades))
     BarreraDeAtajos()
     LectorHidDeLaVentana(viewModel::procesarTecla)
-    // La vista y el modelo usan la misma foto de capacidades durante esta apertura.
-    val ajustesAlAbrir = remember(viewModel, venueId) { ajustes }
     val estado by viewModel.estado.collectAsState()
     val identificada by viewModel.identificada.collectAsState()
     val conectado by viewModel.conexion.collectAsState()
@@ -44,7 +53,7 @@ fun IdentificarTarjetaSheet(
     var pidioCodigo by remember { mutableStateOf(false) }
     var camara by remember { mutableStateOf(false) }
     DisposableEffect(viewModel, venueId) {
-        viewModel.abrir(venueId, ajustesAlAbrir)
+        viewModel.abrir(venueId, ajustesEfectivos)
         onDispose { viewModel.cerrar() }
     }
     LaunchedEffect(viewModel, prueba) { prueba?.let { viewModel.porPrueba(it) } }
@@ -66,7 +75,7 @@ fun IdentificarTarjetaSheet(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
             if (!conectado || !alcanzable) Text(TextosDeTarjetas.SIN_RED)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                (listOf(TextosDeTarjetas.ESCANEAR, TextosDeTarjetas.TECLEAR_CODIGO) + if (ajustesAlAbrir?.porTelefono == true) listOf(TextosDeTarjetas.TELEFONO) else emptyList()).forEach { tab ->
+                (listOf(TextosDeTarjetas.ESCANEAR, TextosDeTarjetas.TECLEAR_CODIGO) + if (ajustesEfectivos.porTelefono) listOf(TextosDeTarjetas.TELEFONO) else emptyList()).forEach { tab ->
                     FilterChip(selected = modo == tab, enabled = !ocupado, onClick = { modo = tab }, label = { Text(tab) })
                 }
             }

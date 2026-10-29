@@ -23,6 +23,7 @@ class IdentificarTarjetaViewModelTest {
     private lateinit var server: MockWebServer
     private lateinit var prefs: SolicitudesDeTarjetaTest.Preferencias
     private lateinit var storage: SecureStorage
+    private lateinit var repo: GiftCardsRepository
     private lateinit var vm: IdentificarTarjetaViewModel
     private val online = MutableStateFlow(true)
     private val reachable = MutableStateFlow(true)
@@ -36,7 +37,11 @@ class IdentificarTarjetaViewModelTest {
         storage = prefs.almacen()
         val red = mockk<ConnectivityMonitor> { every { isConnected } returns online; every { isServerReachable } returns reachable }
         val roles = mockk<RoleManager> { every { canReadGiftCards } returns true }
-        vm = IdentificarTarjetaViewModel(GiftCardsRepository(OkHttpClient(), storage), storage, red, lector, roles)
+        SecureStorage::class.java.getDeclaredField("plainPrefs").apply { isAccessible = true }.set(storage,
+            SecureStorage::class.java.getDeclaredField("prefs").apply { isAccessible = true }.get(storage))
+        prefs.values["giftCardSettings.a"] = GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), settings)
+        repo = GiftCardsRepository(OkHttpClient(), storage)
+        vm = IdentificarTarjetaViewModel(repo, storage, red, lector, roles)
         vm.ahora = { 1000L }; vm.abrir("a", settings)
     }
     @After fun end() { vm.cerrar(); System.clearProperty("avoqado.test.baseUrl"); server.shutdown() }
@@ -190,4 +195,29 @@ class IdentificarTarjetaViewModelTest {
         assertEquals("""{"code":"abcd"}""",request().body.readUtf8())
         assertEquals(1,server.requestCount)
     }
+    private suspend fun retirarCapacidades() {
+        enqueue("""{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true}}""")
+        assertEquals(EstadoDeAjustes.NoDisponible, repo.refrescarAjustes("a")); request()
+    }
+    private suspend fun entradaRetirada(prueba: PruebaDeTarjeta? = null) {
+        retirarCapacidades()
+        enqueue("""{"usableBalance":300.5,"cards":[$card]}""")
+        if (prueba == null) vm.porCodigo("abcd") else vm.porPrueba(prueba)
+        assertEquals("Una entrada abierta no consulta después de retirar capacidades", 1, server.requestCount)
+        assertNull(vm.identificada.value)
+    }
+    @Test fun `union E consulta del mosaico abierta no usa ajustes retirados`() = runBlocking { entradaRetirada() }
+    @Test fun `union E consulta del escaner abierta no usa ajustes retirados`() = runBlocking { entradaRetirada(PruebaDeTarjeta.PageToken("privado")) }
+    @Test fun `union E identificar del cobro no manda OTP ni consulta al retirar capacidades`() = runBlocking {
+        retirarCapacidades()
+        enqueue("""{"enviado":true}"""); vm.pedirCodigo("5512345678")
+        vm.verificar("5512345678", "123456"); vm.porEscaneo("abcd"); vm.reintentar()
+        assertEquals(1, server.requestCount); assertNull(vm.identificada.value)
+    }
+    @Test fun `union E entrada abierta queda inerte al perder ajustes del negocio`() = runBlocking {
+        prefs.values.remove("giftCardSettings.a")
+        enqueue("""{"usableBalance":300.5,"cards":[$card]}"""); vm.porCodigo("abcd")
+        assertEquals(0, server.requestCount); assertNull(vm.identificada.value)
+    }
+
 }

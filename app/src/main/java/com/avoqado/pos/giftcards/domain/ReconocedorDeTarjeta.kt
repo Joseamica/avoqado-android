@@ -9,6 +9,6 @@ object ReconocedorDeTarjeta {
         val texto = crudo.trim()
         liga.matchEntire(texto)?.let { return PruebaDeTarjeta.PageToken(it.groupValues[1]) }
         val limpio = texto.filterNot { it == '-' || it.isWhitespace() }
-        return limpio.takeIf(codigo::matches)?.let(PruebaDeTarjeta::Codigo)
+        return limpio.takeIf(codigo::matches)?.let { PruebaDeTarjeta.Codigo(it.uppercase()) }
     }
 }

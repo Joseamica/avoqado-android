@@ -30,7 +30,10 @@ class ConexionYCicloDePantallaR1Test {
         prefs = SolicitudesDeTarjetaTest.Preferencias()
         prefs.values["venueId"]="a"; prefs.values["userId"]="staff"
         store = SolicitudesDeTarjetaStore(prefs.almacen())
-        repo = mockk()
+        repo = mockk {
+            every { cambiosDeAjustes } returns MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())
+            every { ajustesParaEntrada("a") } returns ajustes
+        }
         red = mockk { every { isConnected } returns conectado; every { isServerReachable } returns servidor }
     }
     @After fun cerrar() { modelos.forEach { it.viewModelScope.cancel() } }

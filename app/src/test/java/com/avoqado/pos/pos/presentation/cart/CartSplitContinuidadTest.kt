@@ -812,6 +812,46 @@ class CartSplitContinuidadTest {
         assertNull(vm.cartState.value.creacionIncierta)
     }
 
+    @Test fun unionPorProductoConservaOrigenGuardadoYT6() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(SavedCart(id = "guardado", name = "Venta", items = listOf(
+            SavedCartItem(productId = "p1", name = "Articulo A", unitPrice = 10000, quantity = 1),
+            SavedCartItem(productId = "p2", name = "Articulo B", unitPrice = 10000, quantity = 1),
+        )))
+        vm.applyOrderDiscount(Discount(id = "d", name = "Cuenta", value = 20.0, type = "FIXED"))
+        val identidad = vm.cartState.value.identidadDeVenta
+        assertEquals(18000, vm.cartState.value.totalCents)
+        vm.aplicarCobroConfirmado("BYPRODUCT", setOf(vm.cartState.value.items.first().id), 9000)
+        val cart = vm.cartState.value
+        assertEquals(9000, cart.totalCents)
+        assertEquals("Saldo pendiente", cart.items.single().name)
+        assertEquals(identidad, cart.identidadDeVenta)
+        assertTrue(cart.vinoDeCarritoGuardado)
+        val fila = com.avoqado.pos.giftcards.domain.estadoDeLaVenta(
+            com.avoqado.pos.giftcards.data.EstadoDeAjustes.Disponible(
+                com.avoqado.pos.giftcards.data.AjustesDeTarjetas(true, emptyList(), 1.0, 1000.0,
+                    sale = com.avoqado.pos.giftcards.data.VentaPermitida(true))),
+            true, true, false, false, false, true, false, cart.creacionIncierta != null,
+            cart.vinoDeCarritoGuardado, false, false, false, true, false,
+        )
+        assertEquals(com.avoqado.pos.giftcards.domain.FilaDeLaCaja.T6, fila.fila)
+        assertFalse(fila.habilitada)
+    }
+
+    @Test fun unionPorProductoConservaCreacionIncierta() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(SavedCart(id = "guardado", name = "Venta", items = listOf(
+            SavedCartItem(productId = "p1", name = "Articulo A", unitPrice = 10000, quantity = 1),
+            SavedCartItem(productId = "p2", name = "Articulo B", unitPrice = 10000, quantity = 1),
+        )))
+        vm.applyOrderDiscount(Discount(id = "d", name = "Cuenta", value = 20.0, type = "FIXED"))
+        vm.marcarCreacionIncierta(vm.cartState.value.identidadDeVenta, "creacion")
+        vm.aplicarCobroConfirmado("BYPRODUCT", setOf(vm.cartState.value.items.first().id), 9000)
+        assertEquals(9000, vm.cartState.value.totalCents)
+        assertEquals("creacion", vm.cartState.value.creacionIncierta)
+        assertTrue(vm.cartState.value.vinoDeCarritoGuardado)
+    }
+
     @Test fun restaurarFotoSoloVacioConIdentidadNuevaSinVinculo() = runTest {
         val vm = createViewModel()
         vm.addCustomAmount("Venta", 10000)

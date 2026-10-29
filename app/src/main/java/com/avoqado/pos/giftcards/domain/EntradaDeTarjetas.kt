@@ -14,7 +14,7 @@ fun estadoDeLaHoja(
     etiquetaPro: String?,
 ): EstadoDeHoja {
     val oculta = AccionDeHoja(visible = false, habilitada = false)
-    if (ajustes == EstadoDeAjustes.NoDisponible) return EstadoDeHoja(false, oculta, oculta)
+    if (ajustes == EstadoDeAjustes.NoDisponible || ajustes == EstadoDeAjustes.Desconocido) return EstadoDeHoja(false, oculta, oculta)
     val consultar = when {
         !enLinea -> AccionDeHoja(true, false, TextosDeTarjetas.SIN_RED)
         ajustes == EstadoDeAjustes.SinPermiso || !puedeLeer -> AccionDeHoja(true, false, TextosDeTarjetas.SIN_PERMISO_CONSULTAR)

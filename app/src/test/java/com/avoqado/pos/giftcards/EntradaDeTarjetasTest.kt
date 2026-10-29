@@ -28,19 +28,22 @@ class EntradaDeTarjetasTest {
         }
     }
 
-    @Test fun `desconocido oculta vender con y sin red`() {
+    @Test fun `desconocido oculta toda entrada con y sin red`() {
         for (red in listOf(true, false)) {
             val e = hoja(EstadoDeAjustes.Desconocido, red)
-            assertTrue(e.mosaicoVisible)
+            assertFalse(e.mosaicoVisible)
             assertFalse(e.vender.visible)
-            assertTrue(e.consultar.visible)
-            assertEquals(red, e.consultar.habilitada)
-            assertEquals(if (red) null else TextosDeTarjetas.SIN_RED, e.consultar.motivo)
+            assertFalse(e.consultar.visible)
+            assertFalse(e.consultar.habilitada)
+            assertNull(e.consultar.motivo)
         }
     }
 
-    @Test fun `desconocido conserva permiso de consultar`() {
-        assertEquals(TextosDeTarjetas.SIN_PERMISO_CONSULTAR, hoja(EstadoDeAjustes.Desconocido, leer = false).consultar.motivo)
+    @Test fun `desconocido no ofrece consultar aun sin permiso`() {
+        val consultar = hoja(EstadoDeAjustes.Desconocido, leer = false).consultar
+        assertFalse(consultar.visible)
+        assertFalse(consultar.habilitada)
+        assertNull(consultar.motivo)
     }
 
     @Test fun `sin entrega nunca aparece vender incluso sin red`() {

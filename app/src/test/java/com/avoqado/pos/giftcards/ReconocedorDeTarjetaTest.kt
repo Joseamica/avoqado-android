@@ -1,5 +1,6 @@
 package com.avoqado.pos.giftcards
 import com.avoqado.pos.giftcards.data.PruebaDeTarjeta.*
+import com.avoqado.pos.giftcards.data.aJson
 import com.avoqado.pos.giftcards.domain.*
 import org.junit.Test
 import org.junit.Assert.*
@@ -17,7 +18,7 @@ class ReconocedorDeTarjetaTest {
             "https://pay.avoqado.io/tarjeta/$t?x=1" to null,
             "https://pay.avoqado.io/r/abc" to null,
             "K7QZ-ABCD-EFGH-JKMN-P" to Codigo("K7QZABCDEFGHJKMNP"),
-            "k7qz abcd efgh jkmn p" to Codigo("k7qzabcdefghjkmnp"),
+            "k7qz abcd efgh jkmn p" to Codigo("K7QZABCDEFGHJKMNP"),
             "K7QZABCDEFGHJKMNP\r\n" to Codigo("K7QZABCDEFGHJKMNP"),
             "K7QZ-ABCD-EFGH-JKMN" to null,
             "K7QZ-ABCD-EFGH-JKMN-PQ" to null,
@@ -26,6 +27,17 @@ class ReconocedorDeTarjetaTest {
             "" to null)
         assertEquals(16, casos.size)
         casos.forEachIndexed { i, (entrada, esperado) -> assertEquals("caso $i", esperado, ReconocedorDeTarjeta.reconocer(entrada)) }
+    }
+    @Test fun `unionF minusculas y mayusculas son la misma prueba y llave`() {
+        val mayusculas = ReconocedorDeTarjeta.reconocer("K7QZABCDEFGHJKMNP")!!
+        for (texto in listOf("k7qzabcdefghjkmnp", "k7Qz-AbCd-EfGh-JkMn-P", " k7qz abcd efgh jkmn p\r\n")) {
+            val prueba = ReconocedorDeTarjeta.reconocer(texto)!!
+            assertEquals(Codigo("K7QZABCDEFGHJKMNP"), prueba)
+            assertEquals(mayusculas, prueba)
+            assertEquals(mayusculas.hashCode(), prueba.hashCode())
+            assertEquals("misma llave de prueba", 1, setOf(mayusculas, prueba).size)
+            assertEquals(mayusculas.aJson(), prueba.aJson())
+        }
     }
     @Test fun `scanner y paquete no escriben secretos`() {
         val root = File("src/main/java/com/avoqado/pos").takeIf { it.exists() } ?: File("app/src/main/java/com/avoqado/pos")

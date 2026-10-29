@@ -8,6 +8,7 @@ import com.avoqado.pos.giftcards.presentation.VenderTarjetaViewModel
 import io.mockk.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.*
 import org.junit.*
@@ -19,6 +20,7 @@ class VenderTarjetaViewModelTest {
     private lateinit var fake: SolicitudesDeTarjetaTest.Preferencias
     private lateinit var almacen: SecureStorage
     private lateinit var store: SolicitudesDeTarjetaStore
+    private lateinit var repoActual: GiftCardsRepository
     private val conectado = MutableStateFlow(true)
     private val alcanzable = MutableStateFlow(true)
     private val red = mockk<ConnectivityMonitor> {
@@ -32,7 +34,8 @@ class VenderTarjetaViewModelTest {
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer " + almacen.userId).build())
         }.build()
-        return VenderTarjetaViewModel(GiftCardsRepository(client, almacen), store, almacen, red).also {
+        repoActual = GiftCardsRepository(client, almacen)
+        return VenderTarjetaViewModel(repoActual, store, almacen, red).also {
             it.alAbrir("a", ajustes); it.cambiar(form)
         }
     }
@@ -43,6 +46,9 @@ class VenderTarjetaViewModelTest {
         fake.values["venueId"] = "a"; fake.values["userId"] = "c000000000000000000000000a"
         fake.values["userFirstName"] = "Ana"; fake.values["userLastName"] = "López"
         almacen = fake.almacen(); store = SolicitudesDeTarjetaStore(almacen)
+        SecureStorage::class.java.getDeclaredField("plainPrefs").apply { isAccessible = true }.set(almacen,
+            SecureStorage::class.java.getDeclaredField("prefs").apply { isAccessible = true }.get(almacen))
+        fake.values["giftCardSettings.a"] = GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), ajustes)
         conectado.value = true; alcanzable.value = true
     }
     @After fun cerrar() { server.shutdown(); System.clearProperty("avoqado.test.baseUrl") }
@@ -211,4 +217,46 @@ class VenderTarjetaViewModelTest {
         }
         assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
     }
+    private suspend fun retirarCapacidades() {
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(
+            """{"success":true,"data":{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true}}}"""))
+        assertEquals(EstadoDeAjustes.NoDisponible, repoActual.refrescarAjustes("a"))
+        assertTrue(server.takeRequest(1, TimeUnit.SECONDS)?.path?.endsWith("/settings") == true)
+    }
+    @Test fun `union E vender abierto no crea ni envia tras retirar capacidades`() = runBlocking {
+        val vm = vm(); retirarCapacidades(); server.enqueue(exito()); vm.cobrar()
+        assertEquals(1, server.requestCount); assertTrue(store.delNegocio("a").isEmpty())
+    }
+    @Test fun `union E venta durable con dinero sigue consultando su cuenta sin capacidades`() = runBlocking {
+        val vm = vm(); val s = pendiente(); assertTrue(store.guardar(s)); assertTrue(vm.reanudar(s.llave))
+        retirarCapacidades(); server.enqueue(s4("ACTIVE")); vm.cobrar()
+        assertEquals("GET", server.takeRequest(1, TimeUnit.SECONDS)?.method)
+        assertEquals(2, server.requestCount); assertEquals(VenderTarjetaViewModel.Estado.ResultadoPendiente("o"), vm.estado.value)
+        assertEquals(s, store.delNegocio("a").single())
+    }
+
+    @Test fun `union E venta enviada no se cancela al retirar capacidades y conserva su solicitud`() = runBlocking {
+        val llego=java.util.concurrent.CountDownLatch(1);val seguir=java.util.concurrent.CountDownLatch(1)
+        server.dispatcher=object: Dispatcher() {
+            override fun dispatch(r: RecordedRequest): MockResponse {
+                if(r.path!!.endsWith("/settings")) return MockResponse().setHeader("Content-Type","application/json").setBody(
+                    """{"success":true,"data":{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true}}}""")
+                llego.countDown();check(seguir.await(5,TimeUnit.SECONDS));return exito()
+            }
+        }
+        val vm=vm();val llave=vm.llave
+        val primero=async(kotlinx.coroutines.Dispatchers.Default) { vm.cobrar() }
+        try {
+            assertTrue(llego.await(5,TimeUnit.SECONDS));val original=store.delNegocio("a").single()
+            assertEquals(EstadoDeAjustes.NoDisponible,repoActual.refrescarAjustes("a"))
+            assertEquals(VenderTarjetaViewModel.Estado.Enviando,vm.estado.value)
+            assertEquals(original,store.delNegocio("a").single())
+            seguir.countDown();primero.await()
+            assertEquals(VenderTarjetaViewModel.Estado.Cobro("o"),vm.estado.value)
+            assertEquals(llave,store.delNegocio("a").single().llave)
+            assertEquals(original.cuerpo,store.delNegocio("a").single().cuerpo)
+            assertEquals(2,server.requestCount)
+        } finally { seguir.countDown();primero.join() }
+    }
+
 }

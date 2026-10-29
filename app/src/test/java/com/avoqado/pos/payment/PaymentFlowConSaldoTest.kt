@@ -4,6 +4,10 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
+import com.avoqado.pos.core.data.local.database.filaAlReemplazar
+import com.avoqado.pos.cashdrawer.data.CashDrawerDao
+import com.avoqado.pos.cashdrawer.data.model.*
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.giftcards.SolicitudesDeTarjetaTest
 import com.avoqado.pos.giftcards.TablaDeLaCajaTest
@@ -32,6 +36,7 @@ class PaymentFlowConSaldoTest {
     private val preferences = SolicitudesDeTarjetaTest.Preferencias()
     internal val storage = preferences.almacen()
     private val dao = mockk<PendingPaymentDao>(relaxed=true)
+    private val filasDelEfectivo = linkedMapOf<String, PendingPaymentEntity>()
     private val roles = mockk<RoleManager>(relaxed = true)
     internal val connected = MutableStateFlow(true)
     private val reachable = MutableStateFlow(true)
@@ -62,13 +67,56 @@ class PaymentFlowConSaldoTest {
         storage.guardarAjustesDeTarjetas("a",GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(),settings))
         every { roles.canReadGiftCards } returns true;every { roles.canRedeemGiftCards } returns true
         every { roles.hasVenuePermission("orders:create") } returns true
-        coEvery { dao.forVenue(any()) } returns emptyList()
-        coEvery { dao.insert(any()) } answers { reservas++; Unit }
+        coEvery { dao.forVenue(any()) } coAnswers { filasDelEfectivo.values.filter { it.venueId == firstArg<String>() } }
+        coEvery { dao.findForVenue(any(), any()) } coAnswers {
+            filasDelEfectivo[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() }
+        }
+        coEvery { dao.findByIdQ15(any()) } coAnswers { filasDelEfectivo[firstArg<String>()] }
+        coEvery { dao.enVueloDelVenue(any()) } coAnswers {
+            filasDelEfectivo.values.filter { it.venueId == firstArg<String>() && it.syncStatus == "EN_VUELO" }
+        }
+        coEvery { dao.insert(any()) } coAnswers { reservas++; guardarFilaDelEfectivo(firstArg()) }
+        coEvery { dao.reservarEnLugarDe(any(), any()) } coAnswers {
+            secondArg<Collection<String>>().forEach(::descartarFilaDelEfectivo)
+            reservas++; guardarFilaDelEfectivo(firstArg())
+        }
+        coEvery { dao.borrarSiEnVuelo(any()) } returns 0
+        coEvery { dao.descartarReservaRechazada(any()) } coAnswers { descartarFilaDelEfectivo(firstArg()) }
+        coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+            val fila = filasDelEfectivo[firstArg<String>()]?.takeIf { it.syncStatus == "EN_VUELO" }
+            if (fila == null) 0 else {
+                filasDelEfectivo[fila.id] = fila.copy(amountCents = secondArg(), orderId = thirdArg()); 1
+            }
+        }
+        coEvery { dao.registrarResultadoQ15(any(), any(), any(), any(), any(), any()) } coAnswers {
+            val fila = filasDelEfectivo[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() }
+            if (fila == null) 0 else {
+                val motivo = arg<String?>(3); val resultado = arg<String?>(4)
+                filasDelEfectivo[fila.id] = fila.copy(
+                    syncStatus = if (fila.syncStatus == "SYNCED" || arg<Boolean>(2)) "SYNCED" else "PENDING",
+                    q15InitialResultJson = fila.q15InitialResultJson ?: resultado,
+                    q15ResultJson = resultado ?: fila.q15ResultJson,
+                    q15Reason = fila.q15Reason ?: motivo,
+                    q15DetectedAt = if (fila.q15Reason != null || motivo != null) fila.q15DetectedAt ?: arg<Long>(5) else fila.q15DetectedAt,
+                ); 1
+            }
+        }
         every { network.isConnected } returns connected;every { network.isServerReachable } returns reachable
         server=MockWebServer().also {it.start()};System.setProperty("avoqado.test.baseUrl",server.url("/api/v1").toString())
         store=SolicitudesDeTarjetaStore(storage);repo=GiftCardsRepository(OkHttpClient(),storage)
         local=CobrosLocalesDeLaCuenta(dao,storage,store);coordinator=CobroConSaldoCoordinator(repo,store,storage,local)
     }
+    private fun guardarFilaDelEfectivo(fila: PendingPaymentEntity) {
+        val anterior = filasDelEfectivo[fila.id]
+        if (anterior?.syncStatus != "SYNCED") filasDelEfectivo[fila.id] = filaAlReemplazar(anterior, fila)
+    }
+    private fun descartarFilaDelEfectivo(id: String): Int {
+        val fila = filasDelEfectivo[id] ?: return 0
+        if (fila.syncStatus != "EN_VUELO" || fila.q15CaptureJson == null || fila.q15Reason != null ||
+            fila.method != "CASH" || fila.tenderTypeId != null) return 0
+        filasDelEfectivo.remove(id); return 1
+    }
+
     private suspend fun cerrarScopes() {
         val trabajos = subjects.mapNotNull { it.viewModelScope.coroutineContext[Job] }
         trabajos.forEach { it.cancel() }
@@ -124,6 +172,30 @@ class PaymentFlowConSaldoTest {
     private fun response(status:Int=200,body:String=success())=MockResponse().setResponseCode(status).setHeader("Content-Type","application/json").setBody(body)
     private fun success(rest:Int=0)="""{"success":true,"data":{"paymentId":"p","orderId":"o","orderNumber":"ORD","amount":80,"tipAmount":0,"redeemed":[],"orderRemaining":$rest,"orderPaymentStatus":"${if(rest>0) "PARTIAL" else "PAID"}"}}"""
     private fun active()=SolicitudDeTarjeta(tipo="GIFT_CARD_REDEEM",llave="existing",venueId="a",creadaEn=1,orderId="o",cuerpo="{}",mandado=true)
+
+    @Test fun unionDaoActualizaSoloApartadoEnVueloYConservaCaptura() = runTest {
+        val llave = "c000000000000000000000002"
+        assertEquals(0, dao.actualizarApartadoEnVuelo(llave, 9000, "o"))
+        val efectivo = CashPaymentRepository(storage, dao)
+        efectivo.reservarCobro(com.avoqado.pos.payment.data.model.CreateOrderRequest(emptyList(),
+            subtotal = 10000, total = 10000, paymentMethod = "CASH"), "staff", 10000, 0, null,
+            orderId = "o", idempotencyKey = llave, venueId = "a")
+        val original = dao.findForVenue("a", llave)
+        assertNotNull("El DAO debe conservar la reserva escrita por el repositorio real", original)
+        assertNotNull(original!!.q15CaptureJson)
+        assertEquals(1, dao.actualizarApartadoEnVuelo(llave, 9000, "o"))
+        val actualizada = dao.findForVenue("a", llave)!!
+        assertEquals(9000, actualizada.amountCents)
+        assertEquals("o", actualizada.orderId)
+        assertEquals(original.q15CaptureJson, actualizada.q15CaptureJson)
+        dao.insert(actualizada.copy(syncStatus = "PENDING", q15CaptureJson = null))
+        assertEquals(0, dao.actualizarApartadoEnVuelo(llave, 7000, "otra"))
+        val pendiente = dao.findForVenue("a", llave)!!
+        assertEquals(9000, pendiente.amountCents)
+        assertEquals("o", pendiente.orderId)
+        assertEquals(original.q15CaptureJson, pendiente.q15CaptureJson)
+        assertNull(dao.findForVenue("b", llave))
+    }
 
     @Test fun laTablaEntera()=runTest {
         for (row in TablaDeLaCajaTest.casos()) {
@@ -1032,11 +1104,12 @@ class PaymentFlowConSaldoTest {
         } finally { soltar.countDown(); cerrarR21(carrito, recuperar) }
     }
 
-    @Test fun r21EfectivoTardioDeCuentaCerradaNoConsumeOtraFotoEnElMismoModelo() = runTest {
+    @Test fun r21EfectivoEnVueloProtegeSuFotoYTerminaUnaVez() = runTest {
         val carrito = com.avoqado.pos.pos.presentation.cart.CartPromotionTest().apply { setup() }.createViewModel()
         val recuperar = recuperadorR21()
         val entrada = java.util.concurrent.CountDownLatch(1)
         val soltar = java.util.concurrent.CountDownLatch(1)
+        var dejarDeObservar: (() -> Unit)? = null
         every { terminal.intentoEnVuelo() } returns null
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -1046,6 +1119,9 @@ class PaymentFlowConSaldoTest {
         }
         try {
             val foto = cart.aFoto(null)
+            assertTrue(carrito.restaurarFoto(foto))
+            cart = carrito.cartState.value
+            val identidadA = cart.identidadDeVenta
             val subject = vm("o", efectivoReal = true)
             subject.startPaymentFlow(cart, resumeOrderId = "o", apertura = "r21-cuenta-a-tardia")
             enlazarR21(subject, carrito)
@@ -1057,9 +1133,24 @@ class PaymentFlowConSaldoTest {
             val productores = parent.children.filter { it !in previos }.toList()
             assertTrue("El productor real de efectivo sigue vivo", productores.isNotEmpty())
             subject.cancelarVenta(); runCurrent()
-            assertTrue("Una cuenta existente permite cerrar su pantalla", subject.debeSalir.value)
-            subject.consumirSalida()
+            assertFalse("D2 v6: el efectivo suspendido no permite salir", subject.debeSalir.value)
+            val observador = carrito.observarRestauracionDeFoto({ true }, { true }, {})
+            dejarDeObservar = observador.first
+            assertFalse("Dinero en curso impide otro cobro sobre la misma foto", observador.second())
+            assertEquals(identidadA, carrito.cartState.value.identidadDeVenta)
+            assertEquals(10000, carrito.cartState.value.totalCents)
+            assertEquals("a", storage.venueId)
+            soltar.countDown()
+            withContext(Dispatchers.Default) { withTimeout(5000) { productores.joinAll() } }
+            runCurrent()
+            val completion = subject.consumeCompletion()!!
+            assertEquals(identidadA, completion.identidadDeVenta)
+            assertEquals("o", completion.orderId)
+            assertTrue(carrito.aplicarCobroConfirmado(completion.splitType, completion.paidItemIds,
+                completion.remainingBalanceCents, identidadDeVentaDelCobro = completion.identidadDeVenta).aplicadoAlCarritoActual)
             assertTrue(carrito.cartState.value.isEmpty)
+            assertNull("El resultado de A se consume una sola vez", subject.consumeCompletion())
+            assertEquals(1, reservas)
             assertTrue(store.guardar(SolicitudDeTarjeta(tipo = "GIFT_CARD_REDEEM", llave = "r21-foto-b-tardia",
                 venueId = "a", creadaEn = 1, cuerpo = "", nuevaCuenta = true, porRecuperar = true,
                 mandado = true, foto = GiftCardsApi.json.encodeToString(FotoDeLaVenta.serializer(), foto))))
@@ -1068,22 +1159,17 @@ class PaymentFlowConSaldoTest {
             val identidadB = cart.identidadDeVenta
             subject.startPaymentFlow(cart, apertura = "r21-foto-b-tardia")
             enlazarR21(subject, carrito)
-            soltar.countDown()
-            withContext(Dispatchers.Default) { withTimeout(5000) { productores.joinAll() } }
-            runCurrent()
-            val completion = subject.consumeCompletion()
-            val aplicado = completion?.let {
-                carrito.aplicarCobroConfirmado(it.splitType, it.paidItemIds, it.remainingBalanceCents,
-                    identidadDeVentaDelCobro = it.identidadDeVenta).aplicadoAlCarritoActual
-            } ?: false
-            assertFalse("El efectivo de A no puede consumir la foto recuperada de B", aplicado)
-            assertNull(completion)
+            assertFalse("La finalización de A no puede consumir la foto posterior de B",
+                carrito.aplicarCobroConfirmado(completion.splitType, completion.paidItemIds,
+                    completion.remainingBalanceCents, identidadDeVentaDelCobro = completion.identidadDeVenta).aplicadoAlCarritoActual)
+            assertNull(subject.consumeCompletion())
             assertEquals(identidadB, carrito.cartState.value.identidadDeVenta)
             assertEquals(10000, carrito.cartState.value.totalCents)
+            assertEquals("a", storage.venueId)
             assertTrue(subject.state.value is com.avoqado.pos.payment.data.model.PaymentFlowState.SelectingPaymentMethod)
             assertEquals(1, server.requestCount)
             assertTrue(server.takeRequest(1, TimeUnit.SECONDS)!!.path!!.contains("/orders/o/"))
-        } finally { soltar.countDown(); cerrarR21(carrito, recuperar) }
+        } finally { dejarDeObservar?.invoke(); soltar.countDown(); cerrarR21(carrito, recuperar) }
     }
 
     @Test fun r22ControlExitoObsoletoRegistraArqueoAutoritativoSinCambiarB() = runTest {
@@ -1097,9 +1183,20 @@ class PaymentFlowConSaldoTest {
     private suspend fun TestScope.controlarEfectivoObsoletoR22(encolable: Boolean) {
         val carrito = com.avoqado.pos.pos.presentation.cart.CartPromotionTest().apply { setup() }.createViewModel()
         val arqueo = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed = true)
-        val efectivo = spyk(CashPaymentRepository(storage, dao))
-        val filas = mutableListOf<com.avoqado.pos.core.data.local.database.PendingPaymentEntity>()
-        coEvery { dao.insert(capture(filas)) } answers { Unit }
+        val caja = CashDrawerSessionEntity("c000000000000000000000001", "a", "FULLTEST", "staff", "Ana A", 1, 0)
+        val eventos = linkedMapOf<String, CashDrawerEventEntity>()
+        val cajon = mockk<CashDrawerDao>(relaxed = true)
+        coEvery { cajon.getSession(any()) } coAnswers { caja.takeIf { it.id == firstArg<String>() } }
+        coEvery { cajon.getSessionEvents(any()) } coAnswers { eventos.values.filter { it.sessionId == firstArg<String>() } }
+        coEvery { cajon.insertarEventoSiNoExiste(any()) } coAnswers {
+            val evento = firstArg<CashDrawerEventEntity>()
+            if (eventos.putIfAbsent(evento.id, evento) == null) 1L else -1L
+        }
+        coEvery { arqueo.getOpenSession() } returns caja
+        every { arqueo.cajasQueEsperanSuApertura() } returns emptySet()
+        val salida = SalidaDelApartado(dao, cajon, storage)
+        val efectivo = spyk(CashPaymentRepository(storage, dao, salida))
+        val filas = filasDelEfectivo.values
         val entrada = java.util.concurrent.CountDownLatch(1)
         val soltar = java.util.concurrent.CountDownLatch(1)
         preferences.values["userFirstName"] = "Ana"
@@ -1109,11 +1206,11 @@ class PaymentFlowConSaldoTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 entrada.countDown(); check(soltar.await(10, TimeUnit.SECONDS))
                 return if (encolable) response(503, """{"message":"temporal"}""")
-                else response(200, """{"success":true,"data":{"id":"cash-a","amount":7500,"tipAmount":500,"remainingBalance":0,"orderPaymentStatus":"PAID"}}""")
+                else response(200, """{"success":true,"payment":{"paymentId":"cash-a","orderId":"o","venueId":"a","status":"COMPLETED","method":"CASH","splitType":"FULLPAYMENT","amount":7500,"tipAmount":500,"remainingBalanceCents":0,"orderPaymentStatus":"PAID"}}""")
             }
         }
         try {
-            val subject = vmControlR22(efectivo, arqueo)
+            val subject = vmControlR22(efectivo, arqueo, salida)
             subject.startPaymentFlow(cart, resumeOrderId = "o", apertura = "r22-a")
             enlazarR21(subject, carrito)
             runCurrent()
@@ -1124,7 +1221,7 @@ class PaymentFlowConSaldoTest {
             val productores = parent.children.filter { it !in previos }.toList()
             assertTrue(productores.isNotEmpty())
             subject.cancelarVenta(); runCurrent()
-            assertTrue(subject.debeSalir.value)
+            assertFalse("D2 v6 conserva A mientras su efectivo está en vuelo", subject.debeSalir.value)
             subject.consumirSalida()
             preferences.values["venueId"] = "b"
             preferences.values["userId"] = "staff-b"
@@ -1142,15 +1239,27 @@ class PaymentFlowConSaldoTest {
             soltar.countDown()
             withContext(Dispatchers.Default) { withTimeout(5000) { productores.joinAll() } }
             runCurrent()
-            coVerify(exactly = 1) { arqueo.addCashSale(if (encolable) 10000 else 8000, "o", "a", "staff", "Ana A") }
+            assertEquals(1, eventos.size)
+            coVerify(exactly = 1) { cajon.insertarEventoSiNoExiste(any()) }
+            val evento = eventos.values.single()
+            assertEquals(CashDrawerEventType.CASH_SALE.name, evento.type)
+            assertEquals(caja.id, evento.sessionId)
+            assertEquals("a", evento.venueId)
+            assertEquals("staff", evento.staffId)
+            assertEquals("Ana A", evento.staffName)
+            assertEquals("o", evento.orderId)
+            assertEquals(if (encolable) 10000 else 8000, evento.amountCents)
             coVerify(exactly = if (encolable) 1 else 0) {
                 efectivo.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(),
-                    any(), any(), any(), any(), any(), any(), any(), any())
+                    any(), any(), any(), any(), any(), any(), any(), any(), cajaDelCobro = caja.id)
             }
             val request = server.takeRequest(1, TimeUnit.SECONDS)!!
             assertTrue(request.path!!.contains("/venues/a/orders/o/pay"))
             val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
             assertEquals("staff", body.getValue("staffId").jsonPrimitive.content)
+            val llave = body.getValue("idempotencyKey").jsonPrimitive.content
+            assertEquals(com.avoqado.pos.cashdrawer.data.CashDrawerRepository.idDeLaVentaEnEfectivo(llave), evento.id)
+            assertEquals(filas.single { it.id == llave }.createdAt, evento.createdAt)
             if (encolable) {
                 val pendiente = filas.single { it.syncStatus == "PENDING" }
                 assertEquals(body.getValue("idempotencyKey").jsonPrimitive.content, pendiente.id)
@@ -1159,7 +1268,14 @@ class PaymentFlowConSaldoTest {
                 assertEquals("o", pendiente.orderId)
                 assertEquals(10000, pendiente.amountCents)
                 assertEquals(0, pendiente.tipCents)
-            } else assertTrue(filas.none { it.syncStatus == "PENDING" })
+            } else {
+                assertTrue(filas.none { it.syncStatus == "PENDING" })
+                val confirmada = filas.single { it.id == llave }
+                assertEquals("SYNCED", confirmada.syncStatus)
+                assertEquals(10000, confirmada.amountCents)
+                assertEquals(0, confirmada.tipCents)
+                assertEquals(ConciliacionDelCobro.DIFERENCIA, confirmada.q15Reason)
+            }
             assertEquals(estadoB, subject.state.value)
             assertTrue(estadoB is com.avoqado.pos.payment.data.model.PaymentFlowState.SelectingPaymentMethod)
             assertNull(subject.consumeCompletion())
@@ -1172,7 +1288,7 @@ class PaymentFlowConSaldoTest {
 
     // Colaboradores observables sólo para los controles R22; las fixtures acreditadas quedan literales.
     private fun vmControlR22(efectivo: CashPaymentRepository,
-        arqueo: com.avoqado.pos.cashdrawer.data.CashDrawerRepository): PaymentFlowViewModel {
+        arqueo: com.avoqado.pos.cashdrawer.data.CashDrawerRepository, salida: SalidaDelApartado): PaymentFlowViewModel {
         val tpv = mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository>()
         every { tpv.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
         val areas = mockk<com.avoqado.pos.areatickets.data.AreaTicketRepository>(relaxed = true)
@@ -1181,7 +1297,7 @@ class PaymentFlowConSaldoTest {
             val destino = server.url(chain.request().url.encodedPath)
             check(java.net.InetAddress.getByName(destino.host).isLoopbackAddress)
             chain.proceed(chain.request().newBuilder().url(destino).build())
-        }.build())
+        }.build(), dao, salida)
         return PaymentFlowViewModel(orderRepository = orders, cashPaymentRepository = efectivo,
             tenderTypeRepository = mockk(relaxed = true), terminalPaymentService = terminal, tpvSettingsRepository = tpv,
             paymentSyncService = mockk(relaxed = true), cashDrawerRepository = arqueo, kdsRepository = mockk(relaxed = true),
@@ -1217,4 +1333,34 @@ class PaymentFlowConSaldoTest {
         assertEquals(diario,storage.giftCardRequestsJson)
         assertEquals(1,server.requestCount)
     }
+    private suspend fun retirarCapacidadesUnionE() {
+        server.enqueue(response(body="""{"success":true,"data":{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true}}}"""))
+        assertEquals(EstadoDeAjustes.NoDisponible, repo.refrescarAjustes("a"))
+        assertTrue(server.takeRequest(1, TimeUnit.SECONDS)?.path?.endsWith("/settings") == true)
+    }
+    @Test fun `union E monto abierto observa retiro 200 y no manda dinero nuevo`() = runTest {
+        storage.guardarAjustesDeTarjetas("a", GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), settings.copy(capacidades=setOf("PAGE_TOKEN"))))
+        val subject=vm("o"); subject.actualizarFilaDeSaldo(); runCurrent()
+        assertTrue(subject.conductaDelSaldo.value.visible)
+        retirarCapacidadesUnionE(); runCurrent()
+        assertFalse("El cobro abierto observa el retiro sin otro toque", subject.conductaDelSaldo.value.visible)
+        assertTrue(subject.cobrarConSaldo(identified, 8000) is DesenlaceDeCobro.NoSalio)
+        assertEquals(1, server.requestCount); assertTrue(store.delNegocio("a").isEmpty())
+    }
+    @Test fun `union E saldo incierto mantiene llave y recupera despues de retirar capacidades`() = runTest {
+        val subject=vm("o"); server.enqueue(response(503,"{}"))
+        assertTrue(subject.cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Incierto)
+        server.takeRequest(1,TimeUnit.SECONDS)
+        val diario=storage.giftCardRequestsJson;val llave=subject.llaveDeLaSolicitudDeSaldo
+        retirarCapacidadesUnionE(); runCurrent()
+        assertEquals(diario,storage.giftCardRequestsJson);assertEquals(llave,subject.llaveDeLaSolicitudDeSaldo)
+        assertTrue(subject.desenlaceDeSaldo.value is DesenlaceDeCobro.Incierto)
+        server.enqueue(response(body="""{"success":true,"data":{"found":false}}"""));server.enqueue(response())
+        assertTrue(subject.reintentarSaldo() is DesenlaceDeCobro.Cobrado)
+        val get=server.takeRequest(1,TimeUnit.SECONDS)!!;val replay=server.takeRequest(1,TimeUnit.SECONDS)!!
+        assertEquals("GET",get.method);assertTrue(get.path!!.endsWith("/payments/"+llave))
+        assertEquals(SolicitudesDeTarjeta.leer(diario).single().cuerpo,replay.body.readUtf8())
+        assertEquals(4,server.requestCount);assertEquals(1,cleared)
+    }
+
 }

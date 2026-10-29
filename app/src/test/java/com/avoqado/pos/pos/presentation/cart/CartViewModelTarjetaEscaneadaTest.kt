@@ -184,6 +184,7 @@ class CartViewModelTarjetaEscaneadaTest {
             every { isConnected } returns online; every { isServerReachable } returns online
         }
         val roles = mockk<com.avoqado.pos.core.domain.RoleManager> { every { canReadGiftCards } returns true }
+        every { secureStorage.leerAjustesDeTarjetas("venue-1") } returns com.avoqado.pos.giftcards.FijasDeTarjetas.ajustes
         val vm = com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel(
             com.avoqado.pos.giftcards.data.GiftCardsRepository(cliente,secureStorage),secureStorage,red,bus,roles)
         val dialogo = mockk<android.app.Dialog>()

@@ -702,6 +702,8 @@ class AtajosDelCobroEnLaEscenaTest {
         val vm: com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel
         init {
             e.sesion(); e.storage.venuePermissions = listOf("giftCards:read")
+            e.storage.guardarAjustesDeTarjetas(e.storage.venueId!!,
+                """{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true},"capacidades":["PAGE_TOKEN"]}""")
             vm = com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel(
                 com.avoqado.pos.giftcards.data.GiftCardsRepository(cliente,e.storage), e.storage,e.red,
                 com.avoqado.pos.pos.data.LectorHidBus(),com.avoqado.pos.core.domain.RoleManager(e.storage))
@@ -735,6 +737,172 @@ class AtajosDelCobroEnLaEscenaTest {
                 androidx.compose.ui.semantics.SemanticsProperties.ImeAction,androidx.compose.ui.text.input.ImeAction.Done))
             onNode(hasSetTextAction()).performImeAction()
             q.esperarConsulta()
+        } }
+    }
+
+    private class ConsultaG(val e: R6Entorno, capacidades: Set<String>) : AutoCloseable {
+        val apertura = ajustes(capacidades)
+        @Volatile private var actuales: com.avoqado.pos.giftcards.data.AjustesDeTarjetas? = apertura
+        val consultas = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val lector = com.avoqado.pos.pos.data.LectorHidBus()
+        private val cliente = okhttp3.OkHttpClient.Builder().addInterceptor { cadena ->
+            val req = cadena.request()
+            val settings = req.url.encodedPath.endsWith("/settings")
+            val vigente = actuales
+            val datos = if (settings) vigente?.let {
+                kotlinx.serialization.json.Json.encodeToString(com.avoqado.pos.giftcards.data.AjustesDeTarjetas.serializer(), it)
+            } else {
+                consultas += req.url.encodedPath
+                """{"usableBalance":0,"cards":[]}"""
+            }
+            okhttp3.Response.Builder().request(req).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(if (settings && vigente == null) 404 else 200).message("fixtureG")
+                .body((datos?.let { """{"success":true,"data":$it}""" } ?: """{"message":"Sin soporte"}""")
+                    .toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val repo: com.avoqado.pos.giftcards.data.GiftCardsRepository
+        val vm: com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel
+        private val store = androidx.lifecycle.ViewModelStore()
+        init {
+            e.sesion(); e.storage.venuePermissions = listOf("giftCards:read")
+            guardarApertura(apertura)
+            repo = com.avoqado.pos.giftcards.data.GiftCardsRepository(cliente, e.storage)
+            vm = com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel(repo, e.storage, e.red,
+                lector, com.avoqado.pos.core.domain.RoleManager(e.storage))
+            store.put("identificarG", vm)
+        }
+        fun ajustes(caps: Set<String>) = com.avoqado.pos.giftcards.data.AjustesDeTarjetas(true, emptyList(), 100.0, 10000.0,
+            sale = com.avoqado.pos.giftcards.data.VentaPermitida(true), capacidades = caps)
+        fun guardarApertura(a: com.avoqado.pos.giftcards.data.AjustesDeTarjetas) {
+            e.storage.guardarAjustesDeTarjetas(e.storage.venueId!!,
+                kotlinx.serialization.json.Json.encodeToString(com.avoqado.pos.giftcards.data.AjustesDeTarjetas.serializer(), a))
+        }
+        fun refrescar(caps: Set<String>?) = kotlinx.coroutines.runBlocking {
+            actuales = caps?.let(::ajustes)
+            repo.refrescarAjustes(e.storage.venueId!!)
+        }
+        fun escanear() = lector.recibirDelLectorIntegrado("https://pay.avoqado.io/tarjeta/Xk3pQ9vLabcdefghij12")
+        fun recibioEscaneo() = vm.estado.value is com.avoqado.pos.giftcards.presentation.EstadoDeIdentificacion.Saldo ||
+            vm.estado.value == com.avoqado.pos.giftcards.presentation.EstadoDeIdentificacion.Desconocido
+        override fun close() { vm.cerrar(); store.clear(); cliente.dispatcher.executorService.shutdown(); cliente.connectionPool.evictAll() }
+    }
+
+    @Test fun `union G hoja real no amplia PAGE_TOKEN con refresco y props nuevos`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            var apertura by mutableStateOf(q.apertura)
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle()
+            q.refrescar(setOf("ENTREGA", "PAGE_TOKEN"))
+            runOnIdle { apertura = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN")) }
+            waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty(), "Una recomposición no autoriza lookup nuevo") }
+        } }
+    }
+
+    @Test fun `union G hoja real sigue angostando al quitar PAGE_TOKEN`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "PAGE_TOKEN")).use { q ->
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA")); waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+
+    private fun hojaGSeCierra(caps: Set<String>?) = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "PAGE_TOKEN")).use { q ->
+            var cierres = 0
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = { cierres++ }, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(caps)
+            waitUntil(timeoutMillis = 5000) { cierres == 1 }
+            onAllNodes(hasSetTextAction()).assertCountEquals(0)
+            runOnIdle { q.escanear() }
+            waitForIdle()
+            runOnIdle { assertFalse(q.vm.contextoVigente()); assertTrue(q.consultas.isEmpty()); assertEquals(1, cierres) }
+        } }
+    }
+    @Test fun `union G hoja real cierra con capacidades vacias`() = hojaGSeCierra(emptySet())
+    @Test fun `union G hoja real cierra al perder entrada 404`() = hojaGSeCierra(null)
+
+    @Test fun `union G recreacion de hoja conserva el argumento de apertura`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            var recreacion by mutableStateOf(0)
+            setContent { EnWindows { androidx.compose.runtime.key(recreacion) {
+                com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { recreacion++ }; waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+
+    @Test fun `union G cerrar y abrir expresamente permite capacidades de la nueva apertura`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            var visible by mutableStateOf(true)
+            var apertura by mutableStateOf(q.apertura)
+            setContent { EnWindows { if (visible) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { visible = false }; waitForIdle()
+            runOnIdle { apertura = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN")); visible = true }; waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            runOnIdle {
+                assertTrue(q.vm.estado.value is com.avoqado.pos.giftcards.presentation.EstadoDeIdentificacion.Saldo)
+                assertEquals(1, q.consultas.size)
+                assertTrue(q.consultas.single().endsWith("/lookup"))
+            }
+        } }
+    }
+
+    @Test fun `union G cambiar negocio usa limite propio y no lo amplia en su refresco`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "PAGE_TOKEN")).use { q ->
+            var venue by mutableStateOf(e.storage.venueId!!)
+            var apertura by mutableStateOf(q.apertura)
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                venue, apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle()
+            runOnIdle {
+                e.sesion("c823456789012345678901234")
+                apertura = q.ajustes(setOf("ENTREGA")); q.guardarApertura(apertura); venue = e.storage.venueId!!
+            }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+    @Test fun `union G argumento inicial amplio no vence el limite vigente al abrir`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.ajustes(setOf("ENTREGA", "PAGE_TOKEN")),
+                onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+    @Test fun `union G la hoja tampoco agrega el modo Telefono durante la apertura`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "TELEFONO")); waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertDoesNotExist()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
         } }
     }
 }

@@ -38,6 +38,8 @@ class IdentificarTarjetaViewModel @Inject constructor(
     val bloqueadoHasta = bloqueo.asStateFlow()
     val conexion = red.isConnected
     val servidor = red.isServerReachable
+    val cambiosDeAjustes = repo.cambiosDeAjustes
+    fun ajustesVigentes(venueId: String): AjustesDeTarjetas? = repo.ajustesParaEntrada(venueId)
     private val entrada = MutableStateFlow("")
     val codigo = entrada.asStateFlow()
     fun cambiarCodigo(texto: String) { entrada.value = texto; ultimaPrueba = null }
@@ -87,7 +89,9 @@ class IdentificarTarjetaViewModel @Inject constructor(
     }
     fun contextoVigente(): Boolean {
         if (venue == null) return false
-        if (venue != almacen.venueId || usuario != almacen.userId) { cerrar(); return false }
+        val actuales = repo.ajustesParaEntrada(venue!!)
+        if (venue != almacen.venueId || usuario != almacen.userId || actuales == null) { cerrar(); return false }
+        ajustes = actuales.copy(capacidades = actuales.capacidades.intersect(ajustes?.capacidades.orEmpty()))
         return true
     }
     private fun comenzar(): Long? {

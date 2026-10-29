@@ -61,12 +61,12 @@ internal fun saldoMostrado(tarjeta: TarjetaIdentificada, resultado: DesenlaceDeC
 }
 
 internal fun hojaDeSaldoVigente(resultado: DesenlaceDeCobro?, ocupado: Boolean, llave: String?, venue: String?,
-    solicitudes: List<SolicitudDeTarjeta>): Boolean = when (resultado) {
+    solicitudes: List<SolicitudDeTarjeta>, entradaDisponible: Boolean = true): Boolean = when (resultado) {
         is DesenlaceDeCobro.Cobrado -> false
         is DesenlaceDeCobro.Incierto, is DesenlaceDeCobro.Reintentable -> ocupado || solicitudes.any {
             it.llave == llave && it.venueId == venue && it.mandado && !it.porTerminar && !it.porRecuperar
         }
-        else -> true
+        else -> ocupado || entradaDisponible
     }
 
 internal fun resultadoDeSaldoVigente(orderId: String?, cerradas: List<String>): Boolean = orderId == null || orderId !in cerradas

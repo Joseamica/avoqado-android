@@ -75,7 +75,7 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
         val order=TableOrderViewModel(repo,session,config,mockk(relaxed=true),mockk(relaxed=true),storage,outbox,
             mockk(relaxed=true),network,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true))
         val floor=TablesViewModel(repo,mockk(relaxed=true),session,mockk(relaxed=true),storage,outbox,mockk(relaxed=true),
-            mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true))
+            mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),cashDrawerRepository=mockk(relaxed=true))
         try {
             order.loadCheck();advanceUntilIdle()
             if(mode!="posterior" && mode!="cambioSucursal") pending()

@@ -691,6 +691,7 @@ class CartViewModel @Inject constructor(
      * mercancía agregada o dejaba pegado al cliente).
      */
     private fun adoptarOrdenDeLaParte(vigente: PendingSplitOrder, subida: com.avoqado.pos.payment.data.EstadoDeParte.Subida) {
+        vigente.parteEnCola?.let(::limpiarCreacionIncierta)
         observadorDeParte?.cancel()
         val cart = _cartState.value
         val sinCambios = !carritoCambioDesde(vigente, cart)
@@ -1864,7 +1865,7 @@ class CartViewModel @Inject constructor(
                 // un descuento fijo de toda la cuenta se quedaría entero en los renglones que quedan.
                 if (remainingBalanceCents > 0 && _cartState.value.totalCents != remainingBalanceCents) {
                     clearCart()
-                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal) }
+                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado) }
                     addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 }
                 RamaCobro.RENGLONES_PAGADOS

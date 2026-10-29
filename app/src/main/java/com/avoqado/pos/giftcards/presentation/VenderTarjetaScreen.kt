@@ -35,6 +35,12 @@ fun VenderTarjetaScreen(
     val solicitudes by viewModel.solicitudes.collectAsState()
     val conectado by viewModel.conectado.collectAsState()
     val servidor by viewModel.servidor.collectAsState()
+    val cambioDeAjustes by viewModel.cambiosDeAjustes.collectAsState()
+    val entradaDisponible = cambioDeAjustes.let { viewModel.ajustesVigentes(venueId) != null }
+    if (!entradaDisponible && !viewModel.conservaOperacion) {
+        LaunchedEffect(viewModel, venueId) { onSalir() }
+        return
+    }
     val scope = rememberCoroutineScope()
     var cuenta by rememberSaveable { mutableStateOf<String?>(null) }
     var mensaje by rememberSaveable { mutableStateOf<String?>(null) }
@@ -52,7 +58,7 @@ fun VenderTarjetaScreen(
         AvoqadoFullscreenHeader(
             title = TextosDeTarjetas.VENDER, onNav = onSalir,
             primaryActionText = if (viewModel.bloqueado) TextosDeTarjetas.REINTENTAR else TextosDeTarjetas.cobrar(form.sobres.sumOf { it.montoCents ?: 0 }),
-            primaryActionEnabled = controlDeVentaDeTarjeta(conectado, servidor, estado != VenderTarjetaViewModel.Estado.Enviando && (viewModel.bloqueado || invalidos.isEmpty())),
+            primaryActionEnabled = controlDeVentaDeTarjeta(conectado, servidor, estado != VenderTarjetaViewModel.Estado.Enviando && (viewModel.bloqueado || (entradaDisponible && invalidos.isEmpty()))),
             primaryActionDisabledReason = if (!conectado || !servidor) TextosDeTarjetas.SIN_RED else if (invalidos.isNotEmpty() && !viewModel.bloqueado) "Revisa los campos de la tarjeta" else null,
             onPrimaryAction = { scope.launch { viewModel.cobrarDesdePantalla() } },
             showDivider = true,
@@ -74,7 +80,7 @@ fun VenderTarjetaScreen(
                     })
                 }
             }
-            if (!viewModel.bloqueado) {
+            if (!viewModel.bloqueado && entradaDisponible) {
                 form.sobres.forEachIndexed { i, sobre ->
                     Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                         Text("${TextosDeTarjetas.MOSAICO} ${i + 1}", style = MaterialTheme.typography.titleMedium)

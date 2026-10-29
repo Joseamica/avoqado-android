@@ -37,7 +37,7 @@ class CreadoresDeCuentaDeMostradorTest {
         // C4 manda el payload durable directamente: no vuelve a tomar el carrito.
         val cola = java.io.File("src/main/java/com/avoqado/pos/payment/data/PaymentSyncService.kt").readText()
         assertTrue(cola.contains("private suspend fun resolveMissingOrderId("))
-        assertTrue(cola.contains(".post(orderRequestJson.toRequestBody(JSON_MEDIA))"))
+        assertTrue(cola.contains(".post(pedidoConLaCaja(orderRequestJson, cajaParaElServidor).toRequestBody(JSON_MEDIA))"))
     }
 }
 
@@ -53,7 +53,7 @@ internal object InventarioDeFuentes6 {
                 var p = f.range.last + 1; var parentesis = 1
                 while (p < fuente.length && parentesis > 0) { if (fuente[p]=='(') parentesis++; if (fuente[p]==')') parentesis--; p++ }
                 val inicio = fuente.indexOf('{',p)
-                if (inicio < 0 || inicio > (funciones.getOrNull(index+1)?.range?.first ?: fuente.length)) null
+                if (inicio < 0 || inicio > (funciones.getOrNull(index+1)?.range?.first ?: fuente.length) || Regex("\\b(?:class|interface)\\b").containsMatchIn(fuente.substring(p,inicio))) null
                 else {
                     var fin = inicio + 1; var depth = 1
                     while (fin < fuente.length && depth > 0) { if (fuente[fin]=='{') depth++; if (fuente[fin]=='}') depth--; fin++ }

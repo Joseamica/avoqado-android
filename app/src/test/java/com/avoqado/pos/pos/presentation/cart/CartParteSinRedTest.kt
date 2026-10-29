@@ -135,6 +135,61 @@ class CartParteSinRedTest {
 
     // ── Cuando sube ────────────────────────────────────────────────────────────
 
+    @Test fun unionParteSubidaConSaldoLimpiaSuCreacionYT4() = runTest {
+        val vm = createViewModel()
+        vm.parteGuardadaSinRed()
+        vm.marcarCreacionIncierta(vm.cartState.value.identidadDeVenta, "cola-1")
+        advanceUntilIdle()
+        assertEquals("cola-1", vm.cartState.value.creacionIncierta)
+        parte.value = EstadoDeParte.Subida("orden-1", 6000)
+        advanceUntilIdle()
+        assertNull(vm.cartState.value.creacionIncierta)
+        assertEquals("orden-1", vm.resolvePendingSplitOrderForCharge())
+        val cart = vm.cartState.value
+        val fila = com.avoqado.pos.giftcards.domain.estadoDeLaVenta(
+            com.avoqado.pos.giftcards.data.EstadoDeAjustes.Disponible(
+                com.avoqado.pos.giftcards.data.AjustesDeTarjetas(true, emptyList(), 1.0, 1000.0,
+                    sale = com.avoqado.pos.giftcards.data.VentaPermitida(true))),
+            true, true, false, false, false, true, false, cart.creacionIncierta != null,
+            cart.vinoDeCarritoGuardado, false, false, false, true, false,
+        )
+        assertEquals(com.avoqado.pos.giftcards.domain.FilaDeLaCaja.T2, fila.fila)
+        assertTrue(fila.habilitada)
+    }
+
+    @Test fun unionParteSubidaSaldoDistintoLimpiaSuCreacion() = runTest {
+        val vm = createViewModel()
+        vm.parteGuardadaSinRed()
+        vm.marcarCreacionIncierta(vm.cartState.value.identidadDeVenta, "cola-1")
+        advanceUntilIdle()
+        parte.value = EstadoDeParte.Subida("orden-1", 16000)
+        advanceUntilIdle()
+        assertNull(vm.cartState.value.creacionIncierta)
+        assertTrue(vm.detenerCobroPorParteEnEspera())
+    }
+
+    @Test fun unionPartePagadaConAlgoMasLimpiaSuCreacion() = runTest {
+        val vm = createViewModel()
+        vm.parteGuardadaSinRed()
+        vm.marcarCreacionIncierta(vm.cartState.value.identidadDeVenta, "cola-1")
+        vm.addCustomAmount("Otra cosa", 2500)
+        advanceUntilIdle()
+        parte.value = EstadoDeParte.Subida("orden-1", 0, pagada = true)
+        advanceUntilIdle()
+        assertNull(vm.cartState.value.creacionIncierta)
+        assertEquals(8500, vm.cartState.value.totalCents)
+    }
+
+    @Test fun unionParteSubidaNoLimpiaCreacionDeOtraLlave() = runTest {
+        val vm = createViewModel()
+        vm.parteGuardadaSinRed()
+        vm.marcarCreacionIncierta(vm.cartState.value.identidadDeVenta, "otra-llave")
+        advanceUntilIdle()
+        parte.value = EstadoDeParte.Subida("orden-1", 6000)
+        advanceUntilIdle()
+        assertEquals("otra-llave", vm.cartState.value.creacionIncierta)
+    }
+
     @Test
     fun `al subir, el resto se cobra contra la orden que le dio el servidor`() = runTest {
         val vm = createViewModel()

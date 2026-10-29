@@ -280,14 +280,23 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
                 f.reopen()
                 val antes = f.query("SELECT * FROM pending_payments").single()
                 assertEquals(llave, antes["id"]); assertEquals("PENDING", antes["syncStatus"])
-                assertEquals(captura, antes["q15CaptureJson"])
+                val enVuelo = Json.parseToJsonElement(captura as String).jsonObject
+                assertEquals(JsonPrimitive(true), enVuelo["daPorCobradaAlAbandonar"])
+                val pendiente = Json.parseToJsonElement(antes["q15CaptureJson"] as String).jsonObject
+                assertTrue(pendiente["daPorCobradaAlAbandonar"] == null || pendiente["daPorCobradaAlAbandonar"] == JsonNull)
+                assertEquals(JsonObject(enVuelo.filterKeys { it != "daPorCobradaAlAbandonar" }),
+                    JsonObject(pendiente.filterKeys { it != "daPorCobradaAlAbandonar" }))
+                assertEquals(orden, antes["orderId"])
+                assertEquals(50000, (antes["amountCents"] as Number).toInt())
+                assertEquals(0, (antes["tipCents"] as Number).toInt())
                 ruta.value = true
                 f.service.usarContextoDeSincronizacion(kotlinx.coroutines.Dispatchers.Unconfined)
                 f.service.start(); f.service.esperarSincronizacionActualQ16()
                 val despues = f.query("SELECT * FROM pending_payments").single()
                 falloDelTransporte.get()?.let { throw it }
                 assertEquals("SYNCED", despues["syncStatus"])
-                assertEquals(llave, despues["id"]); assertEquals(captura, despues["q15CaptureJson"])
+                assertEquals(llave, despues["id"]); assertEquals(antes["q15CaptureJson"], despues["q15CaptureJson"])
+                assertEquals(orden, despues["orderId"])
                 assertEquals(2, requests.size)
                 requests.forEach { body ->
                     assertEquals(llave, body.getString("idempotencyKey"))

@@ -33,6 +33,34 @@ class GiftCardsRepositoryTest {
     @After fun cerrar() { server.shutdown(); System.clearProperty("avoqado.test.baseUrl") }
     private fun responde(status: Int, json: String) = server.enqueue(MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(json))
     private fun ok(json: String) = responde(200, "{\"success\":true,\"data\":$json}")
+
+    @Test fun `union servidor 1a oculta entradas y borra cache previa de 1b`() = runBlocking {
+        ok(FijasDeTarjetas.ajustes)
+        val repo = GiftCardsRepository(OkHttpClient(), storage)
+        assertTrue(repo.refrescarAjustes("v") is EstadoDeAjustes.Disponible)
+        ok("""{"enabled":true,"suggestedAmounts":[500,1000],"minAmount":100,"maxAmount":10000,"llavesConfiguradas":true,"sale":{"sellable":true}}""")
+        val estado = repo.refrescarAjustes("v")
+        assertEquals(EstadoDeAjustes.NoDisponible, estado)
+        assertEquals("null", cache["v"])
+        verify { storage.guardarAjustesDeTarjetas("v", null) }
+        assertEquals(EstadoDeAjustes.NoDisponible, GiftCardsRepository(OkHttpClient(), storage).estadoDeAjustes.value)
+        assertFalse(com.avoqado.pos.giftcards.domain.estadoDeLaHoja(estado, true, true, true, true, "Pro").mosaicoVisible)
+        val fila = com.avoqado.pos.giftcards.domain.estadoDeLaVenta(estado, true, true, false, false, false,
+            true, false, false, false, false, false, false, false, false)
+        assertEquals(com.avoqado.pos.giftcards.domain.FilaDeLaCaja.T12, fila.fila)
+        assertFalse(fila.visible)
+    }
+
+    @Test fun `union primer arranque sin cache no muestra mosaico`() {
+        val repo = GiftCardsRepository(OkHttpClient(), storage)
+        assertEquals(EstadoDeAjustes.Desconocido, repo.estadoDeAjustes.value)
+        for (red in listOf(true, false)) {
+            val hoja = com.avoqado.pos.giftcards.domain.estadoDeLaHoja(repo.estadoDeAjustes.value, red, true, true, true, "Pro")
+            assertFalse(hoja.mosaicoVisible)
+            assertFalse(hoja.vender.visible)
+            assertFalse(hoja.consultar.visible)
+        }
+    }
     @Test fun `ajustes persisten 200 y 404 por negocio sin cruzarlos`() = runBlocking {
         val repo = GiftCardsRepository(OkHttpClient(), storage)
         ok(FijasDeTarjetas.ajustes)
@@ -258,4 +286,53 @@ class GiftCardsRepositoryTest {
             antigua.cancelAndJoin()
         }
     }
+    @Test fun `union E retirada tardia de A avisa aunque B ya tuviera el mismo estado global`() = runBlocking {
+        cache["v"]=FijasDeTarjetas.ajustes
+        val llego=CountDownLatch(1);val seguir=CountDownLatch(1)
+        server.dispatcher=object: Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if(request.path!!.contains("/venues/v/")) { llego.countDown();check(seguir.await(10,TimeUnit.SECONDS)) }
+                return MockResponse().setHeader("Content-Type","application/json").setBody(
+                    """{"success":true,"data":{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true}}}""")
+            }
+        }
+        val repo=GiftCardsRepository(OkHttpClient(),storage)
+        val a=async(Dispatchers.IO) { repo.refrescarAjustes("v") }
+        try {
+            assertTrue(llego.await(5,TimeUnit.SECONDS))
+            assertEquals(EstadoDeAjustes.NoDisponible,repo.refrescarAjustes("b"))
+            assertFalse(repo.cambiosDeAjustes.value.containsKey("v"))
+            seguir.countDown();a.await()
+            assertEquals("null",cache["v"])
+            assertEquals(EstadoDeAjustes.NoDisponible,repo.estadoDeAjustes.value)
+            assertEquals("La vista de A debe recibir SU retiro aunque el global no cambie",EstadoDeAjustes.NoDisponible,repo.cambiosDeAjustes.value["v"])
+            assertEquals(EstadoDeAjustes.NoDisponible,repo.cambiosDeAjustes.value["b"])
+        } finally { seguir.countDown();a.cancelAndJoin() }
+    }
+
+    @Test fun `union E A desconocida no recibe Disponible de B si su refresco falla`() = runBlocking {
+        cache["b"]=FijasDeTarjetas.ajustes
+        val llego=CountDownLatch(1);val seguir=CountDownLatch(1)
+        val disponible=GiftCardsApi.parsearAjustes(FijasDeTarjetas.ajustes)
+        server.dispatcher=object: Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if(request.path!!.contains("/venues/v/")) {
+                    llego.countDown();check(seguir.await(10,TimeUnit.SECONDS))
+                    return MockResponse().setResponseCode(503).setBody("{}")
+                }
+                return respuestaDeAjustes(200,disponible)
+            }
+        }
+        val repo=GiftCardsRepository(OkHttpClient(),storage)
+        val a=async(Dispatchers.IO) { repo.refrescarAjustes("v") }
+        try {
+            assertTrue(llego.await(5,TimeUnit.SECONDS))
+            assertEquals(EstadoDeAjustes.Disponible(disponible),repo.refrescarAjustes("b"))
+            seguir.countDown()
+            assertEquals("El retorno debe pertenecer a A aunque el flow global sea B",EstadoDeAjustes.Desconocido,a.await())
+            assertNull(cache["v"])
+            assertEquals(EstadoDeAjustes.Disponible(disponible),repo.estadoDeAjustes.value)
+        } finally { seguir.countDown();a.cancelAndJoin() }
+    }
+
 }

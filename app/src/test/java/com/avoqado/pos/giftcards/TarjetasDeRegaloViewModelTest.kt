@@ -20,6 +20,7 @@ import org.junit.Test
 
 class TarjetasDeRegaloViewModelTest {
     @get:Rule val main = MainDispatcherRule()
+    private val cambios = MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())
     private val ajustes = MutableStateFlow<EstadoDeAjustes>(EstadoDeAjustes.Disponible(AjustesDeTarjetas(
         enabled = true, suggestedAmounts = listOf(500.0), minAmount = 100.0, maxAmount = 10000.0,
         sale = VentaPermitida(true), capacidades = setOf("ENTREGA"),
@@ -37,6 +38,7 @@ class TarjetasDeRegaloViewModelTest {
     }
     private val repo = mockk<GiftCardsRepository> {
         every { estadoDeAjustes } returns ajustes
+        every { cambiosDeAjustes } returns cambios
         coEvery { refrescarAjustes(any()) } answers { ajustes.value }
     }
     private val red = mockk<ConnectivityMonitor> {
@@ -156,7 +158,9 @@ class TarjetasDeRegaloViewModelTest {
         vm.alAbrir(true)
         runCurrent()
         assertFalse(vm.hoja.value.vender.visible)
-        assertEquals(TextosDeTarjetas.SIN_RED, vm.hoja.value.consultar.motivo)
+        assertFalse(vm.hoja.value.mosaicoVisible)
+        assertFalse(vm.hoja.value.consultar.visible)
+        assertNull(vm.hoja.value.consultar.motivo)
         coVerify(exactly = 0) { repo.refrescarAjustes(any()) }
     }
 
@@ -174,7 +178,9 @@ class TarjetasDeRegaloViewModelTest {
         retenida.complete(fotoA)
         runCurrent()
         assertFalse(vm.hoja.value.vender.visible)
-        assertEquals(TextosDeTarjetas.SIN_RED, vm.hoja.value.consultar.motivo)
+        assertFalse(vm.hoja.value.mosaicoVisible)
+        assertFalse(vm.hoja.value.consultar.visible)
+        assertNull(vm.hoja.value.consultar.motivo)
         coVerify(exactly = 0) { repo.refrescarAjustes("sucursal-b") }
     }
 
@@ -183,7 +189,9 @@ class TarjetasDeRegaloViewModelTest {
         conexion.value = false
         val vm = vm()
         assertFalse(vm.hoja.value.vender.visible)
-        assertEquals(TextosDeTarjetas.SIN_RED, vm.hoja.value.consultar.motivo)
+        assertFalse(vm.hoja.value.mosaicoVisible)
+        assertFalse(vm.hoja.value.consultar.visible)
+        assertNull(vm.hoja.value.consultar.motivo)
     }
 
     @Test fun `VM nueva usa solo la cache propia de B sin entrega`() = runTest {
@@ -274,4 +282,21 @@ class TarjetasDeRegaloViewModelTest {
         assertTrue(vm.hoja.value.vender.visible)
         assertEquals(TextosDeTarjetas.SIN_RED, vm.hoja.value.vender.motivo)
     }
+    @Test fun `union E mosaico abierto observa cache retirada por otro refresco propio`() = runTest {
+        val vm=vm();runCurrent();assertTrue(vm.hoja.value.mosaicoVisible)
+        cache["sucursal-a"]="null";ajustes.value=EstadoDeAjustes.NoDisponible
+        cambios.value=mapOf("sucursal-a" to EstadoDeAjustes.NoDisponible);runCurrent()
+        assertFalse(vm.hoja.value.mosaicoVisible)
+        assertNull(vm.ajustesParaConsultar("sucursal-a"));assertNull(vm.ajustesParaVender("sucursal-a"))
+    }
+
+    @Test fun `union E apertura adopta respuesta propia y no el retorno global de B`() = runTest {
+        val propia=ajustes.value
+        cambios.value=mapOf("sucursal-a" to propia,"sucursal-b" to EstadoDeAjustes.NoDisponible)
+        coEvery { repo.refrescarAjustes("sucursal-a") } returns EstadoDeAjustes.NoDisponible
+        val vm=vm();vm.alAbrir(true);runCurrent()
+        assertTrue(vm.hoja.value.mosaicoVisible);assertTrue(vm.hoja.value.vender.habilitada)
+        assertNotNull(vm.ajustesParaConsultar("sucursal-a"));assertNull(vm.ajustesParaConsultar("sucursal-b"))
+    }
+
 }

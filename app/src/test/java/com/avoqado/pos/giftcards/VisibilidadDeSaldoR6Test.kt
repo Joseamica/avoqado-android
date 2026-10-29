@@ -96,4 +96,33 @@ class VisibilidadDeSaldoR6Test {
         for(f in listOf("ResultadoDeVentaScreen", "CuentaDeTarjetasScreen"))
             assertTrue(fuente("giftcards/presentation/$f").contains("mostrarReconsultaDeTarjetas("))
     }
+    @Test fun `union E monto antes de enviar cierra sin capacidades y conserva dinero en vuelo`() {
+        for (resultado in listOf(null, DesenlaceDeCobro.NoSalio("No salió"), DesenlaceDeCobro.Rechazado("No cobrado"))) {
+            assertFalse(hojaDeSaldoVigente(resultado, false, null, "venue", emptyList(), entradaDisponible = false))
+        }
+        assertTrue(hojaDeSaldoVigente(null, true, null, "venue", emptyList(), entradaDisponible = false))
+        val durable = cuenta.copy(porTerminar=false, mandado=true)
+        for (resultado in listOf(DesenlaceDeCobro.Incierto, DesenlaceDeCobro.Reintentable("Espera", null))) {
+            assertTrue(hojaDeSaldoVigente(resultado, false, "key", "venue", listOf(durable), entradaDisponible = false))
+        }
+        assertEquals(cobro, (siguienteAvisoDeSaldo(contexto, contexto, listOf(cobro), emptyList(), emptyList()) as AvisoDeSaldo.Cobro).cobro)
+    }
+    @Test fun `union E todas las entradas observan capacidades y dinero mantiene sus pantallas`() {
+        val checkout = fuente("pos/presentation/checkout/CheckoutScreen")
+        assertTrue(checkout.contains("if (!hojaDeTarjetas.mosaicoVisible) {"))
+        assertTrue(checkout.contains("consultaDeTarjeta = null"))
+        val identificar = fuente("giftcards/presentation/IdentificarTarjetaSheet")
+        assertFalse(identificar.contains("val ajustesAlAbrir = remember"))
+        assertTrue(identificar.contains("viewModel.cambiosDeAjustes.collectAsState()"))
+        assertTrue(identificar.contains("viewModel.ajustesVigentes(venueId)"))
+        val vender = fuente("giftcards/presentation/VenderTarjetaScreen")
+        assertTrue(vender.contains("viewModel.cambiosDeAjustes.collectAsState()"))
+        assertTrue(vender.contains("viewModel.conservaOperacion"))
+        val pago = fuente("payment/presentation/PaymentFlowScreen")
+        assertTrue(pago.contains("entradaDisponible = filaDeSaldo.visible"))
+        for (pantalla in listOf("CuentaDeTarjetasScreen", "ResultadoDeVentaScreen", "VentaPorRecuperar", "AvisoDeCobroRecuperado")) {
+            assertFalse("El dinero no se oculta por capacidades: $pantalla", fuente("giftcards/presentation/$pantalla").contains("mosaicoVisible"))
+        }
+    }
+
 }

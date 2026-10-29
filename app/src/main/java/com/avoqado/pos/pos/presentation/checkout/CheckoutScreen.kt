@@ -150,7 +150,10 @@ fun CheckoutScreen(
     var cuentaDeTarjetasCancelada by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(cartState.isEmpty) { tarjetasViewModel.alAbrir(cartState.isEmpty) }
     LaunchedEffect(hojaDeTarjetas.mosaicoVisible) {
-        if (!hojaDeTarjetas.mosaicoVisible) mostrarHojaDeTarjetas = false
+        if (!hojaDeTarjetas.mosaicoVisible) {
+            mostrarHojaDeTarjetas = false
+            consultaDeTarjeta = null
+        }
     }
     val abrirTarjetas: (() -> Unit)? = if (hojaDeTarjetas.mosaicoVisible) ({
         tarjetasViewModel.alAbrir(cartViewModel.cartState.value.isEmpty)
@@ -1171,7 +1174,7 @@ fun CheckoutScreen(
         com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
     }
 
-    consultaDeTarjeta?.let { (venue, prueba) ->
+    consultaDeTarjeta?.takeIf { hojaDeTarjetas.mosaicoVisible }?.let { (venue, prueba) ->
         androidx.compose.ui.window.Dialog(onDismissRequest = { consultaDeTarjeta = null },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()

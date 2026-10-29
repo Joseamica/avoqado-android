@@ -1751,7 +1751,9 @@ class PaymentFlowViewModel @Inject constructor(
     val servidorDelSaldo: StateFlow<Boolean> = connectivityMonitor?.isServerReachable ?: MutableStateFlow(false)
     init {
         viewModelScope.launch {
-            combine(conexionDelSaldo, servidorDelSaldo) { _, _ -> Unit }.collect { actualizarFilaDeSaldo() }
+            combine(conexionDelSaldo, servidorDelSaldo,
+                tarjetasRepository?.cambiosDeAjustes ?: MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())) { _, _, _ -> Unit }
+                .collect { actualizarFilaDeSaldo() }
         }
     }
     private fun ajustesParaSaldo(): EstadoDeAjustes = secureStorage.venueId?.let { secureStorage.leerAjustesDeTarjetas(it) }?.let {

@@ -34,6 +34,10 @@ import javax.inject.Inject
     val solicitudes = store.solicitudes
     val conectado = red.isConnected
     val servidor = red.isServerReachable
+    val cambiosDeAjustes = repo.cambiosDeAjustes
+    fun ajustesVigentes(venueId: String): AjustesDeTarjetas? = repo.ajustesParaEntrada(venueId)
+    val conservaOperacion: Boolean get() = bloqueado || valor.value is Estado.Cobro || valor.value is Estado.ResultadoPendiente ||
+        solicitudes.value.any { it.venueId == (venue ?: almacen.venueId) && it.tipo == "GIFT_CARD_SALE" }
     var llave: String = UUID.randomUUID().toString()
         private set
     private var venue: String? = null
@@ -79,7 +83,7 @@ import javax.inject.Inject
             valor.value = Estado.Error(TextosDeTarjetas.SIN_RED); return
         }
         val estabaGuardada = pendiente() != null
-        val a = ajustes ?: return
+        val a = (if (estabaGuardada) ajustes else repo.ajustesParaEntrada(v)) ?: return
         val llaveEnVuelo = llave
         if (!store.enVueloDeEsteProceso.add(llaveEnVuelo)) return
         try {
