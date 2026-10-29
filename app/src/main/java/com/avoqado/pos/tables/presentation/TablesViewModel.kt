@@ -65,6 +65,18 @@ class TablesViewModel @Inject constructor(
 
     private var generacion = 0L
     private var mutacionesEnVuelo = 0
+    private fun bloqueoDeSaldo(vId: String, ids: Set<String>, revisarSaldo: Boolean = true): String? {
+        if (vId != venueId) return "La cuenta cambió. Vuelve a abrirla."
+        return if (revisarSaldo && ids.any {
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.cuentaTrabada(secureStorage.giftCardRequestsJson, vId, it)
+        }) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.COMPROBANDO_COBRO else null
+    }
+    private suspend fun <T> mutarCuenta(vId: String, ids: Set<String>, revisarSaldo: Boolean = true,
+        bloque: suspend () -> Result<T>): Result<T> {
+        bloqueoDeSaldo(vId, ids, revisarSaldo)?.let { return Result.failure(IllegalStateException(it)) }
+        return mutar { bloque() }
+    }
+
     private suspend fun <T> mutar(bloque: suspend () -> T): T {
         generacion++; mutacionesEnVuelo++
         try { return bloque() }
@@ -518,9 +530,10 @@ class TablesViewModel @Inject constructor(
     fun compItem(table: DiningTable, itemId: String, reason: String) {
         val order = table.primaryCheck ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, setOf(order.id))?.let { _actionState.value = TableActionState.Error(it); return }
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
-            mutar { repository.compItem(vId, order.id, itemId, reason) }.fold(
+            mutarCuenta(vId, setOf(order.id)) { repository.compItem(vId, order.id, itemId, reason) }.fold(
                 onSuccess = {
                     repository.refresh(vId)
                     _actionState.value = TableActionState.Success("Artículo de cortesía — $reason")
@@ -541,14 +554,15 @@ class TablesViewModel @Inject constructor(
     fun anularCuenta(table: DiningTable, reason: String) {
         val order = table.primaryCheck ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, setOf(order.id))?.let { _actionState.value = TableActionState.Error(it); return }
         val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
-            mutar { repository.cancelOrder(vId, order.id, reason) }.fold(
+            mutarCuenta(vId, setOf(order.id)) { repository.cancelOrder(vId, order.id, reason) }.fold(
                 onSuccess = {
                     // Belt & suspenders for servers without the release-on-cancel
                     // change: try clearing explicitly (no-op/failure is fine).
-                    mutar { repository.clearTable(vId, table.id) }
+                    mutarCuenta(vId, setOf(order.id)) { repository.clearTable(vId, table.id) }
                     repository.refresh(vId)
                     // The cancelled order must never keep steering a session.
                     tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
@@ -585,12 +599,13 @@ class TablesViewModel @Inject constructor(
     fun finishTableAfterPayment() {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session.idsDeLaOrden)?.let { _actionState.value = TableActionState.Error(it); return }
         val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
             // Server-driven settle check: clearTable succeeds ONLY when the
             // order is fully PAID. If it's still PARTIAL (split-the-bill),
             // keep the session alive so the next payment stays routed to it.
-            val cleared = mutar { repository.clearTable(vId, session.tableId) }.isSuccess
+            val cleared = mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId) }.isSuccess
             repository.refresh(vId)
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
@@ -615,9 +630,10 @@ class TablesViewModel @Inject constructor(
             var primerMotivo: String? = null
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
-                mutar { repository.cancelOrder(vId, order.id, reason) }.fold(
+                bloqueoDeSaldo(vId, setOf(order.id))?.let { if (primerMotivo == null) primerMotivo = it; fail++; return@forEach }
+                mutarCuenta(vId, setOf(order.id)) { repository.cancelOrder(vId, order.id, reason) }.fold(
                     onSuccess = {
-                        mutar { repository.clearTable(vId, table.id) }
+                        mutarCuenta(vId, setOf(order.id)) { repository.clearTable(vId, table.id) }
                         tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                         lanHub.release(table.id)
                         ok++
@@ -644,7 +660,7 @@ class TablesViewModel @Inject constructor(
             var fail = 0
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
-                mutar { repository.assignOrder(vId, order.id, staffId) }.fold(
+                mutarCuenta(vId, setOf(order.id), revisarSaldo = false) { repository.assignOrder(vId, order.id, staffId) }.fold(
                     onSuccess = { ok++ },
                     onFailure = { fail++ },
                 )
@@ -662,7 +678,8 @@ class TablesViewModel @Inject constructor(
             var fail = 0
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
-                mutar { repository.compWholeOrder(vId, order.id, reason) }.fold(
+                bloqueoDeSaldo(vId, setOf(order.id))?.let { fail++; return@forEach }
+                mutarCuenta(vId, setOf(order.id)) { repository.compWholeOrder(vId, order.id, reason) }.fold(
                     onSuccess = { ok++ },
                     onFailure = { fail++ },
                 )
@@ -678,7 +695,7 @@ class TablesViewModel @Inject constructor(
         val order = source.primaryCheck ?: return
         val sessionEpoch = tableSession.contextoActual()
         viewModelScope.launch {
-            mutar { repository.moveOrder(vId, order.id, targetTableId) }.fold(
+            mutarCuenta(vId, setOf(order.id), revisarSaldo = false) { repository.moveOrder(vId, order.id, targetTableId) }.fold(
                 onSuccess = {
                     tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                     repository.refresh(vId)
@@ -721,7 +738,7 @@ class TablesViewModel @Inject constructor(
                 .distinct()
                 .filter { it != targetOrder.id }
             orderIds.forEach { sourceOrderId ->
-                mutar { repository.mergeOrders(vId, targetOrder.id, sourceOrderId) }.fold(
+                mutarCuenta(vId, setOf(targetOrder.id, sourceOrderId)) { repository.mergeOrders(vId, targetOrder.id, sourceOrderId) }.fold(
                     onSuccess = {
                         tableSession.finalizar(vId, setOf(sourceOrderId), sessionEpoch)
                         tableSession.marcarSaldoDesconocido(vId, setOf(targetOrder.id), sessionEpoch)

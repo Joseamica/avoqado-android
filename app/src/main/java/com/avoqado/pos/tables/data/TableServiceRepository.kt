@@ -590,6 +590,11 @@ class TableServiceRepository @Inject constructor(
     }.onFailure { Log.e(TAG, "❌ compItem failed: ${it.message}") }
 
     /** "Anular cuenta": cancels the table's open order (server releases the table). */
+    suspend fun cancelarEnLinea(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
+        apiService.cancelOrder(venueId, orderId, CancelOrderRequest(reason))
+        Unit
+    }
+
     suspend fun cancelOrder(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
         apiService.cancelOrder(venueId, orderId, CancelOrderRequest(reason))
         Unit

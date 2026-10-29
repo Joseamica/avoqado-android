@@ -749,4 +749,78 @@ class PagarDespuesCarritoTest {
         coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
         assertNotNull(vm.selectedCustomer.value)
     }
+
+    // ── Tarjetas de regalo 1b sobre el «Pagar después» nuevo (unión con develop, 28-oct) ──
+
+    /** Una venta de tarjeta que espera recuperar su entrega frena guardar, vaciar y diferir (1b, R4 del cobro con saldo). */
+    private fun entregaDeTarjetaSinConfirmar() {
+        val solicitud = com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo = "GIFT_CARD_REDEEM", llave = "entrega",
+            venueId = "venue-1", creadaEn = 1, cuerpo = "", nuevaCuenta = true, porRecuperar = true, foto = "{}")
+        val raw = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservarEntrega(
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.agregar(null, solicitud), "entrega")
+        assertNotNull(raw)
+        every { secureStorage.giftCardRequestsJson } returns raw
+    }
+
+    @Test
+    fun `tarjetas - con una entrega de tarjeta sin confirmar, Pagar despues no manda ni saca la venta del carrito`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        entregaDeTarjetaSinConfirmar()
+        responde(201, creada(100.0))
+        val antes = vm.cartState.value
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(ResultadoPagarDespues.Error(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.NO_SE_PUDO_RECUPERAR), resultado)
+        assertTrue(enviados.isEmpty())
+        assertTrue(disco.guardado.isEmpty())
+        assertEquals(antes, vm.cartState.value)
+    }
+
+    @Test
+    fun `tarjetas - con premio y sin respuesta, la venta que se queda en el carrito queda marcada desde antes de mandarse`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Café gratis", "FIXED_AMOUNT", 30.0))
+        var marcadaAlMandar: String? = null
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } answers {
+            marcadaAlMandar = vm.cartState.value.creacionIncierta
+            throw java.net.SocketTimeoutException("sin respuesta")
+        }
+
+        assertTrue(vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Error)
+
+        val llave = vm.cartState.value.llavePagarDespues
+        assertNotNull(llave)
+        assertEquals("se marca ANTES de mandar", llave, marcadaAlMandar)
+        assertEquals("sin saber si se creó, el saldo de tarjeta no se ofrece para esta venta", llave, vm.cartState.value.creacionIncierta)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `tarjetas - con premio y rechazo definitivo, la marca se limpia`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Café gratis", "FIXED_AMOUNT", 30.0))
+        responde(404, """{"message":"Cliente no encontrado"}""")
+
+        assertEquals(ResultadoPagarDespues.Error("Cliente no encontrado"), vm.createPayLaterOrder("cli-1"))
+
+        assertEquals(1, enviados.size)
+        assertNull(vm.cartState.value.creacionIncierta)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `tarjetas - sin premio la venta sale del carrito antes de mandarse y el carrito no queda marcado`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        sinRed()
+
+        vm.createPayLaterOrder("cli-1")
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.cartState.value.creacionIncierta)
+    }
 }

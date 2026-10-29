@@ -30,6 +30,12 @@ class PlanManagerTest {
         assertFalse(planManager.hasFeature("OFFLINE_LAN_HUB"))
     }
 
+    @Test fun `GIFT_CARDS is PRO`() {
+        stubPlan("FREE"); assertFalse(planManager.hasFeature("GIFT_CARDS"))
+        stubPlan("PRO"); assertTrue(planManager.hasFeature("GIFT_CARDS"))
+        assertEquals("Pro", planManager.requiredTierLabel("GIFT_CARDS"))
+    }
+
     // MARK: - Fail-open (THE LAW: a gating bug must never brick a POS)
 
     @Test

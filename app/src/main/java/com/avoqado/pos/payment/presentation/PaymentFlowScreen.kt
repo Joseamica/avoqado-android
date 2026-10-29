@@ -6,6 +6,11 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
+import com.avoqado.pos.giftcards.data.*
+import com.avoqado.pos.giftcards.presentation.*
+import com.avoqado.pos.giftcards.domain.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -74,11 +79,43 @@ fun PaymentFlowScreen(
      */
     apertura: String? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
+    cuentaDeTarjetas: Boolean = false,
+    onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
+    onCreacionResuelta: (String) -> Unit = {},
+    ventaViva: () -> CartState = { cartState },
+    fotoDeLaVenta: (() -> FotoDeLaVenta)? = null,
+    vaciarVenta: (() -> Unit)? = null,
+    restaurarVenta: ((FotoDeLaVenta) -> CartState?)? = null,
+    registrarRecuperacionDeFoto: ((() -> Boolean, () -> Boolean, () -> Unit) -> Pair<() -> Unit, () -> Boolean>)? = null,
+    alRestaurarSnapshot: (CartState) -> Unit = {},
+    desdeCuentasAbiertas: Boolean = false,
+    pruebaPreseleccionada: TarjetaIdentificada? = null,
+    onCuentaConSaldo: ((String) -> Unit)? = null,
 ) {
+    val scopeDeSaldo = rememberCoroutineScope()
+    val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
+    val conexionDelSaldo by viewModel.conexionDelSaldo.collectAsState()
+    val servidorDelSaldo by viewModel.servidorDelSaldo.collectAsState()
+    val resultadoDeSaldo by viewModel.desenlaceDeSaldo.collectAsState()
+    val accionesDeRedHabilitadas = controlDeReciboDeTarjeta(cuentaDeTarjetas || resultadoDeSaldo != null, conexionDelSaldo, servidorDelSaldo, true)
+    val ocupadoDeSaldo by viewModel.procesandoSaldo.collectAsState()
+    val solicitudesDeSaldo = LocalSolicitudesDeSaldo.current
+    val cuentasDeSaldoCerradas = LocalCuentasDeSaldoCerradas.current
+    val hojaVigente = hojaDeSaldoVigente(resultadoDeSaldo, ocupadoDeSaldo, viewModel.llaveDeLaSolicitudDeSaldo,
+        viewModel.venueParaSaldo, solicitudesDeSaldo, entradaDisponible = filaDeSaldo.visible)
+    var muestraSaldo by remember { mutableStateOf(false) }
+    var identificadaDeSaldo by remember { mutableStateOf<TarjetaIdentificada?>(null) }
+    var preseleccionConsumida by remember { mutableStateOf(false) }
+    var reintentoDisponible by remember { mutableStateOf(false) }
+    SideEffect {
+        viewModel.configurarSaldo(ventaViva, fotoDeLaVenta, vaciarVenta, restaurarVenta, desdeCuentasAbiertas, alRestaurarSnapshot)
+        viewModel.vincularRecuperacionDeFoto(registrarRecuperacionDeFoto)
+    }
     // Salir del cobro sin cobrar (calificación, propina, elegir método): si ESTE cobro ya armó la cuenta de los vales (una
     // tarjeta rechazada, por ejemplo), se suelta, igual que con «Cancelar» (Codex r4 #6).
     val salirSinCobrar: () -> Unit = { viewModel.alSalirSinCobrar(); onCancel() }
     val state by viewModel.state.collectAsState()
+    val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     val terminalAvailability by viewModel.terminalAvailability.collectAsState()
@@ -116,6 +153,7 @@ fun PaymentFlowScreen(
     // se perdía, porque quien llama lo guarda en un `remember` que no sobrevive al cambio.
     val aperturaGuardada = rememberSaveable { java.util.UUID.randomUUID().toString() }
     val aperturaDelCobro = apertura ?: aperturaGuardada
+    var aperturaIniciada by remember { mutableStateOf(false) }
 
     // 🔴 D2 v7: «Cancelar» (la X, Esc) es la decisión de la cajera sobre esta venta. Primero se borran —y se espera— sus
     // apartados de efectivo (p. ej. el del 409 de precio); si no se pudo, el aviso lo dice y la pantalla no se cierra. Sin
@@ -127,8 +165,8 @@ fun PaymentFlowScreen(
         }
     }
 
-    LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId) {
-        if (viewModel.esElCobroEnCurso(aperturaDelCobro)) return@LaunchedEffect
+    LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId, cuentaDeTarjetas) {
+        if (viewModel.esElCobroEnCurso(aperturaDelCobro)) { aperturaIniciada = true; return@LaunchedEffect }
         viewModel.setSplitConfig(
             type = splitConfig.type.toApiSplitType(),
             selectedItemIds = splitConfig.selectedItemIds,
@@ -141,8 +179,59 @@ fun PaymentFlowScreen(
             customerName = preselectedCustomerName,
             resumeOrderId = resumeOrderId,
             apertura = aperturaDelCobro,
+            cuentaDeTarjetas = cuentaDeTarjetas,
+            onCreacionIncierta = onCreacionIncierta,
+            onCreacionResuelta = onCreacionResuelta,
             origen = origen,
         )
+        aperturaIniciada = true
+    }
+
+    if (aperturaIniciada && !resultadoDeSaldoVigente(viewModel.cuentaDelResultadoDeSaldo, cuentasDeSaldoCerradas)) {
+        LaunchedEffect(Unit) { onCancel() }
+        return
+    }
+
+    LaunchedEffect(state, pruebaPreseleccionada) {
+        if (state is PaymentFlowState.SelectingPaymentMethod) {
+            viewModel.actualizarFilaDeSaldo(refrescar = true)
+            if (!preseleccionConsumida && pruebaPreseleccionada != null) {
+                preseleccionConsumida = true
+                viewModel.abrirSaldoDesdeConsultar(pruebaPreseleccionada) { viewModel.descartarSaldoInsuficienteAlIdentificar(); identificadaDeSaldo = it; muestraSaldo = true }
+            }
+        }
+    }
+    LaunchedEffect(resultadoDeSaldo, ocupadoDeSaldo, hojaVigente, muestraSaldo) {
+        reintentoDisponible = hojaVigente && viewModel.puedeReintentarSaldo()
+        val espera = (resultadoDeSaldo as? DesenlaceDeCobro.Reintentable)?.retryAfterSeg
+        if (espera != null && !reintentoDisponible) {
+            kotlinx.coroutines.delay(espera.coerceAtLeast(0).toLong() * 1000)
+            reintentoDisponible = hojaVigente && viewModel.puedeReintentarSaldo()
+        }
+        if (!hojaVigente && muestraSaldo) {
+            muestraSaldo = false
+            when (resultadoDeSaldo) {
+                is DesenlaceDeCobro.Incierto, is DesenlaceDeCobro.Reintentable -> onCancel()
+                else -> Unit
+            }
+        }
+    }
+    if (muestraSaldo && !hojaVigente && resultadoDeSaldo !is DesenlaceDeCobro.Cobrado) return
+    if (muestraSaldo && hojaVigente) {
+        val tarjeta = identificadaDeSaldo
+        if (tarjeta == null) {
+            viewModel.venueParaSaldo?.let { venue ->
+                IdentificarTarjetaSheet(venue, viewModel.ajustesDelSaldo(),
+                    onIdentificada = { viewModel.descartarSaldoInsuficienteAlIdentificar(); identificadaDeSaldo = it }, onCerrar = { muestraSaldo = false })
+            }
+        } else MontoConSaldoSheet(tarjeta, viewModel.montoParaSaldo(tarjeta), ocupadoDeSaldo, resultadoDeSaldo,
+            reintentoDisponible, conectado = conexionDelSaldo, servidor = servidorDelSaldo, onPagar = { monto -> scopeDeSaldo.launch { viewModel.cobrarConSaldo(tarjeta, monto) } },
+            onReintentar = { scopeDeSaldo.launch { viewModel.reintentarSaldo() } }, onCerrar = {
+                muestraSaldo = false
+                if (resultadoDeSaldo is DesenlaceDeCobro.Incierto || resultadoDeSaldo is DesenlaceDeCobro.Reintentable) onCancel()
+                else viewModel.cuentaParaContinuarConSaldo?.let { onCuentaConSaldo?.invoke(it) }
+            })
+        return
     }
 
     Box(
@@ -195,6 +284,8 @@ fun PaymentFlowScreen(
                     // Sin pantalla de cliente: método de pago con la hoja de
                     // propina encima, como siempre.
                     PaymentMethodSelectionScreen(
+                        metodosHabilitados = metodosHabilitados,
+                        motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                         paymentContext = paymentContext.copy(totalCents = currentState.amount),
                         onMethodSelected = { viewModel.selectPaymentMethod(it) },
                         onCashPresetSelected = { viewModel.confirmCashPreset(it) },
@@ -221,6 +312,8 @@ fun PaymentFlowScreen(
             }
             is PaymentFlowState.SelectingPaymentMethod -> {
                 PaymentMethodSelectionScreen(
+                    metodosHabilitados = metodosHabilitados,
+                    motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                     paymentContext = paymentContext.copy(totalCents = currentState.amount),
                     onMethodSelected = { viewModel.selectPaymentMethod(it) },
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
@@ -235,6 +328,9 @@ fun PaymentFlowScreen(
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     // D15: con $0 no hay nada que dividir.
                     onSplitImporte = onSplitImporte.takeUnless { viewModel.ventaRapidaEnCero() },
+                    // La tarjeta de regalo sólo en el cobro de siempre: un pedido en línea o de plataforma no la ofrece.
+                    conductaDeSaldo = filaDeSaldo.takeIf { !origen.esPedidoEnLinea },
+                    onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {
@@ -258,6 +354,9 @@ fun PaymentFlowScreen(
             is PaymentFlowState.SelectingTerminal -> {
                 TerminalSelectionScreen(
                     terminals = terminals,
+                    cuentaDeTarjetas = cuentaDeTarjetas || resultadoDeSaldo != null,
+                    conectado = conexionDelSaldo,
+                    servidor = servidorDelSaldo,
                     onTerminalSelected = { viewModel.selectTerminalAndPay(it) },
                     // Tras un intento fallido esta pantalla vuelve con la ORDEN ya creada: salir
                     // sin más la dejaba abierta para siempre. Sin nada que cancelar, sale igual.
@@ -286,6 +385,7 @@ fun PaymentFlowScreen(
             }
             is PaymentFlowState.CancelacionPendiente -> {
                 CancelacionPendienteView(
+                    accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                     sinRed = currentState.sinRed,
                     isChecking = currentState.checking,
                     onVolverAConsultar = { viewModel.volverAConsultarCancelacion() },
@@ -330,8 +430,10 @@ fun PaymentFlowScreen(
                     val sincronizacion by viewModel.sincronizacionDelCobro.collectAsState()
 
                     PaymentResultScreen(
+                        accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                         totalCents = currentState.totalAmount,
                         methodLabel = viewModel.manualMethodLabel,
+                        saldoPagado = (resultadoDeSaldo as? DesenlaceDeCobro.Cobrado)?.cobro,
                         method = currentState.method,
                         changeCents = currentState.changeAmount,
                         isQueued = currentState.isQueued,
@@ -435,6 +537,7 @@ fun PaymentFlowScreen(
             }
             is PaymentFlowState.Error -> {
                 PaymentErrorView(
+                    accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                     message = currentState.message,
                     sinRed = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     onRetry = { viewModel.retry() },
@@ -456,6 +559,7 @@ fun PaymentFlowScreen(
                     }
                 }
                 PaymentUndeterminedView(
+                    accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                     message = currentState.message,
                     isChecking = currentState.checking,
                     // M-5: el título dice «anterior» sólo si el cobro es de OTRA venta; «…de esta venta.» lleva el neutro.

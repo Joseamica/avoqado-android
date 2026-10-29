@@ -36,6 +36,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -95,7 +98,13 @@ fun PaymentMethodSelectionScreen(
     onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit)? = null,
     /** Tipos de pago del catálogo del negocio, ya cacheados (vacío = sólo los fijos). */
     tenderTypes: List<com.avoqado.pos.payment.domain.TenderTypeOption> = emptyList(),
+    metodosHabilitados: Boolean = true,
+    motivoDeshabilitado: String? = null,
+    conductaDeSaldo: com.avoqado.pos.giftcards.domain.ConductaDeTarjeta? = null,
+    onSaldoSelected: (() -> Unit)? = null,
 ) {
+    val metodosVigentes by rememberUpdatedState(metodosHabilitados)
+    val gris = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
     val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
     var showCustomCashSheet by remember { mutableStateOf(false) }
@@ -106,7 +115,11 @@ fun PaymentMethodSelectionScreen(
 
     // Teclas del POS de Windows (founder, 19-oct): hacen lo mismo que el clic en su botón. Con cualquiera de las
     // hojas de abajo abierta no responden (la hoja es barrera).
-    AtajoDeTeclado(Key.F5) {
+    LaunchedEffect(metodosHabilitados) {
+        if (!metodosHabilitados) { showCustomCashSheet = false; showManualMethodSheet = false }
+    }
+    AtajoDeTeclado(Key.F5, activo = metodosHabilitados) {
+        if (!metodosVigentes) return@AtajoDeTeclado
         if (onCashCustomSelected != null) {
             efectivoConTotal = true
             showCustomCashSheet = true
@@ -114,7 +127,7 @@ fun PaymentMethodSelectionScreen(
             onMethodSelected(PaymentMethod.CASH)
         }
     }
-    AtajoDeTeclado(Key.F4, activo = !terminalsUnavailable && !saldoSinActualizar) { onMethodSelected(PaymentMethod.CARD) }
+    AtajoDeTeclado(Key.F4, activo = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar) { if (metodosVigentes) onMethodSelected(PaymentMethod.CARD) }
     AtajoDeTeclado(Key.Escape) { onCancel() }
     val enWindows = LocalEsEscritorio.current
 
@@ -136,7 +149,7 @@ fun PaymentMethodSelectionScreen(
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     textDecoration = TextDecoration.Underline,
-                    modifier = Modifier.clickable(onClick = onSplitImporte),
+                    modifier = Modifier.clickable(enabled = metodosHabilitados, onClick = onSplitImporte),
                 )
             } else {
                 Spacer(modifier = Modifier.size(1.dp))
@@ -199,6 +212,11 @@ fun PaymentMethodSelectionScreen(
                 .padding(bottom = AvoqadoTheme.spacing.xxxl)
                 .align(Alignment.CenterHorizontally),
         ) {
+            if (!metodosHabilitados && motivoDeshabilitado != null) {
+                Text(motivoDeshabilitado, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             // Efectivo row: label + suggested amounts + Personalizado
@@ -212,6 +230,8 @@ fun PaymentMethodSelectionScreen(
                     text = "Efectivo",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Medium,
+                    color = if (metodosHabilitados) MaterialTheme.colorScheme.onSurface else gris,
+                    modifier = Modifier.semantics { if (!metodosHabilitados) disabled() },
                 )
 
                 Spacer(modifier = Modifier.weight(1f))
@@ -225,11 +245,12 @@ fun PaymentMethodSelectionScreen(
                             text = formatCompactAmount(amountSuggestion),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = if (metodosHabilitados) MaterialTheme.colorScheme.primary else gris,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                                 .sinTeclasDeClic(enWindows)
-                                .clickable {
+                                .clickable(enabled = metodosHabilitados) {
+                                    if (!metodosVigentes) return@clickable
                                     if (onCashPresetSelected != null) {
                                         onCashPresetSelected(amountSuggestion)
                                     } else {
@@ -246,10 +267,11 @@ fun PaymentMethodSelectionScreen(
                     Text(
                         text = "Personalizado",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (metodosHabilitados) MaterialTheme.colorScheme.onSurfaceVariant else gris,
                         modifier = Modifier
                             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                            .clickable {
+                            .clickable(enabled = metodosHabilitados) {
+                                if (!metodosVigentes) return@clickable
                                 if (onCashCustomSelected != null) {
                                     efectivoConTotal = false
                                     showCustomCashSheet = true
@@ -262,7 +284,7 @@ fun PaymentMethodSelectionScreen(
                                 vertical = AvoqadoTheme.spacing.xs,
                             ),
                     )
-                    TeclaDeAtajo("F5")
+                    TeclaDeAtajo("F5", color = if (metodosHabilitados) MaterialTheme.colorScheme.onSurfaceVariant else gris)
                 }
             }
 
@@ -274,10 +296,9 @@ fun PaymentMethodSelectionScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(
-                        if (terminalsUnavailable || saldoSinActualizar) Modifier
-                        else Modifier.clickable { onMethodSelected(PaymentMethod.CARD) },
-                    )
+                    .clickable(enabled = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar) {
+                        if (metodosVigentes && !terminalsUnavailable && !saldoSinActualizar) onMethodSelected(PaymentMethod.CARD)
+                    }
                     .padding(vertical = AvoqadoTheme.spacing.md),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -286,13 +307,13 @@ fun PaymentMethodSelectionScreen(
                         text = "Cobrar con terminal",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Medium,
-                        color = if (terminalsUnavailable || saldoSinActualizar) MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (!metodosHabilitados) gris else if (terminalsUnavailable || saldoSinActualizar) MaterialTheme.colorScheme.onSurfaceVariant
                         else MaterialTheme.colorScheme.onSurface,
                     )
-                    if (saldoSinActualizar) {
+                    if (saldoSinActualizar && metodosHabilitados) {
                         Text(textoSoloEfectivo,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else if (terminalsUnavailable) {
+                    } else if (terminalsUnavailable && metodosHabilitados) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "No hay terminales conectadas · ",
@@ -313,17 +334,27 @@ fun PaymentMethodSelectionScreen(
                 TeclaDeAtajo(
                     "F4",
                     Modifier.padding(end = AvoqadoTheme.spacing.sm),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (terminalsUnavailable || saldoSinActualizar) 0.4f else 1f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (!metodosHabilitados || terminalsUnavailable || saldoSinActualizar) 0.4f else 1f),
                 )
                 Icon(
                     Icons.Filled.ChevronRight,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (metodosHabilitados) MaterialTheme.colorScheme.onSurfaceVariant else gris,
                 )
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            if (conductaDeSaldo?.visible == true && onSaldoSelected != null) {
+                Column(Modifier.fillMaxWidth().clickable(enabled = conductaDeSaldo.habilitada && metodosHabilitados, onClick = onSaldoSelected)
+                    .padding(AvoqadoTheme.spacing.lg)) {
+                    Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.FILA_COBRO, style = MaterialTheme.typography.titleMedium,
+                        color = if (conductaDeSaldo.habilitada && metodosHabilitados) MaterialTheme.colorScheme.onSurface else gris)
+                    conductaDeSaldo.motivo?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
 
             // "Ya me pagó de otra forma": el dinero NO pasó por Avoqado.
             // Antes el mesero sólo podía marcarlo como efectivo, y el corte
@@ -332,7 +363,7 @@ fun PaymentMethodSelectionScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { showManualMethodSheet = true }
+                        .clickable(enabled = metodosHabilitados) { if (metodosVigentes) showManualMethodSheet = true }
                         .padding(vertical = AvoqadoTheme.spacing.md),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -341,18 +372,19 @@ fun PaymentMethodSelectionScreen(
                             text = "Ya pagó de otra forma",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Medium,
+                            color = if (metodosHabilitados) MaterialTheme.colorScheme.onSurface else gris,
                         )
                         Text(
                             text = "Tarjeta de otra terminal, transferencia…",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (metodosHabilitados) MaterialTheme.colorScheme.onSurfaceVariant else gris,
                         )
                     }
                     Icon(
                         Icons.Filled.ChevronRight,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (metodosHabilitados) MaterialTheme.colorScheme.onSurfaceVariant else gris,
                     )
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -360,26 +392,26 @@ fun PaymentMethodSelectionScreen(
         }
     }
 
-    if (showManualMethodSheet && onManualMethodSelected != null) {
+    if (metodosHabilitados && showManualMethodSheet && onManualMethodSelected != null) {
         ManualMethodSheet(
             amountCents = amountCents,
             tenderTypes = tenderTypes,
             onSelect = { method ->
                 showManualMethodSheet = false
-                onManualMethodSelected(method)
+                if (metodosVigentes) onManualMethodSelected(method)
             },
             onDismiss = { showManualMethodSheet = false },
         )
     }
 
     // Custom cash amount bottom sheet
-    if (showCustomCashSheet) {
+    if (metodosHabilitados && showCustomCashSheet) {
         CustomCashSheet(
             totalCents = amountCents,
             conTotal = efectivoConTotal,
             onConfirm = { amount ->
                 showCustomCashSheet = false
-                onCashCustomSelected?.invoke(amount)
+                if (metodosVigentes) onCashCustomSelected?.invoke(amount)
             },
             onDismiss = { showCustomCashSheet = false },
         )

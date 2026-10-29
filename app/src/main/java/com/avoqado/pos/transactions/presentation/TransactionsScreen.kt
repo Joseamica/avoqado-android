@@ -310,6 +310,8 @@ private fun TransactionListPanel(
         //
         // **RE-ENABLING CHECKLIST**
         // Before uncommenting this button:
+        //   [ ] RefundRepository.kt:221 manda PESOS y POST /mobile/venues/:venueId/refunds espera CENTAVOS (deuda del 18-oct): convertir antes de prender.
+        //   [ ] En negocios que alguna vez cobraron una tarjeta de regalo el servidor responde 409 GIFT_CARD_UNLINKED_REFUND_BLOCKED: la devolución se hace desde su venta.
         //   [ ] Fix the 5 server bugs above (with tests).
         //   [ ] Decide single source of truth for cash impact (Payment vs CashDrawerEvent).
         //   [ ] Pass `items` from controller -> service and restore inventory atomically

@@ -35,6 +35,23 @@ class RoleManagerTest {
         every { secureStorage.venuePermissions } returns emptyList()
     }
 
+    @Test fun `tarjetas espejo de permisos reales y respaldo por rol`() {
+        for ((role, permissions, floor, manager) in listOf(
+            listOf("CASHIER", PermisosRealesDelServer.CASHIER, true, false),
+            listOf("WAITER", PermisosRealesDelServer.WAITER, false, false),
+            listOf("MANAGER", PermisosRealesDelServer.MANAGER, true, true),
+            listOf("CASHIER", emptyList<String>(), true, false),
+        )) {
+            every { secureStorage.userRole } returns role as String
+            @Suppress("UNCHECKED_CAST")
+            every { secureStorage.venuePermissions } returns permissions as List<String>
+            assertEquals(floor, roleManager.canReadGiftCards)
+            assertEquals(floor, roleManager.canSellGiftCards)
+            assertEquals(floor, roleManager.canRedeemGiftCards)
+            assertEquals(manager, roleManager.canManageGiftCards)
+        }
+    }
+
     // MARK: - `tables:pay-any`: cobrar la mesa de otro NO es editarla
     //
     // El detalle está en `tables/CobrarMesaAjenaTest`, que mide el candado

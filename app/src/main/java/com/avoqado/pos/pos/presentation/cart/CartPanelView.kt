@@ -88,6 +88,7 @@ fun CartPanelView(
     onClearCart: () -> Unit,
     onSaveCart: () -> Unit = {},
     onAddCustomAmount: () -> Unit = {},
+    onTarjetaDeRegalo: (() -> Unit)? = null,
     onRemoveItem: (String) -> Unit = {},
     /**
      * Abre los descuentos de la CUENTA COMPLETA desde el carrito — el
@@ -473,6 +474,10 @@ fun CartPanelView(
                     onAddCustomAmount()
                     showCartOptions = false
                 },
+                onTarjetaDeRegalo = onTarjetaDeRegalo?.let { abrir -> {
+                    showCartOptions = false
+                    abrir()
+                } },
             )
         }
     }
@@ -1084,6 +1089,7 @@ private fun CartOptionsSheet(
     onDismiss: () -> Unit,
     onClearCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
+    onTarjetaDeRegalo: (() -> Unit)?,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -1102,14 +1108,14 @@ private fun CartOptionsSheet(
 
             HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
 
-            CartOptionButton(
-                icon = Icons.Filled.CardGiftcard,
-                title = "Vender o verificar una tarjeta de regalo",
-                enabled = false,
-                onClick = { },
-            )
-
-            HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            if (onTarjetaDeRegalo != null) {
+                CartOptionButton(
+                    icon = Icons.Filled.CardGiftcard,
+                    title = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.MOSAICO,
+                    onClick = onTarjetaDeRegalo,
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            }
 
             CartOptionButton(
                 icon = Icons.Filled.Campaign,

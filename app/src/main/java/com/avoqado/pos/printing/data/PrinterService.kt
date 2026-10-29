@@ -1343,6 +1343,9 @@ class PrinterService @Inject constructor(
     suspend fun printWasteReceipt(comprobante: ComprobanteDeMerma): PrintOutcome =
         imprimirEnRecibos { it.generateWasteReceipt(comprobante) }
 
+    suspend fun printGiftCardCertificate(c: CertificadoDeTarjeta): PrintOutcome =
+        imprimirEnRecibos { it.generateGiftCardCertificate(c) }
+
     private suspend fun imprimirEnRecibos(armar: (ESCPOSPrinter) -> ByteArray): PrintOutcome {
         val printer = getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
             ?: return PrintOutcome.NoPrinter

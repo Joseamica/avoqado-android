@@ -26,6 +26,7 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -72,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
+import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.theme.ActionPurple
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
@@ -200,6 +202,25 @@ fun ReportsScreen(
                         if (data.paymentMethods.isNotEmpty()) {
                             item {
                                 PaymentMethodsSection(paymentMethods = data.paymentMethods)
+                            }
+                        }
+
+                        if ((data.summary.giftCardLoadsCount ?: 0) > 0) {
+                            item {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Tarjetas de regalo vendidas",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        text = "${data.summary.giftCardLoads?.let { formatMoney(it) } ?: "—"} · ${data.summary.giftCardLoadsCount}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
                             }
                         }
 
@@ -956,6 +977,7 @@ private fun PaymentMethodRow(method: PaymentMethodBreakdown) {
     val methodIcon = when (method.method.uppercase()) {
         "CASH" -> Icons.Filled.Payments
         "TRANSFER" -> Icons.Filled.SwapHoriz
+        "GIFT_CARD" -> Icons.Filled.CardGiftcard
         else -> Icons.Filled.CreditCard
     }
 

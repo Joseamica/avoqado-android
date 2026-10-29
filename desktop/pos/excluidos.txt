@@ -6,7 +6,7 @@
 # (Windows)») truena y dice cuál. Entonces: lee el cambio (`git log -p -- app/src/main/java/<ruta>`), pon al día el
 # reemplazo (o anota lo que escritorio todavía no tiene) y SÓLO DESPUÉS corre `./gradlew -p desktop :pos:actualizarHuellas`.
 # Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
-com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: a573e61bcfae757aafe73c4ea874a65a8e798a69951372a8856708ad04c209c3
+com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: c03aac9932ccc08b1cca7ba998f90a46737e8b628ee35cbea82da4cc7bf3730d
 com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 58bea02fbd39aaa815d6d6e484956aeffe6a4e6d62b4e027f1c66979b81eb3b1
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: 9048af0c6480c4e09530def9a51ddb11e90736a6504492898e330c488e8ce06b
 com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 7279c695aaf32507a57661b37cc5e806e511a2877630a2ed18438e7f576da2d8
@@ -23,9 +23,13 @@ com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: imp
 com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android | huella: a91806bea6913f760a45292b9688addfe140c9fa03bac212e1c20b49de1320ca
 com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf | huella: 935f87860dde7da3bb81d337d84f4c9293870f0ac995cc46e5208ee9be3aaeee
 com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por un puerto COM de Windows (escritorio/bascula/), misma lógica de tramas | huella: cabd0b26eccb941d6a13653e652af981e1f7328627a2ebe20f9a8e447cc1bc63
-com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit | huella: 03b1fe072482244d049eabbc8e931535f277b14a5f44861916eda0b67708aea1
+com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit | huella: bfe4e802aaf0166fb198306b39507e4a5a87f5abbfd9dda3962000ca6f465a54
 com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fijar pantalla (modo kiosco) de Android | huella: d23efb3da30e0a9846ac6f9183d9b6504d24ed380120d25a604d577a8e240228
 #
 # No se excluye de nada: sólo se vigila. Lo que Android declara aquí (servicios, receptores de arranque, permisos) lo da el
 # sistema; en escritorio se replica a mano en escritorio/Arranque.kt o se declara «no disponible en Windows».
 @manifiesto app/src/main/AndroidManifest.xml | huella: 795af42a0155011921fafbf394f3a6036649cf9450b2d461d240c1ea2c6fbc95
+
+com/avoqado/pos/giftcards/presentation/CompartirLiga.kt # reemplazo: portapapeles de Windows | huella: 4777ca9b23e97480c02d8d9bf906dbbe776da54c2b57a4d9ec97d9344cda0e25
+
+com/avoqado/pos/giftcards/presentation/LectorHidDeLaVentana.kt # RULING-r3: ventana Android; Windows conserva PistolaDeLaVentana | huella: d7dd26d9a6408dfcdade8b92ef1d193901a82ca64d6bddb2e8f75aebbc5e762e
