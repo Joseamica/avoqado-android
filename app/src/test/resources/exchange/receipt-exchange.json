@@ -1,0 +1,68 @@
+{
+  "exchange": {
+    "id": "exchange",
+    "status": "COMPLETED",
+    "originalOrderId": "old",
+    "originalOrderNumber": "ORD-1",
+    "newOrderId": "new",
+    "newOrderNumber": "ORD-2",
+    "returnedCents": 1000,
+    "takenCents": 1250,
+    "differenceCents": 250,
+    "settlement": {
+      "kind": "COLLECT",
+      "method": "CASH",
+      "amountCents": 250,
+      "sources": []
+    },
+    "lines": {
+      "returned": [
+        {
+          "orderItemId": "line",
+          "productId": "old-product",
+          "productName": "Blusa M",
+          "quantity": 1,
+          "reason": "SIZE",
+          "restock": true,
+          "pieceValuesCents": [
+            1000
+          ],
+          "valueCents": 1000
+        }
+      ],
+      "taken": [
+        {
+          "productId": "new-product",
+          "productName": "Falda L",
+          "quantity": 1,
+          "listCents": 1250,
+          "priceCents": 1250,
+          "pieces": [
+            {
+              "priceCents": 1250,
+              "inheritedFromOrderItemId": null
+            }
+          ],
+          "newOrderItemIds": [
+            "new-line"
+          ]
+        }
+      ]
+    },
+    "receiptUrl": "https://must-not-share.example/receipt"
+  },
+  "expectedText32": [
+    "CAMBIO",
+    "ORD-2",
+    "de la venta ORD-1",
+    "Regresa",
+    "1 Blusa M",
+    "-$10.00",
+    "Se lleva",
+    "1 Falda L",
+    "$12.50",
+    "Diferencia                 $2.50",
+    "Pago:                   Efectivo",
+    "Atendió                      Ana"
+  ]
+}

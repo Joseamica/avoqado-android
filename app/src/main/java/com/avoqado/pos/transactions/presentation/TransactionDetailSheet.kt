@@ -80,6 +80,11 @@ import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeEntry
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 
 // MARK: - Responsive metrics
 //
@@ -217,6 +222,8 @@ private fun LoadedDetailView(
 ) {
     // Receipt dialog states
     var showReceiptMethodDialog by remember { mutableStateOf(false) }
+    var showMoreActions by remember(transaction.id) { mutableStateOf(false) }
+    val exchangeMessage by viewModel.exchangeMessage.collectAsState()
 
     // 🔴 Quién abre este formulario vive en el ViewModel, no aquí: con el candado
     // hay que pedir el PIN ANTES de abrirlo, y esa decisión tiene que poder
@@ -310,36 +317,28 @@ private fun LoadedDetailView(
             // status='REFUNDED'. Re-enable only after the 5 server bugs are fixed.
             val isPrintingReceipt by viewModel.isPrintingReceipt.collectAsState()
             val printReceiptResult by viewModel.printReceiptResult.collectAsState()
+            val overrideEnabled by viewModel.tpvSettingsRepository.managerPinOverrideEnabled.collectAsState()
+            val exchangesEnabled by viewModel.tpvSettingsRepository.exchangesEnabled.collectAsState()
+            val connected by viewModel.customerConnection.collectAsState()
+            val reachable by viewModel.customerServerReachable.collectAsState()
+            val canRefund = viewModel.roleManager.canIssueRefund
+            val exchangeEntry = ExchangeEntry.decide(transaction, exchangesEnabled, connected && reachable, canRefund, overrideEnabled)
+            com.avoqado.pos.transactions.presentation.exchange.ExchangeRecoveryNotice(transaction) {
+                viewModel.resumePendingExchange(transaction)
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // Direct print — visible action, Square-style (not hidden in a dialog).
-                ActionButton(
-                    label = if (isPrintingReceipt) "Imprimiendo…" else "Imprimir",
-                    modifier = Modifier.weight(1f),
-                    enabled = !isPrintingReceipt,
-                    onClick = { viewModel.printTransactionReceipt(transaction) },
-                )
-                ActionButton(
-                    label = "Recibo nuevo",
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        viewModel.clearReceiptResult()
-                        showReceiptMethodDialog = true
-                    },
-                )
                 // 🔴 Sin el candado, el PIN de gerente es inalcanzable aquí: un
                 // botón que no existe nunca produce el 403 que abre el teclado.
                 // Con el switch OFF se esconde exactamente como hoy.
-                val overrideEnabled by viewModel.tpvSettingsRepository.managerPinOverrideEnabled.collectAsState()
-                val canRefund = viewModel.roleManager.canIssueRefund
                 when (viewModel.roleManager.visibilityOf(canRefund, overrideEnabled)) {
                     ActionVisibility.HIDDEN -> Unit
                     ActionVisibility.ALLOWED, ActionVisibility.LOCKED -> {
                         ActionButton(
-                            label = "Emitir reembolso",
+                            label = TextosCambio.EMITIR_REEMBOLSO,
                             modifier = Modifier.weight(1f),
                             enabled = transaction.remainingRefundable > 0.001,
                             locked = !canRefund,
@@ -350,6 +349,29 @@ private fun LoadedDetailView(
                         )
                     }
                 }
+                if (exchangeEntry.visible) {
+                    ActionButton(label = TextosCambio.CAMBIO, modifier = Modifier.weight(1f),
+                        locked = exchangeEntry.requiresPin, blockedReason = exchangeEntry.blockedReason,
+                        onClick = viewModel::onExchangeTapped)
+                }
+                Box {
+                    IconButton(onClick = { showMoreActions = true }) {
+                        Icon(Icons.Filled.MoreHoriz, contentDescription = TextosCambio.MAS_OPCIONES)
+                    }
+                    DropdownMenu(expanded = showMoreActions, onDismissRequest = { showMoreActions = false }) {
+                        DropdownMenuItem(text = { Text(TextosCambio.IMPRIMIR) }, enabled = !isPrintingReceipt,
+                            onClick = { showMoreActions = false; viewModel.printTransactionReceipt(transaction) })
+                        DropdownMenuItem(text = { Text(TextosCambio.RECIBO_NUEVO) }, onClick = {
+                            showMoreActions = false
+                            viewModel.clearReceiptResult()
+                            showReceiptMethodDialog = true
+                        })
+                    }
+                }
+            }
+            exchangeEntry.blockedReason?.let { reason ->
+                Text(reason, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm))
             }
 
             // Print status
@@ -384,6 +406,17 @@ private fun LoadedDetailView(
             }
 
             // MARK: - Cliente Section
+            val exchangeLinks = ExchangeEntry.links(transaction)
+            if (exchangeLinks.isNotEmpty()) {
+                Text(TextosCambio.CAMBIOS, style = MaterialTheme.typography.titleLarge)
+                ThinDivider()
+                exchangeLinks.forEach { link ->
+                    Text(link.label, style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.fillMaxWidth().clickable { viewModel.openExchangeOrder(link.orderId) }
+                            .padding(vertical = AvoqadoTheme.spacing.lg))
+                }
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+            }
             CustomerAssignmentSection(transaction, viewModel)
 
             // MARK: - Pago Section
@@ -399,6 +432,11 @@ private fun LoadedDetailView(
 
             Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
         }
+    }
+
+    exchangeMessage?.let { reason ->
+        AvoqadoDialog(title = TextosCambio.CAMBIO, description = reason,
+            onDismiss = viewModel::clearExchangeMessage, content = {})
     }
 
     // Receipt method chooser dialog
@@ -525,20 +563,29 @@ private fun ActionButton(
      * avisa que va a pedir el código de un encargado.
      */
     locked: Boolean = false,
+    blockedReason: String? = null,
     onClick: () -> Unit,
 ) {
     val metrics = LocalDetailMetrics.current
+    var showBlockedReason by remember(blockedReason) { mutableStateOf(false) }
+    val available = enabled && blockedReason == null
+    if (showBlockedReason) {
+        AvoqadoDialog(title = label, description = blockedReason,
+            onDismiss = { showBlockedReason = false }, content = {})
+    }
     Box(
         modifier = modifier
             .height(metrics.actionButtonHeight)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(50))
             .background(
-                if (enabled) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer,
+                if (available) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer,
             )
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(enabled = enabled || blockedReason != null) {
+                if (blockedReason != null) showBlockedReason = true else onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        val contentColor = if (enabled) {
+        val contentColor = if (available) {
             MaterialTheme.colorScheme.onSurface
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant

@@ -398,6 +398,9 @@ class TpvSettingsRepository internal constructor(
      */
     val managerPinOverrideEnabled: StateFlow<Boolean> = _managerPinOverrideEnabled.asStateFlow()
 
+    private val _exchangesEnabled = MutableStateFlow(secureStorage.exchangesEnabled)
+    val exchangesEnabled: StateFlow<Boolean> = _exchangesEnabled.asStateFlow()
+
     /** La sucursal cuyos ajustes hay en memoria. `@Volatile`: el poll refresca desde otro hilo (Task 4.1). */
     @Volatile private var loadedVenueId: String? = null
 
@@ -583,6 +586,9 @@ class TpvSettingsRepository internal constructor(
                     val overrideEnabled = result.data?.managerPinOverrideEnabled ?: false
                     _managerPinOverrideEnabled.value = overrideEnabled
                     secureStorage.managerPinOverrideEnabled = overrideEnabled
+                    val exchangesEnabled = result.data?.exchangesEnabled ?: false
+                    _exchangesEnabled.value = exchangesEnabled
+                    secureStorage.exchangesEnabled = exchangesEnabled
                 }
 
                 // Panel de promociones: es de VENUE, así que aplica HAYA o NO una terminal activa. Fallido ⇒ el previo
@@ -758,6 +764,8 @@ class TpvSettingsRepository internal constructor(
             // el GUARDADO, que es una sola llave para todo el aparato: la siguiente sucursal sin red lo heredaría.
             _managerPinOverrideEnabled.value = false
             secureStorage.managerPinOverrideEnabled = false
+            _exchangesEnabled.value = false
+            secureStorage.exchangesEnabled = false
         }
     }
 
@@ -863,6 +871,8 @@ internal data class VenueSettingsData(
      * ausente) se comporta exactamente como hoy.
      */
     val managerPinOverrideEnabled: Boolean = false,
+    /** Venue-owned switch; absent or null on older servers means disabled. */
+    val exchangesEnabled: Boolean? = null,
     /**
      * Encabezado del ticket impreso. Ausente (server viejo) ⇒ null ⇒ el ticket
      * sale sin encabezado fiscal, como hoy.

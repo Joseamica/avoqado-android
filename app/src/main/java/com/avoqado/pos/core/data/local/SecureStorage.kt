@@ -30,8 +30,20 @@ class SecureStorage @Inject constructor(
     /// authenticator). Before, nothing observed this, so the UI stayed in the
     /// main scaffold with every request silently 401ing until a force-restart
     /// (zombie session). AppState collects this and flips isLoggedIn=false.
-    private val _sessionInvalidated = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val sessionInvalidated: kotlinx.coroutines.flow.SharedFlow<Unit> = _sessionInvalidated
+    /// Lleva la [generacion] que dejó el cierre: quien lo procese tarde (ya entró otra persona) no la apaga (D4, 29-oct).
+    private val _sessionInvalidated = kotlinx.coroutines.flow.MutableSharedFlow<Long>(extraBufferCapacity = 1)
+    val sessionInvalidated: kotlinx.coroutines.flow.SharedFlow<Long> = _sessionInvalidated
+
+    /**
+     * El sello de sesión (D4, 29-oct): sube cada vez que cambia quién está adentro, al instalar una sesión (contraseña,
+     * PIN, huella) y al cerrarla. No sube al renovar las llaves ni al cambiar de sucursal. Una petición, un aviso, un
+     * cierre o un intento de entrar que llegue con otra generación es de una sesión que ya no está: no renueva, no
+     * reenvía, no instala y no cierra. Se muta bajo el candado de esta clase; vive en memoria y empieza en 0 con el
+     * proceso.
+     */
+    @Volatile
+    var generacion: Long = 0L
+        private set
 
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -280,6 +292,11 @@ class SecureStorage @Inject constructor(
     var managerPinOverrideEnabled: Boolean
         get() = prefs.getBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, value).apply() }
+
+    /** Last known switch for the active venue, cleared when leaving that venue. */
+    var exchangesEnabled: Boolean
+        get() = prefs.getBoolean(KEY_EXCHANGES_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_EXCHANGES_ENABLED, value).apply() }
 
     /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
@@ -593,6 +610,7 @@ class SecureStorage @Inject constructor(
     val isLoggedIn: Boolean
         get() = accessToken != null && userId != null
 
+    @Synchronized
     fun saveLogin(
         userId: String,
         email: String,
@@ -619,11 +637,85 @@ class SecureStorage @Inject constructor(
         this.accessToken = accessToken
         this.refreshToken = refreshToken
         this.venuePermissions = venuePermissions
+        generacion++
     }
 
+    /** La generación y el access, leídos juntos: con qué sesión sale una petición. */
+    @Synchronized
+    fun selloYAccess(): Pair<Long, String?> = generacion to accessToken
+
+    /** El access sólo si la sesión sigue siendo la de [sello]; si no, `null` (ya entró o salió alguien). */
+    @Synchronized
+    fun accessSiSigue(sello: Long): String? = if (generacion == sello) accessToken else null
+
+    /** El refresh sólo si la sesión sigue siendo la de [sello] y la sucursal la de [venueId], leídos juntos (Codex código r1 #1). */
+    @Synchronized
+    fun refreshSiSigue(sello: Long, venueId: String): String? =
+        if (generacion == sello && this.venueId == venueId) refreshToken?.takeIf { it.isNotBlank() } else null
+
+    /** Corre [efecto] sólo si la sesión sigue siendo la de [sello], sin que nada se cuele entre mirar y hacer. */
+    @Synchronized
+    fun siSigueLaGeneracion(sello: Long, efecto: () -> Unit = {}): Boolean {
+        if (generacion != sello) return false
+        efecto()
+        return true
+    }
+
+    /**
+     * Instala la sesión de un intento de entrar ([efecto] hace el `saveLogin` y lo demás de ESE login) sólo si nadie
+     * entró ni salió desde que empezó ([sello]). Devuelve la generación que quedó, para quien publique después; `null`
+     * si se descartó.
+     */
+    @Synchronized
+    fun instalarSiSigue(sello: Long, efecto: () -> Unit): Long? {
+        if (generacion != sello) return null
+        efecto()
+        return generacion
+    }
+
+    /** Cierra sólo si la sesión sigue siendo la de [sello]: un cierre que se quedó esperando no saca a quien entró. */
+    @Synchronized
+    fun clearSessionSiSigueLaGeneracion(sello: Long): Boolean {
+        if (generacion != sello) return false
+        clearSession()
+        return true
+    }
+
+    @Synchronized
     fun updateTokens(accessToken: String, refreshToken: String) {
         this.accessToken = accessToken
         this.refreshToken = refreshToken
+    }
+
+    /**
+     * Guarda una sesión RENOVADA sólo si sigue siendo la que se mandó a renovar ([refreshUsado]). Mientras la renovación
+     * viajaba, otra persona pudo entrar con su PIN o cerrarse la sesión: pisarla dejaba el nombre y los permisos de B con
+     * las llaves de A (Codex, D9 del Cambio, 29-oct). Comparar y escribir van bajo el mismo candado que [saveLogin] y
+     * [clearSession].
+     */
+    @Synchronized
+    fun updateTokensSiSigue(refreshUsado: String, accessToken: String, refreshToken: String): Boolean {
+        if (this.refreshToken != refreshUsado) return false
+        updateTokens(accessToken, refreshToken)
+        return true
+    }
+
+    /** Cierra la sesión sólo si sigue siendo la de [refreshUsado]: un rechazo de la renovación que llega tarde no
+     *  expulsa a quien entró después con su PIN (Codex, D9 del Cambio r2, 29-oct). */
+    @Synchronized
+    fun clearSessionSiSigue(refreshUsado: String?): Boolean {
+        if (this.refreshToken != refreshUsado) return false
+        clearSession()
+        return true
+    }
+
+    /** Igual, para una petición ya reintentada que vuelve 401: cierra sólo si la sesión sigue con el access con que
+     *  salió [accessUsado]. Sin access no se sabe de quién es, y no se cierra. */
+    @Synchronized
+    fun clearSessionSiSigueElAccess(accessUsado: String?): Boolean {
+        if (accessUsado == null || this.accessToken != accessUsado) return false
+        clearSession()
+        return true
     }
 
     fun switchVenue(venue: StoredVenue) {
@@ -641,6 +733,7 @@ class SecureStorage @Inject constructor(
         // lleguen los ajustes de la nueva sucursal: heredar un ON ajeno pintaría
         // candados que ese local no activó, y al tocarlos saldría el 403 pelón.
         this.managerPinOverrideEnabled = false
+        this.exchangesEnabled = false
     }
 
     fun saveBiometricCredentials(
@@ -658,6 +751,20 @@ class SecureStorage @Inject constructor(
         isBiometricLoginEnabled = true
     }
 
+    /**
+     * La llave de la huella que el servidor ya rotó se guarda aunque la entrada se descarte: con la vieja, la siguiente
+     * huella presentaría un refresh consumido y el servidor revocaría la sesión (Codex plan r1 #2). Sólo si la reserva
+     * sigue siendo la que se mandó.
+     */
+    @Synchronized
+    fun guardarRotadaDeLaHuellaSiSigue(enviado: String, nuevo: String): Boolean {
+        if (biometricRefreshToken != enviado) return false
+        biometricRefreshToken = nuevo
+        return true
+    }
+
+    /** Entrar con huella también es instalar una sesión: sube el sello como [saveLogin]. */
+    @Synchronized
     fun restoreBiometricSession(venue: StoredVenue?): Boolean {
         val restoredUserId = biometricUserId ?: return false
         val restoredVenue = venue ?: return false
@@ -665,11 +772,14 @@ class SecureStorage @Inject constructor(
         userId = restoredUserId
         userEmail = biometricUserEmail
         switchVenue(restoredVenue)
+        generacion++
         return true
     }
 
+    @Synchronized
     fun clearSession() {
-        _sessionInvalidated.tryEmit(Unit)
+        generacion++
+        _sessionInvalidated.tryEmit(generacion)
         prefs.edit()
             .remove(KEY_USER_ID)
             .remove(KEY_USER_EMAIL)
@@ -692,11 +802,21 @@ class SecureStorage @Inject constructor(
             // y vale pendiente permite recuperarlos tras volver a iniciar.
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
+            .remove(KEY_EXCHANGES_ENABLED)
             .remove(KEY_VENUE_PERMISSIONS)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_TERMINAL_ID)
             .apply()
+    }
+
+    /** Borra la huella sólo si su llave sigue siendo la que mandó el intento que falló: un error que llega tarde no
+     *  borra la que otro intento acaba de renovar (Codex plan r2 #5). */
+    @Synchronized
+    fun clearBiometricCredentialsSiSigue(enviado: String): Boolean {
+        if (biometricRefreshToken != enviado) return false
+        clearBiometricCredentials()
+        return true
     }
 
     fun clearBiometricCredentials() {
@@ -758,6 +878,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"
         private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
+        private const val KEY_EXCHANGES_ENABLED = "exchangesEnabled"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"

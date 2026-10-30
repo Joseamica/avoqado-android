@@ -50,6 +50,9 @@ class SesionSinRenovarTest {
         server.start()
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
+        every { secureStorage.updateTokensSiSigue(any(), any(), any()) } returns true
+        every { secureStorage.clearSessionSiSigue(any()) } returns true
+        every { secureStorage.clearSessionSiSigueElAccess(any()) } returns true
         authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
         authenticator.reportarFallo = { reportes.add(it) }
@@ -101,8 +104,8 @@ class SesionSinRenovarTest {
 
         assertTrue("debe contar como sin red para la UI", ServerErrorText.isOffline(e))
         assertTrue("debe encolarse como cualquier corte de red", OrderRepository.isQueueableError(e))
-        verify(exactly = 0) { secureStorage.clearSession() }
-        verify(exactly = 0) { secureStorage.updateTokens(any(), any()) }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
+        verify(exactly = 0) { secureStorage.updateTokensSiSigue(any(), any(), any()) }
     }
 
     @Test
@@ -111,7 +114,7 @@ class SesionSinRenovarTest {
 
         autenticarEsperandoSinRed(original401())
 
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -128,7 +131,7 @@ class SesionSinRenovarTest {
         lider.join(5_000)
 
         assertEquals("un solo refresco: el seguidor reusa el resultado del lider", 1, server.requestCount)
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -145,7 +148,7 @@ class SesionSinRenovarTest {
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"invalid refresh token"}"""))
 
         assertNull(authenticator.authenticate(null, original401()))
-        verify(exactly = 1) { secureStorage.clearSession() }
+        verify(exactly = 1) { secureStorage.clearSessionSiSigue("refresh-viejo") }
     }
 
     @Test
@@ -182,7 +185,7 @@ class SesionSinRenovarTest {
         assertSame(ConexionesCompartidas.pool, TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo()).refreshHttpClient.connectionPool)
         val principal = com.avoqado.pos.core.di.NetworkModule.provideOkHttpClient(
             mockk(relaxed = true), mockk(relaxed = true), authenticator,
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), secureStorage,
         )
         assertSame("el cliente principal y el del refresco comparten conexiones", ConexionesCompartidas.pool, principal.connectionPool)
     }
@@ -198,7 +201,7 @@ class SesionSinRenovarTest {
         autenticarEsperandoSinRed(original401())
 
         assertEquals("una ráfaga de 401 = UN refresco al servidor", 1, server.requestCount)
-        verify(exactly = 0) { secureStorage.clearSession() }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }; verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
     }
 
     @Test
@@ -243,7 +246,7 @@ class SesionSinRenovarTest {
         // `OkHttpClient.Builder()` independientes traen cada uno la suya: compartir sólo el pool no basta (Codex).
         val principal = com.avoqado.pos.core.di.NetworkModule.provideOkHttpClient(
             mockk(relaxed = true), mockk(relaxed = true), authenticator,
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), secureStorage,
         )
         val refresco = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo()).refreshHttpClient
 

@@ -357,6 +357,8 @@ data class ReceiptData(
     /** Saldo autoritativo de la lectura de precuenta, en centavos. Null = no disponible. */
     val paidAmount: Int? = null,
     val remainingAmount: Int? = null,
+    val kind: String? = null,
+    val exchange: com.avoqado.pos.printing.receiptlayout.ReceiptExchange? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"

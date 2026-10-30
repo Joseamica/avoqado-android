@@ -193,6 +193,11 @@ open class ManagerOverrideCoordinator @Inject constructor(
         return vivo.token
     }
 
+    @Synchronized
+    open fun discardPreauthorized(permission: String) {
+        if (preauthorized?.permission == permission) preauthorized = null
+    }
+
     /** La UI llama esto al teclear el código. Sólo `Granted` cierra el diálogo. */
     open suspend fun submitPin(venueId: String, pin: String): OverrideResult {
         // 🔴 UNA sola lectura: deferred, permiso e identidad salen del MISMO
