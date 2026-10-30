@@ -62,9 +62,9 @@ class PaymentLegacyCourtesyContinuationTest {
 
         init {
             // Q16's small table/decoder omits persisted fields. Use the REAL
-            // schema18 export for this full-source contract, keeping its owned
+            // schema19 export for this full-source contract, keeping its owned
             // connection, server, service and production Q15 result SQL.
-            val entities = JSONObject(File("schemas/com.avoqado.pos.core.data.local.database.AvoqadoDatabase/18.json").readText())
+            val entities = JSONObject(File("schemas/com.avoqado.pos.core.data.local.database.AvoqadoDatabase/19.json").readText())
                 .getJSONObject("database").getJSONArray("entities")
             for (name in listOf("pending_payments", "sales_notice_acknowledgements")) {
                 val entity = (0 until entities.length()).map { entities.getJSONObject(it) }.single { it.getString("tableName") == name }
@@ -198,7 +198,7 @@ class PaymentLegacyCourtesyContinuationTest {
         }
     }
 
-    @Test fun `CAS rejects a change in EACH of the 33 persisted source fields`() = runBlocking {
+    @Test fun `CAS rejects a change in EACH of the 34 persisted source fields`() = runBlocking {
         for ((name, change) in mutations()) Harness().use { h ->
             val source = h.seed(); val changed = change(source)
             assertEquals(columns(source).keys, mutations().map { it.first }.toSet())
@@ -541,6 +541,7 @@ class PaymentLegacyCourtesyContinuationTest {
             "q15InitialResultJson" to p.q15InitialResultJson, "q15ResultJson" to p.q15ResultJson, "q15Reason" to p.q15Reason,
             "q15DetectedAt" to p.q15DetectedAt, "q15ReviewedAt" to p.q15ReviewedAt, "q15ReviewedBy" to p.q15ReviewedBy,
             "q15ReviewRole" to p.q15ReviewRole, "capturedOrderRef" to p.capturedOrderRef, "cashDrawerSessionId" to p.cashDrawerSessionId,
+            "lineasDelTicketJson" to p.lineasDelTicketJson,
         )
         private fun decode(r: Map<String, Any?>): PendingPaymentEntity {
             fun i(k: String) = (r[k] as? Number)?.toInt()
@@ -555,7 +556,7 @@ class PaymentLegacyCourtesyContinuationTest {
                 q15CaptureJson = s("q15CaptureJson"), q15InitialResultJson = s("q15InitialResultJson"), q15ResultJson = s("q15ResultJson"),
                 q15Reason = s("q15Reason"), q15DetectedAt = l("q15DetectedAt"), q15ReviewedAt = l("q15ReviewedAt"),
                 q15ReviewedBy = s("q15ReviewedBy"), q15ReviewRole = s("q15ReviewRole"), capturedOrderRef = s("capturedOrderRef"),
-                cashDrawerSessionId = s("cashDrawerSessionId"))
+                cashDrawerSessionId = s("cashDrawerSessionId"), lineasDelTicketJson = s("lineasDelTicketJson"))
         }
         private fun mutations(): List<Pair<String, (PendingPaymentEntity) -> PendingPaymentEntity>> = listOf(
             "id" to { it.copy(id = OTHER) }, "venueId" to { it.copy(venueId = OTHER) }, "staffId" to { it.copy(staffId = OTHER) },
@@ -572,6 +573,7 @@ class PaymentLegacyCourtesyContinuationTest {
             "q15DetectedAt" to { it.copy(q15DetectedAt = CAPTURED_AT + 9) }, "q15ReviewedAt" to { it.copy(q15ReviewedAt = CAPTURED_AT + 9) },
             "q15ReviewedBy" to { it.copy(q15ReviewedBy = OTHER) }, "q15ReviewRole" to { it.copy(q15ReviewRole = "OWNER") },
             "capturedOrderRef" to { it.copy(capturedOrderRef = ORDER) }, "cashDrawerSessionId" to { it.copy(cashDrawerSessionId = OTHER) },
+            "lineasDelTicketJson" to { it.copy(lineasDelTicketJson = "{}") },
         )
     }
 }

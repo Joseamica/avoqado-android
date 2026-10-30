@@ -451,7 +451,7 @@ class SelloDeLaVentaTest {
     fun `una mesa cuyo cobro se encola tampoco promete porque la orden de la mesa puede no tener al cliente`() = runTest {
         every { orderRepository.programaDeSellosActivo(any()) } returns true
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.failure(java.net.UnknownHostException("sin red"))
         tableSession.start(
             TableSession.Active("mesa-5", "5", null, "orden-mesa-5", "M-5", 0, 10_000, TableSession.Mode.PAYING),
@@ -473,7 +473,7 @@ class SelloDeLaVentaTest {
             Result.success(com.avoqado.pos.payment.data.model.CreateOrderResponse(success = true,
                 data = com.avoqado.pos.payment.data.model.OrderData(id = "orden-rapida")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         viewModel.setSplitConfig("CUSTOMAMOUNT", customAmountCents = 4_000)
         viewModel.startPaymentFlow(otroImporte(), customerId = "cm-dany", customerName = "Dany")
@@ -524,7 +524,7 @@ class SelloDeLaVentaTest {
         } returns Result.failure(java.net.UnknownHostException("sin red"))
         coEvery {
             cashPaymentRepository.queueCashPayment(
-                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any(),
             )
         } returns "fila-1"
         every { cashPaymentRepository.observarEstado("fila-1") } returns estadoDeLaFila

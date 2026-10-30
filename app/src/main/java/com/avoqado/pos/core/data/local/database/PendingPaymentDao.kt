@@ -237,8 +237,11 @@ interface PendingPaymentDao {
      * acaba de nacer, en el apartado que sigue `EN_VUELO`, en UNA escritura antes del `/pay`. Sólo vía
      * `CashPaymentRepository.actualizarApartado` (pasa por `AdmisionDePrecioQ16.write`). La captura no se toca.
      */
-    @Query("UPDATE pending_payments SET amountCents = :amountCents, orderId = :orderId WHERE id = :id AND syncStatus = 'EN_VUELO'")
-    suspend fun actualizarApartadoEnVuelo(id: String, amountCents: Int, orderId: String): Int
+    @Query(
+        "UPDATE pending_payments SET amountCents = :amountCents, orderId = :orderId, lineasDelTicketJson = :lineasDelTicketJson " +
+            "WHERE id = :id AND syncStatus = 'EN_VUELO'",
+    )
+    suspend fun actualizarApartadoEnVuelo(id: String, amountCents: Int, orderId: String, lineasDelTicketJson: String? = null): Int
 
     /**
      * Agregado 5 y Codex r11 #2: una TANDA de los cobros de efectivo PURO que todavía pueden subir, de UN negocio y de las cajas
@@ -349,6 +352,8 @@ internal fun filaAlReemplazar(old: PendingPaymentEntity?, payment: PendingPaymen
         q15Reason = old.q15Reason, q15DetectedAt = old.q15DetectedAt,
         q15ReviewedAt = old.q15ReviewedAt, q15ReviewedBy = old.q15ReviewedBy, q15ReviewRole = old.q15ReviewRole,
         cashDrawerSessionId = old.cashDrawerSessionId,
+        // D1: la copia sigue al importe de ESTA escritura (la fila toma el de `payment`); si ésta no la trae, se conserva la de disco.
+        lineasDelTicketJson = payment.lineasDelTicketJson ?: old.lineasDelTicketJson,
     )
 
 /** «Sí se cobró» y «se da por cobrado» (D2 v7): la reserva pasa a la cola con su MISMA llave. */

@@ -84,7 +84,7 @@ class EfectivoSinConfirmarTest {
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns CashPaymentResult.Success(changeCents = 0)
-        coEvery { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) } answers {
+        coEvery { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any()) } answers {
             arg<String?>(8) ?: "sin-llave"
         }
         every { cashPaymentRepository.observarEstado(any()) } returns estadoEnCola
@@ -125,7 +125,7 @@ class EfectivoSinConfirmarTest {
 
     private fun llaveReservada(): String {
         val llave = slot<String>()
-        coVerify { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), capture(llave), any(), any(), any(), any(), any(), venueId = any()) }
+        coVerify { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), capture(llave), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any()) }
         return llave.captured
     }
 
@@ -141,7 +141,7 @@ class EfectivoSinConfirmarTest {
         advanceUntilIdle()
 
         coVerifyOrder {
-            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
             orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
     }
@@ -172,7 +172,7 @@ class EfectivoSinConfirmarTest {
 
         val llave = llaveReservada()
         coVerifyOrder {
-            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), llave, any(), any(), any(), any(), any(), venueId = any())
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), llave, any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
             cashPaymentRepository.soltarReserva(llave)
         }
         val exito = viewModel.state.value as PaymentFlowState.Success
@@ -198,7 +198,7 @@ class EfectivoSinConfirmarTest {
         coVerify(exactly = 0) { cashPaymentRepository.soltarReserva(llave) }
         coVerify(exactly = 0) { cashPaymentRepository.olvidarReservaEnMemoria(llave) }
         coVerify(exactly = 0) { cashPaymentRepository.descartarReservaRechazada(any()) }
-        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) }
+        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any()) }
         assertTrue(viewModel.state.value is PaymentFlowState.Error)
     }
 
@@ -261,11 +261,11 @@ class EfectivoSinConfirmarTest {
 
         coVerify {
             cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
-                venueId = any(), capturadaEn = any(), cajaDelCobro = "srv-C")
+                venueId = any(), capturadaEn = any(), cajaDelCobro = "srv-C", lineasDelTicket = any())
         }
         coVerify {
             cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
-                venueId = any(), capturadaEn = any(), cajaDelCobro = "srv-C")
+                venueId = any(), capturadaEn = any(), cajaDelCobro = "srv-C", lineasDelTicket = any())
         }
         coVerify(exactly = 1) { cashDrawerRepository.getOpenSession() }
     }
@@ -289,7 +289,7 @@ class EfectivoSinConfirmarTest {
         coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
         coVerify {
             cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
-                venueId = any(), capturadaEn = any(), cajaDelCobro = "B-local")
+                venueId = any(), capturadaEn = any(), cajaDelCobro = "B-local", lineasDelTicket = any())
         }
         assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
     }
@@ -307,7 +307,7 @@ class EfectivoSinConfirmarTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
-        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) }
+        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any()) }
     }
 
     /** Sin caja abierta al confirmar, la reserva no lleva caja: sube como hoy. */
@@ -323,7 +323,7 @@ class EfectivoSinConfirmarTest {
 
         coVerify {
             cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
-                venueId = any(), capturadaEn = any(), cajaDelCobro = null)
+                venueId = any(), capturadaEn = any(), cajaDelCobro = null, lineasDelTicket = any())
         }
     }
 

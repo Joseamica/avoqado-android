@@ -1004,7 +1004,7 @@ class PaymentFlowViewModelTest {
             areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any())
         } returns materializedCheckout
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(
                 paymentId = "payment-area-1",
@@ -1083,7 +1083,7 @@ class PaymentFlowViewModelTest {
 
     private fun cobroDeEfectivoRegistrado() {
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pago-vales", receiptAccessKey = null))
     }
 
@@ -1115,7 +1115,7 @@ class PaymentFlowViewModelTest {
 
         verify(exactly = 0) { cashPaymentRepository.processCashPayment(any(), any()) }
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         val estado = viewModel.state.value
         assertTrue("$estado", estado is PaymentFlowState.Error && "vuelve a escanear" in estado.message)
@@ -1251,7 +1251,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         coVerify(exactly = 1) { areaTicketRepository.cancel(any()) }
         assertTrue("regresa al carrito", viewModel.debeSalir.value)
@@ -1279,7 +1279,7 @@ class PaymentFlowViewModelTest {
         every { areaTicketRepository.session.current() } returns sesion
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(paymentId = "pago-vales", receiptAccessKey = null, remainingBalanceCents = 200, orderPaymentStatus = "PARTIAL"),
         )
@@ -1352,7 +1352,7 @@ class PaymentFlowViewModelTest {
         assertFalse("B sigue abierto", viewModel.debeSalir.value)
         coVerify(exactly = 0) { areaTicketRepository.cancel(soloSi = "checkout-b") }
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
     }
 
@@ -1387,7 +1387,7 @@ class PaymentFlowViewModelTest {
         assertFalse("B sigue abierto", viewModel.debeSalir.value)
         assertFalse("A no marca una diferencia de vales en B", viewModel.valesNoCoincidian.value)
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
     }
 
@@ -1406,7 +1406,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         assertTrue(viewModel.valesNoCoincidian.value)
         assertTrue("sale del cobro sin cancelar la sesión de vales", viewModel.debeSalir.value)
@@ -1426,7 +1426,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-vales", 300, any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment("order-vales", 300, any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         coVerify(exactly = 0) { areaTicketRepository.refresh(any(), any()) }
         assertFalse(viewModel.valesNoCoincidian.value)
@@ -1447,7 +1447,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-vales", 200, any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment("order-vales", 200, any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         assertFalse(viewModel.valesNoCoincidian.value)
     }
@@ -1471,7 +1471,7 @@ class PaymentFlowViewModelTest {
 
         coVerify(exactly = 0) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) {
-            orderRepository.recordCashPayment("order-vales", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment("order-vales", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
         assertFalse(viewModel.valesNoCoincidian.value)
@@ -1494,7 +1494,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("order-vales", 200, any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment("order-vales", 200, any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         }
         assertFalse(viewModel.valesNoCoincidian.value)
     }
@@ -1509,7 +1509,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-cancelada")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
 
         viewModel.startPaymentFlow(cartConUnProducto())
@@ -1548,7 +1548,7 @@ class PaymentFlowViewModelTest {
         every { areaTicketRepository.session.current() } returns openCheckout
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns materializedCheckout
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
 
         val cart = CartState(
@@ -1581,7 +1581,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-legacy")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-legacy", receiptAccessKey = null))
         // Default from setup(): printConfigRepository.getCurrentConfig() returns PrintConfig() (no stations)
 
@@ -1613,7 +1613,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-abcd1234")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-legacy-2", receiptAccessKey = null))
 
         val ticketSlot = slot<KitchenTicketData>()
@@ -1663,7 +1663,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-routed")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-routed", receiptAccessKey = null))
 
         val station = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)
@@ -1704,7 +1704,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-aviso")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-aviso", receiptAccessKey = null))
 
         val station = StationInfo(id = "st_barra", name = "Barra", printerId = "pr_1", active = true)
@@ -1744,7 +1744,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-ok")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-ok", receiptAccessKey = null))
 
         val station = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)
@@ -1776,7 +1776,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-tienda")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-tienda", receiptAccessKey = null))
         every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 0, fallidas = emptyList())
@@ -1801,7 +1801,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-resto")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-resto", receiptAccessKey = null))
         every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = listOf("Cocina"))
@@ -1850,7 +1850,7 @@ class PaymentFlowViewModelTest {
         // 🔴 Los OCHO argumentos: con seis, Kotlin rellena `manualMethod` y `tenderType` con su default
         // (null) y el stub sólo atrapa el efectivo — la transferencia y el catálogo caerían al mock relajado.
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-recibo", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -1871,7 +1871,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `un metodo manual fijo imprime su nombre y sin billete recibido`() = runTest {
         val recibo = reciboDelCobro { viewModel.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.TRANSFER)) }
-        coVerify { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), ManualPaymentMethod.TRANSFER, null, capturedVenueId = any()) }
+        coVerify { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), ManualPaymentMethod.TRANSFER, null, capturedVenueId = any(), lineasDelTicket = any()) }
         assertEquals("Transferencia", recibo.paymentMethod)
         assertNull(recibo.cashTendered)
         assertEquals("pay-recibo", recibo.transactionId)
@@ -1884,7 +1884,7 @@ class PaymentFlowViewModelTest {
             baseMethod = "OTHER", captureTip = false, posSection = "PRIMARY", displayOrder = 1,
         )
         val recibo = reciboDelCobro { viewModel.confirmManualChoice(ManualPaymentChoice.Tender(uber)) }
-        coVerify { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), null, uber, capturedVenueId = any()) }
+        coVerify { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), null, uber, capturedVenueId = any(), lineasDelTicket = any()) }
         assertEquals("Uber Eats", recibo.paymentMethod)
         assertNull(recibo.cashTendered)
         assertFalse(recibo.isCashPayment)
@@ -1977,7 +1977,7 @@ class PaymentFlowViewModelTest {
     fun `P1 venta en efectivo EN LINEA - la estacion solo pantalla no se imprime ni se marca`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-en-linea")))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-en-linea", receiptAccessKey = null))
         every { printConfigRepository.getCurrentConfig() } returns configConBarraSoloPantalla
 
@@ -2017,7 +2017,7 @@ class PaymentFlowViewModelTest {
         // m-6 de la revisión final: el folio es POR VENTA. Una segunda venta que NO crea orden (retoma "order-2") y
         // cuyo efectivo también se encola no puede heredar el folio de la anterior: su marca escondería la comanda
         // de OTRA venta en la pantalla. Sin folio propio, el papel sale igual pero sin marca.
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.failure(java.net.UnknownHostException("sin red"))
         viewModel.startPaymentFlow(cartConCafe, resumeOrderId = "order-2")
         viewModel.confirmCashCustom(3000)
@@ -2129,7 +2129,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-atendio")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-atendio", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -2155,7 +2155,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-sesion")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-sesion", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -2175,7 +2175,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-llevar")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-llevar", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -2208,7 +2208,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-task4")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-task4", receiptAccessKey = null))
 
         viewModel.startPaymentFlow(cartConUnProducto())
@@ -2347,7 +2347,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-AAAA")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-A", receiptAccessKey = null))
         viewModel.startPaymentFlow(cartConUnProducto())
         viewModel.confirmCashCustom(1000)
@@ -2361,7 +2361,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-BBBB")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-B", receiptAccessKey = null))
         viewModel.startPaymentFlow(cartConUnProducto())
         viewModel.confirmCashCustom(1000)
@@ -2970,7 +2970,7 @@ class PaymentFlowViewModelTest {
 
         // Rediseño r9: con apartado de efectivo puro (el repositorio de cobros de esta prueba lo acepta) la venta entra al arqueo
         // por su salida de `EN_VUELO` (`SalidaDelApartadoRoomTest`), no por el ViewModel.
-        coVerify(exactly = 1) { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) }
         coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
     }
 
@@ -2980,7 +2980,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-race")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(
                 paymentId = "payment-race",
@@ -3022,7 +3022,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-overflow")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(
                 paymentId = "payment-overflow",
@@ -3076,7 +3076,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-cambio")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(
                 paymentId = "payment-cambio",
@@ -3126,7 +3126,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-ticket")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(
                 paymentId = "payment-ticket",
@@ -3206,7 +3206,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `change uses cashRetainedCents when present`() = runTest {
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns cobroRegistrado(amount = 10000, retenido = 12000)
 
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
@@ -3225,7 +3225,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `change uses cashRetainedCents on an overpayment`() = runTest {
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns cobroRegistrado(amount = 10000, retenido = 10000)
 
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
@@ -3262,7 +3262,7 @@ class PaymentFlowViewModelTest {
     fun `P1 a Rappi cash order of 205 paid with 500 keeps 205 in the drawer, screen and ticket`() = runTest {
         every { cashPaymentRepository.processCashPayment(20500, 50000) } returns CashPaymentResult.Success(changeCents = 29500)
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any(), lineasDelTicket = any())
         } returns cobroDeRappi()
         viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO)
@@ -3281,21 +3281,21 @@ class PaymentFlowViewModelTest {
                 staffId = any(), cashTenderedCents = 50000, changeCents = 29500, rating = any(),
                 orderId = "rappi-1", orderExternalId = any(), customerId = any(), idempotencyKey = capture(llaveDelApartado),
                 manualMethod = null, tenderType = null, amountCents = 20500, tipCents = 0, splitType = "FULLPAYMENT",
-                venueId = "venue-1", capturadaEn = any(), cajaDelCobro = any(), enLugarDe = any(),
+                venueId = "venue-1", capturadaEn = any(), cajaDelCobro = any(), enLugarDe = any(), lineasDelTicket = any(),
             )
         }
         assertTrue(llaveDelApartado.captured.isNotBlank())
         // Se manda el saldo como importe y SIN propina: el servidor reparte lo recibido. Y como efectivo YA recibido (captura
         // previa): si Rappi canceló con el cobro abierto, el SERVIDOR lo registra y avisa, nunca lo rechaza (Codex código r1 #2).
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), llaveDelApartado.captured, capturedVenueId = any(), capturaPrevia = true)
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), llaveDelApartado.captured, capturedVenueId = any(), capturaPrevia = true, lineasDelTicket = any())
         }
     }
 
     @Test
     fun `P1 a Rappi cash order opened with the saved balance goes as a prior capture`() = runTest {
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), capturaPrevia = any(), lineasDelTicket = any())
         } returns cobroDeRappi()
         viewModel.startPaymentFlow(carritoDelPedidoWeb(20500), resumeOrderId = "rappi-1",
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO)
@@ -3303,7 +3303,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), any(), capturedVenueId = any(), capturaPrevia = true)
+            orderRepository.recordCashPayment("rappi-1", 20500, any(), 0, any(), any(), capturedVenueId = any(), capturaPrevia = true, lineasDelTicket = any())
         }
     }
 
@@ -3331,7 +3331,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `change keeps today's formula without it`() = runTest {
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns cobroRegistrado(amount = 9000, tip = 500, retenido = null)
 
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
@@ -3353,7 +3353,7 @@ class PaymentFlowViewModelTest {
         sesionDeMesa.start(mesaCobrando())
         val cobradas = mutableListOf<String>()
         coEvery {
-            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns cobroRegistrado(amount = 10000, retenido = 10000)
 
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
@@ -3392,7 +3392,7 @@ class PaymentFlowViewModelTest {
         coEvery { areaTicketRepository.refresh(any(), any()) } returns vales
         val cobradas = mutableListOf<String>()
         coEvery {
-            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns cobroRegistrado(amount = 10000, retenido = 10000)
 
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
@@ -3434,7 +3434,7 @@ class PaymentFlowViewModelTest {
     fun `existing table and split flows unchanged with origen NORMAL`() = runTest {
         val cobradas = mutableListOf<String>()
         coEvery {
-            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns cobroRegistrado(amount = 10000, retenido = 10000)
 
         // Split de mostrador, sin mesa: la parte 2 cobra contra la orden de la parte 1.
@@ -4957,7 +4957,7 @@ class PaymentFlowViewModelTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-apertura")))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-apertura", receiptAccessKey = null))
         viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
         viewModel.confirmCashCustom(1000)
@@ -5146,7 +5146,7 @@ class PaymentFlowViewModelTest {
 
     private fun elServidorDiceTrasElEfectivo(saldo: Int, estado: String) {
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(
             OrderRepository.CashPayResult(paymentId = "p-ef", receiptAccessKey = null, remainingBalanceCents = saldo, orderPaymentStatus = estado),
         )

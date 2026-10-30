@@ -454,7 +454,7 @@ class OrderRequestPromotionTest {
         )
         val cobrado = slot<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.startPaymentFlow(CartState(items = carrito))
@@ -481,7 +481,7 @@ class OrderRequestPromotionTest {
         )
         val cobrado = slot<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.startPaymentFlow(CartState(items = carrito))
@@ -510,7 +510,7 @@ class OrderRequestPromotionTest {
         val encolado = slot<CreateOrderRequest>()
         coEvery {
             cashPaymentRepository.queueCashPayment(
-                capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), tenderType = any(), amountCents = any(), tipCents = any(), splitType = any(), venueId = any()
+                capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), tenderType = any(), amountCents = any(), tipCents = any(), splitType = any(), venueId = any(), lineasDelTicket = any(),
             )
         } returns "queued-1"
 
@@ -578,7 +578,7 @@ class OrderRequestPromotionTest {
             CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 99.0)),
         )
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 5000)
@@ -606,7 +606,7 @@ class OrderRequestPromotionTest {
             CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 120.0)),
         )
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         val cart = CartState(items = listOf(lineaNormal)) // 9000
@@ -684,7 +684,7 @@ class OrderRequestPromotionTest {
         every { cashPaymentRepository.processCashPayment(9899, 10000) } returns CashPaymentResult.Success(changeCents = 101)
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 99.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -711,7 +711,7 @@ class OrderRequestPromotionTest {
         }
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 104.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -733,7 +733,7 @@ class OrderRequestPromotionTest {
 
     @Test
     fun `control - el cobro completo de una mesa con cargo imprime el renglon unico de hoy y el mismo total (7a no empeora)`() = runTest {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -762,7 +762,7 @@ class OrderRequestPromotionTest {
     fun `control - un pago parcial imprime solo lo cobrado, sin descuento ni IVA prorrateado`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 99.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -786,7 +786,7 @@ class OrderRequestPromotionTest {
     fun `control - una venta vieja con IVA aparte imprime su IVA agregado una sola vez`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 116.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -820,7 +820,7 @@ class OrderRequestPromotionTest {
         every { cashPaymentRepository.processCashPayment(9900, 10000) } returns CashPaymentResult.Success(changeCents = 100)
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 89.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -1022,7 +1022,7 @@ class OrderRequestPromotionTest {
         importe: Int = 11500,
         mesa: com.avoqado.pos.tables.data.TableSession.Active = mesaT4(),
     ): ReceiptData {
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -1054,7 +1054,7 @@ class OrderRequestPromotionTest {
 
     @Test fun `T4 una cuenta pagada solo con cargo conserva productos cero y cargo completo`() = runTest {
         try {
-            coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
                 Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
             val impreso = slot<ReceiptData>()
             coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -1075,7 +1075,7 @@ class OrderRequestPromotionTest {
             assertNull(r.discountAmount)
             assertEquals(0, r.taxAmount)
             assertTrue(cuadra(r))
-            coVerify(exactly = 1) { orderRepository.recordCashPayment("order-mesa-A", 1500, any(), 0, any(), any(), any(), any(), capturedVenueId = any()) }
+            coVerify(exactly = 1) { orderRepository.recordCashPayment("order-mesa-A", 1500, any(), 0, any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) }
         } finally { paymentViewModel.viewModelScope.cancel() }
     }
 
@@ -1111,7 +1111,7 @@ class OrderRequestPromotionTest {
         val response = CompletableDeferred<Result<OrderRepository.CashPayResult>>()
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } coAnswers {
             started.complete(Unit); response.await()
         }
         every { secureStorage.venueName } returns "Negocio A"
@@ -1126,7 +1126,7 @@ class OrderRequestPromotionTest {
             tableSession.start(mesaT4(cargo = 3000, id = "order-mesa-B", total = 20000))
             response.complete(Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null)))
             advanceUntilIdle()
-            coVerify(exactly = 1) { orderRepository.recordCashPayment("order-mesa-A", 11500, any(), any(), any(), any(), any(), capturedVenueId = "venue-1") }
+            coVerify(exactly = 1) { orderRepository.recordCashPayment("order-mesa-A", 11500, any(), any(), any(), any(), any(), capturedVenueId = "venue-1", lineasDelTicket = any()) }
             val r = impreso.captured
             assertEquals("Negocio A", r.venueName)
             assertEquals(1500, r.serviceChargeAmount); assertEquals(10000, r.subtotal)
@@ -1145,7 +1145,7 @@ class OrderRequestPromotionTest {
         val started = CompletableDeferred<Unit>()
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } coAnswers {
             started.complete(Unit); response.await()
         }
         every { secureStorage.venueName } returns "Negocio A"
@@ -1171,7 +1171,7 @@ class OrderRequestPromotionTest {
     @Test fun `T4 una apertura nueva sin mesa no hereda el cargo ni el negocio anterior`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-nueva", total = 115.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult("pay-nueva", null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
@@ -1202,7 +1202,7 @@ class OrderRequestPromotionTest {
             assertEquals("Atendió = el mesero dueño de la cuenta", "Ana", r.cashierName)
             assertEquals("Mesa 5", r.orderType)
             coVerify(exactly = 1) {
-                orderRepository.recordCashPayment("order-mesa-A", 11500, "staff-luis", any(), any(), any(), any(), any(), capturedVenueId = any())
+                orderRepository.recordCashPayment("order-mesa-A", 11500, "staff-luis", any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
             }
         } finally { paymentViewModel.viewModelScope.cancel() }
     }
@@ -1210,7 +1210,7 @@ class OrderRequestPromotionTest {
     @Test fun `D4 cuenta sin mesero - Atendio es la sesion, nunca el literal Staff`() = runTest {
         every { secureStorage.userFirstName } returns "Luis"
         every { secureStorage.userLastName } returns "Cajero"
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit

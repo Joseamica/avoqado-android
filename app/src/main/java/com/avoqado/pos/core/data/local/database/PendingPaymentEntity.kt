@@ -91,4 +91,14 @@ data class PendingPaymentEntity(
      * Nula en las filas de antes de la v17 y cuando no había caja abierta: esas suben exactamente como hoy.
      */
     val cashDrawerSessionId: String? = null,
+    /**
+     * D1 «fotocopia del ticket» (v19, 28-oct): el JSON de los renglones que imprimió el cobro de UNA parte de una venta dividida
+     * (`CopiaDelTicket`), ya serializado y dentro de los topes. Se escribe con la fila, ANTES de tocar la red, y el reenvío lo
+     * manda como `lineasDelTicket` en `/pay`. Es sólo texto del ticket.
+     *
+     * 🔴 Columna PROPIA, nunca [itemsJson]: ése es de `/fast` y el DAO lo compara al reemplazar una reserva. Un reemplazo de la
+     * fila sin copia conserva la de disco ([filaAlReemplazar]). Nula en las filas de antes de la v19 y en los cobros de un solo
+     * pago: esas suben exactamente como hoy.
+     */
+    val lineasDelTicketJson: String? = null,
 )
