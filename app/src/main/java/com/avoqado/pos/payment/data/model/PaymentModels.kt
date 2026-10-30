@@ -281,6 +281,12 @@ data class OrderItemRequest(
     /** El `catalogAt` del catálogo con que se agregó ESTA línea. Viaja sólo junto con [displayedUnitPrice]. */
     val catalogAt: String? = null,
     val cortesiaReason: String? = null,
+    /**
+     * D12: el «Ajuste de precio» del cajero, en centavos por unidad (por kg en venta por peso), SIN extras. El servidor
+     * lo vuelve un descuento ("Ajuste de precio"). Sólo en líneas con productId, nunca en cortesía, y sólo si BAJA el
+     * precio; se OMITE del payload cuando es null (apps viejas y líneas sin ajuste, idénticas a antes).
+     */
+    val adjustedUnitPrice: Int? = null,
 ) {
     /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
     companion object {

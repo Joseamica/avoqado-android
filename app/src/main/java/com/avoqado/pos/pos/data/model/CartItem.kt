@@ -97,8 +97,16 @@ data class CartItem(
     val modifiersPrice: Int
         get() = selectedModifiers.sumOf { it.priceInCents } * quantity
 
+    /**
+     * D12: en un PRODUCTO el ajuste manual sólo BAJA el precio —un ajuste mayor que el precio vigente (catálogo que
+     * bajó, carrito viejo) no cuenta, igual que en el servidor—. "Otro importe", paquetes y créditos siguen con
+     * `priceAdjustment ?: unitPrice`: ahí el precio es el que se escribió.
+     */
     val effectiveUnitPrice: Int
-        get() = priceAdjustment ?: unitPrice
+        get() {
+            val ajuste = priceAdjustment ?: return unitPrice
+            return if (type is CartItemType.ProductItem) minOf(ajuste, unitPrice) else ajuste
+        }
 
     /**
      * Lo que vale la línea ANTES del descuento: producto + modificadores, ya por

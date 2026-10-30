@@ -222,4 +222,46 @@ class CartItemDiscountTest {
         assertEquals(200, item.itemDiscountCents)
         assertEquals(1800, item.totalPrice)
     }
+
+    // MARK: - D12: el ajuste sólo baja el precio de un PRODUCTO
+
+    @Test
+    fun `un ajuste mayor que el precio vigente no cuenta`() {
+        // Catálogo que bajó (o carrito viejo): el ajuste de $80 ya no baja nada contra un precio vigente de $60.
+        val item = CartItem(
+            type = CartItemType.ProductItem("p1"),
+            name = "Producto",
+            unitPrice = 6000,
+            priceAdjustment = 8000,
+        )
+
+        assertEquals(6000, item.effectiveUnitPrice)
+        assertEquals(6000, item.totalPrice)
+    }
+
+    @Test
+    fun `por peso al centavo`() {
+        // $200.00/kg ajustado a $100.05/kg × 0.300 kg = $30.015 → $30.02 (half-up), igual que el servidor y iOS.
+        val item = CartItem(
+            type = CartItemType.ProductItem("p1"),
+            name = "Jamón",
+            unitPrice = 20000,
+            priceAdjustment = 10005,
+            weightKg = 0.3,
+        )
+
+        assertEquals(3002, item.lineBeforeDiscountCents)
+    }
+
+    @Test
+    fun `un Otro importe ajustado hacia arriba sigue valiendo el ajuste`() {
+        val item = CartItem(
+            type = CartItemType.CustomAmount,
+            name = "Otro importe",
+            unitPrice = 10000,
+            priceAdjustment = 12000,
+        )
+
+        assertEquals(12000, item.effectiveUnitPrice)
+    }
 }
