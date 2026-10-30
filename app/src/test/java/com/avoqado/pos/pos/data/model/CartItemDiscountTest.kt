@@ -341,4 +341,52 @@ class CartItemDiscountTest {
         assertEquals(null, nulo.maxDiscountAmount)
         assertEquals(null, ausente.maxDiscountAmount)
     }
+
+    // MARK: - D13: el tope también en el descuento de CUENTA (`Discount.calculateDiscount`)
+
+    private fun deCuenta(type: String, value: Double, max: Double? = null) =
+        Discount(id = "d-cuenta", name = "Cuenta", value = value, type = type, scope = "ORDER", maxDiscountAmount = max)
+
+    @Test
+    fun `descuento de cuenta 20 por ciento maximo 10 pesos sobre 100 descuenta 10`() {
+        assertEquals(1000, deCuenta("PERCENTAGE", 20.0, max = 10.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta con tope mayor que el bruto no cambia`() {
+        assertEquals(2000, deCuenta("PERCENTAGE", 20.0, max = 50.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta sin tope no cambia`() {
+        assertEquals(2000, deCuenta("PERCENTAGE", 20.0).calculateDiscount(10000))
+        assertEquals(3000, deCuenta("FIXED_AMOUNT", 30.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta fijo de 30 con tope 10 descuenta 10`() {
+        assertEquals(1000, deCuenta("FIXED_AMOUNT", 30.0, max = 10.0).calculateDiscount(10000))
+        assertEquals(1000, deCuenta("FIXED", 30.0, max = 10.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta con tope en cero queda en cero, igual que el servidor`() {
+        assertEquals(0, deCuenta("PERCENTAGE", 20.0, max = 0.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta fijo mayor que la cuenta sigue topado a la cuenta`() {
+        assertEquals(10000, deCuenta("FIXED_AMOUNT", 300.0, max = 500.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `el carrito cobra 90 con un descuento de cuenta 20 por ciento maximo 10 sobre 100`() {
+        val state = com.avoqado.pos.pos.presentation.cart.CartState(
+            items = listOf(CartItem(type = CartItemType.ProductItem("p1"), name = "Playera", unitPrice = 10000)),
+            orderDiscount = deCuenta("PERCENTAGE", 20.0, max = 10.0),
+        )
+
+        assertEquals(1000, state.orderDiscountCents)
+        assertEquals(9000, state.totalCents)
+    }
 }

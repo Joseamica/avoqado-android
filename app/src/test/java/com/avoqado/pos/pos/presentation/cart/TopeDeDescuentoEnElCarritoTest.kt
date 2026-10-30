@@ -87,4 +87,21 @@ class TopeDeDescuentoEnElCarritoTest {
         // Como hoy: sin tope conocido, el descuento es el calculado.
         assertEquals(5000, restaurado.itemDiscountCents)
     }
+
+    @Test
+    fun `el descuento de cuenta con tope viaja en el carrito guardado y se restaura con su tope`() {
+        val prefs = PrefsDeDosCapas()
+        val vm = carrito(SavedCartsRepository(prefs.context))
+        vm.addProductWithModifiers(playera, modifiers = emptyList())
+        vm.applyOrderDiscount(Discount(id = "dc", name = "20 % máx $10", value = 20.0, type = "PERCENTAGE", scope = "ORDER", maxDiscountAmount = 10.0))
+        assertEquals(1000, vm.cartState.value.orderDiscountCents)
+        assertTrue(vm.saveCurrentCart("Mesa 2"))
+
+        val guardado = SavedCartsRepository(prefs.reiniciarProceso().context).savedCarts.value.single()
+        assertEquals(10.0, guardado.orderDiscount!!.maxDiscountAmount!!, 0.0)
+
+        val otro = carrito(SavedCartsRepository(PrefsDeDosCapas().context))
+        otro.restoreSavedCart(guardado)
+        assertEquals(1000, otro.cartState.value.orderDiscountCents)
+    }
 }
