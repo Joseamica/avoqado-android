@@ -61,6 +61,7 @@ object NetworkModule {
         // No hay ciclo: ManagerOverrideCoordinator → PermissionOverrideRepository
         // → SecureStorage, y el repositorio construye su PROPIO OkHttpClient.
         managerOverrideCoordinator: ManagerOverrideCoordinator,
+        secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
     ): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
             redactHeader("Authorization")
@@ -78,7 +79,7 @@ object NetworkModule {
             // los headers X-Device-* para que el server registre este aparato en el
             // venue. Si falla, el request sigue sin ellos — nunca bloquea un cobro.
             .addInterceptor(deviceHeadersInterceptor)
-            .addInterceptor(ForbiddenInterceptor(errorNotifier, managerOverrideCoordinator))
+            .addInterceptor(ForbiddenInterceptor(errorNotifier, managerOverrideCoordinator) { secureStorage.siSigueLaGeneracion(it) })
             .addInterceptor(ConnectivityInterceptor(connectivityMonitor))
             .addInterceptor(logging)
             .addNetworkInterceptor(com.avoqado.pos.core.data.sync.InterceptorDePrecioQ16)

@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 import com.avoqado.pos.designsystem.components.ImmersiveWindow
@@ -50,12 +51,19 @@ private const val ALFA_SIN_COMBINACION = 0.38f
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun HojaDeVariantes(familia: Familia, onElegir: (Product) -> Unit, onCerrar: () -> Unit) {
+fun HojaDeVariantes(
+    familia: Familia,
+    onElegir: (Product) -> Unit,
+    onCerrar: () -> Unit,
+    struckProductIds: Set<String> = emptySet(),
+    disableOutOfStock: Boolean = false,
+) {
     var seleccion by remember(familia.groupId) { mutableStateOf(seleccionInicial(familia)) }
     // Una entrega por apertura (Codex P1-2): dos activaciones de «Agregar» pendientes antes de que Compose desmonte la hoja no suman dos
     // unidades. Se marca SINCRÓNICAMENTE antes de entregar; deshabilitar el botón no cubriría eventos que ya están en cola.
     val entregada = remember(familia.groupId) { AtomicBoolean(false) }
     val elegida: Product? = varianteElegida(familia, seleccion)
+    val puedeAgregar = elegida?.let { variantSelectable(it, struckProductIds, disableOutOfStock) } == true
     // Techo explícito, como PromotionSheet: dentro de una hoja la altura llega sin acotar.
     val alturaMaximaLista = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
     // El chip ELEGIDO va relleno con el contraste de `primary` (oscuro en tema claro, claro en el oscuro), como el negro de iOS: el
@@ -98,10 +106,18 @@ fun HojaDeVariantes(familia: Familia, onElegir: (Product) -> Unit, onCerrar: () 
                         ) {
                             eje.valores.forEach { valor ->
                                 val disponible = valorDisponible(familia, seleccion, eje.nombre, valor)
+                                val candidatas = familia.variantes.filter { v ->
+                                    val valores = valoresDe(v)
+                                    valores[eje.nombre] == valor && seleccion.all { (e, x) -> e == eje.nombre || valores[e] == x }
+                                }
+                                val tachada = candidatas.isNotEmpty() && candidatas.all { it.id in struckProductIds }
+                                val restringida = (struckProductIds.isNotEmpty() || disableOutOfStock) &&
+                                    candidatas.none { variantSelectable(it, struckProductIds, disableOutOfStock) }
                                 FilterChip(
                                     selected = seleccion[eje.nombre] == valor,
                                     onClick = { seleccion = elegir(familia, seleccion, eje.nombre, valor) },
-                                    label = { Text(valor) },
+                                    label = { Text(valor, textDecoration = if (tachada) TextDecoration.LineThrough else null) },
+                                    enabled = !restringida,
                                     colors = coloresDelChip,
                                     modifier = if (disponible) Modifier else Modifier
                                         .alpha(ALFA_SIN_COMBINACION)
@@ -129,8 +145,10 @@ fun HojaDeVariantes(familia: Familia, onElegir: (Product) -> Unit, onCerrar: () 
             PrimaryButton(
                 // Con la variante, su precio con la regla del tile (`displayPrice`, «/kg» incluido); sin ella, sin un precio inventado.
                 text = elegida?.let { TextosVariantes.agregarCon(it.displayPrice) } ?: TextosVariantes.AGREGAR,
-                onClick = { elegida?.let { if (entregada.compareAndSet(false, true)) onElegir(it) } },
-                enabled = elegida != null,
+                onClick = { elegida?.let {
+                    if (variantSelectable(it, struckProductIds, disableOutOfStock) && entregada.compareAndSet(false, true)) onElegir(it)
+                } },
+                enabled = puedeAgregar,
                 fullWidth = true,
             )
             if (elegida == null) {
@@ -147,7 +165,7 @@ fun HojaDeVariantes(familia: Familia, onElegir: (Product) -> Unit, onCerrar: () 
 }
 
 /** Sólo si la variante rastrea inventario; sin número no se dice nada (nunca un cero inventado). */
-private fun avisoDeExistencia(v: Product): String? = when {
+internal fun avisoDeExistencia(v: Product): String? = when {
     v.trackInventory != true -> null
     v.isOutOfStock -> TextosVariantes.AGOTADO_AVISO
     else -> v.availableQuantity?.let { TextosVariantes.disponibles(it) }
