@@ -27,6 +27,10 @@ class TransactionCustomerAssignmentHttpTest {
         every { storage.userId } returns "actor-a"
         every { storage.venueId } returns "venue-a"
         every { storage.accessToken } returns "token-a"
+        // D4: la lectura sale con el sello de su sesión; aquí nadie entra ni sale (la persona sí puede cambiar).
+        every { storage.selloYAccess() } answers { 0L to storage.accessToken }
+        every { storage.accessSiSigue(0L) } answers { storage.accessToken }
+        every { storage.siSigueLaGeneracion(0L, any()) } returns true
         return TransactionRepository(storage, client).apply { baseUrl = server.url("/api/v1").toString().trimEnd('/') }
     }
 
@@ -137,18 +141,18 @@ class TransactionCustomerAssignmentHttpTest {
         }
     }
 
-    @Test fun `historical detail unauthorized cannot refresh or replay under another actor`() = runBlocking {
+    // D9 (28-oct): la lectura SÍ deja renovar la sesión (dura 10 min y el detalle no abría), pero nunca reenvía
+    // como otra persona. El POST de arriba sigue sin renovar.
+    @Test fun `historical detail unauthorized never replays under another actor`() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
             server.enqueue(MockResponse().setBody("""{"transaction":{"id":"payment-a"}}"""))
-            val refreshed = AtomicInteger()
             val client = OkHttpClient.Builder().authenticator(Authenticator { _, response ->
-                refreshed.incrementAndGet()
                 every { storage.userId } returns "actor-b"
+                every { storage.accessToken } returns "token-b"
                 response.request.newBuilder().header("Authorization", "Bearer token-b").build()
             }).build()
             assertNull(repository(server, client).fetchTransactionDetail("payment-a"))
-            assertEquals(0, refreshed.get())
             assertEquals(1, server.requestCount)
         }
     }

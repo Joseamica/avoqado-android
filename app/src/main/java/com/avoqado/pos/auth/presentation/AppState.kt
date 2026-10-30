@@ -238,7 +238,10 @@ class AppState @Inject constructor(
         // Reactive logout: a wiped session (failed refresh) now routes the user
         // to Landing instead of leaving a zombie session behind.
         viewModelScope.launch {
-            secureStorage.sessionInvalidated.collect {
+            secureStorage.sessionInvalidated.collect { generacionDelCierre ->
+                // D4: el aviso se procesa en el hilo principal, después. Si mientras tanto entró otra persona (PIN), el
+                // cierre ya no es de quien está: no se le apaga nada.
+                if (!secureStorage.siSigueLaGeneracion(generacionDelCierre)) return@collect
                 soltarAjustesDeLaSesion()
                 tableSyncCoordinator.onSessionInvalidated()
                 stopInventorySync()
@@ -496,6 +499,9 @@ class AppState @Inject constructor(
     }
 
     fun onLogout() {
+        // D4: el cierre a mano espera (revisar pendientes, vaciar la merma). Si mientras tanto entró otra persona con su
+        // PIN, este cierre ya no es suyo: no se le detiene nada ni se le borra la sesión (Codex plan r1 #6).
+        val sello = secureStorage.generacion
         viewModelScope.launch {
             val venueId = secureStorage.venueId
             val blocking = paymentSyncService.blockingWorkCount() +
@@ -517,6 +523,10 @@ class AppState @Inject constructor(
             if (::wasteSyncCoordinator.isInitialized) {
                 wasteSyncCoordinator.vaciarAntesDeCerrarSesion(secureStorage.userId)
             }
+            if (!secureStorage.siSigueLaGeneracion(sello)) {
+                android.util.Log.w("🔐", "Ya entró otra persona mientras se cerraba la sesión: no se cierra la suya")
+                return@launch
+            }
             paymentSyncService.stop()
             payLaterQueue?.stop()
             stopInventorySync()
@@ -524,7 +534,9 @@ class AppState @Inject constructor(
             detenerRedLocal()
             tableSyncCoordinator.onSessionInvalidated()
             soltarAjustesDeLaSesion()
-            secureStorage.clearSession()
+            // ponytail: los `stop()` de arriba y este borrado no son un solo paso; entre la comprobación y aquí no hay
+            // espera, y el borrado igual sólo sale si la sesión sigue siendo la que se cerraba.
+            secureStorage.clearSessionSiSigueLaGeneracion(sello)
             _isLoggedIn.value = false
             notifyDeviceSessionChanged()
         }

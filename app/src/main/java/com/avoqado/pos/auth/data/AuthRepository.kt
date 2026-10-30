@@ -58,6 +58,8 @@ class AuthRepository @Inject constructor(
         rememberMe: Boolean = true,
     ): LoginResult {
         Log.d("🔐", "loginWithEmail - email: $email, rememberMe: $rememberMe")
+        // D4: si mientras viaja este login entra o sale alguien, su respuesta tardía no se instala.
+        val sello = secureStorage.generacion
 
         return try {
             val response = apiService.login(
@@ -78,24 +80,28 @@ class AuthRepository @Inject constructor(
                     return LoginResult.Error("No tienes acceso a ningún establecimiento.")
                 }
 
-                // Save session data
-                secureStorage.saveLogin(
-                    userId = user.id,
-                    email = user.email,
-                    firstName = user.firstName,
-                    lastName = user.lastName,
-                    venueId = primaryVenue.id,
-                    venueName = primaryVenue.name,
-                    venueSlug = primaryVenue.slug,
-                    role = primaryVenue.role,
-                    accessToken = response.accessToken,
-                    refreshToken = response.refreshToken ?: "",
-                    venueTimezone = primaryVenue.timezone,
-                    venuePermissions = primaryVenue.permissions,
-                )
-
-                // Save all venues for switching
-                secureStorage.venuesList = venues.map { it.toStoredVenue() }
+                // Save session data (y la lista de venues del MISMO login, en el mismo paso: D4)
+                val instalada = secureStorage.instalarSiSigue(sello) {
+                    secureStorage.saveLogin(
+                        userId = user.id,
+                        email = user.email,
+                        firstName = user.firstName,
+                        lastName = user.lastName,
+                        venueId = primaryVenue.id,
+                        venueName = primaryVenue.name,
+                        venueSlug = primaryVenue.slug,
+                        role = primaryVenue.role,
+                        accessToken = response.accessToken,
+                        refreshToken = response.refreshToken ?: "",
+                        venueTimezone = primaryVenue.timezone,
+                        venuePermissions = primaryVenue.permissions,
+                    )
+                    secureStorage.venuesList = venues.map { it.toStoredVenue() }
+                }
+                if (instalada == null) {
+                    Log.w("🔐", "Login tardío: ya entró otra persona en este aparato, no se instala")
+                    return LoginResult.Error(OTRA_PERSONA_ENTRO)
+                }
 
                 Log.d("🔐", "✅ Login successful - user: ${user.id}, venue: ${primaryVenue.name}")
 
@@ -148,6 +154,11 @@ class AuthRepository @Inject constructor(
             return SwitchUserResult.Error("Vuelve a iniciar sesión para continuar.")
         }
 
+        // D4: un PIN cuya respuesta llega después de que entró o salió alguien no se instala. Si la sesión de quien sale
+        // se cierra sola mientras viaja (el SERVIDOR la revoca al aceptar el PIN), la pantalla ya volvió al acceso y esta
+        // petición se cancela con ella, como hoy: se vuelve a entrar (decisión documentada en el plan v3).
+        val sello = secureStorage.generacion
+
         return try {
             val response = apiService.switchUser(venueId, SwitchUserRequest(pin))
             val user = response.user
@@ -159,36 +170,42 @@ class AuthRepository @Inject constructor(
 
             // Reemplaza la sesión ENTERA: rol y permisos incluidos. Es lo que hace que el menú, los
             // botones y lo que se ve se repinten para quien acaba de entrar.
-            secureStorage.saveLogin(
-                userId = user.id,
-                email = user.email,
-                firstName = user.firstName,
-                lastName = user.lastName,
-                venueId = venue.id,
-                venueName = venue.name,
-                venueSlug = venue.slug,
-                role = venue.role,
-                accessToken = response.accessToken,
-                refreshToken = response.refreshToken ?: "",
-                venueTimezone = venue.timezone,
-                venuePermissions = venue.permissions,
-            )
+            val instalada = secureStorage.instalarSiSigue(sello) {
+                secureStorage.saveLogin(
+                    userId = user.id,
+                    email = user.email,
+                    firstName = user.firstName,
+                    lastName = user.lastName,
+                    venueId = venue.id,
+                    venueName = venue.name,
+                    venueSlug = venue.slug,
+                    role = venue.role,
+                    accessToken = response.accessToken,
+                    refreshToken = response.refreshToken ?: "",
+                    venueTimezone = venue.timezone,
+                    venuePermissions = venue.permissions,
+                )
 
-            // 🔴 `venuesList` TAMBIÉN se reemplaza. Se descubrió en el simulador de iPad, donde la
-            // tarjeta de identidad saca el rol de esta lista y no de `saveLogin`: con sólo
-            // `saveLogin`, el nombre cambiaba a la persona nueva y la píldora seguía diciendo
-            // «Propietario». Un rol que miente sobre lo que alguien puede hacer es peor que no
-            // mostrarlo. Se arregla en las DOS apps aunque el síntoma se viera en una: la lista
-            // la leen varias pantallas y el dato quedaba viejo igual.
-            secureStorage.venuesList = listOf(venue.toStoredVenue())
+                // 🔴 `venuesList` TAMBIÉN se reemplaza. Se descubrió en el simulador de iPad, donde la
+                // tarjeta de identidad saca el rol de esta lista y no de `saveLogin`: con sólo
+                // `saveLogin`, el nombre cambiaba a la persona nueva y la píldora seguía diciendo
+                // «Propietario». Un rol que miente sobre lo que alguien puede hacer es peor que no
+                // mostrarlo. Se arregla en las DOS apps aunque el síntoma se viera en una: la lista
+                // la leen varias pantallas y el dato quedaba viejo igual.
+                secureStorage.venuesList = listOf(venue.toStoredVenue())
 
-            // 🔴 La venta se atribuye a quien acaba de entrar. Sin esto, entra Ana y las ventas
-            // siguen saliendo a nombre del anterior. El cajero puede cambiarlo enseguida desde
-            // Cobrar, sin PIN — eso no se toca.
-            secureStorage.saveSelectedStaffForCurrentVenue(
-                staffId = user.id,
-                staffName = listOfNotNull(user.firstName, user.lastName).joinToString(" ").ifBlank { user.email },
-            )
+                // 🔴 La venta se atribuye a quien acaba de entrar. Sin esto, entra Ana y las ventas
+                // siguen saliendo a nombre del anterior. El cajero puede cambiarlo enseguida desde
+                // Cobrar, sin PIN — eso no se toca.
+                secureStorage.saveSelectedStaffForCurrentVenue(
+                    staffId = user.id,
+                    staffName = listOfNotNull(user.firstName, user.lastName).joinToString(" ").ifBlank { user.email },
+                )
+            }
+            if (instalada == null) {
+                Log.w("🔐", "PIN tardío: ya entró otra persona en este aparato, no se instala")
+                return SwitchUserResult.Error(OTRA_PERSONA_ENTRO)
+            }
 
             Log.d("🔐", "✅ Cambio de usuario: ${user.email} (${venue.role})")
             SwitchUserResult.Success(userId = user.id, firstName = user.firstName, role = venue.role)
@@ -235,16 +252,29 @@ class AuthRepository @Inject constructor(
             refrescoExclusivo.enExclusiva { runBlocking { bloque() } }
         }
 
-    suspend fun refreshTokensForBiometric(refreshToken: String): Pair<String, String> {
-        Log.d("🔐", "refreshTokensForBiometric - refreshing...")
+    /**
+     * Entra con la huella (D4). Pide la renovación con la llave de la huella y, dentro del mismo candado, guarda la llave
+     * rotada en la reserva de la huella SIEMPRE (comparando con la enviada: con la vieja, la siguiente huella mandaría un
+     * refresh consumido y el servidor revocaría la sesión, Codex plan r1 #2) y luego instala la sesión, llaves e
+     * identidad juntas, sólo si nadie entró ni salió desde [sello]. `false` = ya entró otra persona: no se instala.
+     */
+    suspend fun entrarConHuella(refreshToken: String, venue: StoredVenue?, sello: Long): Boolean {
+        Log.d("🔐", "entrarConHuella - refreshing...")
+        if (venue == null || secureStorage.biometricUserId == null) throw IllegalStateException("Missing biometric session data")
 
-        val response = enExclusiva { apiService.refreshToken(RefreshRequest(refreshToken)) }
-        secureStorage.updateTokens(
-            accessToken = response.accessToken,
-            refreshToken = response.refreshToken,
-        )
-        Log.d("🔐", "✅ Biometric token refresh successful")
-        return Pair(response.accessToken, response.refreshToken)
+        return enExclusiva {
+            // Antes de MANDAR la llave (Codex código r4 #1): si mientras esperaba turno ya entró alguien (por ejemplo, otro
+            // toque de huella que terminó primero), esta llave puede estar consumida y mandarla revocaría la sesión nueva.
+            if (!secureStorage.siSigueLaGeneracion(sello)) return@enExclusiva false
+            val response = apiService.refreshToken(RefreshRequest(refreshToken))
+            secureStorage.guardarRotadaDeLaHuellaSiSigue(refreshToken, response.refreshToken)
+            val instalada = secureStorage.instalarSiSigue(sello) {
+                secureStorage.updateTokens(accessToken = response.accessToken, refreshToken = response.refreshToken)
+                secureStorage.restoreBiometricSession(venue)
+            }
+            Log.d("🔐", if (instalada != null) "✅ Biometric login" else "Huella tardía: ya entró otra persona, no se instala")
+            instalada != null
+        }
     }
 
     /**
@@ -259,23 +289,51 @@ class AuthRepository @Inject constructor(
      * trabajando offline; el siguiente arranque o cambio de venue reintentará.
      */
     suspend fun repairCurrentVenueBinding(): Boolean {
-        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return false
-        val refresh = secureStorage.refreshToken?.takeIf { it.isNotBlank() } ?: return false
+        // D4: si la sucursal cambia con la renovación en vuelo, las llaves rotadas se guardan igual (tirarlas deja un
+        // refresh consumido) y se da UNA vuelta más por la sucursal que quedó (Codex plan r1 #4). Las dos vueltas son de
+        // la sesión con que empezó: si mientras tanto entró otra persona, la segunda no la adopta (Codex código r1 #4).
+        val sello = secureStorage.generacion
+        repeat(2) {
+            when (ligarAlVenueActual(sello)) {
+                Ligado.SI -> return true
+                Ligado.NO -> return false
+                Ligado.CAMBIO_LA_SUCURSAL -> Log.w("🔄", "La sucursal cambió mientras se ligaba: otra vuelta por la vigente")
+            }
+        }
+        return false
+    }
+
+    private enum class Ligado { SI, NO, CAMBIO_LA_SUCURSAL }
+
+    private suspend fun ligarAlVenueActual(sello: Long): Ligado {
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return Ligado.NO
 
         return try {
             // 🔴 El refresh token se relee DENTRO del candado: si el autenticador acaba de
             // rotarlo mientras esperábamos turno, el de fuera ya está consumido y mandarlo
             // sería exactamente el doble refresco que este candado existe para evitar.
-            val tokens = enExclusiva {
-                val vigente = secureStorage.refreshToken?.takeIf { it.isNotBlank() } ?: refresh
-                apiService.refreshToken(RefreshRequest(vigente, venueId = venueId))
+            // Pedir y GUARDAR van los dos adentro: guardando afuera, otro renovador podía tomar turno con el refresh
+            // que esta petición acababa de consumir (Codex plan r1).
+            enExclusiva {
+                // Si mientras esperaba turno entró o salió alguien, o se eligió otra sucursal, no se pide nada: esta
+                // reparación ya no es de la sesión ni del local que hay (D4; el cambio de sucursal pide la suya).
+                // Sesión, sucursal y llave se leen en un solo paso: entre mirar y leer no se cuela otra persona.
+                val vigente = secureStorage.refreshSiSigue(sello, venueId) ?: return@enExclusiva Ligado.NO
+                val tokens = apiService.refreshToken(RefreshRequest(vigente, venueId = venueId))
+                // Si mientras tanto entró otra persona o se cerró la sesión, no se pisa (Codex, D9 del Cambio, 29-oct).
+                if (!secureStorage.updateTokensSiSigue(vigente, tokens.accessToken, tokens.refreshToken)) {
+                    Log.w("🔄", "La sesión cambió mientras se ligaba al venue: no se guarda")
+                    Ligado.NO
+                } else if (secureStorage.venueId != venueId) {
+                    Ligado.CAMBIO_LA_SUCURSAL
+                } else {
+                    Log.d("🔄", "✅ Token ligado al venue actual")
+                    Ligado.SI
+                }
             }
-            secureStorage.updateTokens(tokens.accessToken, tokens.refreshToken)
-            Log.d("🔄", "✅ Token ligado al venue actual")
-            true
         } catch (e: Exception) {
             Log.w("🔄", "No se pudo ligar el token al venue actual: ${e.message}")
-            false
+            Ligado.NO
         }
     }
 
@@ -331,6 +389,11 @@ class AuthRepository @Inject constructor(
     }
 
     fun isLoggedIn(): Boolean = secureStorage.isLoggedIn
+
+    companion object {
+        /** Un intento de entrar cuya respuesta llegó después de que entró o salió alguien (D4). */
+        const val OTRA_PERSONA_ENTRO = "Ya entró otra persona en este aparato."
+    }
 
     /**
      * El campo `message` del cuerpo de error, o null si no se puede leer.

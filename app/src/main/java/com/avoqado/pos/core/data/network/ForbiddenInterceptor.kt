@@ -49,6 +49,8 @@ class ErrorNotifier @Inject constructor() {
 class ForbiddenInterceptor(
     private val errorNotifier: ErrorNotifier,
     private val overrideCoordinator: ManagerOverrideCoordinator,
+    /** ¿La sesión sigue siendo la del sello de la petición? (D4). Las pruebas que no lo miran la dan por buena. */
+    private val sigueLaSesion: (Long) -> Boolean = { true },
 ) : Interceptor {
 
     companion object {
@@ -181,7 +183,13 @@ class ForbiddenInterceptor(
             // de la llamada; hasta entonces, aquí el "no" es un no.
             request.header(FAIL_FAST_HEADER) == null
         ) {
+            // D4: si mientras viajaba entró o salió alguien, no se le pide a nadie el PIN de gerente por la acción de
+            // otra persona ni se reenvía; el «no» se queda como «no». Se vuelve a mirar al tener el token (el teclado
+            // puede tardar lo que tarde el gerente).
+            val sello = request.sello
+            if (sello != null && !sigueLaSesion(sello)) return response
             val token = overrideCoordinator.awaitToken(parsed.required)
+            if (token != null && sello != null && !sigueLaSesion(sello)) return response
             if (token != null) {
                 response.close()
                 val retriedRequest = request.newBuilder()

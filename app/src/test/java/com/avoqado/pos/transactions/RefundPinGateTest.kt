@@ -76,6 +76,7 @@ class RefundPinGateTest {
             secureStorage = mockk(relaxed = true),
             refreshGateFactory = factory,
             connectivityMonitor = mockk(relaxed = true),
+            exchangePendingStore = mockk(relaxed = true),
         )
     }
 

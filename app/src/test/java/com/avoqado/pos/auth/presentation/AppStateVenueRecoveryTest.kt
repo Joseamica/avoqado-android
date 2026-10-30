@@ -34,6 +34,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -308,16 +309,54 @@ class AppStateVenueRecoveryTest {
     @Test
     fun `sesion expirada limpia los ajustes y cancela el refresco`() = runTest {
         val refresco = RefrescoQueNoTermina()
-        val invalidada = MutableSharedFlow<Unit>()
+        val invalidada = MutableSharedFlow<Long>()
         createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo, sessionInvalidated = invalidada)
         runCurrent()
 
-        invalidada.emit(Unit) // TokenRefreshAuthenticator: el refresco del token fue rechazado de verdad
+        invalidada.emit(1L) // TokenRefreshAuthenticator: el refresco del token fue rechazado de verdad
         runCurrent()
 
         io.mockk.verify(exactly = 1) { refresco.repo.clearCache() }
         assertEquals(1, refresco.cancelados)
         refresco.soltar.complete(Unit)
+    }
+
+    @Test
+    fun `D4 H4 el aviso de cierre de A que se procesa despues de que entro B no la apaga`() = runTest {
+        val refresco = RefrescoQueNoTermina()
+        val invalidada = MutableSharedFlow<Long>()
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = refresco.repo,
+            sessionInvalidated = invalidada, configurarSesion = {
+                every { siSigueLaGeneracion(1L, any()) } returns false // el cierre de A (gen 1); ya entró B
+            })
+        runCurrent()
+
+        invalidada.emit(1L)
+        runCurrent()
+
+        assertTrue("B sigue adentro", appState.isLoggedIn.value)
+        io.mockk.verify(exactly = 0) { refresco.repo.clearCache() }
+        refresco.soltar.complete(Unit)
+    }
+
+    @Test
+    fun `D4 H6 si B entra con su PIN mientras el cierre de A espera, no se cierra la sesion de B`() = runTest {
+        var gen = 5L
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, configurarSesion = {
+            every { generacion } answers { gen }
+            every { siSigueLaGeneracion(any(), any()) } answers { firstArg<Long>() == gen }
+            every { clearSessionSiSigueLaGeneracion(any()) } answers { firstArg<Long>() == gen }
+        })
+        // B entra con su PIN justo mientras el cierre de A vacía la merma (la espera del cierre a mano).
+        appState.wasteSyncCoordinator = mockk(relaxed = true) {
+            coEvery { vaciarAntesDeCerrarSesion(any()) } coAnswers { gen = 6L }
+        }
+        advanceUntilIdle()
+
+        appState.onLogout() // A toca «Cerrar sesión» (sello 5)
+        advanceUntilIdle()
+
+        assertTrue("B sigue adentro", appState.isLoggedIn.value)
     }
 
     private fun createAppState(
@@ -331,7 +370,7 @@ class AppStateVenueRecoveryTest {
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
         tpvSettingsRepository: TpvSettingsRepository? = null,
-        sessionInvalidated: MutableSharedFlow<Unit> = MutableSharedFlow(),
+        sessionInvalidated: MutableSharedFlow<Long> = MutableSharedFlow(),
         printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
             mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
@@ -346,6 +385,9 @@ class AppStateVenueRecoveryTest {
             every { venueId } returns "venue-atole"
             every { reservationsEnabled } returns false
             every { this@mockk.sessionInvalidated } returns sessionInvalidated
+            // D4: por defecto nadie entra ni sale a media prueba (la sesión sigue siendo la de su sello).
+            every { siSigueLaGeneracion(any(), any()) } answers { secondArg<() -> Unit>().invoke(); true }
+            every { clearSessionSiSigueLaGeneracion(any()) } answers { clearSession(); true }
             configurarSesion()
         }
         val authRepository = mockk<AuthRepository>(relaxed = true) {
