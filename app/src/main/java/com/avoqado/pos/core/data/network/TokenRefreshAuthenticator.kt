@@ -53,6 +53,10 @@ class TokenRefreshAuthenticator @Inject constructor(
     @Volatile
     private var lastRefreshOutcome: RefreshOutcome? = null
 
+    /** El sello de la petición cuyo refresco dejó [lastRefreshOutcome] (D4). Un seguidor de otra sesión no lo reusa. */
+    @Volatile
+    private var selloDelUltimoRefresco: Long? = null
+
     /**
      * Cliente y base URL PROPIOS del refresco, deliberadamente separados del
      * OkHttpClient que arma NetworkModule — ese cliente necesita a este
@@ -201,6 +205,16 @@ class TokenRefreshAuthenticator @Inject constructor(
             return null
         }
 
+        // 🔴 D4 (29-oct): la petición salió con la sesión de [sello]. Si mientras viajaba entró o salió alguien, su 401
+        // es de una sesión que ya no está: no se renueva la de quien está ahora ni se le reenvía lo de otra persona. El
+        // 401 llega a quien la mandó, que lo trata como siempre (pausa, aviso), sin cerrar la sesión de nadie. Sin sello
+        // (no pasó por `AuthInterceptor`; en la app no pasa) se queda como antes.
+        val sello = response.request.sello
+        if (sello != null && !secureStorage.siSigueLaGeneracion(sello)) {
+            Log.w("🔐", "401 de una sesión que ya no está: no se renueva ni se reenvía")
+            return null
+        }
+
         synchronized(refreshLock) {
             if (isRefreshing) {
                 // Otro hilo ya está refrescando (Task 14): esperar su
@@ -221,7 +235,10 @@ class TokenRefreshAuthenticator @Inject constructor(
                 if (delLider is RefreshOutcome.NetworkFailure || delLider is RefreshOutcome.TransientServerFailure) {
                     fallarSinRed(response, delLider, reportar = false)
                 }
-                return if (noReenviar(response)) null else buildRetry(response, delLider)
+                // D4 (Codex código r1 #5): el resultado del líder es de SU sesión. Si este seguidor salió con otra (entró B
+                // mientras se renovaba A), no lo hereda: reenviar con el access vencido de B terminaba borrando a B.
+                if (sello != null && selloDelUltimoRefresco != sello) return null
+                return if (noReenviar(response)) null else buildRetry(response, delLider, sello)
             }
             // 🔴 Ráfaga (QA en la D3, 16-oct): al reabrir con el servidor caído, cada petición del arranque
             // disparaba su propio refresco en cuanto el anterior fallaba — 17 en 4 s. Si el último falló por
@@ -244,10 +261,16 @@ class TokenRefreshAuthenticator @Inject constructor(
             // justo el doble refresco que este candado existe para evitar.
             val outcome = refrescoExclusivo.enExclusiva {
                 val refreshToken = secureStorage.refreshToken
-                if (refreshToken == null) {
+                if (sello != null && !secureStorage.siSigueLaGeneracion(sello)) {
+                    // Entró o salió alguien mientras esta petición esperaba turno: el refresh guardado ya es de otra
+                    // sesión, y renovarla por un 401 ajeno no le toca (Codex plan r1 #3, mismo caso en ANDROID).
+                    RefreshOutcome.SesionCambiada
+                } else if (refreshToken == null) {
                     // Sin refresh token no hay nada que intentar: no es un fallo
-                    // de red, es una sesión que ya no existe localmente.
-                    if (secureStorage.clearSessionSiSigue(null)) RefreshOutcome.Rejected(httpCode = 0)
+                    // de red, es una sesión que ya no existe localmente. Si además ya no hay nadie adentro (una
+                    // consulta que salió después del cierre), no hay nada que cerrar otra vez (D4, iPhone 30-oct).
+                    if (secureStorage.userId == null) RefreshOutcome.SesionCambiada
+                    else if (secureStorage.clearSessionSiSigue(null)) RefreshOutcome.Rejected(httpCode = 0)
                     else RefreshOutcome.SesionCambiada
                 } else {
                     // Se guarda aquí, comparando con la llave que se mandó: si la sesión ya es otra, no se pisa.
@@ -262,11 +285,12 @@ class TokenRefreshAuthenticator @Inject constructor(
                     }
                 }
             }
+            selloDelUltimoRefresco = sello
             lastRefreshOutcome = outcome
             if (outcome is RefreshOutcome.NetworkFailure || outcome is RefreshOutcome.TransientServerFailure) {
                 ultimoFalloMs = reloj()
             }
-            return applyOutcome(response, outcome)
+            return applyOutcome(response, outcome, sello)
         } finally {
             synchronized(refreshLock) {
                 isRefreshing = false
@@ -275,11 +299,11 @@ class TokenRefreshAuthenticator @Inject constructor(
         }
     }
 
-    private fun applyOutcome(response: Response, outcome: RefreshOutcome): Request? {
+    private fun applyOutcome(response: Response, outcome: RefreshOutcome, sello: Long?): Request? {
         return when (outcome) {
             is RefreshOutcome.Success -> {
                 Log.d("🔐", "Token refreshed successfully")
-                if (noReenviar(response)) null else buildRetry(response, outcome)
+                if (noReenviar(response)) null else buildRetry(response, outcome, sello)
             }
             is RefreshOutcome.NetworkFailure -> {
                 // offline-first-y-hub-lan.md §2.3: un fallo de RED se
@@ -343,10 +367,15 @@ class TokenRefreshAuthenticator @Inject constructor(
     private fun noReenviar(response: Response): Boolean =
         response.request.header(NO_AUTO_RETRY_HEADER) != null
 
-    private fun buildRetry(response: Response, outcome: RefreshOutcome?): Request? {
+    /**
+     * El reenvío sale con el access de SU sesión, leído al armarlo: si entre guardar la renovación y reenviar entró
+     * otra persona, no se reenvía (D4). Sin sello, con el del refresco, como antes.
+     */
+    private fun buildRetry(response: Response, outcome: RefreshOutcome?, sello: Long?): Request? {
         val success = outcome as? RefreshOutcome.Success ?: return null
+        val access = if (sello == null) success.accessToken else secureStorage.accessSiSigue(sello) ?: return null
         return response.request.newBuilder()
-            .header("Authorization", "Bearer ${success.accessToken}")
+            .header("Authorization", "Bearer $access")
             .header("X-Retry-After-Refresh", "true")
             .build()
     }

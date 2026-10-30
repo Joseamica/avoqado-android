@@ -90,7 +90,8 @@ class SignInViewModel @Inject constructor(
 
     fun loginWithPassword(onSuccess: () -> Unit) {
         val state = _uiState.value
-        if (!state.isEmailValid || state.password.length < 4) return
+        // El «Done» del teclado no mira si ya hay un login en camino: dos seguidos con distinto correo cruzaban sesiones (D4).
+        if (state.isLoading || !state.isEmailValid || state.password.length < 4) return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -108,7 +109,11 @@ class SignInViewModel @Inject constructor(
     }
 
     fun loginWithBiometric(activity: FragmentActivity, onSuccess: () -> Unit) {
+        // Un segundo toque mientras el primero espera la red mandaría la misma llave dos veces (D4, Codex código r4 #1).
+        if (_uiState.value.isLoading) return
         val refreshToken = secureStorage.biometricRefreshToken ?: return
+        // D4: si mientras se pone la huella y viaja la renovación entra o sale alguien, esta entrada no se instala.
+        val sello = secureStorage.generacion
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -125,14 +130,14 @@ class SignInViewModel @Inject constructor(
                     return@launch
                 }
 
-                authRepository.refreshTokensForBiometric(refreshToken)
-
                 val biometricVenues = secureStorage.biometricVenuesList
                 val restoredVenue = biometricVenues.firstOrNull { it.id == secureStorage.biometricVenueId }
                     ?: biometricVenues.firstOrNull()
 
-                if (!secureStorage.restoreBiometricSession(restoredVenue)) {
-                    throw IllegalStateException("Missing biometric session data")
+                if (!authRepository.entrarConHuella(refreshToken, restoredVenue, sello)) {
+                    // No es que la huella haya vencido: entró otra persona. Sus credenciales se quedan.
+                    _uiState.update { it.copy(isLoading = false, errorMessage = AuthRepository.OTRA_PERSONA_ENTRO) }
+                    return@launch
                 }
 
                 Log.d("🔐", "✅ Biometric login success")
@@ -146,8 +151,8 @@ class SignInViewModel @Inject constructor(
                         canUseBiometric = false,
                     )
                 }
-                // Clear expired biometric credentials
-                secureStorage.clearBiometricCredentials()
+                // Clear expired biometric credentials (sólo si siguen siendo las que mandó ESTE intento)
+                secureStorage.clearBiometricCredentialsSiSigue(refreshToken)
             }
         }
     }

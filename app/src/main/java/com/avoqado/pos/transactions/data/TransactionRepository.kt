@@ -287,14 +287,16 @@ class TransactionRepository @Inject constructor(
      * sucursal. Sin token, null.
      */
     private suspend fun leerComo(actorId: String, venueId: String, request: Request): Pair<Int, String>? {
-        var token = secureStorage.accessToken ?: return null
+        // D4: la repetición es de la MISMA sesión, no sólo de la misma persona: si salió y volvió a entrar, ya es otra.
+        val (sello, primero) = secureStorage.selloYAccess()
+        var token = primero ?: return null
         for (intento in 0..1) {
             val (code, body) = withContext(Dispatchers.IO) {
-                scopedCustomerClient(actorId, venueId, token, isRead = true).newCall(request).execute().use {
+                scopedCustomerClient(actorId, venueId, token, isRead = true, sello = sello).newCall(request).execute().use {
                     it.code to it.body?.string().orEmpty()
                 }
             }
-            val renovado = secureStorage.accessToken
+            val renovado = secureStorage.accessSiSigue(sello)
             if (code != 401 || intento == 1 || renovado == null || renovado == token || !sameIdentity(actorId, venueId)) {
                 return code to body
             }
@@ -309,7 +311,7 @@ class TransactionRepository @Inject constructor(
      * Una conexión guardada que el servidor ya cerró tumbaba el detalle (D3, 23-oct): el GET puede
      * reintentar (leer dos veces no cambia nada); el POST no reintenta y por eso usa una conexión nueva.
      */
-    private fun scopedCustomerClient(actorId: String, venueId: String, token: String, isRead: Boolean): OkHttpClient =
+    private fun scopedCustomerClient(actorId: String, venueId: String, token: String, isRead: Boolean, sello: Long? = null): OkHttpClient =
         client.newBuilder()
             .apply { if (!isRead) authenticator(Authenticator.NONE) }
             .retryOnConnectionFailure(isRead)
@@ -319,6 +321,9 @@ class TransactionRepository @Inject constructor(
             .callTimeout(20, TimeUnit.SECONDS)
             .addNetworkInterceptor { chain ->
                 check(sameIdentity(actorId, venueId)) { "La sesión o la sucursal cambió. Abre de nuevo esta venta." }
+                // D4 (Codex código r3 #4): la lectura es de SU sesión hasta el momento de salir; si mientras pasaba a IO la
+                // misma persona salió y volvió a entrar, ya es otra sesión y no sale.
+                check(sello == null || secureStorage.siSigueLaGeneracion(sello)) { "La sesión cambió. Abre de nuevo esta venta." }
                 chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer $token").build())
             }.build()
 

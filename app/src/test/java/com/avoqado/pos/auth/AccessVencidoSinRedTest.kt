@@ -162,11 +162,26 @@ class AccessVencidoSinRedTest {
     @Test
     fun `sin refresh token guardado no hay nada que reintentar, y se cierra sesion`() {
         every { secureStorage.refreshToken } returns null
+        every { secureStorage.userId } returns "staff-a" // la sesión sigue a la vista, pero sin llave
 
         val retry = authenticator.authenticate(null, original401())
 
         assertNull(retry)
         verify(exactly = 1) { secureStorage.clearSessionSiSigue(null) }
+    }
+
+    @Test
+    fun `D4 una consulta que salio despues de cerrar sesion no vuelve a cerrar ni avisa`() {
+        // Visto en el iPhone 14 (30-oct): tras «Cerrar sesión», las consultas que ya iban en camino regresan 401. Sin nadie
+        // adentro no hay sesión que «venza»: no se vuelve a cerrar (y no se avisa «sesión expirada»).
+        every { secureStorage.refreshToken } returns null
+        every { secureStorage.userId } returns null
+
+        val retry = authenticator.authenticate(null, original401())
+
+        assertNull(retry)
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }
+        verify(exactly = 0) { secureStorage.clearSession() }
     }
 
     @Test

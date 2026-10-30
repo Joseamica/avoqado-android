@@ -185,7 +185,7 @@ class SesionSinRenovarTest {
         assertSame(ConexionesCompartidas.pool, TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo()).refreshHttpClient.connectionPool)
         val principal = com.avoqado.pos.core.di.NetworkModule.provideOkHttpClient(
             mockk(relaxed = true), mockk(relaxed = true), authenticator,
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), secureStorage,
         )
         assertSame("el cliente principal y el del refresco comparten conexiones", ConexionesCompartidas.pool, principal.connectionPool)
     }
@@ -246,7 +246,7 @@ class SesionSinRenovarTest {
         // `OkHttpClient.Builder()` independientes traen cada uno la suya: compartir sólo el pool no basta (Codex).
         val principal = com.avoqado.pos.core.di.NetworkModule.provideOkHttpClient(
             mockk(relaxed = true), mockk(relaxed = true), authenticator,
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), secureStorage,
         )
         val refresco = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo()).refreshHttpClient
 

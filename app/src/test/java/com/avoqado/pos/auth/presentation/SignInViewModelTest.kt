@@ -9,6 +9,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -78,9 +79,8 @@ class SignInViewModelTest {
         every { secureStorage.biometricRefreshToken } returns "refresh-1"
         every { secureStorage.biometricUserEmail } returns "cajera@avoqado.io"
         every { secureStorage.biometricVenuesList } returns emptyList()
-        every { secureStorage.restoreBiometricSession(any()) } returns true
         coEvery { biometricAuthManager.authenticate(any()) } returns true
-        coEvery { authRepository.refreshTokensForBiometric("refresh-1") } returns ("access-2" to "refresh-2")
+        coEvery { authRepository.entrarConHuella("refresh-1", any(), any()) } returns true
         val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
 
         var entro = false
@@ -90,5 +90,23 @@ class SignInViewModelTest {
         val alVolver = viewModel.uiState.value
         assertFalse("la ruedita no debe seguir girando", alVolver.isLoading)
         assertTrue("la huella sigue disponible para la siguiente entrada", alVolver.canUseBiometric)
+    }
+
+    @Test
+    fun `D4 H2-d una huella cuya respuesta llega despues de que entro otra persona no entra ni borra la huella`() {
+        every { secureStorage.isBiometricLoginEnabled } returns true
+        every { secureStorage.biometricRefreshToken } returns "refresh-1"
+        every { secureStorage.biometricVenuesList } returns emptyList()
+        coEvery { biometricAuthManager.authenticate(any()) } returns true
+        coEvery { authRepository.entrarConHuella("refresh-1", any(), any()) } returns false // ya entró otra persona
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+
+        var entro = false
+        viewModel.loginWithBiometric(mockk<FragmentActivity>(relaxed = true)) { entro = true }
+
+        assertFalse("no navega como si hubiera entrado", entro)
+        assertEquals(AuthRepository.OTRA_PERSONA_ENTRO, viewModel.uiState.value.errorMessage)
+        verify(exactly = 0) { secureStorage.clearBiometricCredentials() }
+        verify(exactly = 0) { secureStorage.clearBiometricCredentialsSiSigue(any()) }
     }
 }

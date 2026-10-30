@@ -47,15 +47,18 @@ import org.junit.Assert.*
 @OptIn(ExperimentalCoroutinesApi::class)
 class TableSessionAuthBoundaryTest {
     @get:Rule val mainDispatcherRule = MainDispatcherRule()
-    private val invalidated = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val invalidated = MutableSharedFlow<Long>(extraBufferCapacity = 1)
     private var user = "staff-a"
     private var venue = "venue-atole"
-    private val storage = mockk<SecureStorage>(relaxed = true).also {
+    private val storage = mockk<SecureStorage>(relaxed = true).also { m ->
+        val it = m
         every { it.userId } answers { user }
         every { it.venueId } answers { venue }
         every { it.isLoggedIn } returns true
         every { it.reservationsEnabled } returns false
         every { it.sessionInvalidated } returns invalidated
+        every { it.siSigueLaGeneracion(any(), any()) } answers { secondArg<() -> Unit>().invoke(); true }
+        every { it.clearSessionSiSigueLaGeneracion(any()) } answers { m.clearSession(); true }
     }
     private val session = TableSession()
     private val tableCoordinator = io.mockk.spyk(TableSyncCoordinator(mockk<SyncOutbox>(relaxed = true), session,
@@ -86,7 +89,7 @@ class TableSessionAuthBoundaryTest {
         try {
             advanceUntilIdle(); parked(); app.onLogout(); advanceUntilIdle()
             assertFalse(restore().saldoSinRedConocido)
-            parked(); invalidated.emit(Unit); runCurrent()
+            parked(); invalidated.emit(1L); runCurrent()
             // El flow puede emitirse ANTES de clearSession; no dependemos de que getter ya sea nil.
             assertFalse(restore().saldoSinRedConocido)
         } finally { app.viewModelScope.cancel() }

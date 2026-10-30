@@ -27,6 +27,10 @@ class TransactionCustomerAssignmentHttpTest {
         every { storage.userId } returns "actor-a"
         every { storage.venueId } returns "venue-a"
         every { storage.accessToken } returns "token-a"
+        // D4: la lectura sale con el sello de su sesión; aquí nadie entra ni sale (la persona sí puede cambiar).
+        every { storage.selloYAccess() } answers { 0L to storage.accessToken }
+        every { storage.accessSiSigue(0L) } answers { storage.accessToken }
+        every { storage.siSigueLaGeneracion(0L, any()) } returns true
         return TransactionRepository(storage, client).apply { baseUrl = server.url("/api/v1").toString().trimEnd('/') }
     }
 
