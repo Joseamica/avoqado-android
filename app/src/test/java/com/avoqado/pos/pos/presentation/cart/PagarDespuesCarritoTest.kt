@@ -443,6 +443,46 @@ class PagarDespuesCarritoTest {
         assertTrue(fila.filas.value.isEmpty())
     }
 
+    // MARK: - D3 (29-oct): el borrado de la fila falla con la venta ya puesta a salvo
+
+    @Test
+    fun `D3 rechazo con el carrito libre y el borrado de la fila fallido - la venta queda en un solo lugar`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        // La fila pasa bien a RECUPERAR; el disco falla justo en la escritura siguiente (su borrado).
+        disco.alEscribir = { disco.alEscribir = { disco.alEscribir = null; disco.discoSano = false } }
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+        val aviso = resultado.await()
+        disco.discoSano = true
+
+        fila.mantenimientoLocal() // la pasada siguiente (o el siguiente arranque)
+
+        val enElCarrito = if (vm.cartState.value.items.any { it.name == "Café" }) 1 else 0
+        assertEquals("una sola copia viva de la venta de Ana", 1, enElCarrito + guardados.savedCarts.value.size)
+        assertEquals(ResultadoPagarDespues.Error(pagarDespuesNiGuardada("Ana")), aviso)
+        assertTrue(fila.filas.value.isEmpty())
+        assertEquals(1, enviados.size)
+    }
+
+    @Test
+    fun `D3 la venta ya guardada no se restaura mientras su fila siga viva - venderla y trasladarla la duplicaria`() = runTest {
+        val vm = createViewModel()
+        rechazoConBorradoFallido(vm)
+        val copia = guardados.savedCarts.value.single()
+        vm.clearCart()
+
+        assertEquals(Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(copia, confirmado = true))
+
+        fila.mantenimientoLocal()
+        assertTrue(fila.filas.value.isEmpty())
+        assertEquals(Restauracion.Hecha, vm.restoreSavedCart(guardados.savedCarts.value.single(), confirmado = true))
+    }
+
     @Test
     fun `r2-3 rechazo sin poder marcar ni borrar la fila - la venta no vuelve, el aviso lo dice y este proceso no la reenvia`() = runTest {
         val vm = createViewModel()

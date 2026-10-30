@@ -2965,7 +2965,8 @@ class CartViewModel @Inject constructor(
     /**
      * La venta no se dejó para después: vuelve al carrito o a «Carritos guardados». 🔴 Codex A-4: primero su fila sale del
      * reenvío (RECUPERAR; nunca se manda, como venta sin red se saltaría el rechazo de precio) y sólo se borra cuando la venta
-     * ya está en el carrito o escrita. Si no se pudo guardar, la fila se queda a la vista y se dice que NO se guardó.
+     * ya está escrita en «Carritos guardados», o justo ANTES de volver al carrito (D3: nunca las dos copias vivas). Si no se
+     * pudo guardar, la fila se queda a la vista y se dice que NO se guardó.
      *
      * Codex r2: UNA sola captura con id estable (#1) viaja en la fila y es la que se guarda: trasladarla dos veces deja un solo
      * carrito. Si ni RECUPERAR ni el borrado se confirman (#3), la venta NO vuelve: null, y quien llama retiene la marca.
@@ -2980,9 +2981,16 @@ class CartViewModel @Inject constructor(
         val captura = comoCarritoGuardado(s.venta, s.cliente.name, s.cliente.id)
         val porRecuperar: (com.avoqado.pos.payment.data.PayLaterRow) -> com.avoqado.pos.payment.data.PayLaterRow =
             { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR, motivo = motivo, venta = captura) }
-        val recuperable = cola.cambiar(fila.id, porRecuperar)
+        var recuperable = cola.cambiar(fila.id, porRecuperar)
         if (!recuperable && !cola.borrar(fila.id)) return null
+        // 🔴 D3 (29-oct): al carrito sólo con la fila YA borrada. Con la fila viva, el mantenimiento la pasaba además a
+        // «Carritos guardados»: dos copias de la misma venta. Si el borrado falla, la venta se queda sólo en la fila.
+        if (recuperable && carritoLibrePara(venueId)) {
+            if (!cola.borrar(fila.id)) return ResultadoPagarDespues.Error(pagarDespuesNiGuardada(s.cliente.name))
+            recuperable = false
+        }
         devolverVenta(s, venueId, motivo, captura)?.let { texto ->
+            // Ya en «Carritos guardados»: si este borrado falla, la fila liga esa copia hasta trasladarla (mismo id).
             if (recuperable) cola.borrar(fila.id)
             return ResultadoPagarDespues.Error(texto)
         }
@@ -2992,12 +3000,15 @@ class CartViewModel @Inject constructor(
         return ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO)
     }
 
+    private fun carritoLibrePara(venueId: String) =
+        _cartState.value.isEmpty && _selectedCustomer.value == null && secureStorage.venueId == venueId
+
     /**
      * La venta vuelve al carrito si sigue vacío (y en la misma sucursal); si ya hay otra, se guarda [captura] en «Carritos
      * guardados». Nunca se mezcla con la nueva (R3-2). null = no se pudo guardar.
      */
     private fun devolverVenta(s: VentaSeparada, venueId: String, motivo: String, captura: SavedCart): String? {
-        if (_cartState.value.isEmpty && _selectedCustomer.value == null && secureStorage.venueId == venueId) {
+        if (carritoLibrePara(venueId)) {
             // Directo y en este orden: `setSelectedCustomer` le quitaría el premio a la venta que vuelve.
             _selectedCustomer.value = s.cliente
             _cartState.value = s.venta
