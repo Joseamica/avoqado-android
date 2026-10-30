@@ -72,6 +72,9 @@ data class CartItem(
      * cobrar lo mismo mañana aunque el dueño edite el descuento hoy. Es el mismo
      * patrón que ya usan `promotionName` y `SelectedModifier.priceInCents`.
      *
+     * D13: al RESTAURAR un carrito guardado, la foto se refresca contra el descuento vivo del catálogo si está cargado (el
+     * SERVIDOR cobra con el vivo; un carrito de antes de D13 ni siquiera traía el tope).
+     *
      * Sin el snapshot sólo queda el id, y con un id NO se puede calcular nada:
      * la línea se cobra completa. Eso es exactamente lo que pasaba antes de
      * 2026-08-17 —el POS cobraba precio de lista y el server registraba la orden
