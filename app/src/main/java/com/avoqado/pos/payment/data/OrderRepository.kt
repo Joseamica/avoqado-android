@@ -660,6 +660,8 @@ class OrderRepository @Inject constructor(
                                             put("displayedUnitPrice", displayed)
                                             put("catalogAt", horaDelCatalogo)
                                         }
+                                        // D12: el «Ajuste de precio» (la cola sin red arma el pedido por aquí también).
+                                        item.adjustedUnitPrice?.takeIf { !item.isCortesia }?.let { put("adjustedUnitPrice", it) }
                                     } else {
                                         // Custom amount line item (e.g. "Otro importe")
                                         put("name", item.name)

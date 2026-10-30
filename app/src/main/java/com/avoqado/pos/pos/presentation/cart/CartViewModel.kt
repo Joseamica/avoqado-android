@@ -1337,6 +1337,7 @@ class CartViewModel @Inject constructor(
             itemDiscountType = discount?.type,
             itemDiscountValue = discount?.value,
             itemDiscountName = discount?.name,
+            itemDiscountMax = discount?.maxDiscountAmount,
             serviceCourse = immediateServiceCourse(),
             catalogAt = product.catalogAt,
         )
@@ -1731,6 +1732,7 @@ class CartViewModel @Inject constructor(
                     itemDiscountType = item.itemDiscountType,
                     itemDiscountValue = item.itemDiscountValue,
                     itemDiscountName = item.itemDiscountName,
+                    itemDiscountMax = item.itemDiscountMax,
                     promotionInstanceId = item.promotionInstanceId,
                     promotionName = item.promotionName,
                     promotionId = item.promotionId,
@@ -2603,7 +2605,13 @@ class CartViewModel @Inject constructor(
         savedCart.cobroIniciadoEn?.let {
             if (!confirmado || !savedCartsRepository.quitarMarca(savedCart.id)) return Restauracion.PideConfirmacion(it)
         }
+        // D13: el descuento de catálogo VIVO (en memoria; nunca una petición al restaurar) manda sobre la foto guardada, porque es el
+        // que aplicará el SERVIDOR al crear la orden —por `discountId`, con su tipo, su valor y su tope—. Un carrito guardado antes
+        // de D13 no trae el tope: copiarlo como null cobraba de menos y la venta quedaba debiendo. Si el descuento no está (catálogo
+        // sin cargar todavía, desactivado, o uno manual), se queda lo guardado.
+        val catalogoVivo = discountsRepository.discounts.value.associateBy { it.id }
         val items = savedCart.items.map { savedItem ->
+            val vivo = savedItem.itemDiscountId?.let { catalogoVivo[it] }
             CartItem(
                 id = savedItem.lineId ?: UUID.randomUUID().toString(),
                 weightKg = savedItem.weightKg,
@@ -2629,9 +2637,11 @@ class CartViewModel @Inject constructor(
                 cortesiaReason = savedItem.cortesiaReason,
                 priceAdjustment = savedItem.priceAdjustment,
                 itemDiscountId = savedItem.itemDiscountId,
-                itemDiscountType = savedItem.itemDiscountType,
-                itemDiscountValue = savedItem.itemDiscountValue,
-                itemDiscountName = savedItem.itemDiscountName,
+                itemDiscountType = vivo?.type ?: savedItem.itemDiscountType,
+                itemDiscountValue = vivo?.value ?: savedItem.itemDiscountValue,
+                itemDiscountName = vivo?.name ?: savedItem.itemDiscountName,
+                // Con el descuento vivo a la mano su tope manda aunque sea null (el dueño pudo quitarlo).
+                itemDiscountMax = if (vivo != null) vivo.maxDiscountAmount else savedItem.itemDiscountMax,
                 // El combo vuelve como combo: mismo `promotionInstanceId` y las
                 // mismas elecciones, o el carrito restaurado cobraría el 2x1
                 // como dos productos a precio de lista.
@@ -2648,6 +2658,8 @@ class CartViewModel @Inject constructor(
         // Referral-sourced discounts must NOT survive a restore without a live
         // validation — the referrer would never be credited for the new sale.
         val restoredDiscount = savedCart.orderDiscount?.takeIf { it.source != REFERRAL_DISCOUNT_SOURCE }
+            // D13: igual que en las líneas, el descuento de cuenta del catálogo se refresca con el vivo (tipo, valor y tope).
+            ?.let { guardado -> catalogoVivo[guardado.id]?.copy(source = guardado.source) ?: guardado }
         clearReferral()
         _cartState.value = CartState(
             items = items,

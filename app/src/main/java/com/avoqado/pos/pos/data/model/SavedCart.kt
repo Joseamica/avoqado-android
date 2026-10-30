@@ -47,6 +47,8 @@ data class SavedCartItem(
     val itemDiscountType: String? = null,
     val itemDiscountValue: Double? = null,
     val itemDiscountName: String? = null,
+    /// D13: el descuento máximo del catálogo (pesos) de la foto. Nulo en carritos viejos = sin tope, como antes.
+    val itemDiscountMax: Double? = null,
     /// Credit-pack (membresía) identity — before, a saved pack line restored
     /// as a plain CustomAmount: charged, never granted, gate bypassed.
     val packId: String? = null,

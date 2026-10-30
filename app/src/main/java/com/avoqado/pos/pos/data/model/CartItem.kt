@@ -72,6 +72,9 @@ data class CartItem(
      * cobrar lo mismo mañana aunque el dueño edite el descuento hoy. Es el mismo
      * patrón que ya usan `promotionName` y `SelectedModifier.priceInCents`.
      *
+     * D13: al RESTAURAR un carrito guardado, la foto se refresca contra el descuento vivo del catálogo si está cargado (el
+     * SERVIDOR cobra con el vivo; un carrito de antes de D13 ni siquiera traía el tope).
+     *
      * Sin el snapshot sólo queda el id, y con un id NO se puede calcular nada:
      * la línea se cobra completa. Eso es exactamente lo que pasaba antes de
      * 2026-08-17 —el POS cobraba precio de lista y el server registraba la orden
@@ -80,6 +83,8 @@ data class CartItem(
     var itemDiscountType: String? = null,
     var itemDiscountValue: Double? = null,
     var itemDiscountName: String? = null,
+    /** D13: el descuento máximo del catálogo (pesos) congelado junto al resto de la foto. `null` = sin tope (carritos viejos). */
+    var itemDiscountMax: Double? = null,
     /**
      * Venta por peso (báscula): kg con 3 decimales. Cuando está presente, [unitPrice] es el precio
      * POR KG en centavos, [quantity] queda fija en 1 y el total de línea = round(weightKg × unitPrice)
@@ -97,8 +102,16 @@ data class CartItem(
     val modifiersPrice: Int
         get() = selectedModifiers.sumOf { it.priceInCents } * quantity
 
+    /**
+     * D12: en un PRODUCTO el ajuste manual sólo BAJA el precio —un ajuste mayor que el precio vigente (catálogo que
+     * bajó, carrito viejo) no cuenta, igual que en el servidor—. "Otro importe", paquetes y créditos siguen con
+     * `priceAdjustment ?: unitPrice`: ahí el precio es el que se escribió.
+     */
     val effectiveUnitPrice: Int
-        get() = priceAdjustment ?: unitPrice
+        get() {
+            val ajuste = priceAdjustment ?: return unitPrice
+            return if (type is CartItemType.ProductItem) minOf(ajuste, unitPrice) else ajuste
+        }
 
     /**
      * Lo que vale la línea ANTES del descuento: producto + modificadores, ya por
@@ -136,7 +149,7 @@ data class CartItem(
      * Cortesía: 0 por la misma razón que [grossPrice].
      */
     val itemDiscountCents: Int
-        get() = if (isCortesia) 0 else descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents)
+        get() = if (isCortesia) 0 else descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents, itemDiscountMax)
 
     /** Lo que de verdad se cobra por esta línea: bruto menos su descuento. */
     val totalPrice: Int

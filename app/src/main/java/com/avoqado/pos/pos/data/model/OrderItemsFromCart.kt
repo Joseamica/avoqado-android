@@ -114,5 +114,9 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         externalId = id.takeIf { isCortesia || delCatalogo || serviceCourse?.preparationVersion == 1 },
         displayedUnitPrice = unitPrice.takeIf { delCatalogo },
         catalogAt = catalogAt.takeIf { delCatalogo },
+        // D12: sólo un producto, nunca una cortesía, y sólo si el ajuste BAJA el precio (si no, no hay nada que descontar).
+        adjustedUnitPrice = priceAdjustment.takeIf {
+            type is CartItemType.ProductItem && !isCortesia && it != null && it < unitPrice
+        },
     )
 }
