@@ -46,7 +46,7 @@ class Q15OnlinePaymentTest {
     @get:Rule val tope: org.junit.rules.Timeout = org.junit.rules.Timeout.builder()
         .withTimeout(90, java.util.concurrent.TimeUnit.SECONDS).withLookingForStuckThread(true).build()
 
-    private class Fixture : AutoCloseable {
+    private class Fixture(retenerSello: Boolean = false) : AutoCloseable {
         val directory=Files.createTempDirectory("q15-online-owned").toFile()
         private val db:Connection=DriverManager.getConnection("jdbc:sqlite:"+directory.resolve("online.sqlite").absolutePath)
         val dao=mockk<PendingPaymentDao>(relaxed=true)
@@ -57,6 +57,8 @@ class Q15OnlinePaymentTest {
         val released=CompletableDeferred<PendingPaymentEntity>()
         val entered=CompletableDeferred<RecordedRequest>()
         val answer=CountDownLatch(1)
+        val selloEntrado=CompletableDeferred<RecordedRequest>()
+        val respuestaDelSello=CountDownLatch(if (retenerSello) 1 else 0)
         val server=MockWebServer()
         var body="""{"success":true,"data":{"id":"server-payment","orderId":"fast-order","amount":"35.00","tipAmount":"10.00","status":"COMPLETED"}}"""
         val cash:CashPaymentRepository
@@ -94,10 +96,15 @@ class Q15OnlinePaymentTest {
             every { dao.observarEstado(any()) } answers { flowOf(rows().singleOrNull { it.id==firstArg<String>() }?.syncStatus) }
             server.dispatcher=object:Dispatcher() {
                 override fun dispatch(request:RecordedRequest):MockResponse {
-                    // D7 (28-oct): tras cobrar, la pantalla pide sola el sello de lealtad. Si esa consulta esperaba el
-                    // `answer` de la prueba, terminaba después del @After de MainDispatcherRule y su regreso al Main ya
-                    // reseteado tumbaba la prueba SIGUIENTE (UncaughtExceptionsBeforeTest). El sello no es de Q15: 404 al instante.
-                    if (request.path?.endsWith("/loyalty") == true) return MockResponse().setResponseCode(404)
+                    // D7: la consulta de sello no espera la respuesta financiera y devuelve 404 por defecto.
+                    // Sólo Task13 retiene esta GET para probar que el cierre espera el regreso real de IO.
+                    if (request.path?.substringBefore('?')?.endsWith("/loyalty") == true) {
+                        if (retenerSello) {
+                            selloEntrado.complete(request)
+                            check(respuestaDelSello.await(5,TimeUnit.SECONDS)) { "La prueba no liberó su GET de sello" }
+                        }
+                        return MockResponse().setResponseCode(404)
+                    }
                     entered.complete(request)
                     check(answer.await(5,TimeUnit.SECONDS)) { "El test no liberó su respuesta HTTP" }
                     return MockResponse().setResponseCode(200).setBody(body)
@@ -167,8 +174,16 @@ class Q15OnlinePaymentTest {
             service.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
             try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(esperadas,server.requestCount) } finally { service.stop() }
         }
+        // Cancelar no espera el retorno de IO: todos los scopes deben terminar antes de retirar Main.
+        suspend fun cerrarTrabajosPropios() {
+            val trabajos=vms.map { it.viewModelScope.coroutineContext[Job]!! }
+            trabajos.forEach { it.cancel() }
+            trabajos.forEach { it.join() }
+        }
         override fun close() {
-            vms.forEach { it.viewModelScope.cancel() };answer.countDown();server.shutdown()
+            answer.countDown();respuestaDelSello.countDown()
+            runBlocking { cerrarTrabajosPropios() }
+            server.shutdown()
             // D7: ninguna llamada HTTP sigue en vuelo cuando MainDispatcherRule quita el Main de prueba.
             val tope=System.currentTimeMillis()+2_000
             while (client.dispatcher.runningCallsCount()>0 && System.currentTimeMillis()<tope) Thread.sleep(10)
@@ -420,4 +435,36 @@ class Q15OnlinePaymentTest {
         }
     }
     companion object { private const val VENUE="FULLTEST-Q15-ORIGINAL" }
+    /** Task13: no modifica ningún oráculo económico. */
+    @Test fun `el cierre no termina mientras la GET real del sello sigue en IO`() = runTest {
+        val f=Fixture(retenerSello=true)
+        val vm=f.vm()
+        val trabajo=vm.viewModelScope.coroutineContext[Job]!!
+        var cierre: Job?=null
+        try {
+            open(vm)
+            vm.processCashPayment(5000)
+            runCurrent()
+            f.arrival()
+            f.answer.countDown()
+            assertTrue(terminalState(vm) is PaymentFlowState.Success)
+            runCurrent()
+            withContext(Dispatchers.Default) { withTimeout(5_000) { f.selloEntrado.await() } }
+            // UNDISPATCHED ejecuta hasta retornar o suspender: no hay espera por tiempo para decidir el RED.
+            cierre=launch(start=CoroutineStart.UNDISPATCHED) { f.cerrarTrabajosPropios() }
+            assertTrue("premisa: cancelar ya fue solicitado", trabajo.isCancelled)
+            assertFalse("premisa: la GET retenida todavía pertenece al scope", trabajo.isCompleted)
+            assertFalse("el cierre debe esperar al scope antes de devolver el control a resetMain", cierre.isCompleted)
+            f.respuestaDelSello.countDown()
+            cierre.join()
+            assertTrue("al volver del cierre, todas sus tareas finalizaron", trabajo.isCompleted)
+        } finally {
+            // Incluso RED libera el HTTP real y espera su scope ANTES de MainDispatcherRule.finished.
+            f.respuestaDelSello.countDown()
+            cierre?.join()
+            trabajo.cancelAndJoin()
+            f.close()
+        }
+    }
+
 }

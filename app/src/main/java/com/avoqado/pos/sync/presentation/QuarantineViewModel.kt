@@ -64,7 +64,7 @@ class QuarantineViewModel @Inject constructor(
                 when (val d = cola.reintentar(id)) {
                     is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada ->
                         if (cola.filas.value.none { it.id == id }) _successMessage.value = "Cuenta registrada"
-                        else _errorMessage.value = cola.filas.value.firstOrNull { it.id == id }
+                        else _errorMessage.value = d.motivoRevision ?: cola.filas.value.firstOrNull { it.id == id }
                             ?.let { com.avoqado.pos.payment.data.detalleDePagarDespues(it) }
                     is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value = d.mensaje
                     null -> Unit
