@@ -81,10 +81,10 @@ class PagarDespuesCarritoTest {
         coEvery { staffRepository.getActiveStaff() } returns Result.success(emptyList())
     }
 
-    private fun createViewModel(): CartViewModel = CartViewModel(
+    private fun createViewModel(copiasGuardadas: SavedCartsRepository = guardados, cola: PayLaterQueue = fila): CartViewModel = CartViewModel(
         productsRepository = productsRepository,
         discountsRepository = discountsRepository,
-        savedCartsRepository = guardados,
+        savedCartsRepository = copiasGuardadas,
         authRepository = authRepository,
         secureStorage = secureStorage,
         activeCartState = mockk<ActiveCartState>(relaxed = true),
@@ -98,7 +98,7 @@ class PagarDespuesCarritoTest {
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
         areaTicketRepository = vales,
         walletScanRepository = mockk(relaxed = true),
-        payLaterQueue = fila,
+        payLaterQueue = cola,
     )
 
     private val enviados = mutableListOf<String>()
@@ -460,11 +460,15 @@ class PagarDespuesCarritoTest {
         val aviso = resultado.await()
         disco.discoSano = true
 
-        fila.mantenimientoLocal() // la pasada siguiente (o el siguiente arranque)
-
         val enElCarrito = if (vm.cartState.value.items.any { it.name == "Café" }) 1 else 0
         assertEquals("una sola copia viva de la venta de Ana", 1, enElCarrito + guardados.savedCarts.value.size)
-        assertEquals(ResultadoPagarDespues.Error(pagarDespuesNiGuardada("Ana")), aviso)
+        assertEquals(ResultadoPagarDespues.Error(pagarDespuesACarritosGuardados("Ana")), aviso)
+        assertEquals("ligada a su fila: no se vende", Restauracion.YaDejadaParaDespues, vm.restoreSavedCart(guardados.savedCarts.value.single()))
+
+        fila.mantenimientoLocal() // la pasada siguiente (o el siguiente arranque)
+
+        assertEquals(1, guardados.savedCarts.value.size)
+        assertTrue(vm.cartState.value.isEmpty)
         assertTrue(fila.filas.value.isEmpty())
         assertEquals(1, enviados.size)
     }
@@ -481,6 +485,112 @@ class PagarDespuesCarritoTest {
         fila.mantenimientoLocal()
         assertTrue(fila.filas.value.isEmpty())
         assertEquals(Restauracion.Hecha, vm.restoreSavedCart(guardados.savedCarts.value.single(), confirmado = true))
+    }
+
+    /** Arranque en frío: sólo sobrevive lo que llegó al disco ([PrefsEnMemoria.enDisco]). */
+    private fun PrefsEnMemoria.trasReiniciar() = PrefsEnMemoria().also { it.guardado.putAll(enDisco); it.enDisco.putAll(enDisco) }
+
+    private class LaAppMurio : RuntimeException("la app murió aquí")
+
+    @Test
+    fun `D3 r1 la app muere antes de cada escritura del rechazo - al arrancar queda exactamente una copia`() = runTest {
+        for (muereEn in 1..4) { // 3 escrituras: fila a RECUPERAR, copia guardada, borrado de la fila; la 4 = no muere
+            val disco = PrefsEnMemoria()
+            val copias = PrefsEnMemoria()
+            val guardados = SavedCartsRepository(copias.context)
+            val fila = PayLaterQueue(disco.context, ordenes, secureStorage, guardados, mockk(relaxed = true)).apply { io = Dispatchers.Unconfined }
+            val vm = createViewModel(guardados, fila)
+            vm.addProduct(cafe)
+            vm.setSelectedCustomer("cli-1", "Ana")
+            val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+            coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+            val resultado = async { runCatching { vm.createPayLaterOrder("cli-1") } }
+            runCurrent()
+            var escrituras = 0
+            val muere = { if (++escrituras == muereEn) throw LaAppMurio() }
+            disco.alEscribir = muere
+            copias.alEscribir = muere
+            respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+            resultado.await()
+
+            val guardados2 = SavedCartsRepository(copias.trasReiniciar().context)
+            val fila2 = PayLaterQueue(disco.trasReiniciar().context, ordenes, secureStorage, guardados2, mockk(relaxed = true))
+                .apply { io = Dispatchers.Unconfined }
+            val vm2 = createViewModel(guardados2, fila2)
+            fila2.mantenimientoLocal()
+
+            assertTrue(vm2.cartState.value.isEmpty)
+            assertEquals("muere antes de la escritura $muereEn: una sola copia", 1, guardados2.savedCarts.value.size + fila2.filas.value.size)
+        }
+    }
+
+    @Test
+    fun `D3 r1 la fila borrada y nada mas se escribe - la venta nunca se queda sin respaldo`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        // El camino de Codex r1: RECUPERAR y el borrado salen bien, entra otra venta mientras, y ya nada más se escribe.
+        copias.discoSano = false
+        var escrituras = 0
+        disco.alEscribir = {
+            escrituras++
+            if (escrituras == 2) vm.addProduct(pan)
+            if (escrituras >= 3) disco.discoSano = false
+        }
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+        val aviso = resultado.await()
+        disco.alEscribir = null
+
+        assertEquals("la venta de Ana sigue en disco", PayLaterRow.Estado.RECUPERAR, fila.filas.value.singleOrNull()?.estado)
+        assertEquals(ResultadoPagarDespues.Error(pagarDespuesNiGuardada("Ana")), aviso)
+        assertFalse(vm.cartState.value.items.any { it.name == "Café" })
+        disco.discoSano = true
+        copias.discoSano = true
+        fila.mantenimientoLocal()
+        assertEquals(listOf("Café"), guardados.savedCarts.value.single().items.map { it.name })
+    }
+
+    @Test
+    fun `D3 r1 entra otra venta mientras se borra la fila - la de Ana se queda en Carritos guardados y no se mezcla`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        var escrituras = 0
+        disco.alEscribir = { if (++escrituras == 2) vm.addProduct(pan) } // la 2a de la cola es el borrado
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+
+        assertEquals(ResultadoPagarDespues.Error(pagarDespuesACarritosGuardados("Ana")), resultado.await())
+        disco.alEscribir = null
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+        assertEquals(listOf("Café"), guardados.savedCarts.value.single().items.map { it.name })
+        assertTrue(fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `D3 r1 con el carrito libre vuelve ligada a su copia guardada, como un carrito restaurado, y cobrarla la retira`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        responde(409, """{"message":"El precio cambió."}""")
+
+        assertEquals(ResultadoPagarDespues.Error("El precio cambió."), vm.createPayLaterOrder("cli-1"))
+
+        val copia = guardados.savedCarts.value.singleOrNull()
+        assertNotNull("la venta que volvió tiene respaldo en Carritos guardados", copia)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals(copia?.id, vm.cartState.value.carritoGuardadoId)
+        assertTrue(vm.cartState.value.vinoDeCarritoGuardado)
+        assertTrue(fila.filas.value.isEmpty())
+        vm.aplicarCobroConfirmado(splitType = "FULLPAYMENT", paidItemIds = emptySet(), remainingBalanceCents = 0)
+        assertTrue("el cobro retira la copia", guardados.savedCarts.value.isEmpty())
     }
 
     @Test
