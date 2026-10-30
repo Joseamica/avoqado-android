@@ -77,6 +77,7 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.domain.MENSAJE_SUBIR_PRECIO
+import com.avoqado.pos.pos.domain.ajusteAGuardar
 import com.avoqado.pos.pos.domain.ajusteDePrecioPermitido
 
 /**
@@ -963,7 +964,7 @@ private fun CortesiaSubView(
 private fun PriceAdjustSubView(
     originalPriceCents: Int,
     currentAdjustment: Int?,
-    onConfirm: (Int) -> Unit,
+    onConfirm: (Int?) -> Unit,
     onClear: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -1077,7 +1078,7 @@ private fun PriceAdjustSubView(
         ) {
             PrimaryButton(
                 text = "Confirmar precio",
-                onClick = { onConfirm(priceCents) },
+                onClick = { onConfirm(ajusteAGuardar(priceCents, originalPriceCents)) },
                 enabled = ajusteDePrecioPermitido(priceCents, originalPriceCents),
                 modifier = Modifier.fillMaxWidth(),
             )

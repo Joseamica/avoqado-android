@@ -2,6 +2,7 @@ package com.avoqado.pos.pos.domain
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +30,17 @@ class AjusteDePrecioTest {
     @Test
     fun `un precio en cero no se permite`() {
         assertFalse(ajusteDePrecioPermitido(nuevoCents = 0, originalCents = 10000))
+    }
+
+    @Test
+    fun `un ajuste más bajo se guarda tal cual`() {
+        assertEquals(8000, ajusteAGuardar(nuevoCents = 8000, originalCents = 10000))
+    }
+
+    @Test
+    fun `confirmar el mismo precio no deja ajuste`() {
+        // Igual al original no descuenta nada: la línea no debe quedar marcada como «ajustada» (por ejemplo, para los vales).
+        assertNull(ajusteAGuardar(nuevoCents = 10000, originalCents = 10000))
     }
 
     @Test
