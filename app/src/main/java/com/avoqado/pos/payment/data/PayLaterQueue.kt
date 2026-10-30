@@ -244,7 +244,8 @@ class PayLaterQueue @Inject constructor(
             // RECUPERAR también (Codex r2 #2): su venta se está trasladando a esa misma copia.
             (it.ligaSuCopia || it.estado == PayLaterRow.Estado.RECHAZADA || it.estado == PayLaterRow.Estado.RECUPERAR) ||
             // D3 (29-oct): y la copia que ya se guardó de una RECUPERAR cuyo borrado falló: vendida antes de que la fila se
-            // vaya, el traslado la volvería a guardar (venta nueva = id nuevo, sin carritoGuardadoId).
+            // vaya, el traslado la volvería a guardar. Las filas nuevas ya traen ese id en carritoGuardadoId (D3 r2); esto
+            // cubre las RECUPERAR escritas por versiones anteriores (venta nueva sin carritoGuardadoId).
             it.estado == PayLaterRow.Estado.RECUPERAR && it.venta?.id == copia
     }
 

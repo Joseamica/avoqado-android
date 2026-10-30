@@ -2811,7 +2811,9 @@ class CartViewModel @Inject constructor(
                 customerName = cliente.name,
                 totalEsperadoCents = venta.totalCents,
                 cuerpo = cuerpo(reenvio = true),
-                carritoGuardadoId = venta.carritoGuardadoId,
+                // D3 r2: el id de su copia de respaldo existe desde ya y la fila lo liga (`ligaSuCopia`): si al rechazarse la
+                // fila no se puede marcar ni borrar, esa copia no se vende y se retira cuando la cuenta se crea.
+                carritoGuardadoId = venta.carritoGuardadoId ?: UUID.randomUUID().toString(),
                 creadaEn = capturadaEn,
             )
             _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents)
@@ -2966,14 +2968,14 @@ class CartViewModel @Inject constructor(
      * La venta no se dejó para después: vuelve al carrito o a «Carritos guardados». 🔴 Codex A-4: primero su fila sale del
      * reenvío (RECUPERAR; nunca se manda, como venta sin red se saltaría el rechazo de precio).
      *
-     * 🔴 D3 (Codex r1, 29-oct): en todo instante hay UNA copia vendible y siempre una en disco. 1) Su captura (id estable)
-     * se escribe en «Carritos guardados»; si no se puede, se queda en la fila y nada vuelve al carrito. 2) Sale la fila; si no
-     * se borra, copia y fila quedan ligadas (`copiaLigada`) hasta que el mantenimiento reescribe esa copia y la borra, y la
-     * venta tampoco vuelve al carrito. 3) Sólo sin fila y con el carrito libre, vuelve LIGADA a su copia, como un carrito
-     * restaurado: cobrarla o dejarla para después retira la copia por el camino de siempre.
+     * 🔴 D3 (Codex r1/r2; tabla en `.superpowers/sdd/2026-10-29-d3-pagar-despues/tabla-de-casos.md`): nada se borra hasta que
+     * su reemplazo en disco está confirmado. 1) Su captura (el id que la fila ya liga) va a «Carritos guardados»; si no se
+     * puede, la fila se queda como está. 2) Sale la fila; si no se borra, copia y fila quedan ligadas: una RECUPERAR la
+     * traslada el mantenimiento sobre esa misma copia; una EN_VUELO (la marca falló) la retira al crearse la cuenta. 3) Sólo
+     * sin fila y con el carrito libre, vuelve LIGADA a su copia, como un carrito restaurado.
      *
-     * Codex r2: UNA sola captura con id estable (#1) viaja en la fila y es la que se guarda: trasladarla dos veces deja un solo
-     * carrito. Si ni RECUPERAR ni el borrado se confirman (#3), la venta NO vuelve: null, y quien llama retiene la marca.
+     * null = la fila sigue EN_VUELO (ni la marca ni el borrado se confirmaron): la venta NO vuelve y quien llama retiene la
+     * marca para que este proceso no la reenvíe.
      */
     private suspend fun ponerASalvo(
         cola: com.avoqado.pos.payment.data.PayLaterQueue,
@@ -2982,19 +2984,16 @@ class CartViewModel @Inject constructor(
         venueId: String,
         motivo: String,
     ): ResultadoPagarDespues.Error? {
-        val captura = comoCarritoGuardado(s.venta, s.cliente.name, s.cliente.id)
-        val porRecuperar: (com.avoqado.pos.payment.data.PayLaterRow) -> com.avoqado.pos.payment.data.PayLaterRow =
-            { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR, motivo = motivo, venta = captura) }
-        val recuperable = cola.cambiar(fila.id, porRecuperar)
-        if (!recuperable && !cola.borrar(fila.id)) return null
-        if (!savedCartsRepository.saveCart(captura)) {
-            if (recuperable || cola.guardar(porRecuperar(fila))) return ResultadoPagarDespues.Error(pagarDespuesNiGuardada(s.cliente.name))
-            // ponytail: ninguna escritura se confirmó y la venta sólo está en memoria: vuelve al carrito si sigue libre.
-            if (carritoLibrePara(venueId)) return ResultadoPagarDespues.Error(volverAlCarrito(s, s.venta, motivo))
-            Log.e("🛒", "La venta de ${s.cliente.name} no se pudo guardar en ningún lado: el disco no escribe")
-            return ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO)
+        val captura = comoCarritoGuardado(s.venta.copy(carritoGuardadoId = fila.carritoGuardadoId), s.cliente.name, s.cliente.id)
+        val recuperable = cola.cambiar(fila.id) {
+            it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR, motivo = motivo, venta = captura)
         }
-        if (recuperable && !cola.borrar(fila.id)) return ResultadoPagarDespues.Error(pagarDespuesACarritosGuardados(s.cliente.name))
+        if (!savedCartsRepository.saveCart(captura)) {
+            return if (recuperable) ResultadoPagarDespues.Error(pagarDespuesNiGuardada(s.cliente.name)) else null
+        }
+        if (!cola.borrar(fila.id)) {
+            return if (recuperable) ResultadoPagarDespues.Error(pagarDespuesACarritosGuardados(s.cliente.name)) else null
+        }
         if (!carritoLibrePara(venueId)) return ResultadoPagarDespues.Error(pagarDespuesACarritosGuardados(s.cliente.name))
         val ligada = s.venta.copy(carritoGuardadoId = captura.id, vinoDeCarritoGuardado = true)
         return ResultadoPagarDespues.Error(volverAlCarrito(s, ligada, motivo))

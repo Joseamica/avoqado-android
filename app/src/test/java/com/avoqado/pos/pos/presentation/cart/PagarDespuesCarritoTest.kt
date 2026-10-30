@@ -593,6 +593,113 @@ class PagarDespuesCarritoTest {
         assertTrue("el cobro retira la copia", guardados.savedCarts.value.isEmpty())
     }
 
+    // MARK: - D3 r2 (30-oct): pasada exhaustiva de `ponerASalvo` (tabla en .superpowers/sdd/2026-10-29-d3-pagar-despues/tabla-de-casos.md)
+
+    /**
+     * Un rechazo con cada escritura que puede fallar (`commit()` = false) y la app muerta justo ANTES de la escritura
+     * [muereAntesDe] (null = no muere; luego igual se arranca en frío). Las escrituras se reconocen por lo que cambian en disco:
+     * la MARCA (la fila pasa a RECUPERAR), la COPIA («Carritos guardados») y el BORRADO de la fila; las compensaciones que no
+     * cambian el disco no cuentan. Devuelve lo que rompe la regla: UNA venta vendible, nunca 0 ni 2, y una venta cuya marca
+     * llegó al disco nunca se reenvía. Al arrancar corre `drenar()` (mantenimiento + reenvío, el SERVIDOR acepta).
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.correrCaso(
+        desdeGuardado: Boolean, fallaMarca: Boolean, fallaCopia: Boolean, fallaBorrado: Boolean, ocupado: Boolean, muereAntesDe: String?,
+    ): List<String> {
+        val caso = "guardada=$desdeGuardado marca=${!fallaMarca} copia=${!fallaCopia} borrado=${!fallaBorrado} ocupado=$ocupado muereAntesDe=$muereAntesDe"
+        val problemas = mutableListOf<String>()
+        val disco = PrefsEnMemoria()
+        val copias = PrefsEnMemoria()
+        val guardados = SavedCartsRepository(copias.context)
+        val fila = PayLaterQueue(disco.context, ordenes, secureStorage, guardados, mockk(relaxed = true)).apply { io = Dispatchers.Unconfined }
+        val vm = createViewModel(guardados, fila)
+        vm.addProduct(cafe)
+        if (desdeGuardado) {
+            assertTrue(vm.saveCurrentCart("Mesa de Ana"))
+            vm.restoreSavedCart(guardados.savedCarts.value.single())
+        }
+        vm.setSelectedCustomer("cli-1", "Ana")
+        var enLinea: String? = null
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enLinea = secondArg(); respuesta.await() }
+        val resultado = async { runCatching { vm.createPayLaterOrder("cli-1") } }
+        runCurrent()
+        if (ocupado) vm.addProduct(pan)
+        var murio = false
+        var marcaEnDisco = false
+        fun escritura(prefs: PrefsEnMemoria, clase: String?) {
+            if (clase == null) return
+            if (!murio && clase == muereAntesDe) { murio = true; throw LaAppMurio() }
+            val falla = clase == "marca" && fallaMarca || clase == "copia" && fallaCopia || clase == "borrado" && fallaBorrado
+            prefs.discoSano = !falla
+            if (clase == "marca" && !falla) marcaEnDisco = true
+        }
+        disco.alEscribir = {
+            val k = (disco.guardado.keys + disco.enDisco.keys).firstOrNull { it.startsWith("fila:") }
+            val nuevo = k?.let { disco.guardado[it] }
+            escritura(disco, when {
+                k == null || nuevo == disco.enDisco[k] -> null
+                nuevo == null -> "borrado"
+                nuevo.contains("RECUPERAR") -> "marca"
+                else -> null
+            })
+        }
+        copias.alEscribir = { escritura(copias, "copia".takeIf { copias.guardado["carts"] != copias.enDisco["carts"] }) }
+        respuesta.complete(OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"El precio cambió."}"""))
+        resultado.await()
+        disco.alEscribir = null
+        copias.alEscribir = null
+
+        if (!murio) {
+            val carrito = vm.cartState.value
+            val vendibles = (if (carrito.items.any { it.name == "Café" }) 1 else 0) +
+                guardados.savedCarts.value.count { !fila.copiaLigada(it.id) && it.id != carrito.carritoGuardadoId } +
+                fila.filas.value.count { it.estado == PayLaterRow.Estado.RECUPERAR || it.porSubir }
+            if (vendibles != 1) problemas += "$caso: $vendibles vendibles en el aparato"
+        }
+
+        val reenvios = mutableListOf<String>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } answers {
+            reenvios += secondArg<String>()
+            OrderRepository.RespuestaCruda(201, "application/json", null, creada(100.0))
+        }
+        val guardados2 = SavedCartsRepository(copias.trasReiniciar().context)
+        val fila2 = PayLaterQueue(disco.trasReiniciar().context, ordenes, secureStorage, guardados2, mockk(relaxed = true))
+            .apply { io = Dispatchers.Unconfined }
+        val vm2 = createViewModel(guardados2, fila2)
+        fila2.drenar()
+        val alArrancar = reenvios.size + guardados2.savedCarts.value.size + fila2.filas.value.size
+        if (!vm2.cartState.value.isEmpty || alArrancar != 1) problemas += "$caso: $alArrancar al arrancar"
+        if (marcaEnDisco && reenvios.isNotEmpty()) problemas += "$caso: la rechazada se reenvió"
+        reenvios.forEach {
+            val cuerpo = JSONObject(it)
+            if (cuerpo.getString("externalId") != JSONObject(enLinea!!).getString("externalId") || !cuerpo.getBoolean("isOfflineReplay")) {
+                problemas += "$caso: el reenvío no lleva la misma llave como venta sin red"
+            }
+        }
+        return problemas
+    }
+
+    @Test
+    fun `D3 r2 la marca falla, el borrado saldria bien y la app muere antes de la copia - la venta no se pierde`() = runTest {
+        assertEquals(emptyList<String>(), correrCaso(false, fallaMarca = true, fallaCopia = false, fallaBorrado = false, ocupado = false, muereAntesDe = "copia"))
+    }
+
+    @Test
+    fun `D3 r2 la marca y la copia fallan con otra venta en el carrito - la venta no se pierde`() = runTest {
+        assertEquals(emptyList<String>(), correrCaso(false, fallaMarca = true, fallaCopia = true, fallaBorrado = false, ocupado = true, muereAntesDe = null))
+    }
+
+    @Test
+    fun `D3 r2 tabla completa - cualquier escritura fallida y la app muerta en cualquier punto dejan UNA venta`() = runTest {
+        val problemas = mutableListOf<String>()
+        val bools = listOf(false, true)
+        for (desdeGuardado in bools) for (marca in bools) for (copia in bools) for (borrado in bools) for (ocupado in bools)
+            for (muere in listOf("marca", "copia", "borrado", null)) {
+                problemas += correrCaso(desdeGuardado, marca, copia, borrado, ocupado, muere)
+            }
+        assertEquals(emptyList<String>(), problemas)
+    }
+
     @Test
     fun `r2-3 rechazo sin poder marcar ni borrar la fila - la venta no vuelve, el aviso lo dice y este proceso no la reenvia`() = runTest {
         val vm = createViewModel()
