@@ -138,7 +138,8 @@ private fun esTransferencia(method: String?) = method == "BANK_TRANSFER" || meth
  * Las pastillas de «Devolver con» (spec 2026-09-30): el método original primero (marcado), más «Efectivo de la
  * caja» y «Transferencia» sin repetir. Sólo se pintan si el servidor dijo `canChooseRefundMethod`.
  */
-fun opcionesParaDevolver(method: String?, tenderLabel: String?): List<OpcionDeDevolucion> {
+fun opcionesParaDevolver(method: String?, tenderLabel: String?, refundToGiftCardBalance: Boolean? = null): List<OpcionDeDevolucion> {
+    if (refundToGiftCardBalance == true) return listOf(OpcionDeDevolucion(null, "Regresar a la tarjeta"))
     val original = when {
         esEfectivo(method) -> "Efectivo de la caja"
         esTransferencia(method) -> "Transferencia"
@@ -162,8 +163,14 @@ fun opcionesParaDevolver(method: String?, tenderLabel: String?): List<OpcionDeDe
  * ¿Avisar «esto sólo lo registra»? Un cobro que no se abre en la terminal, sin selector y que no es efectivo
  * (tarjeta registrada a mano, transferencia vieja): el cajero tiene que saber que el dinero lo devuelve él.
  */
-fun avisoDeSoloRegistro(enTerminal: Boolean, hayOpciones: Boolean, method: String?): Boolean =
-    !enTerminal && !hayOpciones && method != "CASH"
+fun avisoDeSoloRegistro(enTerminal: Boolean, hayOpciones: Boolean, method: String?, refundToGiftCardBalance: Boolean? = null): Boolean =
+    refundToGiftCardBalance != true && !enTerminal && !hayOpciones && method != "CASH"
+
+fun puedeEnviarDevolucion(saldo: Boolean, soloCompleto: Boolean, enLinea: Boolean, ocupado: Boolean): Boolean =
+    !ocupado && (!(saldo || soloCompleto) || enLinea)
+
+fun importeParaDevolver(escrito: Double, disponible: Double, soloCompleto: Boolean): Double =
+    if (soloCompleto) disponible else escrito
 
 /**
  * Qué avisar bajo «Devolver con» al escoger efectivo sin `payments:refund-to-cash` (1-oct-2026); `null` = nada.

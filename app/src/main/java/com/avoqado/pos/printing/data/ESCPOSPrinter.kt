@@ -1032,6 +1032,45 @@ class ESCPOSPrinter(
         return getData()
     }
 
+    fun generateGiftCardCertificate(c: CertificadoDeTarjeta): ByteArray {
+        reset()
+        fun printWrapped(text: String) {
+            ReceiptText.wrap(ReceiptText.force(text), paperWidth.charsPerLine).forEach { printLine(it) }
+        }
+        setAlignment(TextAlignment.CENTER)
+        c.negocio?.let(::printWrapped)
+        printTitle(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_TITULO, bold = true)
+        printLine(com.avoqado.pos.core.util.formatMoney(c.monto))
+        setAlignment(TextAlignment.LEFT)
+        c.para?.let { printWrapped("Para: $it") }
+        c.de?.let { printWrapped("De: $it") }
+        c.mensaje?.let { printWrapped("\"$it\"") }
+        printWrapped("Código: ${c.codigo}")
+        printWrapped("Folio: ${c.folio}")
+        printWrapped("Vence: ${c.vence ?: com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_SIN_VENCIMIENTO}")
+        c.liga?.let {
+            setAlignment(TextAlignment.CENTER)
+            printQr(it, moduleSize = if (paperWidth == PaperWidth.MM58) 6 else 7)
+            setAlignment(TextAlignment.LEFT)
+            printWrapped(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_ESCANEA)
+        }
+        val codigo = c.codigo.replace("-", "").lowercase()
+        val symbology = BarcodeSymbology.CODE128_B
+        val moduleWidth = fittingModuleWidth(codigo, symbology, DEFAULT_MODULE_WIDTH, paperWidth)
+        if (barcodeWidthInModules(codigo, symbology) * moduleWidth <= paperWidth.dots) {
+            setAlignment(TextAlignment.CENTER)
+            val impreso = printBarcode(codigo, symbology, moduleWidth = moduleWidth, hriPosition = HriPosition.NONE)
+            setAlignment(TextAlignment.LEFT)
+            if (impreso) {
+                printLine()
+                printWrapped(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_BARRAS)
+            }
+        }
+        printWrapped(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_NO_EFECTIVO)
+        cut()
+        return getData()
+    }
+
     // MARK: - Test Print
 
     fun generateTestPrint(): ByteArray {

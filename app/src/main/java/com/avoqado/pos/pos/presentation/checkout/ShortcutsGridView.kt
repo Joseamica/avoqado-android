@@ -140,6 +140,7 @@ fun ShortcutsGridView(
     onCreateItem: () -> Unit = {},
     onProductTap: (Product) -> Unit = {},
     canCreateProducts: Boolean = true,
+    onTarjetaDeRegalo: (() -> Unit)? = null,
 ) {
     val cartState by cartViewModel.cartState.collectAsState()
     val allProducts by cartViewModel.products.collectAsState()
@@ -169,6 +170,7 @@ fun ShortcutsGridView(
                 },
                 onProductTap = onProductTap,
                 canCreateProducts = canCreateProducts,
+                onTarjetaDeRegalo = onTarjetaDeRegalo,
             )
         }
         ShortcutsScreen.DISCOUNTS -> {
@@ -241,6 +243,7 @@ private fun ShortcutsMainGrid(
     onNavigate: (ShortcutsScreen) -> Unit,
     onProductTap: (Product) -> Unit = {},
     canCreateProducts: Boolean = true,
+    onTarjetaDeRegalo: (() -> Unit)? = null,
 ) {
     val hasItems = !cartState.isEmpty
     val context = LocalContext.current
@@ -252,15 +255,13 @@ private fun ShortcutsMainGrid(
     }
 
     val shortcuts = listOfNotNull(
-        ShortcutItem(
+        if (onTarjetaDeRegalo != null) ShortcutItem(
             id = "giftcard",
-            name = "Tarjeta de regalo",
+            name = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.MOSAICO,
             icon = Icons.Filled.CardGiftcard,
             color = ActionColors.giftCard,
             screen = ShortcutsScreen.MAIN,
-            enabled = false,
-            badge = "Pronto",
-        ),
+        ) else null,
         if (canCreateProducts) ShortcutItem(
             id = "createitem",
             name = "Crear artículo",
@@ -376,7 +377,8 @@ private fun ShortcutsMainGrid(
                     shortcut = shortcut,
                     onClick = {
                         if (shortcut.enabled) {
-                            onNavigate(shortcut.screen)
+                            if (shortcut.id == "giftcard") onTarjetaDeRegalo?.invoke()
+                            else onNavigate(shortcut.screen)
                         }
                     },
                 )

@@ -38,6 +38,9 @@ data class SalesSummaryReport(
     val totalCollected: Double = 0.0,
     val netProfit: Double = 0.0,
     val transactionCount: Int = 0,
+    val giftCardLoads: Double? = null,
+    val giftCardLoadsCount: Int? = null,
+    val paidWithGiftCardBalance: Double? = null,
 ) {
     val averageTicket: Double
         get() = if (transactionCount > 0) netSales / transactionCount else 0.0
@@ -92,6 +95,7 @@ data class PaymentMethodBreakdown(
             "CARD", "CREDIT_CARD", "DEBIT_CARD" -> "Tarjeta"
             "TRANSFER" -> "Transferencia"
             "WALLET" -> "Monedero"
+            "GIFT_CARD" -> "Tarjeta de regalo"
             else -> method
         }
 
@@ -101,6 +105,7 @@ data class PaymentMethodBreakdown(
             "CARD", "CREDIT_CARD", "DEBIT_CARD" -> "creditcard"
             "TRANSFER" -> "arrow_forward"
             "WALLET" -> "wallet"
+            "GIFT_CARD" -> "giftcard"
             else -> "creditcard"
         }
 }

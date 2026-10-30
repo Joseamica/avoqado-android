@@ -98,6 +98,9 @@ class AppState @Inject constructor(
     @Inject
     lateinit var customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState
 
+    @Inject
+    lateinit var solicitudesDeTarjeta: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
+
     /** El kiosco de check-in: al cambiar de sucursal olvida la lista de la clase (es de la anterior). */
     @Inject
     lateinit var kioskState: com.avoqado.pos.kiosk.domain.KioskState
@@ -119,6 +122,9 @@ class AppState @Inject constructor(
     }
 
     private fun notifyDeviceSessionChanged() {
+        if (::solicitudesDeTarjeta.isInitialized) {
+            solicitudesDeTarjeta.onSessionChanged(_isLoggedIn.value)
+        }
         // La marca del negocio en la pantalla del cliente (QA F2-1): antes sólo se ponía al volver la app al frente, así que
         // tras iniciar sesión el reposo seguía con la de Avoqado. Sin sesión queda vacía ⇒ la de Avoqado, a propósito.
         if (::customerDisplayState.isInitialized) {

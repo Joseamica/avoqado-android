@@ -57,6 +57,7 @@ class PagarDespuesCarritoTest {
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val staffRepository = mockk<StaffRepository>(relaxed = true)
     private val ordenes = mockk<OrderRepository>(relaxed = true)
+    private val vales = mockk<com.avoqado.pos.areatickets.data.AreaTicketRepository>(relaxed = true)
     private val disco = PrefsEnMemoria()
     private val copias = PrefsEnMemoria()
     private val guardados by lazy { SavedCartsRepository(copias.context) }
@@ -95,7 +96,7 @@ class PagarDespuesCarritoTest {
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
-        areaTicketRepository = mockk(relaxed = true),
+        areaTicketRepository = vales,
         walletScanRepository = mockk(relaxed = true),
         payLaterQueue = fila,
     )
@@ -558,6 +559,124 @@ class PagarDespuesCarritoTest {
         assertFalse("al terminar, ya se puede cobrar", vm.detenerPorPagarDespues())
     }
 
+    /** D10: una venta de Ana con premio cuyo «Pagar después» se queda esperando al SERVIDOR hasta [respuesta]. */
+    private fun kotlinx.coroutines.test.TestScope.ventaConPremioMandandose(
+        vm: CartViewModel,
+        respuesta: CompletableDeferred<OrderRepository.RespuestaCruda>,
+    ): kotlinx.coroutines.Deferred<ResultadoPagarDespues> {
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0))
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+        return async { vm.createPayLaterOrder("cli-1") }.also { runCurrent() }
+    }
+
+    @Test
+    fun `D10 mientras se manda un Pagar despues con premio, un vale escaneado no entra ni se aparta`() = runTest {
+        // La venta con premio se queda en el carrito mientras espera al SERVIDOR y al terminar sale conservando lo que entró:
+        // un vale leído ahí pasaba a la venta siguiente con su apartado a nombre de la anterior (Codex, merge iOS r3 #2).
+        val vm = createViewModel()
+        coEvery { vales.resolveCheckoutScan("9470000015") } returns
+            com.avoqado.pos.areatickets.data.AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        val resultado = ventaConPremioMandandose(vm, respuesta)
+
+        val leido = vm.resolveScannedBarcode("9470000015")
+
+        assertEquals(ScannedBarcodeResult.Error(PAGAR_DESPUES_EN_CURSO), leido)
+        coVerify(exactly = 0) { vales.addTicket(any()) }
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+        resultado.await()
+    }
+
+    @Test
+    fun `D10 un producto con codigo de forma de vale si entra mientras se manda`() = runTest {
+        // Codex D10 r1 #2: la forma del código no dice que sea un vale; el SERVIDOR también busca productos por SKU.
+        val gomitas = Product(id = "p-gomitas", name = "Gomitas", priceValue = 15.0, sku = "9470000015")
+        every { productsRepository.products } returns MutableStateFlow(listOf(gomitas))
+        val vm = createViewModel()
+        coEvery { vales.resolveCheckoutScan("9470000015") } returns
+            com.avoqado.pos.areatickets.data.AreaTicketScanData(type = "PRODUCT", code = "9470000015")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        val resultado = ventaConPremioMandandose(vm, respuesta)
+
+        assertEquals(ScannedBarcodeResult.ProductFound(gomitas), vm.resolveScannedBarcode("9470000015"))
+
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+        resultado.await()
+    }
+
+    @Test
+    fun `D10 los vales de un apartado restaurado no entran a la venta mientras se manda`() = runTest {
+        // Codex D10 r1 #1: la restauración al entrar a Cobrar no pasa por el escaneo; si respondía durante el envío, sus vales
+        // se proyectaban en la venta que se está yendo. Se quedan apartados y siguen las reglas de siempre (regla 8).
+        val sesion = com.avoqado.pos.areatickets.data.AreaTicketSession(secureStorage)
+        every { vales.session } returns sesion
+        val vm = createViewModel()
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        val resultado = ventaConPremioMandandose(vm, respuesta)
+        sesion.update("venue-1", apartadoConUnVale())
+
+        vm.traerValesDeLaSesion()
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+        resultado.await()
+    }
+
+    @Test
+    fun `D10 el vale que ya se estaba apartando al tocar Continuar entra y Pagar despues lo rechaza como siempre`() = runTest {
+        // Codex D10 r2: el freno se activaba al tocar «Continuar», antes de esperar los escaneos en curso; este vale ya no se
+        // proyectaba y la cuenta se iba sin él. El freno va desde la foto de la venta: lo leído antes entra y se rechaza la venta.
+        val sesion = com.avoqado.pos.areatickets.data.AreaTicketSession(secureStorage)
+        every { vales.session } returns sesion
+        coEvery { vales.settings() } returns com.avoqado.pos.areatickets.data.AreaTicketSettingsData(
+            venueId = "venue-1",
+            areaTickets = com.avoqado.pos.areatickets.data.AreaTicketModuleSettings(entitled = true, enabled = true, allowMixedCart = true),
+            terminal = com.avoqado.pos.areatickets.data.AreaTicketTerminalCapabilities(id = "t1", name = "Caja"),
+            scaleIntegration = com.avoqado.pos.areatickets.data.ScaleIntegrationSettings(entitled = false, enabled = false),
+        )
+        coEvery { vales.resolveCheckoutScan("9470000015") } returns
+            com.avoqado.pos.areatickets.data.AreaTicketScanData(type = "AREA_TICKET", code = "9470000015")
+        val apartando = CompletableDeferred<Unit>()
+        coEvery { vales.addTicket("9470000015") } coAnswers {
+            apartando.await()
+            apartadoConUnVale().also { sesion.update("venue-1", it) }
+        }
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        val escaneo = async { vm.resolveScannedBarcode("9470000015") }
+        runCurrent()
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+
+        apartando.complete(Unit)
+
+        assertEquals(ScannedBarcodeResult.AreaTicketsAdded(1), escaneo.await())
+        assertEquals(ResultadoPagarDespues.Error(VALES_NO_PAGAR_DESPUES), resultado.await())
+        assertEquals(listOf("Café", "Helado"), vm.cartState.value.items.map { it.name })
+        assertTrue("nada se mandó", enviados.isEmpty())
+    }
+
+    private fun apartadoConUnVale() = com.avoqado.pos.areatickets.data.AreaTicketCheckout(
+        id = "apartado-1", status = "OPEN", version = 1, expiresAt = "2999-01-01T00:00:00Z", createdAt = "2026-10-28T10:00:00Z",
+        tickets = listOf(
+            com.avoqado.pos.areatickets.data.AreaTicket(
+                id = "t1", code = "9470000015", status = "OPEN",
+                fulfillmentArea = com.avoqado.pos.areatickets.data.AreaTicketArea("area-1", "Barra", "PICKUP"),
+                subtotal = "50.00", total = "50.00", issuedAt = "2026-10-28T10:00:00Z",
+                lines = listOf(
+                    com.avoqado.pos.areatickets.data.AreaTicketLine(
+                        id = "l1", clientLineId = "c1", productNameSnapshot = "Helado", quantity = "1", unitPrice = "50.00", total = "50.00",
+                    ),
+                ),
+            ),
+        ),
+        totals = com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals("50.00", "0.00", "50.00"),
+    )
+
     @Test
     fun `A-4 la venta por recuperar pasa sola a Carritos guardados con su llave, sin mandar nada`() = runTest {
         val vm = createViewModel()
@@ -629,5 +748,79 @@ class PagarDespuesCarritoTest {
         assertEquals(2, vm.cartState.value.items.size)
         coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
         assertNotNull(vm.selectedCustomer.value)
+    }
+
+    // ── Tarjetas de regalo 1b sobre el «Pagar después» nuevo (unión con develop, 28-oct) ──
+
+    /** Una venta de tarjeta que espera recuperar su entrega frena guardar, vaciar y diferir (1b, R4 del cobro con saldo). */
+    private fun entregaDeTarjetaSinConfirmar() {
+        val solicitud = com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo = "GIFT_CARD_REDEEM", llave = "entrega",
+            venueId = "venue-1", creadaEn = 1, cuerpo = "", nuevaCuenta = true, porRecuperar = true, foto = "{}")
+        val raw = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservarEntrega(
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.agregar(null, solicitud), "entrega")
+        assertNotNull(raw)
+        every { secureStorage.giftCardRequestsJson } returns raw
+    }
+
+    @Test
+    fun `tarjetas - con una entrega de tarjeta sin confirmar, Pagar despues no manda ni saca la venta del carrito`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        entregaDeTarjetaSinConfirmar()
+        responde(201, creada(100.0))
+        val antes = vm.cartState.value
+
+        val resultado = vm.createPayLaterOrder("cli-1")
+
+        assertEquals(ResultadoPagarDespues.Error(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.NO_SE_PUDO_RECUPERAR), resultado)
+        assertTrue(enviados.isEmpty())
+        assertTrue(disco.guardado.isEmpty())
+        assertEquals(antes, vm.cartState.value)
+    }
+
+    @Test
+    fun `tarjetas - con premio y sin respuesta, la venta que se queda en el carrito queda marcada desde antes de mandarse`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Café gratis", "FIXED_AMOUNT", 30.0))
+        var marcadaAlMandar: String? = null
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } answers {
+            marcadaAlMandar = vm.cartState.value.creacionIncierta
+            throw java.net.SocketTimeoutException("sin respuesta")
+        }
+
+        assertTrue(vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Error)
+
+        val llave = vm.cartState.value.llavePagarDespues
+        assertNotNull(llave)
+        assertEquals("se marca ANTES de mandar", llave, marcadaAlMandar)
+        assertEquals("sin saber si se creó, el saldo de tarjeta no se ofrece para esta venta", llave, vm.cartState.value.creacionIncierta)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `tarjetas - con premio y rechazo definitivo, la marca se limpia`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Café gratis", "FIXED_AMOUNT", 30.0))
+        responde(404, """{"message":"Cliente no encontrado"}""")
+
+        assertEquals(ResultadoPagarDespues.Error("Cliente no encontrado"), vm.createPayLaterOrder("cli-1"))
+
+        assertEquals(1, enviados.size)
+        assertNull(vm.cartState.value.creacionIncierta)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `tarjetas - sin premio la venta sale del carrito antes de mandarse y el carrito no queda marcado`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        sinRed()
+
+        vm.createPayLaterOrder("cli-1")
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.cartState.value.creacionIncierta)
     }
 }

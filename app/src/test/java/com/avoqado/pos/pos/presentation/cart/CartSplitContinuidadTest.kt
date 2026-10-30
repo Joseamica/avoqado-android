@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.cart
 
+import com.avoqado.pos.giftcards.domain.aCartState
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -431,6 +432,26 @@ class CartSplitContinuidadTest {
         assertFalse("bajarla de nuevo deshace el cambio", vm.detenerCobroDeVentaCambiada())
     }
 
+    // Codex iOS código r1 #2 (28-oct): quitar un renglón y llevar otra unidad de uno que ya estaba deja el MISMO total y ningún
+    // id nuevo, pero la orden tiene B+C, no B×2: cobrarlo dejaba el recibo y el inventario distintos de lo vendido.
+    @Test
+    fun `cambiar un renglon por otra unidad de uno que ya estaba con el mismo total tambien detiene el cobro`() = runTest {
+        val vm = createViewModel()
+        val b = Product(id = "prod-b", name = "B", priceValue = 100.0)
+        vm.addProduct(b)
+        vm.addProduct(Product(id = "prod-c", name = "C", priceValue = 100.0))
+        vm.markPendingSplitOrder("order-parte-1")
+
+        vm.quitarPorElCajero(vm.cartState.value.items.last().id)
+        vm.addProduct(b)
+
+        assertEquals(1, vm.cartState.value.items.size)
+        assertEquals(2, vm.cartState.value.items.first().quantity)
+        assertEquals("montaje: vale lo mismo que al marcar el vínculo", 20000, vm.cartState.value.totalCents)
+        assertTrue(vm.detenerCobroDeVentaCambiada())
+        assertNull("no se cobra contra la orden vieja", vm.resolvePendingSplitOrderForCharge())
+    }
+
     // Codex r9: guardar soltaba el vínculo y restaurar dejaba cobrar el saldo dentro de otra venta; pagar después hacía otra
     // cuenta con el saldo adentro. Una venta a medias no se guarda ni se difiere: primero su saldo.
     @Test
@@ -782,4 +803,121 @@ class CartSplitContinuidadTest {
         // venta sí lo lleva.
         assertEquals("Cliente", vm.selectedCustomer.value?.name)
     }
+    @Test fun marcaAntesDelPostYSoloLaLimpiaRespuestaDeSuLlave() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount("Venta", 10000)
+        val id = vm.cartState.value.identidadDeVenta
+        vm.marcarCreacionIncierta("otra-venta", "ajena")
+        assertNull(vm.cartState.value.creacionIncierta)
+        vm.marcarCreacionIncierta(id, "propia")
+        assertEquals("propia", vm.cartState.value.creacionIncierta)
+        vm.limpiarCreacionIncierta("ajena")
+        assertEquals("propia", vm.cartState.value.creacionIncierta)
+        vm.limpiarCreacionIncierta("propia")
+        assertNull(vm.cartState.value.creacionIncierta)
+    }
+
+    @Test fun parcialConservaIdentidadT4YOrigenGuardado() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(SavedCart(id = "copia", name = "Venta", items = listOf(SavedCartItem(productId = null, name = "Venta", unitPrice = 10000, quantity = 1))))
+        val id = vm.cartState.value.identidadDeVenta
+        vm.marcarCreacionIncierta(id, "creacion")
+        vm.aplicarCobroConfirmado(null, emptySet(), 4000)
+        assertEquals(id, vm.cartState.value.identidadDeVenta)
+        assertEquals("creacion", vm.cartState.value.creacionIncierta)
+        assertTrue(vm.cartState.value.vinoDeCarritoGuardado)
+        assertNull(vm.cartState.value.carritoGuardadoId)
+        vm.finalizarVenta()
+        assertFalse(vm.cartState.value.vinoDeCarritoGuardado)
+        assertNull(vm.cartState.value.creacionIncierta)
+    }
+
+    @Test fun unionPorProductoConservaOrigenGuardadoYT6() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(SavedCart(id = "guardado", name = "Venta", items = listOf(
+            SavedCartItem(productId = "p1", name = "Articulo A", unitPrice = 10000, quantity = 1),
+            SavedCartItem(productId = "p2", name = "Articulo B", unitPrice = 10000, quantity = 1),
+        )))
+        vm.applyOrderDiscount(Discount(id = "d", name = "Cuenta", value = 20.0, type = "FIXED"))
+        val identidad = vm.cartState.value.identidadDeVenta
+        assertEquals(18000, vm.cartState.value.totalCents)
+        vm.aplicarCobroConfirmado("BYPRODUCT", setOf(vm.cartState.value.items.first().id), 9000)
+        val cart = vm.cartState.value
+        assertEquals(9000, cart.totalCents)
+        assertEquals("Saldo pendiente", cart.items.single().name)
+        assertEquals(identidad, cart.identidadDeVenta)
+        assertTrue(cart.vinoDeCarritoGuardado)
+        val fila = com.avoqado.pos.giftcards.domain.estadoDeLaVenta(
+            com.avoqado.pos.giftcards.data.EstadoDeAjustes.Disponible(
+                com.avoqado.pos.giftcards.data.AjustesDeTarjetas(true, emptyList(), 1.0, 1000.0,
+                    sale = com.avoqado.pos.giftcards.data.VentaPermitida(true))),
+            true, true, false, false, false, true, false, cart.creacionIncierta != null,
+            cart.vinoDeCarritoGuardado, false, false, false, true, false,
+        )
+        assertEquals(com.avoqado.pos.giftcards.domain.FilaDeLaCaja.T6, fila.fila)
+        assertFalse(fila.habilitada)
+    }
+
+    @Test fun unionPorProductoConservaCreacionIncierta() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(SavedCart(id = "guardado", name = "Venta", items = listOf(
+            SavedCartItem(productId = "p1", name = "Articulo A", unitPrice = 10000, quantity = 1),
+            SavedCartItem(productId = "p2", name = "Articulo B", unitPrice = 10000, quantity = 1),
+        )))
+        vm.applyOrderDiscount(Discount(id = "d", name = "Cuenta", value = 20.0, type = "FIXED"))
+        vm.marcarCreacionIncierta(vm.cartState.value.identidadDeVenta, "creacion")
+        vm.aplicarCobroConfirmado("BYPRODUCT", setOf(vm.cartState.value.items.first().id), 9000)
+        assertEquals(9000, vm.cartState.value.totalCents)
+        assertEquals("creacion", vm.cartState.value.creacionIncierta)
+        assertTrue(vm.cartState.value.vinoDeCarritoGuardado)
+    }
+
+    @Test fun restaurarFotoSoloVacioConIdentidadNuevaSinVinculo() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount("Venta", 10000)
+        vm.setSelectedCustomer("cliente", "Nombre")
+        val id = vm.cartState.value.identidadDeVenta
+        val foto = vm.fotoDeLaVenta()
+        assertEquals(10000, foto.aCartState().totalCents)
+        assertFalse(vm.restaurarFoto(foto))
+        vm.clearCart()
+        vm.markPendingSplitOrder("vieja")
+        assertTrue(vm.restaurarFoto(foto))
+        assertEquals(10000, vm.cartState.value.totalCents)
+        assertTrue(vm.cartState.value.identidadDeVenta != id)
+        assertNull(vm.resolvePendingSplitOrderForCharge())
+        assertEquals("cliente", vm.selectedCustomer.value?.id)
+    }
+
+    // «Pagar después» de develop (27-oct) ya no borra la copia ni crea la cuenta desde el carrito: la venta sale del carrito antes
+    // de mandarse. La marca de creación incierta (con premio) y el freno de la entrega viven en PagarDespuesCarritoTest («tarjetas - …»).
+
+    @Test fun entregaSinConfirmarNoSeVaciaNiSeGuardaNiPagaDespues() = runTest {
+        val vm = createViewModel(); vm.addCustomAmount("Venta", 10000)
+        val antes = vm.cartState.value
+        val fila = com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo="GIFT_CARD_REDEEM",llave="entrega",
+            venueId="venue-1",creadaEn=1,cuerpo="",nuevaCuenta=true,porRecuperar=true,foto="{}")
+        val raw = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservarEntrega(
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.agregar(null,fila),"entrega")
+        assertNotNull(raw)
+        every { secureStorage.giftCardRequestsJson } returns raw
+        vm.clearCart()
+        assertEquals("No debe vaciar una entrega pendiente", antes, vm.cartState.value)
+        assertFalse(vm.saveCurrentCart())
+        assertTrue(vm.createPayLaterOrder("cliente") is ResultadoPagarDespues.Error)
+        assertEquals(antes,vm.cartState.value)
+    }
+
+    @Test fun entregaSinConfirmarNoSueltaElCliente() = runTest {
+        val vm = createViewModel(); vm.addCustomAmount("Venta",10000); vm.setSelectedCustomer("cliente","Ana")
+        val antes = vm.selectedCustomer.value
+        val fila = com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo="GIFT_CARD_REDEEM",llave="entrega",
+            venueId="venue-1",creadaEn=1,cuerpo="",nuevaCuenta=true,porRecuperar=true,foto="{}")
+        val raw=com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservarEntrega(
+            com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.agregar(null,fila),"entrega")
+        every { secureStorage.giftCardRequestsJson } returns raw
+        vm.finalizarVenta()
+        assertEquals("Una salida bloqueada conserva también al cliente",antes,vm.selectedCustomer.value)
+    }
+
 }

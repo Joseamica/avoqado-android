@@ -1,5 +1,7 @@
 package com.avoqado.pos.pos.presentation.cart
 
+import com.avoqado.pos.giftcards.domain.aFoto
+import com.avoqado.pos.giftcards.domain.aCartState
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -70,6 +72,7 @@ import javax.inject.Inject
 import com.avoqado.pos.core.util.aCentavos
 
 sealed interface ScannedBarcodeResult {
+    data class GiftCardFound(val prueba: com.avoqado.pos.giftcards.data.PruebaDeTarjeta) : ScannedBarcodeResult
     data class ProductFound(val product: Product) : ScannedBarcodeResult
     data class WeightedProductFound(val product: Product, val weightKg: Double) : ScannedBarcodeResult
     data class AreaTicketsAdded(val ticketCount: Int) : ScannedBarcodeResult
@@ -124,6 +127,8 @@ data class CartState(
      *  through to the order so the sale links back to the reservation. */
     val reservationId: String? = null,
     val carritoGuardadoId: String? = null,
+    val vinoDeCarritoGuardado: Boolean = false,
+    val creacionIncierta: String? = null,
     /** Identidad de la venta en memoria; guardar una copia no la cambia. */
     val identidadDeVenta: String = UUID.randomUUID().toString(),
     /**
@@ -667,12 +672,20 @@ class CartViewModel @Inject constructor(
     /** El carrito continúa una venta cobrada a medias (tiene saldo en su orden). */
     fun hayVentaAMedias(): Boolean = _pendingSplitOrder.value != null
 
-    /** Hay un renglón que la orden no tiene, o el carrito creció en dinero (`addProduct` FUSIONA: misma línea, cantidad 2). */
+    /**
+     * Hay un renglón que la orden no tiene, uno que lleva MÁS que en su foto, o el carrito creció en dinero (`addProduct`
+     * FUSIONA: misma línea, cantidad 2). Mirar sólo el total no basta: quitar C y llevar otra B deja B×2 al mismo precio
+     * contra una orden con B+C (Codex iOS código r1 #2, 28-oct).
+     */
     private fun carritoCambioDesde(pendiente: PendingSplitOrder, cart: CartState): Boolean =
         // Exacta: renglones, descuento Y total (quitar al cliente quita su premio y sube el total sin tocar renglones, Codex r2 #1).
         if (pendiente.exacta) cart.items != pendiente.renglones || cart.orderDiscount != pendiente.descuentoDeCuenta ||
             cart.totalCents != pendiente.totalCents
-        else cart.items.any { it.id !in pendiente.itemIds } || cart.totalCents > pendiente.totalCents
+        else cart.totalCents > pendiente.totalCents || cart.items.any { item ->
+            val foto = pendiente.renglones.firstOrNull { it.id == item.id }
+            item.id !in pendiente.itemIds ||
+                (foto != null && (item.quantity > foto.quantity || item.grossPrice > foto.grossPrice))
+        }
 
     // MARK: - D1: la parte que se guardó sin red (founder «B», 26-oct)
 
@@ -732,6 +745,7 @@ class CartViewModel @Inject constructor(
      * mercancía agregada o dejaba pegado al cliente).
      */
     private fun adoptarOrdenDeLaParte(vigente: PendingSplitOrder, subida: com.avoqado.pos.payment.data.EstadoDeParte.Subida) {
+        vigente.parteEnCola?.let(::limpiarCreacionIncierta)
         observadorDeParte?.cancel()
         val cart = _cartState.value
         val sinCambios = !carritoCambioDesde(vigente, cart)
@@ -1655,6 +1669,7 @@ class CartViewModel @Inject constructor(
 
     fun saveCurrentCart(name: String? = null): Boolean {
         if (detenerPorPagarDespues()) return false
+        if (bloqueoDeEntrega() != null) return false
         val state = _cartState.value
         if (state.isEmpty || state.items.any { it.locked }) return false
         // D5 (Codex r3 #5): guardar también vaciaba la venta de vales con abono (y su saldo guardado se cobraba aparte).
@@ -1734,6 +1749,7 @@ class CartViewModel @Inject constructor(
         )
 
     fun clearCart() {
+        bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
         if (areaTicketRepository.session.current() != null) {
             viewModelScope.launch {
                 runCatching { areaTicketRepository.cancel() }
@@ -1785,6 +1801,7 @@ class CartViewModel @Inject constructor(
      * pasa por [aplicarCobroConfirmado], que decide si la venta cerró o sigue viva.
      */
     fun finalizarVenta() {
+        bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
         clearCart()
         setSelectedCustomer(null)
     }
@@ -1874,6 +1891,8 @@ class CartViewModel @Inject constructor(
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
         val identidadOriginal = _cartState.value.identidadDeVenta
+        val creacionOriginal = _cartState.value.creacionIncierta
+        val vinoDeGuardado = _cartState.value.vinoDeCarritoGuardado
         // El recibo retira su copia; una respuesta tardía no puede tocar la venta siguiente.
         carritoGuardadoDelCobro?.let {
             if (!savedCartsRepository.deleteCart(it)) Log.w("🛒", "No se confirmó el retiro de la copia marcada $it")
@@ -1919,7 +1938,7 @@ class CartViewModel @Inject constructor(
                 // un descuento fijo de toda la cuenta se quedaría entero en los renglones que quedan.
                 if (remainingBalanceCents > 0 && _cartState.value.totalCents != remainingBalanceCents) {
                     clearCart()
-                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal) }
+                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado) }
                     addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 }
                 RamaCobro.RENGLONES_PAGADOS
@@ -1927,7 +1946,7 @@ class CartViewModel @Inject constructor(
             remainingBalanceCents > 0 -> {
                 // El cliente sobrevive: `clearCart()` no lo toca, a propósito.
                 clearCart()
-                _cartState.update { it.copy(identidadDeVenta = identidadOriginal) }
+                _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado) }
                 addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 RamaCobro.QUEDA_SALDO
             }
@@ -2026,6 +2045,7 @@ class CartViewModel @Inject constructor(
     }
 
     suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+        if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return ScannedBarcodeResult.Error("Termina la consulta de la tarjeta primero.")
         // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
@@ -2078,6 +2098,7 @@ class CartViewModel @Inject constructor(
             // cliente. Se filtra por FORMA primero (`pareceTarjetaDeCliente`) para no
             // hacer un viaje al servidor por cada producto mal dado de alta — en una
             // caja con fila esa latencia se nota.
+            com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.reconocer(code)?.let { return ScannedBarcodeResult.GiftCardFound(it) }
             if (com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente(code)) {
                 walletScanRepository.escanear(code)?.let { return ScannedBarcodeResult.CustomerCardFound(it) }
             }
@@ -2100,6 +2121,11 @@ class CartViewModel @Inject constructor(
                     val hasNormalItems = _cartState.value.items.any { !it.locked }
                     if (!sigueLaVenta()) {
                         ScannedBarcodeResult.Error(VALES_VENTA_CAMBIO_AL_LEER)
+                    } else if (pagarDespuesTomoLaFoto) {
+                        // 🔴 D10: con «Pagar después» en camino la venta sale conservando lo que entró; este vale pasaba a la
+                        // venta siguiente con su apartado a nombre de la anterior. Sólo el vale: lo que el SERVIDOR dice que es
+                        // un producto (aunque su código parezca de vale) sí entra. Igual en iOS.
+                        ScannedBarcodeResult.Error(PAGAR_DESPUES_EN_CURSO)
                     } else if (_pendingSplitOrder.value != null) {
                         // 🔴 D4 (20-oct). Con una venta cobrada a medias, el vale armaba una orden NUEVA con lo que faltaba y la
                         // venta de antes se quedaba con su saldo abierto para siempre. Primero se termina esa venta.
@@ -2193,6 +2219,9 @@ class CartViewModel @Inject constructor(
      * mete sus vales en la siguiente.
      */
     private fun replaceAreaTicketLines(checkout: AreaTicketCheckout, venta: String): Boolean {
+        // 🔴 D10 (Codex r1 #1): tampoco por la restauración al entrar a Cobrar. Mientras «Pagar después» manda esta venta, sus
+        // vales se quedan apartados (sin dueño nuevo) y siguen la regla 8 cuando termine.
+        if (pagarDespuesTomoLaFoto) return false
         val sesion = areaTicketRepository.session
         if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
         val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
@@ -2627,6 +2656,7 @@ class CartViewModel @Inject constructor(
             orderTaxPercent = null,
             reservationId = savedCart.reservationId,
             carritoGuardadoId = savedCart.id,
+            vinoDeCarritoGuardado = true,
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
             llavePagarDespues = savedCart.llavePagarDespues,
@@ -2668,6 +2698,12 @@ class CartViewModel @Inject constructor(
     )
 
     private val _pagarDespuesEnCurso = MutableStateFlow<EnvioPagarDespues?>(null)
+
+    /**
+     * 🔴 D10: «Pagar después» ya tomó la foto de la venta (después de esperar los escaneos en curso). Desde ahí un vale no entra;
+     * antes sí, y la venta se rechaza con [VALES_NO_PAGAR_DESPUES] como siempre (Codex D10 r2). Igual en iOS.
+     */
+    private var pagarDespuesTomoLaFoto = false
     /** No-null mientras se manda: la pantalla de «Pagar después» no se puede cerrar y dice «Guardando la cuenta…». */
     val pagarDespuesEnCurso: StateFlow<EnvioPagarDespues?> = _pagarDespuesEnCurso.asStateFlow()
 
@@ -2722,11 +2758,13 @@ class CartViewModel @Inject constructor(
      * hasta que está a salvo. Una venta con premio de sellos nunca entra a la fila para mandarse (R8).
      */
     suspend fun createPayLaterOrder(customerId: String): ResultadoPagarDespues {
+        bloqueoDeEntrega()?.let { return ResultadoPagarDespues.Error(it) }
         val cliente = _selectedCustomer.value?.takeIf { it.id == customerId } ?: SelectedCustomer(customerId, "Cliente")
         _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents)
         try {
             // Como el cobro (`hayConsultasDeCodigo`): lo leído antes del toque entra ANTES de capturar la venta.
             consultasDeCodigo.first { it == 0 }
+            pagarDespuesTomoLaFoto = true
             val venta = _cartState.value
             motivoParaNoDiferir(venta, customerId)?.let { return ResultadoPagarDespues.Error(it) }
             val venueId = secureStorage.venueId ?: return ResultadoPagarDespues.Error("No venue selected")
@@ -2789,6 +2827,7 @@ class CartViewModel @Inject constructor(
                 diferirConFila(cola, s, fila, venueId, cuerpo(reenvio = false))
             }
         } finally {
+            pagarDespuesTomoLaFoto = false
             _pagarDespuesEnCurso.value = null
         }
     }
@@ -2871,7 +2910,11 @@ class CartViewModel @Inject constructor(
         enLinea: String,
     ): ResultadoPagarDespues {
         val copia = s.venta.carritoGuardadoId
+        // Tarjetas 1b: la venta sigue en el carrito y sin respuesta no se sabe si quedó creada: no se cobra con saldo (llave = venta).
+        val llave = checkNotNull(s.venta.llavePagarDespues)
+        marcarCreacionIncierta(s.venta.identidadDeVenta, llave)
         val d = cola.mandar(venueId, enLinea)
+        if (d is DesenlacePagarDespues.Rechazada || d is DesenlacePagarDespues.SesionVencida) limpiarCreacionIncierta(llave)
         if (d !is DesenlacePagarDespues.Creada) {
             // No se creó (o, sin respuesta, no se sabe: riesgo aceptado de hoy). La copia vuelve a poderse restaurar.
             copia?.let { savedCartsRepository.soltarPagarDespues(it) }
@@ -2964,6 +3007,39 @@ class CartViewModel @Inject constructor(
         }
         return if (savedCartsRepository.saveCart(captura)) pagarDespuesACarritosGuardados(s.cliente.name) else null
     }
+
+    fun marcarCreacionIncierta(identidad: String, externalId: String) {
+        _cartState.update { if (it.identidadDeVenta == identidad) it.copy(creacionIncierta = externalId) else it }
+    }
+    fun limpiarCreacionIncierta(externalId: String) {
+        _cartState.update { if (it.creacionIncierta == externalId) it.copy(creacionIncierta = null) else it }
+    }
+    fun fotoDeLaVenta(): com.avoqado.pos.giftcards.domain.FotoDeLaVenta = _cartState.value.aFoto(_selectedCustomer.value)
+    private val duenosDeLaFoto = mutableMapOf<Any, Triple<() -> Boolean, () -> Boolean, () -> Unit>>()
+    /** Devuelve desuscripción y permiso para iniciar dinero sin competir con otro dueño de esta venta. */
+    fun observarRestauracionDeFoto(puedeRestaurar: () -> Boolean, puedeEmpezarOtroCobro: () -> Boolean, invalidar: () -> Unit): Pair<() -> Unit, () -> Boolean> {
+        val dueno = Any()
+        duenosDeLaFoto[dueno] = Triple(puedeRestaurar, puedeEmpezarOtroCobro, invalidar)
+        return { duenosDeLaFoto.remove(dueno); Unit } to {
+            duenosDeLaFoto.all { (otro, callbacks) -> otro === dueno || callbacks.second() }
+        }
+    }
+
+    fun restaurarFoto(foto: com.avoqado.pos.giftcards.domain.FotoDeLaVenta): Boolean {
+        if (!_cartState.value.isEmpty) return false
+        val duenos = duenosDeLaFoto.values.toList()
+        if (duenos.any { !it.first() }) return false
+        duenos.forEach { it.third() }
+        setSelectedCustomer(foto.clienteId, foto.clienteNombre)
+        _cartState.value = foto.aCartState()
+        _pendingSplitOrder.value = null
+        return true
+    }
+    fun cuentaLigada(): String? = _pendingSplitOrder.value?.orderId
+
+    fun bloqueoDeEntrega(): String? = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.reservas(secureStorage.giftCardRequestsJson)
+        .takeIf { rows -> rows.any { it.venueId == secureStorage.venueId } }
+        ?.let { com.avoqado.pos.giftcards.domain.TextosDeTarjetas.NO_SE_PUDO_RECUPERAR }
 
     fun getCartForPayment(): CartState = _cartState.value
 }

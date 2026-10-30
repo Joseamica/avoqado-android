@@ -337,9 +337,11 @@ class AppStateVenueRecoveryTest {
                 every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
             },
         configurarSesion: SecureStorage.() -> Unit = {},
+        storageReal: SecureStorage? = null,
+        resolverReal: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta? = null,
         llegadasDelKiosco: Int = 0,
     ): AppState {
-        val secureStorage = mockk<SecureStorage>(relaxed = true) {
+        val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
             every { venueId } returns "venue-atole"
             every { reservationsEnabled } returns false
@@ -383,7 +385,7 @@ class AppStateVenueRecoveryTest {
             every { blockingWorkCount() } returns 0
         }
 
-        return AppState(
+        val plantilla = AppState(
             secureStorage = secureStorage,
             authRepository = authRepository,
             timeEntryRepository = mockk<TimeEntryRepository>(relaxed = true),
@@ -410,6 +412,27 @@ class AppStateVenueRecoveryTest {
             connectivityMonitor = connectivityMonitor,
             printConfigRepository = printConfigRepository,
         )
+        if (resolverReal == null) return plantilla
+        // La fábrica generada ejecuta también la inyección de miembros de Hilt.
+        val factory = Class.forName("com.avoqado.pos.auth.presentation.AppState_Factory")
+        val crear = factory.methods.single { it.name == "create" }
+        val providers = crear.genericParameterTypes.map { provider ->
+            val tipo = (provider as java.lang.reflect.ParameterizedType).actualTypeArguments.single() as Class<*>
+            val valor = when (tipo) {
+                com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta::class.java -> resolverReal
+                ConnectivityMonitor::class.java -> connectivityMonitor
+                com.avoqado.pos.cashdrawer.data.CashDrawerRepository::class.java -> mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed = true) {
+                    every { estadoDeLosCobros } returns MutableStateFlow(com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros.LIBRES)
+                }
+                else -> AppState::class.java.declaredFields.firstOrNull { it.type == tipo }
+                    ?.let { runCatching { it.isAccessible = true; it.get(plantilla) }.getOrNull() }
+                    ?: io.mockk.mockkClass(tipo.kotlin, relaxed = true)
+            }
+            dagger.internal.Provider<Any> { valor }
+        }.toTypedArray()
+        return (factory.getMethod("get").invoke(crear.invoke(null, *providers)) as AppState).also {
+            androidx.lifecycle.ViewModelStore().apply { put("plantilla", plantilla); clear() }
+        }
     }
 
     /**
@@ -464,5 +487,76 @@ class AppStateVenueRecoveryTest {
                 assertEquals("La pantalla de Barra no se alcanza por el WiFi", appState.avisoDeRacha.first { it != null })
             }
         }
+    }
+
+    @Test fun `R6 Hilt real recupera al entrar y cambiar negocio con red arriba sin duplicar callbacks`() = runBlocking {
+        val prefs = com.avoqado.pos.giftcards.SolicitudesDeTarjetaTest.Preferencias()
+        val storage = prefs.almacen()
+        SecureStorage::class.java.getDeclaredField("sessionInvalidated").apply { isAccessible = true }
+            .set(storage, SecureStorage::class.java.getDeclaredField("_sessionInvalidated").apply { isAccessible = true }.get(storage))
+        val preferencias = SecureStorage::class.java.getDeclaredField("prefs").apply { isAccessible = true }.get(storage) as android.content.SharedPreferences
+        every { preferencias.getBoolean(any(), any()) } answers { secondArg() }
+        val store = com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore(storage)
+        for (venue in listOf("a", "b")) org.junit.Assert.assertTrue(store.guardar(com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(
+            tipo = "GIFT_CARD_SALE", llave = "k-$venue", venueId = venue, creadaEn = 1, orderId = "o-$venue", cuerpo = "{}")))
+        val red = mockk<ConnectivityMonitor> {
+            every { isConnected } returns MutableStateFlow(true)
+            every { isServerReachable } returns MutableStateFlow(true)
+        }
+        val repo = mockk<com.avoqado.pos.giftcards.data.GiftCardsRepository>()
+        val consultas = java.util.concurrent.CopyOnWriteArrayList<String>()
+        io.mockk.coEvery { repo.cuenta(any(), any()) } coAnswers {
+            consultas += firstArg<String>()
+            com.avoqado.pos.giftcards.data.Respuesta.Ok(com.avoqado.pos.giftcards.data.CuentaDeTarjetas(
+                secondArg(), "n", 500.0, "PENDING", "CONFIRMED", sobres = listOf(
+                    com.avoqado.pos.giftcards.data.SobreDeLaCuenta("g", "1234", 500.0, 500.0, "ACTIVE", deliveryChannel = "PRINTED",
+                        usada = false, puedeReenviar = false, puedeCambiarDestino = false, puedeRevelar = false)),
+                cancel = com.avoqado.pos.giftcards.data.Cancelacion(true)))
+        }
+        val resolver = com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta(repo, store, storage, red)
+        val app = createAppState(true, {}, {}, {}, onOutboxStart = {}, storageReal = storage, resolverReal = resolver)
+        val vms = androidx.lifecycle.ViewModelStore().apply { put("r6", app) }
+        try {
+        org.junit.Assert.assertSame(resolver, app.solicitudesDeTarjeta)
+        resolver.resolverAhora()
+        assertEquals(emptyList<String>(), consultas)
+
+        storage.userId = "ana"; storage.accessToken = "test-token"; storage.venueId = "a"
+        app.onLoginSuccess() // Incluye notify + refreshTabs: un solo contexto, no dos pasadas.
+        val a = kotlinx.coroutines.withTimeoutOrNull(1500) { resolver.ventasListas.first { it == listOf("k-a") } }
+        assertEquals("El callback real de login debe despertar sin cambiar la red", listOf("k-a"), a)
+        storage.venueId = "b"
+        app.refreshTabs()
+        val b = kotlinx.coroutines.withTimeoutOrNull(1500) { resolver.ventasListas.first { it == listOf("k-b") } }
+        assertEquals(listOf("k-b"), b)
+        assertEquals(listOf("a", "b"), consultas.toList())
+        app.onLogout()
+        assertEquals(emptyList<String>(), resolver.ventasListas.value)
+        assertEquals(listOf("a", "b"), consultas.toList())
+        } finally { vms.clear() }
+    }
+
+    @Test fun `R6 invalidar sesion limpia ventas listas aunque las preferencias aun tengan identidad`() = runBlocking {
+        val prefs = com.avoqado.pos.giftcards.SolicitudesDeTarjetaTest.Preferencias().apply {
+            values["venueId"] = "a"; values["accessToken"] = "fixture-con-sesion"
+        }
+        val storage = prefs.almacen()
+        val store = com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore(storage)
+        org.junit.Assert.assertTrue(store.guardar(com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(
+            tipo = "GIFT_CARD_SALE", llave = "k", venueId = "a", creadaEn = 1, orderId = "o", cuerpo = "{}")))
+        val repo = mockk<com.avoqado.pos.giftcards.data.GiftCardsRepository>()
+        io.mockk.coEvery { repo.cuenta(any(), any()) } returns com.avoqado.pos.giftcards.data.Respuesta.Ok(
+            com.avoqado.pos.giftcards.data.CuentaDeTarjetas("o", "n", 500.0, "PENDING", "CONFIRMED", sobres = listOf(
+                com.avoqado.pos.giftcards.data.SobreDeLaCuenta("g", "1234", 500.0, 500.0, "ACTIVE", deliveryChannel = "PRINTED",
+                    usada = false, puedeReenviar = false, puedeCambiarDestino = false, puedeRevelar = false)), cancel = com.avoqado.pos.giftcards.data.Cancelacion(true)))
+        val red = mockk<ConnectivityMonitor> {
+            every { isConnected } returns MutableStateFlow(true)
+            every { isServerReachable } returns MutableStateFlow(true)
+        }
+        val resolver = com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta(repo, store, storage, red)
+        resolver.resolverAhora()
+        assertEquals(listOf("k"), resolver.ventasListas.value)
+        resolver.onSessionChanged(false)
+        assertEquals("No conservar una lista accionable tras invalidar", emptyList<String>(), resolver.ventasListas.value)
     }
 }

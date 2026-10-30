@@ -28,6 +28,11 @@ sealed interface EstadoDeComanda {
         val causa: String?,
         val orderNumber: String,
         val trabajo: TrabajoPendiente? = null,
+        /**
+         * D2 (founder, 28-oct): no salió porque el negocio no tiene NINGUNA impresora de cocina ni estaciones (una tienda).
+         * Sigue siendo `NoSalio` —cero intentos nunca es éxito—, pero el mostrador no lo avisa: sin cocina no hay comanda.
+         */
+        val sinImpresoraDeCocina: Boolean = false,
     ) : EstadoDeComanda
 }
 

@@ -902,6 +902,7 @@ class OrderRequestPromotionTest {
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
         every { savedCartsRepository.savedCarts } returns MutableStateFlow<List<SavedCart>>(emptyList())
+        every { savedCartsRepository.deleteCart("saved-1") } returns true
         // «Pagar después» de un carrito restaurado deja su llave en la copia antes de mandar (Codex A-5).
         every { savedCartsRepository.prepararPagarDespues(any(), any(), any(), any()) } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())

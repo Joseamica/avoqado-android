@@ -23,6 +23,10 @@ package com.avoqado.pos.core.domain
  */
 object PermissionLabels {
     private val LABELS = mapOf(
+        "giftCards:read" to "consultar tarjetas de regalo",
+        "giftCards:sell" to "vender tarjetas de regalo",
+        "giftCards:redeem" to "cobrar con tarjeta de regalo",
+        "giftCards:manage" to "administrar tarjetas de regalo",
         // MARK: - Terminales de cobro (PAX)
         //
         // 🔴 `tpv:read` NO es "cobrar". Desde 2026-08-16 (server c74f6593) la
