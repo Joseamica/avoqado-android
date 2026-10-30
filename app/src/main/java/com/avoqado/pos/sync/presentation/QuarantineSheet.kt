@@ -59,6 +59,10 @@ import java.util.Locale
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.payment.data.ConciliacionDelCobro
+import com.avoqado.pos.kiosk.data.KioskTap
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.NoticeToast
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowOverlays
 
 /**
  * Cuarentena de sincronización — bottom sheet que lista las operaciones offline
@@ -92,6 +96,11 @@ fun QuarantineSheet(
     val cobrosInterrumpidos by viewModel.cobrosInterrumpidos.collectAsState()
     val cuentasPagarDespues by viewModel.cuentasPagarDespues.collectAsState()
     val reintentandoCuenta by viewModel.reintentandoCuenta.collectAsState()
+    val undoUi by viewModel.undo.ui.collectAsState()
+    val resolviendoAviso by viewModel.resolviendoAviso.collectAsState()
+    val resolveNotice by viewModel.resolveNotice.collectAsState()
+    // Con red Y servidor (el mismo dato que ya decide «Revisar cortesía»): «Sí llegó» y resolver un aviso son en línea.
+    val enLinea = courtesyReviewOnline
     var cuentaPorDescartar by androidx.compose.runtime.remember { mutableStateOf<com.avoqado.pos.payment.data.PayLaterRow?>(null) }
     // Cancelaciones de cobro que no se pudieron confirmar: viven fuera del flujo de pago, así que
     // sin esta sección el cajero salía de la venta y nadie volvía a enterarse.
@@ -298,11 +307,35 @@ fun QuarantineSheet(
                         items(failedReservations, key = { "reservation-${it.rowId}" }) { entry ->
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 Text(viewModel.describeReservationAction(entry.action), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                                Text(formatTime(entry.createdAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                viewModel.reservationRejectionReason(entry)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                                Text(viewModel.reservationResolutionHint(entry), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                if (viewModel.canResolve) {
-                                    AccionDeRevision(text = "Marcar resuelta", onClick = { viewModel.dismissReservationAction(entry.rowId) })
+                                Text(formatTime(entry.createdAt, viewModel.zonaDe(KioskTap.venueOf(entry.payloadJson))), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (viewModel.isCorrectionNotice(entry)) {
+                                    // D4: el SERVIDOR corrigió solo la llegada y dejó algo pendiente; se resuelve allá.
+                                    viewModel.correctionNoticeLines(entry).forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                                    if (viewModel.canFixArrival) {
+                                        AccionDeRevision(
+                                            text = UndoNoShowTexts.RESOLVE, // canónico de D4; los demás renglones dicen «Marcar resuelta»
+                                            onClick = { viewModel.resolveCorrectionNotice(entry) },
+                                            enabled = enLinea && resolviendoAviso == null,
+                                            isLoading = resolviendoAviso == entry.rowId,
+                                        )
+                                        if (!enLinea) Text(UndoNoShowTexts.OFFLINE_RESOLVE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                } else {
+                                    viewModel.reservationRejectionReason(entry)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                                    Text(viewModel.reservationResolutionHint(entry), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    if (viewModel.canUndoNoShow(entry)) {
+                                        AccionDeRevision(
+                                            text = UndoNoShowTexts.BUTTON,
+                                            onClick = { viewModel.undoNoShow(entry) },
+                                            principal = true,
+                                            enabled = enLinea && undoUi.busyId == null,
+                                            isLoading = undoUi.busyId == entry.reservationId,
+                                        )
+                                        if (!enLinea) Text(UndoNoShowTexts.OFFLINE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (viewModel.canResolve) {
+                                        AccionDeRevision(text = "Marcar resuelta", onClick = { viewModel.dismissReservationAction(entry.rowId) })
+                                    }
                                 }
                             }
                             HorizontalDivider()
@@ -370,6 +403,9 @@ fun QuarantineSheet(
     errorMessage?.let {
         AvoqadoErrorToast(message = it, onDismiss = viewModel::consumeError)
     }
+
+    resolveNotice?.let { NoticeToast(it, viewModel::consumeResolveNotice) }
+    UndoNoShowOverlays(viewModel.undo)
 }
 
 /**
@@ -381,9 +417,9 @@ fun QuarantineSheet(
  * eso no se puede cruzar nada contra el corte. Las otras 49 pantallas de la app
  * ya usan `VenueTimeZone`; ésta se había quedado fuera.
  */
-private fun formatTime(epochMs: Long): String =
+private fun formatTime(epochMs: Long, timezone: String? = null): String =
     java.time.Instant.ofEpochMilli(epochMs)
-        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
+        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it, timezone) }
         .format(java.time.format.DateTimeFormatter.ofPattern("d MMM, HH:mm", Locale("es", "MX")))
 
 private fun formatMoney(cents: Int): String =

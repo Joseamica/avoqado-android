@@ -58,7 +58,7 @@ class ReservationActionsRetrierKioskTest {
         val otraReserva = llegada(reservationId = "r2")
         dao.quarantine(otraReserva, MAX, "No asistió")
         val nueva = llegada()
-        coEvery { kioskApi.checkInReservation(any(), "r1", any(), any()) } returns Result.success(Unit)
+        coEvery { kioskApi.checkInReservation(any(), "r1", any(), any()) } returns Result.success(null)
 
         val mandadas = retrier.drain(KioskTap.ACTION)
 
@@ -76,7 +76,7 @@ class ReservationActionsRetrierKioskTest {
         dao.alResolverCuarentena = { yield() }
         coEvery { kioskApi.checkInReservation(any(), "r1", any(), any()) } coAnswers {
             currentCoroutineContext().job.cancel()
-            Result.success(Unit)
+            Result.success(null)
         }
 
         launch { retrier.drain(KioskTap.ACTION) }.join()
@@ -87,7 +87,7 @@ class ReservationActionsRetrierKioskTest {
     @Test
     fun `KIOSK_CHECK_IN se manda a su sucursal con lo que faltaba para el cierre`() = runTest {
         val id = llegada()
-        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } returns Result.success(Unit)
+        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } returns Result.success(null)
 
         val mandadas = retrier.drain()
 
@@ -154,7 +154,7 @@ class ReservationActionsRetrierKioskTest {
                 createdAt = System.currentTimeMillis() - 96 * HORA,
             ),
         )
-        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } returns Result.success(Unit)
+        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } returns Result.success(null)
 
         assertEquals(mapOf(id to KioskTap.Outcome.Sent), retrier.drain(KioskTap.ACTION))
         assertTrue(dao.rows.isEmpty())
@@ -172,7 +172,7 @@ class ReservationActionsRetrierKioskTest {
         )
         val nueva = llegada("r2", KioskTap.payload("v1", cierreHace(5 * 60_000L), 900_000))
         coEvery { kioskApi.checkInReservation(any(), "r1", any(), any()) } returns Result.failure(IOException())
-        coEvery { kioskApi.checkInReservation(any(), "r2", any(), any()) } returns Result.success(Unit)
+        coEvery { kioskApi.checkInReservation(any(), "r2", any(), any()) } returns Result.success(null)
 
         retrier.drain(KioskTap.ACTION)
 
@@ -259,7 +259,7 @@ class ReservationActionsRetrierKioskTest {
     fun `drain(KIOSK_CHECK_IN) no toca las filas del personal`() = runTest {
         val personal = dao.insert(PendingReservationActionEntity(reservationId = "r9", action = "CONFIRM"))
         llegada()
-        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } returns Result.success(Unit)
+        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } returns Result.success(null)
 
         retrier.drain(KioskTap.ACTION)
 
@@ -271,7 +271,7 @@ class ReservationActionsRetrierKioskTest {
     @Test
     fun `dos drain a la vez mandan una sola vez`() = runTest {
         llegada()
-        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } coAnswers { delay(1_000); Result.success(Unit) }
+        coEvery { kioskApi.checkInReservation(any(), any(), any(), any()) } coAnswers { delay(1_000); Result.success(null) }
 
         launch { retrier.drain() }
         launch { retrier.drain(KioskTap.ACTION) }
