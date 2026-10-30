@@ -343,6 +343,8 @@ class AppState @Inject constructor(
      */
     val reservationQuarantinedCount: kotlinx.coroutines.flow.Flow<Int> get()=reservationRepository.quarantinedCount
 
+    val payLaterReviewCount: kotlinx.coroutines.flow.Flow<Int> = payLaterQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0)
+
     val reconciliationCount: StateFlow<Int> by lazy {
         // Los cobros en efectivo interrumpidos (la app murió a media petición) también piden a una persona.
         val interrumpidos = if (::cashPaymentRepositoryParaAvisos.isInitialized) {
@@ -358,7 +360,7 @@ class AppState @Inject constructor(
             syncOutbox.q15ReviewCount,
         ) { rejected, failed, reservas, cobros, revisiones -> rejected + failed + reservas + cobros + revisiones }
             // «Pagar después» rechazadas o creadas por otro importe: una persona las ve y decide.
-            .combine(payLaterQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0)) { otras, cuentas -> otras + cuentas }
+            .combine(payLaterReviewCount) { otras, cuentas -> otras + cuentas }
             .stateIn(
                 scope = viewModelScope,
                 started = SharingStarted.WhileSubscribed(5_000),

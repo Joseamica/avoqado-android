@@ -61,7 +61,20 @@ fun SalesNoticesContent(
         }
     }
     if(permitted && courtesy.key!=null && courtesy.key==selection?.key) {
-        CourtesyReviewDialog(courtesy,online,viewModel.canConfirmCourtesy,viewModel::closeCourtesy,viewModel::confirmSelectedCourtesy)
+        if(courtesy.kind==CourtesyReviewKind.CANCELLED_ZERO) {
+            AvoqadoDialog(title="Revisar intento cancelado",onDismiss=viewModel::closeCourtesy,
+                description=com.avoqado.pos.core.data.local.database.RevisionCanceladoCero.AVISO,
+                dismissOnClickOutside=!courtesy.confirming,
+                actionButton={ PrimaryButton(text="Marcar revisado",onClick=viewModel::confirmSelectedCancelledReview,
+                    enabled=courtesy.ready && online && viewModel.canConfirmCancelledReview && !courtesy.busy,
+                    isLoading=courtesy.busy) }) {
+                Column(verticalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    Text("El intento permanecerá en el historial con su folio y la comprobación del servidor.",style=MaterialTheme.typography.bodyMedium)
+                    courtesy.error?.let { Text(it,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.error) }
+                    if(!online) Text(COURTESY_NEEDS_CONNECTION,style=MaterialTheme.typography.bodyMedium)
+                }
+            }
+        } else CourtesyReviewDialog(courtesy,online,viewModel.canConfirmCourtesy,viewModel::closeCourtesy,viewModel::confirmSelectedCourtesy)
     }
 }
 
