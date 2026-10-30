@@ -71,14 +71,13 @@ data class PayLaterRow(
     val orderId: String? = null,
     /** [Estado.REVISAR]: lo que registró el servidor; null = no se pudo leer. */
     val totalRegistradoCents: Int? = null,
-    /** La venta entera, como se guarda en «Carritos guardados» (con su llave). Desde D3 viaja desde que nace la fila. */
+    /** [Estado.RECUPERAR]: la venta entera, como se guarda en «Carritos guardados» (con su llave). */
     val venta: com.avoqado.pos.pos.data.model.SavedCart? = null,
 ) {
     /**
      * - [RECUPERAR] (Codex ANDROID r1 A-4): el servidor NO la creó en línea y la venta no se pudo poner a salvo (carrito ocupado y
      *   «Carritos guardados» sin escribir). Nunca se manda: como venta sin red se saltaría el rechazo de precio. Lleva la venta
-     *   ([venta]) y pasa sola a «Carritos guardados» en cuanto se pueda escribir. D3 r3: también el reenvío rechazado de una fila
-     *   que trae su venta.
+     *   ([venta]) y pasa sola a «Carritos guardados» en cuanto se pueda escribir.
      * - [RETIRO_PENDIENTE] (A-5): la cuenta ya existe pero su copia guardada no se pudo retirar. Local: no se manda ni se cuenta;
      *   se borra cuando el retiro se confirma. Mientras, esa copia no se restaura.
      */
@@ -321,15 +320,8 @@ class PayLaterQueue @Inject constructor(
                     motivo = (desenlace as? DesenlacePagarDespues.Pendiente)?.motivo ?: "Sin conexión")
             }
             is DesenlacePagarDespues.SesionVencida -> Unit
-            // D3 r3: con su venta (filas desde D3), el rechazo del reenvío sigue el camino del primero: RECUPERAR, y el
-            // mantenimiento la pasa a «Carritos guardados» sobre su misma copia. Las de versiones anteriores, sin venta, siguen
-            // en RECHAZADA.
             is DesenlacePagarDespues.Rechazada -> cambiar(fila.id) {
-                it.copy(
-                    estado = if (it.venta != null) PayLaterRow.Estado.RECUPERAR else PayLaterRow.Estado.RECHAZADA,
-                    intentos = it.intentos + 1,
-                    motivo = desenlace.mensaje,
-                )
+                it.copy(estado = PayLaterRow.Estado.RECHAZADA, intentos = it.intentos + 1, motivo = desenlace.mensaje)
             }
         }
         return desenlace

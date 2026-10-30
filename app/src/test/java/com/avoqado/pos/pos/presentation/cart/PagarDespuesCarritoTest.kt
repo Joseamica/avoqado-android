@@ -600,15 +600,12 @@ class PagarDespuesCarritoTest {
      * [muereAntesDe] (null = no muere; luego igual se arranca en frío). Las escrituras se reconocen por lo que cambian en disco:
      * la MARCA (la fila pasa a RECUPERAR), la COPIA («Carritos guardados») y el BORRADO de la fila; las compensaciones que no
      * cambian el disco no cuentan. Devuelve lo que rompe la regla: UNA venta vendible, nunca 0 ni 2, y una venta cuya marca
-     * llegó al disco nunca se reenvía. Al arrancar corre `drenar()` y la pasada siguiente; el SERVIDOR contesta al reenvío
-     * según [alArrancar]: "acepta" (201), "rechaza" (4xx definitivo) o "sinRed".
+     * llegó al disco nunca se reenvía. Al arrancar corre `drenar()` (mantenimiento + reenvío, el SERVIDOR acepta).
      */
     private suspend fun kotlinx.coroutines.test.TestScope.correrCaso(
         desdeGuardado: Boolean, fallaMarca: Boolean, fallaCopia: Boolean, fallaBorrado: Boolean, ocupado: Boolean, muereAntesDe: String?,
-        alArrancar: String = "acepta",
     ): List<String> {
-        val caso = "guardada=$desdeGuardado marca=${!fallaMarca} copia=${!fallaCopia} borrado=${!fallaBorrado} ocupado=$ocupado " +
-            "muereAntesDe=$muereAntesDe alArrancar=$alArrancar"
+        val caso = "guardada=$desdeGuardado marca=${!fallaMarca} copia=${!fallaCopia} borrado=${!fallaBorrado} ocupado=$ocupado muereAntesDe=$muereAntesDe"
         val problemas = mutableListOf<String>()
         val disco = PrefsEnMemoria()
         val copias = PrefsEnMemoria()
@@ -661,24 +658,17 @@ class PagarDespuesCarritoTest {
         }
 
         val reenvios = mutableListOf<String>()
-        var cuentas = 0
         coEvery { ordenes.enviarPagarDespues(any(), any()) } answers {
             reenvios += secondArg<String>()
-            when (alArrancar) {
-                "rechaza" -> OrderRepository.RespuestaCruda(409, "application/json", null, """{"message":"Sigue sin poderse."}""")
-                "sinRed" -> throw java.io.IOException("sin red")
-                else -> OrderRepository.RespuestaCruda(201, "application/json", null, creada(100.0)).also { cuentas++ }
-            }
+            OrderRepository.RespuestaCruda(201, "application/json", null, creada(100.0))
         }
         val guardados2 = SavedCartsRepository(copias.trasReiniciar().context)
         val fila2 = PayLaterQueue(disco.trasReiniciar().context, ordenes, secureStorage, guardados2, mockk(relaxed = true))
             .apply { io = Dispatchers.Unconfined }
         val vm2 = createViewModel(guardados2, fila2)
         fila2.drenar()
-        fila2.mantenimientoLocal() // la pasada siguiente: lo que volvió a RECUPERAR va a «Carritos guardados»
-        val vivas = cuentas + guardados2.savedCarts.value.count { !fila2.copiaLigada(it.id) } +
-            fila2.filas.value.count { it.estado == PayLaterRow.Estado.RECUPERAR || it.porSubir }
-        if (!vm2.cartState.value.isEmpty || vivas != 1) problemas += "$caso: $vivas vendibles al arrancar"
+        val alArrancar = reenvios.size + guardados2.savedCarts.value.size + fila2.filas.value.size
+        if (!vm2.cartState.value.isEmpty || alArrancar != 1) problemas += "$caso: $alArrancar al arrancar"
         if (marcaEnDisco && reenvios.isNotEmpty()) problemas += "$caso: la rechazada se reenvió"
         reenvios.forEach {
             val cuerpo = JSONObject(it)
@@ -700,26 +690,12 @@ class PagarDespuesCarritoTest {
     }
 
     @Test
-    fun `D3 r3 A7 y M6 con un segundo rechazo al reenviar - la venta nueva vuelve a Carritos guardados`() = runTest {
-        val problemas = correrCaso(false, fallaMarca = true, fallaCopia = false, fallaBorrado = true, ocupado = false, muereAntesDe = null, alArrancar = "rechaza") +
-            correrCaso(false, fallaMarca = true, fallaCopia = false, fallaBorrado = false, ocupado = false, muereAntesDe = "borrado", alArrancar = "rechaza")
-        assertEquals(emptyList<String>(), problemas)
-    }
-
-    @Test
-    fun `D3 r3 A7 y M6 con un segundo rechazo al reenviar - la venta guardada vuelve a su carrito guardado`() = runTest {
-        val problemas = correrCaso(true, fallaMarca = true, fallaCopia = false, fallaBorrado = true, ocupado = false, muereAntesDe = null, alArrancar = "rechaza") +
-            correrCaso(true, fallaMarca = true, fallaCopia = false, fallaBorrado = false, ocupado = false, muereAntesDe = "borrado", alArrancar = "rechaza")
-        assertEquals(emptyList<String>(), problemas)
-    }
-
-    @Test
     fun `D3 r2 tabla completa - cualquier escritura fallida y la app muerta en cualquier punto dejan UNA venta`() = runTest {
         val problemas = mutableListOf<String>()
         val bools = listOf(false, true)
         for (desdeGuardado in bools) for (marca in bools) for (copia in bools) for (borrado in bools) for (ocupado in bools)
-            for (muere in listOf("marca", "copia", "borrado", null)) for (alArrancar in listOf("acepta", "rechaza", "sinRed")) {
-                problemas += correrCaso(desdeGuardado, marca, copia, borrado, ocupado, muere, alArrancar)
+            for (muere in listOf("marca", "copia", "borrado", null)) {
+                problemas += correrCaso(desdeGuardado, marca, copia, borrado, ocupado, muere)
             }
         assertEquals(emptyList<String>(), problemas)
     }
