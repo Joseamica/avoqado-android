@@ -1220,6 +1220,10 @@ class PaymentFlowConSaldoTest {
             assertTrue(withContext(Dispatchers.Default) { entrada.await(5, TimeUnit.SECONDS) })
             val productores = parent.children.filter { it !in previos }.toList()
             assertTrue(productores.isNotEmpty())
+            // D4: el cajón se lee al TERMINAR el cobro, en su propio hilo. Si la venta se anotara en un launch suelto, esto falla
+            // siempre, y no 1 de cada 5,340 veces como el coVerify de antes (verificaba después de `joinAll`, contra el reloj).
+            val cajonAlTerminar = java.util.concurrent.CopyOnWriteArrayList<Int>()
+            productores.forEach { it.invokeOnCompletion { cajonAlTerminar += eventos.size } }
             subject.cancelarVenta(); runCurrent()
             assertFalse("D2 v6 conserva A mientras su efectivo está en vuelo", subject.debeSalir.value)
             subject.consumirSalida()
@@ -1239,6 +1243,7 @@ class PaymentFlowConSaldoTest {
             soltar.countDown()
             withContext(Dispatchers.Default) { withTimeout(5000) { productores.joinAll() } }
             runCurrent()
+            assertEquals("D4: la venta ya está en el cajón cuando termina el cobro", 1, cajonAlTerminar.maxOrNull())
             assertEquals(1, eventos.size)
             coVerify(exactly = 1) { cajon.insertarEventoSiNoExiste(any()) }
             val evento = eventos.values.single()
