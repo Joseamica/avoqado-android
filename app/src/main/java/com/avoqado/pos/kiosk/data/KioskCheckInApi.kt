@@ -114,8 +114,16 @@ class KioskCheckInApi @Inject constructor(
      * servidor reconstruye la hora del toque con eso. Sólo la llama el reintentador: un solo mensajero.
      *
      * Red caída ⇒ la `IOException` tal cual, sin envolver (la fila se queda y se manda sola).
+     *
+     * D4: si el SERVIDOR corrigió un «No asistió» con esta llegada (o ya lo había hecho y sigue sin resolver), devuelve
+     * su `correction`; si no, null. Un cuerpo que no se entiende NUNCA convierte el éxito en falla: da null.
      */
-    suspend fun checkInReservation(venueId: String, reservationId: String, closesAt: String, msBeforeClose: Long): Result<Unit> =
+    suspend fun checkInReservation(
+        venueId: String,
+        reservationId: String,
+        closesAt: String,
+        msBeforeClose: Long,
+    ): Result<KioskTap.Correction?> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val payload = buildJsonObject {
@@ -129,7 +137,12 @@ class KioskCheckInApi @Inject constructor(
                     .post(json.encodeToString(JsonObject.serializer(), payload).toRequestBody(jsonMedia))
                     .build()
                 kioskClient.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) return@use
+                    if (res.isSuccessful) {
+                        return@use runCatching {
+                            val c = json.parseToJsonElement(res.body?.string().orEmpty()).jsonObject["correction"] as? JsonObject
+                            c?.let { json.decodeFromJsonElement(KioskTap.Correction.serializer(), it) }
+                        }.getOrNull()
+                    }
                     val error = rejected(res.code, res.body?.string().orEmpty())
                     if (res.code == 422 && error.code == "CHECK_IN_OUTSIDE_WINDOW") throw OutsideWindow(error.message)
                     throw error

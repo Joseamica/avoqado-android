@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CreadoresDeCuentaDeMostradorTest {
+    /**
+     * MISC_ADRIAN (29-oct): con `"(?:\\.|[^"\\])*"` java.util.regex se llamaba a sí mismo una vez por LETRA de cada cadena, y una
+     * cadena larga de src/main agotaba la pila (StackOverflowError en 4 de 5 suites completas de develop). Desenrollada, sólo
+     * recursa por escape, y quita lo mismo: la cadena entera, con sus comillas escapadas adentro.
+     */
+    @Test fun unaCadenaLargaNoAgotaLaPilaYLasComillasEscapadasSiguenAdentro() {
+        val larga = "val x = \"" + "a".repeat(200_000) + "\"\n"
+        assertEquals("val x = \n", InventarioDeFuentes6.comentariosYCadenas.replace(larga, ""))
+        assertEquals("x =  + y", InventarioDeFuentes6.comentariosYCadenas.replace("x = \"a\\\"b\" + y", ""))
+    }
+
     @Test fun todoCreadorEstaClasificado() {
         val creadores = mapOf(
             "com/avoqado/pos/giftcards/data/CobroConSaldoCoordinator.kt:cobrarNuevaCuenta:cobrarNuevaCuenta" to "DIARIO",
@@ -53,7 +64,7 @@ class CreadoresDeCuentaDeMostradorTest {
 
 internal object InventarioDeFuentes6 {
     data class Llamada(val key: String, val linea: Int, val inicio: Int, val fin: Int, val posicion: Int, val texto: String)
-    private val comentariosYCadenas = Regex("//[^\\n]*|/\\*[\\s\\S]*?\\*/|\"\"\"[\\s\\S]*?\"\"\"|\"(?:\\\\.|[^\"\\\\])*\"")
+    internal val comentariosYCadenas = Regex("//[^\\n]*|/\\*[\\s\\S]*?\\*/|\"\"\"[\\s\\S]*?\"\"\"|\"[^\"\\\\]*(?:\\\\.[^\"\\\\]*)*\"")
     fun llamadas(pattern: String): List<Llamada> = java.io.File("src/main/java").walkTopDown()
         .filter { it.isFile && it.extension == "kt" }.flatMap { file ->
             val original = file.readText()

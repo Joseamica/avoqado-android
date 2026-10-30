@@ -9,8 +9,13 @@ import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.payment.data.CortesiaPersistida
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.kiosk.data.KioskTap
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
+import com.avoqado.pos.reservations.data.ReservationApiException
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.domain.ReservationsCapability
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowFlow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -296,6 +301,102 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 
+    // MARK: - D4 · «Sí llegó» en una llegada rechazada, y el aviso cuando el SERVIDOR la corrigió solo
+
+    /**
+     * «Sí llegó» y «Marcar resuelta» del aviso piden lo MISMO que en el detalle de la reserva (`reservations:update`, que
+     * recepción tiene por omisión), no el candado de gerente de [canResolve]: van al SERVIDOR, que las juzga con su propio
+     * permiso, y la fila sólo se borra cuando él ya contestó. Las demás acciones de aquí siguen con [canResolve].
+     */
+    val canFixArrival: Boolean
+        get() = ReservationsCapability.fromPermissions(secureStorage.venuePermissions).canUpdate
+
+    /** La fila de la llegada rechazada que se está corrigiendo: al salir bien, se va de la lista. */
+    private var filaPorCorregir: Long? = null
+
+    /**
+     * La zona de la sucursal de una fila del kiosco ([KioskTap.venueOf]): su aviso y el título de su «Sí llegó» dicen la
+     * hora de ESA sucursal, aunque la sesión ande en otra (Cancún va una hora adelante de CDMX). La toma de la lista de
+     * sucursales del usuario (la del selector). Si no la conoce, o la fila no trae sucursal, la de la activa, como antes:
+     * no se inventa una zona.
+     */
+    fun zonaDe(venueId: String?): String? =
+        venueId?.takeIf { it != secureStorage.venueId }
+            ?.let { v -> secureStorage.venuesList.firstOrNull { it.id == v }?.timezone?.takeIf { it.isNotBlank() } }
+            ?: secureStorage.venueTimezone
+
+    val undo = UndoNoShowFlow(reservationRepository, viewModelScope, ::zonaDe) {
+        filaPorCorregir?.let { reservationRepository.dismissQuarantined(it) }
+        filaPorCorregir = null
+        load()
+    }
+
+    /**
+     * Una llegada del kiosco que el SERVIDOR rechazó porque su «No asistió» le ganó (y no pudo corregirlo solo). La fila
+     * guarda el TEXTO del 409, no su código: se reconoce por él (`kioskCheckIn.service.ts`, «…ya estaba como «No asistió»…»).
+     * ponytail: si el SERVIDOR cambia ese texto el botón deja de salir y queda «Revisa la reserva en Reservaciones»
+     * (falla segura); entonces, guardar el `code` del rechazo en la fila.
+     */
+    fun canUndoNoShow(entry: PendingReservationActionEntity): Boolean =
+        canFixArrival && entry.action == KioskTap.ACTION && entry.lastError?.contains("«No asistió»") == true
+
+    fun undoNoShow(entry: PendingReservationActionEntity) {
+        val ui = undo.ui.value
+        if (!canUndoNoShow(entry) || ui.busyId != null || ui.prompt != null) return
+        filaPorCorregir = entry.rowId
+        // Contra la sucursal DE LA LLEGADA (su toque guardado la trae), aunque la sesión ande en otra.
+        undo.start(entry.reservationId, venueId = KioskTap.venueOf(entry.payloadJson))
+    }
+
+    fun isCorrectionNotice(entry: PendingReservationActionEntity): Boolean = entry.action == KioskTap.CORRECTION
+
+    /** «Karla R. llegó a las 08:49 sin conexión; su «No se presentó» ya quedó como «Llegó».» y un «Pendiente: …» por cada cosa que falta. */
+    fun correctionNoticeLines(entry: PendingReservationActionEntity): List<String> {
+        val c = KioskTap.parseCorrection(entry.payloadJson)
+        val hora = UndoNoShowTexts.hhmm(c?.tappedAt, zonaDe(KioskTap.venueOf(entry.payloadJson)))
+        return listOf(UndoNoShowTexts.kioskNotice(c?.name, hora)) +
+            c?.pending.orEmpty().map { "Pendiente: ${UndoNoShowTexts.pending(it)}" }
+    }
+
+    private val _resolviendoAviso = MutableStateFlow<Long?>(null)
+    val resolviendoAviso: StateFlow<Long?> = _resolviendoAviso.asStateFlow()
+
+    /** «Marcar resuelta» que no salió: sin red en ámbar, un rechazo humanizado; nunca el texto crudo en rojo. */
+    private val _resolveNotice = MutableStateFlow<UndoNoShowFlow.Notice?>(null)
+    val resolveNotice: StateFlow<UndoNoShowFlow.Notice?> = _resolveNotice.asStateFlow()
+
+    fun consumeResolveNotice() {
+        _resolveNotice.value = null
+    }
+
+    /** «Marcar resuelta» del aviso: se resuelve en el SERVIDOR (sólo con red) y entonces sale de la franja. */
+    fun resolveCorrectionNotice(entry: PendingReservationActionEntity) {
+        if (!canFixArrival || !isCorrectionNotice(entry) || _resolviendoAviso.value != null) return
+        _resolviendoAviso.value = entry.rowId
+        _resolveNotice.value = null
+        viewModelScope.launch {
+            try {
+                // Contra la sucursal DEL AVISO (la de la llegada), aunque la sesión ande en otra; un aviso viejo sin ella va
+                // contra la de la sesión, como antes.
+                val venueId = KioskTap.venueOf(entry.payloadJson)
+                val r = reservationRepository.resolveNoShowCorrection(entry.reservationId, venueId = venueId)
+                // 404 en SU sucursal: el SERVIDOR ya no la tiene pendiente. Se quita para que no se atore, sin decir que la
+                // resolvimos; allá siguen su registro, la campanita y el correo. Cualquier otro error deja el aviso, y también
+                // el 404 de un aviso viejo (sin sucursal): pudo venir de la sucursal equivocada.
+                val yaNoEstaba = venueId != null && (r.exceptionOrNull() as? ReservationApiException)?.status == 404
+                if (r.isSuccess || yaNoEstaba) {
+                    reservationRepository.dismissQuarantined(entry.rowId)
+                    _successMessage.value = if (yaNoEstaba) UndoNoShowTexts.NO_LONGER_PENDING else UndoNoShowTexts.RESOLVED
+                    load()
+                } else {
+                    _resolveNotice.value = UndoNoShowFlow.resolveFailure(r.exceptionOrNull())
+                }
+            } finally {
+                _resolviendoAviso.value = null
+            }
+        }
+    }
+
     /** Qué intentaba hacer el mesero, en palabras. */
     fun describeReservationAction(action: String): String = when (action) {
         "CONFIRM" -> "Confirmar reserva"
@@ -307,6 +408,7 @@ class QuarantineViewModel @Inject constructor(
         "CREATE" -> "Crear reserva"
         "UPDATE" -> "Editar reserva"
         com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Llegada en el kiosco (sin conexión)"
+        KioskTap.CORRECTION -> "Llegada del kiosco corregida"
         else -> action
     }
 

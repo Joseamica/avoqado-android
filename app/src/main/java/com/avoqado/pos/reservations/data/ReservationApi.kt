@@ -11,6 +11,8 @@ import com.avoqado.pos.reservations.data.model.ReservationFilters
 import com.avoqado.pos.reservations.data.model.ReservationListResponse
 import com.avoqado.pos.reservations.data.model.ReservationSettingsContract
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
+import com.avoqado.pos.reservations.data.model.UndoNoShowPlan
+import com.avoqado.pos.reservations.data.model.UndoNoShowResult
 import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,6 +20,8 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -40,8 +44,9 @@ class ReservationApi @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false; isLenient = true }
     private val jsonMedia = "application/json".toMediaType()
 
-    private fun base(): String? {
-        val v = secureStorage.venueId ?: return null
+    /** [venueId] para lo que es de OTRA sucursal (un aviso de la franja); si no, la de la sesión. */
+    private fun base(venueId: String? = null): String? {
+        val v = venueId ?: secureStorage.venueId ?: return null
         return "${baseUrlProvider()}/dashboard/venues/$v/reservations"
     }
 
@@ -113,8 +118,9 @@ class ReservationApi @Inject constructor(
         }
     }
 
-    suspend fun get(id: String): Result<Reservation> = call {
-        Request.Builder().url("${base() ?: error("No venue")}/$id").get().build()
+    /** [venueId]: la sucursal de un aviso de la franja (null = la de la sesión). */
+    suspend fun get(id: String, venueId: String? = null): Result<Reservation> = call {
+        Request.Builder().url("${base(venueId) ?: error("No venue")}/$id").get().build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
     suspend fun confirm(id: String, background: Boolean = false) = stateTransition(id, "confirm", background)
@@ -141,6 +147,32 @@ class ReservationApi @Inject constructor(
         val payload = json.encodeToString(UpdateReservationRequest.serializer(), body).toRequestBody(jsonMedia)
         Request.Builder().url("${base() ?: error("No venue")}/$id").put(payload).build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
+
+    // MARK: - D4 · «Sí llegó» (deshacer un «No asistió»). El `x-device-platform` lo pone el cliente compartido.
+
+    /**
+     * Lo que se revertiría, sin tocar nada. 409 `NO_SHOW_UNDO_PASS_BOOKING` / `NO_SHOW_UNDO_NOT_APPLICABLE`.
+     * [venueId] en las tres de «Sí llegó»: la sucursal del aviso de la franja (null = la de la sesión).
+     */
+    suspend fun previewUndoNoShow(id: String, venueId: String? = null): Result<UndoNoShowPlan> = call {
+        Request.Builder().url("${base(venueId) ?: error("No venue")}/$id/no-show/undo").get().build()
+    }.mapCatching { body ->
+        val plan = json.parseToJsonElement(body).jsonObject["plan"] ?: error("Respuesta sin plan")
+        json.decodeFromJsonElement(UndoNoShowPlan.serializer(), plan)
+    }
+
+    suspend fun undoNoShow(id: String, reason: String? = null, venueId: String? = null): Result<UndoNoShowResult> = call {
+        val payload = buildJsonObject { reason?.let { put("reason", JsonPrimitive(it)) } }
+        Request.Builder().url("${base(venueId) ?: error("No venue")}/$id/no-show/undo")
+            .post(json.encodeToString(JsonObject.serializer(), payload).toRequestBody(jsonMedia)).build()
+    }.mapCatching { json.decodeFromString(UndoNoShowResult.serializer(), it) }
+
+    /** «Marcar resuelto» del pendiente. Devuelve `resolvedAt` (idempotente: si ya estaba resuelto, el de entonces). */
+    suspend fun resolveNoShowCorrection(id: String, note: String? = null, venueId: String? = null): Result<String?> = call {
+        val payload = buildJsonObject { note?.let { put("note", JsonPrimitive(it)) } }
+        Request.Builder().url("${base(venueId) ?: error("No venue")}/$id/no-show/undo/resolve")
+            .post(json.encodeToString(JsonObject.serializer(), payload).toRequestBody(jsonMedia)).build()
+    }.mapCatching { json.parseToJsonElement(it).jsonObject["resolvedAt"]?.jsonPrimitive?.contentOrNull }
 
     private suspend fun stateTransition(id: String, action: String, background: Boolean = false): Result<Reservation> = call(background) {
         Request.Builder().url("${base() ?: error("No venue")}/$id/$action").post(ByteArray(0).toRequestBody(jsonMedia)).build()

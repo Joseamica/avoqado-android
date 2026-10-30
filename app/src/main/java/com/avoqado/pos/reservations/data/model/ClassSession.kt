@@ -35,7 +35,13 @@ data class ClassSession(
     val available: Int = capacity - enrolled,
     val createdAt: String? = null,
     val updatedAt: String? = null,
+    /** D4: quienes quedaron como «No se presentó», APARTE: `reservations` y `enrolled` no cambian. */
+    val noShows: List<ClassSessionAttendee> = emptyList(),
+    /** Cuántas faltas hay en total (el SERVIDOR manda hasta 500 en `noShows`). */
+    val noShowsTotal: Int? = null,
 ) {
+    /** Las faltas que no vinieron en `noShows`: la lista dice «y N más». */
+    val moreNoShows: Int get() = ((noShowsTotal ?: 0) - noShows.size).coerceAtLeast(0)
     val title: String get() = product?.name ?: "Clase"
     val isFull: Boolean get() = enrolled >= capacity
 }
@@ -67,6 +73,8 @@ data class ClassSessionAttendee(
     val guestEmail: String? = null,
     val specialRequests: String? = null,
     val customer: CustomerLite? = null,
+    /** Sólo en `noShows`: la falta vino de un pase (TotalPass/Wellhub) y se corrige desde su app. */
+    val aggregatorBooking: AggregatorBookingLite? = null,
 ) {
     val displayName: String get() = customer?.fullName ?: guestName ?: "Invitado"
     val displayContact: String? get() = customer?.phone ?: guestPhone ?: guestEmail
