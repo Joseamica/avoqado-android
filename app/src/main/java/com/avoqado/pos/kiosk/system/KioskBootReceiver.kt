@@ -58,10 +58,9 @@ class KioskBootReceiver : BroadcastReceiver() {
          * La decisión, aparte del sistema para poder probarla: se levanta SÓLO si el aviso
          * es de arranque Y este aparato trabaja como kiosco.
          */
-        fun shouldLaunchOnBoot(action: String?, kioskEnabled: Boolean): Boolean {
-            val esArranque = action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_LOCKED_BOOT_COMPLETED
-            return esArranque && kioskEnabled
-        }
+        fun shouldLaunchOnBoot(action: String?, kioskEnabled: Boolean): Boolean =
+            // Sólo el arranque ya desbloqueado: antes, la app no puede leer sus datos cifrados (D6).
+            action == Intent.ACTION_BOOT_COMPLETED && kioskEnabled
 
         private const val TAG = "KioskBoot"
 
