@@ -104,7 +104,14 @@ data class ReceiptSale(
     /** Saldo de una PRE_BILL, en centavos; ausente en documentos legacy. */
     val paidCents: Long? = null,
     val remainingCents: Long? = null,
+    val exchange: ReceiptExchange? = null,
 )
+
+@Serializable
+data class ReceiptExchange(val originalOrderNumber: String, val returned: List<ReceiptExchangeLine>,
+    val taken: List<ReceiptExchangeLine>, val differenceCents: Long, val methodLabel: String?)
+@Serializable
+data class ReceiptExchangeLine(val name: String, val quantity: Int, val totalCents: Long)
 
 @Serializable
 data class ReceiptReprint(val printedAt: String)

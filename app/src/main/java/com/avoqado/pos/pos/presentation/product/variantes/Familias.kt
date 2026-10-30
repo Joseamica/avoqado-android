@@ -24,6 +24,9 @@ sealed interface ResultadoDeBusqueda {
 
 data class PrecioDeFamilia(val minimo: Double, val todosIguales: Boolean)
 
+fun variantSelectable(product: Product, struckProductIds: Set<String> = emptySet(), disableOutOfStock: Boolean = false): Boolean =
+    product.id !in struckProductIds && (!disableOutOfStock || !product.isOutOfStock)
+
 /** Valores de opción de una variante: nombre del eje → valor. */
 fun valoresDe(p: Product): Map<String, String> = p.variantOptions.orEmpty().associate { it.name to it.value }
 

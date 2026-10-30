@@ -59,7 +59,7 @@ class KioskCheckInSinRedTest {
         KioskRosterDto("Yoga", "2026-10-28T19:10:00.000Z", "María", people, C, closesInMs)
 
     private val api = mockk<KioskCheckInApi>().also {
-        coEvery { it.checkInReservation(any(), any(), any(), any()) } returns Result.success(Unit)
+        coEvery { it.checkInReservation(any(), any(), any(), any()) } returns Result.success(null)
         coEvery { it.roster() } returns Result.failure(IOException())
     }
     private val dao = FakeReservationDao()
@@ -127,7 +127,7 @@ class KioskCheckInSinRedTest {
         assertFalse(r.failed)
         assertTrue(persona("r1").checkedIn)
         assertEquals("r1", r.justConfirmedId)
-        assertEquals(listOf(KioskTap.ACTION to KioskTap.payload("v1", C, 900_000)), dao.rows.map { it.action to it.payloadJson })
+        assertEquals(listOf(KioskTap.ACTION to KioskTap.payload("v1", C, 900_000, name = "Ana R.")), dao.rows.map { it.action to it.payloadJson })
         assertEquals("r1", dao.rows.single().reservationId)
         assertTrue("la fila tiene que existir cuando se pide mandarla", filaAlMandar)
     }
@@ -520,7 +520,7 @@ class KioskCheckInSinRedTest {
 
         advanceTimeBy(29_000)
         tocar(ana)
-        assertEquals(KioskTap.payload("v1", C, 1_000), dao.rows.single().payloadJson)
+        assertEquals(KioskTap.payload("v1", C, 1_000, name = "Ana R."), dao.rows.single().payloadJson)
 
         // Cierra a los 30 s (contados desde que se PIDIÓ), no a los 40 s: la palomita se encoge a los 37 s y ya no hay lista.
         advanceTimeBy(8_001)

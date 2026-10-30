@@ -704,6 +704,7 @@ fun PaymentProcessingView(
     /** Sólo con el cobro ya en la terminal. Un efectivo o una orden que se registra no espera a ninguna (iOS: «Procesando…»). */
     esperandoTerminal: Boolean,
     onCancel: (() -> Unit)? = null,
+    title: String? = null,
 ) {
     Column(
         modifier = Modifier
@@ -717,7 +718,7 @@ fun PaymentProcessingView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = "Procesando pago...",
+            text = title ?: "Procesando pago...",
             style = MaterialTheme.typography.headlineMedium,
         )
 
@@ -756,6 +757,9 @@ fun PaymentErrorView(
      * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
      */
     sinRed: Boolean = false,
+    retryLabel: String = "Reintentar",
+    cancelLabel: String = "Cancelar",
+    titleLabel: String? = null,
     accionesDeRedHabilitadas: Boolean = true,
 ) {
     Column(
@@ -776,7 +780,7 @@ fun PaymentErrorView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = if (sinRed) "Sin conexión" else "Error en el pago",
+            text = titleLabel ?: if (sinRed) "Sin conexión" else "Error en el pago",
             style = MaterialTheme.typography.headlineLarge,
         )
 
@@ -791,7 +795,7 @@ fun PaymentErrorView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
         PrimaryButton(
-            text = "Reintentar",
+            text = retryLabel,
             onClick = onRetry,
             enabled = accionesDeRedHabilitadas,
             modifier = Modifier.sinTeclasDeClic(LocalEsEscritorio.current),
@@ -800,7 +804,7 @@ fun PaymentErrorView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
         TextButton(onClick = onCancel) {
-            Text("Cancelar")
+            Text(cancelLabel)
         }
     }
 }
@@ -847,6 +851,7 @@ fun PaymentUndeterminedView(
      * cuál se está declarando. `null` cuando no consta: el texto dice «ese cobro».
      */
     montoDelCobro: String? = null,
+    recheckLabel: String? = null,
     accionesDeRedHabilitadas: Boolean = true,
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
@@ -898,7 +903,7 @@ fun PaymentUndeterminedView(
 
         // Acción segura y destacada: sólo pregunta, nunca cobra.
         PrimaryButton(
-            text = if (isChecking) "Consultando..." else "Volver a consultar",
+            text = if (isChecking) "Consultando..." else recheckLabel ?: "Volver a consultar",
             onClick = onRecheck,
             enabled = accionesDeRedHabilitadas && !isChecking,
             isLoading = isChecking,

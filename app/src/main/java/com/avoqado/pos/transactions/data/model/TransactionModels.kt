@@ -3,6 +3,8 @@ package com.avoqado.pos.transactions.data.model
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.pos.data.model.OpcionesDeVarianteTolerantes
+import com.avoqado.pos.pos.data.model.VariantOption
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
@@ -185,6 +187,17 @@ data class Transaction(
      */
     val orderType: String? = null,
     val tableNumber: String? = null,
+    val exchangeable: Boolean? = null,
+    val notExchangeableReason: String? = null,
+    val tenderSystemKind: String? = null,
+    val chainRefundMethod: String? = null,
+    val chainRefundLabel: String? = null,
+    val chainRefundBlockedCode: String? = null,
+    val chainRefundBlockedReason: String? = null,
+    @Serializable(with = PayoutOptionsTolerante::class)
+    val payoutOptions: List<PayoutOption>? = null,
+    @Serializable(with = ExchangeLinksTolerante::class)
+    val exchange: ExchangeLinks? = null,
     val refundToGiftCardBalance: Boolean? = null,
     val esSaldoDeTarjeta: Boolean? = null,
 ) {
@@ -264,6 +277,20 @@ data class TransactionItem(
     /** Quantity still available to refund = quantity − refundedQty. */
     val remainingQty: Int = 0,
     val modifiers: List<TransactionItemModifier> = emptyList(),
+    val productId: String? = null,
+    val chargedTotalCents: Long? = null,
+    val returnedQtyOrder: Int? = null,
+    val returnedCentsOrder: Long? = null,
+    val remainingQtyOrder: Int? = null,
+    val productGroupId: String? = null,
+    @Serializable(with = OpcionesDeVarianteTolerantes::class)
+    val variantOptions: List<VariantOption>? = null,
+    val productType: String? = null,
+    val isPromotionLine: Boolean? = null,
+    val orderPromotionId: String? = null,
+    val notExchangeableReason: String? = null,
+    val restockable: Boolean? = null,
+    val currentListPriceCents: Long? = null,
 ) {
     val name: String get() = productName
     val formattedTotal: String get() = formatMoney(amount)

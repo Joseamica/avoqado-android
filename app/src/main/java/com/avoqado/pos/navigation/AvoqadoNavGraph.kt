@@ -54,6 +54,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.avoqado.pos.giftcards.presentation.AvisoDeSaldo
 import androidx.compose.runtime.setValue
@@ -93,6 +95,9 @@ import com.avoqado.pos.settings.MoreMenuScreen
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 import com.avoqado.pos.transactions.presentation.TransactionsScreen
+import com.avoqado.pos.transactions.presentation.TransactionsViewModel
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeScreen
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeViewModel
 import dagger.hilt.android.EntryPointAccessors
 import java.time.format.DateTimeFormatter
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -436,6 +441,7 @@ private fun MainScaffold(
         }
     }
 
+    val isExchanging = currentDestination?.route == EXCHANGE_ROUTE
     var carritoVivo by remember { mutableStateOf<com.avoqado.pos.pos.presentation.cart.CartViewModel?>(null) }
     var cuentaConSaldoDeArranque by rememberSaveable { mutableStateOf<String?>(null) }
     androidx.compose.runtime.CompositionLocalProvider(
@@ -494,7 +500,7 @@ private fun MainScaffold(
             bottomBar = {
                 // Durante el cobro el tab bar se esconde: el diálogo del pago no
                 // cubre la pantalla completa y este quedaba asomando y tocable.
-                if (!isPaying) TabletTabBar(
+                if (!isPaying && !isExchanging) TabletTabBar(
                     visibleTabs = graphVisibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab -> tocarPestana(tab) },
@@ -539,7 +545,10 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true, openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }) }
+                    composable(MainTab.TRANSACTIONS.route) {
+                        TransactionsScreen(isTablet = true, openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }, onOpenExchange = { navController.navigate(EXCHANGE_ROUTE) { launchSingleTop = true } })
+                    }
+                    composable(EXCHANGE_ROUTE) { ExchangeDestination(navController) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -552,6 +561,8 @@ private fun MainScaffold(
                                 restoreState = true
                             }
                         },
+                        // «Ver reserva»: la misma ruta del detalle que abre el calendario.
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
                     )
                 }
                 composable(MainTab.MORE.route) {
@@ -788,7 +799,7 @@ private fun MainScaffold(
             bottomBar = {
                 // Mismo criterio que el layout de tablet: durante el cobro no se
                 // muestra, porque asoma por debajo del diálogo del pago.
-                if (!isPaying) NavigationBar {
+                if (!isPaying && !isExchanging) NavigationBar {
                     graphVisibleTabs.forEach { tab ->
                         val selected = tab == pestanaMarcada
                         NavigationBarItem(
@@ -856,7 +867,10 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }) }
+                    composable(MainTab.TRANSACTIONS.route) {
+                        TransactionsScreen(openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }, onOpenExchange = { navController.navigate(EXCHANGE_ROUTE) { launchSingleTop = true } })
+                    }
+                    composable(EXCHANGE_ROUTE) { ExchangeDestination(navController) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -869,6 +883,8 @@ private fun MainScaffold(
                                 restoreState = true
                             }
                         },
+                        // «Ver reserva»: la misma ruta del detalle que abre el calendario.
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
                     )
                 }
                 composable(MainTab.MORE.route) {
@@ -1238,6 +1254,46 @@ private fun TabBarItem(
             )
         }
     }
+}
+
+private const val EXCHANGE_ROUTE = "exchange"
+
+@Composable
+private fun ExchangeDestination(navController: androidx.navigation.NavHostController) {
+    val parent = remember(navController) { navController.getBackStackEntry(MainTab.TRANSACTIONS.route) }
+    val transactions: TransactionsViewModel = hiltViewModel(parent)
+    val exchange: ExchangeViewModel = hiltViewModel()
+    val exchangePayments: com.avoqado.pos.transactions.presentation.exchange.ExchangePaymentViewModel = hiltViewModel()
+    val send by exchangePayments.state.collectAsState()
+    val exchangeScope = rememberCoroutineScope()
+    val transaction by transactions.exchangeTransaction.collectAsState()
+    var leaving by remember { mutableStateOf(false) }
+    LaunchedEffect(transaction?.id) {
+        val sale = transaction
+        if (sale == null && !leaving) {
+            leaving = true
+            navController.popBackStack()
+        } else if (sale != null) exchange.start(sale)
+    }
+    LaunchedEffect(send.phase) {
+        if (send.phase in setOf(com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.COMPLETED,
+                com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.CANCELLED,
+                com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.REVIEW)) transactions.refreshForExchange()
+    }
+    if (transaction != null) ExchangeScreen(exchange, payments = exchangePayments, onStartAgain = {
+        exchangeScope.launch {
+            transactions.refreshForExchange()?.let { fresh ->
+                exchange.restart(fresh)
+                exchangePayments.open(fresh, force = true)
+            }
+        }
+    }, onClose = {
+        if (!leaving) {
+            leaving = true
+            transactions.dismissExchange()
+            navController.popBackStack()
+        }
+    })
 }
 
 /**

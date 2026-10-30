@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.receiptlayout
 
 import kotlin.math.abs
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import com.avoqado.pos.printing.receiptlayout.ReceiptLabels as L
 import com.avoqado.pos.printing.receiptlayout.ReceiptText as T
 
@@ -13,7 +14,27 @@ object ReceiptLayoutInterpreter {
     private const val AVOQADO_MARK_WIDTH_PCT = 15
 
     fun interpret(blocks: List<ReceiptBlock>, input: ReceiptInput, width: Int): List<LogicalLine> =
-        preBillLines(input, width) + blocks.flatMap { render(it, input, width) }
+        if (input.sale.kind == "EXCHANGE") {
+            // Required exchange evidence survives a venue recipe that hides sale blocks or digital QR.
+            blocks.filter { it is ReceiptBlock.Logo || it is ReceiptBlock.BusinessName || it is ReceiptBlock.Fiscal ||
+                it is ReceiptBlock.Address || it is ReceiptBlock.Phone }.flatMap { render(it, input, width) } +
+                exchangeLines(input, width) + blocks.filterIsInstance<ReceiptBlock.Signature>().flatMap { render(it, input, width) }
+        } else preBillLines(input, width) + blocks.flatMap { render(it, input, width) }
+
+    private fun exchangeLines(input: ReceiptInput, width: Int): List<LogicalLine> {
+        val e = requireNotNull(input.sale.exchange)
+        fun wrapped(value: String, bold: Boolean = false) = T.wrap(T.force(value), width).map { text(it, bold = bold) }
+        fun row(label: String, value: String) = T.twoColumnLines(T.force(label), T.force(value), width).map { text(it) }
+        fun section(label: String, items: List<ReceiptExchangeLine>) = wrapped(label, true) + items.flatMap {
+            wrapped("${it.quantity} ${it.name}") + wrapped(ReceiptFormat.money(it.totalCents))
+        }
+        return listOf(text(TextosCambio.TICKET_TITULO, Align.CENTER, bold = true)) +
+            wrapped(input.sale.orderNumber) + wrapped(TextosCambio.TICKET_DE_LA_VENTA.replace("{folio}", e.originalOrderNumber)) +
+            section(TextosCambio.TICKET_REGRESA, e.returned) + section(TextosCambio.TICKET_SE_LLEVA, e.taken) +
+            row(TextosCambio.DIFERENCIA, ReceiptFormat.money(e.differenceCents)) +
+            (e.methodLabel?.let { row(if (e.differenceCents < 0) TextosCambio.TICKET_DEVUELTO_CON else TextosCambio.TICKET_PAGO, it) } ?: emptyList()) +
+            (input.sale.staffName?.let { row(TextosCambio.ATENDIO, it) } ?: emptyList())
+    }
 
     /** La identidad y el saldo de la precuenta no dependen de los bloques configurables. */
     private fun preBillLines(input: ReceiptInput, width: Int): List<LogicalLine> {

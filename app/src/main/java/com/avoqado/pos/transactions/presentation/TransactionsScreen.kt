@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -56,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -91,6 +93,7 @@ fun TransactionsScreen(
     reviewCourtesyPaymentId:String? = null,
     onCourtesyNavigationConsumed:()->Unit = {},
     notices: com.avoqado.pos.sync.presentation.SalesNoticesViewModel = hiltViewModel(),
+    onOpenExchange: () -> Unit = {},
 ) {
     var pending by remember { mutableStateOf(openPendingsRequest > 0) }
     var legacy by remember { mutableStateOf(false) }
@@ -121,7 +124,7 @@ fun TransactionsScreen(
         Box(Modifier.weight(1f)) {
             if(pending && notices.canRead) com.avoqado.pos.sync.presentation.SalesNoticesContent(
                 isTablet=isTablet,onOpenLegacyReview={legacy=true},viewModel=notices)
-            else RegisteredTransactionsScreen(isTablet=isTablet)
+            else RegisteredTransactionsScreen(isTablet=isTablet, onOpenExchange=onOpenExchange)
         }
     }
     if(legacy) com.avoqado.pos.sync.presentation.QuarantineSheet(
@@ -134,18 +137,44 @@ fun TransactionsScreen(
 private fun RegisteredTransactionsScreen(
     isTablet: Boolean = false,
     viewModel: TransactionsViewModel = hiltViewModel(),
+    onOpenExchange: () -> Unit = {},
 ) {
+    val exchangeTransaction by viewModel.exchangeTransaction.collectAsState()
+    LaunchedEffect(exchangeTransaction?.id) { if (exchangeTransaction != null) onOpenExchange() }
     val activeFilter by viewModel.activeFilter.collectAsState()
     val showRefundSheet by viewModel.showRefundSheet.collectAsState()
+    val pendingExchangeNotices by viewModel.pendingExchangeNotices.collectAsState()
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshPendingExchanges()
+        onPauseOrDispose { }
+    }
     val adaptive = AvoqadoTheme.adaptive
     val denseTabletLandscape = !adaptive.isPortrait && adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
 
     Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0)) { innerPadding ->
-        Box(modifier = Modifier.padding(innerPadding)) {
-            if (isTablet) {
-                TabletTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
-            } else {
-                PhoneTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+        Column(modifier = Modifier.padding(innerPadding)) {
+            if (pendingExchangeNotices.isNotEmpty()) {
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = AvoqadoTheme.dimensions.buttonLarge * 3)) {
+                    items(pendingExchangeNotices, key = { it.paymentId }) { notice ->
+                        Text(
+                            text = notice.message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.secondaryContainer)
+                                .clickable(role = Role.Button) { viewModel.openPendingExchange(notice.paymentId) }
+                                .heightIn(min = AvoqadoTheme.dimensions.buttonLarge)
+                                .padding(AvoqadoTheme.spacing.lg),
+                        )
+                    }
+                }
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                if (isTablet) {
+                    TabletTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+                } else {
+                    PhoneTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+                }
             }
         }
     }

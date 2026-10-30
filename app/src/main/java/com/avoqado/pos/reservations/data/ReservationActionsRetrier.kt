@@ -65,6 +65,8 @@ class ReservationActionsRetrier @Inject constructor(
         var kioskSinRed = false
         var anySuccess = false
         for (entry in pending) {
+            // D4: un aviso de la franja, no un envío (ya nace en cuarentena; esto sólo evita el log de «agotó intentos»).
+            if (entry.action == KioskTap.CORRECTION) continue
             if (entry.attemptCount >= maxAttempts) {
                 // Agotó los reintentos: se DEJA en la tabla, no se borra.
                 //
@@ -93,13 +95,16 @@ class ReservationActionsRetrier @Inject constructor(
                 // vuelta y no una por fila (con WiFi sin datos cada intento tarda hasta el tope de 10 s).
                 if (kioskSinRed) continue
                 val result = kioskApi.checkInReservation(saved.venueId, entry.reservationId, saved.closesAt, saved.msBeforeClose)
-                val outcome = KioskTap.outcome(result)
+                val outcome = KioskTap.outcome(result.map { })
                 when (outcome) {
                     KioskTap.Outcome.Sent -> {
                         // Ya está registrada: una cuarentena vieja de esta reserva (p. ej. 5xx agotados) quedó resuelta, y
                         // dejarla le quitaría el ✓ a una llegada que el servidor SÍ aceptó (Codex, código r3). Los dos
                         // borrados van juntos y sin cancelar: un toque de la de atrás no puede cortar entre uno y otro (r4).
                         withContext(NonCancellable) {
+                            // D4: el aviso de la corrección va ANTES de borrar la fila. Si el proceso muere entre los dos, la
+                            // fila se repite, el servidor devuelve la misma corrección y el aviso no se duplica (por su id).
+                            result.getOrNull()?.let { avisarCorreccion(entry.reservationId, saved, it) }
                             pendingDao.delete(entry.rowId)
                             pendingDao.deleteQuarantined(KioskTap.ACTION, entry.reservationId, maxAttempts)
                         }
@@ -185,6 +190,25 @@ class ReservationActionsRetrier @Inject constructor(
         // all-failure drain posts nothing) so stale screens refresh exactly once.
         if (anySuccess) reservationRepository.notifyChanged()
         kiosk
+    }
+
+    /**
+     * D4 · el SERVIDOR corrigió solo el «No asistió» de esta llegada y dejó algo pendiente: entra a la franja como aviso
+     * con «Marcar resuelta». Una corrección limpia no deja aviso (la campanita y el correo ya avisan al gerente). Un aviso
+     * por corrección: la misma `correction.id` (respuesta perdida y repetida) no crea otro.
+     */
+    private suspend fun avisarCorreccion(reservationId: String, saved: KioskTap.Saved, c: KioskTap.Correction) {
+        if (c.pending.isEmpty()) return
+        val yaEsta = pendingDao.all().any { it.action == KioskTap.CORRECTION && KioskTap.parseCorrection(it.payloadJson)?.id == c.id }
+        if (yaEsta) return
+        pendingDao.insert(
+            PendingReservationActionEntity(
+                reservationId = reservationId,
+                action = KioskTap.CORRECTION,
+                payloadJson = KioskTap.correctionPayload(c.copy(name = saved.name, tappedAt = saved.tappedAt(), venueId = saved.venueId)),
+                attemptCount = maxAttempts,
+            ),
+        )
     }
 
     /**

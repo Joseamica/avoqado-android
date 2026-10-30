@@ -136,8 +136,10 @@ class RefundSheetLayoutGuardTest {
         val pieFijo = fuente.substringAfter("=== FIN DE LA BANDA DESPLAZABLE ===").substringBefore("private fun ItemsBody(")
         assertTrue("`FilaDevolverCon(` ya no se INVOCA en el pie fijo.", pieFijo.contains("FilaDevolverCon("))
         assertTrue(
-            "El envío no pasa `refundMethod = devolverCon` (sólo si hay opciones).",
-            leerCodigoSinComentarios(hoja).contains("refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }"),
+            "El envío no pasa `refundMethod = devolverCon` (sólo si hay opciones; un crédito de cambio lo omite, RE-9).",
+            leerCodigoSinComentarios(hoja).contains(
+                "refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() })",
+            ),
         )
     }
 

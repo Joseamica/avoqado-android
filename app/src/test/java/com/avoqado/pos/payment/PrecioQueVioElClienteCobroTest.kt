@@ -706,6 +706,8 @@ class PrecioQueVioElClienteCobroTest {
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
         every { savedCartsRepository.savedCarts } returns MutableStateFlow<List<SavedCart>>(emptyList())
+        // D3 (29-oct): el rechazo de «Pagar después» primero respalda la venta en «Carritos guardados».
+        every { savedCartsRepository.saveCart(any()) } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
         every { authRepository.venueSwitched } returns MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         coEvery { staffRepository.getActiveStaff() } returns Result.success(emptyList())

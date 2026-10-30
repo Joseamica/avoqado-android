@@ -29,7 +29,7 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restaurarFoto:_cartState.value =" to 1,
             // «Pagar después» de develop (27-oct): la venta sale del carrito al mandarse y vuelve entera si se rechaza.
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:separarDelCarrito:finalizarVenta" to 1,
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:devolverVenta:_cartState.value =" to 1,
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:volverAlCarrito:_cartState.value =" to 1,
             // D5 de vales: «Recuperar» termina la venta en pantalla si es la misma mercancía del vale.
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:alRecuperarVale:finalizarVenta" to 1,
             "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:CheckoutScreen:saveCurrentCart" to 2,
@@ -67,7 +67,8 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restaurarFoto:_cartState.value =" to "regresa-foto / sin-vinculo / origen-de-foto-T1",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:separarDelCarrito:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             // Regresa la MISMA venta capturada (rechazo definitivo: no se creó); a medias no se difiere, así que no trae vínculo.
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:devolverVenta:_cartState.value =" to "regresa-la-venta / sin-vinculo / conserva-su-origen",
+            // D3 (29-oct): vuelve ligada a su copia de «Carritos guardados», como restaurada (T6); sin copia escrita, conserva su origen.
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:volverAlCarrito:_cartState.value =" to "regresa-la-venta / sin-vinculo / marca-T6-con-su-copia",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:alRecuperarVale:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:CheckoutScreen:saveCurrentCart" to "guarda-sin-marca-y-finaliza / no-persiste / no-persiste",
             "com/avoqado/pos/pos/presentation/checkout/ShortcutsGridView.kt:SavedCartsSubView:restoreSavedCart" to "borra / borra / marca-T6",

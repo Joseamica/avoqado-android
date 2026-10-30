@@ -10,8 +10,11 @@ import com.avoqado.pos.reservations.data.model.ReservationFilters
 import com.avoqado.pos.reservations.data.model.ReservationListResponse
 import com.avoqado.pos.reservations.data.model.ReservationSettingsContract
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
+import com.avoqado.pos.reservations.data.model.UndoNoShowPlan
+import com.avoqado.pos.reservations.data.model.UndoNoShowResult
 import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import com.avoqado.pos.reservations.domain.ReservationAction
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -93,7 +96,8 @@ class ReservationRepository @Inject constructor(
     ): Result<List<Reservation>> =
         api.calendar(dateFrom, dateTo, background = background)
 
-    suspend fun fetchOne(id: String): Result<Reservation> = api.get(id)
+    /** [venueId]: la sucursal de un aviso de la franja (null = la de la sesión). */
+    suspend fun fetchOne(id: String, venueId: String? = null): Result<Reservation> = api.get(id, venueId)
 
     suspend fun runAction(
         reservationId: String,
@@ -129,6 +133,28 @@ class ReservationRepository @Inject constructor(
         if (result.isSuccess) _changes.tryEmit(Unit)
         return result
     }
+
+    // MARK: - D4 · «Sí llegó»: SOLO EN LÍNEA a propósito. Mueve el paquete y el depósito en el SERVIDOR; sin red no se
+    // llama ni se encola (no es un valor de `ReservationAction`: rompería los `when` exhaustivos y el reintentador).
+
+    // [venueId] en las tres: la sucursal del aviso de la franja (null = la de la sesión).
+
+    suspend fun previewUndoNoShow(reservationId: String, venueId: String? = null): Result<UndoNoShowPlan> =
+        enLinea(UndoNoShowTexts.OFFLINE) { api.previewUndoNoShow(reservationId, venueId) }
+
+    suspend fun undoNoShow(reservationId: String, reason: String? = null, venueId: String? = null): Result<UndoNoShowResult> =
+        enLinea(UndoNoShowTexts.OFFLINE) { api.undoNoShow(reservationId, reason, venueId) }
+            .also { if (it.isSuccess) _changes.tryEmit(Unit) }
+
+    suspend fun resolveNoShowCorrection(reservationId: String, note: String? = null, venueId: String? = null): Result<String?> =
+        enLinea(UndoNoShowTexts.OFFLINE_RESOLVE) { api.resolveNoShowCorrection(reservationId, note, venueId) }
+            .also { if (it.isSuccess) _changes.tryEmit(Unit) }
+
+    private suspend fun <T> enLinea(sinRed: String, block: suspend () -> Result<T>): Result<T> =
+        if (connectivity.isOnline()) block() else Result.failure(OfflineRequiredException(sinRed))
+
+    /** Lo que sólo funciona con red: no se guardó nada, la pantalla lo dice y el botón queda en gris. */
+    class OfflineRequiredException(message: String) : Exception(message)
 
     /** Horas reservables del día en la zona del venue (server = fuente de verdad). */
     suspend fun availableSlots(
