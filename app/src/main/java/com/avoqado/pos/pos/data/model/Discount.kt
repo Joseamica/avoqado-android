@@ -36,6 +36,12 @@ data class Discount(
      * backend doesn't consume this column; safe for all serialization paths.
      */
     val source: String? = null,
+    /**
+     * Descuento máximo del catálogo, en PESOS (`null` o ausente = sin tope). El servidor lo aplica siempre
+     * (`calculateDiscountPesos`: `min(descuento, tope)`); sin leerlo aquí la caja cobraba de menos y la venta quedaba
+     * debiendo. La línea del carrito lo congela en [CartItem.itemDiscountMax].
+     */
+    val maxDiscountAmount: Double? = null,
 ) {
     val discountScope: DiscountScope
         get() = when (scope.uppercase()) {
@@ -122,8 +128,12 @@ data class Discount(
  *
  * Un tipo desconocido devuelve 0 — se cobra completo, que es la dirección segura:
  * nunca inventar un descuento que el server no va a reconocer.
+ *
+ * D13: [maxPesos] es el descuento máximo del catálogo (`Discount.maxDiscountAmount`, en pesos). Tras calcular el bruto
+ * se recorta a `round(maxPesos × 100)` —igual que el server: un tope en 0 deja el descuento en 0— y luego el clamp a la
+ * línea. `null` = sin tope.
  */
-fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int): Int {
+fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int, maxPesos: Double? = null): Int {
     val valor = value ?: return 0
     if (baseCents <= 0) return 0
     val bruto = when (type?.uppercase()) {
@@ -133,7 +143,8 @@ fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int): Int {
         "COMP" -> baseCents
         else -> 0
     }
-    return bruto.coerceIn(0, baseCents)
+    val conTope = if (maxPesos != null) minOf(bruto.toLong(), Math.round(maxPesos * 100)).toInt() else bruto
+    return conTope.coerceIn(0, baseCents)
 }
 
 @Serializable

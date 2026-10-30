@@ -1337,6 +1337,7 @@ class CartViewModel @Inject constructor(
             itemDiscountType = discount?.type,
             itemDiscountValue = discount?.value,
             itemDiscountName = discount?.name,
+            itemDiscountMax = discount?.maxDiscountAmount,
             serviceCourse = immediateServiceCourse(),
             catalogAt = product.catalogAt,
         )
@@ -1731,6 +1732,7 @@ class CartViewModel @Inject constructor(
                     itemDiscountType = item.itemDiscountType,
                     itemDiscountValue = item.itemDiscountValue,
                     itemDiscountName = item.itemDiscountName,
+                    itemDiscountMax = item.itemDiscountMax,
                     promotionInstanceId = item.promotionInstanceId,
                     promotionName = item.promotionName,
                     promotionId = item.promotionId,
@@ -2632,6 +2634,7 @@ class CartViewModel @Inject constructor(
                 itemDiscountType = savedItem.itemDiscountType,
                 itemDiscountValue = savedItem.itemDiscountValue,
                 itemDiscountName = savedItem.itemDiscountName,
+                itemDiscountMax = savedItem.itemDiscountMax,
                 // El combo vuelve como combo: mismo `promotionInstanceId` y las
                 // mismas elecciones, o el carrito restaurado cobraría el 2x1
                 // como dos productos a precio de lista.

@@ -80,6 +80,8 @@ data class CartItem(
     var itemDiscountType: String? = null,
     var itemDiscountValue: Double? = null,
     var itemDiscountName: String? = null,
+    /** D13: el descuento máximo del catálogo (pesos) congelado junto al resto de la foto. `null` = sin tope (carritos viejos). */
+    var itemDiscountMax: Double? = null,
     /**
      * Venta por peso (báscula): kg con 3 decimales. Cuando está presente, [unitPrice] es el precio
      * POR KG en centavos, [quantity] queda fija en 1 y el total de línea = round(weightKg × unitPrice)
@@ -144,7 +146,7 @@ data class CartItem(
      * Cortesía: 0 por la misma razón que [grossPrice].
      */
     val itemDiscountCents: Int
-        get() = if (isCortesia) 0 else descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents)
+        get() = if (isCortesia) 0 else descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents, itemDiscountMax)
 
     /** Lo que de verdad se cobra por esta línea: bruto menos su descuento. */
     val totalPrice: Int
