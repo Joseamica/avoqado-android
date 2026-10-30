@@ -196,6 +196,21 @@ class SalidaDelApartadoRoomTest {
         assertEquals(listOf<String?>("orden-k1"), ventasEn("caja-1").map { it.orderId }, "la venta del cajón lleva su orden")
     }
 
+    /**
+     * D1 (Codex código r3 #1): el servidor corrigió el precio de la parte; la reserva guarda la copia del ticket con el importe NUEVO en
+     * la misma escritura. Si la app muere antes del `/pay`, el reenvío ya no manda la copia vieja (que no cuadraría).
+     */
+    @Test fun `al corregir el importe la reserva guarda tambien la copia nueva del ticket`() = runBlocking {
+        abrir("caja-1")
+        apartar(caja, "k1", "caja-1", importe = 10_000)
+        val nueva = """{"lineas":[{"nombre":"Café","cantidad":1,"unitarioCents":8000,"totalCents":8000}],"subtotalCents":8000,"descuentoCents":0}"""
+        caja.actualizarApartado("k1", VENUE, 8_000, "orden-k1", lineasDelTicket = nueva)
+
+        val fila = pagos.findForVenue(VENUE, "k1")!!
+        assertEquals(8_000, fila.amountCents)
+        assertEquals(nueva, fila.lineasDelTicketJson)
+    }
+
     /** Con el 2xx comprobado la venta se anota AUNQUE la caja ya traiga la gemela del servidor (la fusión con red retira la copia). */
     /** Codex r14 A5: el respaldo del 2xx comprobado (lo local falló tras comprobarlo) anota lo que el servidor CONFIRMÓ, no lo apartado. */
     @Test fun `el respaldo del 2xx comprobado anota el importe que confirmo el servidor`() = runBlocking {

@@ -301,4 +301,87 @@ class TransactionReprintReceiptTest {
             """{"success":true,"transaction":{"id":"p","method":"CASH","amount":15,"ticketTotals":{"kind":"COBRO","desglosado":false,"subtotal":15,"serviceCharge":0,"addedTax":0,"tip":0,"total":15}}}""")
         assertNull(sin.transaction?.ticketTotals?.parcial)
     }
+
+    // MARK: - D1 (28-oct): la reimpresión de una parte con «fotocopia del ticket» pinta la copia, no la venta
+
+    private fun copiaDeCafe(descuento: Int = 300) = com.avoqado.pos.transactions.data.model.LineasDelTicketDto(
+        lineas = listOf(com.avoqado.pos.transactions.data.model.LineaDelTicketDto("Café", 1.0, 3000, 3000)),
+        subtotalCents = 3000, descuentoCents = descuento,
+    )
+
+    @Test
+    fun `D1 - con copia la reimpresion pinta sus renglones, su subtotal y su Descuento`() {
+        // Café $30 + Agua $20 con 10 % de cuenta; la parte de Café cobró $27. El servidor la marca parcial y guardó la copia.
+        val parte = comprobante(desglosado = false, subtotal = 27.0).copy(parcial = true)
+        val r = Transaction(id = "pay_cafe", method = "CASH", amount = 27.0, items = dosProductos, ticketTotals = parte,
+            lineasDelTicket = copiaDeCafe()).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf("Café"), r.items.map { it.name })
+        assertEquals(3000, r.items.single().totalPrice)
+        assertEquals(3000, r.subtotal)
+        assertEquals(300, r.discountAmount)
+        assertEquals(2700, r.total)
+        assertTrue(cuadra(r))
+        val papel = renglonesDelPapel(r)
+        assertTrue(papel.toString(), papel.any { it.contains("Descuento") })
+    }
+
+    @Test
+    fun `D1 - la copia manda aunque el comprobante no diga parcial, y sin cargo ni IVA aparte`() {
+        val r = Transaction(id = "pay_x", method = "CASH", amount = 27.0, items = dosProductos,
+            ticketTotals = comprobante(subtotal = 27.0).copy(addedTax = 4.32, serviceCharge = 1.0, total = 27.0),
+            lineasDelTicket = copiaDeCafe()).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf("Café"), r.items.map { it.name })
+        assertEquals(0, r.taxAmount)
+        assertNull(r.serviceChargeAmount)
+        assertTrue(cuadra(r))
+    }
+
+    @Test
+    fun `D1 - peso, nota, area, cortesia y piezas del combo llegan a su renglon`() {
+        val copia = com.avoqado.pos.transactions.data.model.LineasDelTicketDto(
+            lineas = listOf(
+                com.avoqado.pos.transactions.data.model.LineaDelTicketDto("Queso", 1.0, 18270, 18270, peso = "0.435 kg × \$420.00/kg",
+                    nota = "Rebanado", area = "Cremería · Vale 9016719357", modificadores = listOf("Extra")),
+                com.avoqado.pos.transactions.data.model.LineaDelTicketDto("Combo del día", 1.0, 10000, 10000),
+                com.avoqado.pos.transactions.data.model.LineaDelTicketDto("Hamburguesa", 1.0, 0, 0, pieza = true),
+                com.avoqado.pos.transactions.data.model.LineaDelTicketDto("Postre", 1.0, 5000, 0, cortesia = true),
+            ),
+            subtotalCents = 28270, descuentoCents = 0,
+        )
+        val r = Transaction(id = "pay_q", method = "CASH", amount = 282.70, ticketTotals = comprobante(subtotal = 282.70),
+            lineasDelTicket = copia).toReceiptData(venueName = "T", reprintedAt = cuando)
+        val queso = r.items[0]
+        assertEquals("0.435 kg × \$420.00/kg", queso.weightSummary)
+        assertEquals("Rebanado", queso.note)
+        assertEquals("Cremería · Vale 9016719357", queso.areaSourceLabel)
+        assertEquals(listOf("Extra"), queso.modifiers)
+        assertTrue(r.items[1].isComboHeader)
+        assertTrue(r.items[2].isComboComponent)
+        assertEquals("", r.items[2].formattedPrice)
+        assertTrue(r.items[3].isCortesia)
+        assertEquals(28270, r.subtotal)
+    }
+
+    @Test
+    fun `D1 - sin copia la parte sigue saliendo Pago parcial como hoy`() {
+        val parte = comprobante(desglosado = false, subtotal = 15.0).copy(parcial = true)
+        val r = Transaction(id = "pay_p", method = "CASH", amount = 15.0, items = dosProductos, ticketTotals = parte)
+            .toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf("Pago parcial"), r.items.map { it.name })
+    }
+
+    @Test
+    fun `D1 - el detalle trae la copia aparte, una copia rara cuenta como ausente y el detalle no se cae`() {
+        val json = Json { ignoreUnknownKeys = true } // la misma configuración que `TransactionRepository`
+        fun detalle(copia: String) = json.decodeFromString<TransactionDetailResponse>(
+            """{"success":true,"transaction":{"id":"p","method":"CASH","amount":27,"lineasDelTicket":$copia}}""",
+        ).transaction!!
+        assertEquals(copiaDeCafe(),
+            detalle("""{"lineas":[{"nombre":"Café","cantidad":1,"unitarioCents":3000,"totalCents":3000}],"subtotalCents":3000,"descuentoCents":300}""")
+                .lineasDelTicket)
+        assertNull(detalle("""{"lineas":[],"subtotalCents":0,"descuentoCents":0}""").lineasDelTicket)
+        assertNull(detalle("""{"lineas":"no","subtotalCents":0}""").lineasDelTicket)
+        assertNull(detalle("null").lineasDelTicket)
+        assertEquals("p", detalle("""{"raro":true}""").id)
+    }
 }

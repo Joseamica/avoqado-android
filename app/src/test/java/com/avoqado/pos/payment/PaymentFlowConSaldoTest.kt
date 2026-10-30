@@ -82,7 +82,7 @@ class PaymentFlowConSaldoTest {
         }
         coEvery { dao.borrarSiEnVuelo(any()) } returns 0
         coEvery { dao.descartarReservaRechazada(any()) } coAnswers { descartarFilaDelEfectivo(firstArg()) }
-        coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+        coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any(), any()) } coAnswers {
             val fila = filasDelEfectivo[firstArg<String>()]?.takeIf { it.syncStatus == "EN_VUELO" }
             if (fila == null) 0 else {
                 filasDelEfectivo[fila.id] = fila.copy(amountCents = secondArg(), orderId = thirdArg()); 1
@@ -1256,7 +1256,7 @@ class PaymentFlowConSaldoTest {
             assertEquals(if (encolable) 10000 else 8000, evento.amountCents)
             coVerify(exactly = if (encolable) 1 else 0) {
                 efectivo.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(),
-                    any(), any(), any(), any(), any(), any(), any(), any(), cajaDelCobro = caja.id)
+                    any(), any(), any(), any(), any(), any(), any(), any(), cajaDelCobro = caja.id, lineasDelTicket = any())
             }
             val request = server.takeRequest(1, TimeUnit.SECONDS)!!
             assertTrue(request.path!!.contains("/venues/a/orders/o/pay"))

@@ -42,7 +42,7 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         EntregaKdsPendienteEntity::class,
         KdsTicketLocalEntity::class,
     ],
-    version = 18,
+    version = 19,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {

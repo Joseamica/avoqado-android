@@ -151,7 +151,7 @@ class H2H3TenderCaptureTest {
             rows[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() }
         }
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns Result.failure(IOException("sin red"))
         coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
         val client = mockk<okhttp3.OkHttpClient>()
         every { client.newCall(any()) } answers {
@@ -280,6 +280,8 @@ class H2H3TenderCaptureTest {
         assertEquals(4000, payload.getValue("amountCents").jsonPrimitive.int)
         assertEquals(500, payload.getValue("tipCents").jsonPrimitive.int)
         assertFalse(payload.containsKey("method")); assertFalse(payload.containsKey("externalSource"))
+        // D1: la parte de una mesa abierta sin red va por el intent PAY_CASH, que NUNCA lleva la copia del ticket (fuera de la promesa).
+        assertFalse(payload.containsKey("lineasDelTicket"))
         assertDrawer(0)
         // Enqueue wrote while offline. Start owns the real producer; two failed replays keep bytes/key.
         val started = CompletableDeferred<Unit>()
@@ -354,7 +356,7 @@ class H2H3TenderCaptureTest {
 
     @Test fun `held order post keeps non physical captured tender after selection changes to cash`() = runTest {
         val hold = CompletableDeferred<Unit>().also { compuertasPropias += it }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } coAnswers {
             hold.await(); Result.failure(IOException("sin red"))
         }
         open(orderId = "order-A")
@@ -368,13 +370,13 @@ class H2H3TenderCaptureTest {
         val body = Json.parseToJsonElement(PaymentSyncService.buildReplayBody(row, row.venueId, true)).jsonObject
         assertEquals("tender-A", body.getValue("tenderTypeId").jsonPrimitive.content)
         assertFalse(body.containsKey("method"))
-        coVerify(exactly = 1) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 1) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) }
     }
 
     @Test fun `held cash post still records physical cash after later noncash selection`() = runTest {
         coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
         val hold = CompletableDeferred<Unit>().also { compuertasPropias += it }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } coAnswers {
             hold.await(); Result.failure(IOException("sin red"))
         }
         open(orderId = "order-A"); viewModel.processCashPayment(4500); runCurrent()
@@ -392,7 +394,7 @@ class H2H3TenderCaptureTest {
     @Test fun `physical sale A held POST keeps venue order and actor after opening sale B`() = runTest {
         coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
         val hold = CompletableDeferred<Unit>().also { compuertasPropias += it }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } coAnswers {
             hold.await()
             // Lo que hace el `OrderRepository` de verdad con un 2xx comprobado (`guardarRespuestaDeCaptura`).
             val llave = arg<String>(5)
@@ -434,7 +436,7 @@ class H2H3TenderCaptureTest {
                 .code(503).message("respuesta perdida").body("{}".toResponseBody()).build()
         }.build()
         val realOrders = OrderRepository(secureStorage, client)
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) } coAnswers {
             realOrders.recordCashPayment(firstArg(), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8))
         }
         open(orderId = "order-A")
@@ -513,7 +515,7 @@ class H2H3TenderCaptureTest {
                 .code(503).message("respuesta perdida").body("{}".toResponseBody()).build()
         }.build()
         val realOrders = OrderRepository(secureStorage, client)
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) } coAnswers {
             realOrders.recordCashPayment(firstArg(), arg(1), arg(2), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8))
         }
         open(orderId = "order-A"); viewModel.confirmManualChoice(ManualPaymentChoice.Tender(tender(false)))

@@ -117,7 +117,7 @@ class CobroRechazadoSinConfirmarTest {
                 else { filas[fila.id] = fila.copy(syncStatus = "PENDING"); 1 }
             }
             coEvery { dao.findForVenue(any(), any()) } coAnswers { filas[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() } }
-            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any(), any()) } coAnswers {
                 val f = filas[firstArg()]?.takeIf { it.syncStatus == "EN_VUELO" } ?: return@coAnswers 0
                 filas[f.id] = f.copy(amountCents = secondArg(), orderId = thirdArg()); 1
             }
@@ -225,7 +225,7 @@ class CobroRechazadoSinConfirmarTest {
             Result.failure(OrderRepository.ServerException(409, "El precio cambió", listOf(CambioDePrecio("e1", "p1", "Café", catalogo, 5000, 6000)))),
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 110.0))),
         )
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns pagado()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns pagado()
 
         vm.startPaymentFlow(dosCafes)
         vm.selectPaymentMethod(PaymentMethod.CASH)
@@ -447,7 +447,7 @@ class CobroRechazadoSinConfirmarTest {
     fun `P1 empezar otra venta con CARRITO (orden y pay) tambien suelta la anterior y se da por cobrada`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 100.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns rechazo400()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns rechazo400()
         vm.startPaymentFlow(dosCafes, apertura = "carrito-1")
         vm.selectPaymentMethod(PaymentMethod.CASH)
         vm.processCashPayment(10_000)
@@ -618,7 +618,7 @@ class CobroRechazadoSinConfirmarTest {
 
         assertEquals("ni éxito ni cancelación sobre B", error, vm.state.value)
         assertNull("la orden de A no es de B", vm.buildCompletion().orderId)
-        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
     }
 
     /** A5 (revisión I-B, espejo de iOS `testYaPagoDeOtraFormaSigueComoHoy`): «Ya pagó de otra forma» rechazado sigue como hoy. */
@@ -690,7 +690,7 @@ class CobroRechazadoSinConfirmarTest {
     fun `P1 onCleared con solo borrados pendientes pide el barrido en el acto`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 100.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returnsMany
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returnsMany
             listOf(rechazo400(), pagado())
         vm.startPaymentFlow(dosCafes)
         vm.selectPaymentMethod(PaymentMethod.CASH)
@@ -775,7 +775,7 @@ class CobroRechazadoSinConfirmarTest {
         val venta1 = CompletableDeferred<Result<OrderRepository.CashPayResult>>()
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 100.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { venta1.await() }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { venta1.await() }
         fastResponde(listOf(rechazo400()))
         vm.startPaymentFlow(dosCafes, apertura = "venta-1")
         vm.selectPaymentMethod(PaymentMethod.CASH)
@@ -848,7 +848,7 @@ class CobroRechazadoSinConfirmarTest {
         val pago = CompletableDeferred<Result<OrderRepository.CashPayResult>>()
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 100.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { pago.await() }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { pago.await() }
         vm.startPaymentFlow(dosCafes)
         vm.selectPaymentMethod(PaymentMethod.CASH)
         vm.confirmPayment()
@@ -866,7 +866,7 @@ class CobroRechazadoSinConfirmarTest {
         val pago = CompletableDeferred<Result<OrderRepository.CashPayResult>>()
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 0.0)))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } coAnswers { pago.await() }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { pago.await() }
         val cortesia = Discount(id = "cortesia_1", name = "Cortesía", value = 100.0, type = "PERCENTAGE", scope = "ORDER")
         vm.startPaymentFlow(dosCafes.copy(orderDiscount = cortesia))
         vm.selectPaymentMethod(PaymentMethod.CARD)

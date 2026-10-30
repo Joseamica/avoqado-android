@@ -213,6 +213,13 @@ class PaymentSyncService @Inject constructor(
             // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con
             // `isOfflineReplay`, que este cuerpo siempre lleva. Al final y sólo si viene: sin caja, el cuerpo es el de hoy.
             cajaParaElServidor?.let { put("cashDrawerSessionId", it) }
+            // D1 «fotocopia del ticket»: la copia del papel de esta parte, sólo en `/pay` (el contrato no la lleva a `/fast`). Una
+            // columna ilegible no viaja: es texto del ticket y nunca puede frenar el cobro. Sin copia, el cuerpo es el de hoy.
+            if (esCobroDeOrden) {
+                payment.lineasDelTicketJson
+                    ?.let { runCatching { RESPONSE_JSON.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull() }
+                    ?.let { put("lineasDelTicket", it) }
+            }
         }.toString()
 
         /**
@@ -1022,6 +1029,26 @@ class PaymentSyncService @Inject constructor(
 
     private val revisionCanceladaMutex = kotlinx.coroutines.sync.Mutex()
 
+    /** Sólo consulta; no habilita replay ni despierta el drenador. */
+    suspend fun prepararRevisionCancelada(id: String): PropuestaRevisionCancelada? {
+        val venue = secureStorage.venueId ?: return null
+        val original = dao.findForVenue(venue, id) ?: return null
+        return (prepararRevisionCancelada(original) as? RetryOutcome.CancelledZeroPaymentReview)?.propuesta
+    }
+
+    private suspend fun prepararRevisionCancelada(original: PendingPaymentEntity): RetryOutcome {
+        if ((original.syncStatus != "FAILED" && !(original.syncStatus == "EN_VUELO" &&
+                original.q15Reason == ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)) ||
+            original.paymentType != "ORDER" || original.amountCents != 0 || original.tipCents != 0) return RetryOutcome.StillQueued
+        val actor = secureStorage.userId?.takeIf { it.isNotBlank() } ?: return RetryOutcome.StillQueued
+        val propuesta = PropuestaRevisionCancelada(original, actor, secureStorage.userRole?.uppercase().orEmpty(), syncOutbox.contextoDeSesionQ15())
+        if (!vigente(propuesta) || original.q15ReviewedAt != null) return RetryOutcome.StillQueued
+        val proof = consultarCancelado(original) ?: return RetryOutcome.ConsultaSinPrueba
+        val orderId = RevisionCanceladoCero.ordenAcreditada(original, proof) ?: return RetryOutcome.ConsultaSinPrueba
+        if (!vigente(propuesta) || dao.findForVenue(original.venueId, original.id) != original) return RetryOutcome.StillQueued
+        return RetryOutcome.CancelledZeroPaymentReview(propuesta.copy(ordenAcreditada = orderId))
+    }
+
     /** Confirmation is a new read, never permission inferred from the proposal or a timestamp. */
     suspend fun confirmarRevisionCancelada(propuesta: PropuestaRevisionCancelada): Boolean {
         if (!revisionCanceladaMutex.tryLock()) return false
@@ -1065,13 +1092,7 @@ class PaymentSyncService @Inject constructor(
         if ((original.syncStatus == "FAILED" || (original.syncStatus == "EN_VUELO" &&
                 original.q15Reason == ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)) &&
             original.paymentType == "ORDER" && original.amountCents == 0 && original.tipCents == 0) {
-            val actor = secureStorage.userId?.takeIf { it.isNotBlank() } ?: return RetryOutcome.StillQueued
-            val propuesta = PropuestaRevisionCancelada(original, actor, secureStorage.userRole?.uppercase().orEmpty(), syncOutbox.contextoDeSesionQ15())
-            if (!vigente(propuesta) || original.q15ReviewedAt != null) return RetryOutcome.StillQueued
-            val proof = consultarCancelado(original) ?: return RetryOutcome.ConsultaSinPrueba
-            val orderId = RevisionCanceladoCero.ordenAcreditada(original, proof) ?: return RetryOutcome.ConsultaSinPrueba
-            if (!vigente(propuesta)) return RetryOutcome.StillQueued
-            return RetryOutcome.CancelledZeroPaymentReview(propuesta.copy(ordenAcreditada = orderId))
+            return prepararRevisionCancelada(original)
         }
         if (original.syncStatus != "FAILED" || original.q15Reason != null) return RetryOutcome.StillQueued
         if (ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, original.venueId, original.id) == null) {

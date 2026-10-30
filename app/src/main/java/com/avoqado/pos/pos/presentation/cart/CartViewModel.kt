@@ -2807,7 +2807,7 @@ class CartViewModel @Inject constructor(
                 request = request,
                 staffId = venta.selectedStaffId,
                 customerId = customerId,
-                orderType = "DINE_IN",
+                orderType = venta.orderType,
                 externalId = llave,
                 stampRewardId = premio,
                 stampRewardExpectedDiscount = venta.stampRewardCents.takeIf { it > 0 },
@@ -2883,7 +2883,16 @@ class CartViewModel @Inject constructor(
             return when (val d = cola.mandar(venueId, enLinea)) {
                 // Aceptada (creada o por subir): su copia guardada se retira. Si el retiro no se escribe, la fila espera a
                 // confirmarlo (Codex A-5) y la copia, ligada a ella, no se restaura.
-                is DesenlacePagarDespues.Creada -> when (val total = d.totalCents) {
+                is DesenlacePagarDespues.Creada -> if (d.motivoRevision != null) {
+                    if (cola.cambiar(llave) { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR,
+                            orderId = d.orderId, totalRegistradoCents = d.totalCents, motivo = d.motivoRevision) }) {
+                        cola.retirarCopia(s.venta.carritoGuardadoId)
+                        ResultadoPagarDespues.Aviso(d.motivoRevision)
+                    } else {
+                        retenida = true
+                        ResultadoPagarDespues.Error(d.motivoRevision + "\n\n" + PAGAR_DESPUES_NO_SE_GUARDO)
+                    }
+                } else when (val total = d.totalCents) {
                     s.venta.totalCents -> { cola.cerrarAceptada(llave); ResultadoPagarDespues.Creada }
                     // Existe, pero no se sabe por cuánto: queda por revisar (y nunca se vuelve a crear con otra llave).
                     null -> {
@@ -2951,6 +2960,7 @@ class CartViewModel @Inject constructor(
                 },
             )
         }
+        if (d.motivoRevision != null) return ResultadoPagarDespues.Error(d.motivoRevision)
         // Creada: si el retiro de su copia no se escribe, su marca vinculante la sigue bloqueando (la cuenta ya existe).
         cola.retirarCopia(copia)
         separarDelCarrito(s.venta)
