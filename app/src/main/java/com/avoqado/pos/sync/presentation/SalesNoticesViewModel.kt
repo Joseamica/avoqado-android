@@ -52,11 +52,12 @@ class SalesNoticesViewModel @Inject constructor(
     private val _loading=MutableStateFlow(false); val loading=_loading.asStateFlow()
     val canRead get()=context.venue!=null && current()==context && roles.canResolveQuarantine
     val opensPendingSales get()=roles.canAccessTransactions && canRead
-    val bannerActionLabel get()=if(opensPendingSales) "Ver ventas" else "Revisar"
+    val bannerActionLabel get()=salesNoticeBannerActionLabel(opensPendingSales)
     private val _courtesy=MutableStateFlow(CourtesyReviewUi());val courtesy=_courtesy.asStateFlow()
     val courtesyOnline=combine(connectivity.isConnected,connectivity.isServerReachable) { connected,reachable -> connected && reachable }
         .stateIn(viewModelScope,SharingStarted.WhileSubscribed(),connectivity.isFullyConnected)
     private var courtesyProposal:PaymentSyncService.PropuestaRevisionCortesia?=null
+    private var cancelledProposal:PaymentSyncService.PropuestaRevisionCancelada?=null
     private var courtesyJob:Job?=null
     private var courtesyGeneration=0L
     private var courtesySourceVersion:SalesNoticeVersion?=null
@@ -67,18 +68,21 @@ class SalesNoticesViewModel @Inject constructor(
     }
     val canPreviewCourtesy get()=canRead && courtesyPermission("orders:read")
     val canConfirmCourtesy get()=canPreviewCourtesy && courtesyPermission("orders:comp")
+    val canConfirmCancelledReview get()=canPreviewCourtesy && cancelledProposal!=null
     private fun courtesyPermission(permission:String)=if(storage.venuePermissions.isEmpty()) roles.canResolveQuarantine
         else roles.hasVenuePermission(permission)
     private fun discardCourtesy() {
-        courtesyGeneration++;courtesyJob?.cancel();courtesyJob=null;courtesyProposal=null
+        courtesyGeneration++;courtesyJob?.cancel();courtesyJob=null;courtesyProposal=null;cancelledProposal=null
         courtesySourceVersion=null;_courtesy.value=CourtesyReviewUi()
     }
     fun closeCourtesy() { if(!_courtesy.value.confirming) discardCourtesy() }
     fun leaveCourtesyView() { discardCourtesy() } // Sólo UI; no borra ni revierte fuente/CAS/POST.
+    private fun courtesyContextCurrent(snapshot:Context,token:Long)=
+        token==courtesyGeneration && snapshot==context && current()==snapshot && canPreviewCourtesy
     private fun courtesyCurrent(snapshot:Context,token:Long,key:SalesNoticeKey):Boolean {
         if(token!=courtesyGeneration) return false
-        if(snapshot!=context || current()!=snapshot || !canPreviewCourtesy ||
-            (_courtesy.value.confirming && !canConfirmCourtesy) ||
+        if(!courtesyContextCurrent(snapshot,token) ||
+            (_courtesy.value.confirming && _courtesy.value.kind==CourtesyReviewKind.FINANCIAL && !canConfirmCourtesy) ||
             _selected.value?.let { it.key==key && it.version==courtesySourceVersion }!=true) {
             discardCourtesy();return false
         }
@@ -89,11 +93,18 @@ class SalesNoticesViewModel @Inject constructor(
         if(_courtesy.value.busy || !canPreviewCourtesy || !courtesyReviewCandidate(row)) return
         if(!connectivity.isFullyConnected) return
         val snapshot=context;val key=row.key;val token=++courtesyGeneration
-        courtesyProposal=null;courtesySourceVersion=row.version
+        courtesyProposal=null;cancelledProposal=null;courtesySourceVersion=row.version
         _courtesy.value=CourtesyReviewUi(key=key,busy=true)
         courtesyJob=viewModelScope.launch {
             try {
                 if(!courtesyCurrent(snapshot,token,key)) return@launch
+                val cancelled=payments.prepararRevisionCancelada(row.id)
+                if(!courtesyCurrent(snapshot,token,key)) return@launch
+                if(cancelled!=null) {
+                    cancelledProposal=cancelled
+                    _courtesy.value=CourtesyReviewUi(key=key,ready=true,busy=true,kind=CourtesyReviewKind.CANCELLED_ZERO)
+                    return@launch
+                }
                 val proposal=payments.prepararRevisionCortesia(row.id)
                 if(!courtesyCurrent(snapshot,token,key)) return@launch
                 if(proposal==null) {
@@ -118,6 +129,39 @@ class SalesNoticesViewModel @Inject constructor(
                 if(courtesyCurrent(snapshot,token,key)) {
                     courtesyProposal=null
                     _courtesy.value=_courtesy.value.copy(ready=false,error="No se pudo consultar la cuenta. El intento sigue guardado.")
+                }
+            } finally {
+                if(token==courtesyGeneration) { _courtesy.value=_courtesy.value.copy(busy=false,confirming=false);courtesyJob=null }
+            }
+        }
+    }
+    fun confirmSelectedCancelledReview() {
+        val proposal=cancelledProposal ?: return;val key=_courtesy.value.key ?: return
+        val snapshot=context;val token=courtesyGeneration
+        if(_courtesy.value.kind!=CourtesyReviewKind.CANCELLED_ZERO || _courtesy.value.busy || !_courtesy.value.ready ||
+            !canConfirmCancelledReview || !connectivity.isFullyConnected || !courtesyCurrent(snapshot,token,key)) return
+        _courtesy.value=_courtesy.value.copy(busy=true,confirming=true,error=null)
+        courtesyJob=viewModelScope.launch {
+            try {
+                if(!courtesyCurrent(snapshot,token,key)) return@launch
+                val saved=payments.confirmarRevisionCancelada(proposal)
+                // La notificación del CAS propio puede haber retirado esta selección de Pendientes.
+                if(!courtesyContextCurrent(snapshot,token)) { if(token==courtesyGeneration) discardCourtesy();return@launch }
+                if(saved) {
+                    cancelledProposal=null;courtesySourceVersion=null;_courtesy.value=CourtesyReviewUi()
+                    _message.value="Revisión guardada en el historial."
+                    refresh()
+                } else if(courtesyCurrent(snapshot,token,key)) {
+                    cancelledProposal=null
+                    _courtesy.value=_courtesy.value.copy(ready=false,
+                        error="No se pudo comprobar la revisión. El intento sigue conservado; no vuelvas a cobrar.")
+                }
+            } catch(e:CancellationException) { throw e }
+            catch(_:Exception) {
+                if(courtesyCurrent(snapshot,token,key)) {
+                    cancelledProposal=null
+                    _courtesy.value=_courtesy.value.copy(ready=false,
+                        error="No se pudo comprobar la revisión. El intento sigue conservado; no vuelvas a cobrar.")
                 }
             } finally {
                 if(token==courtesyGeneration) { _courtesy.value=_courtesy.value.copy(busy=false,confirming=false);courtesyJob=null }
@@ -296,7 +340,10 @@ class SalesNoticesViewModel @Inject constructor(
                 if(!valid(snapshot,version)) return@launch
                 val changed=store.acknowledge(row,actor,System.currentTimeMillis())
                 if(!valid(snapshot,version)) return@launch
-                _message.value=if(changed) "Aviso entendido. La operación sigue pendiente en Ventas." else
+                _message.value=if(changed) {
+                    if(row.registeredResult()!=null) "Aviso entendido. Los datos del pago se conservan en Ventas."
+                    else "Aviso entendido. La operación sigue pendiente en Ventas."
+                } else
                     "La incidencia cambió. El aviso sigue pendiente; vuelve a abrir su detalle."
                 if(changed) refresh()
             } catch(e:CancellationException) { throw e }
@@ -307,12 +354,21 @@ class SalesNoticesViewModel @Inject constructor(
 }
 
 /** Presentation count only. The financial reconciliation count is never changed. */
-fun salesNoticeBannerCount(summary:SalesNoticeSummary?, reservations:Int?, fallback:Int):Int {
+fun salesNoticeBannerCount(summary:SalesNoticeSummary?, reservations:Int?, fallback:Int, payLaterCount:Int=0):Int {
     if(summary==null || reservations==null) return fallback
     return summary.alertContributions.entries.sumOf { (group,count)->
         (count-(summary.acknowledgedContributions[group] ?: 0)).coerceAtLeast(0)
-    }+summary.untouchedQ15+summary.untouchedRejected+reservations
+    }+summary.untouchedQ15+summary.untouchedRejected+reservations+payLaterCount
 }
+
+/** The banner's existing route, shared by the tablet and phone layouts. */
+fun openSalesNoticeBanner(opensPendingSales:Boolean, transactionsRegistered:Boolean, payLaterCount:Int=0,
+    onPendingSales:()->Unit, onQuarantine:()->Unit) {
+    if(payLaterCount==0 && opensPendingSales && transactionsRegistered) onPendingSales() else onQuarantine()
+}
+
+fun salesNoticeBannerActionLabel(opensPendingSales:Boolean, payLaterCount:Int=0):String =
+    if(payLaterCount==0 && opensPendingSales) "Ver ventas" else "Revisar"
 
 /** Text actually rendered by the list; keeps its error/empty decisions testable without a device. */
 data class SalesNoticePresentation(val message:String?,val countLabel:String,val emptyLabel:String?,val pendingLabel:String)
@@ -331,7 +387,9 @@ data class CourtesyReviewUi(
     val key:SalesNoticeKey?=null,val snapshot:JsonObject?=null,val originalAmountCents:Int?=null,
     val reasons:Map<String,String> = emptyMap(),val names:Map<String,String> = emptyMap(),
     val ready:Boolean=false,val busy:Boolean=false,val confirming:Boolean=false,val error:String?=null,
+    val kind:CourtesyReviewKind=CourtesyReviewKind.FINANCIAL,
 )
+enum class CourtesyReviewKind { FINANCIAL, CANCELLED_ZERO }
 /** Prefiltro visual. preparar/confirmar releen y validan la fuente íntegra; esto jamás autoriza una escritura. */
 internal fun courtesyReviewCandidate(row:SalesNoticeSnapshot)=row.origin=="PAYMENT" && row.type=="ORDER" &&
     row.state=="FAILED" && row.reason==null && row.originalAmountCents==0 && row.originalTipCents==0 &&

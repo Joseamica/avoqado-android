@@ -69,19 +69,35 @@ data class SalesNoticeSnapshot(val venueId: String, val origin: String, val id: 
             val o = runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return false
             if(normalizedResult) {
                 val allowed=setOf("paymentId","orderId","amountCents","tipCents","method","splitType","tenderTypeId","tenderRevision",
-                    "camposDiferentes","camposNoComprobados","totalAlCobrarCents","totalEnElServidorCents","saldoEsperadoCents","saldoEnElServidorCents","cobradoDeMasCents")
+                    "camposDiferentes","camposNoComprobados","totalAlCobrarCents","totalEnElServidorCents","saldoEsperadoCents","saldoEnElServidorCents","cobradoDeMasCents",
+                    "saldoCents","estadoDeLaOrden")
                 if(o.keys.any {it !in allowed} || listOf("paymentId","orderId").any { key ->
                     (o[key] as? JsonPrimitive)?.takeIf {it.isString}?.content.isNullOrBlank()
                 } || listOf("camposDiferentes","camposNoComprobados").any {key ->
                     val values=o[key] as? JsonArray
                     values == null || values.any {(it as? JsonPrimitive)?.isString != true}
                 }) return false
+                if (o.containsKey("saldoCents") && o.enteroAviso("saldoCents") == null ||
+                    o.containsKey("estadoDeLaOrden") && (o["estadoDeLaOrden"] as? JsonPrimitive)?.takeIf { it.isString }?.content !in setOf("PAID","PARTIAL")) return false
             }
+            // Sólo metadatos del aviso aplicado; no prueba un canal ni amplía la admisión monetaria de tenders locales.
+            val remoteTender = normalizedResult && origin=="PAYMENT" && type=="ORDER" && state=="SYNCED" &&
+                o["method"]==JsonPrimitive("CASH") &&
+                (o["tenderTypeId"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.isNotBlank()==true &&
+                (o.enteroAviso("tenderRevision") ?: 0)>0
             return o.keys.none { it.contains("card",true) || it.contains("terminal",true) || it.contains("authorization",true) } &&
                 (o["method"] == null || o["method"] == JsonNull || o["method"] == JsonPrimitive("CASH")) &&
-                listOf("tenderTypeId","tenderRevision").all { o[it] == null || o[it] == JsonNull }
+                (listOf("tenderTypeId","tenderRevision").all { o[it] == null || o[it] == JsonNull } || remoteTender)
         }
         return native(result,true) && (origin != "INTENT" || native(body))
+    }
+    /** Presentación de componentes conocidos; Entendido conserva todos los datos y no resuelve una revisión financiera. */
+    fun registeredResult(): JsonObject? {
+        if (origin!="PAYMENT" || state!="SYNCED" || !eligible()) return null
+        val o=result?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() } ?: return null
+        val amount=o.enteroAviso("amountCents") ?: return null
+        val tip=o.enteroAviso("tipCents") ?: return null
+        return o.takeIf { amount.toLong()+tip<=Int.MAX_VALUE }
     }
     internal fun cancelledReviewed(): Boolean {
         if (origin != "PAYMENT") return false
@@ -93,6 +109,8 @@ data class SalesNoticeSnapshot(val venueId: String, val origin: String, val id: 
             splitType=splitType ?: "FULLPAYMENT",customerId=customerId))
     }
 }
+
+private fun JsonObject.enteroAviso(key:String):Int?=(get(key) as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it>=0 }
 
 internal object SalesNoticeSql {
     private val payment = """SELECT venueId,'PAYMENT' AS origin,id,createdAt,paymentType AS type,method,amountCents,tipCents,

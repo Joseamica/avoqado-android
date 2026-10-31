@@ -132,7 +132,7 @@ class PrecioQueVioElClienteCobroTest {
     private fun cobradoEnEfectivo(vararg respuestas: Respuesta<OrderRepository.CashPayResult>): MutableList<Int> {
         val cobrados = mutableListOf<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrados), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = captureNullable(importesAceptados))
+            orderRepository.recordCashPayment(any(), capture(cobrados), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = captureNullable(importesAceptados), lineasDelTicket = any())
         } returnsMany respuestas.map { it.r }.ifEmpty { listOf(pagado().r) }
         return cobrados
     }
@@ -534,7 +534,7 @@ class PrecioQueVioElClienteCobroTest {
     fun `sin red se encola como hoy y no hay aviso de precio`() = runTest {
         cuandoSeCreaLaOrden(sinRed())
         coEvery {
-            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
         } returns "cola-1"
 
         vm.startPaymentFlow(dosCafes)
@@ -568,7 +568,7 @@ class PrecioQueVioElClienteCobroTest {
         cuandoSeCreaLaOrden(sinRed(), pedidos = pedidos)
         val encolado = slot<CreateOrderRequest>()
         coEvery {
-            cashPaymentRepository.queueCashPayment(capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
+            cashPaymentRepository.queueCashPayment(capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
         } returns "cola-1"
 
         val antes = System.currentTimeMillis()
@@ -642,7 +642,7 @@ class PrecioQueVioElClienteCobroTest {
             coEvery { dao.findForVenue(any(), any()) } coAnswers { filas[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() } }
             coEvery { dao.enVueloDelVenue(any()) } coAnswers { filas.values.filter { it.venueId == firstArg<String>() && it.syncStatus == "EN_VUELO" } }
             // Ronda corta (agregados 1 y 3): al nacer la orden, el apartado guarda su importe y su orden; 0 filas = fallo.
-            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any(), any()) } coAnswers {
                 val f = filas[firstArg()]?.takeIf { it.syncStatus == "EN_VUELO" } ?: return@coAnswers 0
                 filas[f.id] = f.copy(amountCents = secondArg(), orderId = thirdArg()); 1
             }

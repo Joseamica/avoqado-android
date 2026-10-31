@@ -106,7 +106,7 @@ class H1CapturedCashTest {
         }
         every { dao.observarEstado(any()) } answers { flowOf(rows[firstArg<String>()]?.syncStatus) }
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns Result.failure(IOException("sin red"))
         coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns Result.failure(IOException("sin red"))
         coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
@@ -274,7 +274,7 @@ class H1CapturedCashTest {
     @Test fun `split mutation while the payment post waits cannot relabel the captured payment`() = runTest {
         val started = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } coAnswers {
             started.complete(Unit); release.await(); Result.failure(IOException("sin red"))
         }
         open(orderId = "order-A")

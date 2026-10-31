@@ -189,6 +189,8 @@ private fun UpsellRule.toCard(product: Product): UpsellCard {
     // una sola aritmética, imposible que la tarjeta y el cobro digan cosas
     // distintas.
     val lineaCompleta = product.priceInCents + suggestedModifiers.sumOf { it.priceInCents }
+    // D13: sin `maxPesos` a propósito —el descuento ligado no trae tope porque el servidor NO liga a una regla de upsell
+    // un descuento con tope (`HAS_MAX_DISCOUNT_CAP`)—; al aceptar la tarjeta, la línea sí congela el tope del catálogo vivo.
     val withModifiers = lineaCompleta - descuentoDeLineaCents(
         type = linkedDiscount?.type,
         value = linkedDiscount?.value,

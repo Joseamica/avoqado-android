@@ -316,7 +316,7 @@ class PaymentFlowCancelacionDurableTest {
     fun `P1 cancelar mientras se crea la orden en efectivo se ignora y el cobro sigue`() = runTest {
         val orden = CompletableDeferred<Result<CreateOrderResponse>>()
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers { orden.await() }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
 
         viewModel.startPaymentFlow(cardCart())
@@ -329,7 +329,7 @@ class PaymentFlowCancelacionDurableTest {
         orden.complete(Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1"))))
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.recordCashPayment("order-1", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 1) { orderRepository.recordCashPayment("order-1", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any()) }
         assertTrue(transporte.llamadas.isEmpty())
         assertFalse(viewModel.debeSalir.value)
         assertTrue(viewModel.state.value is PaymentFlowState.Success)

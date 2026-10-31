@@ -104,6 +104,7 @@ class AvoqadoDatabaseMigrationTest {
             AvoqadoDatabaseMigrations.MIGRATION_15_16,
             AvoqadoDatabaseMigrations.MIGRATION_16_17,
             AvoqadoDatabaseMigrations.MIGRATION_17_18,
+            AvoqadoDatabaseMigrations.MIGRATION_18_19,
         ).build().also { roomDb ->
             roomDb.openHelper.writableDatabase
         }
@@ -193,7 +194,7 @@ class AvoqadoDatabaseMigrationTest {
         } finally { helper.close() }
         val database = openMigratedDatabase()
         try {
-            assertEquals(18, database.openHelper.writableDatabase.version)
+            assertEquals(19, database.openHelper.writableDatabase.version)
             val after = snapshot(database.openHelper.writableDatabase)
             val q15FinancialColumns = setOf("q15CaptureJson", "q15InitialResultJson", "q15ResultJson",
                 "q15Reason", "q15DetectedAt", "q15ReviewedAt", "q15ReviewedBy", "q15ReviewRole")
@@ -265,7 +266,7 @@ class AvoqadoDatabaseMigrationTest {
             q15ResultJson = applied.resultadoJson, q15Reason = applied.motivo, q15DetectedAt = 200)
         val migrated = openMigratedDatabase()
         try {
-            assertEquals(18, migrated.openHelper.writableDatabase.version)
+            assertEquals(19, migrated.openHelper.writableDatabase.version)
             migrated.pendingPaymentDao().insert(original)
             assertEquals(original, migrated.pendingPaymentDao().findForVenue(venue, key))
             assertEquals(1, migrated.pendingPaymentDao().registrarResultadoQ15(venue, key,
@@ -340,7 +341,7 @@ class AvoqadoDatabaseMigrationTest {
         } finally { helper.close() }
         val database = openMigratedDatabase()
         try {
-            assertEquals(18, database.openHelper.writableDatabase.version)
+            assertEquals(19, database.openHelper.writableDatabase.version)
             val after = snapshot(database.openHelper.writableDatabase)
             assertEquals(1, after.size)
             assertEquals(before.single().keys + "cashDrawerSessionId", after.single().keys)

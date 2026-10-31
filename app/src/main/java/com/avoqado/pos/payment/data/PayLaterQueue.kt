@@ -36,7 +36,8 @@ import javax.inject.Singleton
 /** Qué pasó al mandar una cuenta de «Pagar después» ([OrderRepository.leerPagarDespues]). */
 sealed interface DesenlacePagarDespues {
     /** 2xx con `order.id`: la cuenta EXISTE. [totalCents] null = no se pudo leer su importe. */
-    data class Creada(val orderId: String, val totalCents: Int?, val orden: OrderData? = null) : DesenlacePagarDespues
+    data class Creada(val orderId: String, val totalCents: Int?, val orden: OrderData? = null,
+        val motivoRevision: String? = null) : DesenlacePagarDespues
     /** No hubo respuesta (red caída, plazo vencido): la pasada se corta. */
     data object SinRespuesta : DesenlacePagarDespues
     /** Una respuesta que no dice nada de la cuenta (5xx, 408/429, intermediario, 2xx sin `order.id`): sigue pendiente. */
@@ -99,7 +100,7 @@ fun tituloDePagarDespues(fila: PayLaterRow): String =
     "Pagar después · ${fila.customerName} · ${formatMoneyFromCents(fila.totalEsperadoCents)}"
 
 fun detalleDePagarDespues(fila: PayLaterRow): String? = when (fila.estado) {
-    PayLaterRow.Estado.REVISAR -> fila.totalRegistradoCents
+    PayLaterRow.Estado.REVISAR -> fila.motivo ?: fila.totalRegistradoCents
         ?.let { "Se registró por ${formatMoneyFromCents(it)}, no por ${formatMoneyFromCents(fila.totalEsperadoCents)}" }
         ?: PAGAR_DESPUES_IMPORTE_DESCONOCIDO
     else -> fila.motivo
@@ -219,14 +220,23 @@ class PayLaterQueue @Inject constructor(
 
     // MARK: - El envío
 
-    suspend fun mandar(venueId: String, cuerpo: String): DesenlacePagarDespues = try {
-        orderRepository.enviarPagarDespues(venueId, cuerpo)
-            .let { OrderRepository.leerPagarDespues(it.code, it.contentType, it.ngrokError, it.body) }
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Log.w(TAG, "Pagar después sin respuesta: ${e.message}")
-        DesenlacePagarDespues.SinRespuesta
+    suspend fun mandar(venueId: String, cuerpo: String): DesenlacePagarDespues {
+        val respuesta: OrderRepository.RespuestaCruda
+        val desenlace: DesenlacePagarDespues
+        try {
+            respuesta = orderRepository.enviarPagarDespues(venueId, cuerpo)
+            desenlace = OrderRepository.leerPagarDespues(respuesta.code, respuesta.contentType, respuesta.ngrokError, respuesta.body)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Pagar después sin respuesta: ${e.message}")
+            return DesenlacePagarDespues.SinRespuesta
+        }
+        // Una cuenta conocida sin prueba de cortesía no es un fallo de red ni un rechazo que diga que no existe.
+        return if (desenlace is DesenlacePagarDespues.Creada && CortesiaPersistida.solicitada(cuerpo) &&
+            !CortesiaPersistida.confirmada(cuerpo, respuesta.body)) {
+            desenlace.copy(motivoRevision = "${CortesiaPersistida.AVISO} Folio: ${desenlace.orderId}.")
+        } else desenlace
     }
 
     // MARK: - La copia guardada (A-5) y la venta por recuperar (A-4): sólo local, nunca se manda nada
@@ -307,11 +317,12 @@ class PayLaterQueue @Inject constructor(
         val desenlace = mandar(fila.venueId, fila.cuerpo)
         when (desenlace) {
             is DesenlacePagarDespues.Creada ->
-                if (desenlace.totalCents == fila.totalEsperadoCents) {
+                if (desenlace.motivoRevision == null && desenlace.totalCents == fila.totalEsperadoCents) {
                     cerrarAceptada(fila.id)
                 } else {
                     cambiar(fila.id) {
                         it.copy(estado = PayLaterRow.Estado.REVISAR, orderId = desenlace.orderId, totalRegistradoCents = desenlace.totalCents,
+                            motivo = desenlace.motivoRevision,
                             intentos = it.intentos + 1)
                     }
                 }

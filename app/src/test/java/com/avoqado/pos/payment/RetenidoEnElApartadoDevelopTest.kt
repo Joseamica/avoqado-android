@@ -95,7 +95,7 @@ class RetenidoEnElApartadoDevelopTest {
                 val fila = firstArg<PendingPaymentEntity>()
                 filas[fila.id] = filaAlReemplazar(filas[fila.id], fila)
             }
-            coEvery { pagos.actualizarApartadoEnVuelo(any(), any(), any()) } answers {
+            coEvery { pagos.actualizarApartadoEnVuelo(any(), any(), any(), any()) } answers {
                 val fila = filas[firstArg<String>()]?.takeIf { it.syncStatus == "EN_VUELO" }
                 if (fila == null) 0 else {
                     filas[fila.id] = fila.copy(amountCents = secondArg(), orderId = thirdArg()); 1

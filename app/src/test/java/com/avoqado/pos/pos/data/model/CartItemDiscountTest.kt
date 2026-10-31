@@ -38,6 +38,7 @@ class CartItemDiscountTest {
         discountValue: Double? = null,
         isCortesia: Boolean = false,
         weightKg: Double? = null,
+        discountMax: Double? = null,
     ) = CartItem(
         type = CartItemType.ProductItem("p1"),
         name = "Producto",
@@ -48,6 +49,7 @@ class CartItemDiscountTest {
         itemDiscountId = if (discountType != null) "disc-1" else null,
         itemDiscountType = discountType,
         itemDiscountValue = discountValue,
+        itemDiscountMax = discountMax,
         weightKg = weightKg,
     )
 
@@ -221,5 +223,170 @@ class CartItemDiscountTest {
 
         assertEquals(200, item.itemDiscountCents)
         assertEquals(1800, item.totalPrice)
+    }
+
+    // MARK: - D12: el ajuste sólo baja el precio de un PRODUCTO
+
+    @Test
+    fun `un ajuste mayor que el precio vigente no cuenta`() {
+        // Catálogo que bajó (o carrito viejo): el ajuste de $80 ya no baja nada contra un precio vigente de $60.
+        val item = CartItem(
+            type = CartItemType.ProductItem("p1"),
+            name = "Producto",
+            unitPrice = 6000,
+            priceAdjustment = 8000,
+        )
+
+        assertEquals(6000, item.effectiveUnitPrice)
+        assertEquals(6000, item.totalPrice)
+    }
+
+    @Test
+    fun `por peso al centavo`() {
+        // $200.00/kg ajustado a $100.05/kg × 0.300 kg = $30.015 → $30.02 (half-up), igual que el servidor y iOS.
+        val item = CartItem(
+            type = CartItemType.ProductItem("p1"),
+            name = "Jamón",
+            unitPrice = 20000,
+            priceAdjustment = 10005,
+            weightKg = 0.3,
+        )
+
+        assertEquals(3002, item.lineBeforeDiscountCents)
+    }
+
+    @Test
+    fun `un Otro importe ajustado hacia arriba sigue valiendo el ajuste`() {
+        val item = CartItem(
+            type = CartItemType.CustomAmount,
+            name = "Otro importe",
+            unitPrice = 10000,
+            priceAdjustment = 12000,
+        )
+
+        assertEquals(12000, item.effectiveUnitPrice)
+    }
+
+    // MARK: - D13: el tope máximo del descuento de catálogo (`maxDiscountAmount`, en pesos), como el servidor
+
+    @Test
+    fun `el tope recorta un porcentaje`() {
+        // 50 % de $100 = $50, pero el máximo es $10.
+        assertEquals(1000, descuentoDeLineaCents("PERCENTAGE", 50.0, 10000, maxPesos = 10.0))
+        assertEquals(5000, descuentoDeLineaCents("PERCENTAGE", 50.0, 10000))
+    }
+
+    @Test
+    fun `un tope mayor que el calculo no cambia nada`() {
+        assertEquals(5000, descuentoDeLineaCents("PERCENTAGE", 50.0, 10000, maxPesos = 80.0))
+    }
+
+    @Test
+    fun `un tope en cero deja el descuento en cero, igual que el servidor`() {
+        assertEquals(0, descuentoDeLineaCents("PERCENTAGE", 50.0, 10000, maxPesos = 0.0))
+    }
+
+    @Test
+    fun `el tope recorta un monto fijo`() {
+        assertEquals(1000, descuentoDeLineaCents("FIXED_AMOUNT", 30.0, 10000, maxPesos = 10.0))
+    }
+
+    @Test
+    fun `el tope redondea al centavo hacia arriba en el medio`() {
+        // $0.125 = 12.5 centavos → 13 (half-up, como el resto aritmética).
+        assertEquals(13, descuentoDeLineaCents("PERCENTAGE", 50.0, 10000, maxPesos = 0.125))
+    }
+
+    @Test
+    fun `el renglon con descuento 50 por ciento maximo 10 pesos cobra 90`() {
+        val item = linea(unitPrice = 10000, discountType = "PERCENTAGE", discountValue = 50.0, discountMax = 10.0)
+
+        assertEquals(1000, item.itemDiscountCents)
+        assertEquals(9000, item.totalPrice)
+    }
+
+    @Test
+    fun `con Ajuste de precio a 80 el tope sigue mandando`() {
+        val item = linea(unitPrice = 10000, discountType = "PERCENTAGE", discountValue = 50.0, discountMax = 10.0)
+            .copy(priceAdjustment = 8000)
+
+        // 50 % de $80 = $40, tope $10 => neto $70.
+        assertEquals(7000, item.totalPrice)
+    }
+
+    @Test
+    fun `un ajuste viejo hacia arriba no infla el descuento, el servidor cobra 90`() {
+        // Codex r2: carrito viejo con ajuste $180 sobre un precio vigente de $100. Precio efectivo = $100.
+        val item = linea(unitPrice = 10000, discountType = "PERCENTAGE", discountValue = 50.0, discountMax = 10.0)
+            .copy(priceAdjustment = 18000)
+
+        assertEquals(9000, item.totalPrice)
+    }
+
+    @Test
+    fun `sin foto de tope la linea descuenta como antes`() {
+        val item = linea(unitPrice = 10000, discountType = "PERCENTAGE", discountValue = 50.0)
+
+        assertEquals(5000, item.itemDiscountCents)
+    }
+
+    @Test
+    fun `el Discount del catalogo decodifica maxDiscountAmount, y ausente o null es sin tope`() {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val con = json.decodeFromString<Discount>("""{"id":"d","name":"n","value":50,"type":"PERCENTAGE","scope":"ITEM","maxDiscountAmount":10.0}""")
+        val nulo = json.decodeFromString<Discount>("""{"id":"d","name":"n","value":50,"type":"PERCENTAGE","scope":"ITEM","maxDiscountAmount":null}""")
+        val ausente = json.decodeFromString<Discount>("""{"id":"d","name":"n","value":50,"type":"PERCENTAGE","scope":"ITEM"}""")
+
+        assertEquals(10.0, con.maxDiscountAmount!!, 0.0)
+        assertEquals(null, nulo.maxDiscountAmount)
+        assertEquals(null, ausente.maxDiscountAmount)
+    }
+
+    // MARK: - D13: el tope también en el descuento de CUENTA (`Discount.calculateDiscount`)
+
+    private fun deCuenta(type: String, value: Double, max: Double? = null) =
+        Discount(id = "d-cuenta", name = "Cuenta", value = value, type = type, scope = "ORDER", maxDiscountAmount = max)
+
+    @Test
+    fun `descuento de cuenta 20 por ciento maximo 10 pesos sobre 100 descuenta 10`() {
+        assertEquals(1000, deCuenta("PERCENTAGE", 20.0, max = 10.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta con tope mayor que el bruto no cambia`() {
+        assertEquals(2000, deCuenta("PERCENTAGE", 20.0, max = 50.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta sin tope no cambia`() {
+        assertEquals(2000, deCuenta("PERCENTAGE", 20.0).calculateDiscount(10000))
+        assertEquals(3000, deCuenta("FIXED_AMOUNT", 30.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta fijo de 30 con tope 10 descuenta 10`() {
+        assertEquals(1000, deCuenta("FIXED_AMOUNT", 30.0, max = 10.0).calculateDiscount(10000))
+        assertEquals(1000, deCuenta("FIXED", 30.0, max = 10.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta con tope en cero queda en cero, igual que el servidor`() {
+        assertEquals(0, deCuenta("PERCENTAGE", 20.0, max = 0.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `descuento de cuenta fijo mayor que la cuenta sigue topado a la cuenta`() {
+        assertEquals(10000, deCuenta("FIXED_AMOUNT", 300.0, max = 500.0).calculateDiscount(10000))
+    }
+
+    @Test
+    fun `el carrito cobra 90 con un descuento de cuenta 20 por ciento maximo 10 sobre 100`() {
+        val state = com.avoqado.pos.pos.presentation.cart.CartState(
+            items = listOf(CartItem(type = CartItemType.ProductItem("p1"), name = "Playera", unitPrice = 10000)),
+            orderDiscount = deCuenta("PERCENTAGE", 20.0, max = 10.0),
+        )
+
+        assertEquals(1000, state.orderDiscountCents)
+        assertEquals(9000, state.totalCents)
     }
 }

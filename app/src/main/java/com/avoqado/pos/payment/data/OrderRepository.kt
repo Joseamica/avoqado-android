@@ -660,6 +660,8 @@ class OrderRepository @Inject constructor(
                                             put("displayedUnitPrice", displayed)
                                             put("catalogAt", horaDelCatalogo)
                                         }
+                                        // D12: el «Ajuste de precio» (la cola sin red arma el pedido por aquí también).
+                                        item.adjustedUnitPrice?.takeIf { !item.isCortesia }?.let { put("adjustedUnitPrice", it) }
                                     } else {
                                         // Custom amount line item (e.g. "Otro importe")
                                         put("name", item.name)
@@ -1207,6 +1209,11 @@ class OrderRepository @Inject constructor(
         importeAceptadoCents: Int? = null,
         /** Rappi 2b: efectivo ya recibido con un saldo guardado ⇒ viaja con `isOfflineReplay` (el contrato del replay). */
         capturaPrevia: Boolean = false,
+        /**
+         * D1 «fotocopia del ticket»: la copia de los renglones del papel de ESTA parte, ya serializada por `CopiaDelTicket` (JSON
+         * válido y dentro de los topes). Viaja tal cual como `lineasDelTicket`. null = no viaja y el body queda byte a byte como hoy.
+         */
+        lineasDelTicket: String? = null,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -1232,6 +1239,10 @@ class OrderRepository @Inject constructor(
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
                 if (capturaPrevia) append("\"isOfflineReplay\":true,")
+                // Un OBJETO JSON (sus textos ya vienen escapados): se pega como valor. Se vuelve a leer antes, porque un texto roto
+                // dejaría el body inválido y el cobro rebotaría por una copia que es sólo texto del ticket: sin objeto, no viaja.
+                lineasDelTicket?.let { runCatching { Json.parseToJsonElement(it) as JsonObject }.getOrNull() }
+                    ?.let { append("\"lineasDelTicket\":$it,") }
                 append("\"idempotencyKey\":\"$idempotencyKey\"")
                 append("}")
             }

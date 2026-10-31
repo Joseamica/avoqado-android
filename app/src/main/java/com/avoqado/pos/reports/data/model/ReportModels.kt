@@ -89,13 +89,18 @@ data class PaymentMethodBreakdown(
     val count: Int = 0,
     val percentage: Double = 0.0,
 ) {
+    // Todos los valores del enum `PaymentMethod` del servidor tienen nombre: «BANK_TRANSFER» salía crudo en el informe
+    // (visto en iOS el 30-oct, igual aquí). Mismos nombres que `PaymentMethodDisplay`.
     val label: String
         get() = when (method.uppercase()) {
             "CASH" -> "Efectivo"
             "CARD", "CREDIT_CARD", "DEBIT_CARD" -> "Tarjeta"
-            "TRANSFER" -> "Transferencia"
+            "TRANSFER", "BANK_TRANSFER" -> "Transferencia"
             "WALLET" -> "Monedero"
+            "DIGITAL_WALLET" -> "Cartera digital"
             "GIFT_CARD" -> "Tarjeta de regalo"
+            "CRYPTOCURRENCY" -> "Criptomoneda"
+            "OTHER" -> "Otro"
             else -> method
         }
 
@@ -103,8 +108,8 @@ data class PaymentMethodBreakdown(
         get() = when (method.uppercase()) {
             "CASH" -> "banknote"
             "CARD", "CREDIT_CARD", "DEBIT_CARD" -> "creditcard"
-            "TRANSFER" -> "arrow_forward"
-            "WALLET" -> "wallet"
+            "TRANSFER", "BANK_TRANSFER" -> "arrow_forward"
+            "WALLET", "DIGITAL_WALLET" -> "wallet"
             "GIFT_CARD" -> "giftcard"
             else -> "creditcard"
         }

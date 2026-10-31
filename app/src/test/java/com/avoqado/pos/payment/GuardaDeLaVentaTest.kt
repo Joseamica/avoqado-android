@@ -99,7 +99,7 @@ class GuardaDeLaVentaTest {
             }
             coEvery { dao.findForVenue(any(), any()) } coAnswers { filas[secondArg<String>()]?.takeIf { it.venueId == firstArg<String>() } }
             coEvery { dao.findByIdQ15(any()) } coAnswers { filas[firstArg<String>()] }
-            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any()) } coAnswers {
+            coEvery { dao.actualizarApartadoEnVuelo(any(), any(), any(), any()) } coAnswers {
                 val f = filas[firstArg()]?.takeIf { it.syncStatus == "EN_VUELO" } ?: return@coAnswers 0
                 filas[f.id] = f.copy(amountCents = secondArg(), orderId = thirdArg()); 1
             }
@@ -247,7 +247,7 @@ class GuardaDeLaVentaTest {
 
         assertNull("la orden de A no es la de B", campo("createdOrderId"))
         assertEquals(deB, vm.state.value)
-        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-vales-A", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-vales-A", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
     }
 
     // MARK: - La venta B no lleva datos de A (folio de la comanda)
@@ -274,7 +274,7 @@ class GuardaDeLaVentaTest {
     @Test
     fun `la comanda de la venta vieja sale con su orden aunque mientras imprimia empezara otra`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns ordenCreada("orden-A")
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns pagado()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns pagado()
         val ticket = CompletableDeferred<Unit>()
         coEvery { printerService.autoPrintReceipt(any()) } coAnswers { ticket.await() }
         val ordenDeLaComanda = slot<String?>()
@@ -418,7 +418,7 @@ class GuardaDeLaVentaTest {
         val caja = CompletableDeferred<Unit>()
         coEvery { cashDrawerRepository.getOpenSession() } coAnswers { caja.await(); null }
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns ordenCreada("orden-A")
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns pagado()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns pagado()
         val conPremio = CartState(
             items = listOf(cafe("e1")),
             pendingStampReward = com.avoqado.pos.loyalty.data.PremioPorAplicar(id = "rw1", etiqueta = "\$10 de premio", tipo = "FIXED_AMOUNT", valor = 10.0),
@@ -434,7 +434,7 @@ class GuardaDeLaVentaTest {
         advanceUntilIdle()
 
         assertTrue("con premio no hay apartado", disco.filas.isEmpty())
-        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-A", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-A", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
         verify(exactly = 0) { cancelacionDeCobro.registrar(any()) }
         assertNull(campo("createdOrderId"))
         assertEquals(deB, vm.state.value)
@@ -449,7 +449,7 @@ class GuardaDeLaVentaTest {
         val caja = CompletableDeferred<Unit>()
         coEvery { cashDrawerRepository.getOpenSession() } coAnswers { caja.await(); null }
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns ordenCreada("orden-A")
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns pagado()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns pagado()
 
         vm.startPaymentFlow(dosCafes)
         vm.selectPaymentMethod(PaymentMethod.CASH)
@@ -460,7 +460,7 @@ class GuardaDeLaVentaTest {
         caja.complete(Unit)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-A", 10_000, any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-A", 10_000, any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
         coVerify(exactly = 1) { cashDrawerRepository.addCashSale(10_000, "orden-A", any(), any(), any(), llaveDelCobro = any()) }
         verify(exactly = 0) { cancelacionDeCobro.registrar(any()) }
         assertNull("la orden de A no es la de B", campo("createdOrderId"))
@@ -499,7 +499,7 @@ class GuardaDeLaVentaTest {
             Result.failure(OrderRepository.ServerException(400, "rechazo")),
             ordenCreada("orden-3"),
         )
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns pagado()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns pagado()
         vm.startPaymentFlow(dosCafes)
         vm.selectPaymentMethod(PaymentMethod.CASH)
         vm.processCashPayment(10_000)
@@ -546,7 +546,7 @@ class GuardaDeLaVentaTest {
     @Test
     fun `el respaldo del 2xx comprobado de una orden muestra el importe y el cambio que confirmo el servidor`() = runTest {
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns ordenCreada("orden-A")
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns
             Result.failure(OrderRepository.CobroRegistradoSinGuardar(IllegalStateException("disco"), importeCobradoCents = 8_000))
 
         vm.startPaymentFlow(dosCafes) // $100
@@ -751,7 +751,7 @@ class GuardaDeLaVentaTest {
         coEvery { api.getAreaTicketCheckout(VENUE, any()) } answers {
             com.avoqado.pos.areatickets.data.AreaTicketEnvelope(success = true, data = com.avoqado.pos.areatickets.data.CheckoutData(sesionConVale(secondArg(), "b1")))
         }
-        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) } returns pagado()
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } returns pagado()
         val caja = CompletableDeferred<com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity?>()
         coEvery { cashDrawerRepository.getOpenSession() } coAnswers { caja.await() }
         vm = nuevoVm(vales = valesReales)
@@ -774,7 +774,7 @@ class GuardaDeLaVentaTest {
 
         coVerify(exactly = 1) { api.materializeAreaTicketCheckout(VENUE, "sesion-A", any()) }
         coVerify(exactly = 0) { api.materializeAreaTicketCheckout(VENUE, "sesion-B", any()) }
-        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-de-sesion-A", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any()) }
+        coVerify(exactly = 1) { orderRepository.recordCashPayment("orden-de-sesion-A", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
         assertEquals("la sesión de B no se toca", "sesion-B", sesionDeVales.current()?.id)
     }
 

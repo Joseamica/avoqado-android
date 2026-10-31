@@ -1,10 +1,13 @@
 package com.avoqado.pos.pos.presentation.cart
 
+import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.payment.PrefsEnMemoria
+import com.avoqado.pos.payment.data.CortesiaPersistida
+import com.avoqado.pos.payment.data.detalleDePagarDespues
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PayLaterQueue
 import com.avoqado.pos.payment.data.PayLaterRow
@@ -25,11 +28,20 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -81,14 +93,15 @@ class PagarDespuesCarritoTest {
         coEvery { staffRepository.getActiveStaff() } returns Result.success(emptyList())
     }
 
-    private fun createViewModel(copiasGuardadas: SavedCartsRepository = guardados, cola: PayLaterQueue = fila): CartViewModel = CartViewModel(
+    private fun createViewModel(copiasGuardadas: SavedCartsRepository = guardados, cola: PayLaterQueue = fila,
+        repository: OrderRepository = ordenes): CartViewModel = CartViewModel(
         productsRepository = productsRepository,
         discountsRepository = discountsRepository,
         savedCartsRepository = copiasGuardadas,
         authRepository = authRepository,
         secureStorage = secureStorage,
         activeCartState = mockk<ActiveCartState>(relaxed = true),
-        orderRepository = ordenes,
+        orderRepository = repository,
         staffRepository = staffRepository,
         classCheckoutSeed = mockk<ClassCheckoutSeed>(relaxed = true).also { every { it.consume() } returns null },
         validateReferralUseCase = mockk(relaxed = true),
@@ -1005,6 +1018,317 @@ class PagarDespuesCarritoTest {
         assertEquals(2, vm.cartState.value.items.size)
         coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
         assertNotNull(vm.selectedCustomer.value)
+    }
+
+    // Task10 F3: the active writer must retain original comp evidence, not only compare the total.
+    private enum class RespuestaCortesia { CANONICA, SIN_ITEMS, MOTIVO_CAMBIADO }
+
+    /** Only the HTTP transport is replaced; both writers and the response parser remain production code. */
+    private inner class CortesiaActiva(val conPremio: Boolean = false) : AutoCloseable {
+        var respuesta = RespuestaCortesia.CANONICA
+        var sinConexion = false
+        val enviados = mutableListOf<String>()
+        var filasAlEnviar = emptyList<PayLaterRow>()
+        var carritoAlEnviar: CartState? = null
+        var copiaAlEnviar: com.avoqado.pos.pos.data.model.SavedCart? = null
+        private val http = OkHttpClient.Builder().addInterceptor { chain -> contestar(chain.request()) }.build()
+        val repository = OrderRepository(secureStorage, http).apply { baseUrl = "http://127.0.0.1:9/api/v1" }
+        val queue = PayLaterQueue(disco.context, repository, secureStorage, guardados, mockk(relaxed = true))
+            .apply { io = Dispatchers.Unconfined }
+        val vm = createViewModel(repository = repository, cola = queue)
+        val totalCents = if (conPremio) 1500 else 2000
+        var totalCanonicoCents: Int? = totalCents
+        var antesDeContestar: (() -> Unit)? = null
+        val lineaCortesia: String
+
+        init {
+            vm.addProduct(cafe)
+            lineaCortesia = vm.cartState.value.items.single().id
+            vm.markItemAsCortesia(lineaCortesia, "Invitación")
+            vm.addProduct(pan)
+            assertTrue(vm.saveCurrentCart("Cortesía original de Ana"))
+            vm.restoreSavedCart(guardados.savedCarts.value.single())
+            vm.setSelectedCustomer("cli-1", "Ana")
+            if (conPremio) assertTrue(vm.setPendingStampReward(
+                com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 5.0)))
+            assertEquals(totalCents, vm.cartState.value.totalCents)
+            assertEquals(lineaCortesia, vm.cartState.value.items.single { it.isCortesia }.id)
+        }
+
+        private fun contestar(request: Request): Response {
+            val raw = Buffer().also { requireNotNull(request.body).writeTo(it) }.readUtf8()
+            enviados += raw
+            filasAlEnviar = queue.filas.value
+            carritoAlEnviar = vm.cartState.value
+            copiaAlEnviar = guardados.savedCarts.value.singleOrNull()
+            if (sinConexion) throw java.io.IOException("sin red")
+            antesDeContestar?.invoke()
+            val order = JSONObject().put("id", "ord-1")
+            totalCanonicoCents?.let { order.put("total", it / 100.0) }
+            if (respuesta != RespuestaCortesia.SIN_ITEMS) {
+                order.put("items", JSONArray().put(JSONObject().put("externalId", lineaCortesia)
+                    .put("isCortesia", true)
+                    .put("cortesiaReason", if (respuesta == RespuestaCortesia.MOTIVO_CAMBIADO) "Otro motivo" else "Invitación")))
+            }
+            if (conPremio) order.put("stampReward", JSONObject().put("applied", true).put("discountAmount", 5.0))
+            return Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(201).message("Created")
+                .body(JSONObject().put("success", true).put("order", order).toString()
+                    .toResponseBody("application/json".toMediaType())).build()
+        }
+
+        fun comprobarCaptura(body: String) {
+            val request = JSONObject(body)
+            assertEquals(totalCents, request.getInt("total"))
+            assertEquals("PAY_LATER", request.getString("paymentMethod"))
+            val items = request.getJSONArray("items")
+            val comp = (0 until items.length()).map { items.getJSONObject(it) }.single { it.optBoolean("isCortesia") }
+            assertEquals(lineaCortesia, comp.getString("externalId"))
+            assertEquals("Invitación", comp.getString("cortesiaReason"))
+        }
+
+        suspend fun comprobarFuente(original: PayLaterRow) {
+            assertEquals("The original queue key must remain available for review", listOf(original.id), queue.filas.value.map { it.id })
+            val actual = queue.filas.value.single()
+            // Resolution metadata may change; every captured source field must remain byte exact.
+            assertEquals(original, actual.copy(estado = original.estado, intentos = original.intentos,
+                motivo = original.motivo, orderId = original.orderId, totalRegistradoCents = original.totalRegistradoCents))
+            assertTrue("An existing account with unconfirmed comp evidence needs human review", actual.paraRevisar)
+            assertEquals(1, queue.porRevisar.first())
+            assertEquals("ord-1", actual.orderId)
+            assertEquals("${CortesiaPersistida.AVISO} Folio: ord-1.", actual.motivo)
+            assertEquals(actual.motivo, detalleDePagarDespues(actual))
+        }
+
+        override fun close() {
+            vm.viewModelScope.cancel()
+            http.connectionPool.evictAll()
+            http.dispatcher.executorService.shutdown()
+        }
+    }
+
+    private suspend fun cortesiaOnlineSinPrueba(respuesta: RespuestaCortesia) {
+        CortesiaActiva().use { f ->
+            f.respuesta = respuesta
+            val resultado = f.vm.createPayLaterOrder("cli-1")
+            val original = f.filasAlEnviar.single()
+            f.comprobarCaptura(original.cuerpo)
+            assertEquals(original.id, JSONObject(f.enviados.single()).getString("externalId"))
+            f.comprobarFuente(original)
+            assertFalse("A matching total alone must not report the original comp as created", resultado == ResultadoPagarDespues.Creada)
+        }
+    }
+
+    private suspend fun cortesiaReplaySinPrueba(respuesta: RespuestaCortesia) {
+        CortesiaActiva().use { f ->
+            f.sinConexion = true
+            assertTrue(f.vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Aviso)
+            val original = f.queue.filas.value.single()
+            f.comprobarCaptura(original.cuerpo)
+            assertEquals(PayLaterRow.Estado.PENDIENTE, original.estado)
+            assertTrue(JSONObject(original.cuerpo).getBoolean("isOfflineReplay"))
+            f.sinConexion = false; f.respuesta = respuesta
+            f.queue.drenar()
+            assertEquals(2, f.enviados.size)
+            assertEquals(original.cuerpo, f.enviados.last())
+            f.comprobarFuente(original)
+        }
+    }
+
+    private suspend fun cortesiaPremioSinPrueba(respuesta: RespuestaCortesia) {
+        CortesiaActiva(conPremio = true).use { f ->
+            f.respuesta = respuesta
+            val resultado = f.vm.createPayLaterOrder("cli-1")
+            f.comprobarCaptura(f.enviados.single())
+            assertEquals("rw1", JSONObject(f.enviados.single()).getString("stampRewardId"))
+            assertTrue("Rewards never enter the replay queue", f.filasAlEnviar.isEmpty())
+            assertTrue(f.queue.filas.value.isEmpty())
+            assertTrue(disco.enDisco.isEmpty())
+            assertEquals("Original reward sale must remain when its comp is not confirmed", f.carritoAlEnviar, f.vm.cartState.value)
+            assertEquals(listOf(requireNotNull(f.copiaAlEnviar)), guardados.savedCarts.value)
+            assertEquals(JSONObject(f.enviados.single()).getString("externalId"), f.vm.cartState.value.llavePagarDespues)
+            assertFalse(resultado == ResultadoPagarDespues.Creada)
+        }
+    }
+
+    @Test fun F3_online_con_total_igual_sin_items_conserva_fuente() = runTest { cortesiaOnlineSinPrueba(RespuestaCortesia.SIN_ITEMS) }
+    @Test fun F3_online_con_total_igual_motivo_cambiado_conserva_fuente() = runTest { cortesiaOnlineSinPrueba(RespuestaCortesia.MOTIVO_CAMBIADO) }
+    @Test fun F3_replay_con_total_igual_sin_items_conserva_fuente() = runTest { cortesiaReplaySinPrueba(RespuestaCortesia.SIN_ITEMS) }
+    @Test fun F3_replay_con_total_igual_motivo_cambiado_conserva_fuente() = runTest { cortesiaReplaySinPrueba(RespuestaCortesia.MOTIVO_CAMBIADO) }
+    @Test fun F3_premio_con_total_igual_sin_items_conserva_carrito_y_copia() = runTest { cortesiaPremioSinPrueba(RespuestaCortesia.SIN_ITEMS) }
+    @Test fun F3_premio_con_total_igual_motivo_cambiado_conserva_carrito_y_copia() = runTest { cortesiaPremioSinPrueba(RespuestaCortesia.MOTIVO_CAMBIADO) }
+
+    @Test fun F3_online_canonica_conserva_la_politica_de_aceptacion() = runTest {
+        CortesiaActiva().use { f ->
+            assertEquals(ResultadoPagarDespues.Creada, f.vm.createPayLaterOrder("cli-1"))
+            f.comprobarCaptura(f.enviados.single())
+            assertTrue(f.queue.filas.value.isEmpty()); assertTrue(guardados.savedCarts.value.isEmpty())
+            assertTrue(f.vm.cartState.value.isEmpty)
+        }
+    }
+
+    @Test fun F3_replay_canonica_retira_solo_la_misma_llave() = runTest {
+        CortesiaActiva().use { f ->
+            f.sinConexion = true
+            assertTrue(f.vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Aviso)
+            val original = f.queue.filas.value.single()
+            f.comprobarCaptura(original.cuerpo)
+            val foreign = original.copy(id = "pay-later:foreign", venueId = "venue-other")
+            assertTrue(f.queue.guardar(foreign))
+            f.sinConexion = false
+            f.queue.drenar()
+            assertEquals(2, f.enviados.size)
+            assertEquals(original.cuerpo, f.enviados.last())
+            assertEquals(listOf(foreign), f.queue.filas.value); assertTrue(guardados.savedCarts.value.isEmpty())
+        }
+    }
+
+    @Test fun F3_premio_canonica_no_encola_y_retira_fuente_y_premio_confirmados() = runTest {
+        CortesiaActiva(conPremio = true).use { f ->
+            assertEquals(ResultadoPagarDespues.Creada, f.vm.createPayLaterOrder("cli-1"))
+            f.comprobarCaptura(f.enviados.single())
+            assertTrue(f.filasAlEnviar.isEmpty()); assertTrue(f.queue.filas.value.isEmpty()); assertTrue(disco.enDisco.isEmpty())
+            assertTrue(guardados.savedCarts.value.isEmpty()); assertTrue(f.vm.cartState.value.isEmpty)
+            assertNull(f.vm.cartState.value.pendingStampRewardId); assertNull(f.vm.selectedCustomer.value)
+            assertNull(f.vm.avisoDelPremio.value)
+        }
+    }
+
+    private suspend fun cortesiaTotalSinPrueba(total: Int?, replay: Boolean = false, premio: Boolean = false) {
+        CortesiaActiva(conPremio = premio).use { f ->
+            if (replay) {
+                f.sinConexion = true
+                assertTrue(f.vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Aviso)
+                f.sinConexion = false
+            }
+            f.totalCanonicoCents = total
+            if (replay) {
+                val original = f.queue.filas.value.single()
+                f.queue.drenar()
+                f.comprobarFuente(original)
+            } else {
+                val resultado = f.vm.createPayLaterOrder("cli-1")
+                if (premio) {
+                    assertEquals(ResultadoPagarDespues.Error("${CortesiaPersistida.AVISO} Folio: ord-1."), resultado)
+                    assertEquals(f.carritoAlEnviar, f.vm.cartState.value)
+                    assertEquals(listOf(requireNotNull(f.copiaAlEnviar)), guardados.savedCarts.value)
+                    assertTrue(f.queue.filas.value.isEmpty()); assertTrue(disco.enDisco.isEmpty())
+                } else {
+                    f.comprobarFuente(f.filasAlEnviar.single())
+                    assertTrue(resultado is ResultadoPagarDespues.Aviso)
+                }
+            }
+        }
+    }
+
+    @Test fun F3_online_canonica_mayor_no_autovalida_el_total() = runTest { cortesiaTotalSinPrueba(2100) }
+    @Test fun F3_online_canonica_sin_total_conserva_fuente() = runTest { cortesiaTotalSinPrueba(null) }
+    @Test fun F3_replay_canonica_mayor_conserva_fuente() = runTest { cortesiaTotalSinPrueba(2100, replay = true) }
+    @Test fun F3_replay_canonica_sin_total_conserva_fuente() = runTest { cortesiaTotalSinPrueba(null, replay = true) }
+    @Test fun F3_premio_canonica_mayor_conserva_carrito() = runTest { cortesiaTotalSinPrueba(1600, premio = true) }
+    @Test fun F3_premio_canonica_sin_total_conserva_carrito() = runTest { cortesiaTotalSinPrueba(null, premio = true) }
+
+    @Test fun F3_online_canonica_menor_conserva_el_aviso_anterior() = runTest {
+        CortesiaActiva().use { f ->
+            f.totalCanonicoCents = 1900
+            assertEquals(ResultadoPagarDespues.Aviso(pagarDespuesOtroImporte("Ana", 1900, 2000)), f.vm.createPayLaterOrder("cli-1"))
+            assertTrue(f.queue.filas.value.isEmpty()); assertTrue(guardados.savedCarts.value.isEmpty())
+        }
+    }
+
+    @Test fun F3_replay_canonica_menor_conserva_revision_de_importe() = runTest {
+        CortesiaActiva().use { f ->
+            f.sinConexion = true
+            assertTrue(f.vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Aviso)
+            val original = f.queue.filas.value.single()
+            f.sinConexion = false; f.totalCanonicoCents = 1900
+            f.queue.drenar()
+            val actual = f.queue.filas.value.single()
+            assertEquals(original.cuerpo, actual.cuerpo); assertEquals(original.id, actual.id)
+            assertEquals(PayLaterRow.Estado.REVISAR, actual.estado)
+            assertEquals(1900, actual.totalRegistradoCents); assertNull(actual.motivo)
+            assertEquals("Se registró por \$19.00, no por \$20.00", detalleDePagarDespues(actual))
+        }
+    }
+
+    @Test fun F3_premio_canonica_menor_conserva_el_aviso_anterior_y_no_encola() = runTest {
+        CortesiaActiva(conPremio = true).use { f ->
+            f.totalCanonicoCents = 1400
+            assertEquals(ResultadoPagarDespues.Aviso(pagarDespuesOtroImporte("Ana", 1400, 1500)), f.vm.createPayLaterOrder("cli-1"))
+            assertTrue(f.queue.filas.value.isEmpty()); assertTrue(guardados.savedCarts.value.isEmpty())
+            assertTrue(disco.enDisco.isEmpty()); assertTrue(f.vm.cartState.value.isEmpty)
+        }
+    }
+
+    @Test fun F3_contexto_nuevo_no_cambia_el_esperado_ni_la_sucursal_de_la_fuente_capturada() = runTest {
+        CortesiaActiva().use { f ->
+            f.totalCanonicoCents = 2500 // Mayor que la captura original de 2000, aunque la venta nueva muestra 10000.
+            f.antesDeContestar = {
+                every { secureStorage.venueId } returns "venue-otra"
+                f.queue.alCambiarLaSesion()
+                f.vm.addProduct(cafe)
+            }
+            assertTrue(f.vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Aviso)
+            val original = f.filasAlEnviar.single(); val actual = f.queue.filas.value.single()
+            assertEquals(original.cuerpo, actual.cuerpo); assertEquals(original.id, actual.id)
+            assertEquals("venue-1", actual.venueId); assertEquals(2000, actual.totalEsperadoCents)
+            assertEquals(PayLaterRow.Estado.REVISAR, actual.estado)
+            assertEquals(0, f.queue.porRevisar.first())
+            assertEquals(10000, f.vm.cartState.value.totalCents)
+        }
+    }
+
+    @Test fun current_PAY_LATER_preserves_captured_type_actor_and_identical_replay_body() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setOrderType("TAKEOUT")
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers {
+            enviados += secondArg<String>()
+            assertEquals("venue-1", firstArg<String>())
+            every { secureStorage.venueId } returns "venue-2"
+            every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-2"
+            vm.setOrderType("DELIVERY")
+            throw java.io.IOException("sin red")
+        }
+        assertTrue(vm.createPayLaterOrder("cli-1") is ResultadoPagarDespues.Aviso)
+        val source = fila.filas.value.single()
+        assertEquals("venue-1", source.venueId); assertEquals("staff-1", source.staffId)
+        val online = JSONObject(enviados.single())
+        assertEquals(source.id, online.getString("externalId"))
+        assertEquals("staff-1", online.getString("staffId"))
+        assertEquals("cli-1", online.getString("customerId"))
+        assertEquals("PAY_LATER", online.getString("paymentMethod"))
+        every { secureStorage.venueId } returns "venue-1"
+        fila.alCambiarLaSesion()
+        responde(201, creada(100.0))
+        fila.drenar()
+        assertEquals(2, enviados.size)
+        assertEquals(source.cuerpo, enviados.last())
+        assertEquals("staff-1", JSONObject(enviados.last()).getString("staffId"))
+        assertEquals(source.id, JSONObject(enviados.last()).getString("externalId"))
+        assertTrue(fila.filas.value.isEmpty())
+        assertEquals("TAKEOUT", online.getString("orderType"))
+        assertEquals("TAKEOUT", JSONObject(enviados.last()).getString("orderType"))
+    }
+
+    @Test fun current_PAY_LATER_reward_preserves_the_type_captured_before_the_response() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.setOrderType("DELIVERY")
+        assertTrue(vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Descuento", "FIXED_AMOUNT", 30.0)))
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers {
+            enviados += secondArg<String>()
+            every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-2"
+            vm.setOrderType("TAKEOUT")
+            OrderRepository.RespuestaCruda(201, "application/json", null,
+                """{"success":true,"order":{"id":"ord-1","total":70.0,"stampReward":{"applied":true,"discountAmount":30.0}}}""")
+        }
+        assertEquals(ResultadoPagarDespues.Creada, vm.createPayLaterOrder("cli-1"))
+        assertTrue(fila.filas.value.isEmpty()); assertTrue(disco.enDisco.isEmpty())
+        val captured = JSONObject(enviados.single())
+        assertEquals("PAY_LATER", captured.getString("paymentMethod"))
+        assertEquals("staff-1", captured.getString("staffId"))
+        assertEquals("rw1", captured.getString("stampRewardId"))
+        assertEquals("DELIVERY", captured.getString("orderType"))
     }
 
     // ── Tarjetas de regalo 1b sobre el «Pagar después» nuevo (unión con develop, 28-oct) ──

@@ -64,10 +64,10 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
             every { it.userId } returns "c223456789012345678901234"
         }
         every { cash.processCashPayment(any(), any()) } returns CashPaymentResult.Success(changeCents = 0)
-        coEvery { order.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { order.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) } returns
             Result.failure(OrderRepository.ServerException(403, "Se alcanzó el transporte sin la guarda Q34"))
         // Si la guarda llega tarde, el fallo de reserva impide red pero deja evidencia de la llamada indebida.
-        coEvery { cash.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } throws IOException("reserva alcanzada")
+        coEvery { cash.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) } throws IOException("reserva alcanzada")
         return PaymentFlowViewModel(tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             orderRepository = real?.let { OrderRepository(it.storage, it.client, it.dao) } ?: order,
@@ -100,9 +100,9 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
         val estado = m.state.value
         assertTrue("Q34 debe explicar la falta de red antes de reservar", estado is PaymentFlowState.Error)
         assertEquals(TextosDeTarjetas.CUENTA_SIN_RED, (estado as PaymentFlowState.Error).message)
-        coVerify(exactly = 0) { cash.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cash.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) }
         verify(exactly = 0) { cash.processCashPayment(any(), any()) }
-        coVerify(exactly = 0) { order.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { order.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), lineasDelTicket = any()) }
     }
 
     @Test fun `Q34 sin ruta o sin servidor ninguna entrada reserva efectivo`() = runTest {

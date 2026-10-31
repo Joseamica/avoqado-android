@@ -28,10 +28,12 @@ object TextosMerma {
     const val SIN_RESULTADOS = "No encontramos ese artículo."
 
     const val NO_REGISTRABLES = "Estos productos no aparecen en la lista de merma:"
+    // Lo ya vendido salió del inventario al venderse: mermarlo lo descontaría dos veces (Testarudo, 30-oct).
+    private const val SI_YA_SE_VENDIO = "Si ya se vendió y lo rehicieron, no es merma: cobra el nuevo como «Cortesía»."
     const val MOTIVO_SIN_INVENTARIO =
-        "No lleva inventario. Si lo preparan aquí, registra la merma de sus ingredientes. Si lo compran hecho, pide al dueño o gerente que en el dashboard abra el producto › «Configurar Inventario» › «Rastrear Inventario» › «Seguimiento de Cantidad»."
+        "No lleva inventario. Si lo preparan aquí, registra la merma de sus ingredientes. Si lo compran hecho, pide al dueño o gerente que en el dashboard abra el producto › «Configurar Inventario» › «Rastrear Inventario» › «Seguimiento de Cantidad». $SI_YA_SE_VENDIO"
     const val MOTIVO_CON_INVENTARIO =
-        "Se descuenta por receta o su inventario está incompleto. Registra la merma de sus ingredientes, o pide al dueño o gerente que revise su inventario en el dashboard («Configurar Inventario»)."
+        "Se descuenta por receta o su inventario está incompleto. Registra la merma de sus ingredientes, o pide al dueño o gerente que revise su inventario en el dashboard («Configurar Inventario»). $SI_YA_SE_VENDIO"
 
     fun motivoNoRegistrable(m: MotivoNoRegistrable): String = when (m) {
         MotivoNoRegistrable.SIN_INVENTARIO -> MOTIVO_SIN_INVENTARIO

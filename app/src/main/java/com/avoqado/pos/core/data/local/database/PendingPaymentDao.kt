@@ -123,6 +123,18 @@ interface PendingPaymentDao {
 
     @Query(Q15_PAYMENT_RESULT_SQL)
     suspend fun registrarResultadoQ15(venueId: String, id: String, aplicado: Boolean, motivo: String?, resultadoJson: String?, ahora: Long): Int
+    suspend fun recuperarResultadoPorLlaveQ15(original: PendingPaymentEntity, motivo: String?, resultadoJson: String,
+        ahora: Long, sigueVigente: () -> Boolean): Int = com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(original.venueId) {
+        recuperarResultadoPorLlaveTxQ15(original, motivo, resultadoJson, ahora, sigueVigente)
+    }
+    @androidx.room.Transaction
+    suspend fun recuperarResultadoPorLlaveTxQ15(original: PendingPaymentEntity, motivo: String?, resultadoJson: String,
+        ahora: Long, sigueVigente: () -> Boolean): Int {
+        // El writer ya está tomado: la igualdad completa protege también autor, caja, captura, historia y ticket.
+        if (!sigueVigente() || findForVenue(original.venueId, original.id) != original ||
+            com.avoqado.pos.payment.data.ResultadoDeEfectivoPorLlave.captura(original) == null || !sigueVigente()) return 0
+        return registrarResultadoQ15(original.venueId, original.id, true, motivo, resultadoJson, ahora)
+    }
     @Query(Q15_PAYMENT_HOLD_SQL)
     suspend fun retenerPagoQ15(venueId: String, id: String, motivo: String, ahora: Long): Int
     @Query(Q15_PAYMENT_REVIEW_SQL)
@@ -237,8 +249,11 @@ interface PendingPaymentDao {
      * acaba de nacer, en el apartado que sigue `EN_VUELO`, en UNA escritura antes del `/pay`. Sólo vía
      * `CashPaymentRepository.actualizarApartado` (pasa por `AdmisionDePrecioQ16.write`). La captura no se toca.
      */
-    @Query("UPDATE pending_payments SET amountCents = :amountCents, orderId = :orderId WHERE id = :id AND syncStatus = 'EN_VUELO'")
-    suspend fun actualizarApartadoEnVuelo(id: String, amountCents: Int, orderId: String): Int
+    @Query(
+        "UPDATE pending_payments SET amountCents = :amountCents, orderId = :orderId, lineasDelTicketJson = :lineasDelTicketJson " +
+            "WHERE id = :id AND syncStatus = 'EN_VUELO'",
+    )
+    suspend fun actualizarApartadoEnVuelo(id: String, amountCents: Int, orderId: String, lineasDelTicketJson: String? = null): Int
 
     /**
      * Agregado 5 y Codex r11 #2: una TANDA de los cobros de efectivo PURO que todavía pueden subir, de UN negocio y de las cajas
@@ -349,6 +364,8 @@ internal fun filaAlReemplazar(old: PendingPaymentEntity?, payment: PendingPaymen
         q15Reason = old.q15Reason, q15DetectedAt = old.q15DetectedAt,
         q15ReviewedAt = old.q15ReviewedAt, q15ReviewedBy = old.q15ReviewedBy, q15ReviewRole = old.q15ReviewRole,
         cashDrawerSessionId = old.cashDrawerSessionId,
+        // D1: la copia sigue al importe de ESTA escritura (la fila toma el de `payment`); si ésta no la trae, se conserva la de disco.
+        lineasDelTicketJson = payment.lineasDelTicketJson ?: old.lineasDelTicketJson,
     )
 
 /** «Sí se cobró» y «se da por cobrado» (D2 v7): la reserva pasa a la cola con su MISMA llave. */
