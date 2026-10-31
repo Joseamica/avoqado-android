@@ -24,6 +24,11 @@ data class SavedCart(
      * se retira (y si el retiro falla, sigue bloqueada: la cuenta ya existe).
      */
     val pagarDespuesSinDesenlace: Boolean = false,
+    /**
+     * D8: la sucursal del carrito; se enseña sólo en ella (como iOS). Nula en los guardados por versiones anteriores: son de
+     * la sucursal en que estaban, porque cambiar de sucursal los borraba (`SavedCartsRepository.alCambiarLaSesion`).
+     */
+    val venueId: String? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }

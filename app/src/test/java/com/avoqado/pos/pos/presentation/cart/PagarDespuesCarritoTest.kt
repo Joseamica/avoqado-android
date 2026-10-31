@@ -236,6 +236,24 @@ class PagarDespuesCarritoTest {
     }
 
     @Test
+    fun `D8 si la respuesta del rechazo llega despues de cambiar de sucursal, la venta guardada se queda con la del intento`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        vm.addProduct(pan)
+        every { secureStorage.venueId } returns "venue-2"
+        respuesta.complete(OrderRepository.RespuestaCruda(400, "application/json", null, """{"message":"Producto inválido"}"""))
+        resultado.await()
+
+        assertEquals(listOf("venue-1"), guardados.savedCarts.value.map { it.venueId })
+    }
+
+    @Test
     fun `la venta con premio nunca entra a la fila, y sin red se queda en el carrito`() = runTest {
         val vm = createViewModel()
         ventaDeAna(vm)

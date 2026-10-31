@@ -56,6 +56,8 @@ class AppState @Inject constructor(
     private val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository,
     /** «Pagar después» sin red (27-oct): su fila arranca y para con la de los cobros. Default para las pruebas de JVM. */
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
+    /** D8: los carritos guardados se enseñan por sucursal. Default para las pruebas de JVM. */
+    private val savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
 ) : ViewModel() {
 
     /**
@@ -138,6 +140,8 @@ class AppState @Inject constructor(
         tableSyncCoordinator.onSessionChanged()
         // Codex ANDROID r1 A-8: los contadores y la cuarentena de «Pagar después» siguen a la sucursal de la sesión.
         payLaterQueue?.alCambiarLaSesion()
+        // D8: y los carritos guardados (también al entrar y salir, no sólo al cambiar de sucursal).
+        savedCartsRepository?.alCambiarLaSesion()
         syncOutbox.refreshQ15Observation()
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()

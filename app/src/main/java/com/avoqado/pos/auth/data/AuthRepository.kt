@@ -342,6 +342,8 @@ class AuthRepository @Inject constructor(
 
         // 1. Update SecureStorage with new venue
         secureStorage.switchVenue(venue)
+        // 1.a D8: los carritos guardados ya no se borran: cada uno se queda con su sucursal y se enseña sólo en ella.
+        savedCartsRepository.alCambiarLaSesion()
 
         // 1.b 🔴 Re-emitir el token para el local nuevo.
         //
@@ -366,7 +368,6 @@ class AuthRepository @Inject constructor(
         discountsRepository.clearCache()
         promotionsRepository.clearCache()
         tpvSettingsRepository.clearCache()
-        savedCartsRepository.clearCache()
         inventoryRepository.clearCache()
         transactionRepository.clearCache()
         notificationsRepository.clearCache()

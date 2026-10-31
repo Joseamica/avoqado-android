@@ -1015,7 +1015,7 @@ class CartViewModel @Inject constructor(
     val products = productsRepository.products
     val categories = productsRepository.categories
     val isLoading = productsRepository.isLoading
-    val savedCarts = savedCartsRepository.savedCarts
+    val savedCarts = savedCartsRepository.deLaSucursal
 
     private val _selectedCategoryId = MutableStateFlow<String?>(null)
     val selectedCategoryId: StateFlow<String?> = _selectedCategoryId.asStateFlow()
@@ -1692,7 +1692,13 @@ class CartViewModel @Inject constructor(
     }
 
     /** La copia de «Carritos guardados» de [state]. La usan guardar el carrito y «Pagar después» rechazado con otra venta. */
-    private fun comoCarritoGuardado(state: CartState, cartName: String, customerId: String?): SavedCart =
+    private fun comoCarritoGuardado(
+        state: CartState,
+        cartName: String,
+        customerId: String?,
+        // D8: la sucursal del intento cuando se sabe (ponerASalvo); null = la pone el almacén al guardar (Codex r2 #1).
+        venueId: String? = null,
+    ): SavedCart =
         SavedCart(
             id = state.carritoGuardadoId ?: UUID.randomUUID().toString(),
             name = cartName,
@@ -1748,6 +1754,8 @@ class CartViewModel @Inject constructor(
             reservationId = state.reservationId,
             attachedCustomerId = customerId,
             llavePagarDespues = state.llavePagarDespues,
+            // D8: el carrito se enseña sólo en su sucursal.
+            venueId = venueId,
         )
 
     fun clearCart() {
@@ -3006,7 +3014,8 @@ class CartViewModel @Inject constructor(
         venueId: String,
         motivo: String,
     ): ResultadoPagarDespues.Error? {
-        val captura = comoCarritoGuardado(s.venta.copy(carritoGuardadoId = fila.carritoGuardadoId), s.cliente.name, s.cliente.id)
+        // D8: con la sucursal del intento, no la de ahora: la respuesta pudo llegar después de cambiar de sucursal.
+        val captura = comoCarritoGuardado(s.venta.copy(carritoGuardadoId = fila.carritoGuardadoId), s.cliente.name, s.cliente.id, venueId)
         val recuperable = cola.cambiar(fila.id) {
             it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR, motivo = motivo, venta = captura)
         }
