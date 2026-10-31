@@ -414,13 +414,12 @@ private fun CategoryTile(
     onClick: () -> Unit,
     tileSize: TileSize,
 ) {
-    val hasCustomColor = !category.color.isNullOrEmpty()
-    val bgColor = if (hasCustomColor) {
-        parseHexColor(category.color!!) ?: MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.primary
-    }
-    val contentColor = if (hasCustomColor) Color.White else MaterialTheme.colorScheme.onPrimary
+    // El color del negocio sólo si es válido; la letra encima se elige por lo claro del fondo (blanco sobre amarillo
+    // no se lee — «Postres», iOS 30-oct; espejo de `Color.letraSobre(hex:)` en iOS).
+    val colorDelNegocio = category.color?.takeIf { it.isNotEmpty() }?.let { hex -> parseHexColor(hex)?.let { hex } }
+    val bgColor = colorDelNegocio?.let { parseHexColor(it) } ?: MaterialTheme.colorScheme.primary
+    val contentColor = colorDelNegocio?.let { letraSobreColorDelNegocio(it, MaterialTheme.colorScheme.onSurface) }
+        ?: MaterialTheme.colorScheme.onPrimary
 
     Box(
         modifier = Modifier
@@ -513,35 +512,43 @@ private fun ProductTile(
                     )
                 }
 
-                if (product.isOutOfStock) {
-                    val existencia = product.availableQuantityExact ?: product.availableQuantity?.toDouble()
-                    ChipDeAgotado(
-                        texto = if (existencia != null && existencia < 0) "Agotado · ${formatChipQty(existencia)}" else "Agotado · 0",
-                        modifier = Modifier.align(Alignment.TopEnd),
-                    )
+                // «Agotado» y «tiene modificadores» comparten la esquina de arriba a la derecha: van en UNA fila para que
+                // no se encimen (los dos alineados a TopEnd se pintaban uno sobre otro; visto en iOS el 30-oct, igual aquí).
+                Row(
+                    modifier = Modifier.align(Alignment.TopEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (product.isOutOfStock) {
+                        val existencia = product.availableQuantityExact ?: product.availableQuantity?.toDouble()
+                        // Con peso: el ícono de modificadores se mide primero y nunca se queda sin lugar; el chip toma lo
+                        // que sobra y se recorta con «…» (Codex r1 #2: una existencia larga lo dejaba en cero).
+                        ChipDeAgotado(
+                            texto = if (existencia != null && existencia < 0) "Agotado · ${formatChipQty(existencia)}" else "Agotado · 0",
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                    }
+
+                    // Modifier indicator
+                    if (product.hasModifiers) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = "Tiene modificadores",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .padding(AvoqadoTheme.spacing.xs)
+                                .background(
+                                    Color.Black.copy(alpha = 0.6f),
+                                    RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+                                )
+                                .padding(AvoqadoTheme.spacing.xs)
+                                .size(14.dp),
+                        )
+                    }
                 }
 
                 // Variants badge (top-left)
                 if (!product.variants.isNullOrEmpty() && product.variants.size > 1) {
                     InsigniaDeTile(texto = "${product.variants.size} variantes", modifier = Modifier.align(Alignment.TopStart))
-                }
-
-                // Modifier indicator (top-right)
-                if (product.hasModifiers) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = "Tiene modificadores",
-                        tint = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(AvoqadoTheme.spacing.sm)
-                            .background(
-                                Color.Black.copy(alpha = 0.6f),
-                                RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
-                            )
-                            .padding(AvoqadoTheme.spacing.xs)
-                            .size(14.dp),
-                    )
                 }
             }
 
@@ -573,12 +580,22 @@ private fun ProductTile(
 
 // MARK: - Piezas del tile que comparte el botón de una familia (`TileDeFamilia`): mismo aspecto que `ProductTile`
 
-/** Fondo de la imagen y color de las iniciales: el color propio del producto si lo trae; si no, los del tema. */
+/**
+ * Fondo de la imagen y color de las iniciales: el color propio del producto si lo trae (con letra oscura si el color es
+ * claro); si no, los del tema.
+ */
 @Composable
-internal fun coloresDeTile(hexColor: String?): Pair<Color, Color> = Pair(
-    hexColor?.let { parseHexColor(it) } ?: MaterialTheme.colorScheme.surfaceVariant,
-    if (hexColor != null) Color.White else MaterialTheme.colorScheme.onSurface,
-)
+internal fun coloresDeTile(hexColor: String?): Pair<Color, Color> {
+    val fondo = hexColor?.let { parseHexColor(it) }
+    return Pair(
+        fondo ?: MaterialTheme.colorScheme.surfaceVariant,
+        if (fondo != null && hexColor != null) {
+            letraSobreColorDelNegocio(hexColor, MaterialTheme.colorScheme.onSurface)
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+    )
+}
 
 /** Insignia de arriba a la izquierda («N variantes»): oscura sobre la foto o el color del tile, en cualquier tema. */
 @Composable
@@ -605,6 +622,8 @@ internal fun ChipDeAgotado(texto: String, modifier: Modifier) {
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.SemiBold,
         color = Color.White,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier
             .padding(AvoqadoTheme.spacing.xs)
             .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(50))

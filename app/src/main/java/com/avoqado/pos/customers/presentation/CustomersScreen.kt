@@ -1,7 +1,6 @@
 package com.avoqado.pos.customers.presentation
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -244,19 +243,15 @@ private fun TabletCustomersLayout(
                 }
             }
 
-            // Search bar (outlined style)
+            // Search bar: relleno gris, igual que Pedidos (`OrderSearchBar`). Era el único buscador con contorno (revisión
+            // visual del 30-oct, en iOS y aquí).
             TextField(
                 value = searchText,
                 onValueChange = { onSearchTextChange(it) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AvoqadoTheme.spacing.lg)
-                    .padding(bottom = AvoqadoTheme.spacing.md)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(25.dp),
-                    ),
+                    .padding(bottom = AvoqadoTheme.spacing.md),
                 placeholder = { Text("Buscar") },
                 leadingIcon = {
                     Icon(
@@ -276,10 +271,10 @@ private fun TabletCustomersLayout(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(25.dp),
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,
                 ),
@@ -521,19 +516,14 @@ private fun PhoneCustomersLayout(
             }
         }
 
-        // Search bar
+        // Search bar: relleno gris, igual que en tableta y que Pedidos (Codex r1 #4: el teléfono seguía con contorno).
         TextField(
             value = searchText,
             onValueChange = { onSearchTextChange(it) },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AvoqadoTheme.spacing.lg)
-                .padding(bottom = AvoqadoTheme.spacing.md)
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    shape = RoundedCornerShape(25.dp),
-                ),
+                .padding(bottom = AvoqadoTheme.spacing.md),
             placeholder = { Text("Buscar") },
             leadingIcon = {
                 Icon(
@@ -553,10 +543,10 @@ private fun PhoneCustomersLayout(
                 }
             },
             singleLine = true,
-            shape = RoundedCornerShape(25.dp),
+            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                 focusedIndicatorColor = Color.Transparent,
                 unfocusedIndicatorColor = Color.Transparent,
             ),
