@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.payment.data.CierreDeLlave
 import com.avoqado.pos.payment.data.DesenlacePagarDespues
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PayLaterQueue
@@ -474,6 +475,126 @@ class PagarDespuesFilaTest {
 
         q.guardar(fila(estado = Estado.REVISAR))
         assertTrue(q.descartar("pay-later:1"))
+        assertTrue(q.filas.value.isEmpty())
+    }
+
+    // MARK: - D9: el rechazo del REENVÍO sólo devuelve la venta si el SERVIDOR cierra su llave
+
+    private val ventaDeAna = SavedCart(id = "copia-1", name = "Ana", items = emptyList(), attachedCustomerId = "cli-1",
+        llavePagarDespues = "pay-later:1", cobroIniciadoEn = 5L, venueId = "venue-A")
+
+    private fun cierra(code: Int, body: String, contentType: String = "application/json") {
+        coEvery { ordenes.cerrarLlaveDePagarDespues(any(), any()) } returns OrderRepository.RespuestaCruda(code, contentType, null, body)
+    }
+
+    private fun colaConGuardados(): Pair<PayLaterQueue, SavedCartsRepository> {
+        val guardados = SavedCartsRepository(copias.context)
+        return PayLaterQueue(disco.context, ordenes, storage, guardados, mockk(relaxed = true)).apply { io = Dispatchers.Unconfined } to guardados
+    }
+
+    @Test
+    fun `D9 el reenvio se rechaza y el SERVIDOR cierra la llave - la venta vuelve a Carritos guardados sin su llave vieja`() = runTest {
+        val (q, guardados) = colaConGuardados()
+        q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+        responde(400, """{"message":"Producto inválido"}""")
+        cierra(200, """{"success":true,"released":true}""")
+
+        q.drenar()
+        assertEquals(Estado.RECUPERAR, fila(q, "pay-later:1")?.estado)
+        assertEquals("Producto inválido", fila(q, "pay-later:1")?.motivo)
+        q.mantenimientoLocal()
+
+        assertTrue(q.filas.value.isEmpty())
+        assertEquals(listOf(ventaDeAna.copy(llavePagarDespues = null, cobroIniciadoEn = null)), guardados.savedCarts.value)
+        coVerify(exactly = 1) { ordenes.cerrarLlaveDePagarDespues("venue-A", "pay-later:1") }
+    }
+
+    @Test
+    fun `D9 Codex r4 - la cuenta se creo y perdio la respuesta, el reenvio da 403 - se da por creada y no vuelve`() = runTest {
+        val (q, guardados) = colaConGuardados()
+        q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+        responde(403, """{"message":"No tienes permiso para crear cuentas"}""")
+        cierra(200, """{"success":true,"released":false,"order":{"id":"ord-1","total":100,"status":"CONFIRMED","paymentStatus":"PENDING"}}""")
+
+        q.drenar()
+        q.mantenimientoLocal()
+
+        assertTrue(q.filas.value.isEmpty())
+        assertTrue("nada vendible de más", guardados.savedCarts.value.isEmpty())
+    }
+
+    @Test
+    fun `D9 la cuenta existe con otro importe - queda por revisar con su folio`() = runTest {
+        val (q, guardados) = colaConGuardados()
+        q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+        responde(409, """{"message":"Cambió el precio"}""")
+        cierra(200, """{"success":true,"released":false,"order":{"id":"ord-1","total":90}}""")
+
+        q.drenar()
+
+        val revisar = fila(q, "pay-later:1")!!
+        assertEquals(Estado.REVISAR, revisar.estado)
+        assertEquals("ord-1", revisar.orderId)
+        assertEquals(9000, revisar.totalRegistradoCents)
+        assertTrue(guardados.savedCarts.value.isEmpty())
+    }
+
+    @Test
+    fun `D9 si no se puede cerrar la llave (sin permiso, sin red o un portal) queda RECHAZADA como antes y nada vuelve`() = runTest {
+        for (cerrar in listOf<() -> Unit>(
+            { cierra(403, """{"message":"Sin permiso"}""") },
+            { coEvery { ordenes.cerrarLlaveDePagarDespues(any(), any()) } throws java.io.IOException("sin red") },
+            { cierra(200, "<html>portal</html>", contentType = "text/html") },
+        )) {
+            val (q, guardados) = colaConGuardados()
+            q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+            responde(400, """{"message":"Producto inválido"}""")
+            cerrar()
+
+            q.drenar()
+            q.mantenimientoLocal()
+
+            assertEquals(Estado.RECHAZADA, fila(q, "pay-later:1")?.estado)
+            assertTrue(guardados.savedCarts.value.isEmpty())
+            q.descartar("pay-later:1")
+        }
+    }
+
+    @Test
+    fun `D9 una fila de version anterior (sin venta) queda RECHAZADA y no se pide cerrar la llave`() = runTest {
+        val (q, _) = colaConGuardados()
+        q.guardar(fila(estado = Estado.PENDIENTE))
+        responde(400, """{"message":"Producto inválido"}""")
+
+        q.drenar()
+
+        assertEquals(Estado.RECHAZADA, fila(q, "pay-later:1")?.estado)
+        coVerify(exactly = 0) { ordenes.cerrarLlaveDePagarDespues(any(), any()) }
+    }
+
+    @Test
+    fun `D9 lectura de cerrar la llave - solo un 200 JSON de la API cuenta`() {
+        val leer = OrderRepository::leerCierreDeLlave
+        assertEquals(CierreDeLlave.Cerrada, leer(200, "application/json; charset=utf-8", null, """{"success":true,"released":true}"""))
+        assertEquals(CierreDeLlave.Existe("ord-1", 15050), leer(200, "application/json", null, """{"released":false,"order":{"id":"ord-1","total":"150.50"}}"""))
+        assertEquals(CierreDeLlave.Existe("ord-1", null), leer(200, "application/json", null, """{"released":false,"order":{"id":"ord-1"}}"""))
+        assertEquals(CierreDeLlave.NoSeSabe, leer(200, "application/json", null, """{"released":"true"}"""))
+        assertEquals(CierreDeLlave.NoSeSabe, leer(200, "application/json", null, """{"released":false}"""))
+        assertEquals(CierreDeLlave.NoSeSabe, leer(200, "application/json", "ERR_NGROK_3200", """{"released":true}"""))
+        assertEquals(CierreDeLlave.NoSeSabe, leer(200, "text/html", null, """{"released":true}"""))
+        assertEquals(CierreDeLlave.NoSeSabe, leer(404, "application/json", null, """{"released":true}"""))
+    }
+
+    @Test
+    fun `D9 Codex codigo r1 #2 - Reintentar que encuentra la cuenta dice que quedo registrada, no el rechazo`() = runTest {
+        val (q, _) = colaConGuardados()
+        q.guardar(fila(estado = Estado.RECHAZADA, copia = "copia-1").copy(venta = ventaDeAna, motivo = "No tienes permiso"))
+        responde(403, """{"message":"No tienes permiso para crear cuentas"}""")
+        cierra(200, """{"success":true,"released":false,"order":{"id":"ord-1","total":100}}""")
+
+        val desenlace = q.reintentar("pay-later:1")
+
+        assertEquals(DesenlacePagarDespues.Creada("ord-1", 10000), desenlace)
         assertTrue(q.filas.value.isEmpty())
     }
 }
