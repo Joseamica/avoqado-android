@@ -307,7 +307,7 @@ class PagarDespuesFilaTest {
 
         assertEquals(true, q.pasarACarritosGuardados("pay-later:1"))
 
-        assertEquals(listOf(venta), guardados.savedCarts.value)
+        assertEquals("D8: con la sucursal de su fila", listOf(venta.copy(venueId = "venue-A")), guardados.savedCarts.value)
         assertTrue(q.filas.value.isEmpty())
         assertFalse(q.copiaLigada("copia-1"))
     }
@@ -326,7 +326,7 @@ class PagarDespuesFilaTest {
         assertEquals(true, q.pasarACarritosGuardados("pay-later:1"))
 
         assertTrue(q.filas.value.isEmpty())
-        assertEquals(listOf(venta), guardados.savedCarts.value)
+        assertEquals("D8: con la sucursal de su fila", listOf(venta.copy(venueId = "venue-A")), guardados.savedCarts.value)
         coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
     }
 

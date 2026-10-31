@@ -272,7 +272,9 @@ class PayLaterQueue @Inject constructor(
      */
     private suspend fun aCarritosGuardados(fila: PayLaterRow): Boolean {
         val venta = fila.venta ?: return false
-        return savedCartsRepository.saveCart(venta) && borrar(fila.id)
+        // D8 (Codex r1 #2): con la sucursal de SU fila. Las filas de versiones anteriores traen la venta sin sucursal y, en
+        // pleno cambio de sucursal, se habría anotado con la que se deja.
+        return savedCartsRepository.saveCart(venta.copy(venueId = venta.venueId ?: fila.venueId)) && borrar(fila.id)
     }
 
     /**

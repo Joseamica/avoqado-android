@@ -20,9 +20,11 @@ import com.avoqado.pos.tables.data.TableSyncCoordinator
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.tpvsettings.data.TerminalNavigationSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -87,6 +89,24 @@ class AppStateVenueRecoveryTest {
         advanceUntilIdle()
 
         assertEquals(false, appState.visibleTabs.value.isEmpty())
+    }
+
+    // ── D8: los carritos guardados siguen a la sucursal de la sesión al entrar y al salir, no sólo al cambiar ──
+
+    @Test
+    fun `D8 entrar y salir les avisan a los carritos guardados`() = runTest {
+        val carritos = mockk<com.avoqado.pos.pos.data.SavedCartsRepository>(relaxed = true)
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, savedCartsRepository = carritos)
+        advanceUntilIdle()
+        clearMocks(carritos, answers = false)
+
+        appState.onLoginSuccess()
+        verify(atLeast = 1) { carritos.alCambiarLaSesion() }
+        clearMocks(carritos, answers = false)
+
+        appState.onLogout()
+        advanceUntilIdle()
+        verify(atLeast = 1) { carritos.alCambiarLaSesion() }
     }
 
     // ── La marca del negocio en la pantalla del cliente sigue a la sesión (QA F2-1) ──
@@ -379,6 +399,7 @@ class AppStateVenueRecoveryTest {
         storageReal: SecureStorage? = null,
         resolverReal: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta? = null,
         llegadasDelKiosco: Int = 0,
+        savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -453,6 +474,7 @@ class AppStateVenueRecoveryTest {
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,
             printConfigRepository = printConfigRepository,
+            savedCartsRepository = savedCartsRepository,
         )
         if (resolverReal == null) return plantilla
         // La fábrica generada ejecuta también la inyección de miembros de Hilt.
