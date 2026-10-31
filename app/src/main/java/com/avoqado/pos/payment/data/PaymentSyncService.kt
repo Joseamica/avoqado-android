@@ -11,6 +11,7 @@ import com.avoqado.pos.core.data.local.database.RevisionCanceladoCero
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
@@ -267,6 +268,7 @@ class PaymentSyncService @Inject constructor(
     private var syncJob: Job? = null
     private var syncRequested: SyncContext? = null
     private var syncCycle = 0L
+    private var ultimaCandidataDeResultadoQ15: String? = null
     private data class SyncContext(val venue: String?, val actor: String?, val role: String?, val epoch: Long)
     private fun syncContext() = SyncContext(
         secureStorage.venueId, secureStorage.userId, secureStorage.userRole, syncOutbox.contextoDeSesionQ15(),
@@ -305,6 +307,8 @@ class PaymentSyncService @Inject constructor(
 
     /** Qué dejó la recuperación de una fila retenida (Q16). */
     private sealed interface Recuperacion {
+        /** Payment identificado por lectura, con su resultado ya guardado; nunca vuelve al POST. */
+        data object Aplicada : Recuperacion
         /** La recuperación vacía soltó la venta sin red: se relee la cola y sale en su lugar FIFO. */
         data object Soltada : Recuperacion
         /** Sigue retenida, o se le adoptó su orden del servidor (sale la vuelta siguiente): la vuelta sigue sin ella. */
@@ -316,6 +320,19 @@ class PaymentSyncService @Inject constructor(
          * que un 500 persistente no detenga la cola para siempre.
          */
         data object Pausa : Recuperacion
+    }
+
+    /** Presupuesto sólo de lectura, compartido por todos los lotes/pasadas de UNA sincronización. */
+    private class ConsultasDeResultadoQ15 { var seleccionadas: Set<String>? = null }
+
+    private fun seleccionarConsultasQ15(pending: List<PendingPaymentEntity>, consultas: ConsultasDeResultadoQ15): Set<String> {
+        consultas.seleccionadas?.let { return it }
+        val venue = secureStorage.venueId
+        val ids = pending.mapNotNull { fila -> fila.id.takeIf { fila.venueId == venue && ResultadoDeEfectivoPorLlave.captura(fila) != null } }
+        val inicio = ids.indexOf(ultimaCandidataDeResultadoQ15) + 1
+        return (if (ids.isEmpty()) emptySet() else List(minOf(ids.size, MAX_PAYMENTS_PER_SYNC)) {
+            ids[(inicio + it) % ids.size]
+        }.toSet()).also { consultas.seleccionadas = it }
     }
 
     /** Waits for the real launched drain; no alternate test pipeline. */
@@ -460,6 +477,62 @@ class PaymentSyncService @Inject constructor(
         return Recuperacion.Retenida(ordenAdoptada = id)
     }
 
+    private suspend fun recuperarResultadoPorLlaveQ15(payment: PendingPaymentEntity, identidades: Set<String>): Recuperacion {
+        val retenida = Recuperacion.Retenida()
+        val capture = ResultadoDeEfectivoPorLlave.captura(payment) ?: return retenida
+        val contexto = syncContext()
+        val ciclo = syncCycle
+        fun vigente() = isStarted && syncCycle == ciclo && syncContext() == contexto &&
+            contexto.venue == payment.venueId && !contexto.actor.isNullOrBlank() &&
+            connectivityMonitor.isConnected.value
+        if (!vigente()) return Recuperacion.Pausa
+        if (payment.retryCount > 0 && System.currentTimeMillis() - (payment.lastRetryAt ?: 0) in 0 until calculateBackoff(payment.retryCount)) return retenida
+        if (syncOutbox.trabajoSinResolverDeLaOrden(payment.venueId, identidades).enCamino > 0) return retenida
+        if (!vigente() || dao.findForVenue(payment.venueId, payment.id) != payment) return retenida
+        val (code, body) = try {
+            withContext(Dispatchers.IO) {
+                if (!vigente()) return@withContext 401 to ""
+                val url = "${ApiConstants.BASE_URL}/mobile/venues/".toHttpUrl()
+                    .newBuilder().addPathSegment(payment.venueId).addPathSegment("payments")
+                    .addPathSegment("by-key").addPathSegment(payment.id).build()
+                val request = Request.Builder().url(url)
+                    .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "true")
+                    .get().build()
+                client.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            Log.w(TAG, "No se pudo consultar el resultado del efectivo; sigue guardado", error)
+            return Recuperacion.Pausa
+        }
+        if (code == 401 || !vigente()) return Recuperacion.Pausa
+        if (code !in 200..299) return retenida
+        val proof = ResultadoDeEfectivoPorLlave.normalizar(payment, body) ?: return retenida
+        val external = ResultadoDeEfectivoPorLlave.external(capture.orderRequestJson)
+        if (external != null && (external != ResultadoDeEfectivoPorLlave.external(payment.orderRequestJson) || proof.externalId != external)) return retenida
+        val originales = listOfNotNull(payment.orderId, capture.orderId, capture.localOrderId).distinct()
+        if (payment.paymentType == "ORDER" && originales.isEmpty() && external == null) return retenida
+        for (order in originales) {
+            if (!vigente()) return Recuperacion.Pausa
+            if (order != proof.orderId && syncOutbox.aliasDurableQ16(payment.venueId, order) != proof.orderId) return retenida
+        }
+        if (!vigente()) return Recuperacion.Pausa
+        if (syncOutbox.trabajoSinResolverDeLaOrden(payment.venueId, identidades + proof.orderId).enCamino > 0) return retenida
+        val alias = capture.orderId?.takeIf { it != proof.orderId }?.let { it to proof.orderId }
+        val evaluation = ConciliacionDelCobro.evaluar(payment.q15CaptureJson, payment.venueId, payment.id,
+            if (payment.paymentType == "FAST") CanalDelCobro.FAST else CanalDelCobro.ORDER, proof.respuesta, alias,
+            ordenNacidaEnLaCola = nacioSinOrden(payment))
+        if (!evaluation.aplicado || evaluation.resultadoJson == null) return retenida
+        return try {
+            if (dao.recuperarResultadoPorLlaveQ15(payment, evaluation.motivo, evaluation.resultadoJson,
+                    System.currentTimeMillis(), ::vigente) == 1) Recuperacion.Aplicada else retenida
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            Log.e(TAG, "No se pudo guardar el resultado consultado; la próxima vuelta sólo lo consulta", error)
+            retenida
+        }
+    }
+
     /**
      * Adenda Q16: con qué orden se identifica una fila — su `orderId` y el de su captura (servidor, `local_…` o alias de
      * Mesas, cada uno con la orden a la que resuelve su alias) y el `externalId` del pedido de la fila y del de la captura
@@ -552,6 +625,7 @@ class PaymentSyncService @Inject constructor(
                 // cobros de A, cierre de A, apertura B, cobros de B — en ese orden y sin esperar al siguiente ciclo.
                 val esperan = mutableSetOf<String>()
                 val bloqueadas = mutableSetOf<String>()
+                val consultasQ15 = ConsultasDeResultadoQ15()
                 var limpiado = false
                 // El tope del cierre que espera a sus ventas cuenta intentos (ver [contarPaseDelCierre]): qué cierres retuvo esta
                 // sincronización y si, después de retenerlos, la subida de cobros tuvo su oportunidad.
@@ -580,7 +654,7 @@ class PaymentSyncService @Inject constructor(
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (e: Exception) { Log.e(TAG, "El outbox no se pudo reproducir en esta vuelta: ${e.message}"); 0 }
                     darPorCobradasLasAbandonadas()
-                    val drenado = drenarCobros(sinCajaPuedenSalir, cajasEsperando, esperan, bloqueadas)
+                    val drenado = drenarCobros(sinCajaPuedenSalir, cajasEsperando, esperan, bloqueadas, consultasQ15)
                     if (retenidos.isNotEmpty() && drenado.corrio) corrioElDrenado = true
                     if (drenado.cortada) break
                     if (!avanzoElCajon && delOutbox == 0 && drenado.resueltos == 0) break
@@ -589,7 +663,7 @@ class PaymentSyncService @Inject constructor(
                     }
                 }
                 contarPaseDelCierre(retenidos, corrioElDrenado) {
-                    drenarCobros(ultimaBarrera.first, ultimaBarrera.second, esperan, bloqueadas).corrio
+                    drenarCobros(ultimaBarrera.first, ultimaBarrera.second, esperan, bloqueadas, consultasQ15).corrio
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -682,6 +756,7 @@ class PaymentSyncService @Inject constructor(
         cajasEsperando: Set<String>,
         esperan: MutableSet<String>,
         bloqueadas: MutableSet<String>,
+        consultasQ15: ConsultasDeResultadoQ15,
     ): Drenado {
         var resueltos = 0
         // 🔴 Adenda Q16 (founder, 16-oct) + Codex 2.ª pasada: una venta RETENIDA ya no tapa la cola. Se queda
@@ -700,6 +775,7 @@ class PaymentSyncService @Inject constructor(
             // ponytail: cada lote lee y decodifica toda la cola local (decenas de filas; la prueba usa 1,000). Techo:
             // con decenas de miles pendientes cada lote pesa. Salida: paginar por cursor (createdAt, id).
             val pending = dao.getPendingPayments(Int.MAX_VALUE).filter { it.id !in esperan }
+            val seleccionadasQ15 = seleccionarConsultasQ15(pending, consultasQ15)
             if (pending.isEmpty()) {
                 Log.d(TAG, "No pending payments to sync")
                 return Drenado(resueltos, cortada = false)
@@ -711,7 +787,15 @@ class PaymentSyncService @Inject constructor(
 
             for (payment in pending) {
                 if (!isStarted) return Drenado(resueltos, cortada = true)
+                // La cola incluye otros negocios; su evidencia no comparte presupuesto ni identidades con el activo.
+                if (payment.q15Reason == ConciliacionDelCobro.RESULTADO_NO_COMPROBADO && payment.venueId != secureStorage.venueId) {
+                    esperan += payment.id
+                    continue
+                }
                 if (intentados >= MAX_PAYMENTS_PER_SYNC) break // lote lleno: se relee la cola
+                // Visitar también avanza cuando su apertura/dependencia/backoff todavía impide consultar.
+                val consultarResultadoQ15 = payment.id in seleccionadasQ15
+                if (consultarResultadoQ15) ultimaCandidataDeResultadoQ15 = payment.id
                 // 🔴 BARRERA 1 POR CAJA: si la apertura de la caja de ESTE cobro todavía no llega, la fila se detiene aquí
                 // (FIFO: lo de detrás no se adelanta). Las anteriores ya salieron. No es un corte: si el cajón avanzó, la
                 // siguiente vuelta la vuelve a evaluar.
@@ -732,7 +816,10 @@ class PaymentSyncService @Inject constructor(
                 if (identidades.any { it in bloqueadas }) { esperar(payment, identidades); continue }
 
                 if (payment.q15Reason != null) {
-                    when (val recuperacion = recuperarOrdenRetenidaQ16(payment)) {
+                    when (val recuperacion = if (payment.q15Reason == ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)
+                        if (consultarResultadoQ15) recuperarResultadoPorLlaveQ15(payment, identidades) else Recuperacion.Retenida()
+                        else recuperarOrdenRetenidaQ16(payment)) {
+                        Recuperacion.Aplicada -> { resueltos++; continue }
                         // Q16: se soltó ⇒ se relee la cola y sale en esta misma vuelta, en su lugar FIFO.
                         Recuperacion.Soltada -> { soltada = true; break }
                         Recuperacion.Pausa -> return Drenado(resueltos, cortada = true)

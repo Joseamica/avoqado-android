@@ -150,6 +150,46 @@ class CortesiaAntiguaContinuacionRoomTest {
         }
     }
 
+    @Test fun resultadoConsultadoSeGuardaAtomicoConFuenteCompletaHistoriaYAckEnRoom() = runBlocking {
+        Fixture().use { f ->
+            val original = fuenteParaConsulta(f.sembrar())
+            f.pagos.insertRaw(original)
+            val ack=f.reconocimientos(); val eventos=f.filas("cash_drawer_events"); val cajas=f.filas("cash_drawer_sessions")
+            val result="""{"paymentId":"${id(88)}","orderId":"${id(80)}","amountCents":0,"tipCents":0,"method":"CASH","splitType":"FULLPAYMENT","saldoCents":0,"estadoDeLaOrden":"PAID","camposDiferentes":[],"camposNoComprobados":[]}"""
+            assertEquals(1,f.pagos.recuperarResultadoPorLlaveQ15(original,null,result,f.primera+100) {true})
+            val expected=original.copy(syncStatus="SYNCED",q15InitialResultJson=result,q15ResultJson=result)
+            assertEquals(expected,f.fuente()); assertEquals(ack,f.reconocimientos()); assertEquals(eventos,f.filas("cash_drawer_events")); assertEquals(cajas,f.filas("cash_drawer_sessions"))
+            assertEquals(0,f.pagos.recuperarResultadoPorLlaveQ15(original,null,result,f.primera+101) {true})
+            f.reabrir(); assertEquals(expected,f.fuente()); assertEquals(ack,f.reconocimientos())
+        }
+    }
+
+    @Test fun resultadoConsultadoNoPisaCambioDeOtraInstanciaRoomNiAdoptaSesionPerdida() = runBlocking {
+        Fixture().use { f ->
+            val original=fuenteParaConsulta(f.sembrar()); f.pagos.insertRaw(original)
+            val ack=f.reconocimientos(); val otra=DatabaseModule.provideDatabase(f.contexto)
+            val mutations:List<(PendingPaymentEntity)->PendingPaymentEntity> = listOf(
+                {it.copy(staffId=id(99))}, {it.copy(customerId=id(99))}, {it.copy(cashTenderedCents=1)},
+                {it.copy(changeCents=1)}, {it.copy(cashDrawerSessionId=id(99))}, {it.copy(lineasDelTicketJson="{}")},
+                {it.copy(itemsJson="[]")}, {it.copy(q15CaptureJson=it.q15CaptureJson+" ")},
+                {it.copy(createdAt=it.createdAt+1)}, {it.copy(q15InitialResultJson="{}")},
+                {it.copy(q15ReviewedAt=f.primera+10)}, {it.copy(lastError="Diagnóstico posterior")})
+            try {
+                for(change in mutations) {
+                    f.pagos.insertRaw(original); val newer=change(original); otra.pendingPaymentDao().insertRaw(newer)
+                    assertEquals(0,f.pagos.recuperarResultadoPorLlaveQ15(original,null,"{}",f.primera+100) {true})
+                    assertEquals(newer,f.fuente()); assertEquals(ack,f.reconocimientos())
+                }
+                f.pagos.insertRaw(original)
+                assertEquals(0,f.pagos.recuperarResultadoPorLlaveQ15(original,null,"{}",f.primera+100) {false})
+                assertEquals(original,f.fuente()); assertEquals(ack,f.reconocimientos())
+            } finally {otra.close()}
+        }
+    }
+
+    private fun fuenteParaConsulta(old:PendingPaymentEntity)=old.copy(syncStatus="PENDING",q15InitialResultJson=null,
+        q15ResultJson=null,q15Reason=ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,q15ReviewedAt=null,q15ReviewedBy=null,q15ReviewRole=null)
+
     /** Misma configuración y productores que EfectivoVentasCortesiaRetryRoomTest; sin modificar su fixture privada. */
     private class Fixture : AutoCloseable {
         val carpeta = Files.createTempDirectory("cortesia-antigua-room-")

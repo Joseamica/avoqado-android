@@ -123,6 +123,18 @@ interface PendingPaymentDao {
 
     @Query(Q15_PAYMENT_RESULT_SQL)
     suspend fun registrarResultadoQ15(venueId: String, id: String, aplicado: Boolean, motivo: String?, resultadoJson: String?, ahora: Long): Int
+    suspend fun recuperarResultadoPorLlaveQ15(original: PendingPaymentEntity, motivo: String?, resultadoJson: String,
+        ahora: Long, sigueVigente: () -> Boolean): Int = com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(original.venueId) {
+        recuperarResultadoPorLlaveTxQ15(original, motivo, resultadoJson, ahora, sigueVigente)
+    }
+    @androidx.room.Transaction
+    suspend fun recuperarResultadoPorLlaveTxQ15(original: PendingPaymentEntity, motivo: String?, resultadoJson: String,
+        ahora: Long, sigueVigente: () -> Boolean): Int {
+        // El writer ya está tomado: la igualdad completa protege también autor, caja, captura, historia y ticket.
+        if (!sigueVigente() || findForVenue(original.venueId, original.id) != original ||
+            com.avoqado.pos.payment.data.ResultadoDeEfectivoPorLlave.captura(original) == null || !sigueVigente()) return 0
+        return registrarResultadoQ15(original.venueId, original.id, true, motivo, resultadoJson, ahora)
+    }
     @Query(Q15_PAYMENT_HOLD_SQL)
     suspend fun retenerPagoQ15(venueId: String, id: String, motivo: String, ahora: Long): Int
     @Query(Q15_PAYMENT_REVIEW_SQL)
