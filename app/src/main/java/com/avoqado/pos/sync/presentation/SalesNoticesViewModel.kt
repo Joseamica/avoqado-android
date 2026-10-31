@@ -340,7 +340,10 @@ class SalesNoticesViewModel @Inject constructor(
                 if(!valid(snapshot,version)) return@launch
                 val changed=store.acknowledge(row,actor,System.currentTimeMillis())
                 if(!valid(snapshot,version)) return@launch
-                _message.value=if(changed) "Aviso entendido. La operación sigue pendiente en Ventas." else
+                _message.value=if(changed) {
+                    if(row.registeredResult()!=null) "Aviso entendido. Los datos del pago se conservan en Ventas."
+                    else "Aviso entendido. La operación sigue pendiente en Ventas."
+                } else
                     "La incidencia cambió. El aviso sigue pendiente; vuelve a abrir su detalle."
                 if(changed) refresh()
             } catch(e:CancellationException) { throw e }

@@ -96,7 +96,7 @@ private fun SalesNoticesList(rows:List<SalesNoticeSnapshot>,total:Int,query:Stri
                     Text("${salesNoticeDate(row.originalCreatedAt)} · ${row.id.take(8)}",style=MaterialTheme.typography.bodySmall,
                         color=MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(salesNoticeStatus(row),style=MaterialTheme.typography.bodyMedium)
-                    if(row.acknowledgement!=null) Text("Aviso entendido · sigue pendiente",style=MaterialTheme.typography.bodySmall,
+                    if(row.acknowledgement!=null) Text(salesNoticeAcknowledged(row),style=MaterialTheme.typography.bodySmall,
                         color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 HorizontalDivider()
@@ -130,8 +130,9 @@ private fun SalesNoticeDetail(row:SalesNoticeSnapshot?,acknowledging:Boolean,mob
             Text("Folio ${row.id}",style=MaterialTheme.typography.bodyMedium)
             row.reference?.takeIf { it!=row.id }?.let { Text("Cuenta $it",style=MaterialTheme.typography.bodyMedium) }
             Text(salesNoticeDate(row.originalCreatedAt),style=MaterialTheme.typography.bodyMedium)
-            Text("Importe del servidor: Sin confirmar",style=MaterialTheme.typography.bodyMedium)
-            if(row.acknowledgement!=null) Text("Aviso entendido · sigue pendiente",style=MaterialTheme.typography.bodyMedium)
+            Text(salesNoticeServerMoney(row),style=MaterialTheme.typography.bodyMedium)
+            salesNoticeResultWarnings(row).forEach { Text(it,style=MaterialTheme.typography.bodyMedium) }
+            if(row.acknowledgement!=null) Text(salesNoticeAcknowledged(row),style=MaterialTheme.typography.bodyMedium)
             if(salesNoticeCourtesy(row) && row.origin=="PAYMENT" && row.type=="ORDER" && row.state=="FAILED") {
                 PrimaryButton(text="Revisar cortesía",onClick=onReviewCourtesy,fullWidth=true,
                     enabled=canPreviewCourtesy && online && !courtesyBusy && courtesyReviewCandidate(row))
@@ -147,7 +148,8 @@ private fun SalesNoticeDetail(row:SalesNoticeSnapshot?,acknowledging:Boolean,mob
                 Button(onClick=onAcknowledge,enabled=!acknowledging,shape=RoundedCornerShape(50),modifier=Modifier.heightIn(min=48.dp)) {
                     Text(if(acknowledging) "Guardando…" else "Entendido")
                 }
-                Text("Entendido quita este aviso de Inicio en este aparato. La operación sigue pendiente en Ventas.",
+                Text(if(row.registeredResult()!=null) "Entendido quita este aviso de Inicio en este aparato. Los datos del pago se conservan en Ventas."
+                    else "Entendido quita este aviso de Inicio en este aparato. La operación sigue pendiente en Ventas.",
                     style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
             OutlinedButton(onClick={clipboard.setText(AnnotatedString(row.id))},shape=RoundedCornerShape(50),modifier=Modifier.heightIn(min=48.dp)) { Text("Copiar folio") }
@@ -161,19 +163,39 @@ private fun SalesNoticeDetail(row:SalesNoticeSnapshot?,acknowledging:Boolean,mob
 private fun salesNoticeCourtesy(row:SalesNoticeSnapshot)=row.originalAmountCents==0 && row.originalMethod=="CASH"
 private fun salesNoticeTitle(row:SalesNoticeSnapshot)=if(salesNoticeCourtesy(row)) "Intento de cortesía" else
     row.originalMethod?.let { com.avoqado.pos.transactions.data.model.PaymentMethodDisplay.label(it) } ?: "Cobro sin confirmar"
-private fun salesNoticeStatus(row:SalesNoticeSnapshot)=when {
+internal fun salesNoticeStatus(row:SalesNoticeSnapshot)=when {
+    row.registeredResult()!=null -> if ((row.registeredResult()?.get("camposDiferentes") as? JsonArray)?.isNotEmpty()==true)
+        "Pago registrado · revisa las diferencias" else "Pago registrado"
     row.state in setOf("PENDING","SYNCING","HELD") && row.reason==null && row.originalMethod=="CASH" &&
         row.tenderTypeId==null && row.tenderRevision==null -> "Por sincronizar"
     salesNoticeCourtesy(row) -> "Cortesía no registrada"
     else -> "Sin confirmar"
 }
-private fun salesNoticeReason(row:SalesNoticeSnapshot)=when {
+internal fun salesNoticeReason(row:SalesNoticeSnapshot)=when {
+    row.registeredResult()!=null -> if ((row.registeredResult()?.get("camposDiferentes") as? JsonArray)?.isNotEmpty()==true)
+        "El pago ya está registrado. Revisa las diferencias; sus datos se conservan."
+        else "El pago ya está registrado. Puedes marcar el aviso como entendido; sus datos se conservan."
     salesNoticeStatus(row)=="Por sincronizar" -> "El efectivo está guardado en este aparato. Se registrará al recuperar la conexión."
     salesNoticeCourtesy(row) -> "El servidor no confirmó la cortesía original. El intento se conserva para revisión; no vuelvas a cobrar."
     row.reason==ConciliacionDelCobro.DIFERENCIA -> "El registro del pago cambió al sincronizar."
     row.reason==ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA -> "Falta la evidencia original de este pago."
     row.reason==ConciliacionDelCobro.PRICE_PROOF_PENDING -> "El pago espera comprobar el precio original."
     else -> "Todavía no podemos comprobar el resultado de este pago. Sus datos siguen guardados."
+}
+internal fun salesNoticeAcknowledged(row:SalesNoticeSnapshot)=if(row.registeredResult()!=null) "Aviso entendido · datos conservados" else "Aviso entendido · sigue pendiente"
+internal fun salesNoticeServerMoney(row:SalesNoticeSnapshot):String {
+    val result=row.registeredResult() ?: return "Importe del servidor: Sin confirmar"
+    return "Importe registrado: ${salesNoticeMoney(result["amountCents"]?.jsonPrimitive?.intOrNull)} · propina: ${salesNoticeMoney(result["tipCents"]?.jsonPrimitive?.intOrNull)}"
+}
+internal fun salesNoticeResultWarnings(row:SalesNoticeSnapshot):List<String> {
+    val result=row.registeredResult() ?: return emptyList()
+    val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto",
+        "tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden",
+        "saldoDeLaMesa" to "saldo de la mesa","cashRetainedCents" to "efectivo retenido")
+    return listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar").mapNotNull { (key,title) ->
+        val fields=(result[key] as? JsonArray)?.map { labels[it.jsonPrimitive.content] ?: "otros datos" }.orEmpty()
+        if(fields.isEmpty()) null else "$title: ${fields.joinToString()}"
+    }
 }
 private fun salesNoticeMoney(cents:Int?)=cents?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it) } ?: "Sin confirmar"
 private fun salesNoticeDate(epoch:Long)=com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epoch))
