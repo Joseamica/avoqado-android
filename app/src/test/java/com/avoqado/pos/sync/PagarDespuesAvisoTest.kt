@@ -35,6 +35,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import kotlinx.coroutines.test.advanceUntilIdle
+import com.avoqado.pos.pos.data.model.SavedCart
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -61,7 +65,8 @@ class PagarDespuesAvisoTest {
             every { it.isServerReachable } returns MutableStateFlow(false)
             every { it.isFullyConnected } returns false
         }
-        val queue = PayLaterQueue(disk.context, orders, storage, SavedCartsRepository(copies.context), network)
+        val copias = SavedCartsRepository(copies.context)
+        val queue = PayLaterQueue(disk.context, orders, storage, copias, network)
             .apply { io = Dispatchers.Unconfined }
         private val cash = mockk<CashPaymentRepository>().also {
             every { it.salesNoticeReservedIds() } returns emptySet()
@@ -315,6 +320,30 @@ class PagarDespuesAvisoTest {
             assertEquals(disk, f.disk.enDisco)
             assertNull(quarantine.successMessage.value)
             assertEquals("${CortesiaPersistida.AVISO} Folio: order-A.", quarantine.errorMessage.value)
+        }
+    }
+
+    @Test fun `D9 Reintentar encuentra la cuenta y falla retirar su copia - dice Cuenta registrada, no el rechazo viejo`() = runTest {
+        Fixture().use { f ->
+            val id = "pay-later:d9"
+            assertTrue(f.copias.saveCart(SavedCart(id = "copia-1", name = "Ana", items = emptyList(), venueId = "venue-A")))
+            assertTrue(f.queue.guardar(PayLaterRow(id, "venue-A", "cashier-A", "customer-A", "Ana", 10000,
+                """{"externalId":"$id","isOfflineReplay":true}""", carritoGuardadoId = "copia-1", creadaEn = 1000,
+                estado = PayLaterRow.Estado.RECHAZADA, motivo = "No tienes permiso",
+                venta = SavedCart(id = "copia-1", name = "Ana", items = emptyList(), venueId = "venue-A"))))
+            coEvery { f.orders.enviarPagarDespues(any(), any()) } returns
+                OrderRepository.RespuestaCruda(403, "application/json", null, """{"message":"No tienes permiso"}""")
+            coEvery { f.orders.cerrarLlaveDePagarDespues(any(), any()) } returns
+                OrderRepository.RespuestaCruda(200, "application/json", null, """{"released":false,"order":{"id":"ord-1","total":100}}""")
+            f.copies.discoSano = false
+            val vm = f.quarantine()
+
+            vm.reintentarCuenta(id)
+            advanceUntilIdle()
+
+            assertEquals("Cuenta registrada", vm.successMessage.value)
+            assertNull(vm.errorMessage.value)
+            assertEquals(PayLaterRow.Estado.RETIRO_PENDIENTE, f.queue.filas.value.single { it.id == id }.estado)
         }
     }
 }
