@@ -167,7 +167,7 @@ private fun TabletEstimatesLayout(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = AvoqadoTheme.spacing.lg)
-                        .padding(bottom = AvoqadoTheme.spacing.md)
+                        .padding(bottom = AvoqadoTheme.spacing.md),
                     placeholder = { Text("Buscar") },
                     leadingIcon = {
                         Icon(
@@ -412,7 +412,7 @@ private fun PhoneEstimatesLayout(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AvoqadoTheme.spacing.lg)
-                    .padding(bottom = AvoqadoTheme.spacing.md)
+                    .padding(bottom = AvoqadoTheme.spacing.md),
                 placeholder = { Text("Buscar") },
                 leadingIcon = {
                     Icon(
