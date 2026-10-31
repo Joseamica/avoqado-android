@@ -124,15 +124,15 @@
           (SharedPreferences "avoqado_kiosk"): en un POS de mostrador arrancar solo se
           metería encima de lo que el negocio esté haciendo; en un kiosco de entrada no hay
           nadie a quien pedírselo.
+          Sólo el arranque ya desbloqueado (D6, 28-oct): con el aviso de antes del desbloqueo Android
+          creaba el proceso y AvoqadoApp tronaba al abrir sus datos cifrados en cada encendido.
         -->
         <receiver
             android:name=".kiosk.system.KioskBootReceiver"
             android:enabled="true"
-            android:exported="true"
-            android:directBootAware="true">
+            android:exported="true">
             <intent-filter android:priority="1000">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

@@ -9,7 +9,7 @@
 com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: c03aac9932ccc08b1cca7ba998f90a46737e8b628ee35cbea82da4cc7bf3730d
 com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 58bea02fbd39aaa815d6d6e484956aeffe6a4e6d62b4e027f1c66979b81eb3b1
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: 9048af0c6480c4e09530def9a51ddb11e90736a6504492898e330c488e8ce06b
-com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 7279c695aaf32507a57661b37cc5e806e511a2877630a2ed18438e7f576da2d8
+com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: f92c93d636048e972628ef4629f97bf3c1d8cc2c769ee095d8dd2f2232f715d8
 com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: 3f11f61aa975b60b4a1f78f7449a22c5d6dad13566228b761f6efeffc90b1749
 com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: baded2c3f106c59145721c8927f6ec67faeb33fdb5b40eada6f930c009b3a6f4
 com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio | huella: e0ccd4d268b356bb4d0b4765510c62ebaa8f53252ec3fae247808c7679723cb2
@@ -28,7 +28,7 @@ com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fij
 #
 # No se excluye de nada: sólo se vigila. Lo que Android declara aquí (servicios, receptores de arranque, permisos) lo da el
 # sistema; en escritorio se replica a mano en escritorio/Arranque.kt o se declara «no disponible en Windows».
-@manifiesto app/src/main/AndroidManifest.xml | huella: 795af42a0155011921fafbf394f3a6036649cf9450b2d461d240c1ea2c6fbc95
+@manifiesto app/src/main/AndroidManifest.xml | huella: 4266477840aadd71529e9f2c9beb54f687f9de19103dc8c269bba7e52b5d0598
 
 com/avoqado/pos/giftcards/presentation/CompartirLiga.kt # reemplazo: portapapeles de Windows | huella: 4777ca9b23e97480c02d8d9bf906dbbe776da54c2b57a4d9ec97d9344cda0e25
 
