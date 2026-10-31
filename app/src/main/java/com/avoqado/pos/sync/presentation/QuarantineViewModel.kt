@@ -62,10 +62,16 @@ class QuarantineViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 when (val d = cola.reintentar(id)) {
-                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada ->
-                        if (cola.filas.value.none { it.id == id }) _successMessage.value = "Cuenta registrada"
-                        else _errorMessage.value = d.motivoRevision ?: cola.filas.value.firstOrNull { it.id == id }
-                            ?.let { com.avoqado.pos.payment.data.detalleDePagarDespues(it) }
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada -> {
+                        val fila = cola.filas.value.firstOrNull { it.id == id }
+                        // D9 (Codex código r2): la cuenta existe; si sólo falta retirar su copia (RETIRO_PENDIENTE), quedó
+                        // registrada, como en iOS. Antes salía el motivo del rechazo viejo.
+                        if (fila == null || fila.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.RETIRO_PENDIENTE) {
+                            _successMessage.value = "Cuenta registrada"
+                        } else {
+                            _errorMessage.value = d.motivoRevision ?: com.avoqado.pos.payment.data.detalleDePagarDespues(fila)
+                        }
+                    }
                     is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value = d.mensaje
                     null -> Unit
                     // Sin red o sin respuesta útil: vuelve a la fila de «por subir» y se sube sola.

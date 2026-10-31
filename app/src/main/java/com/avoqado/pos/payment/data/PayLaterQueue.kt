@@ -44,8 +44,22 @@ sealed interface DesenlacePagarDespues {
     data class Pendiente(val motivo: String) : DesenlacePagarDespues
     /** 401: la pasada se corta sin gastar intento. */
     data class SesionVencida(val mensaje: String) : DesenlacePagarDespues
-    /** Un 4xx de la API: el servidor NO la creó. */
+    /**
+     * Un 4xx de la API a ESTE envío. 🔴 No prueba que la cuenta no exista: un 403 del permiso llega antes de que el SERVIDOR
+     * busque la cuenta por su llave, y un envío anterior pudo crearla y perder la respuesta (D3, Codex r4). Por eso un rechazo
+     * del REENVÍO sólo devuelve la venta si el SERVIDOR cierra su llave (D9, [CierreDeLlave]).
+     */
     data class Rechazada(val code: Int, val mensaje: String, val cambios: List<CambioDePrecio>) : DesenlacePagarDespues
+}
+
+/** D9: qué contestó el SERVIDOR al pedirle cerrar la llave de una «Pagar después» (`…/orders/by-external-id/{llave}/release`). */
+sealed interface CierreDeLlave {
+    /** La cuenta no existe y ya no podrá crearse con esa llave: la venta puede volver a «Carritos guardados». */
+    data object Cerrada : CierreDeLlave
+    /** La cuenta SÍ existe (un envío anterior la creó). [totalCents] null = ilegible. */
+    data class Existe(val orderId: String, val totalCents: Int?) : CierreDeLlave
+    /** Sin red, sin permiso, 5xx o una respuesta ilegible: no se sabe; nada se devuelve. */
+    data object NoSeSabe : CierreDeLlave
 }
 
 /**
@@ -333,11 +347,54 @@ class PayLaterQueue @Inject constructor(
                     motivo = (desenlace as? DesenlacePagarDespues.Pendiente)?.motivo ?: "Sin conexión")
             }
             is DesenlacePagarDespues.SesionVencida -> Unit
-            is DesenlacePagarDespues.Rechazada -> cambiar(fila.id) {
-                it.copy(estado = PayLaterRow.Estado.RECHAZADA, intentos = it.intentos + 1, motivo = desenlace.mensaje)
-            }
+            // D9 (Codex código r1 #2): lo que se devuelve es el desenlace FINAL: si la cuenta existía, «Reintentar» dice que quedó registrada.
+            is DesenlacePagarDespues.Rechazada -> return trasElRechazo(fila, desenlace)
         }
         return desenlace
+    }
+
+    /**
+     * D9: el SERVIDOR rechazó el reenvío. Si la fila trae su venta, se le pide cerrar la llave: sólo con la llave CERRADA la venta
+     * vuelve a «Carritos guardados» (RECUPERAR), sin su llave vieja (fiarla con ella daría 409) ni su marca de cobro iniciado.
+     * Si la cuenta existe, es una aceptación cuya respuesta se perdió. Sin saberlo, o con una fila de versión anterior (sin
+     * venta), queda RECHAZADA, como antes. Devuelve el desenlace final: `Creada` si la cuenta existía; si no, el rechazo.
+     */
+    private suspend fun trasElRechazo(fila: PayLaterRow, rechazo: DesenlacePagarDespues.Rechazada): DesenlacePagarDespues {
+        val motivo = rechazo.mensaje
+        val venta = fila.venta
+        val cierre = if (venta == null) CierreDeLlave.NoSeSabe else cerrarLlave(fila)
+        when {
+            venta != null && cierre == CierreDeLlave.Cerrada -> cambiar(fila.id) {
+                it.copy(
+                    estado = PayLaterRow.Estado.RECUPERAR,
+                    intentos = it.intentos + 1,
+                    motivo = motivo,
+                    venta = venta.copy(llavePagarDespues = null, cobroIniciadoEn = null, pagarDespuesSinDesenlace = false),
+                )
+            }
+            // La cortesía de una cuenta que no creó ESTE envío no se puede comprobar: la revisa una persona, como en el 201.
+            cierre is CierreDeLlave.Existe && cierre.totalCents == fila.totalEsperadoCents && !CortesiaPersistida.solicitada(fila.cuerpo) ->
+                cerrarAceptada(fila.id)
+            cierre is CierreDeLlave.Existe -> cambiar(fila.id) {
+                it.copy(estado = PayLaterRow.Estado.REVISAR, orderId = cierre.orderId, totalRegistradoCents = cierre.totalCents,
+                    motivo = if (CortesiaPersistida.solicitada(fila.cuerpo)) "${CortesiaPersistida.AVISO} Folio: ${cierre.orderId}." else null,
+                    intentos = it.intentos + 1)
+            }
+            else -> cambiar(fila.id) {
+                it.copy(estado = PayLaterRow.Estado.RECHAZADA, intentos = it.intentos + 1, motivo = motivo)
+            }
+        }
+        return if (cierre is CierreDeLlave.Existe) DesenlacePagarDespues.Creada(cierre.orderId, cierre.totalCents) else rechazo
+    }
+
+    private suspend fun cerrarLlave(fila: PayLaterRow): CierreDeLlave = try {
+        val r = orderRepository.cerrarLlaveDePagarDespues(fila.venueId, fila.id)
+        OrderRepository.leerCierreDeLlave(r.code, r.contentType, r.ngrokError, r.body)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Cerrar la llave sin respuesta: ${e.message}")
+        CierreDeLlave.NoSeSabe
     }
 
     /**

@@ -166,6 +166,25 @@ class PagarDespuesCarritoTest {
     }
 
     @Test
+    fun `D9 la fila nace con su venta - el id de su copia, el cliente elegido, su llave y su sucursal`() = runTest {
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        sinRed()
+
+        vm.createPayLaterOrder("cli-1")
+
+        val guardada = fila.filas.value.single()
+        val venta = checkNotNull(guardada.venta)
+        assertEquals(guardada.carritoGuardadoId, venta.id)
+        assertEquals("cli-1", venta.attachedCustomerId)
+        assertEquals("Ana", venta.name)
+        assertEquals(guardada.id, venta.llavePagarDespues)
+        assertEquals("venue-1", venta.venueId)
+        assertEquals(listOf("Café"), venta.items.map { it.name })
+    }
+
+    @Test
     fun `sin red la cuenta queda guardada en el aparato, se dice, y la copia guardada se retira`() = runTest {
         val vm = createViewModel()
         ventaDeAna(vm)
