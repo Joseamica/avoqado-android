@@ -79,7 +79,8 @@ class SaldoAFavorCambioTest {
         assertEquals("Saldo a favor para: Ana López · +525512345678", ExchangeSettlement.storeCreditCustomerLabel(ana))
         assertEquals("Saldo a favor para: +525512345678", ExchangeSettlement.storeCreditCustomerLabel(ana.copy(name = " ")))
         assertEquals("Saldo a favor para: Cliente", ExchangeSettlement.storeCreditCustomerLabel(ExchangeStoreCreditCustomer("c", "")))
-        assertEquals("Elige a quién se le abona el saldo a favor", ExchangeSettlement.storeCreditCustomerLabel(null))
+        // A5 O-2: sin elegir, el renglón ya no repite el motivo del botón («Elige a quién se le abona el saldo a favor»).
+        assertEquals("Saldo a favor para: sin elegir", ExchangeSettlement.storeCreditCustomerLabel(null))
     }
 
     @Test fun `el alta desde el saldo a favor pide nombre y teléfono`() {

@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ import com.avoqado.pos.designsystem.components.CloseButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 
 /**
  * ¿Se puede guardar el alta? Con [requirePhone] (el saldo a favor se usa con el teléfono, spec §4) pide nombre Y un teléfono de 10 a 15 dígitos (la misma regla de «Guardar teléfono»);
@@ -59,6 +61,10 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 internal fun puedeGuardarCliente(firstName: String, lastName: String, phone: String, email: String, requirePhone: Boolean): Boolean =
     if (requirePhone) (firstName.isNotBlank() || lastName.isNotBlank()) && telefonoValido(phone)
     else firstName.isNotBlank() || lastName.isNotBlank() || phone.isNotBlank() || email.isNotBlank()
+
+/** W-1 (A5): con teléfono obligatorio, lo tecleado que todavía no alcanza se marca (la ayuda «10 a 15 dígitos» dice por qué). */
+internal fun telefonoIncompleto(phone: String, requirePhone: Boolean): Boolean =
+    requirePhone && phone.isNotBlank() && !telefonoValido(phone)
 
 @Composable
 fun CreateCustomerView(
@@ -85,21 +91,13 @@ fun CreateCustomerView(
         desenlace?.cliente?.let { onAlta(null); alCrear(it) }
     }
 
-    var firstName by remember { mutableStateOf("") }
-    var lastName by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-
-    LaunchedEffect(Unit) {
-        if (!initialPhone.isNullOrEmpty()) {
-            phone = initialPhone
-        }
-        if (!initialName.isNullOrEmpty()) {
-            val parts = initialName.split(" ", limit = 2)
-            if (parts.isNotEmpty()) firstName = parts[0]
-            if (parts.size >= 2) lastName = parts[1]
-        }
-    }
+    // W-2 (A5): lo tecleado sobrevive a girar (el formulario restaurado no se ve vacío ni pierde lo escrito si el alta se rechaza).
+    // Lo que se trajo de la búsqueda sólo siembra el formulario la primera vez.
+    val nombreInicial = initialName.orEmpty().split(" ", limit = 2)
+    var firstName by rememberSaveable { mutableStateOf(nombreInicial.getOrElse(0) { "" }) }
+    var lastName by rememberSaveable { mutableStateOf(nombreInicial.getOrElse(1) { "" }) }
+    var phone by rememberSaveable { mutableStateOf(initialPhone.orEmpty()) }
+    var email by rememberSaveable { mutableStateOf("") }
 
     val contactPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -300,7 +298,10 @@ fun CreateCustomerView(
             OutlinedTextField(
                 value = phone,
                 onValueChange = { phone = it },
-                label = { Text("Teléfono") },
+                // W-1 (A5): con teléfono obligatorio (saldo a favor) se marca y se dice qué pide, para que «Guardar» en gris se entienda.
+                label = { Text(if (requirePhone) "Teléfono *" else "Teléfono") },
+                supportingText = if (requirePhone) { { Text(TextosCambio.TELEFONO_DIGITOS) } } else null,
+                isError = telefonoIncompleto(phone, requirePhone),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),

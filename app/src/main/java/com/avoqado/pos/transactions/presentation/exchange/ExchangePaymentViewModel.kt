@@ -42,6 +42,24 @@ internal fun pedidoDeTelefonoDelSaldo(c: ExchangeStoreCreditCustomer, ficha: Cus
         ?.let { original to it }
 }
 
+/**
+ * O-3 (A5): la venta trae el nombre y el id de su clienta, no su teléfono. Se toma de lo que contesta el SERVIDOR al buscarla (la
+ * misma ficha que sale al escogerla de la lista), para que la destinataria por default se vea igual que una escogida. `null` = sin
+ * clienta, sin coincidencia o sin respuesta: se queda como venía y el servidor revisa el teléfono al mandar. Lo usan el Cambio y el
+ * Reembolso.
+ */
+internal suspend fun fichaDeLaClientaDeLaVenta(customers: CustomersRepository, sale: Transaction): Customer? {
+    val id = sale.customerId ?: return null
+    val nombre = sale.customerName?.takeIf { it.isNotBlank() } ?: return null
+    return try {
+        customers.buscarClientes(nombre).getOrNull()?.clientes?.firstOrNull { it.id == id }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+}
+
 /** Por qué no se guardó el teléfono: los textos de la edición de cliente de siempre (espejo de `EdicionDeCliente.mensajeDeError` en iOS). */
 internal fun motivoAlGuardarTelefono(e: Throwable): String = when {
     e is RechazoAlEditarCliente -> e.message
@@ -93,6 +111,14 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         _message.value = null; _draft.value = null; _terminals.value = emptyList()
         _storeCreditCustomer.value = sale.customerId?.let { ExchangeStoreCreditCustomer(it, sale.customerName.orEmpty()) }
         storeCreditRecord = null
+        // O-3 (A5): su teléfono, de lo que manda el servidor; si mientras tanto se escogió a otra o se abrió otra venta, se tira.
+        if (sale.customerId != null && monitor.isOnline()) viewModelScope.launch {
+            val ficha = fichaDeLaClientaDeLaVenta(customers, sale) ?: return@launch
+            if (turn != generation || storeCreditRecord != null || _busy.value || _storeCreditCustomer.value?.id != ficha.id) return@launch
+            storeCreditRecord = ficha
+            _storeCreditCustomer.value = ExchangeStoreCreditCustomer(ficha.id, ficha.fullName, ficha.phone?.takeIf { it.isNotBlank() },
+                phoneChecked = true)
+        }
         openJob = viewModelScope.launch {
             try { submission.open(requireNotNull(capturedVenue), sale.id) { turn == generation } }
             catch (e: CancellationException) { throw e }

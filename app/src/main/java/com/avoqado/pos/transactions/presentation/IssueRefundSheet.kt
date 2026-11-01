@@ -42,6 +42,7 @@ import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -207,6 +208,8 @@ fun IssueRefundSheet(
         restringe = restringe(soloSaldo, reason?.code, esPorDefecto),
     )
     val devolverCon = devolucionEscogida(opcionesDeDevolucion, devolverConAMano)
+    // O-1 (A5): lo que se ve elegido se queda mientras se siga ofreciendo (marcar «Es por defecto» ya no pasa solo a «Efectivo»).
+    SideEffect { if (devolverConAMano != devolverCon) devolverConAMano = devolverCon }
     val aSaldoAFavor = devolverCon == DEVOLVER_CON_SALDO
     val bloqueo = bloqueoDeLaCadena(chain, devolverCon)
     val enTerminal = !chain.isCredit && !aSaldo && !aSaldoAFavor && seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)

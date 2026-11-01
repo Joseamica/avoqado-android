@@ -10,6 +10,7 @@ import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeStoreCreditCustomer
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import com.avoqado.pos.transactions.presentation.exchange.fichaDeLaClientaDeLaVenta
 import com.avoqado.pos.transactions.presentation.exchange.motivoAlGuardarTelefono
 import com.avoqado.pos.transactions.presentation.exchange.pedidoDeTelefonoDelSaldo
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -50,6 +51,16 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
         ficha = null
         _mensaje.value = null
         _cliente.value = sale.customerId?.let { ExchangeStoreCreditCustomer(it, sale.customerName.orEmpty()) }
+        // O-3 (A5): su teléfono, de lo que manda el servidor, igual que el Cambio; lo de otra apertura o tras escoger a otra se tira.
+        if (sale.customerId == null || !monitor.isOnline()) return
+        val miApertura = apertura
+        viewModelScope.launch {
+            val encontrada = fichaDeLaClientaDeLaVenta(customers, sale) ?: return@launch
+            if (miApertura != apertura || ficha != null || _guardando.value || _cliente.value?.id != encontrada.id) return@launch
+            ficha = encontrada
+            _cliente.value = ExchangeStoreCreditCustomer(encontrada.id, encontrada.fullName,
+                encontrada.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
+        }
     }
 
     fun escoger(customer: Customer) {

@@ -371,4 +371,18 @@ class ExchangePaymentViewModelTest {
             }
         }
     }
+
+    // MARK: - A5 O-3: la clienta de la venta se muestra con su teléfono, el que manda el servidor, como la escogida de la lista.
+    @Test fun `O-3 en el Cambio la clienta de la venta muestra el teléfono que manda el servidor`() {
+        coEvery { store.load("venue", "payment") } returns null
+        coEvery { customers.buscarClientes("Ana López") } returns Result.success(com.avoqado.pos.customers.data.model.PaginaDeClientes(listOf(
+            com.avoqado.pos.customers.data.model.Customer("otra", firstName = "Ana", lastName = "López", phone = "+525599999999"),
+            com.avoqado.pos.customers.data.model.Customer("ana", firstName = "Ana", lastName = "López", phone = "+525511112222"),
+        ), 2))
+        val payments = vm()
+        payments.open(Transaction("payment", customerId = "ana", customerName = "Ana López"))
+        assertEquals("+525511112222", payments.storeCreditCustomer.value?.phone)
+        assertTrue(payments.storeCreditCustomer.value!!.phoneChecked)
+        assertEquals("Saldo a favor para: Ana López · +525511112222", ExchangeSettlement.storeCreditCustomerLabel(payments.storeCreditCustomer.value))
+    }
 }

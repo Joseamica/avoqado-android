@@ -802,7 +802,8 @@ private fun CustomerDetailPanel(
 
         // Saldo a favor (A4): sólo si el cliente tiene sobre; sin él no se pinta nada, ni «$0.00».
         lineaSaldoAFavorDeLaFicha(customer)?.let { linea ->
-            DetailSectionCard(title = TextosCambio.SALDO_A_FAVOR) {
+            // O-4 (A5): el renglón ya dice «Saldo a favor: $X»; sin título encima que lo repita.
+            DetailSectionCard(title = null) {
                 Text(
                     text = linea,
                     style = MaterialTheme.typography.bodyLarge,
@@ -902,10 +903,10 @@ private fun CustomerEmptyState() {
 
 @Composable
 private fun DetailSectionCard(
-    title: String,
+    title: String?,
     content: @Composable () -> Unit,
 ) {
-    Text(
+    if (title != null) Text(
         text = title,
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,

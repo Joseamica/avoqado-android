@@ -569,6 +569,31 @@ class ReembolsoASaldoTest {
         }
     }
 
+    @Test fun `O-3 en el Reembolso la clienta de la venta muestra el teléfono que manda el servidor, salvo que ya se escogió a otra`() = runBlocking {
+        fun ana() = com.avoqado.pos.customers.data.model.Customer("ana", firstName = "Ana", lastName = "López", phone = "+525511112222")
+        var llega = CompletableDeferred<Unit>()
+        val customers = mockk<com.avoqado.pos.customers.data.CustomersRepository>(relaxed = true)
+        coEvery { customers.buscarClientes("Ana López") } coAnswers {
+            llega.await(); Result.success(com.avoqado.pos.customers.data.model.PaginaDeClientes(listOf(ana()), 1))
+        }
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(customers,
+            mockk(relaxed = true), mockk(relaxed = true), online))
+        val venta = Transaction("payment", customerId = "ana", customerName = "Ana López")
+        saldo.abrir(venta)
+        llega.complete(Unit)
+        withTimeout(5_000) { while (saldo.cliente.value?.phone == null) yield() }
+        assertEquals("Saldo a favor para: Ana López · +525511112222",
+            com.avoqado.pos.transactions.presentation.exchange.ExchangeSettlement.storeCreditCustomerLabel(saldo.cliente.value))
+        // La cajera escoge a Beatriz antes de que conteste: se queda Beatriz.
+        llega = CompletableDeferred()
+        saldo.abrir(venta)
+        saldo.escoger(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
+        llega.complete(Unit)
+        repeat(20) { yield() }
+        assertEquals("beatriz", saldo.cliente.value?.id)
+    }
+
     @Test fun `una respuesta tardía de guardar el teléfono no cambia a la destinataria de la hoja reabierta`() = runBlocking {
         val respuesta = CompletableDeferred<Unit>()
         val customers = mockk<com.avoqado.pos.customers.data.CustomersRepository>()

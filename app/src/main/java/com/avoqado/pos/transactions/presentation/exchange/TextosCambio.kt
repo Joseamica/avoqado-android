@@ -127,6 +127,9 @@ object TextosCambio {
     const val TELEFONO = "Teléfono"
     const val GUARDAR_TELEFONO = "Guardar teléfono"
     const val CLIENTE = "Cliente"
+    // A5 (pulido): la ayuda del teléfono obligatorio en el alta, y la destinataria todavía sin elegir.
+    const val TELEFONO_DIGITOS = "10 a 15 dígitos"
+    const val SIN_ELEGIR = "sin elegir"
     // Reembolso a saldo a favor (spec 2026-10-30 §4, §6, §7; A3).
     const val ES_POR_DEFECTO = "Es por defecto"
     const val SOLO_SALDO_EXCEPCIONES = "Defecto y cobro por error siempre se devuelven como se pagó"

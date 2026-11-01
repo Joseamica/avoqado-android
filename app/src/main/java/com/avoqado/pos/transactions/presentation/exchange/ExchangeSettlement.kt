@@ -56,11 +56,14 @@ object ExchangeSettlement {
      */
     fun storeCreditApplies(sale: Transaction): Boolean = sale.storeCreditOption != null && sale.tenderSystemKind != "GIFT_CARD"
 
-    /** «Saldo a favor para: {nombre · teléfono}», con el teléfono como respaldo del nombre y «Cliente» si no hay ninguno. */
+    /**
+     * «Saldo a favor para: {nombre · teléfono}», con el teléfono como respaldo del nombre y «Cliente» si no hay ninguno. Sin elegir,
+     * «Saldo a favor para: sin elegir»: el motivo del botón en gris ya dice qué hacer (O-2, A5: antes salía dos veces).
+     */
     fun storeCreditCustomerLabel(customer: ExchangeStoreCreditCustomer?): String = customer?.let { c ->
         TextosCambio.SALDO_A_FAVOR_PARA.replace("{cliente}", listOfNotNull(c.name.takeIf { it.isNotBlank() },
             c.phone?.takeIf { it.isNotBlank() }).joinToString(" · ").ifEmpty { TextosCambio.CLIENTE })
-    } ?: TextosCambio.SALDO_ELIGE_CLIENTE
+    } ?: TextosCambio.SALDO_A_FAVOR_PARA.replace("{cliente}", TextosCambio.SIN_ELEGIR)
 
     fun methodLabel(method: String?): String? = when (method) {
         "CASH" -> TextosCambio.EFECTIVO

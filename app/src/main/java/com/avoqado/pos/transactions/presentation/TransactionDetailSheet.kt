@@ -1089,7 +1089,7 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
     // Misma forma que «Pago» y «Artículos»: título, línea y un renglón con ícono. Sin cliente y con
     // permiso, el renglón ES el botón (como «Agregar cliente» del carrito); con cliente, sólo lo muestra.
     val metrics = LocalDetailMetrics.current
-    val hasCustomer = transaction.customerId != null
+    val hasCustomer = transaction.customerId != null || transaction.storeCredit?.customerName?.isNotBlank() == true
     val canTap = !hasCustomer && viewModel.canAssignCustomer
     val enabled = canTap && online && !busy
     Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
@@ -1111,7 +1111,7 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
                 modifier = Modifier.size(metrics.iconSize), tint = tint)
             Text(
                 text = when {
-                    hasCustomer -> transaction.customerName ?: "Cliente asignado"
+                    hasCustomer -> transaction.clienteVisible ?: "Cliente asignado"
                     canTap -> "Agregar cliente"
                     else -> "Sin cliente"
                 },
