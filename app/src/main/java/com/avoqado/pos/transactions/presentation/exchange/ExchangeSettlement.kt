@@ -1,6 +1,7 @@
 package com.avoqado.pos.transactions.presentation.exchange
 
 import com.avoqado.pos.transactions.data.model.PayoutOption
+import com.avoqado.pos.transactions.data.model.Transaction
 
 data class ExchangeSettlementOption(val method: String, val label: String, val requiresPin: Boolean = false,
     val cashFromNonCash: Boolean? = null, val disabledReason: String? = null)
@@ -17,8 +18,8 @@ object ExchangeSettlement {
 
     fun payoutOptions(options: List<PayoutOption>?, amountCents: Long, canRefundToCash: Boolean,
         managerPinOverrideEnabled: Boolean, storeCreditOnly: Boolean = false, hasDefect: Boolean = false,
-        storeCreditAvailable: Boolean = true, online: Boolean = true,
-        customer: ExchangeStoreCreditCustomer? = null): List<ExchangeSettlementOption> {
+        storeCreditAvailable: Boolean? = true, online: Boolean = true,
+        customer: ExchangeStoreCreditCustomer? = null, storeCreditApplies: Boolean = true): List<ExchangeSettlementOption> {
         val offered = options.orEmpty().mapNotNull { option ->
             val label = methodLabel(option.method) ?: return@mapNotNull null
             if (option.method == "CARD_TERMINAL" || option.maxCents == null || option.maxSameCents == null ||
@@ -32,19 +33,33 @@ object ExchangeSettlement {
         // «Sólo saldo a favor» sin pieza con Defecto: el saldo a favor y regresar al mismo sobre de regalo (spec §4, §5.4).
         val allowed = if (storeCreditOnly && !hasDefect) offered.filter { it.method == "STORE_CREDIT" || it.method == "GIFT_CARD_BALANCE" }
             else offered
-        // Sin las llaves el servidor no lo ofrece: apagado se ve y se explica (spec §5.1).
-        val shown = if (!storeCreditAvailable && allowed.none { it.method == "STORE_CREDIT" })
+        // Sin las llaves el servidor no lo ofrece: apagado se ve y se explica (spec §5.1), sólo donde aplicaría. Un servidor
+        // anterior (`null`) no sabe darlo: la opción no aparece.
+        val shown = if (storeCreditAvailable == false && storeCreditApplies && allowed.none { it.method == "STORE_CREDIT" })
             listOf(ExchangeSettlementOption("STORE_CREDIT", TextosCambio.SALDO_A_FAVOR,
                 disabledReason = TextosCambio.SALDO_PIDE_A_AVOQADO)) + allowed else allowed
         return shown.sortedBy { it.method != "STORE_CREDIT" }
     }
 
     private fun storeCreditBlock(online: Boolean, customer: ExchangeStoreCreditCustomer?): String? = when {
-        !online -> TextosCambio.SIN_CONEXION
+        !online -> TextosCambio.SALDO_SIN_RED
         customer == null -> TextosCambio.SALDO_ELIGE_CLIENTE
-        customer.phoneChecked && customer.phone.isNullOrBlank() -> TextosCambio.SALDO_SIN_TELEFONO.replace("{nombre}", customer.name)
+        customer.phoneChecked && customer.phone.isNullOrBlank() ->
+            TextosCambio.SALDO_SIN_TELEFONO.replace("{nombre}", customer.name.ifBlank { TextosCambio.CLIENTE })
         else -> null
     }
+
+    /**
+     * ¿El saldo a favor aplicaría a esta venta? Lo dice el servidor (`storeCreditOption` del detalle); sin llaves contesta eso
+     * primero, así que lo pagado con tarjeta de regalo —que regresa a su tarjeta, nunca a un saldo nuevo— se descarta aquí.
+     */
+    fun storeCreditApplies(sale: Transaction): Boolean = sale.storeCreditOption != null && sale.tenderSystemKind != "GIFT_CARD"
+
+    /** «Saldo a favor para: {nombre · teléfono}», con el teléfono como respaldo del nombre y «Cliente» si no hay ninguno. */
+    fun storeCreditCustomerLabel(customer: ExchangeStoreCreditCustomer?): String = customer?.let { c ->
+        TextosCambio.SALDO_A_FAVOR_PARA.replace("{cliente}", listOfNotNull(c.name.takeIf { it.isNotBlank() },
+            c.phone?.takeIf { it.isNotBlank() }).joinToString(" · ").ifEmpty { TextosCambio.CLIENTE })
+    } ?: TextosCambio.SALDO_ELIGE_CLIENTE
 
     fun methodLabel(method: String?): String? = when (method) {
         "CASH" -> TextosCambio.EFECTIVO

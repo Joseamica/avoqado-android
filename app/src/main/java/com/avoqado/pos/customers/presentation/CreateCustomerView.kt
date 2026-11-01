@@ -50,6 +50,14 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
+/**
+ * ¿Se puede guardar el alta? Con [requirePhone] (el saldo a favor se usa con el teléfono, spec §4) pide nombre Y teléfono;
+ * sin él, basta un dato, como siempre.
+ */
+internal fun puedeGuardarCliente(firstName: String, lastName: String, phone: String, email: String, requirePhone: Boolean): Boolean =
+    if (requirePhone) (firstName.isNotBlank() || lastName.isNotBlank()) && phone.isNotBlank()
+    else firstName.isNotBlank() || lastName.isNotBlank() || phone.isNotBlank() || email.isNotBlank()
+
 @Composable
 fun CreateCustomerView(
     viewModel: CustomersViewModel,
@@ -57,6 +65,7 @@ fun CreateCustomerView(
     initialName: String?,
     onCustomerCreated: (Customer) -> Unit,
     onBack: () -> Unit,
+    requirePhone: Boolean = false,
 ) {
     val context = LocalContext.current
     val isSaving by viewModel.isSaving.collectAsState()
@@ -139,10 +148,7 @@ fun CreateCustomerView(
         }
     }
 
-    val canSave = firstName.isNotBlank() ||
-        lastName.isNotBlank() ||
-        phone.isNotBlank() ||
-        email.isNotBlank()
+    val canSave = puedeGuardarCliente(firstName, lastName, phone, email, requirePhone)
 
     LaunchedEffect(error) {
         if (error != null) showErrorAlert = true

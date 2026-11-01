@@ -253,6 +253,9 @@ class ExchangeRepositoryHttpTest {
     @Test fun `IDEMPOTENCY_KEY_REUSED conserva`()=runBlocking {
         respondeAlSaldo(409,"""{"code":"IDEMPOTENCY_KEY_REUSED","message":"Esta llave ya se usó para otro cambio."}""")
         assertConserva()
+        // No promete «cierra y vuelve a abrir»: al reabrir sigue igual de pendiente (r1 M3).
+        assertEquals("Este cambio ya se había mandado con otros datos y esta caja no puede confirmarlo. Revisa la venta en el panel antes de hacer otro cambio.",
+            flow.state.value.message)
     }
     @Test fun `un 503 sigue pendiente y bloqueado`()=runBlocking {
         respondeAlSaldo(503,"""{"message":"Servidor ocupado"}""")

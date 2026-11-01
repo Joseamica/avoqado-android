@@ -27,9 +27,10 @@ class ExchangePaymentViewModelTest {
     private val settings = mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository> {
         every { managerPinOverrideEnabled } returns overrideEnabled
         every { this@mockk.storeCreditOnly } returns this@ExchangePaymentViewModelTest.storeCreditOnly
-        every { storeCreditAvailable } returns kotlinx.coroutines.flow.MutableStateFlow(true)
+        every { storeCreditAvailable } returns kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(true)
     }
-    private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),drawer,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor,settings)
+    private val customers = mockk<com.avoqado.pos.customers.data.CustomersRepository>()
+    private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),drawer,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor,settings,customers)
 
     @Test fun `cash collection and payout send with only a confirmed open drawer from this venue`() {
         val confirmed = CashDrawerSessionEntity("c123456789012345678901234", "venue", null, "actor", "Ana", 0L, 0)
@@ -204,6 +205,82 @@ class ExchangePaymentViewModelTest {
         assertEquals("STORE_CREDIT", second.getValue("settlement").jsonObject.getValue("method").jsonPrimitive.content)
         assertEquals(first["returned"], second["returned"]); assertEquals(first["taken"], second["taken"])
         assertNotEquals(first["idempotencyKey"], second["idempotencyKey"])
+    }
+
+    // MARK: - Teléfono obligatorio (r1 I2): se pide ahí mismo, se guarda con la edición de cliente de siempre y el Cambio sigue.
+    private val mama = com.avoqado.pos.customers.data.model.Customer("mama", firstName = "Rosa", lastName = "López")
+    private fun sinTelefono() = TextosCambio.SALDO_SIN_TELEFONO.replace("{nombre}", "Rosa López")
+    private fun abierto(): ExchangePaymentViewModel {
+        coEvery { store.load(any(), any()) } returns null
+        coEvery { store.save(any()) } answers { firstArg<PendingExchange>() }
+        coEvery { store.remove(any()) } just Runs
+        return vm().also { it.open(Transaction("payment", payoutOptions = listOf(saldo))); it.begin(draft()); it.chooseCustomer(mama) }
+    }
+
+    @Test fun `un cliente sin teléfono se pide, se guarda y el cambio continúa`() {
+        val bodies = mutableListOf<String>()
+        coEvery { repo.create(any(), "venue") } coAnswers { bodies += firstArg<String>(); completed() }
+        coEvery { customers.updateCustomer(mama, com.avoqado.pos.customers.data.model.UpdateCustomerRequest(phone = "5512345678")) } returns
+            Result.success(mama.copy(phone = "5512345678"))
+        val vm = abierto()
+        assertEquals(sinTelefono(), vm.options(draft()).single().disabledReason)
+        vm.saveStoreCreditPhone("55 1234 5678")
+        assertEquals(ExchangeStoreCreditCustomer("mama", "Rosa López", "5512345678", phoneChecked = true), vm.storeCreditCustomer.value)
+        assertNull(vm.message.value)
+        assertEquals(draft(), vm.draft.value)
+        vm.choose(vm.options(draft()).single())
+        assertEquals(ExchangeSendPhase.COMPLETED, vm.state.value.phase)
+        assertEquals("mama", Json.parseToJsonElement(bodies.single()).jsonObject.getValue("settlement").jsonObject
+            .getValue("customerId").jsonPrimitive.content)
+    }
+
+    @Test fun `si guardar el teléfono falla se queda con el motivo y no se pierde lo capturado`() {
+        coEvery { customers.updateCustomer(any(), any()) } returns
+            Result.failure(com.avoqado.pos.customers.data.RechazoAlEditarCliente(403, "No tienes permiso para editar clientes."))
+        val vm = abierto()
+        vm.saveStoreCreditPhone("5512345678")
+        assertEquals("No tienes permiso para editar clientes.", vm.message.value)
+        assertEquals(draft(), vm.draft.value)
+        assertEquals(ExchangeStoreCreditCustomer("mama", "Rosa López", null, phoneChecked = true), vm.storeCreditCustomer.value)
+        assertEquals(sinTelefono(), vm.options(draft()).single().disabledReason)
+        coEvery { customers.updateCustomer(any(), any()) } returns Result.failure(java.io.IOException("timeout"))
+        vm.saveStoreCreditPhone("5512345678")
+        assertEquals(TextosCambio.SALDO_SIN_RED, vm.message.value)
+        assertEquals(draft(), vm.draft.value)
+        coVerify(exactly = 0) { store.save(any()) }
+        coVerify(exactly = 0) { repo.create(any(), any()) }
+    }
+
+    @Test fun `sin red el teléfono no se guarda ni se encola`() {
+        val vm = abierto()
+        every { monitor.isOnline() } returns false
+        vm.saveStoreCreditPhone("5512345678")
+        assertEquals(TextosCambio.SALDO_SIN_RED, vm.message.value)
+        assertEquals(draft(), vm.draft.value)
+        coVerify(exactly = 0) { customers.updateCustomer(any(), any()) }
+    }
+
+    @Test fun `un teléfono que no sirve no se manda`() {
+        val vm = abierto()
+        vm.saveStoreCreditPhone("123")
+        assertEquals(TextosCambio.SALDO_TELEFONO_INVALIDO, vm.message.value)
+        vm.saveStoreCreditPhone("   ")
+        assertEquals(TextosCambio.SALDO_TELEFONO_INVALIDO, vm.message.value)
+        coVerify(exactly = 0) { customers.updateCustomer(any(), any()) }
+    }
+
+    @Test fun `si el servidor pide el teléfono de la clienta de la venta, la app lo pide`() {
+        coEvery { store.load(any(), any()) } returns null
+        coEvery { store.save(any()) } answers { firstArg<PendingExchange>() }
+        coEvery { store.remove(any()) } just Runs
+        coEvery { repo.create(any(), "venue") } throws ExchangeApiException(400, "STORE_CREDIT_CUSTOMER_PHONE_REQUIRED",
+            "Para darle saldo a favor a Ana López hace falta su teléfono: con él lo usa. Agrégalo a su ficha.")
+        val vm = vm()
+        vm.open(Transaction("payment", customerId = "ana", customerName = "Ana López", payoutOptions = listOf(saldo)))
+        vm.begin(draft()); vm.choose(vm.options(draft()).single())
+        assertFalse(vm.state.value.locked)
+        assertEquals(ExchangeStoreCreditCustomer("ana", "Ana López", null, phoneChecked = true), vm.storeCreditCustomer.value)
+        assertEquals(TextosCambio.SALDO_SIN_TELEFONO.replace("{nombre}", "Ana López"), vm.options(draft()).single().disabledReason)
     }
 
     @Test fun `sin a quién abonar el saldo a favor no se manda`() {

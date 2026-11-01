@@ -121,4 +121,10 @@ object TextosCambio {
     const val SALDO_TELEFONO_NO_COINCIDE = "El saldo de {nombre} se usa con el teléfono que termina en {4}, no con el de su ficha. Un gerente lo cambia en el DASHBOARD."
     const val TICKET_SALDO_PARA = "Saldo a favor para {nombre}: {monto} · saldo nuevo {saldo}"
     const val TICKET_SALDO_TELEFONO = "Se usa con el teléfono que termina en {4}"
+    const val SALDO_SIN_RED = "El saldo a favor necesita conexión"
+    const val SALDO_TELEFONO_INVALIDO = "El teléfono debe tener de 10 a 15 dígitos"
+    const val SALDO_LLAVE_REUSADA = "Este cambio ya se había mandado con otros datos y esta caja no puede confirmarlo. Revisa la venta en el panel antes de hacer otro cambio."
+    const val TELEFONO = "Teléfono"
+    const val GUARDAR_TELEFONO = "Guardar teléfono"
+    const val CLIENTE = "Cliente"
 }

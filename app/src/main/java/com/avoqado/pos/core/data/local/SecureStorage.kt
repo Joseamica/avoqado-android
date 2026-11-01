@@ -302,9 +302,13 @@ class SecureStorage @Inject constructor(
     var storeCreditOnly: Boolean
         get() = prefs.getBoolean(KEY_STORE_CREDIT_ONLY, false)
         set(value) { prefs.edit().putBoolean(KEY_STORE_CREDIT_ONLY, value).apply() }
-    var storeCreditAvailable: Boolean
-        get() = prefs.getBoolean(KEY_STORE_CREDIT_AVAILABLE, false)
-        set(value) { prefs.edit().putBoolean(KEY_STORE_CREDIT_AVAILABLE, value).apply() }
+    /** `null` = el servidor no lo dijo (servidor anterior): la opción no aparece; `false` = sin llaves: sale en gris. */
+    var storeCreditAvailable: Boolean?
+        get() = if (prefs.contains(KEY_STORE_CREDIT_AVAILABLE)) prefs.getBoolean(KEY_STORE_CREDIT_AVAILABLE, false) else null
+        set(value) {
+            if (value == null) prefs.edit().remove(KEY_STORE_CREDIT_AVAILABLE).apply()
+            else prefs.edit().putBoolean(KEY_STORE_CREDIT_AVAILABLE, value).apply()
+        }
 
     /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
@@ -743,7 +747,7 @@ class SecureStorage @Inject constructor(
         this.managerPinOverrideEnabled = false
         this.exchangesEnabled = false
         this.storeCreditOnly = false
-        this.storeCreditAvailable = false
+        this.storeCreditAvailable = null
     }
 
     fun saveBiometricCredentials(

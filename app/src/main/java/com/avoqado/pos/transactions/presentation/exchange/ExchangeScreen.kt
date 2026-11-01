@@ -22,6 +22,8 @@ import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
+import androidx.compose.ui.text.input.KeyboardType
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.payment.presentation.PaymentProcessingView
@@ -41,6 +43,7 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
     val draft by payments.draft.collectAsState()
     val terminals by payments.terminals.collectAsState()
     val storeCreditCustomer by payments.storeCreditCustomer.collectAsState()
+    val online by viewModel.online.collectAsState()
     var pickingCustomer by remember { mutableStateOf(false) }
     var createSearch by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(state.transaction?.id) { state.transaction?.let { payments.open(it) } }
@@ -111,7 +114,7 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
         }
     }
     if (draft != null && !send.locked && !pickingCustomer) {
-        val options = payments.options(draft!!)
+        val options = payments.options(draft!!, online)
         AvoqadoDialog(title = if (terminals.isNotEmpty()) TextosCambio.EN_CUAL_TERMINAL
             else if (draft!!.settlement.kind == "PAYOUT") TextosCambio.ELIGE_DEVOLUCION else TextosCambio.ELIGE_METODO,
             description = exchangeBar(draft!!.settlement.expectedDifferenceCents).label,
@@ -127,10 +130,17 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                 // «Saldo a favor para: Ana López · 55 1234 5678 [Cambiar]» (spec §4): sólo si el saldo a favor se puede dar aquí.
                 if (terminals.isEmpty() && options.any { it.method == "STORE_CREDIT" && it.disabledReason != TextosCambio.SALDO_PIDE_A_AVOQADO }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(storeCreditCustomer?.let { c -> TextosCambio.SALDO_A_FAVOR_PARA.replace("{cliente}",
-                            listOfNotNull(c.name, c.phone).joinToString(" · ")) } ?: TextosCambio.SALDO_ELIGE_CLIENTE,
+                        Text(ExchangeSettlement.storeCreditCustomerLabel(storeCreditCustomer),
                             Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         TextButton(onClick = { pickingCustomer = true }, enabled = !busy) { Text(TextosCambio.CAMBIAR) }
+                    }
+                    // Teléfono obligatorio (spec §4): si el cliente no lo tiene, se pide aquí y se guarda en su ficha.
+                    storeCreditCustomer?.takeIf { it.phoneChecked && it.phone.isNullOrBlank() }?.let { c ->
+                        var phone by rememberSaveable(c.id) { mutableStateOf("") }
+                        AvoqadoPillTextField(value = phone, onValueChange = { phone = it }, placeholder = TextosCambio.TELEFONO,
+                            enabled = !busy, keyboardType = KeyboardType.Phone)
+                        PrimaryButton(TextosCambio.GUARDAR_TELEFONO, { payments.saveStoreCreditPhone(phone) },
+                            enabled = !busy && phone.isNotBlank(), fullWidth = true)
                     }
                 }
                 message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
@@ -148,7 +158,7 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                 if (search != null) CreateCustomerView(viewModel = customers,
                     initialPhone = search.takeIf { it.any(Char::isDigit) }, initialName = search.takeUnless { it.any(Char::isDigit) },
                     onCustomerCreated = { payments.chooseCustomer(it); createSearch = null; pickingCustomer = false },
-                    onBack = { createSearch = null })
+                    onBack = { createSearch = null }, requirePhone = true)
                 else CustomersView(viewModel = customers,
                     onCustomerSelected = { payments.chooseCustomer(it); pickingCustomer = false },
                     onDismiss = { pickingCustomer = false }, onCreateCustomer = { createSearch = it },

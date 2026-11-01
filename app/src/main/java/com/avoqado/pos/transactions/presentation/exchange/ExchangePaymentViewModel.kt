@@ -5,7 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.customers.data.CustomersRepository
+import com.avoqado.pos.customers.data.RechazoAlEditarCliente
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.domain.ContactoEditado
+import com.avoqado.pos.customers.domain.cambiosDeContacto
+import com.avoqado.pos.customers.domain.erroresDeContacto
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.payment.data.*
@@ -29,7 +35,8 @@ import javax.inject.Inject
 class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepository, private val store: ExchangePendingStore,
     private val secure: SecureStorage, private val outbox: SyncOutbox, private val drawer: CashDrawerRepository,
     private val terminal: TerminalPaymentService, private val role: RoleManager, private val printer: PrinterService,
-    private val monitor: ConnectivityMonitor, private val settings: TpvSettingsRepository) : ViewModel() {
+    private val monitor: ConnectivityMonitor, private val settings: TpvSettingsRepository,
+    private val customers: CustomersRepository) : ViewModel() {
     private val submission = ExchangeSubmission(repository, store)
     private val card = ExchangeCardCharge(terminal, submission)
     val state = submission.state
@@ -47,6 +54,8 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
     private val _storeCreditCustomer = MutableStateFlow<ExchangeStoreCreditCustomer?>(null)
     val storeCreditCustomer = _storeCreditCustomer.asStateFlow()
     val canCreateCustomer: Boolean get() = role.hasVenuePermission("customers:create")
+    /** La ficha completa del cliente escogido con «Cambiar» (para guardarle el teléfono sin perder sus otros datos). */
+    private var storeCreditRecord: Customer? = null
     private var venue: String? = null
     private var actor: String? = null
     private var transaction: Transaction? = null
@@ -64,6 +73,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         _ready.value = false
         _message.value = null; _draft.value = null; _terminals.value = emptyList()
         _storeCreditCustomer.value = sale.customerId?.let { ExchangeStoreCreditCustomer(it, sale.customerName.orEmpty()) }
+        storeCreditRecord = null
         openJob = viewModelScope.launch {
             try { submission.open(requireNotNull(capturedVenue), sale.id) { turn == generation } }
             catch (e: CancellationException) { throw e }
@@ -85,16 +95,61 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         return true
     }
 
-    fun options(value: ExchangeDraft): List<ExchangeSettlementOption> = if (value.settlement.kind == "COLLECT")
-        ExchangeSettlement.collectOptions() else ExchangeSettlement.payoutOptions(transaction?.payoutOptions,
+    /** [online] llega del observador de red de la pantalla, para que la opción reaccione al volver la red. */
+    fun options(value: ExchangeDraft, online: Boolean = monitor.isOnline()): List<ExchangeSettlementOption> =
+        if (value.settlement.kind == "COLLECT") ExchangeSettlement.collectOptions()
+        else ExchangeSettlement.payoutOptions(transaction?.payoutOptions,
             -value.settlement.expectedDifferenceCents, role.canRefundToCash, settings.managerPinOverrideEnabled.value,
             settings.storeCreditOnly.value, value.returned.any { it.reason == ExchangeReason.DEFECT.name },
-            settings.storeCreditAvailable.value, monitor.isOnline(), _storeCreditCustomer.value)
+            settings.storeCreditAvailable.value, online, _storeCreditCustomer.value,
+            transaction?.let(ExchangeSettlement::storeCreditApplies) ?: false)
 
     fun chooseCustomer(customer: Customer) {
         if (_busy.value) return
+        storeCreditRecord = customer
         _storeCreditCustomer.value = ExchangeStoreCreditCustomer(customer.id, customer.fullName,
             customer.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
+    }
+
+    /**
+     * Teléfono obligatorio (spec §4): el de un cliente que no lo tiene se pide aquí y se guarda en su ficha con la edición de
+     * siempre (`PUT customers/:id`, con su permiso o el PIN de gerente). Sin red no se guarda ni se encola. Si falla, el diálogo
+     * se queda con lo capturado y el motivo.
+     */
+    fun saveStoreCreditPhone(phone: String) {
+        val c = _storeCreditCustomer.value ?: return
+        if (_busy.value) return
+        if (!monitor.isOnline()) { _message.value = TextosCambio.SALDO_SIN_RED; return }
+        val original = storeCreditRecord?.takeIf { it.id == c.id } ?: Customer(c.id, firstName = c.name.takeIf { it.isNotBlank() })
+        val edited = ContactoEditado(original.firstName.orEmpty(), original.lastName.orEmpty(), phone, original.email.orEmpty())
+        val request = cambiosDeContacto(original, edited)?.takeIf { it.phone != null && erroresDeContacto(original, edited).isEmpty() }
+            ?: run { _message.value = TextosCambio.SALDO_TELEFONO_INVALIDO; return }
+        _busy.value = true
+        viewModelScope.launch {
+            try {
+                customers.updateCustomer(original, request).fold(
+                    onSuccess = { updated ->
+                        storeCreditRecord = updated
+                        _storeCreditCustomer.value = c.copy(phone = updated.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
+                        _message.value = null
+                    },
+                    onFailure = { e ->
+                        // Los textos de la edición de cliente de siempre (espejo de `EdicionDeCliente.mensajeDeError` en iOS).
+                        _message.value = when {
+                            e is RechazoAlEditarCliente -> e.message
+                            e is java.io.IOException || ServerErrorText.isOffline(e) -> TextosCambio.SALDO_SIN_RED
+                            else -> null
+                        } ?: "No se pudo guardar el cliente. Intenta de nuevo."
+                    },
+                )
+            } finally { _busy.value = false }
+        }
+    }
+
+    /** El servidor pidió el teléfono de la clienta (la venta no lo trae): ahora la app lo pide antes de volver a abonar. */
+    private fun askPhoneIfServerAsked() {
+        if (state.value.code == "STORE_CREDIT_CUSTOMER_PHONE_REQUIRED")
+            _storeCreditCustomer.value = _storeCreditCustomer.value?.copy(phone = null, phoneChecked = true)
     }
 
     fun begin(value: ExchangeDraft) {
@@ -145,6 +200,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
             freezeExchange(value, settlement, requireNotNull(actor), outbox.deviceId, Instant.now().toString()))
         _draft.value = null; _terminals.value = emptyList()
         submission.submit(pending)
+        askPhoneIfServerAsked()
         if (state.value.phase == ExchangeSendPhase.READY_CARD && allowed()) card.run()
     }
 
@@ -158,6 +214,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
                 catch (_: Exception) { _message.value = TextosCambio.RECUPERACION_FALLIDA; return@perform }
             }
             submission.retry()
+            askPhoneIfServerAsked()
             if (state.value.phase == ExchangeSendPhase.READY_CARD && allowed()) card.run()
         }
     }

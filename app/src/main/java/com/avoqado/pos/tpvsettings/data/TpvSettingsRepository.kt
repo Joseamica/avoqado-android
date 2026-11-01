@@ -407,7 +407,7 @@ class TpvSettingsRepository internal constructor(
 
     /** El SERVIDOR sabe dar saldo a favor (tiene las llaves). Apagado o servidor anterior: la opción sale en gris. */
     private val _storeCreditAvailable = MutableStateFlow(secureStorage.storeCreditAvailable)
-    val storeCreditAvailable: StateFlow<Boolean> = _storeCreditAvailable.asStateFlow()
+    val storeCreditAvailable: StateFlow<Boolean?> = _storeCreditAvailable.asStateFlow()
 
     /** La sucursal cuyos ajustes hay en memoria. `@Volatile`: el poll refresca desde otro hilo (Task 4.1). */
     @Volatile private var loadedVenueId: String? = null
@@ -600,7 +600,7 @@ class TpvSettingsRepository internal constructor(
                     val storeCreditOnly = result.data?.storeCreditOnly ?: false
                     _storeCreditOnly.value = storeCreditOnly
                     secureStorage.storeCreditOnly = storeCreditOnly
-                    val storeCreditAvailable = result.data?.storeCreditAvailable ?: false
+                    val storeCreditAvailable = result.data?.storeCreditAvailable
                     _storeCreditAvailable.value = storeCreditAvailable
                     secureStorage.storeCreditAvailable = storeCreditAvailable
                 }
@@ -782,8 +782,8 @@ class TpvSettingsRepository internal constructor(
             secureStorage.exchangesEnabled = false
             _storeCreditOnly.value = false
             secureStorage.storeCreditOnly = false
-            _storeCreditAvailable.value = false
-            secureStorage.storeCreditAvailable = false
+            _storeCreditAvailable.value = null
+            secureStorage.storeCreditAvailable = null
         }
     }
 

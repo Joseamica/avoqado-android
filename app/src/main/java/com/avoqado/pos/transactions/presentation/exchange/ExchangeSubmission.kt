@@ -13,7 +13,7 @@ enum class ExchangeSendPhase { EDITING, SENDING, UNCERTAIN, READY_CARD, PROCESSI
 enum class ExchangeCardEvidence { STARTED, CHARGED, NOT_CHARGED }
 data class ExchangeSendState(val phase: ExchangeSendPhase = ExchangeSendPhase.EDITING, val message: String? = null,
     val action: String? = null, val locked: Boolean = false, val calculation: ExchangeServerCalculation? = null,
-    val result: ExchangeResult? = null)
+    val result: ExchangeResult? = null, /** El `code` del último rechazo del servidor. */ val code: String? = null)
 
 /** Owns a frozen financial operation, independently of the editable selection. */
 class ExchangeSubmission(private val repository: ExchangeRepository, private val store: ExchangePendingStore) {
@@ -122,12 +122,12 @@ class ExchangeSubmission(private val repository: ExchangeRepository, private val
         }.getOrNull() else null
         val message = when (e?.code) {
             "ACTOR_MISMATCH" -> TextosCambio.ACTOR_MISMATCH.replace("{nombre}", pending?.actorName.orEmpty())
-            "IDEMPOTENCY_KEY_REUSED" -> TextosCambio.IDEMPOTENCY_KEY_REUSED
+            "IDEMPOTENCY_KEY_REUSED" -> if (storeCredit) TextosCambio.SALDO_LLAVE_REUSADA else TextosCambio.IDEMPOTENCY_KEY_REUSED
             else -> e?.message ?: TextosCambio.ENVIO_SIN_CONFIRMAR
         }
         if (definitive) { pending?.let { store.remove(it) }; pending = null }
         _state.value = ExchangeSendState(if (calculation != null) ExchangeSendPhase.RECONFIRM
             else if (definitive) ExchangeSendPhase.EDITING else ExchangeSendPhase.UNCERTAIN,
-            message, if (definitive) null else TextosCambio.REINTENTAR, !definitive, calculation)
+            message, if (definitive) null else TextosCambio.REINTENTAR, !definitive, calculation, code = e?.code)
     }
 }
