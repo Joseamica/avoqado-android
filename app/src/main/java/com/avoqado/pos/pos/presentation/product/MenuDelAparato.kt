@@ -48,4 +48,14 @@ object MenuDelAparato {
     /** «Todo ▸» sólo si el filtro viene de los ajustes del aparato (no de un menú elegido) y de verdad filtra. */
     fun muestraVerTodo(filtroVieneDeVisibles: Boolean, verTodo: Boolean, filtro: Set<String>?): Boolean =
         filtroVieneDeVisibles && !verTodo && filtro != null
+
+    /** «Todo ▸» de Mesas, como iOS: decide por el filtro EFECTIVO (¿es el del aparato?), no por si hay un menú elegido. */
+    fun muestraVerTodoEnMesas(
+        menuElegidoId: String?, menus: List<VenueMenu>, visibleMenuIds: List<String>?,
+        visibles: List<String>?, verTodo: Boolean, categoriasConProductos: Set<String>,
+    ): Boolean {
+        val efectivo = filtroDeMesas(menuElegidoId, menus, visibleMenuIds, visibles, verTodo, categoriasConProductos)
+        val delAparato = filtroDeCobrar(visibles, verTodo, categoriasConProductos)
+        return muestraVerTodo(efectivo == delAparato, verTodo, efectivo)
+    }
 }

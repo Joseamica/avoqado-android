@@ -123,7 +123,7 @@ class TableOrderMenuDelAparatoTest {
         s.selectMenu("B")
         servidorDa(menu("A", listOf("a")), activo = "A")
         s.loadMenus(null); advanceUntilIdle()
-        assertFalse(s.selectedMenuId.value == "B")
+        assertEquals("A", s.selectedMenuId.value) // B se soltó; se preselecciona A
     }
 
     @Test fun `un menu elegido que sale del filtro del aparato se suelta`() = runTest {
@@ -132,6 +132,32 @@ class TableOrderMenuDelAparatoTest {
         s.loadMenus(null); advanceUntilIdle()
         s.selectMenu("B")
         s.loadMenus(listOf("A")); advanceUntilIdle()
-        assertFalse(s.selectedMenuId.value == "B")
+        assertEquals("A", s.selectedMenuId.value) // B se soltó; se preselecciona A
+    }
+
+    // «Todo ▸» en Mesas decide por el filtro EFECTIVO (como iOS), no por si hay menú elegido.
+    private fun todo(elegido: String?, menus: List<VenueMenu>, ids: List<String>? = null, visibles: List<String>? = listOf("a"),
+                     conProductos: Set<String> = setOf("a", "c")) =
+        com.avoqado.pos.pos.presentation.product.MenuDelAparato
+            .muestraVerTodoEnMesas(elegido, menus, ids, visibles, false, conProductos)
+
+    @Test fun `todo se ofrece con un menu elegido de las mismas categorias del aparato`() {
+        assertTrue(todo("M", listOf(menu("M", listOf("a")))))
+    }
+
+    @Test fun `todo se ofrece si el menu elegido no tiene productos`() {
+        assertTrue(todo("M", listOf(menu("M", listOf("p")))))
+    }
+
+    @Test fun `todo se ofrece si el menu elegido no trae categorias`() {
+        assertTrue(todo("M", listOf(menu("M", emptyList()))))
+    }
+
+    @Test fun `todo se ofrece si el menu elegido ya no es del aparato`() {
+        assertTrue(todo("M", listOf(menu("M", listOf("c")), menu("N", listOf("a"))), ids = listOf("N")))
+    }
+
+    @Test fun `todo no se ofrece con un menu elegido con otras categorias`() {
+        assertFalse(todo("M", listOf(menu("M", listOf("c")))))
     }
 }
