@@ -3,7 +3,9 @@ package com.avoqado.pos.pos.data
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -37,13 +39,22 @@ class RefrescoDelCatalogo internal constructor(
     private val refrescar: suspend () -> Unit,
     private val conectado: StateFlow<Boolean>,
     private val scope: CoroutineScope,
+    private val negocioActual: () -> String? = { null },
+    private val refrescarFiltro: suspend (String) -> Unit = {},
 ) : DefaultLifecycleObserver {
 
     @Inject
-    constructor(productos: ProductsRepository, red: ConnectivityMonitor) : this(
+    constructor(
+        productos: ProductsRepository,
+        red: ConnectivityMonitor,
+        ajustes: TpvSettingsRepository,
+        sesion: SecureStorage,
+    ) : this(
         refrescar = { productos.fetchProducts(enSegundoPlano = true) },
         conectado = red.isConnected,
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        negocioActual = { sesion.venueId },
+        refrescarFiltro = { ajustes.refrescarFiltroDelAparato(it) },
     )
 
     /** El ciclo de primer plano: un refresco al arrancar, uno cada 5 min y uno cuando vuelve la red. */
@@ -117,6 +128,8 @@ class RefrescoDelCatalogo internal constructor(
             do {
                 try {
                     refrescar()
+                    // «Menú del aparato»: el filtro del aparato se refresca con el catálogo (la huella no lo incluye).
+                    negocioActual()?.let { refrescarFiltro(it) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

@@ -276,4 +276,42 @@ class RefrescoDelCatalogoTest {
             propio.cancel()
         }
     }
+
+    @Test
+    fun `cada tick tambien refresca el filtro del negocio actual`() = runTest {
+        val filtros = mutableListOf<String>()
+        var negocio: String? = "venue-a"
+        val refresco = RefrescoDelCatalogo(
+            refrescar = {}, conectado = MutableStateFlow(true), scope = backgroundScope,
+            negocioActual = { negocio }, refrescarFiltro = { filtros += it },
+        )
+
+        refresco.onStart(owner)
+        runCurrent()
+        assertEquals(listOf("venue-a"), filtros)
+
+        negocio = "venue-b"
+        advanceTimeBy(RefrescoDelCatalogo.INTERVALO_MS)
+        runCurrent()
+        assertEquals(listOf("venue-a", "venue-b"), filtros)
+
+        refresco.onStop(owner)
+    }
+
+    @Test
+    fun `sin negocio no refresca`() = runTest {
+        val filtros = mutableListOf<String>()
+        var productos = 0
+        val refresco = RefrescoDelCatalogo(
+            refrescar = { productos++ }, conectado = MutableStateFlow(true), scope = backgroundScope,
+            negocioActual = { null }, refrescarFiltro = { filtros += it },
+        )
+
+        refresco.onStart(owner)
+        runCurrent()
+        assertEquals(1, productos)
+        assertTrue(filtros.isEmpty())
+
+        refresco.onStop(owner)
+    }
 }

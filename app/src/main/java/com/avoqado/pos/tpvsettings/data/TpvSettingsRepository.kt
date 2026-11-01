@@ -425,6 +425,14 @@ class TpvSettingsRepository internal constructor(
     private val appliedFingerprints = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val fingerprintRefresh = Mutex()
 
+    /**
+     * «Menú del aparato» D2: el refresco SUAVE del filtro convive con el completo sin pisarlo. [completoGen] sube al empezar
+     * y al terminar cada [refreshSettingsForVenue]; [completosEnCurso] cuenta los que vuelan. Siempre bajo [ticketLock].
+     */
+    private var completoGen = 0L
+    private var completosEnCurso = 0
+    private val filtroRefresh = Mutex()
+
     fun getCurrentSettings(): TpvSettings = _settings.value
 
     /**
@@ -463,6 +471,8 @@ class TpvSettingsRepository internal constructor(
         if (secureStorage.venueId != venueId) return
         val mine = synchronized(ticketLock) {
             _isLoading.value = true
+            completoGen++
+            completosEnCurso++
             refreshTicket.incrementAndGet()
         }
         fun stillCurrent() = mine == refreshTicket.get() && secureStorage.venueId == venueId
@@ -628,7 +638,55 @@ class TpvSettingsRepository internal constructor(
             )
         } finally {
             // El `finally` de una petición vencida no baja la bandera de la vigente.
-            synchronized(ticketLock) { if (mine == refreshTicket.get()) _isLoading.value = false }
+            synchronized(ticketLock) {
+                completoGen++
+                completosEnCurso--
+                if (mine == refreshTicket.get()) _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Refresco SUAVE (cada 5 min, lo llama `RefrescoDelCatalogo`): pide `/settings` y cambia SÓLO `visibleCategoryIds` y
+     * `visibleMenuIds`. Cualquier otra cosa (sin token, red, 4xx/5xx, cuerpo ilegible, `success:false`, sin `deviceTerminal`)
+     * no toca nada: un `null`+`null` sólo limpia el filtro si viene DENTRO de un `deviceTerminal` legítimo. No corre junto a
+     * un refresco completo y descarta su respuesta si uno empezó o terminó mientras volaba, o si cambió el negocio.
+     */
+    suspend fun refrescarFiltroDelAparato(venueId: String) {
+        if (!filtroRefresh.tryLock()) return
+        try {
+            val token = secureStorage.accessToken ?: return
+            val generacion = synchronized(ticketLock) {
+                if (completosEnCurso > 0 || loadedVenueId != venueId || secureStorage.venueId != venueId) return
+                completoGen
+            }
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/settings")
+                .header("Authorization", "Bearer $token")
+                .build()
+            val body = withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string() else null }
+            } ?: return
+            val result = json.decodeFromString<VenueSettingsResponse>(body)
+            val terminal = result.data?.deviceTerminal?.takeIf { result.success } ?: return
+            val aplicado = synchronized(ticketLock) {
+                if (completoGen != generacion || completosEnCurso > 0 || secureStorage.venueId != venueId || loadedVenueId != venueId) {
+                    null
+                } else {
+                    _terminalNavigation.value.copy(
+                        visibleCategoryIds = terminal.visibleCategoryIds,
+                        visibleMenuIds = terminal.visibleMenuIds,
+                    ).also { _terminalNavigation.value = it }
+                }
+            } ?: return
+            // ponytail: el disco no cabe en el candado; si un completo arranca justo aquí, su propia escritura llega después.
+            persistTerminalNavigation(venueId, aplicado)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("📦", "Filtro del aparato sin servidor (${e.message}) — conservo el último")
+        } finally {
+            filtroRefresh.unlock()
         }
     }
 
