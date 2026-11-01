@@ -1366,20 +1366,30 @@ class TableOrderViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
 
-    /** Carga los menús y preselecciona el que aplica AHORA (lo decide el server
-     *  con la zona horaria del venue, no la del dispositivo). */
-    fun loadMenus() {
+    /** «Todo ▸» o «Todos los productos»: la mesa ve todo el catálogo. Vive en la mesa; no se persiste. */
+    private val _verTodo = MutableStateFlow(false)
+    val verTodo: StateFlow<Boolean> = _verTodo.asStateFlow()
+
+    /** «Todo ▸» de la cuadrícula: suelta también el menú elegido (si no, con un menú de las mismas categorías no pasaría nada). */
+    fun verTodoElCatalogo() {
+        _verTodo.value = true
+        _selectedMenuId.value = null
+    }
+
+    /** Carga los menús y preselecciona el que aplica AHORA (lo decide el server con la zona horaria del venue, no la del
+     *  dispositivo). [visibleMenuIds] = filtro del aparato; el modelo no lee los ajustes, la pantalla se lo pasa. */
+    fun loadMenus(visibleMenuIds: List<String>? = null) {
         val vId = venueId ?: return
         viewModelScope.launch {
             repository.getMenus(vId).onSuccess { payload ->
                 _menus.value = payload.menus
-                // Solo preselecciona si el menú activo tiene horario propio: si
-                // el venue no usa menús por horario, la cuadrícula no se toca.
-                if (_selectedMenuId.value == null) {
-                    val activo = payload.menus.firstOrNull { it.id == payload.activeMenuId }
-                    if (activo != null && activo.scheduleDisplay != null) {
-                        _selectedMenuId.value = activo.id
-                    }
+                val propios = com.avoqado.pos.pos.presentation.product.MenuDelAparato.menusDelAparato(payload.menus, visibleMenuIds)
+                // Un menú elegido que ya no viene (apagado, borrado, ya no es del aparato) se suelta.
+                if (_selectedMenuId.value != null && propios.none { it.id == _selectedMenuId.value }) _selectedMenuId.value = null
+                // Sin elección y sin «ver todo»: preselecciona el que aplica ahora (sólo si tiene horario propio).
+                if (_selectedMenuId.value == null && !_verTodo.value) {
+                    _selectedMenuId.value = com.avoqado.pos.pos.presentation.product.MenuDelAparato
+                        .menuPreseleccionado(payload.menus, payload.activeMenuId, visibleMenuIds)
                 }
             }
         }
@@ -1387,6 +1397,7 @@ class TableOrderViewModel @Inject constructor(
 
     fun selectMenu(menuId: String?) {
         _selectedMenuId.value = menuId
+        _verTodo.value = menuId == null
         _actionMessage.value = menuId?.let { id ->
             _menus.value.firstOrNull { it.id == id }?.let { "Menú: ${it.name}" }
         } ?: "Catálogo completo"
