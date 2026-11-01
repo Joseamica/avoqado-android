@@ -24,6 +24,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import androidx.lifecycle.viewModelScope
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.*
@@ -62,7 +63,17 @@ class ReembolsoASaldoTest {
         repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
         store = nuevoStore()
     }
-    @After fun cleanup() { scope.cancel(); server.shutdown() }
+    /**
+     * Los ViewModel de cada prueba se apagan al terminarla: si no, una lectura del disco que acaba tarde despierta un colector de
+     * `viewModelScope` cuando `Dispatchers.Main` ya se restauró, y la excepción la cobra la siguiente clase con `runTest`.
+     */
+    private val modelos = mutableListOf<androidx.lifecycle.ViewModel>()
+    private fun <T : androidx.lifecycle.ViewModel> apagarAlFinal(vm: T): T = vm.also { modelos += it }
+
+    @After fun cleanup() {
+        modelos.forEach { it.viewModelScope.cancel() }
+        scope.cancel(); server.shutdown()
+    }
 
     private fun nuevoStore() = RefundPendingStore(PreferenceDataStoreFactory.create(scope = scope, produceFile = { archivo }))
 
@@ -307,9 +318,9 @@ class ReembolsoASaldoTest {
         coEvery { transactions.fetchTransactionDetail("payment", "actor", "venue") } returns detail
         coEvery { transactions.fetchTransactions(any(), any()) } returns Result.success(Unit)
         val factory = mockk<RefreshGateFactory> { every { create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO }) }
-        return TransactionsViewModel(transactions, repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+        return apagarAlFinal(TransactionsViewModel(transactions, repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
             mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), secure, factory, monitor,
-            mockk(relaxed = true), pendientes)
+            mockk(relaxed = true), pendientes))
     }
 
     @Test fun `Reembolso completo a saldo, se pierde la respuesta, se mata la app y al reabrir la venta se reenvía con la misma llave`() = runBlocking {
@@ -411,8 +422,8 @@ class ReembolsoASaldoTest {
     }
 
     @Test fun `al abrir la hoja otra vez vuelve la clienta de la venta`() {
-        val saldo = com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true))
+        val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true)))
         val venta = Transaction("payment", customerId = "mama", customerName = "Mamá")
         saldo.abrir(venta)
         saldo.escoger(com.avoqado.pos.customers.data.model.Customer("lucia", firstName = "Lucía", phone = "+525512345678"))
@@ -492,6 +503,49 @@ class ReembolsoASaldoTest {
         val detalle = fuente("app/src/main/java/com/avoqado/pos/transactions/presentation/TransactionDetailSheet.kt")
         assertTrue(detalle.contains("antesDeReembolsar = { viewModel.motivoParaNoReembolsar(transaction.id) }"))
         assertTrue(detalle.contains("transaction.remainingRefundable > 0.001 && !reembolsoBloqueado"))
+    }
+
+    // MARK: - Codex apps r1
+
+    @Test fun `un 400 que no es del servidor - HTML, vacío o JSON ajeno - conserva lo pendiente`() = runBlocking {
+        store.guardar(pendiente())
+        val ajenos = listOf(
+            MockResponse().setResponseCode(400).setHeader("Content-Type", "text/html").setBody("<html><body>Bad Request</body></html>"),
+            MockResponse().setResponseCode(400),
+            respuesta(400, """{"error":"bad request"}"""),
+        )
+        for (r in ajenos) {
+            server.enqueue(r)
+            assertEquals(DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_NO_CONFIRMADO), enviarReembolsoPendiente(repo, store, pendiente()))
+            assertEquals(pendiente(), store.pendiente("venue", "payment"))
+        }
+        // El 400 sin código con el sobre del servidor sí es definitivo.
+        server.enqueue(respuesta(400, """{"success":false,"message":"customerId debe ser texto"}"""))
+        assertEquals(DesenlaceDeSaldo.Rechazado("customerId debe ser texto", null), enviarReembolsoPendiente(repo, store, pendiente()))
+        assertNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `una respuesta tardía de guardar el teléfono no cambia a la destinataria de la hoja reabierta`() = runBlocking {
+        val respuesta = CompletableDeferred<Unit>()
+        val customers = mockk<com.avoqado.pos.customers.data.CustomersRepository>()
+        coEvery { customers.updateCustomer(any(), any()) } coAnswers {
+            respuesta.await()
+            Result.success(com.avoqado.pos.customers.data.model.Customer("ana", firstName = "Ana", phone = "+525511112222"))
+        }
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(customers,
+            mockk(relaxed = true), mockk(relaxed = true), online))
+        saldo.abrir(Transaction("venta-ana", customerId = "ana", customerName = "Ana"))
+        saldo.pedirTelefono()
+        saldo.guardarTelefono("5511112222")
+        assertTrue(saldo.guardando.value)
+        // Se cierra la hoja con el guardado en vuelo y se abre el reembolso de Beatriz.
+        saldo.abrir(Transaction("venta-beatriz", customerId = "beatriz", customerName = "Beatriz"))
+        respuesta.complete(Unit)
+        withTimeout(5_000) { while (saldo.cliente.value?.id != "beatriz" || saldo.guardando.value) yield() }
+        assertEquals("beatriz", saldo.cliente.value?.id)
+        assertNull(saldo.mensaje.value)
+        assertFalse(saldo.guardando.value)
     }
 
     // MARK: - La reimpresión

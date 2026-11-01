@@ -36,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -50,6 +51,12 @@ class RefundApiException(
     override val message: String,
     /** El `code` del rechazo (p. ej. `STORE_CREDIT_…`): decide si lo pendiente se borra (`esRechazoDefinitivoDeSaldo`). */
     val code: String? = null,
+    /**
+     * ¿Lo dijo NUESTRO servidor? Sólo si el cuerpo trae su sobre de error (`message` o `code`) y no viene de un intermediario
+     * (`OrderRepository.isTransient4xx`: HTML, vacío, no-JSON, túnel caído, 408/429), igual que el Cambio. Un 400 de un proxy no
+     * prueba que no se escribió nada: lo pendiente se conserva (Codex apps r1, P1).
+     */
+    val delServidor: Boolean = true,
 ) : Exception(message)
 
 @Serializable
@@ -223,9 +230,9 @@ class RefundRepository @Inject constructor(
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val (code, responseBody) = withContext(Dispatchers.IO) {
+            val (code, responseBody, encabezados) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+                Triple(response.code, response.body?.string() ?: "", response.header("Content-Type") to response.header("ngrok-error-code"))
             }
 
             if (code in 200..299) {
@@ -243,7 +250,11 @@ class RefundRepository @Inject constructor(
             } else {
                 Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
                 val error = runCatching { jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody) }.getOrNull()
-                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code))
+                val sobre = runCatching { jsonReembolsos.parseToJsonElement(responseBody).jsonObject }.getOrNull()
+                val delServidor = !com.avoqado.pos.payment.data.OrderRepository.isTransient4xx(
+                    code, encabezados.first, encabezados.second, responseBody,
+                ) && sobre != null && (sobre["message"] != null || sobre["code"] != null)
+                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code, delServidor))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Associated refund error: ${e.message}")

@@ -40,9 +40,13 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
     val mensaje = _mensaje.asStateFlow()
     val puedeCrearCliente: Boolean get() = role.hasVenuePermission("customers:create")
     private var ficha: Customer? = null
+    /** Cada apertura de la hoja cuenta: lo que llega tarde de otra apertura (un teléfono guardado) se tira (Codex apps r1, P1). */
+    private var apertura = 0L
 
     /** En CADA apertura de la hoja (como iOS): la clienta de la venta (llega sin teléfono: lo revisa el servidor), sin mensaje viejo. */
     fun abrir(sale: Transaction) {
+        apertura++
+        _guardando.value = false
         ficha = null
         _mensaje.value = null
         _cliente.value = sale.customerId?.let { ExchangeStoreCreditCustomer(it, sale.customerName.orEmpty()) }
@@ -66,9 +70,13 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
         val (original, request) = pedidoDeTelefonoDelSaldo(c, ficha, phone)
             ?: run { _mensaje.value = TextosCambio.SALDO_TELEFONO_INVALIDO; return }
         _guardando.value = true
+        val miApertura = apertura
         viewModelScope.launch {
             try {
-                customers.updateCustomer(original, request).fold(
+                val resultado = customers.updateCustomer(original, request)
+                // La hoja se cerró y se abrió otra (otra destinataria): esta respuesta ya no es de nadie en pantalla.
+                if (miApertura != apertura) return@launch
+                resultado.fold(
                     onSuccess = { updated ->
                         ficha = updated
                         _cliente.value = c.copy(phone = updated.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
@@ -76,7 +84,7 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
                     },
                     onFailure = { e -> _mensaje.value = motivoAlGuardarTelefono(e) },
                 )
-            } finally { _guardando.value = false }
+            } finally { if (miApertura == apertura) _guardando.value = false }
         }
     }
 
