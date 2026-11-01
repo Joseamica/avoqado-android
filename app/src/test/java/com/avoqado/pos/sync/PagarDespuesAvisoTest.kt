@@ -346,4 +346,26 @@ class PagarDespuesAvisoTest {
             assertEquals(PayLaterRow.Estado.RETIRO_PENDIENTE, f.queue.filas.value.single { it.id == id }.estado)
         }
     }
+
+    @Test fun `D1 Reintentar que termina con la llave cerrada dice que quedo en Carritos guardados, no el rechazo`() = runTest {
+        Fixture().use { f ->
+            val id = "pay-later:d1"
+            assertTrue(f.queue.guardar(PayLaterRow(id, "venue-A", "cashier-A", "customer-A", "Ana", 10000,
+                """{"externalId":"$id","isOfflineReplay":true}""", creadaEn = 1000,
+                estado = PayLaterRow.Estado.RECHAZADA, motivo = "No tienes permiso",
+                venta = SavedCart(id = "venta-ana", name = "Ana", items = emptyList(), venueId = "venue-A"))))
+            coEvery { f.orders.enviarPagarDespues(any(), any()) } returns
+                OrderRepository.RespuestaCruda(400, "application/json", null, """{"message":"Products not found: p1"}""")
+            coEvery { f.orders.cerrarLlaveDePagarDespues(any(), any()) } returns
+                OrderRepository.RespuestaCruda(200, "application/json", null, """{"success":true,"released":true}""")
+            val vm = f.quarantine()
+
+            vm.reintentarCuenta(id)
+            advanceUntilIdle()
+
+            assertEquals("La venta de Ana no se pudo dejar para después: quedó en Carritos guardados.", vm.errorMessage.value)
+            assertTrue(f.queue.filas.value.none { it.id == id })
+            assertEquals(listOf("venta-ana"), f.copias.savedCarts.value.map { it.id })
+        }
+    }
 }

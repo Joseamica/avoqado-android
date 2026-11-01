@@ -526,6 +526,26 @@ class PagarDespuesFilaTest {
     }
 
     @Test
+    fun `D1 Codex r1 #1 - si la sesion cambia de sucursal a media pasada, la venta no se traslada hasta volver a la suya`() = runTest {
+        val (q, guardados) = colaConGuardados()
+        q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+        responde(400, """{"message":"Producto inválido"}""")
+        coEvery { ordenes.cerrarLlaveDePagarDespues(any(), any()) } answers {
+            every { storage.venueId } returns "venue-B"
+            OrderRepository.RespuestaCruda(200, "application/json", null, """{"success":true,"released":true}""")
+        }
+
+        q.drenar()
+        assertEquals(Estado.RECUPERAR, fila(q, "pay-later:1")?.estado)
+        assertTrue(guardados.savedCarts.value.isEmpty())
+
+        every { storage.venueId } returns "venue-A"
+        q.mantenimientoLocal()
+        assertTrue(q.filas.value.isEmpty())
+        assertEquals(listOf(ventaDeAna.copy(llavePagarDespues = null, cobroIniciadoEn = null)), guardados.savedCarts.value)
+    }
+
+    @Test
     fun `D1 Reintentar que termina con la llave cerrada deja la venta en Carritos guardados en ese momento`() = runTest {
         val (q, guardados) = colaConGuardados()
         q.guardar(fila(estado = Estado.RECHAZADA, copia = "copia-1").copy(venta = ventaDeAna, motivo = "Sin permiso"))

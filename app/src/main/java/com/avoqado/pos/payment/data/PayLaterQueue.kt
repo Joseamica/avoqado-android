@@ -376,9 +376,9 @@ class PayLaterQueue @Inject constructor(
                 // D1 (full-testing en la SAMSUNG, 31-oct): ya mismo a «Carritos guardados», no hasta la siguiente pasada; mientras,
                 // la cajera la veía en «Operaciones por revisar». La fila sigue marcada en curso por quien la mandó. Si no se puede
                 // escribir, queda RECUPERAR y la pasa [mantenimientoLocal], como antes.
-                if (fila.venueId == secureStorage.venueId) {
-                    leer(fila.id)?.takeIf { it.estado == PayLaterRow.Estado.RECUPERAR }?.let { aCarritosGuardados(it) }
-                }
+                // La sucursal se revisa DESPUÉS de releer (Codex D1 r1 #1): leer() suspende y la sesión pudo cambiar mientras.
+                leer(fila.id)?.takeIf { it.estado == PayLaterRow.Estado.RECUPERAR && it.venueId == secureStorage.venueId }
+                    ?.let { aCarritosGuardados(it) }
             }
             // La cortesía de una cuenta que no creó ESTE envío no se puede comprobar: la revisa una persona, como en el 201.
             cierre is CierreDeLlave.Existe && cierre.totalCents == fila.totalEsperadoCents && !CortesiaPersistida.solicitada(fila.cuerpo) ->
