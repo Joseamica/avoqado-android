@@ -500,13 +500,42 @@ class PagarDespuesFilaTest {
         cierra(200, """{"success":true,"released":true}""")
 
         q.drenar()
-        assertEquals(Estado.RECUPERAR, fila(q, "pay-later:1")?.estado)
-        assertEquals("Producto inválido", fila(q, "pay-later:1")?.motivo)
-        q.mantenimientoLocal()
 
+        // D1 (full-testing en la SAMSUNG, 31-oct): en la MISMA pasada, no hasta la siguiente (reabrir, reconectar o 15 min).
         assertTrue(q.filas.value.isEmpty())
         assertEquals(listOf(ventaDeAna.copy(llavePagarDespues = null, cobroIniciadoEn = null)), guardados.savedCarts.value)
         coVerify(exactly = 1) { ordenes.cerrarLlaveDePagarDespues("venue-A", "pay-later:1") }
+    }
+
+    @Test
+    fun `D1 si Carritos guardados no se puede escribir, queda por recuperar con su motivo y la siguiente pasada la pasa`() = runTest {
+        val (q, guardados) = colaConGuardados()
+        q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+        responde(400, """{"message":"Producto inválido"}""")
+        cierra(200, """{"success":true,"released":true}""")
+        copias.discoSano = false
+
+        q.drenar()
+        assertEquals(Estado.RECUPERAR, fila(q, "pay-later:1")?.estado)
+        assertEquals("Producto inválido", fila(q, "pay-later:1")?.motivo)
+
+        copias.discoSano = true
+        q.mantenimientoLocal()
+        assertTrue(q.filas.value.isEmpty())
+        assertEquals(listOf(ventaDeAna.copy(llavePagarDespues = null, cobroIniciadoEn = null)), guardados.savedCarts.value)
+    }
+
+    @Test
+    fun `D1 Reintentar que termina con la llave cerrada deja la venta en Carritos guardados en ese momento`() = runTest {
+        val (q, guardados) = colaConGuardados()
+        q.guardar(fila(estado = Estado.RECHAZADA, copia = "copia-1").copy(venta = ventaDeAna, motivo = "Sin permiso"))
+        responde(400, """{"message":"Producto inválido"}""")
+        cierra(200, """{"success":true,"released":true}""")
+
+        assertTrue(q.reintentar("pay-later:1") is DesenlacePagarDespues.Rechazada)
+
+        assertTrue(q.filas.value.isEmpty())
+        assertEquals(listOf(ventaDeAna.copy(llavePagarDespues = null, cobroIniciadoEn = null)), guardados.savedCarts.value)
     }
 
     @Test

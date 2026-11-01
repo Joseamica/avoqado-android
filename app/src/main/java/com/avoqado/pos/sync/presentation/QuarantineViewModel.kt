@@ -59,6 +59,7 @@ class QuarantineViewModel @Inject constructor(
         val cola = payLaterQueue ?: return
         if (!canResolve || _reintentandoCuenta.value != null) return
         _reintentandoCuenta.value = id
+        val cliente = cola.filas.value.firstOrNull { it.id == id }?.customerName
         viewModelScope.launch {
             try {
                 when (val d = cola.reintentar(id)) {
@@ -72,7 +73,13 @@ class QuarantineViewModel @Inject constructor(
                             _errorMessage.value = d.motivoRevision ?: com.avoqado.pos.payment.data.detalleDePagarDespues(fila)
                         }
                     }
-                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value = d.mensaje
+                    // D1: un rechazo que ya no deja su fila es la venta que volvió a «Carritos guardados» (igual que iOS).
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value =
+                        if (cliente != null && cola.filas.value.none { it.id == id }) {
+                            com.avoqado.pos.pos.presentation.cart.pagarDespuesACarritosGuardados(cliente)
+                        } else {
+                            d.mensaje
+                        }
                     null -> Unit
                     // Sin red o sin respuesta útil: vuelve a la fila de «por subir» y se sube sola.
                     else -> _errorMessage.value = "Sin conexión: la cuenta sigue guardada en el aparato y se sube sola."
