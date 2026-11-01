@@ -299,7 +299,7 @@ class ReembolsoASaldoTest {
 
     // MARK: - La recuperación al abrir la venta (no la hoja), tras matar la app
 
-    private fun vm(monitor: ConnectivityMonitor, detail: Transaction): TransactionsViewModel {
+    private fun vm(monitor: ConnectivityMonitor, detail: Transaction, pendientes: RefundPendingStore = store): TransactionsViewModel {
         val transactions = mockk<TransactionRepository>(relaxed = true)
         every { transactions.transactions } returns MutableStateFlow(emptyList())
         every { transactions.isLoading } returns MutableStateFlow(false)
@@ -309,7 +309,7 @@ class ReembolsoASaldoTest {
         val factory = mockk<RefreshGateFactory> { every { create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO }) }
         return TransactionsViewModel(transactions, repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
             mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), secure, factory, monitor,
-            mockk(relaxed = true), store)
+            mockk(relaxed = true), pendientes)
     }
 
     @Test fun `Reembolso completo a saldo, se pierde la respuesta, se mata la app y al reabrir la venta se reenvía con la misma llave`() = runBlocking {
@@ -420,6 +420,78 @@ class ReembolsoASaldoTest {
         saldo.abrir(venta)
         assertEquals("mama", saldo.cliente.value?.id)
         assertNull(saldo.mensaje.value)
+    }
+
+    // MARK: - Ronda 2: la guarda de TODA devolución de la hoja
+
+    private val okEfectivo = """{"success":true,"data":{"refundId":"refund-cash","amount":1.0,"remainingRefundable":0.0,"status":"COMPLETED"}}"""
+
+    @Test fun `con un saldo a favor sin confirmar de A, un reembolso en efectivo de A se rechaza sin tocar la red, y el de B sí pasa`() = runBlocking {
+        val sinRed = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
+        val vm = vm(sinRed, Transaction("payment", amount = 500.0, remainingRefundable = 500.0))
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { vm.selectedTransaction.first { it != null } }
+        store.guardar(pendiente())
+        // Lo que hace la hoja antes de CUALQUIER envío: la guarda; si da motivo, no se manda.
+        suspend fun efectivo(pago: String): Result<AssociatedRefundData>? = if (vm.motivoParaNoReembolsar(pago) != null) null
+            else repo.issueAssociatedRefund(pago, "RETURNED_GOODS", amountCents = 100, refundMethod = "CASH")
+        assertEquals(TextosCambio.REEMBOLSO_SIN_CONFIRMAR, vm.motivoParaNoReembolsar("payment"))
+        assertNull(efectivo("payment"))
+        assertEquals(0, server.requestCount)
+        // El detalle se entera: lo pendiente aparece y «Emitir reembolso» se apaga.
+        assertEquals(pendiente(), vm.reembolsoPendiente.value)
+        assertTrue(vm.reembolsoBloqueado.value)
+        // Otra venta no se frena.
+        server.enqueue(respuesta(201, okEfectivo))
+        assertNull(vm.motivoParaNoReembolsar("otro"))
+        assertTrue(efectivo("otro")!!.isSuccess)
+        assertEquals("/api/v1/mobile/venues/venue/payments/otro/refund", server.takeRequest(5, TimeUnit.SECONDS)!!.path)
+    }
+
+    @Test fun `con un envío a saldo en vuelo que aún no llega al disco, cerrar la hoja deja Emitir apagado y la guarda frena otro medio`() = runBlocking {
+        val escribir = CompletableDeferred<Unit>()
+        val lento = mockk<RefundPendingStore>()
+        coEvery { lento.pendiente(any(), any()) } returns null
+        coEvery { lento.guardar(any()) } coAnswers { escribir.await() }
+        coEvery { lento.borrar(any()) } returns Unit
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 500.0), lento)
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { vm.selectedTransaction.first { it != null } }
+        val envio = vm.enviarReembolsoASaldo("payment", cuerpo(), "llave-del-reembolso")
+        // La cajera cierra la hoja mientras el aparato todavía escribe: la relectura no ve nada en disco…
+        vm.dismissIssueRefundSheet()
+        assertNull(withTimeout(5_000) { vm.reembolsoPendiente.first { it == null } })
+        // …pero el envío en vuelo cuenta: «Emitir reembolso» sigue apagado y la guarda frena el efectivo.
+        assertTrue(withTimeout(5_000) { vm.reembolsoBloqueado.first { it } })
+        assertEquals(TextosCambio.REEMBOLSO_SIN_CONFIRMAR, vm.motivoParaNoReembolsar("payment"))
+        assertEquals(0, server.requestCount)
+        // Termina de escribir y el servidor contesta: se libera.
+        server.enqueue(respuesta(201, ok))
+        escribir.complete(Unit)
+        assertTrue(envio.await() is DesenlaceDeSaldo.Hecho)
+        assertFalse(withTimeout(5_000) { vm.reembolsoBloqueado.first { !it } })
+        assertNull(vm.motivoParaNoReembolsar("payment"))
+    }
+
+    private fun fuente(ruta: String): String {
+        var dir: java.io.File? = java.io.File(System.getProperty("user.dir")!!).absoluteFile
+        while (dir != null) { java.io.File(dir, ruta).takeIf { it.isFile }?.let { return it.readText() }; dir = dir.parentFile }
+        error("No se encontró $ruta")
+    }
+
+    @Test fun `toda devolución de la hoja pasa primero por la guarda del saldo a favor`() {
+        val hoja = fuente("app/src/main/java/com/avoqado/pos/transactions/presentation/IssueRefundSheet.kt")
+        val terminal = hoja.substring(hoja.indexOf("fun mandarATerminal("), hoja.indexOf("fun abrirEnTerminal()"))
+        val reembolsar = hoja.substring(hoja.indexOf("text = \"Reembolsar\""), hoja.indexOf("enabled = canSubmit", hoja.indexOf("text = \"Reembolsar\"")))
+        for (trozo in listOf(terminal, reembolsar)) {
+            val guarda = trozo.indexOf("antesDeReembolsar()")
+            assertTrue("falta la guarda del saldo a favor", guarda > 0)
+            assertTrue("la guarda va antes de tocar la red", guarda < trozo.indexOf("conexion.iniciar("))
+        }
+        val detalle = fuente("app/src/main/java/com/avoqado/pos/transactions/presentation/TransactionDetailSheet.kt")
+        assertTrue(detalle.contains("antesDeReembolsar = { viewModel.motivoParaNoReembolsar(transaction.id) }"))
+        assertTrue(detalle.contains("transaction.remainingRefundable > 0.001 && !reembolsoBloqueado"))
     }
 
     // MARK: - La reimpresión

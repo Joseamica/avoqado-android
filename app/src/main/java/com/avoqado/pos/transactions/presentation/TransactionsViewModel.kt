@@ -39,6 +39,10 @@ import com.avoqado.pos.transactions.data.model.TransactionFilters
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
@@ -230,7 +234,41 @@ class TransactionsViewModel @Inject constructor(
     private val _avisoDeReembolso = MutableStateFlow<String?>(null)
     val avisoDeReembolso = _avisoDeReembolso.asStateFlow()
     /** Ventas con un envío o reenvío a saldo en curso: no se manda otro de esa venta mientras tanto (M4: por venta, no global). */
-    private val enVuelo: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+    private val enVuelo = MutableStateFlow<Set<String>>(emptySet())
+    private fun marcarEnVuelo(paymentId: String): Boolean {
+        while (true) {
+            val antes = enVuelo.value
+            if (paymentId in antes) return false
+            if (enVuelo.compareAndSet(antes, antes + paymentId)) return true
+        }
+    }
+    private fun soltarEnVuelo(paymentId: String) = enVuelo.update { it - paymentId }
+
+    /**
+     * «Emitir reembolso» se apaga con un saldo a favor de la venta abierta sin confirmar en el aparato O en vuelo (ronda 2): al cerrar la
+     * hoja justo al tocar «Reembolsar», la relectura puede llegar antes de que DataStore termine de escribir.
+     */
+    val reembolsoBloqueado: StateFlow<Boolean> = combine(_reembolsoPendiente, enVuelo, _selectedTransactionId) { pendiente, vuelo, id ->
+        pendiente != null || (id != null && id in vuelo)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * 🔴 La guarda de TODA devolución que manda la hoja (efectivo, transferencia, tarjeta, terminal y saldo a favor): con un saldo a favor
+     * de esa venta sin confirmar (en el aparato) o en vuelo, no se manda otro; ése se confirma con su misma llave («Confirmar estado», o
+     * solo al abrir la venta), que no pasa por aquí. Si había uno, el detalle lo muestra. `null` = se puede mandar.
+     */
+    suspend fun motivoParaNoReembolsar(paymentId: String): String? {
+        if (paymentId in enVuelo.value) return TextosCambio.REEMBOLSO_SIN_CONFIRMAR
+        val store = refundPendingStore ?: return null
+        val venue = secureStorage.venueId ?: return null
+        val pending = try {
+            store.pendiente(venue, paymentId)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { return TextosCambio.REEMBOLSO_RECUPERACION_FALLIDA }
+        if (pending == null) return null
+        detalleAbierto(paymentId)?.let { versionDelPendiente.incrementAndGet(); _reembolsoPendiente.value = pending }
+        return TextosCambio.REEMBOLSO_SIN_CONFIRMAR
+    }
     /** Cada lectura del almacén y cada desenlace avanza esto: una lectura que llega tarde no pisa un desenlace más nuevo. */
     private val versionDelPendiente = java.util.concurrent.atomic.AtomicLong()
 
@@ -248,13 +286,13 @@ class TransactionsViewModel @Inject constructor(
         }
         if (!current(scope) || version != versionDelPendiente.get()) return
         _reembolsoPendiente.value = pending
-        if (pending == null || !reenviar || !enVuelo.add(scope.paymentId)) return
+        if (pending == null || !reenviar || !marcarEnVuelo(scope.paymentId)) return
         try {
             if (!connectivityMonitor.isOnline()) { _avisoDeReembolso.value = TextosCambio.SALDO_SIN_RED; return }
             _avisoDeReembolso.value = null
             val desenlace = enviarReembolsoPendiente(refundRepository, store, pending)
             detalleAbierto(scope.paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = true) }
-        } finally { enVuelo.remove(scope.paymentId) }
+        } finally { soltarEnVuelo(scope.paymentId) }
     }
 
     /**
@@ -266,10 +304,10 @@ class TransactionsViewModel @Inject constructor(
         viewModelScope.async {
             val store = refundPendingStore ?: return@async DesenlaceDeSaldo.GuardadoFallido
             val venue = secureStorage.venueId ?: return@async DesenlaceDeSaldo.GuardadoFallido
-            if (!enVuelo.add(paymentId)) return@async DesenlaceDeSaldo.OtroPendiente
+            if (!marcarEnVuelo(paymentId)) return@async DesenlaceDeSaldo.OtroPendiente
             val desenlace = try {
                 SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey)
-            } finally { enVuelo.remove(paymentId) }
+            } finally { soltarEnVuelo(paymentId) }
             detalleAbierto(paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = false) }
             desenlace
         }

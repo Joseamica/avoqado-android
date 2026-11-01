@@ -156,6 +156,11 @@ fun IssueRefundSheet(
      * sobrevive a la hoja (I2): si la cierran con el POST en vuelo, el envío sigue y el detalle se entera. Sin él no se ofrece saldo.
      */
     enviarASaldo: ((cuerpo: String, idempotencyKey: String) -> kotlinx.coroutines.Deferred<DesenlaceDeSaldo>)? = null,
+    /**
+     * 🔴 La guarda de TODA devolución de la hoja (efectivo, transferencia, tarjeta, terminal y saldo): con un saldo a favor de esta venta
+     * sin confirmar o en vuelo, devuelve el motivo y no se manda (`TransactionsViewModel.motivoParaNoReembolsar`). `null` = adelante.
+     */
+    antesDeReembolsar: suspend () -> String? = { null },
     conexion: ConexionDeDevolucionViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
     saldo: SaldoAFavorDelReembolsoViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
 ) {
@@ -238,6 +243,8 @@ fun IssueRefundSheet(
         enviandoATerminal = true
         scope.launch {
             terminalMsg = null
+            val motivo = antesDeReembolsar()
+            if (motivo != null) { enviandoATerminal = false; terminalMsg = motivo; return@launch }
             val resultado = conexion.iniciar(necesitaRed, ::vigente) { terminalPaymentService.requestRefundOnTerminal(
                 terminalId = terminalId,
                 paymentId = transaction.id,
@@ -966,6 +973,9 @@ fun IssueRefundSheet(
                         errorMsg = null
 
                         scope.launch {
+                            // Primero la guarda: con un saldo a favor de esta venta sin confirmar o en vuelo, no sale ningún medio.
+                            val motivo = antesDeReembolsar()
+                            if (motivo != null) { submitting = false; errorMsg = motivo; return@launch }
                             // 🔴 Saldo a favor: se GUARDA en el aparato antes del POST y, si la respuesta no consta, se reenvía con la
                             // misma llave al abrir la venta (spec §7). Nunca se encola sin red.
                             val enviar = enviarASaldo

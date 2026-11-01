@@ -329,6 +329,7 @@ private fun LoadedDetailView(
             }
             // Reembolso a saldo a favor sin confirmar (A3): se reenvía solo al abrir la venta; mientras siga, no se empieza otro.
             val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
+            val reembolsoBloqueado by viewModel.reembolsoBloqueado.collectAsState()
             val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
             if (reembolsoPendiente != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
@@ -354,7 +355,7 @@ private fun LoadedDetailView(
                         ActionButton(
                             label = TextosCambio.EMITIR_REEMBOLSO,
                             modifier = Modifier.weight(1f),
-                            enabled = transaction.remainingRefundable > 0.001 && reembolsoPendiente == null,
+                            enabled = transaction.remainingRefundable > 0.001 && !reembolsoBloqueado,
                             locked = !canRefund,
                             // Con candado esto pide el PIN PRIMERO y sólo abre el
                             // formulario si alguien autoriza. Sin candado, abre
@@ -553,6 +554,7 @@ private fun LoadedDetailView(
             },
             // El envío a saldo a favor lo lleva el detalle, para que sobreviva a la hoja (I2).
             enviarASaldo = { cuerpo, llave -> viewModel.enviarReembolsoASaldo(transaction.id, cuerpo, llave) },
+            antesDeReembolsar = { viewModel.motivoParaNoReembolsar(transaction.id) },
         )
     }
 
