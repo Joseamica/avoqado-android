@@ -128,12 +128,18 @@ class RefrescoDelCatalogo internal constructor(
             do {
                 try {
                     refrescar()
-                    // «Menú del aparato»: el filtro del aparato se refresca con el catálogo (la huella no lo incluye).
-                    negocioActual()?.let { refrescarFiltro(it) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.w("RefrescoDelCatalogo", "No se pudo refrescar el catálogo: ${e.message}")
+                }
+                // «Menú del aparato»: el filtro del aparato (la huella no lo incluye) se refresca aunque los productos fallen.
+                try {
+                    negocioActual()?.let { refrescarFiltro(it) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("RefrescoDelCatalogo", "No se pudo refrescar el filtro: ${e.message}")
                 }
             } while (hayOtroPendiente())
         } catch (e: Throwable) {

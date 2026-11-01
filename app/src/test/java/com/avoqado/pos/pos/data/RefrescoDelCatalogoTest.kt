@@ -314,4 +314,19 @@ class RefrescoDelCatalogoTest {
 
         refresco.onStop(owner)
     }
+
+    @Test
+    fun `si los productos fallan el filtro igual se refresca`() = runTest {
+        val filtros = mutableListOf<String>()
+        val refresco = RefrescoDelCatalogo(
+            refrescar = { throw java.io.IOException("500") }, conectado = MutableStateFlow(true), scope = backgroundScope,
+            negocioActual = { "venue-a" }, refrescarFiltro = { filtros += it },
+        )
+
+        refresco.onStart(owner)
+        runCurrent()
+        assertEquals(listOf("venue-a"), filtros)
+
+        refresco.onStop(owner)
+    }
 }
