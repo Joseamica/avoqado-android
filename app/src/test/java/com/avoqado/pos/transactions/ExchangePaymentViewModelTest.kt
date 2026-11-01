@@ -23,8 +23,11 @@ class ExchangePaymentViewModelTest {
     private val monitor=mockk<ConnectivityMonitor> { every { isOnline() } returns true }
     private val drawer=mockk<CashDrawerRepository>(relaxed=true)
     private val overrideEnabled = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val storeCreditOnly = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val settings = mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository> {
         every { managerPinOverrideEnabled } returns overrideEnabled
+        every { this@mockk.storeCreditOnly } returns this@ExchangePaymentViewModelTest.storeCreditOnly
+        every { storeCreditAvailable } returns kotlinx.coroutines.flow.MutableStateFlow(true)
     }
     private fun vm()=ExchangePaymentViewModel(repo,store,secure,mockk(relaxed=true),drawer,mockk(relaxed=true),mockk(relaxed=true),mockk(relaxed=true),monitor,settings)
 
@@ -143,6 +146,76 @@ class ExchangePaymentViewModelTest {
         vm.open(sale,force=true)
         assertFalse(vm.state.value.locked)
         coVerify(exactly=0) { repo.create(any(),any()) }
+    }
+
+    // MARK: - Saldo a favor (A2)
+    private val saldo = com.avoqado.pos.transactions.data.model.PayoutOption("STORE_CREDIT", 50000, 0, false)
+    private fun draft(reason: String = "SIZE") = ExchangeDraft("payment", listOf(ExchangeReturnedInput("line", 1, true, reason)),
+        listOf(ExchangeTakenInput("product", 1, displayedUnitPriceCents = 30000)), ExchangeSettlementDraft("PAYOUT", -20000))
+    private fun completed() = ExchangeResult("exchange", "COMPLETED", "original", "ORD-1", "new", "ORD-2", 50000, 30000, -20000,
+        ExchangeResultSettlement("PAYOUT", "STORE_CREDIT", 20000), ExchangeResultLines(emptyList(), emptyList()))
+
+    @Test fun `el saldo a favor va por defecto al cliente de la venta y Cambiar lo reemplaza`() {
+        coEvery { store.load(any(), any()) } returns null
+        val vm = vm()
+        vm.open(Transaction("payment", customerId = "ana", customerName = "Ana López"))
+        assertEquals(ExchangeStoreCreditCustomer("ana", "Ana López"), vm.storeCreditCustomer.value)
+        vm.chooseCustomer(com.avoqado.pos.customers.data.model.Customer("mama", firstName = "Rosa", lastName = "López"))
+        assertEquals(ExchangeStoreCreditCustomer("mama", "Rosa López", null, phoneChecked = true), vm.storeCreditCustomer.value)
+        vm.open(Transaction("venta-sin-cliente"))
+        assertNull(vm.storeCreditCustomer.value)
+    }
+
+    @Test fun `con sólo saldo el diálogo deja sólo el saldo a favor salvo que una pieza tenga Defecto`() {
+        coEvery { store.load(any(), any()) } returns null
+        storeCreditOnly.value = true
+        val vm = vm()
+        vm.open(Transaction("payment", customerId = "ana", customerName = "Ana López",
+            payoutOptions = listOf(com.avoqado.pos.transactions.data.model.PayoutOption("CASH", 50000, 50000, false), saldo)))
+        assertEquals(listOf("STORE_CREDIT"), vm.options(draft()).map { it.method })
+        assertEquals(listOf("STORE_CREDIT", "CASH"), vm.options(draft("DEFECT")).map { it.method })
+        storeCreditOnly.value = false
+        assertEquals(listOf("STORE_CREDIT", "CASH"), vm.options(draft()).map { it.method })
+    }
+
+    @Test fun `un rechazo por tope deja corregir y continuar con las mismas prendas`() {
+        coEvery { store.load(any(), any()) } returns null
+        coEvery { store.save(any()) } answers { firstArg<PendingExchange>() }
+        coEvery { store.remove(any()) } just Runs
+        val tope = "El saldo a favor de Ana López pasaría de $10,000. Devuelve $150.00 de otra forma o elige a otra persona."
+        val bodies = mutableListOf<String>()
+        coEvery { repo.create(any(), "venue") } coAnswers {
+            bodies += firstArg<String>()
+            if (bodies.size == 1) throw ExchangeApiException(422, "STORE_CREDIT_OVER_CAP", tope) else completed()
+        }
+        val vm = vm()
+        vm.open(Transaction("payment", customerId = "ana", customerName = "Ana López", payoutOptions = listOf(saldo)))
+        vm.begin(draft()); vm.choose(vm.options(draft()).single())
+        assertEquals(tope, vm.state.value.message)
+        assertFalse(vm.state.value.locked)
+        assertEquals(ExchangeSendPhase.EDITING, vm.state.value.phase)
+        coVerify(exactly = 1) { store.remove(any()) }
+        vm.chooseCustomer(com.avoqado.pos.customers.data.model.Customer("hija", firstName = "Sofía", lastName = "López", phone = "+525512345678"))
+        vm.begin(draft()); vm.choose(vm.options(draft()).single())
+        assertEquals(ExchangeSendPhase.COMPLETED, vm.state.value.phase)
+        val (first, second) = bodies.map { Json.parseToJsonElement(it).jsonObject }
+        fun customer(body: JsonObject) = body.getValue("settlement").jsonObject.getValue("customerId").jsonPrimitive.content
+        assertEquals("ana", customer(first)); assertEquals("hija", customer(second))
+        assertEquals("STORE_CREDIT", second.getValue("settlement").jsonObject.getValue("method").jsonPrimitive.content)
+        assertEquals(first["returned"], second["returned"]); assertEquals(first["taken"], second["taken"])
+        assertNotEquals(first["idempotencyKey"], second["idempotencyKey"])
+    }
+
+    @Test fun `sin a quién abonar el saldo a favor no se manda`() {
+        coEvery { store.load(any(), any()) } returns null
+        val vm = vm()
+        vm.open(Transaction("payment", payoutOptions = listOf(saldo)))
+        vm.begin(draft())
+        val option = vm.options(draft()).single()
+        assertEquals(TextosCambio.SALDO_ELIGE_CLIENTE, option.disabledReason)
+        vm.choose(option)
+        coVerify(exactly = 0) { store.save(any()) }
+        coVerify(exactly = 0) { repo.create(any(), any()) }
     }
 
 }

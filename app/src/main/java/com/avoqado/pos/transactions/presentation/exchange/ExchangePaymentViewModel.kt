@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.payment.data.*
@@ -42,6 +43,10 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
     val draft = _draft.asStateFlow()
     private val _terminals = MutableStateFlow<List<OnlineTerminal>>(emptyList())
     val terminals = _terminals.asStateFlow()
+    /** Saldo a favor: a quién se abona. Por default, el cliente de la venta; «Cambiar» lo reemplaza (spec §4). */
+    private val _storeCreditCustomer = MutableStateFlow<ExchangeStoreCreditCustomer?>(null)
+    val storeCreditCustomer = _storeCreditCustomer.asStateFlow()
+    val canCreateCustomer: Boolean get() = role.hasVenuePermission("customers:create")
     private var venue: String? = null
     private var actor: String? = null
     private var transaction: Transaction? = null
@@ -58,6 +63,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         actorName = listOfNotNull(secure.userFirstName, secure.userLastName).joinToString(" ")
         _ready.value = false
         _message.value = null; _draft.value = null; _terminals.value = emptyList()
+        _storeCreditCustomer.value = sale.customerId?.let { ExchangeStoreCreditCustomer(it, sale.customerName.orEmpty()) }
         openJob = viewModelScope.launch {
             try { submission.open(requireNotNull(capturedVenue), sale.id) { turn == generation } }
             catch (e: CancellationException) { throw e }
@@ -81,7 +87,15 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
 
     fun options(value: ExchangeDraft): List<ExchangeSettlementOption> = if (value.settlement.kind == "COLLECT")
         ExchangeSettlement.collectOptions() else ExchangeSettlement.payoutOptions(transaction?.payoutOptions,
-            -value.settlement.expectedDifferenceCents, role.canRefundToCash, settings.managerPinOverrideEnabled.value)
+            -value.settlement.expectedDifferenceCents, role.canRefundToCash, settings.managerPinOverrideEnabled.value,
+            settings.storeCreditOnly.value, value.returned.any { it.reason == ExchangeReason.DEFECT.name },
+            settings.storeCreditAvailable.value, monitor.isOnline(), _storeCreditCustomer.value)
+
+    fun chooseCustomer(customer: Customer) {
+        if (_busy.value) return
+        _storeCreditCustomer.value = ExchangeStoreCreditCustomer(customer.id, customer.fullName,
+            customer.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
+    }
 
     fun begin(value: ExchangeDraft) {
         if (!_ready.value || _busy.value || state.value.locked || !allowed()) return
@@ -125,7 +139,8 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         } else null
         if (!allowed()) return
         val settlement = ExchangeSettlementInput(value.settlement.kind, option?.method,
-            value.settlement.expectedDifferenceCents, session, terminalId, option?.cashFromNonCash)
+            value.settlement.expectedDifferenceCents, session, terminalId, option?.cashFromNonCash,
+            _storeCreditCustomer.value?.id?.takeIf { option?.method == "STORE_CREDIT" })
         val pending = PendingExchange(requireNotNull(venue), value.originalPaymentId, transaction!!.orderNumber.orEmpty(), actorName,
             freezeExchange(value, settlement, requireNotNull(actor), outbox.deviceId, Instant.now().toString()))
         _draft.value = null; _terminals.value = emptyList()

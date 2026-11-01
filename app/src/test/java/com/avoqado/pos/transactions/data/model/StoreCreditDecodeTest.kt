@@ -74,11 +74,11 @@ class StoreCreditDecodeTest {
         assertEquals("STORE_CREDIT", bad.tenderSystemKind)
     }
 
-    @Test fun `payout options drop STORE_CREDIT until A2 gives it a screen, and any unknown method`() {
+    @Test fun `payout options keep STORE_CREDIT now that it has its screen, and drop any unknown method`() {
         val t = json.decodeFromString<Transaction>("""{"id":"t","payoutOptions":[
           {"method":"STORE_CREDIT","maxCents":1000000,"maxSameCents":0,"needsRefundToCash":false},
           {"method":"FUTURE_THING","maxCents":1,"maxSameCents":1,"needsRefundToCash":false}]}""")
-        assertEquals(emptyList<String?>(), t.payoutOptions?.map { it.method })
+        assertEquals(listOf("STORE_CREDIT"), t.payoutOptions?.map { it.method })
     }
 
     @Test fun `customers list decodes storeCredit active blocked null and absent`() {

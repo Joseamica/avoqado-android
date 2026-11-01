@@ -111,4 +111,14 @@ object TextosCambio {
     const val EXCHANGE_CHAIN_NEEDS_TERMINAL = "Esto se pagó con un crédito que salió de una tarjeta: se devuelve a esa tarjeta en la terminal, y eso todavía no está disponible."
     const val EXCHANGE_CHAIN_GIFT_CARD_PENDING = "Esto se pagó con un crédito que salió de una tarjeta de regalo; regresarlo al saldo todavía no está disponible."
     const val EXCHANGE_SETTLEMENT_UNAVAILABLE = "No se pudo comprobar el origen de este crédito de cambio."
+    // Saldo a favor (spec 2026-10-30 §4, §5.1, §5.2).
+    const val SALDO_A_FAVOR = "Saldo a favor"
+    const val SALDO_A_FAVOR_PARA = "Saldo a favor para: {cliente}"
+    const val CAMBIAR = "Cambiar"
+    const val SALDO_PIDE_A_AVOQADO = "Pide a Avoqado que active el saldo a favor"
+    const val SALDO_ELIGE_CLIENTE = "Elige a quién se le abona el saldo a favor"
+    const val SALDO_SIN_TELEFONO = "Para darle saldo a favor a {nombre} hace falta su teléfono: con él lo usa. Agrégalo a su ficha."
+    const val SALDO_TELEFONO_NO_COINCIDE = "El saldo de {nombre} se usa con el teléfono que termina en {4}, no con el de su ficha. Un gerente lo cambia en el DASHBOARD."
+    const val TICKET_SALDO_PARA = "Saldo a favor para {nombre}: {monto} · saldo nuevo {saldo}"
+    const val TICKET_SALDO_TELEFONO = "Se usa con el teléfono que termina en {4}"
 }

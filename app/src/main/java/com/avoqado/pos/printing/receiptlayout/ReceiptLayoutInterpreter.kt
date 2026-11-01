@@ -2,6 +2,8 @@ package com.avoqado.pos.printing.receiptlayout
 
 import kotlin.math.abs
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import com.avoqado.pos.transactions.presentation.exchange.storeCreditLine
+import com.avoqado.pos.transactions.presentation.exchange.storeCreditMismatchLast4
 import com.avoqado.pos.printing.receiptlayout.ReceiptLabels as L
 import com.avoqado.pos.printing.receiptlayout.ReceiptText as T
 
@@ -33,6 +35,10 @@ object ReceiptLayoutInterpreter {
             section(TextosCambio.TICKET_REGRESA, e.returned) + section(TextosCambio.TICKET_SE_LLEVA, e.taken) +
             row(TextosCambio.DIFERENCIA, ReceiptFormat.money(e.differenceCents)) +
             (e.methodLabel?.let { row(if (e.differenceCents < 0) TextosCambio.TICKET_DEVUELTO_CON else TextosCambio.TICKET_PAGO, it) } ?: emptyList()) +
+            (e.storeCredit?.let { sc ->
+                (storeCreditLine(sc, ReceiptFormat::money)?.let { wrapped(it) } ?: emptyList()) +
+                    (storeCreditMismatchLast4(sc)?.let { wrapped(TextosCambio.TICKET_SALDO_TELEFONO.replace("{4}", it)) } ?: emptyList())
+            } ?: emptyList()) +
             (input.sale.staffName?.let { row(TextosCambio.ATENDIO, it) } ?: emptyList())
     }
 

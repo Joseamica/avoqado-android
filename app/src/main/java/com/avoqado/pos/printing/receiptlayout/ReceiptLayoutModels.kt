@@ -109,7 +109,9 @@ data class ReceiptSale(
 
 @Serializable
 data class ReceiptExchange(val originalOrderNumber: String, val returned: List<ReceiptExchangeLine>,
-    val taken: List<ReceiptExchangeLine>, val differenceCents: Long, val methodLabel: String?)
+    val taken: List<ReceiptExchangeLine>, val differenceCents: Long, val methodLabel: String?,
+    /** Saldo a favor: a quién se abonó, cuánto, su saldo nuevo y el teléfono con que se usa (spec §4, §5.2). */
+    val storeCredit: com.avoqado.pos.transactions.data.model.StoreCreditAbono? = null)
 @Serializable
 data class ReceiptExchangeLine(val name: String, val quantity: Int, val totalCents: Long)
 

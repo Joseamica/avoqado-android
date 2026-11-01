@@ -401,6 +401,14 @@ class TpvSettingsRepository internal constructor(
     private val _exchangesEnabled = MutableStateFlow(secureStorage.exchangesEnabled)
     val exchangesEnabled: StateFlow<Boolean> = _exchangesEnabled.asStateFlow()
 
+    /** «Sólo saldo a favor» de la sucursal; viaja en la misma fila que el «Cambio» (spec 2026-10-30 §5.1). */
+    private val _storeCreditOnly = MutableStateFlow(secureStorage.storeCreditOnly)
+    val storeCreditOnly: StateFlow<Boolean> = _storeCreditOnly.asStateFlow()
+
+    /** El SERVIDOR sabe dar saldo a favor (tiene las llaves). Apagado o servidor anterior: la opción sale en gris. */
+    private val _storeCreditAvailable = MutableStateFlow(secureStorage.storeCreditAvailable)
+    val storeCreditAvailable: StateFlow<Boolean> = _storeCreditAvailable.asStateFlow()
+
     /** La sucursal cuyos ajustes hay en memoria. `@Volatile`: el poll refresca desde otro hilo (Task 4.1). */
     @Volatile private var loadedVenueId: String? = null
 
@@ -589,6 +597,12 @@ class TpvSettingsRepository internal constructor(
                     val exchangesEnabled = result.data?.exchangesEnabled ?: false
                     _exchangesEnabled.value = exchangesEnabled
                     secureStorage.exchangesEnabled = exchangesEnabled
+                    val storeCreditOnly = result.data?.storeCreditOnly ?: false
+                    _storeCreditOnly.value = storeCreditOnly
+                    secureStorage.storeCreditOnly = storeCreditOnly
+                    val storeCreditAvailable = result.data?.storeCreditAvailable ?: false
+                    _storeCreditAvailable.value = storeCreditAvailable
+                    secureStorage.storeCreditAvailable = storeCreditAvailable
                 }
 
                 // Panel de promociones: es de VENUE, así que aplica HAYA o NO una terminal activa. Fallido ⇒ el previo
@@ -766,6 +780,10 @@ class TpvSettingsRepository internal constructor(
             secureStorage.managerPinOverrideEnabled = false
             _exchangesEnabled.value = false
             secureStorage.exchangesEnabled = false
+            _storeCreditOnly.value = false
+            secureStorage.storeCreditOnly = false
+            _storeCreditAvailable.value = false
+            secureStorage.storeCreditAvailable = false
         }
     }
 

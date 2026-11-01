@@ -231,4 +231,67 @@ class ExchangeRepositoryHttpTest {
         }
     }
 
+    // MARK: - Saldo a favor (A2): la regla es por prefijo; lo que queda en el almacén después de cada respuesta.
+    private fun saldo()=PendingExchange("venue","payment","ORD-1","Ana", """{"idempotencyKey":"SALDOABCDEFGHIJKLMNOPQRSTUVWXYZ1","originalPaymentId":"payment","staffId":"actor","deviceId":"device","createdAtLocal":"2026-10-26T10:00:00-06:00","returned":[{"orderItemId":"line","quantity":1,"restock":true,"reason":"SIZE"}],"taken":[{"productId":"product","quantity":1,"displayedUnitPriceCents":800}],"settlement":{"kind":"PAYOUT","method":"STORE_CREDIT","expectedDifferenceCents":-200,"customerId":"customer"}}""")
+    private suspend fun respondeAlSaldo(status:Int, body:String) {
+        server.enqueue(MockResponse().setResponseCode(status).setHeader("Content-Type","application/json").setBody(body))
+        if(flow.pending==null) flow.submit(saldo()) else flow.retry()
+    }
+    private suspend fun assertLibera(message:String) {
+        assertNull(flow.pending); assertNull(store.load("venue","payment"))
+        assertFalse(flow.state.value.locked); assertNull(flow.state.value.action)
+        assertEquals(ExchangeSendPhase.EDITING,flow.state.value.phase); assertEquals(message,flow.state.value.message)
+    }
+    private suspend fun assertConserva() {
+        assertEquals(saldo().body,store.load("venue","payment")!!.body)
+        assertTrue(flow.state.value.locked); assertEquals(TextosCambio.REINTENTAR,flow.state.value.action)
+    }
+    @Test fun `un 409 STORE_CREDIT_TERMINAL_REFUND_IN_PROGRESS libera lo pendiente`()=runBlocking {
+        respondeAlSaldo(409,"""{"code":"STORE_CREDIT_TERMINAL_REFUND_IN_PROGRESS","message":"La terminal está devolviendo este cobro"}""")
+        assertLibera("La terminal está devolviendo este cobro")
+    }
+    @Test fun `IDEMPOTENCY_KEY_REUSED conserva`()=runBlocking {
+        respondeAlSaldo(409,"""{"code":"IDEMPOTENCY_KEY_REUSED","message":"Esta llave ya se usó para otro cambio."}""")
+        assertConserva()
+    }
+    @Test fun `un 503 sigue pendiente y bloqueado`()=runBlocking {
+        respondeAlSaldo(503,"""{"message":"Servidor ocupado"}""")
+        assertConserva(); assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":true,"data":{"exchange":{"id":"exchange","status":"COMPLETED","originalOrderId":"original","originalOrderNumber":"ORD-1","newOrderId":"new","newOrderNumber":"ORD-2","returnedCents":1000,"takenCents":800,"differenceCents":-200,"settlement":{"kind":"PAYOUT","method":"STORE_CREDIT","amountCents":200,"sources":[],"storeCredit":{"customerId":"customer","customerName":"Ana López","amountCents":200,"newBalanceCents":200,"phoneLast4":"5678","phoneMismatch":false}},"lines":{"returned":[],"taken":[]}}}}"""))
+        flow.retry()
+        assertEquals(saldo().body,server.takeRequest().body.readUtf8()); assertEquals(saldo().body,server.takeRequest().body.readUtf8())
+        assertEquals(ExchangeSendPhase.COMPLETED,flow.state.value.phase)
+        assertEquals("Ana López",flow.state.value.result!!.settlement.storeCredit!!.customerName)
+        assertNull(store.load("venue","payment"))
+    }
+    @Test fun `un STORE_CREDIT_ con un nombre que la app no conoce también libera`()=runBlocking {
+        respondeAlSaldo(422,"""{"code":"STORE_CREDIT_UN_NOMBRE_QUE_LA_APP_NO_CONOCE","message":"No se puede dar saldo a favor."}""")
+        assertLibera("No se puede dar saldo a favor.")
+    }
+    @Test fun `STORE_CREDIT_REJECTED libera y muestra el mensaje del servidor`()=runBlocking {
+        respondeAlSaldo(422,"""{"code":"STORE_CREDIT_REJECTED","message":"No se puede devolver $500.00","details":{"originalCode":null}}""")
+        assertLibera("No se puede devolver $500.00")
+    }
+    @Test fun `401 y 403 no son definitivos`()=runBlocking {
+        respondeAlSaldo(401,"""{"code":"UNAUTHORIZED","message":"Token expired"}"""); assertConserva()
+        respondeAlSaldo(403,"""{"message":"Permission 'payments:refund' required"}"""); assertConserva()
+    }
+    @Test fun `400 sin code es definitivo`()=runBlocking {
+        respondeAlSaldo(400,"""{"message":"El cuerpo no es válido"}""")
+        assertLibera("El cuerpo no es válido")
+    }
+    @Test fun `una diferencia que cambió envuelta en STORE_CREDIT_REJECTED vuelve a mostrar la cuenta`()=runBlocking {
+        respondeAlSaldo(409,"""{"code":"STORE_CREDIT_REJECTED","message":"La diferencia cambió","details":{"originalCode":"EXCHANGE_DIFFERENCE_CHANGED","calculation":{"kind":"PAYOUT","differenceCents":-150,"returnedCents":1000,"takenCents":850,"lines":{"returned":[],"taken":[]}}}}""")
+        assertEquals(ExchangeSendPhase.RECONFIRM,flow.state.value.phase)
+        assertEquals(-150L,flow.state.value.calculation!!.differenceCents)
+        assertNull(store.load("venue","payment")); assertFalse(flow.state.value.locked)
+    }
+    @Test fun `el cambio a saldo manda a quién se abona y los demás medios no mandan cliente`() {
+        val draft=ExchangeDraft("payment",listOf(ExchangeReturnedInput("line",1,true,"SIZE")),listOf(ExchangeTakenInput("product",1,displayedUnitPriceCents=800)),ExchangeSettlementDraft("PAYOUT",-200))
+        val saldo=Json.parseToJsonElement(freezeExchange(draft,ExchangeSettlementInput("PAYOUT","STORE_CREDIT",-200,customerId="customer"),"actor","device","2026-10-26T10:00:00Z")).jsonObject
+        assertEquals("customer",saldo["settlement"]!!.jsonObject["customerId"]!!.jsonPrimitive.content)
+        val cash=Json.parseToJsonElement(freezeExchange(draft,ExchangeSettlementInput("PAYOUT","CASH",-200),"actor","device","2026-10-26T10:00:00Z")).jsonObject
+        assertFalse(cash["settlement"]!!.jsonObject.containsKey("customerId"))
+    }
+
 }

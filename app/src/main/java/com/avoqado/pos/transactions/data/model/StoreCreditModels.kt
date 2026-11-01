@@ -31,6 +31,16 @@ data class StoreCreditAbono(
     val phoneMismatch: Boolean? = null,
 )
 
+/**
+ * ¿El rechazo garantiza que el SERVIDOR no escribió nada? Entonces lo pendiente se borra y la cajera corrige (spec §5.5; S10 I2).
+ * Por prefijo, no por lista: todo 4xx con `code` `STORE_CREDIT_…` (también uno que esta app todavía no conoce, y el
+ * `STORE_CREDIT_REJECTED` con que el servidor envuelve los demás) y el 400 sin código (validación antes del servicio). Nunca
+ * `IDEMPOTENCY_KEY_REUSED`, la red, un 5xx ni 401/403/408/429. Una sola regla para el Cambio y el Reembolso (A3).
+ */
+fun esRechazoDefinitivoDeSaldo(status: Int, code: String?): Boolean =
+    status in 400..499 && status !in setOf(401, 403, 408, 429) &&
+        (code?.startsWith("STORE_CREDIT_") == true || (status == 400 && code == null))
+
 /** `storeCreditOption` del detalle de una venta: ¿puede la cajera escoger «Saldo a favor»? Si no, se pinta en gris con [reason]. */
 @Serializable
 data class StoreCreditOption(

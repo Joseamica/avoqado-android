@@ -48,6 +48,8 @@ private const val TAG = "💸 RefundRepo"
 class RefundApiException(
     val statusCode: Int,
     override val message: String,
+    /** El `code` del rechazo (p. ej. `STORE_CREDIT_…`): decide si lo pendiente se borra (`esRechazoDefinitivoDeSaldo`). */
+    val code: String? = null,
 ) : Exception(message)
 
 @Serializable
@@ -109,6 +111,7 @@ private data class AssociatedRefundResponse(
     val success: Boolean = false,
     val data: AssociatedRefundData? = null,
     val message: String? = null,
+    val code: String? = null,
 )
 
 @Serializable
@@ -154,6 +157,8 @@ class RefundRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
 ) {
+    internal var baseUrl = ApiConstants.BASE_URL
+
     /**
      * Issue an associated refund against an existing payment.
      * Supports either amount-based (`amountCents`) or item-based (`items`) refunds,
@@ -187,7 +192,7 @@ class RefundRepository @Inject constructor(
             )
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/$paymentId/refund")
+                .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/refund")
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .build()
 
@@ -210,10 +215,8 @@ class RefundRepository @Inject constructor(
                 }
             } else {
                 Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
-                val message = runCatching {
-                    jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody).message
-                }.getOrNull() ?: "Error $code"
-                Result.failure(RefundApiException(code, message))
+                val error = runCatching { jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody) }.getOrNull()
+                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Associated refund error: ${e.message}")

@@ -22,7 +22,9 @@ class ExchangeApiException(val statusCode: Int, val code: String?, override val 
 
 @Serializable
 data class ExchangeSettlementInput(val kind: String, val method: String?, val expectedDifferenceCents: Long,
-    val cashDrawerSessionId: String? = null, val terminalId: String? = null, val cashFromNonCash: Boolean? = null)
+    val cashDrawerSessionId: String? = null, val terminalId: String? = null, val cashFromNonCash: Boolean? = null,
+    /** Saldo a favor: a quién se le abona. Sólo con `STORE_CREDIT`; nulo no viaja (el servidor lo rechaza con otro medio). */
+    val customerId: String? = null)
 
 @Serializable
 data class ExchangeCreateBody(val idempotencyKey: String, val originalPaymentId: String,
