@@ -91,6 +91,21 @@ class TpvSettingsRepositoryOfflineCacheTest {
     }
 
     @Test
+    fun `un 200 degradado no pisa el filtro bueno`() = runTest {
+        val preferences = preferencesBackedBy(mutableMapOf())
+        repositoryWith(preferences, clientReturning(filtroResponse())).refreshSettingsForVenue(VENUE_ID)
+
+        for (degradado in listOf("""{"success":false}""", """{"success":true,"data":null}""")) {
+            repositoryWith(preferences, clientReturning(degradado)).refreshSettingsForVenue(VENUE_ID)
+        }
+
+        val fria = repositoryWith(preferences, clientThrowing(IOException("offline")))
+        fria.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(listOf("cat-a", "cat-b"), fria.terminalNavigation.value.visibleCategoryIds)
+        assertEquals(listOf("menu-1"), fria.terminalNavigation.value.visibleMenuIds)
+    }
+
+    @Test
     fun `un 403 borra el filtro`() = runTest {
         val preferences = preferencesBackedBy(mutableMapOf())
         repositoryWith(preferences, clientReturning(filtroResponse())).refreshSettingsForVenue(VENUE_ID)

@@ -551,6 +551,10 @@ class TpvSettingsRepository internal constructor(
                 receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, receiptInfo.logoUrl) } }
             }
 
+            // Un 200 degradado (`success:false` o sin `data`) no trae el perfil del aparato: conserva lo que había, en memoria y
+            // en disco. (`deviceTerminal` ausente CON data sí es legítimo: terminal desactivada.)
+            if (!result.success || result.data == null) return
+
             val terminalNavigation = result.data.toTerminalNavigationSettings()
             if (!whileCurrent { _terminalNavigation.value = terminalNavigation }) return
             persistTerminalNavigation(venueId, terminalNavigation)
