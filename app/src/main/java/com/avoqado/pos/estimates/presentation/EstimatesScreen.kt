@@ -1,7 +1,6 @@
 package com.avoqado.pos.estimates.presentation
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -168,12 +167,7 @@ private fun TabletEstimatesLayout(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = AvoqadoTheme.spacing.lg)
-                        .padding(bottom = AvoqadoTheme.spacing.md)
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                            shape = RoundedCornerShape(25.dp),
-                        ),
+                        .padding(bottom = AvoqadoTheme.spacing.md),
                     placeholder = { Text("Buscar") },
                     leadingIcon = {
                         Icon(
@@ -193,10 +187,11 @@ private fun TabletEstimatesLayout(
                         }
                     },
                     singleLine = true,
-                    shape = RoundedCornerShape(25.dp),
+                    // Relleno gris, como los demás buscadores: éste era el único con contorno (revisión visual, 30-oct).
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
                     colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent,
                     ),
@@ -417,12 +412,7 @@ private fun PhoneEstimatesLayout(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AvoqadoTheme.spacing.lg)
-                    .padding(bottom = AvoqadoTheme.spacing.md)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(25.dp),
-                    ),
+                    .padding(bottom = AvoqadoTheme.spacing.md),
                 placeholder = { Text("Buscar") },
                 leadingIcon = {
                     Icon(
@@ -442,10 +432,11 @@ private fun PhoneEstimatesLayout(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(25.dp),
+                // Relleno gris, como los demás buscadores: éste era el único con contorno (revisión visual, 30-oct).
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,
                 ),

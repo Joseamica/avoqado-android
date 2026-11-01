@@ -408,14 +408,9 @@ private fun ShortcutTile(
                 .fillMaxWidth()
                 .height(tileHeight)
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-                .background(shortcut.color)
-                .then(
-                    if (!shortcut.enabled) {
-                        Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
-                    } else {
-                        Modifier
-                    },
-                )
+                // Apagado = gris neutro. Antes era el color con un velo de fondo al 55 %: en modo claro quedaba
+                // pastel y la letra casi no se leía (revisión visual, 30-oct). Espejo de iOS `ShortcutTile`.
+                .background(if (shortcut.enabled) shortcut.color else MaterialTheme.colorScheme.surfaceVariant)
                 .clickable(enabled = shortcut.enabled, onClick = onClick),
         ) {
             // Icon at top-left
@@ -448,12 +443,12 @@ private fun ShortcutTile(
                 Text(
                     text = badge,
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.9f),
+                    color = if (shortcut.enabled) Color.White.copy(alpha = 0.9f) else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(innerPad - 4.dp)
                         .background(
-                            Color.White.copy(alpha = 0.2f),
+                            if (shortcut.enabled) Color.White.copy(alpha = 0.2f) else MaterialTheme.colorScheme.outlineVariant,
                             RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
                         )
                         .padding(horizontal = 10.dp, vertical = 5.dp),
