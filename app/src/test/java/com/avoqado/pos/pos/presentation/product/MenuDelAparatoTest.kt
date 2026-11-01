@@ -85,4 +85,10 @@ class MenuDelAparatoTest {
         assertTrue(MenuDelAparato.categoriaAbiertaSigue("a", null))
         assertTrue(MenuDelAparato.categoriaAbiertaSigue(null, setOf("b")))
     }
+
+    @Test fun marcaActualEnTodosSoloSinMenuNiFiltro() {
+        assertTrue(MenuDelAparato.marcaTodosActual(null, null))
+        assertFalse(MenuDelAparato.marcaTodosActual(null, setOf("a")))
+        assertFalse(MenuDelAparato.marcaTodosActual("M", null))
+    }
 }

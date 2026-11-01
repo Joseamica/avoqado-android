@@ -1185,6 +1185,7 @@ fun TableOrderScreen(
         MenusDialog(
             menus = com.avoqado.pos.pos.presentation.product.MenuDelAparato.menusDelAparato(menus, menusDelAparatoIds),
             selectedMenuId = selectedMenuId,
+            todosEsActual = com.avoqado.pos.pos.presentation.product.MenuDelAparato.marcaTodosActual(selectedMenuId, menuCategoryIds),
             onDismiss = { showMenus = false },
             onPick = { id ->
                 showMenus = false
@@ -3196,6 +3197,7 @@ private fun SplitModesDialog(
 private fun MenusDialog(
     menus: List<com.avoqado.pos.tables.data.VenueMenu>,
     selectedMenuId: String?,
+    todosEsActual: Boolean,
     onDismiss: () -> Unit,
     onPick: (String?) -> Unit,
 ) {
@@ -3218,10 +3220,10 @@ private fun MenusDialog(
                 ) {
                     Text(
                         text = "Todos los productos",
-                        fontWeight = if (selectedMenuId == null) FontWeight.Bold else FontWeight.Normal,
+                        fontWeight = if (todosEsActual) FontWeight.Bold else FontWeight.Normal,
                         modifier = Modifier.weight(1f),
                     )
-                    if (selectedMenuId == null) {
+                    if (todosEsActual) {
                         Text("Actual", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }

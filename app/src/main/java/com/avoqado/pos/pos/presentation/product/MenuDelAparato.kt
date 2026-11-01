@@ -58,4 +58,8 @@ object MenuDelAparato {
         val delAparato = filtroDeCobrar(visibles, verTodo, categoriasConProductos)
         return muestraVerTodo(efectivo == delAparato, verTodo, efectivo)
     }
+
+    /** «Todos los productos · Actual» sólo si la cuadrícula de verdad muestra todo: sin menú elegido y sin filtro efectivo. */
+    fun marcaTodosActual(menuElegidoId: String?, filtroEfectivo: Set<String>?): Boolean =
+        menuElegidoId == null && filtroEfectivo == null
 }
