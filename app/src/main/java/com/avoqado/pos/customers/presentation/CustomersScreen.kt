@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
@@ -788,6 +789,19 @@ private fun CustomerDetailPanel(
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        // Saldo a favor (A4): sólo si el cliente tiene sobre; sin él no se pinta nada, ni «$0.00».
+        lineaSaldoAFavorDeLaFicha(customer)?.let { linea ->
+            DetailSectionCard(title = TextosCambio.SALDO_A_FAVOR) {
+                Text(
+                    text = linea,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
+                )
+            }
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        }
 
         // Activity section
         DetailSectionCard(title = "Actividad") {

@@ -137,4 +137,7 @@ object TextosCambio {
     const val REEMBOLSO_LLAVE_REUSADA = "Este reembolso ya se había mandado con otros datos y esta caja no puede confirmarlo. Revisa la venta en el panel antes de hacer otro reembolso."
     const val REEMBOLSO_GUARDADO_FALLIDO = "No se pudo guardar el reembolso en el aparato. No se envió; inténtalo de nuevo."
     const val REEMBOLSO_RECUPERACION_FALLIDA = "No se pudo leer el reembolso guardado. Revisa la venta en el panel antes de hacer otro."
+    // Ficha del cliente (spec 2026-10-30 §4, §5.7; A4).
+    const val SALDO_A_FAVOR_FICHA = "Saldo a favor: {monto}"
+    const val SALDO_A_FAVOR_CONGELADO_FICHA = "Saldo a favor congelado: {monto}"
 }

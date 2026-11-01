@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.domain.telefonoValido
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.CloseButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -51,11 +52,11 @@ import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 /**
- * ¿Se puede guardar el alta? Con [requirePhone] (el saldo a favor se usa con el teléfono, spec §4) pide nombre Y teléfono;
+ * ¿Se puede guardar el alta? Con [requirePhone] (el saldo a favor se usa con el teléfono, spec §4) pide nombre Y un teléfono de 10 a 15 dígitos (la misma regla de «Guardar teléfono»);
  * sin él, basta un dato, como siempre.
  */
 internal fun puedeGuardarCliente(firstName: String, lastName: String, phone: String, email: String, requirePhone: Boolean): Boolean =
-    if (requirePhone) (firstName.isNotBlank() || lastName.isNotBlank()) && phone.isNotBlank()
+    if (requirePhone) (firstName.isNotBlank() || lastName.isNotBlank()) && telefonoValido(phone)
     else firstName.isNotBlank() || lastName.isNotBlank() || phone.isNotBlank() || email.isNotBlank()
 
 @Composable
