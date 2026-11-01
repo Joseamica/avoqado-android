@@ -7,6 +7,9 @@ import com.avoqado.pos.tables.data.VenueMenu
  * mismos casos de prueba. `null` y `[]` significan «todo»: el SERVIDOR nunca manda `[]`, pero la app los trata igual.
  */
 object MenuDelAparato {
+    /** Recargar `/menus` solo si la mesa ya tiene la lista cargada o un menú elegido (abrir una mesa no pide menús). */
+    fun debeRecargarMenus(menusCargados: Boolean, menuElegido: Boolean): Boolean = menusCargados || menuElegido
+
     /** Categorías que muestra Cobrar, o `null` = todo el catálogo. Nunca deja la cuadrícula en blanco. */
     fun filtroDeCobrar(visibles: List<String>?, verTodo: Boolean, categoriasConProductos: Set<String>): Set<String>? {
         if (verTodo || visibles.isNullOrEmpty()) return null

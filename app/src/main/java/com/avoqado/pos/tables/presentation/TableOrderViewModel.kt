@@ -1356,16 +1356,6 @@ class TableOrderViewModel @Inject constructor(
     private val _selectedMenuId = MutableStateFlow<String?>(null)
     val selectedMenuId: StateFlow<String?> = _selectedMenuId.asStateFlow()
 
-    /** Categorías del menú elegido; null = sin filtro. */
-    val menuCategoryIds: StateFlow<Set<String>?> = _selectedMenuId
-        .combine(_menus) { id, list ->
-            // Menú sin categorías = sin filtro: un set vacío dejaría la
-            // cuadrícula en blanco sin salida (auditoría).
-            if (id == null) null
-            else list.firstOrNull { it.id == id }?.categoryIds?.takeIf { it.isNotEmpty() }?.toSet()
-        }
-        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
-
     /** «Todo ▸» o «Todos los productos»: la mesa ve todo el catálogo. Vive en la mesa; no se persiste. */
     private val _verTodo = MutableStateFlow(false)
     val verTodo: StateFlow<Boolean> = _verTodo.asStateFlow()
@@ -1378,10 +1368,10 @@ class TableOrderViewModel @Inject constructor(
 
     /** Carga los menús y preselecciona el que aplica AHORA (lo decide el server con la zona horaria del venue, no la del
      *  dispositivo). [visibleMenuIds] = filtro del aparato; el modelo no lee los ajustes, la pantalla se lo pasa. */
-    fun loadMenus(visibleMenuIds: List<String>? = null) {
+    fun loadMenus(visibleMenuIds: List<String>? = null, enFondo: Boolean = false) {
         val vId = venueId ?: return
         viewModelScope.launch {
-            repository.getMenus(vId).onSuccess { payload ->
+            repository.getMenus(vId, enFondo).onSuccess { payload ->
                 _menus.value = payload.menus
                 val propios = com.avoqado.pos.pos.presentation.product.MenuDelAparato.menusDelAparato(payload.menus, visibleMenuIds)
                 // Un menú elegido que ya no viene (apagado, borrado, ya no es del aparato) se suelta.

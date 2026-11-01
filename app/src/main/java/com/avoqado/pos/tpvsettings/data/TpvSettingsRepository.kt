@@ -262,6 +262,11 @@ class TpvSettingsRepository internal constructor(
     private val _terminalNavigation = MutableStateFlow(TerminalNavigationSettings.DEFAULT)
     val terminalNavigation: StateFlow<TerminalNavigationSettings> = _terminalNavigation.asStateFlow()
 
+    /** Sube cada vez que un refresco del filtro (suave o carga completa) aplica bien, aunque el valor no cambie: las mesas
+     *  con un menú elegido recargan `/menus` con él (cambian las categorías de SU menú sin cambiar la unión del aparato). */
+    private val _generacionDelFiltro = MutableStateFlow(0L)
+    val generacionDelFiltro: StateFlow<Long> = _generacionDelFiltro.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -556,7 +561,7 @@ class TpvSettingsRepository internal constructor(
             if (!result.success || result.data == null) return
 
             val terminalNavigation = result.data.toTerminalNavigationSettings()
-            if (!whileCurrent { _terminalNavigation.value = terminalNavigation }) return
+            if (!whileCurrent { _terminalNavigation.value = terminalNavigation; _generacionDelFiltro.update { it + 1 } }) return
             persistTerminalNavigation(venueId, terminalNavigation)
             if (!stillCurrent()) return
 
@@ -667,6 +672,8 @@ class TpvSettingsRepository internal constructor(
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/settings")
                 .header("Authorization", "Bearer $token")
+                // Automático: un 403 no debe abrir el aviso global de permisos ni pedir PIN.
+                .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
                 .build()
             val body = withContext(Dispatchers.IO) {
                 client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string() else null }
@@ -680,7 +687,7 @@ class TpvSettingsRepository internal constructor(
                     _terminalNavigation.value.copy(
                         visibleCategoryIds = terminal.visibleCategoryIds,
                         visibleMenuIds = terminal.visibleMenuIds,
-                    ).also { _terminalNavigation.value = it }
+                    ).also { _terminalNavigation.value = it; _generacionDelFiltro.update { g -> g + 1 } }
                 }
             } ?: return
             // ponytail: el disco no cabe en el candado; si un completo arranca justo aquí, su propia escritura llega después.

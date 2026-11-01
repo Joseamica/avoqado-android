@@ -91,4 +91,10 @@ class MenuDelAparatoTest {
         assertFalse(MenuDelAparato.marcaTodosActual(null, setOf("a")))
         assertFalse(MenuDelAparato.marcaTodosActual("M", null))
     }
+
+    @org.junit.Test fun `recarga de menus solo con lista cargada o menu elegido`() {
+        org.junit.Assert.assertFalse(MenuDelAparato.debeRecargarMenus(menusCargados = false, menuElegido = false))
+        org.junit.Assert.assertTrue(MenuDelAparato.debeRecargarMenus(menusCargados = true, menuElegido = false))
+        org.junit.Assert.assertTrue(MenuDelAparato.debeRecargarMenus(menusCargados = false, menuElegido = true))
+    }
 }

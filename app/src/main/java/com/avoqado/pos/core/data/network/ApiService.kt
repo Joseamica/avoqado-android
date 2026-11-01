@@ -342,6 +342,8 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/menus")
     suspend fun getMenus(
         @Path("venueId") venueId: String,
+        // null = no se manda; "1" = petición de fondo (un 403 no abre el aviso global de permisos).
+        @retrofit2.http.Header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER) enFondo: String? = null,
     ): com.avoqado.pos.tables.data.MenusResponse
 
     // Cobros por servicio (TABLE_SERVICE): catálogo del venue.

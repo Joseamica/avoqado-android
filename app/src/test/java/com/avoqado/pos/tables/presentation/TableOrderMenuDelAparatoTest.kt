@@ -72,7 +72,25 @@ class TableOrderMenuDelAparatoTest {
     )
 
     private fun servidorDa(vararg menus: VenueMenu, activo: String? = null) {
-        coEvery { repository.getMenus(any()) } returns Result.success(MenusPayload(menus.toList(), activo))
+        coEvery { repository.getMenus(any(), any()) } returns Result.success(MenusPayload(menus.toList(), activo))
+    }
+
+    @Test fun `la recarga automatica pide los menus de fondo y la manual no`() = runTest {
+        val s = vm()
+        servidorDa(menu("A", listOf("a")))
+        s.loadMenus(null, enFondo = true); advanceUntilIdle()
+        s.loadMenus(null); advanceUntilIdle()
+        io.mockk.coVerifyOrder { repository.getMenus(any(), true); repository.getMenus(any(), false) }
+    }
+
+    @Test fun `una recarga automatica que falla conserva los menus y la eleccion`() = runTest {
+        val s = vm()
+        servidorDa(menu("A", listOf("a")), activo = "A")
+        s.loadMenus(null); advanceUntilIdle()
+        coEvery { repository.getMenus(any(), any()) } returns Result.failure(RuntimeException("403"))
+        s.loadMenus(null, enFondo = true); advanceUntilIdle()
+        assertEquals("A", s.selectedMenuId.value)
+        assertEquals(1, s.menus.value.size)
     }
 
     @Test fun `Todos los productos es ver todo`() = runTest {

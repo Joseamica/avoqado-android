@@ -24,6 +24,7 @@ class FiltroDelAparatoViewModelTest {
     private fun vm(nav: MutableStateFlow<TerminalNavigationSettings>): FiltroDelAparatoViewModel {
         val repo = mockk<TpvSettingsRepository>()
         every { repo.terminalNavigation } returns nav
+        every { repo.generacionDelFiltro } returns MutableStateFlow(0L)
         return FiltroDelAparatoViewModel(repo)
     }
 

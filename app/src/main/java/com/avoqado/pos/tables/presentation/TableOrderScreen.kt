@@ -185,8 +185,12 @@ fun TableOrderScreen(
                 selectedMenuId, menus, menusDelAparatoIds, visiblesDelAparato, verTodo, categoriasConProductos,
             )) ({ viewModel.verTodoElCatalogo() }) else null
     // El filtro del aparato cambió (refresco de 5 min) con la lista de menús ya cargada o uno elegido: se vuelve a pedir.
-    LaunchedEffect(visiblesDelAparato, menusDelAparatoIds) {
-        if (menus.isNotEmpty() || selectedMenuId != null) viewModel.loadMenus(menusDelAparatoIds)
+    // También cuando un refresco termina bien sin cambiar el filtro (`generacion`): pudieron cambiar las categorías de SU menú.
+    val generacionDelFiltro by filtroDelAparato.generacion.collectAsState()
+    LaunchedEffect(visiblesDelAparato, menusDelAparatoIds, generacionDelFiltro) {
+        if (com.avoqado.pos.pos.presentation.product.MenuDelAparato.debeRecargarMenus(menus.isNotEmpty(), selectedMenuId != null)) {
+            viewModel.loadMenus(menusDelAparatoIds, enFondo = true)
+        }
     }
     val floorTables by viewModel.floorTables.collectAsState()
     // Propiedad de mesa: cheque de otro mesero + switch del venue encendido y

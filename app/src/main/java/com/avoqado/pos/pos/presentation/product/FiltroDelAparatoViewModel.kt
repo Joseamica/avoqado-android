@@ -24,6 +24,7 @@ class FiltroDelAparatoViewModel @Inject constructor(
         nav.map(f).distinctUntilChanged().stateIn(viewModelScope, SharingStarted.Eagerly, f(nav.value))
 
     val visibleCategoryIds: StateFlow<List<String>?> = flujo { it.visibleCategoryIds }
+    val generacion: StateFlow<Long> = tpvSettingsRepository.generacionDelFiltro
     val visibleMenuIds: StateFlow<List<String>?> = flujo { it.visibleMenuIds }
 
     /** Cambia al cambiar de negocio (otro aparato): la pantalla apaga su «Todo ▸». */

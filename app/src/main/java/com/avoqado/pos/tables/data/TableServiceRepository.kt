@@ -377,8 +377,8 @@ class TableServiceRepository @Inject constructor(
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
     /** Menús del venue con su horario y cuál aplica ahora. Cache-first al fallar red. */
-    suspend fun getMenus(venueId: String): Result<MenusPayload> = runCatching {
-        val payload = apiService.getMenus(venueId).data ?: MenusPayload()
+    suspend fun getMenus(venueId: String, enFondo: Boolean = false): Result<MenusPayload> = runCatching {
+        val payload = apiService.getMenus(venueId, if (enFondo) "1" else null).data ?: MenusPayload()
         payloadCache.save(
             com.avoqado.pos.core.data.local.PayloadCache.TYPE_MENUS,
             venueId,
@@ -386,6 +386,8 @@ class TableServiceRepository @Inject constructor(
         )
         payload
     }.recoverCatching { e ->
+        // De fondo un error no cambia nada: ni caché ni nada (se reintenta en el siguiente refresco).
+        if (enFondo) throw e
         // Sin red: los menús cacheados siguen sirviendo (horarios se evalúan local).
         val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_MENUS, venueId)
             ?: throw e

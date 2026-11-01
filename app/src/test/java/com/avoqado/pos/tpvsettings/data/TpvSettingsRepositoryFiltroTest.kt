@@ -43,8 +43,10 @@ class TpvSettingsRepositoryFiltroTest {
     private class Escalonado(private val respuestas: List<Pair<() -> Response, CountDownLatch?>>) {
         val enVuelo = Array(respuestas.size) { CountDownLatch(1) }
         val peticiones = AtomicInteger(0)
+        val solicitudes = java.util.concurrent.CopyOnWriteArrayList<Request>()
         val client: OkHttpClient = mockk {
             every { newCall(any()) } answers {
+                solicitudes.add(firstArg())
                 val i = peticiones.getAndIncrement()
                 mockk<Call> {
                     every { execute() } answers {
@@ -118,6 +120,41 @@ class TpvSettingsRepositoryFiltroTest {
         val fria = repo(escalonado(falla() to null).client)
         fria.refreshSettingsForVenue(VENUE_ID)
         assertEquals(listOf("b", "c"), fria.terminalNavigation.value.visibleCategoryIds)
+    }
+
+    @Test
+    fun `refresco suave sube la generacion aunque el valor no cambie y no sube si falla`() = runBlocking {
+        val r = repo(escalonado(
+            ok(completa("[\"a\"]", "[\"m1\"]")) to null,
+            ok(suave("[\"a\"]", "[\"m1\"]")) to null,
+            falla() to null,
+            ok("{}", 500) to null,
+        ).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        val tras = r.generacionDelFiltro.value
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals(tras + 1, r.generacionDelFiltro.value)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals(tras + 1, r.generacionDelFiltro.value)
+    }
+
+    @Test
+    fun `la carga completa tambien sube la generacion`() = runBlocking {
+        val r = repo(escalonado(ok(completa("[\"a\"]", "null")) to null).client)
+        val antes = r.generacionDelFiltro.value
+        r.refreshSettingsForVenue(VENUE_ID)
+        assertTrue(r.generacionDelFiltro.value > antes)
+    }
+
+    @Test
+    fun `el refresco suave lleva la marca de fondo`() = runBlocking {
+        val http = escalonado(ok(completa("[\"a\"]", "null")) to null, ok(suave("[\"b\"]", "null")) to null)
+        val r = repo(http.client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("1", http.solicitudes[1].header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER))
+        assertNull(http.solicitudes[0].header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER))
     }
 
     @Test
