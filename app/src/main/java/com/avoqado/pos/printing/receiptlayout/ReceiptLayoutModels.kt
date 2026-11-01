@@ -145,6 +145,8 @@ data class ReceiptTender(
     val tenderedCents: Long? = null,
     val changeCents: Long? = null,
     val merchantAccountId: String? = null,
+    /** Sólo de las apps (el SERVIDOR no lo manda): la etiqueta del renglón; `null` = «Pago:». */
+    val rowLabel: String? = null,
 )
 
 /**

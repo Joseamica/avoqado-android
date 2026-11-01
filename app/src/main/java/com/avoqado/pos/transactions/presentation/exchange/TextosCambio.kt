@@ -127,4 +127,14 @@ object TextosCambio {
     const val TELEFONO = "Teléfono"
     const val GUARDAR_TELEFONO = "Guardar teléfono"
     const val CLIENTE = "Cliente"
+    // Reembolso a saldo a favor (spec 2026-10-30 §4, §6, §7; A3).
+    const val ES_POR_DEFECTO = "Es por defecto"
+    const val SOLO_SALDO_EXCEPCIONES = "Defecto y cobro por error siempre se devuelven como se pagó"
+    const val REIMPRESION_SALDO = "Saldo a favor ({nombre})"
+    const val REEMBOLSO_SIN_CONFIRMAR = "Hay un reembolso a saldo a favor sin confirmar"
+    const val REEMBOLSO_NO_CONFIRMADO = "No se pudo confirmar el reembolso. Se reintenta con los mismos datos al abrir la venta."
+    const val REEMBOLSO_CONFIRMADO = "Se confirmó el reembolso a saldo a favor"
+    const val REEMBOLSO_LLAVE_REUSADA = "Este reembolso ya se había mandado con otros datos y esta caja no puede confirmarlo. Revisa la venta en el panel antes de hacer otro reembolso."
+    const val REEMBOLSO_GUARDADO_FALLIDO = "No se pudo guardar el reembolso en el aparato. No se envió; inténtalo de nuevo."
+    const val REEMBOLSO_RECUPERACION_FALLIDA = "No se pudo leer el reembolso guardado. Revisa la venta en el panel antes de hacer otro."
 }

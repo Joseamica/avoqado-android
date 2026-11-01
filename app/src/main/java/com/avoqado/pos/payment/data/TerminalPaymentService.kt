@@ -1239,6 +1239,11 @@ class TerminalPaymentService @Inject constructor(
         terminalId: String,
         paymentId: String,
         reason: String? = null,
+        /**
+         * «Sólo saldo a favor» (spec §5.5): la excepción que invoca la cajera (DEFECTIVE, ACCIDENTAL_CHARGE, FRAUDULENT_CHARGE,
+         * CANCELLED_ORDER; `excepcionDeSoloSaldo`). `null` = no viaja y el cuerpo queda como siempre.
+         */
+        storeCreditOnlyException: String? = null,
     ): Result<Unit> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
@@ -1249,6 +1254,7 @@ class TerminalPaymentService @Inject constructor(
                 .put("requestId", requestId)
                 .put("paymentId", paymentId)
                 .apply { reason?.takeIf { it.isNotBlank() }?.let { put("reason", it) } }
+                .apply { storeCreditOnlyException?.let { put("storeCreditOnlyException", it) } }
                 .toString()
                 .toRequestBody("application/json".toMediaType())
 

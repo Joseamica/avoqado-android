@@ -9,6 +9,7 @@ import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.RechazoAlEditarCliente
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.data.model.UpdateCustomerRequest
 import com.avoqado.pos.customers.domain.ContactoEditado
 import com.avoqado.pos.customers.domain.cambiosDeContacto
 import com.avoqado.pos.customers.domain.erroresDeContacto
@@ -29,6 +30,24 @@ import kotlinx.serialization.json.*
 import java.time.Instant
 import java.util.Date
 import javax.inject.Inject
+
+/**
+ * El pedido para guardarle el teléfono al cliente del saldo a favor con la edición de cliente de siempre (`PUT customers/:id`);
+ * `null` si el teléfono no sirve. Lo usan el Cambio y el Reembolso.
+ */
+internal fun pedidoDeTelefonoDelSaldo(c: ExchangeStoreCreditCustomer, ficha: Customer?, phone: String): Pair<Customer, UpdateCustomerRequest>? {
+    val original = ficha?.takeIf { it.id == c.id } ?: Customer(c.id, firstName = c.name.takeIf { it.isNotBlank() })
+    val edited = ContactoEditado(original.firstName.orEmpty(), original.lastName.orEmpty(), phone, original.email.orEmpty())
+    return cambiosDeContacto(original, edited)?.takeIf { it.phone != null && erroresDeContacto(original, edited).isEmpty() }
+        ?.let { original to it }
+}
+
+/** Por qué no se guardó el teléfono: los textos de la edición de cliente de siempre (espejo de `EdicionDeCliente.mensajeDeError` en iOS). */
+internal fun motivoAlGuardarTelefono(e: Throwable): String = when {
+    e is RechazoAlEditarCliente -> e.message
+    e is java.io.IOException || ServerErrorText.isOffline(e) -> TextosCambio.SALDO_SIN_RED
+    else -> null
+} ?: "No se pudo guardar el cliente. Intenta de nuevo."
 
 /** Screen lifecycle only; submission and terminal service retain ownership of financial outcomes. */
 @HiltViewModel
@@ -120,9 +139,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         val c = _storeCreditCustomer.value ?: return
         if (_busy.value) return
         if (!monitor.isOnline()) { _message.value = TextosCambio.SALDO_SIN_RED; return }
-        val original = storeCreditRecord?.takeIf { it.id == c.id } ?: Customer(c.id, firstName = c.name.takeIf { it.isNotBlank() })
-        val edited = ContactoEditado(original.firstName.orEmpty(), original.lastName.orEmpty(), phone, original.email.orEmpty())
-        val request = cambiosDeContacto(original, edited)?.takeIf { it.phone != null && erroresDeContacto(original, edited).isEmpty() }
+        val (original, request) = pedidoDeTelefonoDelSaldo(c, storeCreditRecord, phone)
             ?: run { _message.value = TextosCambio.SALDO_TELEFONO_INVALIDO; return }
         _busy.value = true
         viewModelScope.launch {
@@ -133,14 +150,7 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
                         _storeCreditCustomer.value = c.copy(phone = updated.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
                         _message.value = null
                     },
-                    onFailure = { e ->
-                        // Los textos de la edición de cliente de siempre (espejo de `EdicionDeCliente.mensajeDeError` en iOS).
-                        _message.value = when {
-                            e is RechazoAlEditarCliente -> e.message
-                            e is java.io.IOException || ServerErrorText.isOffline(e) -> TextosCambio.SALDO_SIN_RED
-                            else -> null
-                        } ?: "No se pudo guardar el cliente. Intenta de nuevo."
-                    },
+                    onFailure = { e -> _message.value = motivoAlGuardarTelefono(e) },
                 )
             } finally { _busy.value = false }
         }

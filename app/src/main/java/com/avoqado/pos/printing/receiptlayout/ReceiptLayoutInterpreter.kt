@@ -194,7 +194,7 @@ object ReceiptLayoutInterpreter {
         val t = input.sale.tender ?: return emptyList()
         fun row(label: String, value: String, bold: Boolean = false) = T.twoColumnLines(label, value, width).map { text(it, bold = bold) }
         val lines = mutableListOf<LogicalLine>(feed())
-        lines += row(L.PAGO, T.force(t.label))
+        lines += row(t.rowLabel ?: L.PAGO, T.force(t.label))
         if (t.kind == "CARD") {
             if (block.showCardLastFour && t.cardLastFour.present()) {
                 lines += row(L.TARJETA, if (t.cardBrand.present()) "${T.force(t.cardBrand!!)} **** ${t.cardLastFour}" else "**** ${t.cardLastFour}")

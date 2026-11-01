@@ -50,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -326,6 +327,19 @@ private fun LoadedDetailView(
             com.avoqado.pos.transactions.presentation.exchange.ExchangeRecoveryNotice(transaction) {
                 viewModel.resumePendingExchange(transaction)
             }
+            // Reembolso a saldo a favor sin confirmar (A3): se reenvía solo al abrir la venta; mientras siga, no se empieza otro.
+            val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
+            val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
+            if (reembolsoPendiente != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
+                    Text(TextosCambio.REEMBOLSO_SIN_CONFIRMAR, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = viewModel::confirmarReembolsoPendiente) { Text(TextosCambio.CONFIRMAR_ESTADO) }
+                }
+            }
+            avisoDeReembolso?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm))
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -340,7 +354,7 @@ private fun LoadedDetailView(
                         ActionButton(
                             label = TextosCambio.EMITIR_REEMBOLSO,
                             modifier = Modifier.weight(1f),
-                            enabled = transaction.remainingRefundable > 0.001,
+                            enabled = transaction.remainingRefundable > 0.001 && reembolsoPendiente == null,
                             locked = !canRefund,
                             // Con candado esto pide el PIN PRIMERO y sólo abre el
                             // formulario si alguien autoriza. Sin candado, abre
@@ -536,6 +550,10 @@ private fun LoadedDetailView(
                 viewModel.dismissIssueRefundSheet()
                 viewModel.invalidateAndRefresh()
                 viewModel.selectTransaction(transaction.id)
+            },
+            onPendiente = { mensaje ->
+                viewModel.dismissIssueRefundSheet()
+                viewModel.reembolsoQuedoPendiente(mensaje)
             },
         )
     }

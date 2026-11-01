@@ -41,7 +41,8 @@ object ExchangeSettlement {
         return shown.sortedBy { it.method != "STORE_CREDIT" }
     }
 
-    private fun storeCreditBlock(online: Boolean, customer: ExchangeStoreCreditCustomer?): String? = when {
+    /** También la usa el Reembolso a saldo a favor (`faltaParaSaldo`): mismos textos. */
+    fun storeCreditBlock(online: Boolean, customer: ExchangeStoreCreditCustomer?): String? = when {
         !online -> TextosCambio.SALDO_SIN_RED
         customer == null -> TextosCambio.SALDO_ELIGE_CLIENTE
         customer.phoneChecked && customer.phone.isNullOrBlank() ->

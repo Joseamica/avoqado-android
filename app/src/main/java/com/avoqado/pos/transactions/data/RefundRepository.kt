@@ -102,8 +102,12 @@ internal data class AssociatedRefundRequest(
      * =amount => refund only the tip (accidental tip charge case).
      */
     val tipRefundCents: Int? = null,
-    /** «CASH» | «BANK_TRANSFER»; null => por el mismo medio (la llave no viaja). */
+    /** «CASH» | «BANK_TRANSFER» | «STORE_CREDIT»; null => por el mismo medio (la llave no viaja). */
     val refundMethod: String? = null,
+    /** Saldo a favor (aditivos, opcionales; nulos no viajan): a quién se abona, la llave del reintento y «Es por defecto». */
+    val customerId: String? = null,
+    val idempotencyKey: String? = null,
+    val defective: Boolean? = null,
 )
 
 @Serializable
@@ -173,24 +177,47 @@ class RefundRepository @Inject constructor(
         note: String? = null,
         tipRefundCents: Int? = null,
         refundMethod: String? = null,
-    ): Result<AssociatedRefundData> {
+        /** «Es por defecto» con «Sólo saldo a favor» (`defectoParaEnvio`); null => no viaja. */
+        defective: Boolean? = null,
+    ): Result<AssociatedRefundData> = enviarCuerpo(
+        paymentId,
+        cuerpoDeReembolso(reason, amountCents, items, restockItemIds, note, tipRefundCents, refundMethod, defective = defective),
+    )
+
+    /** El JSON del reembolso. El de saldo a favor se guarda tal cual en `RefundPendingStore` y se reenvía con los MISMOS bytes. */
+    fun cuerpoDeReembolso(
+        reason: String,
+        amountCents: Int? = null,
+        items: List<AssociatedRefundItem>? = null,
+        restockItemIds: List<String>? = null,
+        note: String? = null,
+        tipRefundCents: Int? = null,
+        refundMethod: String? = null,
+        customerId: String? = null,
+        idempotencyKey: String? = null,
+        defective: Boolean? = null,
+    ): String = jsonReembolsos.encodeToString(
+        AssociatedRefundRequest.serializer(),
+        AssociatedRefundRequest(
+            amount = amountCents,
+            items = items?.takeIf { it.isNotEmpty() },
+            restockItemIds = restockItemIds?.takeIf { it.isNotEmpty() },
+            reason = reason,
+            note = note,
+            tipRefundCents = tipRefundCents,
+            refundMethod = refundMethod,
+            customerId = customerId,
+            idempotencyKey = idempotencyKey,
+            defective = defective,
+        ),
+    )
+
+    /** Manda un cuerpo ya armado (el reenvío de lo pendiente usa exactamente el que se guardó). */
+    suspend fun enviarCuerpo(paymentId: String, body: String): Result<AssociatedRefundData> {
         val venueId = secureStorage.venueId
             ?: return Result.failure(Exception("No venue ID"))
 
         return try {
-            val body = jsonReembolsos.encodeToString(
-                AssociatedRefundRequest.serializer(),
-                AssociatedRefundRequest(
-                    amount = amountCents,
-                    items = items?.takeIf { it.isNotEmpty() },
-                    restockItemIds = restockItemIds?.takeIf { it.isNotEmpty() },
-                    reason = reason,
-                    note = note,
-                    tipRefundCents = tipRefundCents,
-                    refundMethod = refundMethod,
-                ),
-            )
-
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/refund")
                 .post(body.toRequestBody("application/json".toMediaType()))
