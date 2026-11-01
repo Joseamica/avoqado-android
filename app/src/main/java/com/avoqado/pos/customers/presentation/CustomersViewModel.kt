@@ -170,6 +170,7 @@ class CustomersViewModel @Inject constructor(
         email: String?,
         onSuccess: (Customer) -> Unit,
     ) {
+        val miAlta = ++alta
         viewModelScope.launch {
             _isSaving.value = true
             val request = CreateCustomerRequest(
@@ -183,15 +184,23 @@ class CustomersViewModel @Inject constructor(
                 onSuccess = { customer ->
                     // Arriba de la lista y sin repetir: `LazyColumn(key = id)` truena con dos llaves iguales.
                     _customers.value = listOf(customer) + _customers.value.filterNot { it.id == customer.id }
-                    onSuccess(customer)
+                    if (miAlta == alta) onSuccess(customer)
                 },
                 onFailure = {
-                    _error.value = ServerErrorText.humanize(it.message)
+                    if (miAlta == alta) _error.value = ServerErrorText.humanize(it.message)
                 },
             )
             _isSaving.value = false
         }
     }
+
+    /**
+     * El formulario de alta se cerró o se reemplazó: su alta en vuelo ya no avisa a nadie (Codex apps r3, P1). La clienta sí queda
+     * creada y arriba de la lista, pero no se liga sola a la venta, al Reembolso o al Cambio de quien la pidió. Lo llama
+     * `CreateCustomerView` al salir de pantalla, así que vale para todas las pantallas (espejo de `aperturaDelAlta` de iOS).
+     */
+    fun olvidarAlta() { alta++ }
+    private var alta = 0L
 
     fun clearError() {
         _error.value = null

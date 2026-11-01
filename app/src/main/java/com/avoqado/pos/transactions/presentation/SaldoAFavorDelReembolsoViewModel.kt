@@ -42,13 +42,10 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
     private var ficha: Customer? = null
     /** Cada apertura de la hoja cuenta: lo que llega tarde de otra apertura (un teléfono guardado) se tira (Codex apps r1, P1). */
     private var apertura = 0L
-    private var altas = 0L
-    private var altaVigente: Long? = null
 
     /** En CADA apertura de la hoja (como iOS): la clienta de la venta (llega sin teléfono: lo revisa el servidor), sin mensaje viejo. */
     fun abrir(sale: Transaction) {
         apertura++
-        altaVigente = null
         _guardando.value = false
         ficha = null
         _mensaje.value = null
@@ -57,23 +54,9 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
 
     fun escoger(customer: Customer) {
         if (_guardando.value) return
-        altaVigente = null
         ficha = customer
         _mensaje.value = null
         _cliente.value = ExchangeStoreCreditCustomer(customer.id, customer.fullName, customer.phone?.takeIf { it.isNotBlank() }, phoneChecked = true)
-    }
-
-    /**
-     * El alta de clienta pedida desde «Cambiar» (Codex apps r2, P1): sólo la VIGENTE escoge a la destinataria. Si el cajero cerró el
-     * formulario, escogió a otra de la lista o reabrió la hoja, el alta que llega tarde deja a la clienta creada pero no la liga.
-     * Espejo de `aperturaDelAlta` de `CustomerPickerView` en iOS.
-     */
-    fun empezarAlta(): Long { altaVigente = ++altas; return altas }
-    fun dejarAlta() { altaVigente = null }
-    fun altaCreada(alta: Long, customer: Customer): Boolean {
-        if (alta != altaVigente) return false
-        escoger(customer)
-        return true
     }
 
     /** El servidor pidió el teléfono de la clienta (`STORE_CREDIT_CUSTOMER_PHONE_REQUIRED`): ahora se pide aquí antes de volver a mandar. */

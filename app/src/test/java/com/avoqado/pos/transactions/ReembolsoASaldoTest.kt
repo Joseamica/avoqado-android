@@ -87,20 +87,6 @@ class ReembolsoASaldoTest {
     private fun respuesta(status: Int, body: String) =
         MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(body)
 
-    /**
-     * Como NUESTRO SERVIDOR (`requestLogger`): cada respuesta devuelve el `X-Correlation-ID` de su petición. [sinEco] es un proxy, un
-     * portal o un servidor anterior al 9-ago-2026; [conEcoAjeno], el eco de otra petición (Codex apps r2).
-     */
-    private class ComoElServidor : QueueDispatcher() {
-        override fun dispatch(request: RecordedRequest): MockResponse {
-            val r = super.dispatch(request)
-            if (r.headers[SIN_ECO] != null) return r.removeHeader(SIN_ECO)
-            if (r.headers[ECO] == null) request.getHeader(ECO)?.let { r.setHeader(ECO, it) }
-            return r
-        }
-    }
-    private fun sinEco(r: MockResponse) = r.setHeader(SIN_ECO, "1")
-    private fun conEcoAjeno(r: MockResponse) = r.setHeader(ECO, "id-de-otra-peticion")
 
     private fun cuerpo(llave: String = "llave-del-reembolso", customerId: String = "lucia", defective: Boolean? = null) =
         repo.cuerpoDeReembolso(reason = "RETURNED_GOODS", amountCents = 50000, refundMethod = DEVOLVER_CON_SALDO,
@@ -562,30 +548,21 @@ class ReembolsoASaldoTest {
         assertNull(store.pendiente("venue", "payment"))
     }
 
-    @Test fun `el alta de una clienta que llega tarde no cambia a la destinataria escogida después`() {
+    @Test fun `el alta de una clienta que llega tarde no cambia a la destinataria escogida después`() = runBlocking {
+        val llegaAna = CompletableDeferred<Unit>()
+        val clientes = apagarAlFinal(clientesConAltaEnVuelo(llegaAna, "ana", "Ana"))
         val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
             mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true)))
-        val venta = Transaction("payment", customerId = "mama", customerName = "Mamá")
-        fun cliente(id: String, nombre: String) = com.avoqado.pos.customers.data.model.Customer(id, firstName = nombre, phone = "+525511112222")
-        saldo.abrir(venta)
-        // «Cambiar» → alta de Ana (en vuelo) → cierra el formulario → escoge a Beatriz de la lista → llega el alta de Ana.
-        val altaDeAna = saldo.empezarAlta()
-        saldo.dejarAlta()
-        saldo.escoger(cliente("beatriz", "Beatriz"))
-        assertFalse(saldo.altaCreada(altaDeAna, cliente("ana", "Ana")))
+        saldo.abrir(Transaction("payment", customerId = "mama", customerName = "Mamá"))
+        // «Cambiar» → alta de Ana (en vuelo, con el mismo callback que la hoja) → se cierra el formulario → Beatriz de la lista.
+        clientes.createCustomer("Ana", null, "5511112222", null, onSuccess = saldo::escoger)
+        clientes.olvidarAlta()
+        saldo.escoger(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
+        llegaAna.complete(Unit)
+        withTimeout(5_000) { while (clientes.isSaving.value) yield() }
         assertEquals("beatriz", saldo.cliente.value?.id)
-        // Un alta empezada después tampoco la toma la de Ana; la vigente sí escoge.
-        val altaDeCarla = saldo.empezarAlta()
-        assertFalse(saldo.altaCreada(altaDeAna, cliente("ana", "Ana")))
-        assertEquals("beatriz", saldo.cliente.value?.id)
-        assertTrue(saldo.altaCreada(altaDeCarla, cliente("carla", "Carla")))
-        assertEquals("carla", saldo.cliente.value?.id)
-        // Ya usada, no vuelve a escoger; y reabrir la hoja tira el alta que seguía en vuelo.
-        assertFalse(saldo.altaCreada(altaDeCarla, cliente("ana", "Ana")))
-        val altaDeDora = saldo.empezarAlta()
-        saldo.abrir(venta)
-        assertFalse(saldo.altaCreada(altaDeDora, cliente("dora", "Dora")))
-        assertEquals("mama", saldo.cliente.value?.id)
+        // La clienta sí quedó creada (arriba de la lista); sólo no se liga.
+        assertEquals("ana", clientes.customers.value.first().id)
     }
 
     @Test fun `una respuesta tardía de guardar el teléfono no cambia a la destinataria de la hoja reabierta`() = runBlocking {
@@ -632,5 +609,30 @@ class ReembolsoASaldoTest {
     }
 }
 
-private const val ECO = "X-Correlation-ID"
-private const val SIN_ECO = "X-Prueba-Sin-Eco"
+internal const val ECO = "X-Correlation-ID"
+internal const val SIN_ECO = "X-Prueba-Sin-Eco"
+
+/**
+ * Como NUESTRO SERVIDOR (`requestLogger`): cada respuesta devuelve el `X-Correlation-ID` de su petición. [sinEco] es un proxy, un
+ * portal o un servidor anterior al 9-ago-2026; [conEcoAjeno], el eco de otra petición (Codex apps r2). Lo usan el Reembolso y el Cambio.
+ */
+internal class ComoElServidor : QueueDispatcher() {
+    override fun dispatch(request: RecordedRequest): MockResponse {
+        val r = super.dispatch(request)
+        if (r.headers[SIN_ECO] != null) return r.removeHeader(SIN_ECO)
+        if (r.headers[ECO] == null) request.getHeader(ECO)?.let { r.setHeader(ECO, it) }
+        return r
+    }
+}
+internal fun sinEco(r: MockResponse) = r.setHeader(SIN_ECO, "1")
+internal fun conEcoAjeno(r: MockResponse) = r.setHeader(ECO, "id-de-otra-peticion")
+
+/** Un CustomersViewModel real con el alta de [id] detenida hasta [llega]: lo que pasa en la tienda con la red lenta. */
+internal fun clientesConAltaEnVuelo(llega: CompletableDeferred<Unit>, id: String, nombre: String): com.avoqado.pos.customers.presentation.CustomersViewModel {
+    val repo = mockk<com.avoqado.pos.customers.data.CustomersRepository>(relaxed = true)
+    every { repo.clientesGuardados() } returns emptyList()
+    coEvery { repo.createCustomer(any()) } coAnswers {
+        llega.await(); Result.success(com.avoqado.pos.customers.data.model.Customer(id, firstName = nombre, phone = "+525511112222"))
+    }
+    return com.avoqado.pos.customers.presentation.CustomersViewModel(repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true))
+}

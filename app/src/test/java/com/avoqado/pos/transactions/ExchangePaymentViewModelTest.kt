@@ -295,4 +295,23 @@ class ExchangePaymentViewModelTest {
         coVerify(exactly = 0) { repo.create(any(), any()) }
     }
 
+    // MARK: - Codex apps r3: el alta tardía también en el Cambio (la guarda vive en CustomersViewModel, por donde pasan todas)
+    @Test fun `el alta de una clienta que llega tarde no cambia a quién se abona el Cambio`() {
+        val llegaAna = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val clientes = clientesConAltaEnVuelo(llegaAna, "ana", "Ana")
+        val payments = vm()
+        // «Cambiar» → alta de Ana (en vuelo, con el mismo callback que ExchangeScreen) → se cierra el formulario → Beatriz de la lista.
+        clientes.createCustomer("Ana", null, "5511112222", null, onSuccess = payments::chooseCustomer)
+        clientes.olvidarAlta()
+        payments.chooseCustomer(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
+        llegaAna.complete(Unit)
+        assertFalse(clientes.isSaving.value)
+        assertEquals("beatriz", payments.storeCreditCustomer.value?.id)
+        // Un alta que sigue con su formulario abierto sí escoge.
+        val llegaCarla = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val otros = clientesConAltaEnVuelo(llegaCarla, "carla", "Carla")
+        otros.createCustomer("Carla", null, "5511112222", null, onSuccess = payments::chooseCustomer)
+        llegaCarla.complete(Unit)
+        assertEquals("carla", payments.storeCreditCustomer.value?.id)
+    }
 }

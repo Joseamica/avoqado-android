@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -71,6 +72,9 @@ fun CreateCustomerView(
     val context = LocalContext.current
     val isSaving by viewModel.isSaving.collectAsState()
     val error by viewModel.error.collectAsState()
+
+    // Al cerrar o reemplazar este formulario, su alta en vuelo ya no liga a nadie (Codex apps r3).
+    DisposableEffect(viewModel) { onDispose { viewModel.olvidarAlta() } }
 
     var firstName by remember { mutableStateOf("") }
     var lastName by remember { mutableStateOf("") }

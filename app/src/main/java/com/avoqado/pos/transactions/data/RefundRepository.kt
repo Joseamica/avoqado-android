@@ -44,7 +44,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "💸 RefundRepo"
-private const val CORRELACION = "X-Correlation-ID"
 
 class RefundApiException(
     val statusCode: Int,
@@ -52,11 +51,10 @@ class RefundApiException(
     /** El `code` del rechazo (p. ej. `STORE_CREDIT_…`): decide si lo pendiente se borra (`esRechazoDefinitivoDeSaldo`). */
     val code: String? = null,
     /**
-     * ¿Lo dijo NUESTRO servidor? Sólo si la respuesta devuelve el `X-Correlation-ID` que llevó SU petición (`enviarCuerpo`): el
-     * `requestLogger` del SERVIDOR lo devuelve desde el 9-ago-2026 (3868f6501) y un proxy, un portal o un túnel no. Un rechazo sin
-     * ese eco no prueba que no se escribió nada: lo pendiente del saldo a favor se conserva (Codex apps r2, P1).
+     * ¿Lo dijo NUESTRO servidor? Sólo si la respuesta devolvió el `X-Correlation-ID` de SU petición (`conPruebaDeOrigen`). Sin esa
+     * prueba (`false`, el default) lo pendiente del saldo a favor se conserva (Codex apps r2-r3, P1).
      */
-    val delServidor: Boolean = true,
+    val delServidor: Boolean = false,
 ) : Exception(message)
 
 @Serializable
@@ -225,17 +223,13 @@ class RefundRepository @Inject constructor(
             ?: return Result.failure(Exception("No venue ID"))
 
         return try {
-            // Prueba de origen (Codex apps r2): cada envío y cada reenvío lleva su propio id, y sólo NUESTRO servidor lo devuelve.
-            val correlacion = java.util.UUID.randomUUID().toString()
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/refund")
-                .header(CORRELACION, correlacion)
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val (code, responseBody, eco) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                Triple(response.code, response.body?.string() ?: "", response.header(CORRELACION))
+            val (code, responseBody, delServidor) = withContext(Dispatchers.IO) {
+                client.conPruebaDeOrigen(request) { response, delServidor -> Triple(response.code, response.body?.string() ?: "", delServidor) }
             }
 
             if (code in 200..299) {
@@ -253,7 +247,7 @@ class RefundRepository @Inject constructor(
             } else {
                 Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
                 val error = runCatching { jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody) }.getOrNull()
-                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code, delServidor = eco == correlacion))
+                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code, delServidor))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Associated refund error: ${e.message}")

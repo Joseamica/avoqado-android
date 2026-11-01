@@ -84,16 +84,12 @@ class ExchangeRepository @Inject constructor(private val secureStorage: SecureSt
         check(secureStorage.venueId == venueId) { TextosCambio.SESION_CAMBIO }
         val request = Request.Builder().url("$baseUrl/mobile/venues/$venueId/exchanges$path")
             .post(body.toRequestBody("application/json".toMediaType())).build()
-        client.newCall(request).execute().use { response ->
+        client.conPruebaDeOrigen(request) { response, delServidor ->
             val raw = response.body?.string().orEmpty()
             val root = runCatching { jsonReembolsos.parseToJsonElement(raw).jsonObject }.getOrNull()
-            // A refusal only counts as the server's when it has the server's envelope ({message, code}); an HTML page or an
-            // empty body from a proxy, captive portal or dead tunnel proves nothing, so the pending must survive (rE1).
-            val fromIntermediary = com.avoqado.pos.payment.data.OrderRepository.isTransient4xx(
-                response.code, response.header("Content-Type"), response.header("ngrok-error-code"), raw,
-            )
-            if (!response.isSuccessful && (fromIntermediary || (root?.get("message") == null && root?.get("code") == null)))
-                throw java.io.IOException(TextosCambio.ENVIO_SIN_CONFIRMAR)
+            // A refusal only counts as the server's when it echoes this request's X-Correlation-ID (`conPruebaDeOrigen`, the same
+            // proof as the Refund): a proxy, captive portal or dead tunnel proves nothing, so the pending must survive (rE1, Codex r3).
+            if (!response.isSuccessful && !delServidor) throw java.io.IOException(TextosCambio.ENVIO_SIN_CONFIRMAR)
             if (!response.isSuccessful) throw ExchangeApiException(response.code,
                 (root?.get("code") as? JsonPrimitive)?.contentOrNull,
                 (root?.get("message") as? JsonPrimitive)?.contentOrNull ?: TextosCambio.ENVIO_SIN_CONFIRMAR,

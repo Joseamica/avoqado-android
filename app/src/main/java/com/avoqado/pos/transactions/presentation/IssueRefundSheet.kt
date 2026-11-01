@@ -181,7 +181,6 @@ fun IssueRefundSheet(
     val mensajeDelSaldo by saldo.mensaje.collectAsState()
     var escogiendoCliente by remember(transaction.id) { mutableStateOf(false) }
     var altaDesde by remember(transaction.id) { mutableStateOf<String?>(null) }
-    var alta by remember(transaction.id) { mutableStateOf(0L) }
     var reason by remember(transaction.id) { mutableStateOf<ReasonOption?>(null) }
     var esPorDefecto by remember(transaction.id) { mutableStateOf(false) }
     val soloSaldo = soloSaldoEfectivo(storeCreditOnly, storeCreditAvailable)
@@ -1090,20 +1089,18 @@ fun IssueRefundSheet(
     if (escogiendoCliente) {
         // «Cambiar» reusa la búsqueda y el alta de clientes de siempre (alta con teléfono obligatorio), como el Cambio.
         val clientes: com.avoqado.pos.customers.presentation.CustomersViewModel = androidx.hilt.navigation.compose.hiltViewModel()
-        AvoqadoModalBottomSheet(onDismissRequest = { saldo.dejarAlta(); altaDesde = null; escogiendoCliente = false },
+        AvoqadoModalBottomSheet(onDismissRequest = { altaDesde = null; escogiendoCliente = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), conXPropia = true, dragHandle = null,
             containerColor = MaterialTheme.colorScheme.surface) {
             Box(Modifier.fillMaxSize()) {
                 val busqueda = altaDesde
-                // El alta que llega tarde (formulario cerrado, otra clienta escogida, otra alta) no liga a nadie (Codex apps r2).
-                val estaAlta = alta
                 if (busqueda != null) com.avoqado.pos.customers.presentation.CreateCustomerView(viewModel = clientes,
                     initialPhone = busqueda.takeIf { it.any(Char::isDigit) }, initialName = busqueda.takeUnless { it.any(Char::isDigit) },
-                    onCustomerCreated = { if (saldo.altaCreada(estaAlta, it)) { altaDesde = null; escogiendoCliente = false } },
-                    onBack = { saldo.dejarAlta(); altaDesde = null }, requirePhone = true)
+                    onCustomerCreated = { saldo.escoger(it); altaDesde = null; escogiendoCliente = false },
+                    onBack = { altaDesde = null }, requirePhone = true)
                 else com.avoqado.pos.customers.presentation.CustomersView(viewModel = clientes,
                     onCustomerSelected = { saldo.escoger(it); escogiendoCliente = false },
-                    onDismiss = { escogiendoCliente = false }, onCreateCustomer = { alta = saldo.empezarAlta(); altaDesde = it },
+                    onDismiss = { escogiendoCliente = false }, onCreateCustomer = { altaDesde = it },
                     canCreateCustomer = saldo.puedeCrearCliente)
             }
         }
