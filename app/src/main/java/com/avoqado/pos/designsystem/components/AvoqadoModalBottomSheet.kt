@@ -28,7 +28,11 @@ import kotlinx.coroutines.launch
 val LocalEsEscritorio = staticCompositionLocalOf { false }
 
 /**
- * La hoja modal de la app. En Android es el `ModalBottomSheet` de Material tal cual.
+ * La hoja modal de la app. En Android es el `ModalBottomSheet` de Material, con la pantalla completa del POS ya puesta
+ * (`ImmersiveWindow`), igual que `AvoqadoDialog`: antes cada hoja tenía que acordarse de llamarla, y 10 no lo hacían
+ * (la de «Agregar cliente» en una venta ya cobrada dejaba ver la barra de Android en el SAMSUNG; en la D3, el dock de
+ * Sunmi; 1-nov). Las hojas que todavía la llaman por su cuenta no cambian: es la misma ventana y sólo se aplica una vez.
+ * En Windows no hay barras de Android y no se llama.
  *
  * En Windows lleva una **X** arriba a la derecha en lugar de la barrita de arrastre: con mouse no hay gesto de «bajar
  * la hoja» ni botón de atrás, y arrastrarla hasta abajo la dejaba fuera de la vista con la app bloqueada detrás
@@ -58,8 +62,10 @@ fun AvoqadoModalBottomSheet(
             sheetState = sheetState,
             containerColor = containerColor,
             dragHandle = dragHandle,
-            content = content,
-        )
+        ) {
+            ImmersiveWindow()
+            content()
+        }
         return
     }
     val scope = rememberCoroutineScope()
