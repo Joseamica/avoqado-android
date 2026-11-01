@@ -180,6 +180,9 @@ data class TerminalNavigationSettings(
      * null = no se sabe (primera vez sin red, server viejo): la pantalla dice «esta computadora» / «este aparato».
      */
     val terminalName: String? = null,
+    /** «Menú del aparato»: categorías/menús visibles en la cuadrícula. null (o vacío) = todo. Ausente en cache/server viejo = null. */
+    val visibleCategoryIds: List<String>? = null,
+    val visibleMenuIds: List<String>? = null,
 ) {
     companion object {
         const val STANDARD_POS = "STANDARD_POS"
@@ -922,6 +925,8 @@ internal data class DeviceTerminalSettingsDto(
      * viejo) ⇒ vacía ⇒ no se ofrece nada, que es exactamente el comportamiento de hoy.
      */
     val configurableSettings: List<String> = emptyList(),
+    val visibleCategoryIds: List<String>? = null,
+    val visibleMenuIds: List<String>? = null,
 )
 
 @Serializable
@@ -942,6 +947,8 @@ internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigati
         customerDisplayInverted = terminal.customerDisplayInverted,
         configurableSettings = terminal.configurableSettings,
         terminalName = terminals.firstOrNull { it.id == terminal.id }?.name?.trim()?.takeIf { it.isNotEmpty() },
+        visibleCategoryIds = terminal.visibleCategoryIds,
+        visibleMenuIds = terminal.visibleMenuIds,
     )
 }
 
