@@ -2,16 +2,11 @@ package com.avoqado.pos.transactions.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
-import com.avoqado.pos.transactions.data.DesenlaceDeSaldo
-import com.avoqado.pos.transactions.data.RefundPendingStore
-import com.avoqado.pos.transactions.data.RefundRepository
-import com.avoqado.pos.transactions.data.SaldoAFavorEnvio
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeStoreCreditCustomer
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
@@ -25,19 +20,16 @@ import javax.inject.Inject
 
 /**
  * El saldo a favor de la hoja de Reembolso (spec 2026-10-30 §4, §7; A3): a quién se abona (la clienta de la venta o la que se escoja
- * con «Cambiar»), su teléfono obligatorio, y el envío que se guarda ANTES del POST. Mismo comportamiento y textos que el Cambio (A2).
+ * con «Cambiar») y su teléfono obligatorio. Mismo comportamiento y textos que el Cambio (A2). El envío NO vive aquí: lo lleva
+ * `TransactionsViewModel.enviarReembolsoASaldo`, que sobrevive a la hoja.
  */
 @HiltViewModel
 class SaldoAFavorDelReembolsoViewModel @Inject constructor(
-    refunds: RefundRepository,
-    store: RefundPendingStore,
     private val customers: CustomersRepository,
     settings: TpvSettingsRepository,
     private val role: RoleManager,
     private val monitor: ConnectivityMonitor,
-    private val secure: SecureStorage,
 ) : ViewModel() {
-    private val envio = SaldoAFavorEnvio(refunds, store)
     val storeCreditOnly = settings.storeCreditOnly
     val storeCreditAvailable = settings.storeCreditAvailable
     private val _cliente = MutableStateFlow<ExchangeStoreCreditCustomer?>(null)
@@ -48,12 +40,9 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
     val mensaje = _mensaje.asStateFlow()
     val puedeCrearCliente: Boolean get() = role.hasVenuePermission("customers:create")
     private var ficha: Customer? = null
-    private var venta: String? = null
 
-    /** Por default, la clienta de la venta (llega sin teléfono: lo revisa el servidor). */
+    /** En CADA apertura de la hoja (como iOS): la clienta de la venta (llega sin teléfono: lo revisa el servidor), sin mensaje viejo. */
     fun abrir(sale: Transaction) {
-        if (venta == sale.id) return
-        venta = sale.id
         ficha = null
         _mensaje.value = null
         _cliente.value = sale.customerId?.let { ExchangeStoreCreditCustomer(it, sale.customerName.orEmpty()) }
@@ -91,9 +80,4 @@ class SaldoAFavorDelReembolsoViewModel @Inject constructor(
         }
     }
 
-    /** Guarda en el aparato y manda. Sin sucursal en sesión no se guarda ni se manda. */
-    suspend fun enviar(paymentId: String, body: String, idempotencyKey: String): DesenlaceDeSaldo {
-        val venue = secure.venueId ?: return DesenlaceDeSaldo.GuardadoFallido
-        return envio.enviar(venue, paymentId, body, idempotencyKey)
-    }
 }

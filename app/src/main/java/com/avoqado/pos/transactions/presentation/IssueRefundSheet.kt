@@ -96,6 +96,7 @@ import com.avoqado.pos.transactions.data.model.devolucionEscogida
 import com.avoqado.pos.transactions.data.model.excepcionDeSoloSaldo
 import com.avoqado.pos.transactions.data.model.faltaParaSaldo
 import com.avoqado.pos.transactions.data.model.ofrecerEsPorDefecto
+import com.avoqado.pos.transactions.data.model.restringe
 import com.avoqado.pos.transactions.data.model.opcionesConSaldo
 import com.avoqado.pos.transactions.data.model.pastillaDeSaldo
 import com.avoqado.pos.transactions.data.model.soloSaldoEfectivo
@@ -150,8 +151,11 @@ fun IssueRefundSheet(
     onDismiss: () -> Unit,
     onRefunded: () -> Unit,
     soloCompleto: Boolean = false,
-    /** Reembolso a saldo a favor cuya respuesta no consta: quien abre la hoja la cierra y el detalle muestra lo pendiente (A3). */
-    onPendiente: (String) -> Unit = {},
+    /**
+     * El envío a saldo a favor lo lleva quien abre la hoja (el detalle, `TransactionsViewModel.enviarReembolsoASaldo`) en un ámbito que
+     * sobrevive a la hoja (I2): si la cierran con el POST en vuelo, el envío sigue y el detalle se entera. Sin él no se ofrece saldo.
+     */
+    enviarASaldo: ((cuerpo: String, idempotencyKey: String) -> kotlinx.coroutines.Deferred<DesenlaceDeSaldo>)? = null,
     conexion: ConexionDeDevolucionViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
     saldo: SaldoAFavorDelReembolsoViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
 ) {
@@ -183,7 +187,7 @@ fun IssueRefundSheet(
     // devolver a saldo a favor (entonces también una tarjeta de la terminal gana su pastilla del mismo medio). La venta de una
     // tarjeta de regalo (`soloCompleto`) no se devuelve a saldo.
     var devolverConAMano by remember(transaction.id) { mutableStateOf<String?>(null) }
-    val pastillaDelSaldo = if (soloCompleto) null else pastillaDeSaldo(transaction.storeCreditOption, storeCreditAvailable,
+    val pastillaDelSaldo = if (soloCompleto || enviarASaldo == null) null else pastillaDeSaldo(transaction.storeCreditOption, storeCreditAvailable,
         ExchangeSettlement.storeCreditApplies(transaction), conectado && servidor)
     val opcionesDeDevolucion = opcionesConSaldo(
         base = if (chain.isCredit) chain.options else if (aSaldo || (!soloCompleto && transaction.canChooseRefundMethod == true)) {
@@ -193,7 +197,7 @@ fun IssueRefundSheet(
         },
         original = opcionesParaDevolver(transaction.method, transaction.tenderLabel).first(),
         saldo = pastillaDelSaldo,
-        restringe = ofrecerEsPorDefecto(soloSaldo, reason?.code) && !esPorDefecto,
+        restringe = restringe(soloSaldo, reason?.code, esPorDefecto),
     )
     val devolverCon = devolucionEscogida(opcionesDeDevolucion, devolverConAMano)
     val aSaldoAFavor = devolverCon == DEVOLVER_CON_SALDO
@@ -964,7 +968,8 @@ fun IssueRefundSheet(
                         scope.launch {
                             // 🔴 Saldo a favor: se GUARDA en el aparato antes del POST y, si la respuesta no consta, se reenvía con la
                             // misma llave al abrir la venta (spec §7). Nunca se encola sin red.
-                            if (aSaldoAFavor) {
+                            val enviar = enviarASaldo
+                            if (aSaldoAFavor && enviar != null) {
                                 val llave = java.util.UUID.randomUUID().toString()
                                 val cuerpo = refundRepository.cuerpoDeReembolso(
                                     reason = chosenReason.code,
@@ -977,17 +982,20 @@ fun IssueRefundSheet(
                                     idempotencyKey = llave,
                                     defective = defectoParaEnvio(soloSaldo, chosenReason.code, esPorDefecto),
                                 )
-                                val desenlace = conexion.iniciar(true, ::vigente) { saldo.enviar(transaction.id, cuerpo, llave) }
+                                // Aquí sólo se ESPERA: si la hoja se cierra, se cancela la espera, no el envío.
+                                val envio = conexion.iniciar(true, ::vigente) { enviar(cuerpo, llave) }
+                                val desenlace = envio?.await()
                                 submitting = false
                                 if (!vigente()) return@launch
                                 when (desenlace) {
                                     null -> errorMsg = TextosCambio.SALDO_SIN_RED
-                                    is DesenlaceDeSaldo.Hecho -> onRefunded()
+                                    // El detalle ya muestra el abono y lo pendiente (I1): sólo se cierra la hoja.
+                                    is DesenlaceDeSaldo.Hecho, is DesenlaceDeSaldo.Pendiente -> onDismiss()
                                     is DesenlaceDeSaldo.Rechazado -> {
                                         errorMsg = desenlace.mensaje
                                         if (desenlace.code == "STORE_CREDIT_CUSTOMER_PHONE_REQUIRED") saldo.pedirTelefono()
                                     }
-                                    is DesenlaceDeSaldo.Pendiente -> onPendiente(desenlace.mensaje)
+                                    DesenlaceDeSaldo.OtroPendiente -> errorMsg = TextosCambio.REEMBOLSO_SIN_CONFIRMAR
                                     DesenlaceDeSaldo.GuardadoFallido -> errorMsg = TextosCambio.REEMBOLSO_GUARDADO_FALLIDO
                                 }
                                 return@launch

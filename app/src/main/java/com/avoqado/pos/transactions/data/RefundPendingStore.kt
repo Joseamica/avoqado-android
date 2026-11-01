@@ -42,7 +42,7 @@ class RefundPendingStore internal constructor(private val dataStore: DataStore<P
         dataStore.edit { prefs ->
             val key = key(pending.venueId, pending.paymentId)
             val old = prefs[key]?.let { jsonReembolsos.decodeFromString<PendingRefund>(it) }
-            check(old == null || old.idempotencyKey == pending.idempotencyKey) { "Hay otro reembolso a saldo a favor sin confirmar" }
+            if (old != null && old.idempotencyKey != pending.idempotencyKey) throw OtroReembolsoSinConfirmar()
             prefs[key] = jsonReembolsos.encodeToString(pending)
         }
     }
@@ -57,6 +57,9 @@ class RefundPendingStore internal constructor(private val dataStore: DataStore<P
     }
 }
 
+/** Ya hay en el aparato un reembolso a saldo a favor de esa venta con OTRA llave: no se pisa (puede estar escrito en el servidor). */
+class OtroReembolsoSinConfirmar : IllegalStateException("Hay otro reembolso a saldo a favor sin confirmar")
+
 /** El desenlace de mandar (o reenviar) un Reembolso a saldo a favor. */
 sealed interface DesenlaceDeSaldo {
     /** El servidor lo escribió (o reconoció la llave y contestó lo de la primera vez): lo pendiente se borró. */
@@ -65,6 +68,8 @@ sealed interface DesenlaceDeSaldo {
     data class Rechazado(val mensaje: String, val code: String?) : DesenlaceDeSaldo
     /** No consta: lo pendiente se CONSERVA y se reenvía con la misma llave al abrir la venta. */
     data class Pendiente(val mensaje: String) : DesenlaceDeSaldo
+    /** Ya había otro sin confirmar de esa venta (otra llave): no se mandó nada; el detalle lo muestra y se confirma ése primero. */
+    data object OtroPendiente : DesenlaceDeSaldo
     /** No se pudo guardar en el aparato: no se mandó nada. */
     data object GuardadoFallido : DesenlaceDeSaldo
 }
@@ -80,18 +85,32 @@ fun mensajeDeReembolsoPendiente(status: Int?, code: String?, mensaje: String?): 
 /** Manda lo pendiente con SU cuerpo y SU llave. Borra sólo con éxito o con un rechazo definitivo (`esRechazoDefinitivoDeSaldo`). */
 suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund): DesenlaceDeSaldo {
     val resultado = repo.enviarCuerpo(pending.paymentId, pending.body)
-    resultado.getOrNull()?.let { store.borrar(pending); return DesenlaceDeSaldo.Hecho(it) }
+    resultado.getOrNull()?.let { borrarALoMejor(store, pending); return DesenlaceDeSaldo.Hecho(it) }
     val e = resultado.exceptionOrNull()
     if (e is CancellationException) throw e
     val api = e as? RefundApiException
     if (api != null && esRechazoDefinitivoDeSaldo(api.statusCode, api.code)) {
-        store.borrar(pending)
+        borrarALoMejor(store, pending)
         return DesenlaceDeSaldo.Rechazado(api.message.ifBlank { TextosCambio.REEMBOLSO_NO_CONFIRMADO }, api.code)
     }
     return DesenlaceDeSaldo.Pendiente(mensajeDeReembolsoPendiente(api?.statusCode, api?.code, api?.message))
 }
 
-/** El envío de la hoja: guarda ANTES de tocar la red y manda. Si no se pudo guardar, no se manda nada. */
+/**
+ * Borrar después del desenlace es a lo mejor posible (como el `try?` de iOS): si el disco falla, lo pendiente se queda y al abrir la
+ * venta se reenvía con la misma llave; el SERVIDOR repite la respuesta. Nunca tumba la app.
+ */
+private suspend fun borrarALoMejor(store: RefundPendingStore, pending: PendingRefund) {
+    try {
+        store.borrar(pending)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        android.util.Log.w("💸 RefundPending", "No se pudo borrar el reembolso pendiente ya confirmado", e)
+    }
+}
+
+/** El envío: guarda ANTES de tocar la red y manda. Si no se pudo guardar, no se manda nada. */
 class SaldoAFavorEnvio(private val repo: RefundRepository, private val store: RefundPendingStore) {
     suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String): DesenlaceDeSaldo {
         val pending = PendingRefund(venue, paymentId, body, idempotencyKey)
@@ -99,6 +118,8 @@ class SaldoAFavorEnvio(private val repo: RefundRepository, private val store: Re
             store.guardar(pending)
         } catch (e: CancellationException) {
             throw e
+        } catch (_: OtroReembolsoSinConfirmar) {
+            return DesenlaceDeSaldo.OtroPendiente
         } catch (_: Exception) {
             return DesenlaceDeSaldo.GuardadoFallido
         }

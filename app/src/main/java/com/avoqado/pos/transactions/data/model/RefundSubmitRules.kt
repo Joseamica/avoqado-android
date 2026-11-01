@@ -37,6 +37,9 @@ fun soloSaldoEfectivo(storeCreditOnly: Boolean, storeCreditAvailable: Boolean?):
 /** ¿Se ofrece «Es por defecto»? Con «sólo saldo» y un motivo que restringe (devolución de mercancía, «Otro» o aún sin motivo). */
 fun ofrecerEsPorDefecto(soloSaldo: Boolean, reason: String?): Boolean = soloSaldo && reason !in MOTIVOS_LIBRES_DE_SOLO_SALDO
 
+/** ¿«Sólo saldo» deja sólo el saldo a favor? Con un motivo que restringe y sin «Es por defecto». La usa la hoja. */
+fun restringe(soloSaldo: Boolean, reason: String?, esPorDefecto: Boolean): Boolean = ofrecerEsPorDefecto(soloSaldo, reason) && !esPorDefecto
+
 /** `defective` del cuerpo: sólo viaja cuando cuenta; sin «sólo saldo» el cuerpo no cambia. */
 fun defectoParaEnvio(soloSaldo: Boolean, reason: String?, defective: Boolean): Boolean? =
     true.takeIf { defective && ofrecerEsPorDefecto(soloSaldo, reason) }

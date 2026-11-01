@@ -113,14 +113,20 @@ class ReembolsoASaldoTest {
         val efectivo = opcionesParaDevolver("CASH", null)
         for (motivo in listOf("RETURNED_GOODS", "OTHER", null)) {
             assertTrue(ofrecerEsPorDefecto(true, motivo))
-            assertEquals(listOf(saldo), opcionesConSaldo(efectivo, efectivo.first(), saldo, ofrecerEsPorDefecto(true, motivo)))
+            assertTrue(restringe(true, motivo, esPorDefecto = false))
+            assertEquals(listOf(saldo), opcionesConSaldo(efectivo, efectivo.first(), saldo, restringe(true, motivo, esPorDefecto = false)))
+            // «Es por defecto» marcado: salen todas.
+            assertFalse(restringe(true, motivo, esPorDefecto = true))
+            assertEquals(efectivo + saldo, opcionesConSaldo(efectivo, efectivo.first(), saldo, restringe(true, motivo, esPorDefecto = true)))
         }
-        // «Es por defecto» o un motivo libre: salen todas.
-        assertEquals(efectivo + saldo, opcionesConSaldo(efectivo, efectivo.first(), saldo, ofrecerEsPorDefecto(true, "RETURNED_GOODS") && !true))
+        // Un motivo libre: salen todas, con o sin «Es por defecto».
         for (libre in listOf("ACCIDENTAL_CHARGE", "FRAUDULENT_CHARGE", "CANCELLED_ORDER")) {
             assertFalse(ofrecerEsPorDefecto(true, libre))
-            assertEquals(efectivo + saldo, opcionesConSaldo(efectivo, efectivo.first(), saldo, ofrecerEsPorDefecto(true, libre)))
+            assertFalse(restringe(true, libre, esPorDefecto = false))
+            assertEquals(efectivo + saldo, opcionesConSaldo(efectivo, efectivo.first(), saldo, restringe(true, libre, esPorDefecto = false)))
         }
+        // Sin «sólo saldo» nunca restringe.
+        assertFalse(restringe(false, "RETURNED_GOODS", esPorDefecto = false))
         // Sin «sólo saldo» no se restringe ni se ofrece «Es por defecto».
         assertFalse(ofrecerEsPorDefecto(false, "RETURNED_GOODS"))
         // «Sólo saldo» efectivo = el interruptor y las llaves (D-1 del SERVIDOR).
@@ -281,10 +287,10 @@ class ReembolsoASaldoTest {
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
     }
 
-    @Test fun `no se pisa un pendiente de otra llave ni se borra con la llave equivocada`() = runBlocking {
+    @Test fun `un pendiente de otra llave no se pisa, se dice que hay uno sin confirmar y no se borra con la llave equivocada`() = runBlocking {
         store.guardar(pendiente())
-        assertTrue(SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo("otra-llave-123"), "otra-llave-123")
-            is DesenlaceDeSaldo.GuardadoFallido)
+        assertEquals(DesenlaceDeSaldo.OtroPendiente,
+            SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo("otra-llave-123"), "otra-llave-123"))
         assertEquals(0, server.requestCount)
         store.borrar(pendiente("otra-llave-123"))
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
@@ -345,6 +351,75 @@ class ReembolsoASaldoTest {
             withTimeout(10_000) { vm.avisoDeReembolso.first { it?.startsWith("El saldo a favor de") == true } })
         assertNull(vm.reembolsoPendiente.value)
         assertNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `si borrar falla tras el éxito no se cae - se borra a lo mejor posible`() = runBlocking {
+        val roto = io.mockk.mockk<RefundPendingStore>()
+        io.mockk.coEvery { roto.borrar(any()) } throws java.io.IOException("disco lleno")
+        server.enqueue(respuesta(201, ok))
+        assertTrue(enviarReembolsoPendiente(repo, roto, pendiente()) is DesenlaceDeSaldo.Hecho)
+    }
+
+    private val conTelefonoDistinto = ok.replace(""""newBalanceCents":50000}""", """"newBalanceCents":50000,"phoneLast4":"5678","phoneMismatch":true}""")
+
+    @Test fun `el envío directo que sale bien le dice a la cajera a quién, cuánto, el saldo nuevo y el teléfono que no coincide`() = runBlocking {
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 500.0))
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { vm.selectedTransaction.first { it != null } }
+        server.enqueue(respuesta(201, conTelefonoDistinto))
+        val desenlace = vm.enviarReembolsoASaldo("payment", cuerpo(), "llave-del-reembolso").await()
+        assertTrue(desenlace is DesenlaceDeSaldo.Hecho)
+        // La hoja se cierra (su `onDismiss`): el aviso sigue en el detalle, no lo borra nada.
+        vm.dismissIssueRefundSheet()
+        assertEquals("Saldo a favor para Lucía: \$500.00 · saldo nuevo \$500.00\n" +
+            "El saldo de Lucía se usa con el teléfono que termina en 5678, no con el de su ficha. Un gerente lo cambia en el DASHBOARD.",
+            vm.avisoDeReembolso.value)
+        assertNull(vm.reembolsoPendiente.value)
+        assertNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `cerrar la hoja con el envío en vuelo - el detalle muestra lo pendiente y el envío sigue hasta el final`() = runBlocking {
+        val llego = java.util.concurrent.CountDownLatch(1)
+        val liberar = java.util.concurrent.CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                llego.countDown()
+                liberar.await(10, TimeUnit.SECONDS)
+                return respuesta(201, ok)
+            }
+        }
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 500.0))
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { vm.selectedTransaction.first { it != null } }
+        val envio = vm.enviarReembolsoASaldo("payment", cuerpo(), "llave-del-reembolso")
+        // La hoja espera el desenlace en SU ámbito; la cajera la cierra con el POST en vuelo.
+        val hoja = CoroutineScope(Dispatchers.Default).launch { envio.await() }
+        assertTrue(llego.await(5, TimeUnit.SECONDS))
+        hoja.cancel()
+        vm.dismissIssueRefundSheet()
+        // El detalle se entera: lo pendiente aparece y «Emitir reembolso» se apaga (sale con `reembolsoPendiente != null`).
+        assertEquals(pendiente(), withTimeout(5_000) { vm.reembolsoPendiente.first { it != null } })
+        assertTrue("el envío no se cancela con la hoja", envio.isActive)
+        // El servidor contesta: el envío termina solo y el detalle queda con el abono.
+        liberar.countDown()
+        assertTrue(envio.await() is DesenlaceDeSaldo.Hecho)
+        assertNull(vm.reembolsoPendiente.value)
+        assertEquals("Saldo a favor para Lucía: \$500.00 · saldo nuevo \$500.00", vm.avisoDeReembolso.value)
+        assertNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `al abrir la hoja otra vez vuelve la clienta de la venta`() {
+        val saldo = com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true))
+        val venta = Transaction("payment", customerId = "mama", customerName = "Mamá")
+        saldo.abrir(venta)
+        saldo.escoger(com.avoqado.pos.customers.data.model.Customer("lucia", firstName = "Lucía", phone = "+525512345678"))
+        assertEquals("lucia", saldo.cliente.value?.id)
+        saldo.abrir(venta)
+        assertEquals("mama", saldo.cliente.value?.id)
+        assertNull(saldo.mensaje.value)
     }
 
     // MARK: - La reimpresión

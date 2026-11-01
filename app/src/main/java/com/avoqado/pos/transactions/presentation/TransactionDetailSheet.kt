@@ -551,10 +551,8 @@ private fun LoadedDetailView(
                 viewModel.invalidateAndRefresh()
                 viewModel.selectTransaction(transaction.id)
             },
-            onPendiente = { mensaje ->
-                viewModel.dismissIssueRefundSheet()
-                viewModel.reembolsoQuedoPendiente(mensaje)
-            },
+            // El envío a saldo a favor lo lleva el detalle, para que sobreviva a la hoja (I2).
+            enviarASaldo = { cuerpo, llave -> viewModel.enviarReembolsoASaldo(transaction.id, cuerpo, llave) },
         )
     }
 
