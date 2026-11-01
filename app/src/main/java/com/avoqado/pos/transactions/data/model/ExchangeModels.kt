@@ -117,7 +117,7 @@ internal object PayoutOptionsTolerante : KSerializer<List<PayoutOption>?> {
                         it.maxCents != null && it.maxCents >= 0 && it.maxSameCents != null && it.maxSameCents >= 0 &&
                         it.needsRefundToCash != null
                 }
-            }?.filter { it.method in setOf("CASH", "BANK_TRANSFER", "GIFT_CARD_BALANCE", "STORE_CREDIT") }
+            }?.filter { it.method in setOf("CASH", "BANK_TRANSFER", "GIFT_CARD_BALANCE") }
         } catch (_: IllegalArgumentException) {
             null
         }

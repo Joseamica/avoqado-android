@@ -7,7 +7,10 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 // Saldo a favor (spec 2026-10-30). Todo es aditivo y opcional: un servidor viejo no manda nada de esto y la app se comporta como hoy.
 
@@ -60,6 +63,19 @@ internal open class OpcionalTolerante<T : Any>(private val estricto: KSerializer
     }
 
     override fun serialize(encoder: Encoder, value: T?) = encoder.encodeSerializableValue(estricto.nullable, value)
+}
+
+/** Un Boolean de ajustes ilegible vale `null` (como en iOS): nunca tumba la lectura de los ajustes del local. */
+internal object BooleanTolerante : KSerializer<Boolean?> {
+    override val descriptor: SerialDescriptor = Boolean.serializer().nullable.descriptor
+
+    override fun deserialize(decoder: Decoder): Boolean? {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeSerializableValue(Boolean.serializer().nullable)
+        val e = json.decodeJsonElement() as? JsonPrimitive ?: return null
+        return if (e.isString) null else e.booleanOrNull
+    }
+
+    override fun serialize(encoder: Encoder, value: Boolean?) = encoder.encodeSerializableValue(Boolean.serializer().nullable, value)
 }
 
 internal object StoreCreditAbonoTolerante : OpcionalTolerante<StoreCreditAbono>(StoreCreditAbono.serializer())

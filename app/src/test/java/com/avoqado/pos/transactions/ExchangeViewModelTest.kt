@@ -259,6 +259,19 @@ class ExchangeViewModelTest {
         assertNull(vm.state.value.blockedReason)
     }
 
+    @Test fun `a server offering only STORE_CREDIT keeps the same no-options block until the screen exists`() {
+        val p = Product("other", "Blusa", priceValue = 1.0, active = true)
+        catalog.value = listOf(p)
+        val decoded = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<Transaction>(
+            """{"id":"payment","payoutOptions":[{"method":"STORE_CREDIT","maxCents":1000000,"maxSameCents":0,"needsRefundToCash":false}]}""")
+        val vm = ExchangeViewModel(products, monitor)
+        vm.start(sale(item()).copy(payoutOptions = decoded.payoutOptions))
+        vm.toggleReturned("line")
+        vm.setReason("line", ExchangeReason.SIZE)
+        vm.addTaken(p)
+        assertEquals(TextosCambio.SIN_OPCIONES_DEVOLUCION, vm.state.value.blockedReason)
+    }
+
     @Test fun `overflow is blocked instead of silently narrowing Long cents`() {
         val vm = vm(item().copy(chargedTotalCents = Int.MAX_VALUE.toLong() + 1))
         vm.toggleReturned("line")

@@ -874,8 +874,10 @@ internal data class VenueSettingsData(
     /** Venue-owned switch; absent or null on older servers means disabled. */
     val exchangesEnabled: Boolean? = null,
     /** Saldo a favor (aditivo, de VENUE): «Sólo saldo a favor». Ausente ⇒ null ⇒ como hoy (apagado). */
+    @Serializable(with = com.avoqado.pos.transactions.data.model.BooleanTolerante::class)
     val storeCreditOnly: Boolean? = null,
     /** Saldo a favor (aditivo): el SERVIDOR sabe dar saldo (sus dos llaves). Ausente ⇒ null ⇒ no disponible. */
+    @Serializable(with = com.avoqado.pos.transactions.data.model.BooleanTolerante::class)
     val storeCreditAvailable: Boolean? = null,
     /**
      * Encabezado del ticket impreso. Ausente (server viejo) ⇒ null ⇒ el ticket
