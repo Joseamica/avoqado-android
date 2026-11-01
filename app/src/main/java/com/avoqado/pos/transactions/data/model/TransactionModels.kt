@@ -200,6 +200,12 @@ data class Transaction(
     val exchange: ExchangeLinks? = null,
     val refundToGiftCardBalance: Boolean? = null,
     val esSaldoDeTarjeta: Boolean? = null,
+    /** Saldo a favor (aditivo): ¿puede la cajera escoger «Saldo a favor» al devolver? `null` = servidor anterior. */
+    @Serializable(with = StoreCreditOptionTolerante::class)
+    val storeCreditOption: StoreCreditOption? = null,
+    /** Saldo a favor (aditivo): en la devolución a saldo, a quién y cuánto se abonó (reimpresión). `null` = sin saldo o servidor anterior. */
+    @Serializable(with = StoreCreditAbonoTolerante::class)
+    val storeCredit: StoreCreditAbono? = null,
 ) {
     val paymentMethod: String? get() = method
 

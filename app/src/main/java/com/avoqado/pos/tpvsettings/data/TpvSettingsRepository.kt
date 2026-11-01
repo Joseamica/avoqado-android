@@ -873,6 +873,10 @@ internal data class VenueSettingsData(
     val managerPinOverrideEnabled: Boolean = false,
     /** Venue-owned switch; absent or null on older servers means disabled. */
     val exchangesEnabled: Boolean? = null,
+    /** Saldo a favor (aditivo, de VENUE): «Sólo saldo a favor». Ausente ⇒ null ⇒ como hoy (apagado). */
+    val storeCreditOnly: Boolean? = null,
+    /** Saldo a favor (aditivo): el SERVIDOR sabe dar saldo (sus dos llaves). Ausente ⇒ null ⇒ no disponible. */
+    val storeCreditAvailable: Boolean? = null,
     /**
      * Encabezado del ticket impreso. Ausente (server viejo) ⇒ null ⇒ el ticket
      * sale sin encabezado fiscal, como hoy.

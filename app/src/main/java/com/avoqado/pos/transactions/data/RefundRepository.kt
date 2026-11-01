@@ -27,6 +27,8 @@ package com.avoqado.pos.transactions.data
 // See full audit in TransactionsScreen.kt next to the disabled refund button.
 // ============================================================================
 
+import com.avoqado.pos.transactions.data.model.StoreCreditAbono
+import com.avoqado.pos.transactions.data.model.StoreCreditAbonoTolerante
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
@@ -115,6 +117,9 @@ data class AssociatedRefundData(
     val amount: Double,
     val remainingRefundable: Double,
     val status: String,
+    /** Saldo a favor (aditivo): sólo viene si la devolución fue a saldo. `null` = devolución normal o servidor anterior. */
+    @Serializable(with = StoreCreditAbonoTolerante::class)
+    val storeCredit: StoreCreditAbono? = null,
 )
 
 /**

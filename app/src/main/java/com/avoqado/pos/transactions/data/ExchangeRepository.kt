@@ -1,5 +1,7 @@
 package com.avoqado.pos.transactions.data
 
+import com.avoqado.pos.transactions.data.model.StoreCreditAbono
+import com.avoqado.pos.transactions.data.model.StoreCreditAbonoTolerante
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.transactions.presentation.exchange.*
@@ -45,7 +47,10 @@ data class ExchangeResult(val id: String, val status: String, val originalOrderI
     val amountToChargeCents: Long? = null)
 @Serializable
 data class ExchangeResultSettlement(val kind: String, val method: String?, val amountCents: Long,
-    val sources: List<ExchangeResultSource> = emptyList())
+    val sources: List<ExchangeResultSource> = emptyList(),
+    /** Saldo a favor (aditivo): sólo si el Cambio terminó en `STORE_CREDIT`. `null` = otro medio o servidor anterior. */
+    @Serializable(with = StoreCreditAbonoTolerante::class)
+    val storeCredit: StoreCreditAbono? = null)
 @Serializable
 data class ExchangeResultSource(val originalPaymentId: String, val refundPaymentId: String, val method: String, val amountCents: Long)
 @Serializable
