@@ -58,7 +58,7 @@ class ReembolsoASaldoTest {
     @Before fun setup() {
         every { secure.venueId } returns "venue"
         every { secure.userId } returns "actor"
-        server = MockWebServer(); server.start()
+        server = MockWebServer(); server.dispatcher = ComoElServidor(); server.start()
         repo = RefundRepository(secure, OkHttpClient.Builder().retryOnConnectionFailure(false).build())
         repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
         store = nuevoStore()
@@ -86,6 +86,21 @@ class ReembolsoASaldoTest {
 
     private fun respuesta(status: Int, body: String) =
         MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(body)
+
+    /**
+     * Como NUESTRO SERVIDOR (`requestLogger`): cada respuesta devuelve el `X-Correlation-ID` de su petición. [sinEco] es un proxy, un
+     * portal o un servidor anterior al 9-ago-2026; [conEcoAjeno], el eco de otra petición (Codex apps r2).
+     */
+    private class ComoElServidor : QueueDispatcher() {
+        override fun dispatch(request: RecordedRequest): MockResponse {
+            val r = super.dispatch(request)
+            if (r.headers[SIN_ECO] != null) return r.removeHeader(SIN_ECO)
+            if (r.headers[ECO] == null) request.getHeader(ECO)?.let { r.setHeader(ECO, it) }
+            return r
+        }
+    }
+    private fun sinEco(r: MockResponse) = r.setHeader(SIN_ECO, "1")
+    private fun conEcoAjeno(r: MockResponse) = r.setHeader(ECO, "id-de-otra-peticion")
 
     private fun cuerpo(llave: String = "llave-del-reembolso", customerId: String = "lucia", defective: Boolean? = null) =
         repo.cuerpoDeReembolso(reason = "RETURNED_GOODS", amountCents = 50000, refundMethod = DEVOLVER_CON_SALDO,
@@ -507,22 +522,70 @@ class ReembolsoASaldoTest {
 
     // MARK: - Codex apps r1
 
-    @Test fun `un 400 que no es del servidor - HTML, vacío o JSON ajeno - conserva lo pendiente`() = runBlocking {
+    // MARK: - Codex apps r2: la prueba de origen es el X-Correlation-ID devuelto
+
+    @Test fun `sólo un rechazo con el eco de su X-Correlation-ID libera lo pendiente - sin eco, con otro eco, HTML o JSON de un proxy se conserva`() = runBlocking {
         store.guardar(pendiente())
-        val ajenos = listOf(
-            MockResponse().setResponseCode(400).setHeader("Content-Type", "text/html").setBody("<html><body>Bad Request</body></html>"),
-            MockResponse().setResponseCode(400),
-            respuesta(400, """{"error":"bad request"}"""),
+        val nuestro400 = """{"success":false,"message":"customerId debe ser texto"}"""
+        val rechazado = """{"success":false,"code":"STORE_CREDIT_REJECTED","message":"No se puede devolver ${'$'}600.00"}"""
+        val seConservan = listOf(
+            sinEco(MockResponse().setResponseCode(400).setHeader("Content-Type", "text/html").setBody("<html><body>Bad Request</body></html>")),
+            sinEco(MockResponse().setResponseCode(400)),
+            sinEco(respuesta(400, """{"message":"Bad Request"}""")),
+            sinEco(respuesta(400, """{"error":"bad request"}""")),
+            sinEco(respuesta(400, nuestro400)),
+            sinEco(respuesta(400, rechazado)),
+            conEcoAjeno(respuesta(400, nuestro400)),
+            conEcoAjeno(respuesta(400, rechazado)),
         )
-        for (r in ajenos) {
+        for ((n, r) in seConservan.withIndex()) {
             server.enqueue(r)
-            assertEquals(DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_NO_CONFIRMADO), enviarReembolsoPendiente(repo, store, pendiente()))
+            assertEquals("respuesta $n", DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_NO_CONFIRMADO), enviarReembolsoPendiente(repo, store, pendiente()))
             assertEquals(pendiente(), store.pendiente("venue", "payment"))
         }
-        // El 400 sin código con el sobre del servidor sí es definitivo.
-        server.enqueue(respuesta(400, """{"success":false,"message":"customerId debe ser texto"}"""))
+        // Cada intento (el primero y cada reenvío con la MISMA llave) lleva su propio X-Correlation-ID.
+        val ids = List(seConservan.size) { server.takeRequest().getHeader(ECO) }
+        assertTrue(ids.toString(), ids.all { !it.isNullOrBlank() })
+        assertEquals(ids.size, ids.toSet().size)
+        // Con el eco de su petición, el 400 sin código y el STORE_CREDIT_ sí son definitivos.
+        server.enqueue(respuesta(400, nuestro400))
         assertEquals(DesenlaceDeSaldo.Rechazado("customerId debe ser texto", null), enviarReembolsoPendiente(repo, store, pendiente()))
         assertNull(store.pendiente("venue", "payment"))
+        store.guardar(pendiente())
+        server.enqueue(respuesta(400, rechazado))
+        assertEquals(DesenlaceDeSaldo.Rechazado("No se puede devolver \$600.00", "STORE_CREDIT_REJECTED"), enviarReembolsoPendiente(repo, store, pendiente()))
+        assertNull(store.pendiente("venue", "payment"))
+        // El eco sólo decide si un RECHAZO es definitivo: un 2xx sin eco sigue siendo el éxito.
+        store.guardar(pendiente())
+        server.enqueue(sinEco(respuesta(201, ok)))
+        assertTrue(enviarReembolsoPendiente(repo, store, pendiente()) is DesenlaceDeSaldo.Hecho)
+        assertNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `el alta de una clienta que llega tarde no cambia a la destinataria escogida después`() {
+        val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
+            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true)))
+        val venta = Transaction("payment", customerId = "mama", customerName = "Mamá")
+        fun cliente(id: String, nombre: String) = com.avoqado.pos.customers.data.model.Customer(id, firstName = nombre, phone = "+525511112222")
+        saldo.abrir(venta)
+        // «Cambiar» → alta de Ana (en vuelo) → cierra el formulario → escoge a Beatriz de la lista → llega el alta de Ana.
+        val altaDeAna = saldo.empezarAlta()
+        saldo.dejarAlta()
+        saldo.escoger(cliente("beatriz", "Beatriz"))
+        assertFalse(saldo.altaCreada(altaDeAna, cliente("ana", "Ana")))
+        assertEquals("beatriz", saldo.cliente.value?.id)
+        // Un alta empezada después tampoco la toma la de Ana; la vigente sí escoge.
+        val altaDeCarla = saldo.empezarAlta()
+        assertFalse(saldo.altaCreada(altaDeAna, cliente("ana", "Ana")))
+        assertEquals("beatriz", saldo.cliente.value?.id)
+        assertTrue(saldo.altaCreada(altaDeCarla, cliente("carla", "Carla")))
+        assertEquals("carla", saldo.cliente.value?.id)
+        // Ya usada, no vuelve a escoger; y reabrir la hoja tira el alta que seguía en vuelo.
+        assertFalse(saldo.altaCreada(altaDeCarla, cliente("ana", "Ana")))
+        val altaDeDora = saldo.empezarAlta()
+        saldo.abrir(venta)
+        assertFalse(saldo.altaCreada(altaDeDora, cliente("dora", "Dora")))
+        assertEquals("mama", saldo.cliente.value?.id)
     }
 
     @Test fun `una respuesta tardía de guardar el teléfono no cambia a la destinataria de la hoja reabierta`() = runBlocking {
@@ -568,3 +631,6 @@ class ReembolsoASaldoTest {
         assertNull(deSiempre.paymentRowLabel)
     }
 }
+
+private const val ECO = "X-Correlation-ID"
+private const val SIN_ECO = "X-Prueba-Sin-Eco"

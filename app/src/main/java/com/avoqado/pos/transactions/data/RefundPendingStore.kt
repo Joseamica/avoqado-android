@@ -88,7 +88,7 @@ suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendin
     resultado.getOrNull()?.let { borrarALoMejor(store, pending); return DesenlaceDeSaldo.Hecho(it) }
     val e = resultado.exceptionOrNull()
     if (e is CancellationException) throw e
-    // Un rechazo que no trae el sobre del servidor (un proxy, un portal, un túnel) se trata como la red: lo pendiente se conserva.
+    // Un rechazo sin el eco de SU X-Correlation-ID (un proxy, un portal, un túnel) se trata como la red: lo pendiente se conserva.
     val api = (e as? RefundApiException)?.takeIf { it.delServidor }
     if (api != null && esRechazoDefinitivoDeSaldo(api.statusCode, api.code)) {
         borrarALoMejor(store, pending)
