@@ -1,5 +1,6 @@
 package com.avoqado.pos.customers.presentation
 
+import com.avoqado.pos.core.util.findActivity
 import android.app.Activity
 import android.content.Intent
 import android.provider.ContactsContract
@@ -73,8 +74,9 @@ fun CreateCustomerView(
     val isSaving by viewModel.isSaving.collectAsState()
     val error by viewModel.error.collectAsState()
 
-    // Al cerrar o reemplazar este formulario, su alta en vuelo ya no liga a nadie (Codex apps r3).
-    DisposableEffect(viewModel) { onDispose { viewModel.olvidarAlta() } }
+    // Al cerrar o reemplazar este formulario, su alta en vuelo ya no liga a nadie (Codex apps r3); al girar, sí (r4).
+    val actividad = context.findActivity()
+    DisposableEffect(viewModel, actividad) { onDispose { alSalirDelAlta(viewModel, actividad) } }
 
     var firstName by remember { mutableStateOf("") }
     var lastName by remember { mutableStateOf("") }
@@ -343,4 +345,13 @@ fun CreateCustomerView(
             )
         }
     }
+}
+
+/**
+ * El formulario de alta sale de pantalla (su `onDispose`). Si sale porque la actividad se recrea por un cambio de configuración
+ * (girar el aparato), el formulario vuelve restaurado y su alta en vuelo sigue siendo suya: la respuesta lo alcanza (Codex apps r4).
+ * Cualquier otra salida (atrás, cerrar, la hoja que se descarta, otra pantalla) la olvida: llegue cuando llegue, no liga a nadie.
+ */
+internal fun alSalirDelAlta(viewModel: CustomersViewModel, actividad: android.app.Activity?) {
+    if (actividad?.isChangingConfigurations != true) viewModel.olvidarAlta()
 }

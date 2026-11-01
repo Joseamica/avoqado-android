@@ -556,7 +556,7 @@ class ReembolsoASaldoTest {
         saldo.abrir(Transaction("payment", customerId = "mama", customerName = "Mamá"))
         // «Cambiar» → alta de Ana (en vuelo, con el mismo callback que la hoja) → se cierra el formulario → Beatriz de la lista.
         clientes.createCustomer("Ana", null, "5511112222", null, onSuccess = saldo::escoger)
-        clientes.olvidarAlta()
+        com.avoqado.pos.customers.presentation.alSalirDelAlta(clientes, actividad(recreando = false))
         saldo.escoger(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
         llegaAna.complete(Unit)
         withTimeout(5_000) { while (clientes.isSaving.value) yield() }
@@ -627,12 +627,18 @@ internal class ComoElServidor : QueueDispatcher() {
 internal fun sinEco(r: MockResponse) = r.setHeader(SIN_ECO, "1")
 internal fun conEcoAjeno(r: MockResponse) = r.setHeader(ECO, "id-de-otra-peticion")
 
-/** Un CustomersViewModel real con el alta de [id] detenida hasta [llega]: lo que pasa en la tienda con la red lenta. */
-internal fun clientesConAltaEnVuelo(llega: CompletableDeferred<Unit>, id: String, nombre: String): com.avoqado.pos.customers.presentation.CustomersViewModel {
+/** Un CustomersViewModel real con el alta de [id] detenida hasta [llega] (o rechazada con [falla]): la tienda con la red lenta. */
+internal fun clientesConAltaEnVuelo(llega: CompletableDeferred<Unit>, id: String, nombre: String, falla: String? = null):
+    com.avoqado.pos.customers.presentation.CustomersViewModel {
     val repo = mockk<com.avoqado.pos.customers.data.CustomersRepository>(relaxed = true)
     every { repo.clientesGuardados() } returns emptyList()
     coEvery { repo.createCustomer(any()) } coAnswers {
-        llega.await(); Result.success(com.avoqado.pos.customers.data.model.Customer(id, firstName = nombre, phone = "+525511112222"))
+        llega.await()
+        if (falla != null) Result.failure(Exception(falla))
+        else Result.success(com.avoqado.pos.customers.data.model.Customer(id, firstName = nombre, phone = "+525511112222"))
     }
     return com.avoqado.pos.customers.presentation.CustomersViewModel(repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true))
 }
+
+/** La actividad que el `onDispose` del formulario le pregunta a Android: `recreando` = se destruye para girar (cambio de configuración). */
+internal fun actividad(recreando: Boolean): android.app.Activity = mockk { every { isChangingConfigurations } returns recreando }

@@ -10,4 +10,6 @@ public class Activity extends ContextWrapper {
     private final Window window = new Window(this);
     public Activity(Context base) { super(base); }
     public Window getWindow() { return window; }
+    /** En WINDOWS la ventana nunca se recrea por un cambio de configuración. */
+    public boolean isChangingConfigurations() { return false; }
 }
