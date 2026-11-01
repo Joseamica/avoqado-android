@@ -8,7 +8,6 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.transactions.data.*
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.presentation.exchange.*
-import com.avoqado.pos.customers.presentation.alSalirDelAlta
 import io.mockk.*
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
@@ -296,53 +295,80 @@ class ExchangePaymentViewModelTest {
         coVerify(exactly = 0) { repo.create(any(), any()) }
     }
 
-    // MARK: - Codex apps r3-r4: el alta tardía también en el Cambio. La guarda vive en CustomersViewModel y en `alSalirDelAlta`, lo
-    // que corre el `onDispose` de CreateCustomerView (por donde pasan todas las pantallas), con la actividad que Android le reporta.
-    @Test fun `el alta de una clienta que llega tarde no cambia a quién se abona el Cambio`() {
+    // MARK: - Codex apps r5: el desenlace del alta es ESTADO con su número, y sólo lo aplica el formulario EXACTO que la pidió.
+    private fun beatriz() = com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444")
+    private fun cambio(clientes: com.avoqado.pos.customers.presentation.CustomersViewModel, payments: ExchangePaymentViewModel) =
+        PantallaConAlta(clientes, sobreviveAlGiro = false) { payments.chooseCustomer(it); cerrarFormulario() }
+
+    @Test fun `Cambio - girar con el formulario perdido, escoger a Beatriz y que llegue Ana - sigue Beatriz`() {
         val llegaAna = kotlinx.coroutines.CompletableDeferred<Unit>()
         val clientes = clientesConAltaEnVuelo(llegaAna, "ana", "Ana")
         val payments = vm()
-        // «Cambiar» → alta de Ana (en vuelo, con el mismo callback que ExchangeScreen) → se cierra el formulario → Beatriz de la lista.
-        clientes.createCustomer("Ana", null, "5511112222", null, onSuccess = payments::chooseCustomer)
-        alSalirDelAlta(clientes, actividad(recreando = false))
-        payments.chooseCustomer(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
+        val pantalla = cambio(clientes, payments)
+        pantalla.abrirFormulario(); pantalla.guardar("Ana")
+        pantalla.girar()                       // el selector y el formulario del Cambio usan `remember`: no vuelven
+        payments.chooseCustomer(beatriz())     // «Cambiar» otra vez → Beatriz de la lista
         llegaAna.complete(Unit)
-        assertFalse(clientes.isSaving.value)
+        pantalla.componer()
         assertEquals("beatriz", payments.storeCreditCustomer.value?.id)
-        // Un alta que sigue con su formulario abierto sí escoge.
-        val llegaCarla = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val otros = clientesConAltaEnVuelo(llegaCarla, "carla", "Carla")
-        otros.createCustomer("Carla", null, "5511112222", null, onSuccess = payments::chooseCustomer)
-        llegaCarla.complete(Unit)
-        assertEquals("carla", payments.storeCreditCustomer.value?.id)
+        // Ni un formulario nuevo hereda el alta de Ana.
+        pantalla.abrirFormulario(); pantalla.componer()
+        assertEquals("beatriz", payments.storeCreditCustomer.value?.id)
+        assertEquals("Ana quedó creada, nunca ligada", "ana", clientes.customers.value.first().id)
     }
 
-    @Test fun `girar la pantalla a media alta no la pierde - la respuesta llega y liga a Ana, y un rechazo se ve`() {
-        // Girar: Android destruye la composición con la actividad recreándose (`isChangingConfigurations`) y restaura el
-        // formulario (`rememberSaveable`); el CustomersViewModel y su alta en vuelo sobreviven.
+    @Test fun `Cambio - cerrar el formulario a propósito y que el alta llegue tarde - se ignora`() {
         val llegaAna = kotlinx.coroutines.CompletableDeferred<Unit>()
         val clientes = clientesConAltaEnVuelo(llegaAna, "ana", "Ana")
         val payments = vm()
-        clientes.createCustomer("Ana", null, "5511112222", null, onSuccess = payments::chooseCustomer)
-        alSalirDelAlta(clientes, actividad(recreando = true))
+        val pantalla = cambio(clientes, payments)
+        pantalla.abrirFormulario(); pantalla.guardar("Ana")
+        pantalla.cerrarFormulario()
+        payments.chooseCustomer(beatriz())
         llegaAna.complete(Unit)
-        assertFalse(clientes.isSaving.value)
-        assertEquals("ana", payments.storeCreditCustomer.value?.id)
-        // El rechazo de un alta que sobrevivió al giro sí llega al formulario restaurado; el de un formulario cerrado, no.
-        for (recreando in listOf(true, false)) {
+        pantalla.componer(); pantalla.abrirFormulario(); pantalla.componer()
+        assertEquals("beatriz", payments.storeCreditCustomer.value?.id)
+        // Con su formulario abierto, su propia alta sí escoge (y lo cierra).
+        val llegaCarla = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val otra = cambio(clientesConAltaEnVuelo(llegaCarla, "carla", "Carla"), payments)
+        otra.abrirFormulario(); otra.guardar("Carla")
+        llegaCarla.complete(Unit)
+        otra.componer()
+        assertEquals("carla", payments.storeCreditCustomer.value?.id)
+        assertFalse(otra.formularioAbierto)
+    }
+
+    @Test fun `cobro - girar con el formulario restaurado liga a Ana y cierra el formulario restaurado`() {
+        // El recibo guarda su bandera y el número del alta con `rememberSaveable`: el formulario vuelve tras girar.
+        val llegaAna = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val clientes = clientesConAltaEnVuelo(llegaAna, "ana", "Ana")
+        val ligadas = mutableListOf<String>()
+        // `attachCustomer` de la composición vigente: liga al cobro y cierra el formulario restaurado.
+        val recibo = PantallaConAlta(clientes, sobreviveAlGiro = true) { ligadas += it.id; cerrarFormulario() }
+        recibo.abrirFormulario(); recibo.guardar("Ana")
+        recibo.girar()
+        llegaAna.complete(Unit)                // puede llegar mientras la actividad se recrea: el estado espera
+        recibo.componer(); recibo.componer()
+        assertEquals(listOf("ana"), ligadas)   // una sola vez
+        assertFalse(recibo.formularioAbierto)
+        assertNull(recibo.alta)
+    }
+
+    @Test fun `un rechazo en el formulario restaurado se ve, y el de un formulario perdido o cerrado no`() {
+        for (sobrevive in listOf(true, false)) {
             val llega = kotlinx.coroutines.CompletableDeferred<Unit>()
             val fallan = clientesConAltaEnVuelo(llega, "ana", "Ana", falla = "Este número de teléfono ya está registrado.")
-            fallan.createCustomer("Ana", null, "5511112222", null, onSuccess = { fail("no se creó") })
-            alSalirDelAlta(fallan, actividad(recreando))
+            val pantalla = PantallaConAlta(fallan, sobrevive) { fail("no se creó") }
+            pantalla.abrirFormulario(); pantalla.guardar("Ana")
+            pantalla.girar()
             llega.complete(Unit)
-            assertEquals("recreando=$recreando", recreando, fallan.error.value != null)
+            pantalla.componer()
+            if (sobrevive) assertNotNull(pantalla.rechazoVisible)
+            else {
+                assertNull(pantalla.rechazoVisible)
+                pantalla.abrirFormulario(); pantalla.componer()
+                assertNull("un formulario nuevo no hereda el rechazo de antes", pantalla.rechazoVisible)
+            }
         }
-        // Sin actividad (no hay recreación posible, p. ej. WINDOWS) cerrar el formulario sí tira el alta.
-        val llegaDora = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val otros = clientesConAltaEnVuelo(llegaDora, "dora", "Dora")
-        otros.createCustomer("Dora", null, "5511112222", null, onSuccess = payments::chooseCustomer)
-        alSalirDelAlta(otros, null)
-        llegaDora.complete(Unit)
-        assertEquals("ana", payments.storeCreditCustomer.value?.id)
     }
 }

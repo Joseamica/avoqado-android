@@ -1,6 +1,5 @@
 package com.avoqado.pos.customers.presentation
 
-import com.avoqado.pos.core.util.findActivity
 import android.app.Activity
 import android.content.Intent
 import android.provider.ContactsContract
@@ -30,12 +29,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,21 +67,28 @@ fun CreateCustomerView(
     initialName: String?,
     onCustomerCreated: (Customer) -> Unit,
     onBack: () -> Unit,
+    /**
+     * El número del alta que pidió ESTE formulario, guardado por la pantalla con la misma persistencia que su bandera de formulario
+     * abierto, y borrado al abrir otro (Codex apps r5; ver `CustomersViewModel.AltaTerminada`).
+     */
+    alta: Long?,
+    onAlta: (Long?) -> Unit,
     requirePhone: Boolean = false,
 ) {
     val context = LocalContext.current
     val isSaving by viewModel.isSaving.collectAsState()
-    val error by viewModel.error.collectAsState()
-
-    // Al cerrar o reemplazar este formulario, su alta en vuelo ya no liga a nadie (Codex apps r3); al girar, sí (r4).
-    val actividad = context.findActivity()
-    DisposableEffect(viewModel, actividad) { onDispose { alSalirDelAlta(viewModel, actividad) } }
+    // Sólo el desenlace de SU alta, y en esta composición: tras girar, el formulario restaurado lo recibe y avisa a su pantalla.
+    val terminada by viewModel.altaTerminada.collectAsState()
+    val desenlace = desenlaceDelFormulario(terminada, alta)
+    val alCrear by rememberUpdatedState(onCustomerCreated)
+    LaunchedEffect(desenlace) {
+        desenlace?.cliente?.let { onAlta(null); alCrear(it) }
+    }
 
     var firstName by remember { mutableStateOf("") }
     var lastName by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
-    var showErrorAlert by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         if (!initialPhone.isNullOrEmpty()) {
@@ -157,10 +163,6 @@ fun CreateCustomerView(
 
     val canSave = puedeGuardarCliente(firstName, lastName, phone, email, requirePhone)
 
-    LaunchedEffect(error) {
-        if (error != null) showErrorAlert = true
-    }
-
     val configuration = LocalConfiguration.current
     val adaptive = AvoqadoTheme.adaptive
     val lowDensityTabletFallback = configuration.densityDpi in 1..220 &&
@@ -204,13 +206,12 @@ fun CreateCustomerView(
                 ) {
                     Button(
                         onClick = {
-                            viewModel.createCustomer(
+                            onAlta(viewModel.createCustomer(
                                 firstName = firstName.ifBlank { null },
                                 lastName = lastName.ifBlank { null },
                                 phone = phone.ifBlank { null },
                                 email = email.ifBlank { null },
-                                onSuccess = onCustomerCreated,
-                            )
+                            ))
                         },
                         enabled = canSave && !isSaving,
                         shape = RoundedCornerShape(50),
@@ -320,26 +321,20 @@ fun CreateCustomerView(
         }
     }
 
-    if (showErrorAlert && error != null) {
+    desenlace?.error?.let { motivo ->
         AvoqadoDialog(
             title = "No se pudo crear el cliente",
-            onDismiss = {
-                showErrorAlert = false
-                viewModel.clearError()
-            },
+            onDismiss = { onAlta(null) },
             actionButton = {
                 PrimaryButton(
                     text = "Entendido",
-                    onClick = {
-                        showErrorAlert = false
-                        viewModel.clearError()
-                    },
+                    onClick = { onAlta(null) },
                     fullWidth = true,
                 )
             },
         ) {
             Text(
-                text = error ?: "",
+                text = motivo,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -348,10 +343,10 @@ fun CreateCustomerView(
 }
 
 /**
- * El formulario de alta sale de pantalla (su `onDispose`). Si sale porque la actividad se recrea por un cambio de configuración
- * (girar el aparato), el formulario vuelve restaurado y su alta en vuelo sigue siendo suya: la respuesta lo alcanza (Codex apps r4).
- * Cualquier otra salida (atrás, cerrar, la hoja que se descarta, otra pantalla) la olvida: llegue cuando llegue, no liga a nadie.
+ * ¿Este desenlace es del formulario abierto? Sólo si lleva el número que su pantalla guardó para ESE formulario (Codex apps r5).
+ * Lo demás (un alta de un formulario cerrado, perdido al girar o reemplazado) no llega a nadie.
  */
-internal fun alSalirDelAlta(viewModel: CustomersViewModel, actividad: android.app.Activity?) {
-    if (actividad?.isChangingConfigurations != true) viewModel.olvidarAlta()
-}
+internal fun desenlaceDelFormulario(
+    terminada: CustomersViewModel.AltaTerminada?,
+    alta: Long?,
+): CustomersViewModel.AltaTerminada? = terminada?.takeIf { alta != null && it.numero == alta }

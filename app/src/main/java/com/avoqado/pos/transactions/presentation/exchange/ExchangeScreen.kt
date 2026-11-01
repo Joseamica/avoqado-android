@@ -46,6 +46,8 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
     val online by viewModel.online.collectAsState()
     var pickingCustomer by remember { mutableStateOf(false) }
     var createSearch by remember { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(state.transaction?.id) { state.transaction?.let { payments.open(it) } }
     LaunchedEffect(send.locked, ready, busy, draft) { viewModel.lockSubmission(send.locked || !ready || busy || draft != null) }
     LaunchedEffect(send.calculation) { send.calculation?.let(viewModel::applyServerCalculation) }
@@ -158,10 +160,11 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                 if (search != null) CreateCustomerView(viewModel = customers,
                     initialPhone = search.takeIf { it.any(Char::isDigit) }, initialName = search.takeUnless { it.any(Char::isDigit) },
                     onCustomerCreated = { payments.chooseCustomer(it); createSearch = null; pickingCustomer = false },
-                    onBack = { createSearch = null }, requirePhone = true)
+                    onBack = { createSearch = null }, alta = altaDelFormulario, onAlta = { altaDelFormulario = it },
+                    requirePhone = true)
                 else CustomersView(viewModel = customers,
                     onCustomerSelected = { payments.chooseCustomer(it); pickingCustomer = false },
-                    onDismiss = { pickingCustomer = false }, onCreateCustomer = { createSearch = it },
+                    onDismiss = { pickingCustomer = false }, onCreateCustomer = { altaDelFormulario = null; createSearch = it },
                     canCreateCustomer = payments.canCreateCustomer)
             }
         }

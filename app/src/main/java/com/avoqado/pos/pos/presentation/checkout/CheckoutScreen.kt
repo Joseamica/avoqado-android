@@ -385,8 +385,8 @@ fun CheckoutScreen(
     // `CartViewModel.pendingPackGrant`.
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
-    /** Sube cada vez que se ABRE el alta: la respuesta de un formulario descartado no es la del que está abierto. */
-    var aperturaDelAlta by remember { mutableIntStateOf(0) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     var createCustomerSearchText by remember { mutableStateOf("") }
     var showSavedSnackbar by remember { mutableStateOf(false) }
     var savedCartError by remember { mutableStateOf<String?>(null) }
@@ -2171,18 +2171,15 @@ fun CheckoutScreen(
                     ),
             )
             if (showCreateCustomer) {
-                val aperturaDeEsteAlta = aperturaDelAlta
                 CreateCustomerView(
                     viewModel = customersViewModel,
                     // «81 2944 0042» es un teléfono aunque traiga espacios: antes caía en el NOMBRE y nacía un
                     // cliente llamado «81 2944 0042» sin teléfono (la clase de dato roto de C3).
                     initialPhone = createCustomerSearchText.takeIf { esTextoDeTelefono(it) },
                     initialName = createCustomerSearchText.takeIf { it.isNotBlank() && !esTextoDeTelefono(it) },
-                    onCustomerCreated = creado@{ customer ->
-                        // El alta respondió tarde y el cajero ya cerró el formulario (y quizá quitó al cliente), o lo
-                        // cerró y abrió OTRO: el cliente queda creado, pero no se liga solo a la venta (Codex, cliente en
-                        // cobrar r3 #1 y r4 #2).
-                        if (!showCustomersSheet || !showCreateCustomer || aperturaDeEsteAlta != aperturaDelAlta) return@creado
+                    // El alta que respondió tarde para un formulario ya cerrado, o reemplazado por OTRO, no llega aquí: el cliente
+                    // queda creado, pero no se liga solo a la venta (Codex, cliente en cobrar r3 #1 y r4 #2; saldo a favor r5).
+                    onCustomerCreated = { customer ->
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
                         cartViewModel.setSelectedCustomer(customer.id, customer.fullName)
                         showCreateCustomer = false
@@ -2194,6 +2191,8 @@ fun CheckoutScreen(
                         customerSelectionContext = CustomerSelectionContext.GENERAL
                     },
                     onBack = { showCreateCustomer = false },
+                    alta = altaDelFormulario,
+                    onAlta = { altaDelFormulario = it },
                 )
             } else {
                 CustomersView(
@@ -2216,7 +2215,7 @@ fun CheckoutScreen(
                     },
                     onCreateCustomer = { searchText ->
                         createCustomerSearchText = searchText
-                        aperturaDelAlta += 1
+                        altaDelFormulario = null
                         showCreateCustomer = true
                     },
                     canCreateCustomer = roleManager?.canManageCustomers ?: true,

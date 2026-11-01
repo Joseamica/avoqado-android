@@ -181,6 +181,8 @@ fun IssueRefundSheet(
     val mensajeDelSaldo by saldo.mensaje.collectAsState()
     var escogiendoCliente by remember(transaction.id) { mutableStateOf(false) }
     var altaDesde by remember(transaction.id) { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember(transaction.id) { mutableStateOf<Long?>(null) }
     var reason by remember(transaction.id) { mutableStateOf<ReasonOption?>(null) }
     var esPorDefecto by remember(transaction.id) { mutableStateOf(false) }
     val soloSaldo = soloSaldoEfectivo(storeCreditOnly, storeCreditAvailable)
@@ -1097,10 +1099,11 @@ fun IssueRefundSheet(
                 if (busqueda != null) com.avoqado.pos.customers.presentation.CreateCustomerView(viewModel = clientes,
                     initialPhone = busqueda.takeIf { it.any(Char::isDigit) }, initialName = busqueda.takeUnless { it.any(Char::isDigit) },
                     onCustomerCreated = { saldo.escoger(it); altaDesde = null; escogiendoCliente = false },
-                    onBack = { altaDesde = null }, requirePhone = true)
+                    onBack = { altaDesde = null }, alta = altaDelFormulario, onAlta = { altaDelFormulario = it },
+                    requirePhone = true)
                 else com.avoqado.pos.customers.presentation.CustomersView(viewModel = clientes,
                     onCustomerSelected = { saldo.escoger(it); escogiendoCliente = false },
-                    onDismiss = { escogiendoCliente = false }, onCreateCustomer = { altaDesde = it },
+                    onDismiss = { escogiendoCliente = false }, onCreateCustomer = { altaDelFormulario = null; altaDesde = it },
                     canCreateCustomer = saldo.puedeCrearCliente)
             }
         }

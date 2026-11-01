@@ -1083,6 +1083,8 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
     val reachable by viewModel.customerServerReachable.collectAsState()
     val online = connected && reachable
     var createSearch by remember(transaction.id) { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember(transaction.id) { mutableStateOf<Long?>(null) }
 
     // Misma forma que «Pago» y «Artículos»: título, línea y un renglón con ícono. Sin cliente y con
     // permiso, el renglón ES el botón (como «Agregar cliente» del carrito); con cliente, sólo lo muestra.
@@ -1152,13 +1154,15 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
                         initialName = search.takeUnless { it.any(Char::isDigit) },
                         onCustomerCreated = { createSearch = null; viewModel.chooseCustomer(it) },
                         onBack = { createSearch = null },
+                        alta = altaDelFormulario,
+                        onAlta = { altaDelFormulario = it },
                     )
                 } else {
                     CustomersView(
                         viewModel = customers,
                         onCustomerSelected = viewModel::chooseCustomer,
                         onDismiss = viewModel::cancelCustomerAssignment,
-                        onCreateCustomer = { createSearch = it },
+                        onCreateCustomer = { altaDelFormulario = null; createSearch = it },
                         canCreateCustomer = viewModel.canCreateCustomerForAssignment && online,
                     )
                 }

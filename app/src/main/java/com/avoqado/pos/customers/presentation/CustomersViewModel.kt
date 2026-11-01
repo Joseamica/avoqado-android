@@ -82,24 +82,20 @@ class CustomersViewModel @Inject constructor(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-
     private var busqueda: Job? = null
 
     /**
      * Al abrir la lista: texto vacío y los recientes («Creados recientemente»), sin esperar. Antes se borra lo de la
      * apertura anterior: el ViewModel vive con la pantalla de navegación, así que sus resultados —quizá de OTRA
      * sucursal— se verían bajo «Creados recientemente» hasta que llegaran los recientes. Con la lista vacía y la carga en
-     * vuelo se ve el cargador. Tampoco se arrastra un error viejo al diálogo de crear cliente, ni el aviso ámbar de la
-     * vez anterior: la red pudo volver, y «Sin conexión» se dice cuando ESTA búsqueda falle (revisión final, Minor #6).
+     * vuelo se ve el cargador. Tampoco se arrastra el aviso ámbar de la vez anterior: la red pudo volver, y «Sin conexión»
+     * se dice cuando ESTA búsqueda falle (revisión final, Minor #6).
      */
     fun abrirLista() {
         _customers.value = emptyList()
         _avisoDeMasResultados.value = null
         _avisoDeGuardados.value = null
         _offline.value = false
-        _error.value = null
         onQueryChange("")
     }
 
@@ -139,7 +135,6 @@ class CustomersViewModel @Inject constructor(
                 onSuccess = { pagina ->
                     _offline.value = false
                     _avisoDeGuardados.value = null
-                    _error.value = null
                     _customers.value = pagina.clientes
                     _avisoDeMasResultados.value =
                         avisoDeMasResultados(texto, pagina.clientes.size, pagina.total, pagina.busquedaTopada)
@@ -150,8 +145,8 @@ class CustomersViewModel @Inject constructor(
                     // del servidor (5xx, 401, sin sucursal) también cae a lo guardado —la caja no se queda sin lista— y
                     // también se dice, con su propio texto: a una respuesta del servidor no se le llama «sin conexión»
                     // (mismo criterio que `ServerErrorText.isOffline`, espejo de iOS).
-                    // 🔴 Nunca a `_error`: ese lo pinta `CreateCustomerView` (mismo ViewModel) como «No se pudo crear el
-                    // cliente», y un fallo de BÚSQUEDA abría ese diálogo falso al tocar «Crear».
+                    // 🔴 Nunca como desenlace de un alta: ese lo pinta `CreateCustomerView` (mismo ViewModel) como «No se pudo
+                    // crear el cliente», y un fallo de BÚSQUEDA abría ese diálogo falso al tocar «Crear».
                     val sinRed = ServerErrorText.isOffline(e)
                     if (!sinRed) Log.e("👤", "Error buscando clientes: ${e.message}")
                     _offline.value = sinRed
@@ -163,14 +158,29 @@ class CustomersViewModel @Inject constructor(
         }
     }
 
+    /**
+     * El desenlace de un alta, como ESTADO y con su número (Codex apps r5): la clienta creada o el motivo del rechazo.
+     *
+     * 🔴 Invariante: un alta que llega tarde nunca cambia a la destinataria, salvo que el formulario EXACTO que la pidió siga abierto.
+     * - No hay callback atado a una composición. Cada pantalla guarda el número del alta que pidió SU formulario, con la misma
+     *   persistencia que su bandera de «formulario abierto» (`remember` o `rememberSaveable`), y lo borra al abrir otro formulario.
+     * - `CreateCustomerView` aplica el desenlace sólo si trae ese número (`desenlaceDelFormulario`), y lo hace en la composición
+     *   VIGENTE: un formulario restaurado tras girar lo recibe; uno cerrado, perdido al girar o reemplazado, no.
+     * - Lo que nadie aplica se ignora: la clienta queda creada y arriba de la lista, pero nunca se liga ni se escoge.
+     */
+    data class AltaTerminada(val numero: Long, val cliente: Customer? = null, val error: String? = null)
+    private var altas = 0L
+    private val _altaTerminada = MutableStateFlow<AltaTerminada?>(null)
+    val altaTerminada: StateFlow<AltaTerminada?> = _altaTerminada.asStateFlow()
+
+    /** Pide el alta y devuelve su número; el desenlace llega en [altaTerminada]. */
     fun createCustomer(
         firstName: String?,
         lastName: String?,
         phone: String?,
         email: String?,
-        onSuccess: (Customer) -> Unit,
-    ) {
-        val miAlta = ++alta
+    ): Long {
+        val numero = ++altas
         viewModelScope.launch {
             _isSaving.value = true
             val request = CreateCustomerRequest(
@@ -184,26 +194,15 @@ class CustomersViewModel @Inject constructor(
                 onSuccess = { customer ->
                     // Arriba de la lista y sin repetir: `LazyColumn(key = id)` truena con dos llaves iguales.
                     _customers.value = listOf(customer) + _customers.value.filterNot { it.id == customer.id }
-                    if (miAlta == alta) onSuccess(customer)
+                    _altaTerminada.value = AltaTerminada(numero, cliente = customer)
                 },
                 onFailure = {
-                    if (miAlta == alta) _error.value = ServerErrorText.humanize(it.message)
+                    _altaTerminada.value = AltaTerminada(numero, error = ServerErrorText.humanize(it.message))
                 },
             )
             _isSaving.value = false
         }
-    }
-
-    /**
-     * El formulario de alta se cerró o se reemplazó: su alta en vuelo ya no avisa a nadie (Codex apps r3, P1). La clienta sí queda
-     * creada y arriba de la lista, pero no se liga sola a la venta, al Reembolso o al Cambio de quien la pidió. Lo llama
-     * `CreateCustomerView` al salir de pantalla, así que vale para todas las pantallas (espejo de `aperturaDelAlta` de iOS).
-     */
-    fun olvidarAlta() { alta++ }
-    private var alta = 0L
-
-    fun clearError() {
-        _error.value = null
+        return numero
     }
 
     // MARK: - Editar cliente (26-oct-2026)

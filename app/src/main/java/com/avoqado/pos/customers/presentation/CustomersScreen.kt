@@ -143,6 +143,8 @@ private fun TabletCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
     var clienteActualizado by remember { mutableStateOf(false) }
 
@@ -172,6 +174,8 @@ private fun TabletCustomersLayout(
                 selectedCustomer = customer
             },
             onBack = { showCreateCustomer = false },
+            alta = altaDelFormulario,
+            onAlta = { altaDelFormulario = it },
         )
         return
     }
@@ -225,6 +229,7 @@ private fun TabletCustomersLayout(
                                 text = { Text("Crear cliente") },
                                 onClick = {
                                     showMenu = false
+                                    altaDelFormulario = null
                                     showCreateCustomer = true
                                 },
                             )
@@ -396,6 +401,8 @@ private fun PhoneCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
     var clienteActualizado by remember { mutableStateOf(false) }
 
@@ -425,6 +432,8 @@ private fun PhoneCustomersLayout(
                 selectedCustomer = customer
             },
             onBack = { showCreateCustomer = false },
+            alta = altaDelFormulario,
+            onAlta = { altaDelFormulario = it },
         )
         return
     }
@@ -508,6 +517,7 @@ private fun PhoneCustomersLayout(
                         DropdownMenuItem(
                             text = { Text("Crear cliente") },
                             onClick = {
+                                altaDelFormulario = null
                                 showMenu = false
                                 showCreateCustomer = true
                             },

@@ -548,21 +548,25 @@ class ReembolsoASaldoTest {
         assertNull(store.pendiente("venue", "payment"))
     }
 
-    @Test fun `el alta de una clienta que llega tarde no cambia a la destinataria escogida después`() = runBlocking {
-        val llegaAna = CompletableDeferred<Unit>()
-        val clientes = apagarAlFinal(clientesConAltaEnVuelo(llegaAna, "ana", "Ana"))
-        val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
-            mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true)))
-        saldo.abrir(Transaction("payment", customerId = "mama", customerName = "Mamá"))
-        // «Cambiar» → alta de Ana (en vuelo, con el mismo callback que la hoja) → se cierra el formulario → Beatriz de la lista.
-        clientes.createCustomer("Ana", null, "5511112222", null, onSuccess = saldo::escoger)
-        com.avoqado.pos.customers.presentation.alSalirDelAlta(clientes, actividad(recreando = false))
-        saldo.escoger(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
-        llegaAna.complete(Unit)
-        withTimeout(5_000) { while (clientes.isSaving.value) yield() }
-        assertEquals("beatriz", saldo.cliente.value?.id)
-        // La clienta sí quedó creada (arriba de la lista); sólo no se liga.
-        assertEquals("ana", clientes.customers.value.first().id)
+    @Test fun `Reembolso - girar o cerrar con el alta en vuelo, escoger a Beatriz y que llegue Ana - sigue Beatriz`() = runBlocking {
+        for (girando in listOf(true, false)) {
+            val llegaAna = CompletableDeferred<Unit>()
+            val clientes = apagarAlFinal(clientesConAltaEnVuelo(llegaAna, "ana", "Ana"))
+            val saldo = apagarAlFinal(com.avoqado.pos.transactions.presentation.SaldoAFavorDelReembolsoViewModel(mockk(relaxed = true),
+                mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true)))
+            saldo.abrir(Transaction("payment", customerId = "mama", customerName = "Mamá"))
+            // La hoja guarda su bandera y el número del alta con `remember(transaction.id)`: al girar no vuelven.
+            val hoja = PantallaConAlta(clientes, sobreviveAlGiro = false) { saldo.escoger(it); cerrarFormulario() }
+            hoja.abrirFormulario(); hoja.guardar("Ana")
+            if (girando) hoja.girar() else hoja.cerrarFormulario()
+            saldo.escoger(com.avoqado.pos.customers.data.model.Customer("beatriz", firstName = "Beatriz", phone = "+525533334444"))
+            llegaAna.complete(Unit)
+            withTimeout(5_000) { while (clientes.isSaving.value) yield() }
+            hoja.componer(); hoja.abrirFormulario(); hoja.componer()
+            assertEquals("girando=$girando", "beatriz", saldo.cliente.value?.id)
+            // La clienta sí quedó creada (arriba de la lista); sólo no se liga.
+            assertEquals("ana", clientes.customers.value.first().id)
+        }
     }
 
     @Test fun `una respuesta tardía de guardar el teléfono no cambia a la destinataria de la hoja reabierta`() = runBlocking {
@@ -639,6 +643,3 @@ internal fun clientesConAltaEnVuelo(llega: CompletableDeferred<Unit>, id: String
     }
     return com.avoqado.pos.customers.presentation.CustomersViewModel(repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true))
 }
-
-/** La actividad que el `onDispose` del formulario le pregunta a Android: `recreando` = se destruye para girar (cambio de configuración). */
-internal fun actividad(recreando: Boolean): android.app.Activity = mockk { every { isChangingConfigurations } returns recreando }
