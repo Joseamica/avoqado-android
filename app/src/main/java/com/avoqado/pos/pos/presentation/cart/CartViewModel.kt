@@ -2823,6 +2823,7 @@ class CartViewModel @Inject constructor(
                 createdAtLocal = capturadaEn.takeIf { reenvio },
             )
             val s = VentaSeparada(venta.copy(llavePagarDespues = llave), cliente, _referralCode.value, _referralValidation.value)
+            val idDeLaCopia = venta.carritoGuardadoId ?: UUID.randomUUID().toString()
             val fila = com.avoqado.pos.payment.data.PayLaterRow(
                 id = llave,
                 venueId = venueId,
@@ -2833,8 +2834,12 @@ class CartViewModel @Inject constructor(
                 cuerpo = cuerpo(reenvio = true),
                 // D3 r2: el id de su copia de respaldo existe desde ya y la fila lo liga (`ligaSuCopia`): si al rechazarse la
                 // fila no se puede marcar ni borrar, esa copia no se vende y se retira cuando la cuenta se crea.
-                carritoGuardadoId = venta.carritoGuardadoId ?: UUID.randomUUID().toString(),
+                carritoGuardadoId = idDeLaCopia,
                 creadaEn = capturadaEn,
+                // D9: la venta viaja con su fila, con el id de su copia y el cliente elegido: si el SERVIDOR rechaza el REENVÍO
+                // y cierra su llave, vuelve a «Carritos guardados» (`PayLaterQueue.trasElRechazo`).
+                venta = comoCarritoGuardado(venta.copy(carritoGuardadoId = idDeLaCopia, llavePagarDespues = llave), cliente.name,
+                    cliente.id, venueId),
             )
             _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents)
             // Codex A-5: la copia guardada lleva la llave y la marca de cobro iniciado ANTES de mandar nada. Con premio (sin fila

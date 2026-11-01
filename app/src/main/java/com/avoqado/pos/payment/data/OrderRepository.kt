@@ -122,6 +122,21 @@ class OrderRepository @Inject constructor(
         }
     }
 
+    /** D9: cierra la llave de una «Pagar después» rechazada al reenviarse. Ver [leerCierreDeLlave] y `PayLaterQueue.trasElRechazo`. */
+    suspend fun cerrarLlaveDePagarDespues(venueId: String, llave: String): RespuestaCruda {
+        val token = secureStorage.accessToken ?: return RespuestaCruda(401, null, null, "")
+        val request = Request.Builder()
+            .url("$baseUrl/mobile/venues/$venueId/orders/by-external-id/$llave/release")
+            .header("Authorization", "Bearer $token")
+            .post("{}".toRequestBody("application/json".toMediaType()))
+            .build()
+        return withContext(Dispatchers.IO) {
+            payLaterClient.newCall(request).execute().use {
+                RespuestaCruda(it.code, it.header("content-type"), it.header("ngrok-error-code"), it.body?.string().orEmpty())
+            }
+        }
+    }
+
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /**
@@ -772,6 +787,24 @@ class OrderRepository @Inject constructor(
                 return DesenlacePagarDespues.Pendiente("Error $code")
             }
             return DesenlacePagarDespues.Rechazada(code, mensaje, leerCambiosDePrecio(body))
+        }
+
+        /**
+         * D9: la respuesta de cerrar la llave. PURA. Sólo un 200 JSON de la API cuenta: `released: true` ⇒ [CierreDeLlave.Cerrada];
+         * `released: false` con `order.id` ⇒ [CierreDeLlave.Existe]. Todo lo demás (también la página 200 de un portal) ⇒ NoSeSabe.
+         */
+        fun leerCierreDeLlave(code: Int, contentType: String?, ngrokError: String?, body: String): CierreDeLlave {
+            if (code != 200 || ngrokError != null || contentType?.contains("json", ignoreCase = true) != true) return CierreDeLlave.NoSeSabe
+            val raiz = runCatching { errorParserJson.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return CierreDeLlave.NoSeSabe
+            val liberada = (raiz["released"] as? JsonPrimitive)?.takeIf { !it.isString }?.content
+            if (liberada == "true") return CierreDeLlave.Cerrada
+            if (liberada != "false") return CierreDeLlave.NoSeSabe
+            val orden = raiz["order"] as? JsonObject
+            val id = (orden?.get("id") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+                ?: return CierreDeLlave.NoSeSabe
+            val total = (orden["total"] as? JsonPrimitive)?.content?.toBigDecimalOrNull()
+                ?.movePointRight(2)?.setScale(0, java.math.RoundingMode.HALF_UP)?.toInt()?.takeIf { it >= 0 }
+            return CierreDeLlave.Existe(id, total)
         }
 
         private fun extractErrorMessage(responseBody: String): String? {

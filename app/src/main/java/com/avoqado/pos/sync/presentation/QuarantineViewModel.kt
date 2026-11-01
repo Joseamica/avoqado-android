@@ -59,14 +59,27 @@ class QuarantineViewModel @Inject constructor(
         val cola = payLaterQueue ?: return
         if (!canResolve || _reintentandoCuenta.value != null) return
         _reintentandoCuenta.value = id
+        val cliente = cola.filas.value.firstOrNull { it.id == id }?.customerName
         viewModelScope.launch {
             try {
                 when (val d = cola.reintentar(id)) {
-                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada ->
-                        if (cola.filas.value.none { it.id == id }) _successMessage.value = "Cuenta registrada"
-                        else _errorMessage.value = d.motivoRevision ?: cola.filas.value.firstOrNull { it.id == id }
-                            ?.let { com.avoqado.pos.payment.data.detalleDePagarDespues(it) }
-                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value = d.mensaje
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada -> {
+                        val fila = cola.filas.value.firstOrNull { it.id == id }
+                        // D9 (Codex código r2): la cuenta existe; si sólo falta retirar su copia (RETIRO_PENDIENTE), quedó
+                        // registrada, como en iOS. Antes salía el motivo del rechazo viejo.
+                        if (fila == null || fila.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.RETIRO_PENDIENTE) {
+                            _successMessage.value = "Cuenta registrada"
+                        } else {
+                            _errorMessage.value = d.motivoRevision ?: com.avoqado.pos.payment.data.detalleDePagarDespues(fila)
+                        }
+                    }
+                    // D1: un rechazo que ya no deja su fila es la venta que volvió a «Carritos guardados» (igual que iOS).
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value =
+                        if (cliente != null && cola.filas.value.none { it.id == id }) {
+                            com.avoqado.pos.pos.presentation.cart.pagarDespuesACarritosGuardados(cliente)
+                        } else {
+                            d.mensaje
+                        }
                     null -> Unit
                     // Sin red o sin respuesta útil: vuelve a la fila de «por subir» y se sube sola.
                     else -> _errorMessage.value = "Sin conexión: la cuenta sigue guardada en el aparato y se sube sola."
