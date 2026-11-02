@@ -273,7 +273,7 @@ class TransactionsViewModel @Inject constructor(
     private val versionDelPendiente = java.util.concurrent.atomic.AtomicLong()
 
     /** Lee lo pendiente de la venta abierta y, si [reenviar] y hay red, lo reenvía con su MISMA llave. */
-    private suspend fun recuperarReembolsoPendiente(scope: DetailScope, reenviar: Boolean) {
+    private suspend fun recuperarReembolsoPendiente(scope: DetailScope, reenviar: Boolean, segundoPlano: Boolean = false) {
         val store = refundPendingStore ?: return
         val venue = scope.venueId ?: return
         val version = versionDelPendiente.incrementAndGet()
@@ -290,7 +290,7 @@ class TransactionsViewModel @Inject constructor(
         try {
             if (!connectivityMonitor.isOnline()) { _avisoDeReembolso.value = TextosCambio.SALDO_SIN_RED; return }
             _avisoDeReembolso.value = null
-            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending)
+            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending, segundoPlano)
             detalleAbierto(scope.paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = true) }
         } finally { soltarEnVuelo(scope.paymentId) }
     }
@@ -717,7 +717,7 @@ class TransactionsViewModel @Inject constructor(
             if (!current(scope)) return@launch
             _selectedTransaction.value = detail?.takeIf { it.id == scope.paymentId }
             _isLoadingDetail.value = false
-            if (detail?.id == scope.paymentId) launch { recuperarReembolsoPendiente(scope, reenviar = true) }
+            if (detail?.id == scope.paymentId) launch { recuperarReembolsoPendiente(scope, reenviar = true, segundoPlano = true) }
             if (detail != null && detail.id == scope.paymentId && roleManager.canAttachCustomer && roleManager.hasVenuePermission("customers:read")) {
                 try {
                     readPending(scope)?.let { pending ->

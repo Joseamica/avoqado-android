@@ -82,9 +82,17 @@ fun mensajeDeReembolsoPendiente(status: Int?, code: String?, mensaje: String?): 
     else -> TextosCambio.REEMBOLSO_NO_CONFIRMADO
 }
 
-/** Manda lo pendiente con SU cuerpo y SU llave. Borra sólo con éxito o con un rechazo definitivo (`esRechazoDefinitivoDeSaldo`). */
-suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund): DesenlaceDeSaldo {
-    val resultado = repo.enviarCuerpo(pending.paymentId, pending.body)
+/**
+ * Manda lo pendiente con SU cuerpo y SU llave. Borra sólo con éxito o con un rechazo definitivo (`esRechazoDefinitivoDeSaldo`, o un 403
+ * con el eco de su petición).
+ *
+ * [segundoPlano]: el reenvío que nadie pidió (al abrir la venta) va de fondo, así que un 403 nunca le saca el PIN de gerente a quien
+ * abrió la venta. Lo que pide una persona («Reembolsar», «Confirmar estado») sí puede pedirlo: si el gerente autoriza, se reenvía
+ * AHÍ la misma petición, con la misma llave y con su consentimiento (Revisión final I-1).
+ */
+suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund,
+                                     segundoPlano: Boolean = false): DesenlaceDeSaldo {
+    val resultado = repo.enviarCuerpo(pending.paymentId, pending.body, segundoPlano)
     resultado.getOrNull()?.let { borrarALoMejor(store, pending); return DesenlaceDeSaldo.Hecho(it) }
     val e = resultado.exceptionOrNull()
     if (e is CancellationException) throw e
@@ -93,6 +101,14 @@ suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendin
     if (api != null && esRechazoDefinitivoDeSaldo(api.statusCode, api.code)) {
         borrarALoMejor(store, pending)
         return DesenlaceDeSaldo.Rechazado(api.message.ifBlank { TextosCambio.REEMBOLSO_NO_CONFIRMADO }, api.code)
+    }
+    // Revisión final I-1: un 403 de NUESTRO servidor (con el eco) sale de `checkPermission`, antes de escribir nada. Es definitivo
+    // SÓLO aquí, en el Reembolso a saldo: si se conservara, al abrir la venta alguien con permiso lo reenviaría solo, con SU sesión, y
+    // se crearía un saldo a favor que los permisos negaron y que nadie con permiso decidió. El Cambio no se reenvía solo: ahí un 403
+    // sigue sin ser definitivo (`esRechazoDefinitivoDeSaldo` no cambia).
+    if (api != null && api.statusCode == 403) {
+        borrarALoMejor(store, pending)
+        return DesenlaceDeSaldo.Rechazado(textoDeSinPermisoParaReembolsar(DEVOLVER_CON_SALDO), api.code)
     }
     return DesenlaceDeSaldo.Pendiente(mensajeDeReembolsoPendiente(api?.statusCode, api?.code, api?.message))
 }
