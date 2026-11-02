@@ -231,6 +231,9 @@ class TransactionsViewModel @Inject constructor(
 
     private val _reembolsoPendiente = MutableStateFlow<PendingRefund?>(null)
     val reembolsoPendiente = _reembolsoPendiente.asStateFlow()
+    /** Por qué la venta que se tocó no abrió (sin red o el detalle falló). `null` si abrió o aún no se sabe. */
+    private val _detalleNoDisponible = MutableStateFlow<String?>(null)
+    val detalleNoDisponible = _detalleNoDisponible.asStateFlow()
     private val _avisoDeReembolso = MutableStateFlow<String?>(null)
     val avisoDeReembolso = _avisoDeReembolso.asStateFlow()
     /** Ventas con un envío o reenvío a saldo en curso: no se manda otro de esa venta mientras tanto (M4: por venta, no global). */
@@ -330,7 +333,10 @@ class TransactionsViewModel @Inject constructor(
                 _avisoDeReembolso.value = ((if (reenvio) listOf(TextosCambio.REEMBOLSO_CONFIRMADO) else emptyList()) + abono)
                     .joinToString("\n").ifEmpty { null }
                 repository.fetchTransactionDetail(scope.paymentId, scope.actorId, scope.venueId)
-                    ?.takeIf { current(scope) && it.id == scope.paymentId }?.let { _selectedTransaction.value = it }
+                    ?.takeIf { current(scope) && it.id == scope.paymentId }?.let {
+                        _selectedTransaction.value = it
+                        _detalleNoDisponible.value = null
+                    }
                 invalidateAndRefresh()
             }
             is DesenlaceDeSaldo.Rechazado -> {
@@ -717,13 +723,19 @@ class TransactionsViewModel @Inject constructor(
         _customerAssignmentSucceeded.value = false
         _reembolsoPendiente.value = null
         _avisoDeReembolso.value = null
+        _detalleNoDisponible.value = null
         viewModelScope.launch {
             val detail = repository.fetchTransactionDetail(transactionId, scope.actorId, scope.venueId)
             if (!current(scope)) return@launch
-            _selectedTransaction.value = detail?.takeIf { it.id == scope.paymentId }
+            val abierta = detail?.takeIf { it.id == scope.paymentId }
+            _selectedTransaction.value = abierta
+            // Una venta que no abre lo dice, y lo pendiente se lee igual (está en el aparato, no en la red) (D3).
+            if (abierta == null) {
+                _detalleNoDisponible.value = if (connectivityMonitor.isOnline()) TextosCambio.VENTA_NO_ABRIO else TextosCambio.VENTA_SIN_RED
+            }
             _isLoadingDetail.value = false
             // Opción A (founder, 2-nov): al abrir la venta sólo se LEE lo pendiente; nada se reenvía solo, para nadie.
-            if (detail?.id == scope.paymentId) launch { recuperarReembolsoPendiente(scope, reenviar = false) }
+            launch { recuperarReembolsoPendiente(scope, reenviar = false) }
             if (detail != null && detail.id == scope.paymentId && roleManager.canAttachCustomer && roleManager.hasVenuePermission("customers:read")) {
                 try {
                     readPending(scope)?.let { pending ->
@@ -752,6 +764,7 @@ class TransactionsViewModel @Inject constructor(
         _customerAssignmentSucceeded.value = false
         _reembolsoPendiente.value = null
         _avisoDeReembolso.value = null
+        _detalleNoDisponible.value = null
     }
 
     // MARK: - Print Receipt

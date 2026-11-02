@@ -134,6 +134,8 @@ object TextosCambio {
     const val ES_POR_DEFECTO = "Es por defecto"
     const val SOLO_SALDO_EXCEPCIONES = "Defecto y cobro por error siempre se devuelven como se pagó"
     const val REIMPRESION_SALDO = "Saldo a favor ({nombre})"
+    const val VENTA_SIN_RED = "Sin conexión: para ver esta venta necesitas internet. Vuelve a tocarla cuando regrese."
+    const val VENTA_NO_ABRIO = "No se pudo abrir esta venta. Vuelve a tocarla para reintentar."
     const val REEMBOLSO_SIN_CONFIRMAR = "Hay un reembolso a saldo a favor sin confirmar"
     const val REEMBOLSO_SIN_CONFIRMAR_DE = "Reembolso a saldo a favor sin confirmar (lo pidió {nombre})"
     const val REEMBOLSO_PIDE_GERENTE = "No tienes permiso: pide a un gerente que lo confirme"

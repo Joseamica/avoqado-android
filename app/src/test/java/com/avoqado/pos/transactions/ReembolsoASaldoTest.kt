@@ -48,6 +48,7 @@ class ReembolsoASaldoTest {
 
     private lateinit var server: MockWebServer
     private lateinit var repo: RefundRepository
+    private lateinit var transaccionesDePrueba: TransactionRepository
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var store: RefundPendingStore
     private val secure = mockk<SecureStorage>(relaxed = true)
@@ -388,6 +389,49 @@ class ReembolsoASaldoTest {
         assertTrue(List(3) { server.takeRequest() }.all { it.getHeader("X-Avoqado-Background") == null })
     }
 
+    // MARK: - La venta que no se pudo abrir dice por qué (hz:459741ee:D3)
+
+    @Test fun `sin red, tocar una venta dice por qué y aun así muestra lo pendiente, y Confirmar estado no manda nada`() = runBlocking {
+        store.guardar(pendiente())
+        val sinRed = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
+        val vm = vm(sinRed, null)
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        assertEquals(TextosCambio.VENTA_SIN_RED, vm.detalleNoDisponible.value)
+        assertNull(vm.selectedTransaction.value)
+        assertTrue(withTimeout(5_000) { vm.reembolsoBloqueado.first { it } })
+        vm.confirmarReembolsoPendiente()
+        assertEquals(TextosCambio.SALDO_SIN_RED, withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } })
+        assertEquals(0, server.requestCount)
+        assertNotNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `con red, si el detalle falla dice que no se pudo abrir y se puede volver a tocar`() = runBlocking {
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val vm = vm(online, null)
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { while (vm.detalleNoDisponible.value == null) yield() }
+        assertEquals(TextosCambio.VENTA_NO_ABRIO, vm.detalleNoDisponible.value)
+        assertFalse(vm.isLoadingDetail.value)
+        vm.clearSelection()
+        assertNull(vm.detalleNoDisponible.value)
+        repeat(20) { yield(); kotlinx.coroutines.delay(10) } // Que termine la lectura de lo pendiente antes de restaurar Main.
+    }
+
+    @Test fun `una venta que sí abre no trae aviso, y tocar otra borra el de la anterior`() = runBlocking {
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        val detalle = Transaction("payment", amount = 500.0, remainingRefundable = 500.0)
+        val vm = vm(online, null)
+        vm.selectTransaction("otra")
+        withTimeout(5_000) { while (vm.detalleNoDisponible.value == null) yield() }
+        coEvery { transaccionesDePrueba.fetchTransactionDetail("payment", "actor", "venue") } returns detalle
+        vm.selectTransaction("payment")
+        assertNull(vm.detalleNoDisponible.value)
+        withTimeout(5_000) { while (vm.selectedTransaction.value == null) yield() }
+        assertNull(vm.detalleNoDisponible.value)
+        repeat(20) { yield(); kotlinx.coroutines.delay(10) } // Que termine la lectura de lo pendiente antes de restaurar Main.
+    }
+
     // MARK: - Codex apps r8 #1: el envío sale con la sesión de quien tocó, o no sale
 
     /** El cliente con el [AuthInterceptor] de verdad: es ahí donde la petición toma su credencial. */
@@ -515,8 +559,9 @@ class ReembolsoASaldoTest {
 
     // MARK: - La recuperación al abrir la venta (no la hoja), tras matar la app
 
-    private fun vm(monitor: ConnectivityMonitor, detail: Transaction, pendientes: RefundPendingStore = store): TransactionsViewModel {
+    private fun vm(monitor: ConnectivityMonitor, detail: Transaction?, pendientes: RefundPendingStore = store): TransactionsViewModel {
         val transactions = mockk<TransactionRepository>(relaxed = true)
+        transaccionesDePrueba = transactions
         every { transactions.transactions } returns MutableStateFlow(emptyList())
         every { transactions.isLoading } returns MutableStateFlow(false)
         every { transactions.isLoadingMore } returns MutableStateFlow(false)

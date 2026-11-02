@@ -200,11 +200,19 @@ fun TransactionDetailPanel(
                             modifier = Modifier.size(48.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        val noDisponible by viewModel.detalleNoDisponible.collectAsState()
                         Text(
-                            text = "Selecciona una transacción",
-                            style = MaterialTheme.typography.headlineMedium,
+                            text = noDisponible ?: "Selecciona una transacción",
+                            style = if (noDisponible != null) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
                         )
+                        // Lo pendiente vive en el aparato: se ve aunque la venta no haya abierto (D3).
+                        Box(Modifier.padding(horizontal = AvoqadoTheme.spacing.lg)) { AvisoDeReembolsoPendiente(viewModel) }
+                        if (noDisponible != null && showBackButton) {
+                            TextButton(onClick = viewModel::clearSelection) { Text(TextosCambio.CERRAR) }
+                        }
                     }
                 }
             }
@@ -212,6 +220,26 @@ fun TransactionDetailPanel(
     }
 
     // Refund bottom sheet disabled — see TODO above for risk details.
+}
+
+/** El reembolso a saldo sin confirmar de la venta abierta y el último aviso de su envío. */
+@Composable
+private fun AvisoDeReembolsoPendiente(viewModel: TransactionsViewModel) {
+    val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
+    val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
+    Column {
+        reembolsoPendiente?.let { pendiente ->
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
+                Text(com.avoqado.pos.transactions.data.avisoDelPendiente(pendiente), Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium)
+                TextButton(onClick = viewModel::confirmarReembolsoPendiente) { Text(TextosCambio.CONFIRMAR_ESTADO) }
+            }
+        }
+        avisoDeReembolso?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm))
+        }
+    }
 }
 
 @Composable
@@ -328,20 +356,8 @@ private fun LoadedDetailView(
                 viewModel.resumePendingExchange(transaction)
             }
             // Reembolso a saldo a favor sin confirmar (A3): sólo «Confirmar estado» lo reenvía (Opción A); mientras siga, no se empieza otro.
-            val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
             val reembolsoBloqueado by viewModel.reembolsoBloqueado.collectAsState()
-            val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
-            if (reembolsoPendiente != null) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
-                    Text(com.avoqado.pos.transactions.data.avisoDelPendiente(reembolsoPendiente!!), Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyMedium)
-                    TextButton(onClick = viewModel::confirmarReembolsoPendiente) { Text(TextosCambio.CONFIRMAR_ESTADO) }
-                }
-            }
-            avisoDeReembolso?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm))
-            }
+            AvisoDeReembolsoPendiente(viewModel)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
