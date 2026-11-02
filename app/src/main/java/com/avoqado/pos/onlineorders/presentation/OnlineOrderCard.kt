@@ -62,7 +62,8 @@ internal fun textoDeDinero(pedido: OnlineOrder): String = when {
             // RELEASING, AUTHORIZED, CAPTURING u otro: el desenlace no se conoce, nunca se afirma «no se cobró».
             else -> TextosPedidosEnLinea.LIBERANDO_LA_TARJETA
         }
-    estaPagado(pedido) -> TextosPedidosEnLinea.PAGADO_CON_TARJETA
+    // Sólo un cargo CAPTURED afirma la tarjeta: la cuenta pudo pagarse por otro camino y la tarjeta se soltó.
+    estaPagado(pedido) -> if (pedido.cardChargeStatus == "CAPTURED") TextosPedidosEnLinea.PAGADO_CON_TARJETA else TextosPedidosEnLinea.PAGADO
     pedido.cardStatus == "CONFIRMING" -> TextosPedidosEnLinea.CONFIRMANDO_PAGO
     else -> TextosPedidosEnLinea.TARJETA_SE_COBRA_AL_ACEPTAR
 }

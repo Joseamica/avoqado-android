@@ -267,6 +267,7 @@ class OnlineOrdersViewModel internal constructor(
             _cargando.value = false
             return@withLock
         }
+        val estaLectura = ++lecturasIniciadas
         val primera = try {
             repositorio.inbox("all", comoBandeja, null)
         } catch (e: CancellationException) {
@@ -290,9 +291,13 @@ class OnlineOrdersViewModel internal constructor(
                 cursor = siguiente.nextCursor
                 pagina++
             }
-            val pendientes = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
-            // Una lectura EXITOSA que ya no lo trae confirmando (o ya no por aceptar) libera «Aceptar».
-            confirmando.retainAll { id -> pendientes.any { it.orderId == id && it.cardStatus == "CONFIRMING" } }
+            val leidos = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
+            // Una lectura EXITOSA que salió DESPUÉS del 409 y ya no lo trae confirmando (o ya no por aceptar) libera «Aceptar».
+            confirmando.entries.removeAll { (id, ultimaDeAntes) ->
+                estaLectura > ultimaDeAntes && leidos.none { it.orderId == id && it.cardStatus == "CONFIRMING" }
+            }
+            // La que ya iba en el aire trae una foto de antes del 409: no le devuelve «Aceptar» ni el texto de antes.
+            val pendientes = leidos.map { if (it.orderId in confirmando) it.copy(cardStatus = "CONFIRMING") else it }
             _secciones.value = SeccionesBandeja(
                 porAceptar = pendientes,
                 enPreparacion = ordenes.filter { it.status == OnlineOrderStatus.ACCEPTED },
@@ -384,6 +389,8 @@ class OnlineOrdersViewModel internal constructor(
     // MARK: - Acciones (sólo en línea, nunca encoladas)
 
     fun aceptar(orderId: String, minutos: Int) {
+        // Aquí y no sólo en el botón: ningún camino de la vista (el botón, los minutos de un diálogo ya abierto) se la salta.
+        if (orderId in confirmando || buscar(orderId)?.let(::sePuedeAceptar) == false) return
         ejecutar(
             orderId, permisoActualizar(), sonidoCambia = true,
             // Después de releer: se imprime el pedido ACEPTADO que dijo el servidor (con su hora estimada), nunca la foto de
@@ -395,11 +402,17 @@ class OnlineOrdersViewModel internal constructor(
         }
     }
 
-    /** Pedidos a los que el servidor dijo «confirmando el pago» (409): siguen sin poder aceptarse aunque la relectura falle. */
-    private val confirmando = mutableSetOf<String>()
+    /** Cuántas lecturas de la bandeja han salido: cada una toma su número ANTES de preguntar. */
+    private var lecturasIniciadas = 0L
+
+    /**
+     * Pedidos a los que el servidor dijo «confirmando el pago» (409) -> la última lectura que ya había salido entonces. Siguen sin
+     * poder aceptarse aunque la relectura falle; sólo una lectura posterior a ese número los suelta.
+     */
+    private val confirmando = mutableMapOf<String, Long>()
 
     private fun marcarConfirmando(orderId: String) {
-        confirmando += orderId
+        confirmando[orderId] = lecturasIniciadas
         val s = _secciones.value
         _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
     }

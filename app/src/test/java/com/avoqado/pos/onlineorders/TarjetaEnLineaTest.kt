@@ -11,6 +11,7 @@ import com.avoqado.pos.onlineorders.presentation.pedidoDelDialogo
 import com.avoqado.pos.onlineorders.presentation.sePuedeAceptar
 import com.avoqado.pos.onlineorders.presentation.sePuedeCobrar
 import com.avoqado.pos.onlineorders.presentation.textoDeDinero
+import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -33,8 +34,8 @@ class TarjetaEnLineaTest {
     @Test fun `the five money texts of a card order`() {
         assertEquals("Con tarjeta: se cobra al aceptar", textoDeDinero(pedido()))
         assertEquals("Confirmando el pago…", textoDeDinero(pedido(cardStatus = "CONFIRMING")))
-        assertEquals("Pagado con tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.ACCEPTED, pago = "PAID", restante = 0, cardStatus = null)))
-        assertEquals("Pagado con tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.ACCEPTED, restante = 0, cardStatus = null)))
+        assertEquals("Pagado con tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.ACCEPTED, pago = "PAID", restante = 0, cardStatus = null, cobro = "CAPTURED")))
+        assertEquals("Pagado con tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.COMPLETED, restante = 0, cardStatus = null, cobro = "CAPTURED")))
         assertEquals("Tarjeta cobrada: devuélvela desde el panel", textoDeDinero(pedido(status = OnlineOrderStatus.REJECTED, pago = "PAID", restante = 0, cobro = "CAPTURED")))
         assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.EXPIRED, cardStatus = null, cobro = "RELEASED")))
         assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.CANCELLED_BY_CUSTOMER, cobro = "ABANDONED")))
@@ -44,6 +45,12 @@ class TarjetaEnLineaTest {
     @Test fun `a closed card order with the charge in doubt never says it was not charged`() {
         for (c in listOf("RELEASING", "AUTHORIZED", "CAPTURING", "ALGO_NUEVO", null))
             assertEquals("Liberando la tarjeta…", textoDeDinero(pedido(status = OnlineOrderStatus.REJECTED, cobro = c)))
+    }
+
+    @Test fun `paid by another path says Pagado without mentioning the card`() {
+        // El servidor acepta sin capturar y suelta la tarjeta si la cuenta ya venía pagada (capture.service.ts:94).
+        for (c in listOf("RELEASING", "RELEASED", "AUTHORIZED", "OTRO", null))
+            assertEquals("Pagado", textoDeDinero(pedido(status = OnlineOrderStatus.ACCEPTED, pago = "PAID", restante = 0, cardStatus = null, cobro = c)))
     }
 
     @Test fun `pay at pickup texts do not change`() {
@@ -68,9 +75,11 @@ class TarjetaEnLineaTest {
         assertEquals(apartada, pedidoDelDialogo("p1", TipoDeDialogo.ACEPTAR, SeccionesBandeja(porAceptar = listOf(apartada))))
     }
 
-    @Test fun `the ticket says PAGADO CON TARJETA`() {
-        val lineas = encabezadoDeComanda(pedido(status = OnlineOrderStatus.ACCEPTED, pago = "PAID", restante = 0))
-        assertTrue(lineas.any { it.endsWith("PAGADO CON TARJETA") })
+    @Test fun `the ticket says PAGADO CON TARJETA only if the charge was captured`() {
+        fun comanda(c: String?) = encabezadoDeComanda(pedido(status = OnlineOrderStatus.ACCEPTED, pago = "PAID", restante = 0, cobro = c))
+        assertEquals(listOf("Ana", "${MARCA_NEGRITA_ENCABEZADO}PAGADO CON TARJETA"), comanda("CAPTURED"))
+        // La cuenta se pagó por otro camino y la tarjeta se soltó: el encabezado normal, sin mencionarla.
+        for (c in listOf("RELEASING", "RELEASED", "OTRO", null)) assertEquals(listOf("Ana", "${MARCA_NEGRITA_ENCABEZADO}Pagado"), comanda(c))
         assertTrue(encabezadoDeComanda(pedido(modo = "PAY_AT_PICKUP", cardStatus = null)).none { it.contains("TARJETA") })
     }
 

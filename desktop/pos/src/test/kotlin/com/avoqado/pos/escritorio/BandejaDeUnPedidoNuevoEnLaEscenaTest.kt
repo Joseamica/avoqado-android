@@ -65,8 +65,8 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
         totalCents = 20000, remainingCents = 20000, needsPrint = false, items = emptyList(),
     )
 
-    private fun tarjeta(estado: OnlineOrderStatus, cardStatus: String?, pago: String = "PENDING", restante: Long = 20000) =
-        pedido("t1", estado).copy(paymentMode = "CARD_ONLINE", cardStatus = cardStatus, paymentStatus = pago, remainingCents = restante)
+    private fun tarjeta(estado: OnlineOrderStatus, cardStatus: String?, pago: String = "PENDING", restante: Long = 20000, cargo: String? = null) =
+        pedido("t1", estado).copy(paymentMode = "CARD_ONLINE", cardStatus = cardStatus, paymentStatus = pago, remainingCents = restante, cardChargeStatus = cargo)
 
     private fun pendientes(vararg ids: String) = ids.map { pedido(it, OnlineOrderStatus.PENDING_ACCEPTANCE) }
     private fun enPreparacion(vararg ids: String) = ids.map { pedido(it, OnlineOrderStatus.ACCEPTED) }
@@ -124,7 +124,7 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
         waitForIdle()
     }
 
-    @Test fun `a card order never shows Cobrar, Aceptar is off while confirming and PAID says Pagado con tarjeta`() = runComposeUiTest {
+    @Test fun `a card order never shows Cobrar, Aceptar is off while confirming and only a captured charge says Pagado con tarjeta`() = runComposeUiTest {
         val p = montar(SeccionesBandeja(porAceptar = listOf(tarjeta(OnlineOrderStatus.PENDING_ACCEPTANCE, "AUTHORIZED"))), puedeCobrar = true)
         onNodeWithTag("aceptar-t1").assertIsEnabled()
         onNodeWithText("Con tarjeta: se cobra al aceptar").assertExists()
@@ -132,9 +132,15 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
         waitForIdle()
         onNodeWithTag("aceptar-t1").assertIsNotEnabled()
         onNodeWithText("Confirmando el pago…").assertExists()
-        p.secciones = SeccionesBandeja(enPreparacion = listOf(tarjeta(OnlineOrderStatus.ACCEPTED, null, pago = "PAID", restante = 0)))
+        p.secciones = SeccionesBandeja(enPreparacion = listOf(tarjeta(OnlineOrderStatus.ACCEPTED, null, pago = "PAID", restante = 0, cargo = "CAPTURED")))
         waitForIdle()
         onNodeWithText("Pagado con tarjeta").assertExists()
+        onNodeWithTag("cobrar-t1").assertDoesNotExist()
+        // Se pagó por otro camino y la tarjeta se soltó: «Pagado», sin mencionarla.
+        p.secciones = SeccionesBandeja(enPreparacion = listOf(tarjeta(OnlineOrderStatus.ACCEPTED, null, pago = "PAID", restante = 0, cargo = "RELEASED")))
+        waitForIdle()
+        onNodeWithText("Pagado").assertExists()
+        onNodeWithText("Pagado con tarjeta").assertDoesNotExist()
         onNodeWithTag("cobrar-t1").assertDoesNotExist()
         p.secciones = SeccionesBandeja(enPreparacion = listOf(tarjeta(OnlineOrderStatus.ACCEPTED, null)))
         waitForIdle()
