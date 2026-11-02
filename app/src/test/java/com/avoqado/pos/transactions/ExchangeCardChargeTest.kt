@@ -23,7 +23,7 @@ class ExchangeCardChargeTest {
     private lateinit var store:ExchangePendingStore
     private lateinit var repo:ExchangeRepository
     @Before fun setup() {
-        server=MockWebServer(); server.start()
+        server=MockWebServer(); server.dispatcher=ComoElServidor(); server.start()
         val storage=mockk<SecureStorage>(relaxed=true)
         every { storage.venueId } returns "venue"
         repo=ExchangeRepository(storage,OkHttpClient()).also { it.baseUrl=server.url("/api/v1").toString().trimEnd('/') }
@@ -115,7 +115,9 @@ class ExchangeCardChargeTest {
     private suspend fun assertPositiveChargeRetained() {
         var requestSavedBeforeComplete=false
         server.dispatcher=object:Dispatcher() {
-            override fun dispatch(request:RecordedRequest):MockResponse =
+            // Como NUESTRO SERVIDOR: devuelve el X-Correlation-ID de su petición (Codex apps r3).
+            override fun dispatch(request:RecordedRequest):MockResponse = responder(request).also { r -> request.getHeader(ECO)?.let { r.setHeader(ECO,it) } }
+            fun responder(request:RecordedRequest):MockResponse =
                 if (request.path!!.endsWith("/complete")) {
                     requestSavedBeforeComplete=runBlocking { store.load("venue","payment")?.cardRequestId == "request" }
                     MockResponse().setResponseCode(409).setBody("""{"code":"EXCHANGE_NOT_CHARGED","message":"not visible yet"}""")

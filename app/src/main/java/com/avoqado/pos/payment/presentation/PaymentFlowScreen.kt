@@ -139,6 +139,8 @@ fun PaymentFlowScreen(
     var showCustomersSheet by rememberSaveable { mutableStateOf(false) }
     var showCreateCustomer by rememberSaveable { mutableStateOf(false) }
     var createCustomerSearchText by rememberSaveable { mutableStateOf("") }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by rememberSaveable { mutableStateOf<Long?>(null) }
 
     fun attachCustomer(customer: Customer) {
         showCustomersSheet = false
@@ -694,6 +696,8 @@ fun PaymentFlowScreen(
                         attachCustomer(customer)
                     },
                     onBack = { showCreateCustomer = false },
+                    alta = altaDelFormulario,
+                    onAlta = { altaDelFormulario = it },
                 )
             } else {
                 CustomersView(
@@ -707,6 +711,7 @@ fun PaymentFlowScreen(
                     },
                     onCreateCustomer = { searchText ->
                         createCustomerSearchText = searchText
+                        altaDelFormulario = null
                         showCreateCustomer = true
                     },
                 )

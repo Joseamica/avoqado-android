@@ -34,6 +34,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,11 +46,25 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.domain.telefonoValido
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.CloseButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+
+/**
+ * ¿Se puede guardar el alta? Con [requirePhone] (el saldo a favor se usa con el teléfono, spec §4) pide nombre Y un teléfono de 10 a 15 dígitos (la misma regla de «Guardar teléfono»);
+ * sin él, basta un dato, como siempre.
+ */
+internal fun puedeGuardarCliente(firstName: String, lastName: String, phone: String, email: String, requirePhone: Boolean): Boolean =
+    if (requirePhone) (firstName.isNotBlank() || lastName.isNotBlank()) && telefonoValido(phone)
+    else firstName.isNotBlank() || lastName.isNotBlank() || phone.isNotBlank() || email.isNotBlank()
+
+/** W-1 (A5): con teléfono obligatorio, lo tecleado que todavía no alcanza se marca (la ayuda «10 a 15 dígitos» dice por qué). */
+internal fun telefonoIncompleto(phone: String, requirePhone: Boolean): Boolean =
+    requirePhone && phone.isNotBlank() && !telefonoValido(phone)
 
 @Composable
 fun CreateCustomerView(
@@ -57,27 +73,31 @@ fun CreateCustomerView(
     initialName: String?,
     onCustomerCreated: (Customer) -> Unit,
     onBack: () -> Unit,
+    /**
+     * El número del alta que pidió ESTE formulario, guardado por la pantalla con la misma persistencia que su bandera de formulario
+     * abierto, y borrado al abrir otro (Codex apps r5; ver `CustomersViewModel.AltaTerminada`).
+     */
+    alta: Long?,
+    onAlta: (Long?) -> Unit,
+    requirePhone: Boolean = false,
 ) {
     val context = LocalContext.current
     val isSaving by viewModel.isSaving.collectAsState()
-    val error by viewModel.error.collectAsState()
-
-    var firstName by remember { mutableStateOf("") }
-    var lastName by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-    var showErrorAlert by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        if (!initialPhone.isNullOrEmpty()) {
-            phone = initialPhone
-        }
-        if (!initialName.isNullOrEmpty()) {
-            val parts = initialName.split(" ", limit = 2)
-            if (parts.isNotEmpty()) firstName = parts[0]
-            if (parts.size >= 2) lastName = parts[1]
-        }
+    // Sólo el desenlace de SU alta, y en esta composición: tras girar, el formulario restaurado lo recibe y avisa a su pantalla.
+    val terminada by viewModel.altaTerminada.collectAsState()
+    val desenlace = desenlaceDelFormulario(terminada, alta)
+    val alCrear by rememberUpdatedState(onCustomerCreated)
+    LaunchedEffect(desenlace) {
+        desenlace?.cliente?.let { onAlta(null); alCrear(it) }
     }
+
+    // W-2 (A5): lo tecleado sobrevive a girar (el formulario restaurado no se ve vacío ni pierde lo escrito si el alta se rechaza).
+    // Lo que se trajo de la búsqueda sólo siembra el formulario la primera vez.
+    val nombreInicial = initialName.orEmpty().split(" ", limit = 2)
+    var firstName by rememberSaveable { mutableStateOf(nombreInicial.getOrElse(0) { "" }) }
+    var lastName by rememberSaveable { mutableStateOf(nombreInicial.getOrElse(1) { "" }) }
+    var phone by rememberSaveable { mutableStateOf(initialPhone.orEmpty()) }
+    var email by rememberSaveable { mutableStateOf("") }
 
     val contactPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -139,14 +159,7 @@ fun CreateCustomerView(
         }
     }
 
-    val canSave = firstName.isNotBlank() ||
-        lastName.isNotBlank() ||
-        phone.isNotBlank() ||
-        email.isNotBlank()
-
-    LaunchedEffect(error) {
-        if (error != null) showErrorAlert = true
-    }
+    val canSave = puedeGuardarCliente(firstName, lastName, phone, email, requirePhone)
 
     val configuration = LocalConfiguration.current
     val adaptive = AvoqadoTheme.adaptive
@@ -191,13 +204,12 @@ fun CreateCustomerView(
                 ) {
                     Button(
                         onClick = {
-                            viewModel.createCustomer(
+                            onAlta(viewModel.createCustomer(
                                 firstName = firstName.ifBlank { null },
                                 lastName = lastName.ifBlank { null },
                                 phone = phone.ifBlank { null },
                                 email = email.ifBlank { null },
-                                onSuccess = onCustomerCreated,
-                            )
+                            ))
                         },
                         enabled = canSave && !isSaving,
                         shape = RoundedCornerShape(50),
@@ -286,7 +298,10 @@ fun CreateCustomerView(
             OutlinedTextField(
                 value = phone,
                 onValueChange = { phone = it },
-                label = { Text("Teléfono") },
+                // W-1 (A5): con teléfono obligatorio (saldo a favor) se marca y se dice qué pide, para que «Guardar» en gris se entienda.
+                label = { Text(if (requirePhone) "Teléfono *" else "Teléfono") },
+                supportingText = if (requirePhone) { { Text(TextosCambio.TELEFONO_DIGITOS) } } else null,
+                isError = telefonoIncompleto(phone, requirePhone),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -307,29 +322,32 @@ fun CreateCustomerView(
         }
     }
 
-    if (showErrorAlert && error != null) {
+    desenlace?.error?.let { motivo ->
         AvoqadoDialog(
             title = "No se pudo crear el cliente",
-            onDismiss = {
-                showErrorAlert = false
-                viewModel.clearError()
-            },
+            onDismiss = { onAlta(null) },
             actionButton = {
                 PrimaryButton(
                     text = "Entendido",
-                    onClick = {
-                        showErrorAlert = false
-                        viewModel.clearError()
-                    },
+                    onClick = { onAlta(null) },
                     fullWidth = true,
                 )
             },
         ) {
             Text(
-                text = error ?: "",
+                text = motivo,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
+
+/**
+ * ¿Este desenlace es del formulario abierto? Sólo si lleva el número que su pantalla guardó para ESE formulario (Codex apps r5).
+ * Lo demás (un alta de un formulario cerrado, perdido al girar o reemplazado) no llega a nadie.
+ */
+internal fun desenlaceDelFormulario(
+    terminada: CustomersViewModel.AltaTerminada?,
+    alta: Long?,
+): CustomersViewModel.AltaTerminada? = terminada?.takeIf { alta != null && it.numero == alta }

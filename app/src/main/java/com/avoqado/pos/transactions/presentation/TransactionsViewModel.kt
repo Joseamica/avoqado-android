@@ -20,6 +20,12 @@ import com.avoqado.pos.transactions.data.RefundItem
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.transactions.data.ExchangePendingStore
+import com.avoqado.pos.transactions.data.DesenlaceDeSaldo
+import com.avoqado.pos.transactions.data.PendingRefund
+import com.avoqado.pos.transactions.data.RefundPendingStore
+import com.avoqado.pos.transactions.data.SaldoAFavorEnvio
+import com.avoqado.pos.transactions.data.enviarReembolsoPendiente
+import com.avoqado.pos.transactions.presentation.exchange.exchangeStoreCreditNotice
 import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.ResultadoDeReimpresion
 import com.avoqado.pos.transactions.data.model.ResultadoLigaRecibo
@@ -33,12 +39,18 @@ import com.avoqado.pos.transactions.data.model.TransactionFilters
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import javax.inject.Inject
 import com.avoqado.pos.core.util.aCentavos
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeEntry
@@ -89,6 +101,8 @@ class TransactionsViewModel @Inject constructor(
     refreshGateFactory: RefreshGateFactory,
     private val connectivityMonitor: ConnectivityMonitor,
     private val exchangePendingStore: ExchangePendingStore,
+    /** Reembolso a saldo a favor sin confirmar (A3). `null` sólo en pruebas que no lo usan: no se reenvía nada. */
+    private val refundPendingStore: RefundPendingStore? = null,
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -209,6 +223,135 @@ class TransactionsViewModel @Inject constructor(
         _exchangeTransaction.value = null
     }
     fun clearExchangeMessage() { _exchangeMessage.value = null }
+
+    // MARK: - Reembolso a saldo a favor sin confirmar (spec 2026-10-30 §7; A3)
+    //
+    // 🔴 Se recupera al ABRIR LA VENTA, no la hoja: con todo devuelto el botón de Reembolso sale apagado y la hoja no se abre
+    // (Codex plan r3 h3). Mientras haya un pendiente, «Emitir reembolso» no deja empezar otro con una llave nueva.
+
+    private val _reembolsoPendiente = MutableStateFlow<PendingRefund?>(null)
+    val reembolsoPendiente = _reembolsoPendiente.asStateFlow()
+    private val _avisoDeReembolso = MutableStateFlow<String?>(null)
+    val avisoDeReembolso = _avisoDeReembolso.asStateFlow()
+    /** Ventas con un envío o reenvío a saldo en curso: no se manda otro de esa venta mientras tanto (M4: por venta, no global). */
+    private val enVuelo = MutableStateFlow<Set<String>>(emptySet())
+    private fun marcarEnVuelo(paymentId: String): Boolean {
+        while (true) {
+            val antes = enVuelo.value
+            if (paymentId in antes) return false
+            if (enVuelo.compareAndSet(antes, antes + paymentId)) return true
+        }
+    }
+    private fun soltarEnVuelo(paymentId: String) = enVuelo.update { it - paymentId }
+
+    /**
+     * «Emitir reembolso» se apaga con un saldo a favor de la venta abierta sin confirmar en el aparato O en vuelo (ronda 2): al cerrar la
+     * hoja justo al tocar «Reembolsar», la relectura puede llegar antes de que DataStore termine de escribir.
+     */
+    val reembolsoBloqueado: StateFlow<Boolean> = combine(_reembolsoPendiente, enVuelo, _selectedTransactionId) { pendiente, vuelo, id ->
+        pendiente != null || (id != null && id in vuelo)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * 🔴 La guarda de TODA devolución que manda la hoja (efectivo, transferencia, tarjeta, terminal y saldo a favor): con un saldo a favor
+     * de esa venta sin confirmar (en el aparato) o en vuelo, no se manda otro; ése se confirma con su misma llave («Confirmar estado»),
+     * que no pasa por aquí. Si había uno, el detalle lo muestra. `null` = se puede mandar.
+     */
+    suspend fun motivoParaNoReembolsar(paymentId: String): String? {
+        if (paymentId in enVuelo.value) return TextosCambio.REEMBOLSO_SIN_CONFIRMAR
+        val store = refundPendingStore ?: return null
+        val venue = secureStorage.venueId ?: return null
+        val pending = try {
+            store.pendiente(venue, paymentId)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { return TextosCambio.REEMBOLSO_RECUPERACION_FALLIDA }
+        if (pending == null) return null
+        detalleAbierto(paymentId)?.let { versionDelPendiente.incrementAndGet(); _reembolsoPendiente.value = pending }
+        return TextosCambio.REEMBOLSO_SIN_CONFIRMAR
+    }
+    /** Cada lectura del almacén y cada desenlace avanza esto: una lectura que llega tarde no pisa un desenlace más nuevo. */
+    private val versionDelPendiente = java.util.concurrent.atomic.AtomicLong()
+
+    /** Lee lo pendiente de la venta abierta y, si [reenviar] y hay red, lo reenvía con su MISMA llave. */
+    private suspend fun recuperarReembolsoPendiente(scope: DetailScope, reenviar: Boolean) {
+        val selloDelToque = secureStorage.generacion // Antes de leer el disco: el envío sale con la sesión de quien tocó, o no sale.
+        val store = refundPendingStore ?: return
+        val venue = scope.venueId ?: return
+        val version = versionDelPendiente.incrementAndGet()
+        val pending = try {
+            store.pendiente(venue, scope.paymentId)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) {
+            if (current(scope)) _avisoDeReembolso.value = TextosCambio.REEMBOLSO_RECUPERACION_FALLIDA
+            return
+        }
+        if (!current(scope) || version != versionDelPendiente.get()) return
+        _reembolsoPendiente.value = pending
+        if (pending == null || !reenviar) return
+        if (!marcarEnVuelo(scope.paymentId)) return
+        try {
+            if (!connectivityMonitor.isOnline()) { _avisoDeReembolso.value = TextosCambio.SALDO_SIN_RED; return }
+            _avisoDeReembolso.value = null
+            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending, selloDelToque)
+            detalleAbierto(scope.paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = true) }
+        } finally { soltarEnVuelo(scope.paymentId) }
+    }
+
+    /**
+     * 🔴 El envío a saldo de la hoja corre AQUÍ, no en la hoja (I2): si la cajera la cierra con el POST en vuelo, el envío sigue, el
+     * detalle relee lo pendiente al cerrarla (`dismissIssueRefundSheet`) y, al terminar, muestra el desenlace. La hoja sólo espera el
+     * resultado para lo suyo (un rechazo con lo capturado).
+     */
+    fun enviarReembolsoASaldo(paymentId: String, body: String, idempotencyKey: String): Deferred<DesenlaceDeSaldo> =
+        viewModelScope.async {
+            val selloDelToque = secureStorage.generacion // Antes de escribir en disco: sale con la sesión de quien tocó, o no sale.
+            val store = refundPendingStore ?: return@async DesenlaceDeSaldo.GuardadoFallido
+            val venue = secureStorage.venueId ?: return@async DesenlaceDeSaldo.GuardadoFallido
+            if (!marcarEnVuelo(paymentId)) return@async DesenlaceDeSaldo.OtroPendiente
+            val desenlace = try {
+                // «Quién lo pidió» (para el aviso): el nombre de la sesión de ahora, al tocar «Reembolsar».
+                SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey,
+                    listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim(), selloDelToque)
+            } finally { soltarEnVuelo(paymentId) }
+            detalleAbierto(paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = false) }
+            desenlace
+        }
+
+    /** El detalle abierto si es ESA venta (M5): el desenlace de otra venta no se escribe en ésta. */
+    private fun detalleAbierto(paymentId: String): DetailScope? = detailScope?.takeIf { it.paymentId == paymentId && current(it) }
+
+    /** Lo que el detalle muestra con el desenlace, venga de la hoja o de la recuperación: el abono con su aviso de teléfono (I1). */
+    private suspend fun aplicarDesenlace(scope: DetailScope, desenlace: DesenlaceDeSaldo, reenvio: Boolean) {
+        versionDelPendiente.incrementAndGet()
+        when (desenlace) {
+            is DesenlaceDeSaldo.Hecho -> {
+                _reembolsoPendiente.value = null
+                val abono = desenlace.data.storeCredit?.let(::exchangeStoreCreditNotice).orEmpty()
+                _avisoDeReembolso.value = ((if (reenvio) listOf(TextosCambio.REEMBOLSO_CONFIRMADO) else emptyList()) + abono)
+                    .joinToString("\n").ifEmpty { null }
+                repository.fetchTransactionDetail(scope.paymentId, scope.actorId, scope.venueId)
+                    ?.takeIf { current(scope) && it.id == scope.paymentId }?.let { _selectedTransaction.value = it }
+                invalidateAndRefresh()
+            }
+            is DesenlaceDeSaldo.Rechazado -> {
+                _reembolsoPendiente.value = null
+                // Con la hoja abierta el rechazo lo dice ella, junto a lo capturado; si ya se cerró, lo dice el detalle.
+                if (reenvio || !_issueRefundSheetVisible.value) _avisoDeReembolso.value = desenlace.mensaje
+            }
+            is DesenlaceDeSaldo.Pendiente -> {
+                recuperarReembolsoPendiente(scope, reenviar = false)
+                if (current(scope)) _avisoDeReembolso.value = desenlace.mensaje
+            }
+            DesenlaceDeSaldo.OtroPendiente -> recuperarReembolsoPendiente(scope, reenviar = false)
+            DesenlaceDeSaldo.GuardadoFallido -> Unit
+        }
+    }
+
+    /** «Confirmar estado»: el ÚNICO reenvío de lo pendiente (un toque humano, con la sesión de quien toca y la misma llave). */
+    fun confirmarReembolsoPendiente() {
+        val scope = detailScope ?: return
+        viewModelScope.launch { recuperarReembolsoPendiente(scope, reenviar = true) }
+    }
 
     /** Recovery opens a saved operation, even if its completed return made the original sale ineligible. */
     fun resumePendingExchange(transaction: Transaction) {
@@ -422,6 +565,9 @@ class TransactionsViewModel @Inject constructor(
 
     fun dismissIssueRefundSheet() {
         _issueRefundSheetVisible.value = false
+        // I2: si se cerró con un envío a saldo en vuelo, lo pendiente ya está en disco: el detalle lo muestra y apaga «Emitir».
+        val scope = detailScope ?: return
+        viewModelScope.launch { recuperarReembolsoPendiente(scope, reenviar = false) }
     }
 
     /** Guard §4.5 — dinero: con la devolución abierta (lista o detalle) o corriendo, ni el gesto refresca. */
@@ -569,11 +715,15 @@ class TransactionsViewModel @Inject constructor(
         _customerPickerVisible.value = false
         _customerAssignmentMessage.value = null
         _customerAssignmentSucceeded.value = false
+        _reembolsoPendiente.value = null
+        _avisoDeReembolso.value = null
         viewModelScope.launch {
             val detail = repository.fetchTransactionDetail(transactionId, scope.actorId, scope.venueId)
             if (!current(scope)) return@launch
             _selectedTransaction.value = detail?.takeIf { it.id == scope.paymentId }
             _isLoadingDetail.value = false
+            // Opción A (founder, 2-nov): al abrir la venta sólo se LEE lo pendiente; nada se reenvía solo, para nadie.
+            if (detail?.id == scope.paymentId) launch { recuperarReembolsoPendiente(scope, reenviar = false) }
             if (detail != null && detail.id == scope.paymentId && roleManager.canAttachCustomer && roleManager.hasVenuePermission("customers:read")) {
                 try {
                     readPending(scope)?.let { pending ->
@@ -600,6 +750,8 @@ class TransactionsViewModel @Inject constructor(
         _customerPickerVisible.value = false
         _customerAssignmentMessage.value = null
         _customerAssignmentSucceeded.value = false
+        _reembolsoPendiente.value = null
+        _avisoDeReembolso.value = null
     }
 
     // MARK: - Print Receipt
@@ -807,6 +959,9 @@ internal fun Transaction.toReceiptData(
     // la etiqueta del pago y el ticket los repetía.
     val isCard = method == "CARD" || method == "CREDIT_CARD" || method == "DEBIT_CARD"
     val lastFour = maskedPan?.takeIf { it.length >= 4 }?.takeLast(4)
+    // Devolución a saldo a favor (spec §7, Codex plan r1 h9): «Devuelto con: Saldo a favor (destinataria)», con el nombre que manda el
+    // SERVIDOR (a quién se abonó), no el de la clienta de la venta.
+    val saldoPara = storeCredit?.customerName?.takeIf { it.isNotBlank() }
 
     // D3 (IVA por producto, plan 7a; r1 #2 y #9; r2 R2-6 y R2-9; r3 R3-11; ruling A7-R6): con el comprobante del servidor, TODAS
     // las cifras salen de él —el recibo emitido no cambia aunque el pago se haya corregido después—. Sólo con un servidor anterior
@@ -874,9 +1029,14 @@ internal fun Transaction.toReceiptData(
         total = total,
         serviceChargeAmount = cargo.takeIf { it > 0 },
         isRefund = esDevolucion,
-        paymentMethod = if (isCard) PaymentMethodDisplay.label(method) else methodDescription,
-        cardLastFour = if (isCard) lastFour else null,
-        cardBrand = if (isCard) cardBrand else null,
+        paymentMethod = when {
+            saldoPara != null -> TextosCambio.REIMPRESION_SALDO.replace("{nombre}", saldoPara)
+            isCard -> PaymentMethodDisplay.label(method)
+            else -> methodDescription
+        },
+        paymentRowLabel = TextosCambio.TICKET_DEVUELTO_CON.takeIf { saldoPara != null },
+        cardLastFour = if (isCard && saldoPara == null) lastFour else null,
+        cardBrand = if (isCard && saldoPara == null) cardBrand else null,
         venueName = venueName,
         cashierName = staffName,
         customerName = customerName,

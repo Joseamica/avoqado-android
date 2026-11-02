@@ -83,6 +83,9 @@ class ExchangeViewModel @Inject constructor(
     private var serverCalculation: com.avoqado.pos.transactions.data.ExchangeServerCalculation? = null
     var submissionLocked: Boolean = false
         private set
+    /** La red, con el mismo observador que recalcula la pantalla: el diálogo de devolución la lee para reaccionar al volver. */
+    private val _online = MutableStateFlow(connectivityMonitor.isOnline())
+    val online: StateFlow<Boolean> = _online.asStateFlow()
 
     fun lockSubmission(locked: Boolean) { submissionLocked = locked }
 
@@ -212,6 +215,7 @@ class ExchangeViewModel @Inject constructor(
         ?.firstOrNull { it.orderItemId == row.item.id }?.valueCents ?: pieces(row).sumOf { it.paidCents }
 
     private fun recalculate() {
+        _online.value = connectivityMonitor.isOnline()
         _preparedExchange.value = null
         val s = _state.value
         val selected = s.returned.filter { it.quantity > 0 }
@@ -251,7 +255,9 @@ class ExchangeViewModel @Inject constructor(
                 selected.any { it.item.productId == taken.product.id } } -> TextosCambio.TALLA_QUE_REGRESA
             calculation.kind == ExchangeKind.PAYOUT && s.transaction?.payoutOptions.orEmpty().none {
                 (it.maxCents ?: 0) >= -calculation.differenceCents
-            } -> TextosCambio.SIN_OPCIONES_DEVOLUCION
+            } -> if (s.transaction?.let(ExchangeSettlement::storeCreditApplies) == true &&
+                s.transaction.storeCreditOption?.available == false) TextosCambio.SALDO_PIDE_A_AVOQADO
+                else TextosCambio.SIN_OPCIONES_DEVOLUCION
             else -> null
         }
         _state.value = s.copy(calculation = calculation, bar = exchangeBar(calculation.differenceCents), blockedReason = reason)

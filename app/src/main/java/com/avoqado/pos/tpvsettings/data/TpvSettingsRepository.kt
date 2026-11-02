@@ -409,6 +409,14 @@ class TpvSettingsRepository internal constructor(
     private val _exchangesEnabled = MutableStateFlow(secureStorage.exchangesEnabled)
     val exchangesEnabled: StateFlow<Boolean> = _exchangesEnabled.asStateFlow()
 
+    /** «Sólo saldo a favor» de la sucursal; viaja en la misma fila que el «Cambio» (spec 2026-10-30 §5.1). */
+    private val _storeCreditOnly = MutableStateFlow(secureStorage.storeCreditOnly)
+    val storeCreditOnly: StateFlow<Boolean> = _storeCreditOnly.asStateFlow()
+
+    /** El SERVIDOR sabe dar saldo a favor (tiene las llaves). Apagado o servidor anterior: la opción sale en gris. */
+    private val _storeCreditAvailable = MutableStateFlow(secureStorage.storeCreditAvailable)
+    val storeCreditAvailable: StateFlow<Boolean?> = _storeCreditAvailable.asStateFlow()
+
     /** La sucursal cuyos ajustes hay en memoria. `@Volatile`: el poll refresca desde otro hilo (Task 4.1). */
     @Volatile private var loadedVenueId: String? = null
 
@@ -611,6 +619,12 @@ class TpvSettingsRepository internal constructor(
                     val exchangesEnabled = result.data?.exchangesEnabled ?: false
                     _exchangesEnabled.value = exchangesEnabled
                     secureStorage.exchangesEnabled = exchangesEnabled
+                    val storeCreditOnly = result.data?.storeCreditOnly ?: false
+                    _storeCreditOnly.value = storeCreditOnly
+                    secureStorage.storeCreditOnly = storeCreditOnly
+                    val storeCreditAvailable = result.data?.storeCreditAvailable
+                    _storeCreditAvailable.value = storeCreditAvailable
+                    secureStorage.storeCreditAvailable = storeCreditAvailable
                 }
 
                 // Panel de promociones: es de VENUE, así que aplica HAYA o NO una terminal activa. Fallido ⇒ el previo
@@ -838,6 +852,10 @@ class TpvSettingsRepository internal constructor(
             secureStorage.managerPinOverrideEnabled = false
             _exchangesEnabled.value = false
             secureStorage.exchangesEnabled = false
+            _storeCreditOnly.value = false
+            secureStorage.storeCreditOnly = false
+            _storeCreditAvailable.value = null
+            secureStorage.storeCreditAvailable = null
         }
     }
 
@@ -945,6 +963,12 @@ internal data class VenueSettingsData(
     val managerPinOverrideEnabled: Boolean = false,
     /** Venue-owned switch; absent or null on older servers means disabled. */
     val exchangesEnabled: Boolean? = null,
+    /** Saldo a favor (aditivo, de VENUE): «Sólo saldo a favor». Ausente ⇒ null ⇒ como hoy (apagado). */
+    @Serializable(with = com.avoqado.pos.transactions.data.model.BooleanTolerante::class)
+    val storeCreditOnly: Boolean? = null,
+    /** Saldo a favor (aditivo): el SERVIDOR sabe dar saldo (sus dos llaves). Ausente ⇒ null ⇒ no disponible. */
+    @Serializable(with = com.avoqado.pos.transactions.data.model.BooleanTolerante::class)
+    val storeCreditAvailable: Boolean? = null,
     /**
      * Encabezado del ticket impreso. Ausente (server viejo) ⇒ null ⇒ el ticket
      * sale sin encabezado fiscal, como hoy.

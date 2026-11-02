@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
@@ -142,6 +143,8 @@ private fun TabletCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
     var clienteActualizado by remember { mutableStateOf(false) }
 
@@ -171,6 +174,8 @@ private fun TabletCustomersLayout(
                 selectedCustomer = customer
             },
             onBack = { showCreateCustomer = false },
+            alta = altaDelFormulario,
+            onAlta = { altaDelFormulario = it },
         )
         return
     }
@@ -224,6 +229,7 @@ private fun TabletCustomersLayout(
                                 text = { Text("Crear cliente") },
                                 onClick = {
                                     showMenu = false
+                                    altaDelFormulario = null
                                     showCreateCustomer = true
                                 },
                             )
@@ -395,6 +401,8 @@ private fun PhoneCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
     var clienteActualizado by remember { mutableStateOf(false) }
 
@@ -424,6 +432,8 @@ private fun PhoneCustomersLayout(
                 selectedCustomer = customer
             },
             onBack = { showCreateCustomer = false },
+            alta = altaDelFormulario,
+            onAlta = { altaDelFormulario = it },
         )
         return
     }
@@ -507,6 +517,7 @@ private fun PhoneCustomersLayout(
                         DropdownMenuItem(
                             text = { Text("Crear cliente") },
                             onClick = {
+                                altaDelFormulario = null
                                 showMenu = false
                                 showCreateCustomer = true
                             },
@@ -789,6 +800,20 @@ private fun CustomerDetailPanel(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
+        // Saldo a favor (A4): sólo si el cliente tiene sobre; sin él no se pinta nada, ni «$0.00».
+        lineaSaldoAFavorDeLaFicha(customer)?.let { linea ->
+            // O-4 (A5): el renglón ya dice «Saldo a favor: $X»; sin título encima que lo repita.
+            DetailSectionCard(title = null) {
+                Text(
+                    text = linea,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
+                )
+            }
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        }
+
         // Activity section
         DetailSectionCard(title = "Actividad") {
             DetailRow(
@@ -878,10 +903,10 @@ private fun CustomerEmptyState() {
 
 @Composable
 private fun DetailSectionCard(
-    title: String,
+    title: String?,
     content: @Composable () -> Unit,
 ) {
-    Text(
+    if (title != null) Text(
         text = title,
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,

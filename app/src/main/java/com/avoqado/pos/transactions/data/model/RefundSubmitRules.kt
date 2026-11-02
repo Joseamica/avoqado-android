@@ -17,7 +17,70 @@ fun refundChainRules(systemKind: String?, method: String?, label: String?, block
         ?: emptyList(), blocked)
 }
 
-fun refundMethodForSubmit(systemKind: String?, selected: String?): String? = selected.takeUnless { systemKind == "EXCHANGE_CREDIT" }
+/** Un crédito de cambio sale por el medio de su raíz (no viaja nada), salvo el saldo a favor, que viaja tal cual (Codex plan r1 h6). */
+fun refundMethodForSubmit(systemKind: String?, selected: String?): String? =
+    selected.takeUnless { systemKind == "EXCHANGE_CREDIT" && it != DEVOLVER_CON_SALDO }
+
+/** El bloqueo de la cadena (p. ej. «se devuelve a esa tarjeta en la terminal») no aplica cuando se devuelve a saldo a favor. */
+fun bloqueoDeLaCadena(chain: RefundChainRules, escogido: String?): String? = chain.blockedReason.takeUnless { escogido == DEVOLVER_CON_SALDO }
+
+// MARK: - Saldo a favor en «Devolver con» (spec 2026-10-30 §4, §5.5; A3). Espejo exacto de RefundSubmitRules.swift.
+
+const val DEVOLVER_CON_SALDO = "STORE_CREDIT"
+
+/** Los motivos con los que «Sólo saldo a favor» deja devolver como se pagó (LFPC art. 92); el cuarto es «Es por defecto». */
+val MOTIVOS_LIBRES_DE_SOLO_SALDO = setOf("ACCIDENTAL_CHARGE", "FRAUDULENT_CHARGE", "CANCELLED_ORDER")
+
+/** «Sólo saldo a favor» rige sólo con las llaves puestas, igual que en el SERVIDOR (D-1); un servidor anterior (`null`) no restringe. */
+fun soloSaldoEfectivo(storeCreditOnly: Boolean, storeCreditAvailable: Boolean?): Boolean = storeCreditOnly && storeCreditAvailable == true
+
+/** ¿Se ofrece «Es por defecto»? Con «sólo saldo» y un motivo que restringe (devolución de mercancía, «Otro» o aún sin motivo). */
+fun ofrecerEsPorDefecto(soloSaldo: Boolean, reason: String?): Boolean = soloSaldo && reason !in MOTIVOS_LIBRES_DE_SOLO_SALDO
+
+/** ¿«Sólo saldo» deja sólo el saldo a favor? Con un motivo que restringe y sin «Es por defecto». La usa la hoja. */
+fun restringe(soloSaldo: Boolean, reason: String?, esPorDefecto: Boolean): Boolean = ofrecerEsPorDefecto(soloSaldo, reason) && !esPorDefecto
+
+/** `defective` del cuerpo: sólo viaja cuando cuenta; sin «sólo saldo» el cuerpo no cambia. */
+fun defectoParaEnvio(soloSaldo: Boolean, reason: String?, defective: Boolean): Boolean? =
+    true.takeIf { defective && ofrecerEsPorDefecto(soloSaldo, reason) }
+
+/** La excepción que la terminal exige con «sólo saldo» (`storeCreditOnlyException`); `null` = no viaja. */
+fun excepcionDeSoloSaldo(soloSaldo: Boolean, reason: String?, defective: Boolean): String? = when {
+    !soloSaldo -> null
+    reason in MOTIVOS_LIBRES_DE_SOLO_SALDO -> reason
+    defective -> "DEFECTIVE"
+    else -> null
+}
+
+/**
+ * La pastilla «Saldo a favor»; `null` = no se pinta. Sin el dato del servidor no aparece; sin las llaves sale en gris con
+ * «Pide a Avoqado…» sólo donde aplicaría ([aplica]); sin red, en gris con «El saldo a favor necesita conexión».
+ */
+fun pastillaDeSaldo(option: StoreCreditOption?, storeCreditAvailable: Boolean?, aplica: Boolean, online: Boolean): OpcionDeDevolucion? = when {
+    option == null || storeCreditAvailable == null -> null
+    option.available == true -> OpcionDeDevolucion(DEVOLVER_CON_SALDO, TextosCambio.SALDO_A_FAVOR, TextosCambio.SALDO_SIN_RED.takeUnless { online })
+    storeCreditAvailable == false && aplica -> OpcionDeDevolucion(DEVOLVER_CON_SALDO, TextosCambio.SALDO_A_FAVOR, TextosCambio.SALDO_PIDE_A_AVOQADO)
+    else -> null
+}
+
+/**
+ * «Devolver con» con el saldo a favor: las pastillas de hoy (o, si no había selector —una tarjeta de la terminal—, la del mismo
+ * medio) más «Saldo a favor». Con «sólo saldo» y un motivo que restringe, sólo queda el saldo a favor.
+ */
+fun opcionesConSaldo(base: List<OpcionDeDevolucion>, original: OpcionDeDevolucion, saldo: OpcionDeDevolucion?, restringe: Boolean):
+    List<OpcionDeDevolucion> = when {
+    saldo == null -> base
+    restringe -> listOf(saldo)
+    else -> base.ifEmpty { listOf(original) } + saldo
+}
+
+/** Lo escogido, o la primera opción si lo escogido ya no se ofrece (p. ej. al elegir un motivo que restringe). */
+fun devolucionEscogida(opciones: List<OpcionDeDevolucion>, escogido: String?): String? =
+    if (opciones.isNotEmpty() && opciones.none { it.refundMethod == escogido }) opciones.first().refundMethod else escogido
+
+/** Lo que le falta al saldo a favor para poder mandarse (red, a quién abonar, su teléfono); `null` = nada. Mismo texto que el Cambio. */
+fun faltaParaSaldo(online: Boolean, cliente: com.avoqado.pos.transactions.presentation.exchange.ExchangeStoreCreditCustomer?): String? =
+    com.avoqado.pos.transactions.presentation.exchange.ExchangeSettlement.storeCreditBlock(online, cliente)
 
 /**
  * ════════════════════════════════════════════════════════════════════════════════════
@@ -145,8 +208,11 @@ fun tipRefundCentsPorArticulos(
 fun seDevuelveEnTerminal(refundOnTerminal: Boolean?, method: String?): Boolean =
     refundOnTerminal ?: (method == "CREDIT_CARD" || method == "DEBIT_CARD")
 
-/** Una pastilla de «Devolver con». `refundMethod = null` es «por el mismo medio» (no viaja al servidor). */
-data class OpcionDeDevolucion(val refundMethod: String?, val label: String)
+/**
+ * Una pastilla de «Devolver con». `refundMethod = null` es «por el mismo medio» (no viaja al servidor). Con [disabledReason] se
+ * pinta en gris y se explica (el saldo a favor sin red o sin las llaves).
+ */
+data class OpcionDeDevolucion(val refundMethod: String?, val label: String, val disabledReason: String? = null)
 
 private fun esEfectivo(method: String?) = method == "CASH"
 private fun esTransferencia(method: String?) = method == "BANK_TRANSFER" || method == "TRANSFER"
@@ -210,6 +276,7 @@ fun textoDeSinPermisoParaReembolsar(refundMethod: String?): String =
 
 /** La línea bajo las pastillas: qué pasa con el dinero según lo escogido. */
 fun leyendaDeDevolucion(method: String?, refundMethod: String?): String = when {
+    refundMethod == DEVOLVER_CON_SALDO -> "Queda como saldo a favor: no sale dinero de la caja."
     refundMethod == "CASH" || (refundMethod == null && esEfectivo(method)) -> "Sale de la caja: el corte lo descuenta solo."
     refundMethod == "BANK_TRANSFER" || (refundMethod == null && esTransferencia(method)) -> "Tú le haces la transferencia; aquí sólo queda registrado."
     else -> "Se devuelve por el mismo medio con que se pagó."
