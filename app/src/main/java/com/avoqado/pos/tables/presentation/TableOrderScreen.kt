@@ -167,7 +167,31 @@ fun TableOrderScreen(
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
-    val menuCategoryIds by viewModel.menuCategoryIds.collectAsState()
+    val verTodo by viewModel.verTodo.collectAsState()
+    // «Menú del aparato»: los ajustes vigentes en cada pintada, así un refresco repinta la mesa abierta.
+    val filtroDelAparato: com.avoqado.pos.pos.presentation.product.FiltroDelAparatoViewModel = hiltViewModel()
+    val visiblesDelAparato by filtroDelAparato.visibleCategoryIds.collectAsState()
+    val menusDelAparatoIds by filtroDelAparato.visibleMenuIds.collectAsState()
+    val productosDelCatalogo by catalogViewModel.products.collectAsState()
+    val categoriasConProductos = remember(productosDelCatalogo) {
+        productosDelCatalogo.mapNotNullTo(HashSet()) { it.categoryId ?: it.category?.id }
+    }
+    val menuCategoryIds = com.avoqado.pos.pos.presentation.product.MenuDelAparato.filtroDeMesas(
+        selectedMenuId, menus, menusDelAparatoIds, visiblesDelAparato, verTodo, categoriasConProductos,
+    )
+    // «Todo ▸» sólo cuando el filtro viene del aparato y no de un menú elegido.
+    val verTodoDeLaCuadricula: (() -> Unit)? =
+        if (com.avoqado.pos.pos.presentation.product.MenuDelAparato.muestraVerTodoEnMesas(
+                selectedMenuId, menus, menusDelAparatoIds, visiblesDelAparato, verTodo, categoriasConProductos,
+            )) ({ viewModel.verTodoElCatalogo() }) else null
+    // El filtro del aparato cambió (refresco de 5 min) con la lista de menús ya cargada o uno elegido: se vuelve a pedir.
+    // También cuando un refresco termina bien sin cambiar el filtro (`generacion`): pudieron cambiar las categorías de SU menú.
+    val generacionDelFiltro by filtroDelAparato.generacion.collectAsState()
+    LaunchedEffect(visiblesDelAparato, menusDelAparatoIds, generacionDelFiltro) {
+        if (com.avoqado.pos.pos.presentation.product.MenuDelAparato.debeRecargarMenus(menus.isNotEmpty(), selectedMenuId != null)) {
+            viewModel.loadMenus(menusDelAparatoIds, enFondo = true)
+        }
+    }
     val floorTables by viewModel.floorTables.collectAsState()
     // Propiedad de mesa: cheque de otro mesero + switch del venue encendido y
     // sin 'tables:manage-all' → pantalla read-only (el server refuerza con 403).
@@ -388,6 +412,7 @@ fun TableOrderScreen(
                                         viewModel = catalogViewModel,
                                         onProductTap = { handleProductTap(it) },
                                         menuCategoryIds = menuCategoryIds,
+                                        onVerTodo = verTodoDeLaCuadricula,
                                     )
                                 }
                             }
@@ -501,7 +526,7 @@ fun TableOrderScreen(
                                 onEscanear = { showBarcodeScanner = true },
                                 onRecompensas = { showRewards = true },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
-                                onMenus = { viewModel.loadMenus(); showMenus = true },
+                                onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
@@ -543,6 +568,8 @@ fun TableOrderScreen(
                         ProductGridView(
                             viewModel = catalogViewModel,
                             onProductTap = { handleProductTap(it) },
+                            menuCategoryIds = menuCategoryIds,
+                            onVerTodo = verTodoDeLaCuadricula,
                         )
                     }
                 }
@@ -678,7 +705,7 @@ fun TableOrderScreen(
                                 onEscanear = { showBarcodeScanner = true },
                                 onRecompensas = { showRewards = true },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
-                                onMenus = { viewModel.loadMenus(); showMenus = true },
+                                onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
@@ -1160,8 +1187,9 @@ fun TableOrderScreen(
 
     if (showMenus) {
         MenusDialog(
-            menus = menus,
+            menus = com.avoqado.pos.pos.presentation.product.MenuDelAparato.menusDelAparato(menus, menusDelAparatoIds),
             selectedMenuId = selectedMenuId,
+            todosEsActual = com.avoqado.pos.pos.presentation.product.MenuDelAparato.marcaTodosActual(selectedMenuId, menuCategoryIds),
             onDismiss = { showMenus = false },
             onPick = { id ->
                 showMenus = false
@@ -3173,6 +3201,7 @@ private fun SplitModesDialog(
 private fun MenusDialog(
     menus: List<com.avoqado.pos.tables.data.VenueMenu>,
     selectedMenuId: String?,
+    todosEsActual: Boolean,
     onDismiss: () -> Unit,
     onPick: (String?) -> Unit,
 ) {
@@ -3195,10 +3224,10 @@ private fun MenusDialog(
                 ) {
                     Text(
                         text = "Todos los productos",
-                        fontWeight = if (selectedMenuId == null) FontWeight.Bold else FontWeight.Normal,
+                        fontWeight = if (todosEsActual) FontWeight.Bold else FontWeight.Normal,
                         modifier = Modifier.weight(1f),
                     )
-                    if (selectedMenuId == null) {
+                    if (todosEsActual) {
                         Text("Actual", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     }
                 }

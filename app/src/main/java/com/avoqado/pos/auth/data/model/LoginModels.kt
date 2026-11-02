@@ -2,6 +2,10 @@ package com.avoqado.pos.auth.data.model
 
 import kotlinx.serialization.Serializable
 
+/** «¿Olvidaste tu contraseña?» (POST mobile/auth/request-reset), igual que iOS. */
+@Serializable
+data class RestablecerContrasenaRequest(val email: String)
+
 @Serializable
 data class LoginRequest(
     val email: String,

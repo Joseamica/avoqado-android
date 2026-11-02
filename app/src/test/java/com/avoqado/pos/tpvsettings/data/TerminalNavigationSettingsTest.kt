@@ -78,4 +78,37 @@ class TerminalNavigationSettingsTest {
             response.data.toTerminalNavigationSettings(),
         )
     }
+
+    private fun navegacionDe(deviceTerminal: String) = json.decodeFromString<VenueSettingsResponse>(
+        """{ "data": { "deviceTerminal": $deviceTerminal } }""",
+    ).data.toTerminalNavigationSettings()
+
+    @Test
+    fun `campo ausente es null`() {
+        val nav = navegacionDe("""{ "id": "t1" }""")
+        assertEquals(null, nav.visibleCategoryIds)
+        assertEquals(null, nav.visibleMenuIds)
+    }
+
+    @Test
+    fun `campo null es null`() {
+        val nav = navegacionDe("""{ "id": "t1", "visibleCategoryIds": null, "visibleMenuIds": null }""")
+        assertEquals(null, nav.visibleCategoryIds)
+        assertEquals(null, nav.visibleMenuIds)
+    }
+
+    @Test
+    fun `lista se copia`() {
+        val nav = navegacionDe("""{ "id": "t1", "visibleCategoryIds": ["a","b"], "visibleMenuIds": ["m1"] }""")
+        assertEquals(listOf("a", "b"), nav.visibleCategoryIds)
+        assertEquals(listOf("m1"), nav.visibleMenuIds)
+    }
+
+    @Test
+    fun `cache viejo sin los campos se lee como todo`() {
+        val viejo = """{"terminalId":"t1","defaultWorkspace":"STANDARD_POS"}"""
+        val nav = Json { ignoreUnknownKeys = true }.decodeFromString<TerminalNavigationSettings>(viejo)
+        assertEquals(null, nav.visibleCategoryIds)
+        assertEquals(null, nav.visibleMenuIds)
+    }
 }

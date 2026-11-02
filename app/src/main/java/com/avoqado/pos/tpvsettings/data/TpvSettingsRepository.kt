@@ -180,6 +180,9 @@ data class TerminalNavigationSettings(
      * null = no se sabe (primera vez sin red, server viejo): la pantalla dice «esta computadora» / «este aparato».
      */
     val terminalName: String? = null,
+    /** «Menú del aparato»: categorías/menús visibles en la cuadrícula. null (o vacío) = todo. Ausente en cache/server viejo = null. */
+    val visibleCategoryIds: List<String>? = null,
+    val visibleMenuIds: List<String>? = null,
 ) {
     companion object {
         const val STANDARD_POS = "STANDARD_POS"
@@ -258,6 +261,11 @@ class TpvSettingsRepository internal constructor(
 
     private val _terminalNavigation = MutableStateFlow(TerminalNavigationSettings.DEFAULT)
     val terminalNavigation: StateFlow<TerminalNavigationSettings> = _terminalNavigation.asStateFlow()
+
+    /** Sube cada vez que un refresco del filtro (suave o carga completa) aplica bien, aunque el valor no cambie: las mesas
+     *  con un menú elegido recargan `/menus` con él (cambian las categorías de SU menú sin cambiar la unión del aparato). */
+    private val _generacionDelFiltro = MutableStateFlow(0L)
+    val generacionDelFiltro: StateFlow<Long> = _generacionDelFiltro.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -430,6 +438,14 @@ class TpvSettingsRepository internal constructor(
     private val appliedFingerprints = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val fingerprintRefresh = Mutex()
 
+    /**
+     * «Menú del aparato» D2: el refresco SUAVE del filtro convive con el completo sin pisarlo. [completoGen] sube al empezar
+     * y al terminar cada [refreshSettingsForVenue]; [completosEnCurso] cuenta los que vuelan. Siempre bajo [ticketLock].
+     */
+    private var completoGen = 0L
+    private var completosEnCurso = 0
+    private val filtroRefresh = Mutex()
+
     fun getCurrentSettings(): TpvSettings = _settings.value
 
     /**
@@ -468,6 +484,8 @@ class TpvSettingsRepository internal constructor(
         if (secureStorage.venueId != venueId) return
         val mine = synchronized(ticketLock) {
             _isLoading.value = true
+            completoGen++
+            completosEnCurso++
             refreshTicket.incrementAndGet()
         }
         fun stillCurrent() = mine == refreshTicket.get() && secureStorage.venueId == venueId
@@ -546,8 +564,12 @@ class TpvSettingsRepository internal constructor(
                 receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, receiptInfo.logoUrl) } }
             }
 
+            // Un 200 degradado (`success:false` o sin `data`) no trae el perfil del aparato: conserva lo que había, en memoria y
+            // en disco. (`deviceTerminal` ausente CON data sí es legítimo: terminal desactivada.)
+            if (!result.success || result.data == null) return
+
             val terminalNavigation = result.data.toTerminalNavigationSettings()
-            if (!whileCurrent { _terminalNavigation.value = terminalNavigation }) return
+            if (!whileCurrent { _terminalNavigation.value = terminalNavigation; _generacionDelFiltro.update { it + 1 } }) return
             persistTerminalNavigation(venueId, terminalNavigation)
             if (!stillCurrent()) return
 
@@ -639,7 +661,57 @@ class TpvSettingsRepository internal constructor(
             )
         } finally {
             // El `finally` de una petición vencida no baja la bandera de la vigente.
-            synchronized(ticketLock) { if (mine == refreshTicket.get()) _isLoading.value = false }
+            synchronized(ticketLock) {
+                completoGen++
+                completosEnCurso--
+                if (mine == refreshTicket.get()) _isLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Refresco SUAVE (cada 5 min, lo llama `RefrescoDelCatalogo`): pide `/settings` y cambia SÓLO `visibleCategoryIds` y
+     * `visibleMenuIds`. Cualquier otra cosa (sin token, red, 4xx/5xx, cuerpo ilegible, `success:false`, sin `deviceTerminal`)
+     * no toca nada: un `null`+`null` sólo limpia el filtro si viene DENTRO de un `deviceTerminal` legítimo. No corre junto a
+     * un refresco completo y descarta su respuesta si uno empezó o terminó mientras volaba, o si cambió el negocio.
+     */
+    suspend fun refrescarFiltroDelAparato(venueId: String) {
+        if (!filtroRefresh.tryLock()) return
+        try {
+            val token = secureStorage.accessToken ?: return
+            val generacion = synchronized(ticketLock) {
+                if (completosEnCurso > 0 || loadedVenueId != venueId || secureStorage.venueId != venueId) return
+                completoGen
+            }
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/settings")
+                .header("Authorization", "Bearer $token")
+                // Automático: un 403 no debe abrir el aviso global de permisos ni pedir PIN.
+                .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .build()
+            val body = withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string() else null }
+            } ?: return
+            val result = json.decodeFromString<VenueSettingsResponse>(body)
+            val terminal = result.data?.deviceTerminal?.takeIf { result.success } ?: return
+            val aplicado = synchronized(ticketLock) {
+                if (completoGen != generacion || completosEnCurso > 0 || secureStorage.venueId != venueId || loadedVenueId != venueId) {
+                    null
+                } else {
+                    _terminalNavigation.value.copy(
+                        visibleCategoryIds = terminal.visibleCategoryIds,
+                        visibleMenuIds = terminal.visibleMenuIds,
+                    ).also { _terminalNavigation.value = it; _generacionDelFiltro.update { g -> g + 1 } }
+                }
+            } ?: return
+            // ponytail: el disco no cabe en el candado; si un completo arranca justo aquí, su propia escritura llega después.
+            persistTerminalNavigation(venueId, aplicado)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("📦", "Filtro del aparato sin servidor (${e.message}) — conservo el último")
+        } finally {
+            filtroRefresh.unlock()
         }
     }
 
@@ -946,6 +1018,8 @@ internal data class DeviceTerminalSettingsDto(
      * viejo) ⇒ vacía ⇒ no se ofrece nada, que es exactamente el comportamiento de hoy.
      */
     val configurableSettings: List<String> = emptyList(),
+    val visibleCategoryIds: List<String>? = null,
+    val visibleMenuIds: List<String>? = null,
 )
 
 @Serializable
@@ -966,6 +1040,8 @@ internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigati
         customerDisplayInverted = terminal.customerDisplayInverted,
         configurableSettings = terminal.configurableSettings,
         terminalName = terminals.firstOrNull { it.id == terminal.id }?.name?.trim()?.takeIf { it.isNotEmpty() },
+        visibleCategoryIds = terminal.visibleCategoryIds,
+        visibleMenuIds = terminal.visibleMenuIds,
     )
 }
 

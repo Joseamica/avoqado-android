@@ -78,6 +78,8 @@ fun ProductGridView(
     /** Menús por horario: cuando viene, la cuadrícula solo muestra las categorías
      *  (y sus productos) del menú activo. Null = catálogo completo, como siempre. */
     menuCategoryIds: Set<String>? = null,
+    /** «Menú del aparato»: cuando viene, la cuadrícula ofrece la tarjeta «Todo ▸» (null = no la ofrece, como Mesas hoy). */
+    onVerTodo: (() -> Unit)? = null,
     /** Qué tan densa se ve la cuadrícula EN ESTE APARATO. El default lee la
      *  preferencia local, así que las pantallas que no la manejan (mesas) la
      *  respetan sin tener que enterarse. El mostrador la pasa explícita para
@@ -92,14 +94,6 @@ fun ProductGridView(
 
     val allProductsUnfiltered by viewModel.products.collectAsState()
     val categoriesUnfiltered by viewModel.categories.collectAsState()
-    val allProducts = remember(allProductsUnfiltered, menuCategoryIds) {
-        if (menuCategoryIds == null) allProductsUnfiltered
-        else allProductsUnfiltered.filter { it.categoryId != null && it.categoryId in menuCategoryIds }
-    }
-    val categories = remember(categoriesUnfiltered, menuCategoryIds) {
-        if (menuCategoryIds == null) categoriesUnfiltered
-        else categoriesUnfiltered.filter { it.id in menuCategoryIds }
-    }
     val isLoading by viewModel.isLoading.collectAsState()
     // Variantes: la familia ocupa el lugar de su primera variante; sin familias, la cuadrícula de hoy (mismas llaves y orden).
     val familias by viewModel.familias.collectAsState()
@@ -114,6 +108,42 @@ fun ProductGridView(
         if (onPackTap != null) creditsVM.loadPacks()
     }
 
+    CuadriculaDeProductos(
+        allProductsUnfiltered = allProductsUnfiltered, categoriesUnfiltered = categoriesUnfiltered, isLoading = isLoading,
+        familias = familias, packs = if (onPackTap != null) packs else emptyList(), onPackTap = onPackTap,
+        menuCategoryIds = menuCategoryIds, onVerTodo = onVerTodo, tileSize = tileSize,
+        onProductTap = tapOrInfo, onFamiliaTap = { abierta = it.groupId },
+    )
+
+    // La variante elegida sigue el MISMO camino que tocar un producto suelto en esta pantalla (R1).
+    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = tapOrInfo)
+}
+
+/** La cuadrícula sin ViewModel (la pinta `ProductGridView` y la prueba de escritorio de «Menú del aparato»). */
+@Composable
+internal fun CuadriculaDeProductos(
+    allProductsUnfiltered: List<Product>,
+    categoriesUnfiltered: List<ProductCategory>,
+    isLoading: Boolean,
+    familias: Map<String, Familia>,
+    packs: List<com.avoqado.pos.articles.data.model.CreditPack>,
+    onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)?,
+    menuCategoryIds: Set<String>?,
+    onVerTodo: (() -> Unit)?,
+    tileSize: TileSize,
+    onProductTap: (Product) -> Unit,
+    onFamiliaTap: (Familia) -> Unit,
+) {
+    val tapOrInfo = onProductTap
+    val allProducts = remember(allProductsUnfiltered, menuCategoryIds) {
+        if (menuCategoryIds == null) allProductsUnfiltered
+        else allProductsUnfiltered.filter { it.categoryId != null && it.categoryId in menuCategoryIds }
+    }
+    val categories = remember(categoriesUnfiltered, menuCategoryIds) {
+        if (menuCategoryIds == null) categoriesUnfiltered
+        else categoriesUnfiltered.filter { it.id in menuCategoryIds }
+    }
+
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
 
     // Reset category when products clear (venue switch)
@@ -122,6 +152,10 @@ fun ProductGridView(
         if (isEmpty && selectedCategory != null) {
             selectedCategory = null
         }
+    }
+    // «Menú del aparato»: si el filtro cambia y la categoría abierta ya no se ve, regresa a la raíz.
+    androidx.compose.runtime.LaunchedEffect(menuCategoryIds, selectedCategory?.id) {
+        if (!MenuDelAparato.categoriaAbiertaSigue(selectedCategory?.id, menuCategoryIds)) selectedCategory = null
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -155,11 +189,17 @@ fun ProductGridView(
 
                 if (categories.isEmpty() && uncategorized.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "No hay productos",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "No hay productos",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (onVerTodo != null) {
+                                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                                Box(modifier = Modifier.width(160.dp)) { TarjetaVerTodo(onVerTodo, tileSize) }
+                            }
+                        }
                     }
                 } else {
                     CategoriesGrid(
@@ -167,9 +207,10 @@ fun ProductGridView(
                         uncategorized = sueltos,
                         onCategoryTap = { selectedCategory = it },
                         onProductTap = tapOrInfo,
-                        onFamiliaTap = { abierta = it.groupId },
-                        packs = if (onPackTap != null) packs else emptyList(),
+                        onFamiliaTap = onFamiliaTap,
+                        packs = packs,
                         onPackTap = onPackTap,
+                        onVerTodo = onVerTodo,
                         tileSize = tileSize,
                     )
                 }
@@ -199,7 +240,7 @@ fun ProductGridView(
                     ProductsGrid(
                         entradas = remember(categoryProducts, familias) { agruparCatalogo(categoryProducts, familias) },
                         onProductTap = tapOrInfo,
-                        onFamiliaTap = { abierta = it.groupId },
+                        onFamiliaTap = onFamiliaTap,
                         tileSize = tileSize,
                     )
                 }
@@ -207,8 +248,6 @@ fun ProductGridView(
         }
     }
 
-    // La variante elegida sigue el MISMO camino que tocar un producto suelto en esta pantalla (R1).
-    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = tapOrInfo)
 }
 
 // MARK: - Breadcrumb Navigation
@@ -276,6 +315,7 @@ private fun CategoriesGrid(
     onFamiliaTap: (Familia) -> Unit,
     packs: List<com.avoqado.pos.articles.data.model.CreditPack> = emptyList(),
     onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)? = null,
+    onVerTodo: (() -> Unit)? = null,
     tileSize: TileSize,
 ) {
     LazyVerticalGrid(
@@ -294,6 +334,11 @@ private fun CategoriesGrid(
                 onClick = { onCategoryTap(category) },
                 tileSize = tileSize,
             )
+        }
+
+        // «Menú del aparato»: salir del filtro del aparato, después de las categorías
+        if (onVerTodo != null) {
+            item(key = "ver_todo") { TarjetaVerTodo(onVerTodo, tileSize) }
         }
 
         // Uncategorized products after categories (las llaves de hoy: `prod_<id>`)
@@ -405,6 +450,28 @@ private fun CreditPackTile(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/** «Todo ▸»: mismo estilo que `CategoryTile`, en gris para que no parezca una categoría más. */
+@Composable
+private fun TarjetaVerTodo(onClick: () -> Unit, tileSize: TileSize) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(tileSize.categoryAspect)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick),
+    ) {
+        Text(
+            text = TextosMenuDelAparato.TODO,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.align(Alignment.CenterStart).padding(tileSize.paddingDp.dp),
+        )
     }
 }
 
