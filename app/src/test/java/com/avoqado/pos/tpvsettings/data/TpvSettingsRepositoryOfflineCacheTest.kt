@@ -79,6 +79,47 @@ class TpvSettingsRepositoryOfflineCacheTest {
     }
 
     @Test
+    fun `arranque sin red restaura el filtro del negocio`() = runTest {
+        val preferences = preferencesBackedBy(mutableMapOf())
+        repositoryWith(preferences, clientReturning(filtroResponse())).refreshSettingsForVenue(VENUE_ID)
+
+        val fria = repositoryWith(preferences, clientThrowing(IOException("offline")))
+        fria.refreshSettingsForVenue(VENUE_ID)
+
+        assertEquals(listOf("cat-a", "cat-b"), fria.terminalNavigation.value.visibleCategoryIds)
+        assertEquals(listOf("menu-1"), fria.terminalNavigation.value.visibleMenuIds)
+    }
+
+    @Test
+    fun `un 200 degradado no pisa el filtro bueno`() = runTest {
+        val preferences = preferencesBackedBy(mutableMapOf())
+        repositoryWith(preferences, clientReturning(filtroResponse())).refreshSettingsForVenue(VENUE_ID)
+
+        for (degradado in listOf("""{"success":false}""", """{"success":true,"data":null}""")) {
+            repositoryWith(preferences, clientReturning(degradado)).refreshSettingsForVenue(VENUE_ID)
+        }
+
+        val fria = repositoryWith(preferences, clientThrowing(IOException("offline")))
+        fria.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(listOf("cat-a", "cat-b"), fria.terminalNavigation.value.visibleCategoryIds)
+        assertEquals(listOf("menu-1"), fria.terminalNavigation.value.visibleMenuIds)
+    }
+
+    @Test
+    fun `un 403 borra el filtro`() = runTest {
+        val preferences = preferencesBackedBy(mutableMapOf())
+        repositoryWith(preferences, clientReturning(filtroResponse())).refreshSettingsForVenue(VENUE_ID)
+
+        repositoryWith(preferences, clientReturning(body = "{\"error\":\"Forbidden\"}", statusCode = 403))
+            .refreshSettingsForVenue(VENUE_ID)
+
+        val fria = repositoryWith(preferences, clientThrowing(IOException("offline")))
+        fria.refreshSettingsForVenue(VENUE_ID)
+        assertNull(fria.terminalNavigation.value.visibleCategoryIds)
+        assertNull(fria.terminalNavigation.value.visibleMenuIds)
+    }
+
+    @Test
     fun `terminal cache is scoped by venue and never leaks into another venue`() = runTest {
         val stored = mutableMapOf<String, String>()
         val preferences = preferencesBackedBy(stored)
@@ -430,6 +471,12 @@ class TpvSettingsRepositoryOfflineCacheTest {
             every { newCall(any()) } returns call
         }
     }
+
+    private fun filtroResponse(): String =
+        """
+        { "success": true, "data": { "settings": { "showReviewScreen": false },
+          "deviceTerminal": { "id": "terminal-1", "visibleCategoryIds": ["cat-a","cat-b"], "visibleMenuIds": ["menu-1"] } } }
+        """.trimIndent()
 
     private fun areaOperationsResponse(): String =
         """

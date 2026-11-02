@@ -268,6 +268,12 @@ class PlanManagerTest {
         assertEquals("Pro", planManager.requiredTierLabel("KITCHEN_DISPLAY"))
     }
 
+    @Test
+    fun `DEVICE_MENUS is PRO in the mirror`() {
+        assertEquals(PlanTier.PRO, PlanManager.FEATURE_REQUIRED_TIER["DEVICE_MENUS"])
+        assertEquals("Pro", planManager.requiredTierLabel("DEVICE_MENUS"))
+    }
+
     /**
      * Candado estructural: TODO código que la app consulta al plan tiene que estar en el mapa.
      * Un código que falte no truena — `hasFeature` lo deja pasar en cualquier plan (así se

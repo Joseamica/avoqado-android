@@ -345,6 +345,19 @@ fun CheckoutScreen(
         mutableStateOf(ordenarPestanas(ordenGuardado, InputTab.entries).first())
     }
     var showSearch by remember { mutableStateOf(false) }
+    // «Menú del aparato»: sólo la CUADRÍCULA se filtra (búsqueda, pistola y atajos leen todo). `verTodo` vive en la pantalla,
+    // sobrevive a la búsqueda y se apaga al cambiar de aparato/negocio.
+    val filtroDelAparato: com.avoqado.pos.pos.presentation.product.FiltroDelAparatoViewModel = hiltViewModel()
+    val visiblesDelAparato by filtroDelAparato.visibleCategoryIds.collectAsState()
+    val aparatoId by filtroDelAparato.terminalId.collectAsState()
+    var verTodo by remember { mutableStateOf(false) }
+    LaunchedEffect(aparatoId) { verTodo = false }
+    val productosDelCatalogo by cartViewModel.products.collectAsState()
+    val categoriasConProductos = remember(productosDelCatalogo) {
+        productosDelCatalogo.mapNotNullTo(HashSet()) { it.categoryId ?: it.category?.id }
+    }
+    val categoriasDeLaCuadricula = com.avoqado.pos.pos.presentation.product.MenuDelAparato
+        .filtroDeCobrar(visiblesDelAparato, verTodo, categoriasConProductos)
     var amountCents by remember { mutableIntStateOf(0) }
     // `rememberSaveable`: con `remember` a secas, cambiar de pestaña desmontaba el flujo de
     // cobro y la pantalla "Cobro sin confirmar" desaparecía sin dejar rastro. La llave del
@@ -760,6 +773,8 @@ fun CheckoutScreen(
                                         } else {
                                             null
                                         },
+                                        menuCategoryIds = categoriasDeLaCuadricula,
+                                        onVerTodo = if (categoriasDeLaCuadricula != null) ({ verTodo = true }) else null,
                                         tileSize = tamanoTiles,
                                     )
                                 }
@@ -1001,6 +1016,8 @@ fun CheckoutScreen(
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
+                                    menuCategoryIds = categoriasDeLaCuadricula,
+                                    onVerTodo = if (categoriasDeLaCuadricula != null) ({ verTodo = true }) else null,
                                     tileSize = tamanoTiles,
                                 )
                             }

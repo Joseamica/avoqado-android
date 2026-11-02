@@ -122,6 +122,9 @@ class PlanManager @Inject constructor(
             // Pantalla de cocina por estación (etapa 3, decisión D-A del 27-sep: Pro con lo de sin internet incluido).
             // Gobierna PRENDERLA y lo que ve la tablet; el servidor arma la comanda por la casilla. Espejo en iOS.
             "KITCHEN_DISPLAY" to PlanTier.PRO,
+            // Menú del aparato (Pro). Sólo espejo: la app no esconde ni bloquea nada por plan; el SERVIDOR manda
+            // `null` (= todo) a un negocio sin Pro. Espejo en iOS.
+            "DEVICE_MENUS" to PlanTier.PRO,
             "INVENTORY_TRACKING" to PlanTier.PREMIUM,
             "CFDI" to PlanTier.PREMIUM,
             "SCALE_INTEGRATION" to PlanTier.PREMIUM,
