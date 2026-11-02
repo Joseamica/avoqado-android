@@ -1010,7 +1010,7 @@ private fun PaymentMethodRow(method: PaymentMethodBreakdown) {
             )
             Spacer(modifier = Modifier.width(spacing.sm))
             Text(
-                text = String.format(Locale.US, "%.0f%%", method.percentage),
+                text = textoDelPorcentaje(method.percentage),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.width(36.dp),
@@ -1281,4 +1281,14 @@ private fun HourlyBarChart(
             )
         }
     }
+}
+
+/**
+ * «(0%)» junto a «$35.00» decía que no hubo nada (iPad, 31-oct): con dinero, lo que no llega a 1 % es «<1%», y lo que no
+ * llega a 100 % es «>99%». Lo demás se redondea. Espejo de `PaymentMethodsSection.textoDelPorcentaje` (iOS).
+ */
+internal fun textoDelPorcentaje(porcentaje: Double): String = when {
+    porcentaje > 0 && porcentaje < 1 -> "<1%"
+    porcentaje > 99 && porcentaje < 100 -> ">99%"
+    else -> "${Math.round(porcentaje)}%"
 }
