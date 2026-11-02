@@ -62,7 +62,7 @@ class ReembolsoASaldoTest {
         every { secure.userFirstName } returns "Lupita"
         every { secure.userLastName } returns null
         server = MockWebServer(); server.dispatcher = ComoElServidor(); server.start()
-        repo = RefundRepository(secure, OkHttpClient.Builder().retryOnConnectionFailure(false).build())
+        repo = RefundRepository(secure, clienteDePrueba().build())
         repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
         store = nuevoStore()
     }
@@ -77,6 +77,13 @@ class ReembolsoASaldoTest {
         modelos.forEach { it.viewModelScope.cancel() }
         scope.cancel(); server.shutdown()
     }
+
+    /**
+     * Sin reintentos, para contar cada envío. Con una sola dirección: tras cortar una conexión, OkHttp prueba primero la OTRA dirección
+     * de `localhost` (::1, donde en el CI existe y el servidor no escucha) y, sin reintentos, el siguiente envío no llegaba.
+     */
+    private fun clienteDePrueba() = OkHttpClient.Builder().retryOnConnectionFailure(false)
+        .dns(object : okhttp3.Dns { override fun lookup(hostname: String) = listOf(java.net.InetAddress.getByName("127.0.0.1")) })
 
     private fun nuevoStore() = RefundPendingStore(PreferenceDataStoreFactory.create(scope = scope, produceFile = { archivo }))
 
@@ -385,7 +392,7 @@ class ReembolsoASaldoTest {
 
     /** El cliente con el [AuthInterceptor] de verdad: es ahí donde la petición toma su credencial. */
     private fun conLaCredencialDeVerdad() {
-        repo = RefundRepository(secure, OkHttpClient.Builder().retryOnConnectionFailure(false).addInterceptor(AuthInterceptor(secure)).build())
+        repo = RefundRepository(secure, clienteDePrueba().addInterceptor(AuthInterceptor(secure)).build())
         repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
     }
 
