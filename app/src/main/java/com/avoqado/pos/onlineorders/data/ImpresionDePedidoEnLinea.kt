@@ -186,6 +186,7 @@ fun encabezadoDeComanda(order: OnlineOrder): List<String> = listOfNotNull(
     order.estimatedReadyAt?.let { TextosPedidosEnLinea.listoALas(VenueTimeZone.at(it).format(FORMATO_HORA_COMANDA)) },
     // Lo que el mostrador no se puede equivocar: la línea del dinero va en negrita.
     MARCA_NEGRITA_ENCABEZADO +
-        if (estaPagado(order)) TextosPedidosEnLinea.PAGADO else TextosPedidosEnLinea.cobrarAlRecoger(formatoPesos(order.remainingCents)),
+        if (order.paymentMode == "CARD_ONLINE") TextosPedidosEnLinea.COMANDA_PAGADO_CON_TARJETA
+        else if (estaPagado(order)) TextosPedidosEnLinea.PAGADO else TextosPedidosEnLinea.cobrarAlRecoger(formatoPesos(order.remainingCents)),
     order.note?.trim()?.takeIf { it.isNotEmpty() }?.let { TextosPedidosEnLinea.notaDelPedido(it) },
 )

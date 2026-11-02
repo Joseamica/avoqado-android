@@ -619,6 +619,7 @@ class OnlineOrdersViewModel internal constructor(
                     AccionResultado.Hecho -> textoExito
                     is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
                     AccionResultado.SinConexion -> TextosPedidosEnLinea.REINTENTA
+                    is AccionResultado.ConfirmandoPago -> resultado.mensaje
                     is AccionResultado.Error -> resultado.mensaje
                 }
                 // Siempre se relee: el servidor es el que dice dónde quedó el pedido.

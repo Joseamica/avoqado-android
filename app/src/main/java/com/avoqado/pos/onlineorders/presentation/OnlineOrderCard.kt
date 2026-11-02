@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 
 /** Los diálogos que una tarjeta pide a la bandeja (viven fuera de la lista). */
 enum class TipoDeDialogo { ACEPTAR, RECHAZAR, CANCELAR }
@@ -39,8 +40,29 @@ internal fun estaPagado(pedido: OnlineOrder): Boolean = pedido.paymentStatus == 
 /** Cancelar sólo aplica a un pedido SIN dinero: nada cobrado ni abonado. */
 internal fun sinDinero(pedido: OnlineOrder): Boolean = pedido.paymentStatus == "PENDING" && pedido.remainingCents >= pedido.totalCents
 
-/** Lo que dice el renglón de dinero de la tarjeta: «Pagado» o «Cobrar al recoger $X». */
-internal fun textoDeDinero(pedido: OnlineOrder): String =
+internal fun esTarjetaEnLinea(pedido: OnlineOrder): Boolean = pedido.paymentMode == "CARD_ONLINE"
+
+/** «Cobrar» nunca se ofrece en un pedido de tarjeta en línea (la tarjeta se cobra sola al aceptar); en los demás, sólo con saldo. */
+internal fun sePuedeCobrar(pedido: OnlineOrder, permiso: Boolean): Boolean = permiso && !esTarjetaEnLinea(pedido) && !estaPagado(pedido)
+
+/** «Aceptar» se apaga mientras el banco confirma el pago de una tarjeta. */
+internal fun sePuedeAceptar(pedido: OnlineOrder): Boolean = pedido.cardStatus != "CONFIRMING"
+
+private val CERRADOS_SIN_COMPLETAR = setOf(
+    OnlineOrderStatus.REJECTED, OnlineOrderStatus.EXPIRED, OnlineOrderStatus.CANCELLED_BY_CUSTOMER, OnlineOrderStatus.CANCELLED_BY_STAFF,
+)
+
+/** Lo que dice el renglón de dinero de la tarjeta: «Pagado», «Cobrar al recoger $X» o, en tarjeta en línea, su propio texto. */
+internal fun textoDeDinero(pedido: OnlineOrder): String = when {
+    !esTarjetaEnLinea(pedido) -> textoDeDineroEnLocal(pedido)
+    pedido.status in CERRADOS_SIN_COMPLETAR ->
+        if (pedido.cardChargeStatus == "CAPTURED") TextosPedidosEnLinea.TARJETA_COBRADA_DEVUELVELA else TextosPedidosEnLinea.NO_SE_COBRO_LA_TARJETA
+    estaPagado(pedido) -> TextosPedidosEnLinea.PAGADO_CON_TARJETA
+    pedido.cardStatus == "CONFIRMING" -> TextosPedidosEnLinea.CONFIRMANDO_PAGO
+    else -> TextosPedidosEnLinea.TARJETA_SE_COBRA_AL_ACEPTAR
+}
+
+private fun textoDeDineroEnLocal(pedido: OnlineOrder): String =
     if (estaPagado(pedido)) TextosPedidosEnLinea.PAGADO else TextosPedidosEnLinea.cobrarAlRecoger(formatoPesos(pedido.remainingCents))
 
 /**
@@ -115,6 +137,12 @@ fun OnlineOrderCard(
                 Text(formatoPesos(pedido.totalCents), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
 
+            if (seccion == SeccionDePedido.HOY) {
+                TextosPedidosEnLinea.textoDelMotivo(pedido.rejectReason)?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("motivo-${pedido.orderId}"))
+                }
+            }
+
             val hayAcciones = puedeActualizar && seccion != SeccionDePedido.HOY
             if (hayAcciones) {
                 Spacer(Modifier.height(espacio.xxs))
@@ -123,7 +151,7 @@ fun OnlineOrderCard(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(espacio.sm), verticalArrangement = Arrangement.spacedBy(espacio.sm)) {
                     when (seccion) {
                         SeccionDePedido.POR_ACEPTAR -> {
-                            Button(onClick = { onPedirDialogo(TipoDeDialogo.ACEPTAR) }, enabled = enLinea, modifier = Modifier.testTag("aceptar-${pedido.orderId}")) {
+                            Button(onClick = { onPedirDialogo(TipoDeDialogo.ACEPTAR) }, enabled = enLinea && sePuedeAceptar(pedido), modifier = Modifier.testTag("aceptar-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.ACEPTAR)
                             }
                             OutlinedButton(onClick = { onPedirDialogo(TipoDeDialogo.RECHAZAR) }, enabled = enLinea, modifier = Modifier.testTag("rechazar-${pedido.orderId}")) {
@@ -136,7 +164,7 @@ fun OnlineOrderCard(
                                     Text(TextosPedidosEnLinea.LISTO)
                                 }
                             }
-                            if (puedeCobrar && !estaPagado(pedido)) {
+                            if (sePuedeCobrar(pedido, puedeCobrar)) {
                                 Button(onClick = onCobrar, enabled = !ocupado, modifier = Modifier.testTag("cobrar-${pedido.orderId}")) {
                                     Text(TextosPedidosEnLinea.COBRAR)
                                 }
