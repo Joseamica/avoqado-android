@@ -25,6 +25,7 @@ object TextosPedidosEnLinea {
     const val PAGADO_CON_TARJETA = "Pagado con tarjeta"
     const val TARJETA_COBRADA_DEVUELVELA = "Tarjeta cobrada: devuélvela desde el panel"
     const val NO_SE_COBRO_LA_TARJETA = "No se cobró la tarjeta"
+    const val LIBERANDO_LA_TARJETA = "Liberando la tarjeta…"
     const val COMANDA_PAGADO_CON_TARJETA = "PAGADO CON TARJETA"
     const val MOTIVO_PAGO_FALLIDO = "No se pudo cobrar la tarjeta"
 

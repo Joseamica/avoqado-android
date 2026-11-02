@@ -18,7 +18,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.dp
@@ -62,6 +65,9 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
         totalCents = 20000, remainingCents = 20000, needsPrint = false, items = emptyList(),
     )
 
+    private fun tarjeta(estado: OnlineOrderStatus, cardStatus: String?, pago: String = "PENDING", restante: Long = 20000) =
+        pedido("t1", estado).copy(paymentMode = "CARD_ONLINE", cardStatus = cardStatus, paymentStatus = pago, remainingCents = restante)
+
     private fun pendientes(vararg ids: String) = ids.map { pedido(it, OnlineOrderStatus.PENDING_ACCEPTANCE) }
     private fun enPreparacion(vararg ids: String) = ids.map { pedido(it, OnlineOrderStatus.ACCEPTED) }
 
@@ -86,7 +92,7 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
         ) { AvoqadoTheme(darkTheme = false, content = contenido) }
     }
 
-    private fun ComposeUiTest.montar(inicial: SeccionesBandeja): Pantalla {
+    private fun ComposeUiTest.montar(inicial: SeccionesBandeja, puedeCobrar: Boolean = false): Pantalla {
         val p = Pantalla().apply { secciones = inicial }
         setContent {
             escena {
@@ -96,7 +102,7 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
                 Box(Modifier.width(720.dp).height(700.dp)) {
                     ListaDeBandeja(
                         secciones = p.secciones, sinConexion = false, ocupados = emptySet(), hayMas = false, cargandoMas = false,
-                        hoyRecortado = false, puedeActualizar = true, puedeCancelar = true, puedeCobrar = false,
+                        hoyRecortado = false, puedeActualizar = true, puedeCancelar = true, puedeCobrar = puedeCobrar,
                         onPedirDialogo = p.dialogo::abrir, onListo = {}, onEntregado = {}, onCobrar = {}, onReimprimir = {},
                         onCargarMas = {}, estadoLista = p.estado,
                     )
@@ -116,6 +122,23 @@ class BandejaDeUnPedidoNuevoEnLaEscenaTest {
     private fun ComposeUiTest.irA(p: Pantalla, indice: Int) {
         p.alcance.launch { p.estado.scrollToItem(indice) }
         waitForIdle()
+    }
+
+    @Test fun `a card order never shows Cobrar, Aceptar is off while confirming and PAID says Pagado con tarjeta`() = runComposeUiTest {
+        val p = montar(SeccionesBandeja(porAceptar = listOf(tarjeta(OnlineOrderStatus.PENDING_ACCEPTANCE, "AUTHORIZED"))), puedeCobrar = true)
+        onNodeWithTag("aceptar-t1").assertIsEnabled()
+        onNodeWithText("Con tarjeta: se cobra al aceptar").assertExists()
+        p.secciones = SeccionesBandeja(porAceptar = listOf(tarjeta(OnlineOrderStatus.PENDING_ACCEPTANCE, "CONFIRMING")))
+        waitForIdle()
+        onNodeWithTag("aceptar-t1").assertIsNotEnabled()
+        onNodeWithText("Confirmando el pago…").assertExists()
+        p.secciones = SeccionesBandeja(enPreparacion = listOf(tarjeta(OnlineOrderStatus.ACCEPTED, null, pago = "PAID", restante = 0)))
+        waitForIdle()
+        onNodeWithText("Pagado con tarjeta").assertExists()
+        onNodeWithTag("cobrar-t1").assertDoesNotExist()
+        p.secciones = SeccionesBandeja(enPreparacion = listOf(tarjeta(OnlineOrderStatus.ACCEPTED, null)))
+        waitForIdle()
+        onNodeWithTag("cobrar-t1").assertDoesNotExist()
     }
 
     @Test fun `pending arriving while at top keeps the list at top`() = runComposeUiTest {

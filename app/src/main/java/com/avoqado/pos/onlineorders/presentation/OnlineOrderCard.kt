@@ -56,7 +56,12 @@ private val CERRADOS_SIN_COMPLETAR = setOf(
 internal fun textoDeDinero(pedido: OnlineOrder): String = when {
     !esTarjetaEnLinea(pedido) -> textoDeDineroEnLocal(pedido)
     pedido.status in CERRADOS_SIN_COMPLETAR ->
-        if (pedido.cardChargeStatus == "CAPTURED") TextosPedidosEnLinea.TARJETA_COBRADA_DEVUELVELA else TextosPedidosEnLinea.NO_SE_COBRO_LA_TARJETA
+        when (pedido.cardChargeStatus) {
+            "CAPTURED" -> TextosPedidosEnLinea.TARJETA_COBRADA_DEVUELVELA
+            "RELEASED", "ABANDONED", "CAPTURE_FAILED" -> TextosPedidosEnLinea.NO_SE_COBRO_LA_TARJETA
+            // RELEASING, AUTHORIZED, CAPTURING u otro: el desenlace no se conoce, nunca se afirma «no se cobró».
+            else -> TextosPedidosEnLinea.LIBERANDO_LA_TARJETA
+        }
     estaPagado(pedido) -> TextosPedidosEnLinea.PAGADO_CON_TARJETA
     pedido.cardStatus == "CONFIRMING" -> TextosPedidosEnLinea.CONFIRMANDO_PAGO
     else -> TextosPedidosEnLinea.TARJETA_SE_COBRA_AL_ACEPTAR

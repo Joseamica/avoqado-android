@@ -36,8 +36,14 @@ class TarjetaEnLineaTest {
         assertEquals("Pagado con tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.ACCEPTED, pago = "PAID", restante = 0, cardStatus = null)))
         assertEquals("Pagado con tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.ACCEPTED, restante = 0, cardStatus = null)))
         assertEquals("Tarjeta cobrada: devuélvela desde el panel", textoDeDinero(pedido(status = OnlineOrderStatus.REJECTED, pago = "PAID", restante = 0, cobro = "CAPTURED")))
-        assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.EXPIRED, cardStatus = null)))
-        assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.CANCELLED_BY_CUSTOMER, cobro = "VOIDED")))
+        assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.EXPIRED, cardStatus = null, cobro = "RELEASED")))
+        assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.CANCELLED_BY_CUSTOMER, cobro = "ABANDONED")))
+        assertEquals("No se cobró la tarjeta", textoDeDinero(pedido(status = OnlineOrderStatus.REJECTED, cobro = "CAPTURE_FAILED")))
+    }
+
+    @Test fun `a closed card order with the charge in doubt never says it was not charged`() {
+        for (c in listOf("RELEASING", "AUTHORIZED", "CAPTURING", "ALGO_NUEVO", null))
+            assertEquals("Liberando la tarjeta…", textoDeDinero(pedido(status = OnlineOrderStatus.REJECTED, cobro = c)))
     }
 
     @Test fun `pay at pickup texts do not change`() {

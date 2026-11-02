@@ -34,6 +34,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import com.avoqado.pos.onlineorders.presentation.sePuedeAceptar
+import com.avoqado.pos.onlineorders.presentation.pedidoDelDialogo
+import com.avoqado.pos.onlineorders.presentation.TipoDeDialogo
 import org.junit.Test
 
 /** Task A3: la pantalla «Pedidos en línea». Repositorio falso (mockk) y reloj virtual: nada de red ni de tiempo real. */
@@ -53,11 +56,13 @@ class OnlineOrdersViewModelTest {
         restante: Long = 20000,
         pago: String = "PENDING",
         needsPrint: Boolean = false,
+        modo: String = "PAY_AT_PICKUP",
+        tarjeta: String? = null,
     ) = OnlineOrder(
         orderId = id, onlineOrderId = "o-$id", orderNumber = id, status = estado,
-        paymentMode = "PAY_AT_PICKUP", paymentStatus = pago, customerName = "Ana", customerPhone = "5512345678", note = null,
+        paymentMode = modo, paymentStatus = pago, customerName = "Ana", customerPhone = "5512345678", note = null,
         createdAt = Instant.parse("2026-10-22T10:00:00Z"), acceptDeadlineAt = null, estimatedReadyAt = null,
-        totalCents = total, remainingCents = restante, needsPrint = needsPrint, items = emptyList(),
+        totalCents = total, remainingCents = restante, needsPrint = needsPrint, items = emptyList(), cardStatus = tarjeta,
     )
 
     private fun bandeja(
@@ -547,5 +552,29 @@ class OnlineOrdersViewModelTest {
         vm.reimprimir("a1")
         runCurrent()
         assertTrue(reimpresiones.isEmpty())
+    }
+
+    @Test
+    fun `after a 409 CONFIRMING the order stays unacceptable even if the reread fails, until a good read without CONFIRMING`() = runTest(dispatcher) {
+        fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+            Result.failure(java.io.IOException("500")),
+            Result.success(bandeja(tarjeta("CONFIRMING"))),
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+        )
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.ConfirmandoPago("El banco aún confirma")
+        val vm = armar()
+        vm.refrescar()
+        assertTrue(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        vm.aceptar("p1", 15)
+        runCurrent()
+        assertEquals("El banco aún confirma", vm.aviso.value)
+        assertFalse(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        assertNull(pedidoDelDialogo("p1", TipoDeDialogo.ACEPTAR, vm.secciones.value))
+        vm.refrescar() // sigue CONFIRMING en el servidor
+        assertFalse(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        vm.refrescar() // lectura buena sin CONFIRMING
+        assertTrue(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
     }
 }

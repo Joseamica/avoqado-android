@@ -290,8 +290,11 @@ class OnlineOrdersViewModel internal constructor(
                 cursor = siguiente.nextCursor
                 pagina++
             }
+            val pendientes = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
+            // Una lectura EXITOSA que ya no lo trae confirmando (o ya no por aceptar) libera «Aceptar».
+            confirmando.retainAll { id -> pendientes.any { it.orderId == id && it.cardStatus == "CONFIRMING" } }
             _secciones.value = SeccionesBandeja(
-                porAceptar = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE },
+                porAceptar = pendientes,
                 enPreparacion = ordenes.filter { it.status == OnlineOrderStatus.ACCEPTED },
                 listos = ordenes.filter { it.status == OnlineOrderStatus.READY },
                 hoy = ordenes.filter { it.status !in ABIERTOS },
@@ -387,7 +390,18 @@ class OnlineOrdersViewModel internal constructor(
             // antes de aceptar. Si la relectura falló o el pedido no está, no se imprime de una foto vieja: el siguiente latido
             // lo hace por `needsPrint`.
             alHechoYReleido = { buscar(orderId)?.takeIf { it.status in IMPRIMIBLES }?.let { imprimir(it) } },
-        ) { repositorio.accept(orderId, minutos) }
+        ) {
+            repositorio.accept(orderId, minutos).also { if (it is AccionResultado.ConfirmandoPago) marcarConfirmando(orderId) }
+        }
+    }
+
+    /** Pedidos a los que el servidor dijo «confirmando el pago» (409): siguen sin poder aceptarse aunque la relectura falle. */
+    private val confirmando = mutableSetOf<String>()
+
+    private fun marcarConfirmando(orderId: String) {
+        confirmando += orderId
+        val s = _secciones.value
+        _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
     }
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
