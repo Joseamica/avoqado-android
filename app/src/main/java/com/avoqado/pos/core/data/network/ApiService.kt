@@ -39,6 +39,10 @@ interface ApiService {
     @POST("mobile/auth/refresh")
     suspend fun refreshToken(@Body request: RefreshRequest): RefreshResponse
 
+    /** «¿Olvidaste tu contraseña?»: el servidor manda el enlace por correo y contesta igual exista o no la cuenta. */
+    @POST("mobile/auth/request-reset")
+    suspend fun pedirRestablecerContrasena(@Body request: com.avoqado.pos.auth.data.model.RestablecerContrasenaRequest)
+
     /**
      * Cambiar de usuario con PIN, sin cerrar sesión (Más → Cambiar usuario).
      *

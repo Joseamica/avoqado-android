@@ -28,6 +28,10 @@ data class SignInUiState(
     val errorMessage: String? = null,
     val canUseBiometric: Boolean = false,
     val biometricEmail: String? = null,
+    /** «¿Olvidaste tu contraseña?»: el pedido va en camino. */
+    val pidiendoEnlace: Boolean = false,
+    /** El aviso tras pedir el enlace (mismo texto que iOS); null = cerrado. */
+    val avisoContrasena: String? = null,
 ) {
     val isEmailValid: Boolean
         // Real format check — "a@" used to advance to the password step and
@@ -86,6 +90,35 @@ class SignInViewModel @Inject constructor(
         _uiState.update {
             it.copy(step = SignInStep.EMAIL, password = "", errorMessage = null, isPasswordVisible = false)
         }
+    }
+
+    /**
+     * «¿Olvidaste tu contraseña?» (1-nov-2026: en ANDROID no hacía nada). Como iOS: pide el enlace al correo ya escrito
+     * y avisa con el mismo texto, exista o no la cuenta. Sin red no promete un correo: lo dice.
+     */
+    fun pedirEnlaceDeContrasena() {
+        val state = _uiState.value
+        if (state.pidiendoEnlace || state.isLoading || !state.isEmailValid) return
+        val correo = state.email.trim()
+        viewModelScope.launch {
+            _uiState.update { it.copy(pidiendoEnlace = true, errorMessage = null) }
+            val salio = authRepository.pedirRestablecerContrasena(correo)
+            _uiState.update {
+                it.copy(
+                    pidiendoEnlace = false,
+                    avisoContrasena = if (salio) {
+                        "Si existe una cuenta con $correo, recibirás un enlace para restablecer tu contraseña."
+                    } else {
+                        null
+                    },
+                    errorMessage = if (salio) null else SIN_RED_PARA_EL_ENLACE,
+                )
+            }
+        }
+    }
+
+    fun cerrarAvisoContrasena() {
+        _uiState.update { it.copy(avisoContrasena = null) }
     }
 
     fun loginWithPassword(onSuccess: () -> Unit) {
@@ -155,5 +188,9 @@ class SignInViewModel @Inject constructor(
                 secureStorage.clearBiometricCredentialsSiSigue(refreshToken)
             }
         }
+    }
+
+    companion object {
+        const val SIN_RED_PARA_EL_ENLACE = "Sin conexión: conéctate a internet para recibir el enlace."
     }
 }

@@ -52,6 +52,23 @@ class AuthRepository @Inject constructor(
     private val _venueSwitched = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val venueSwitched: SharedFlow<Unit> = _venueSwitched.asSharedFlow()
 
+    /**
+     * «¿Olvidaste tu contraseña?» (1-nov-2026: en ANDROID no hacía nada; iOS ya lo pedía). Devuelve `false` sólo si no
+     * hubo red: cualquier respuesta del servidor cuenta como pedida, igual que en iOS, para no revelar si la cuenta existe.
+     */
+    suspend fun pedirRestablecerContrasena(email: String): Boolean = try {
+        apiService.pedirRestablecerContrasena(
+            com.avoqado.pos.auth.data.model.RestablecerContrasenaRequest(email.trim().lowercase()),
+        )
+        true
+    } catch (e: java.io.IOException) {
+        Log.w("🔐", "Restablecer contraseña sin red: ${e.message}")
+        false
+    } catch (e: retrofit2.HttpException) {
+        Log.w("🔐", "Restablecer contraseña: HTTP ${e.code()} (no se le dice a quien lo pidió)")
+        true
+    }
+
     suspend fun loginWithEmail(
         email: String,
         password: String,
