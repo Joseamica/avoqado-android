@@ -321,7 +321,7 @@ class ReembolsoASaldoTest {
             assertNotNull(vm.motivoParaNoReembolsar("payment"))
             store.borrar(pidio)
         }
-        assertEquals("Reembolso a saldo a favor de Lupita sin confirmar", avisoDelPendiente(pendiente()))
+        assertEquals("Reembolso a saldo a favor sin confirmar (lo pidió Lupita)", avisoDelPendiente(pendiente()))
     }
 
     @Test fun `Confirmar estado - lo decide quien está, con SU sesión, la misma llave y en primer plano`() = runBlocking {
@@ -333,7 +333,7 @@ class ReembolsoASaldoTest {
         withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
         repeat(20) { yield(); kotlinx.coroutines.delay(10) }
         assertEquals(0, server.requestCount)
-        assertEquals("Reembolso a saldo a favor de Beatriz López sin confirmar", avisoDelPendiente(vm.reembolsoPendiente.value!!))
+        assertEquals("Reembolso a saldo a favor sin confirmar (lo pidió Beatriz López)", avisoDelPendiente(vm.reembolsoPendiente.value!!))
         assertTrue(vm.reembolsoBloqueado.value)
         server.enqueue(respuesta(201, ok))
         vm.confirmarReembolsoPendiente()
