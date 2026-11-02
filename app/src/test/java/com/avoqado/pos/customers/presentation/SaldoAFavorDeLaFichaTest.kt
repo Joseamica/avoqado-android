@@ -25,9 +25,10 @@ class SaldoAFavorDeLaFichaTest {
         assertNull(lineaSaldoAFavorDeLaFicha(ficha(""","storeCredit":"basura"""")))
     }
 
-    @Test fun `congelado lo dice y trae el monto`() {
-        val c = ficha(""","storeCredit":{"balanceCents":1250000,"phoneLast4":"5678","giftCardId":"g1","blocked":true}""")
-        assertEquals("Saldo a favor congelado: ${'$'}12,500.00", lineaSaldoAFavorDeLaFicha(c))
+    @Test fun `congelado lo dice sin monto`() {
+        // O-7 (A5): el servidor manda `balanceCents: 0` con `blocked` (lo congelado no se cuenta): «$0.00» parecía dinero perdido.
+        val c = ficha(""","storeCredit":{"balanceCents":0,"phoneLast4":"5678","giftCardId":"g1","blocked":true}""")
+        assertEquals("Saldo a favor congelado", lineaSaldoAFavorDeLaFicha(c))
     }
 
     @Test fun `el alta con teléfono obligatorio rechaza 9 dígitos y acepta 10`() {
