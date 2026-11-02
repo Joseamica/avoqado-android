@@ -300,12 +300,14 @@ private fun ReviewRowTablet(
             )
         }
 
-        // SKU
+        // SKU: un código va en un renglón, recortado con «…» si no cabe (iPad, 31-oct; igual en iOS).
         Text(
             text = item.sku ?: "-",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
 
         // Expected

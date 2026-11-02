@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -46,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -232,23 +234,8 @@ private fun TabletEstimatesLayout(
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                             )
-                            if (searchText.isEmpty()) {
-                                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                                Text(
-                                    text = "Crea tu primer presupuesto",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                // La pantalla invitaba a crear el primero y no
-                                // ofrecía CÓMO: había que adivinar el icono del
-                                // encabezado. Un estado vacío que pide una
-                                // acción trae el botón de esa acción.
-                                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-                                PrimaryButton(
-                                    text = "Nuevo presupuesto",
-                                    onClick = { showCreateSheet = true },
-                                )
-                            }
+                            // En tableta la invitación y el botón viven SÓLO en el panel derecho: repetirlos en los
+                            // dos lados se veía doble (iPad, 31-oct; igual en iOS).
                         }
                     }
 
@@ -279,8 +266,13 @@ private fun TabletEstimatesLayout(
             ) {
                 if (selectedEstimate != null) {
                     EstimateDetailView(estimate = selectedEstimate!!)
-                } else {
-                    EstimateEmptyState(hayPresupuestos = filteredEstimates.isNotEmpty())
+                } else if (!(isLoading && estimates.isEmpty())) {
+                    // Si hay presupuestos (aunque la búsqueda no encuentre), «Selecciona uno»; si no hay ninguno, la
+                    // invitación con su botón. Antes decía «Crea tu primer presupuesto» al buscar algo que no estaba.
+                    EstimateEmptyState(
+                        hayPresupuestos = estimates.isNotEmpty(),
+                        onCreate = { showCreateSheet = true },
+                    )
                 }
             }
         }
@@ -597,7 +589,7 @@ private fun StatusBadge(status: EstimateStatus) {
  *   elegir algo que no existe.
  */
 @Composable
-private fun EstimateEmptyState(hayPresupuestos: Boolean = true) {
+private fun EstimateEmptyState(hayPresupuestos: Boolean, onCreate: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -626,5 +618,18 @@ private fun EstimateEmptyState(hayPresupuestos: Boolean = true) {
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
         )
+        if (!hayPresupuestos) {
+            // Un estado vacío que pide una acción trae el botón de esa acción (mismo texto que iOS).
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            Text(
+                text = "Los presupuestos te permiten enviar cotizaciones a tus clientes antes de realizar una venta",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 300.dp),
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            PrimaryButton(text = "Nuevo presupuesto", onClick = onCreate)
+        }
     }
 }
