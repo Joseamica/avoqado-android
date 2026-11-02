@@ -333,7 +333,8 @@ private fun LoadedDetailView(
             val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
             if (reembolsoPendiente != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
-                    Text(TextosCambio.REEMBOLSO_SIN_CONFIRMAR, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Text(com.avoqado.pos.transactions.data.avisoDelPendiente(reembolsoPendiente!!), Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium)
                     TextButton(onClick = viewModel::confirmarReembolsoPendiente) { Text(TextosCambio.CONFIRMAR_ESTADO) }
                 }
             }

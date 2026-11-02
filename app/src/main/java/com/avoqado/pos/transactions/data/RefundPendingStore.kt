@@ -20,9 +20,25 @@ import javax.inject.Singleton
 
 private val Context.refundPendingDataStore by preferencesDataStore(name = "refund_pending")
 
-/** Un Reembolso a saldo a favor ya mandado (o por mandar) cuya respuesta no consta: el cuerpo EXACTO y su llave. */
+/**
+ * Un Reembolso a saldo a favor ya mandado (o por mandar) cuya respuesta no consta: el cuerpo EXACTO, su llave y QUIÉN lo pidió
+ * ([staffId] y [staffName] de la sesión al tocar «Reembolsar»). Un pendiente guardado por una versión anterior no los trae (`null`).
+ */
 @Serializable
-data class PendingRefund(val venueId: String, val paymentId: String, val body: String, val idempotencyKey: String)
+data class PendingRefund(val venueId: String, val paymentId: String, val body: String, val idempotencyKey: String,
+                         val staffId: String? = null, val staffName: String? = null)
+
+/**
+ * Revisión final, «Quién lo pidió»: el reenvío automático al abrir la venta sólo sale con la sesión de QUIEN lo pidió. Con otra (o
+ * con un pendiente viejo, sin quién) no sale nada: lo confirma a mano quien esté («Confirmar estado»), con SU sesión y la misma llave.
+ * Así un POST que nunca llegó (un WiFi «conectado sin datos») no se escribe solo a nombre de otra persona.
+ */
+fun seReenviaSolo(pending: PendingRefund, sesion: String?): Boolean = pending.staffId != null && pending.staffId == sesion
+
+/** El aviso del pendiente: de quién es, si se sabe. */
+fun avisoDelPendiente(pending: PendingRefund): String =
+    pending.staffName?.takeIf { it.isNotBlank() }?.let { TextosCambio.REEMBOLSO_SIN_CONFIRMAR_DE.replace("{nombre}", it) }
+        ?: TextosCambio.REEMBOLSO_SIN_CONFIRMAR
 
 /**
  * Lo pendiente del Reembolso a saldo a favor (spec 2026-10-30 §7, Codex r1 h4), en disco como `ExchangePendingStore`. Se guarda
@@ -129,8 +145,9 @@ private suspend fun borrarALoMejor(store: RefundPendingStore, pending: PendingRe
 
 /** El envío: guarda ANTES de tocar la red y manda. Si no se pudo guardar, no se manda nada. */
 class SaldoAFavorEnvio(private val repo: RefundRepository, private val store: RefundPendingStore) {
-    suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String): DesenlaceDeSaldo {
-        val pending = PendingRefund(venue, paymentId, body, idempotencyKey)
+    suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String,
+                       staffId: String? = null, staffName: String? = null): DesenlaceDeSaldo {
+        val pending = PendingRefund(venue, paymentId, body, idempotencyKey, staffId, staffName?.takeIf { it.isNotBlank() })
         try {
             store.guardar(pending)
         } catch (e: CancellationException) {

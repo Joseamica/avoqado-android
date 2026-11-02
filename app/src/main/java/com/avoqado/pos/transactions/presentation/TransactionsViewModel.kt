@@ -25,6 +25,7 @@ import com.avoqado.pos.transactions.data.PendingRefund
 import com.avoqado.pos.transactions.data.RefundPendingStore
 import com.avoqado.pos.transactions.data.SaldoAFavorEnvio
 import com.avoqado.pos.transactions.data.enviarReembolsoPendiente
+import com.avoqado.pos.transactions.data.seReenviaSolo
 import com.avoqado.pos.transactions.presentation.exchange.exchangeStoreCreditNotice
 import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.ResultadoDeReimpresion
@@ -286,7 +287,10 @@ class TransactionsViewModel @Inject constructor(
         }
         if (!current(scope) || version != versionDelPendiente.get()) return
         _reembolsoPendiente.value = pending
-        if (pending == null || !reenviar || !marcarEnVuelo(scope.paymentId)) return
+        // «Quién lo pidió»: el reenvío que nadie pidió (al abrir la venta) sólo sale con la sesión de quien lo pidió; con otra, el
+        // detalle muestra de quién es y espera a que alguien toque «Confirmar estado».
+        if (pending == null || !reenviar || (segundoPlano && !seReenviaSolo(pending, scope.actorId))) return
+        if (!marcarEnVuelo(scope.paymentId)) return
         try {
             if (!connectivityMonitor.isOnline()) { _avisoDeReembolso.value = TextosCambio.SALDO_SIN_RED; return }
             _avisoDeReembolso.value = null
@@ -306,7 +310,9 @@ class TransactionsViewModel @Inject constructor(
             val venue = secureStorage.venueId ?: return@async DesenlaceDeSaldo.GuardadoFallido
             if (!marcarEnVuelo(paymentId)) return@async DesenlaceDeSaldo.OtroPendiente
             val desenlace = try {
-                SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey)
+                // «Quién lo pidió»: la sesión de ahora, al tocar «Reembolsar».
+                SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey, secureStorage.userId,
+                    listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim())
             } finally { soltarEnVuelo(paymentId) }
             detalleAbierto(paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = false) }
             desenlace
