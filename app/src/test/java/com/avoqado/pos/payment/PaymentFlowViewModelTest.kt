@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
+import com.avoqado.pos.payment.data.model.OrigenDeLaDeclaracion
 import com.avoqado.pos.payment.data.ContextoDeCobro
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
@@ -2968,7 +2969,8 @@ class PaymentFlowViewModelTest {
         // una venta que entretanto sí se cobró: es online-only a propósito.
         val estado = viewModel.state.value
         assertTrue("el cobro sin confirmar NO se resuelve sin red", estado is PaymentFlowState.Undetermined)
-        assertEquals(CancelacionDeCobro.DECLARACION_SIN_RED, (estado as PaymentFlowState.Undetermined).message)
+        // C1 (spec §Sin red; fix round 2): la duda es de ESTA venta, así que el texto no invita a cobrarla en efectivo.
+        assertEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, (estado as PaymentFlowState.Undetermined).message)
     }
 
     @Test
@@ -3010,6 +3012,226 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // C4 (22-oct, P4 y P5): el MESERO declara con el PIN de un gerente, y los textos honestos.
+    //
+    // Founder (21-oct): «no se cobró» lo declara el cajero con un toque; el mesero —sin `payments:reconcile-uncharged`— lo
+    // hace con el PIN de un gerente. Quién puede lo decide el SERVIDOR: contesta 403 SUPERVISOR_AUTHORIZATION_REQUIRED y la
+    // tablet abre el teclado; el PIN viaja en el cuerpo de la MISMA declaración (nunca por el coordinador del override).
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `P1 terminal libre viaja del POST y de la revision manual a la duda`() = runTest {
+        stubOrderCreation()
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1", terminalLibreVentaEnDuda = true)
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue("montaje: venta en duda", viewModel.state.value is PaymentFlowState.Undetermined)
+        assertTrue("POST propaga terminal libre", (viewModel.state.value as PaymentFlowState.Undetermined).terminalLibreVentaEnDuda)
+
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1", terminalLibreVentaEnDuda = true)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        assertTrue("consulta propaga terminal libre", (viewModel.state.value as PaymentFlowState.Undetermined).terminalLibreVentaEnDuda)
+        assertEquals("La terminal ya está libre · ¿se cobró esta venta?", CancelacionDeCobro.TERMINAL_LIBRE_VENTA_EN_DUDA)
+        assertEquals("No se cobró → cobrar otra vez", CancelacionDeCobro.NO_SE_COBRO_COBRAR_OTRA_VEZ)
+    }
+
+    @Test
+    fun `P1 automatica con señal valida solo actualiza presentacion y conserva rechazo`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns ResultadoDeDeclaracion.Rechazada("Revisa el cobro", code = "EXECUTION_STILL_ACTIVE")
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        val antes = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue("montaje: rechazo visible", antes.declaracionRechazada)
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("otro mensaje", "req-1", terminalLibreVentaEnDuda = true)
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals(antes.copy(terminalLibreVentaEnDuda = true), viewModel.state.value)
+    }
+
+    @Test
+    fun `P1 terminal libre usa la misma declaracion y pide PIN al mesero`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1", terminalLibreVentaEnDuda = true)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        assertTrue("montaje: duda de terminal libre", (viewModel.state.value as PaymentFlowState.Undetermined).terminalLibreVentaEnDuda)
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), null) } returns pideGerente
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), "1234") } returns ResultadoDeDeclaracion.Liberada
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        assertNotNull(viewModel.pidiendoPinDeGerente.value)
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).terminalLibreVentaEnDuda)
+        val conPin = viewModel.state.value
+        val teclado = viewModel.pidiendoPinDeGerente.value
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals("la automática no pisa la declaración", conPin, viewModel.state.value)
+        assertEquals("el teclado sigue abierto", teclado, viewModel.pidiendoPinDeGerente.value)
+        viewModel.enviarPinDeGerente("1234")
+        advanceUntilIdle()
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-1", any(), "1234") }
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
+    fun `P1 señal vieja no promueve otra solicitud y sin respuesta no adivina libre`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns TerminalPaymentResult.Undetermined("sin red", "req-1", sinRed = true)
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertFalse((viewModel.state.value as PaymentFlowState.Undetermined).terminalLibreVentaEnDuda)
+        val consulta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { consulta.await() }
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        enCobroSinConfirmar("req-2")
+        val nueva = viewModel.state.value
+        consulta.complete(TerminalPaymentResult.Undetermined("vieja", "req-1", terminalLibreVentaEnDuda = true))
+        advanceUntilIdle()
+        assertEquals(nueva, viewModel.state.value)
+    }
+
+    private val pideGerente = ResultadoDeDeclaracion.Rechazada(
+        mensaje = "Pide a un gerente que ingrese su PIN para confirmar que este cobro no pasó.",
+        code = "SUPERVISOR_AUTHORIZATION_REQUIRED",
+    )
+
+    @Test
+    fun `P1 SUPERVISOR_AUTHORIZATION_REQUIRED pide el PIN y con el PIN declara`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), null) } returns pideGerente
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), "1234") } returns ResultadoDeDeclaracion.Liberada
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        val peticion = viewModel.pidiendoPinDeGerente.value
+        assertNotNull("el servidor pidió gerente: se abre el teclado", peticion)
+        assertEquals(OrigenDeLaDeclaracion.COBRO_SIN_CONFIRMAR, peticion!!.origen)
+        // Mientras llega el gerente la declaración sigue en vuelo: la pantalla no se mueve y no deja declarar otra vez.
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).checking)
+
+        viewModel.enviarPinDeGerente("1234")
+        advanceUntilIdle()
+
+        assertNull("con el PIN aceptado el teclado se cierra", viewModel.pidiendoPinDeGerente.value)
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-1", any(), "1234") }
+        coVerify(exactly = 2) { terminalPaymentService.declararNoCobrado(any(), any(), any()) }
+        assertTrue(
+            "liberada: se vuelve a elegir terminal, como con la declaración del cajero (fue ${viewModel.state.value})",
+            viewModel.state.value is PaymentFlowState.SelectingTerminal,
+        )
+    }
+
+    @Test
+    fun `P1 un PIN que el servidor no acepta deja el teclado abierto y la pantalla quieta`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), null) } returns pideGerente
+        // El servidor contesta el MISMO código a un PIN equivocado y al de alguien sin el permiso.
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), "0000") } returns pideGerente
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), "1111") } returns
+            ResultadoDeDeclaracion.Rechazada(mensaje = "Demasiados intentos de autorización. Espera 15 minutos.", code = "RATE_LIMIT_EXCEEDED")
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        val peticion = viewModel.pidiendoPinDeGerente.value
+        assertNotNull("montaje: el teclado está abierto", peticion)
+
+        // «Ese código tampoco tiene este permiso» cubre los dos casos sin mentir; el tope tiene su texto.
+        assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Insufficient, viewModel.enviarPinDeGerente("0000"))
+        assertEquals(com.avoqado.pos.core.data.network.OverrideResult.TooManyAttempts, viewModel.enviarPinDeGerente("1111"))
+        advanceUntilIdle()
+
+        assertEquals("el teclado sigue: el gerente puede volver a teclear", peticion, viewModel.pidiendoPinDeGerente.value)
+        val estado = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue("la declaración sigue esperando al gerente", estado.checking)
+        assertFalse(estado.declaracionRechazada)
+    }
+
+    @Test
+    fun `P1 cerrar el teclado sin PIN deja el cobro como estaba con el motivo del servidor`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), null) } returns pideGerente
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        val peticion = viewModel.pidiendoPinDeGerente.value
+        assertNotNull("montaje: el teclado está abierto", peticion)
+
+        viewModel.cerrarTecladoDelPin(peticion!!.id)
+        advanceUntilIdle()
+
+        assertNull(viewModel.pidiendoPinDeGerente.value)
+        // Cerrar = cancelar: la declaración falla como fallaba antes de C4, con el motivo del SERVIDOR en ámbar, y los
+        // botones vuelven a servir.
+        val estado = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals(pideGerente.mensaje, estado.message)
+        assertTrue(estado.declaracionRechazada)
+        assertFalse(estado.checking)
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any(), any()) }
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        coVerify(exactly = 2) { terminalPaymentService.declararNoCobrado("req-1", any(), null) }
+        assertNotNull("y el servidor vuelve a pedir el PIN", viewModel.pidiendoPinDeGerente.value)
+    }
+
+    @Test
+    fun `P1 sin red la declaracion con PIN no se reenvia y dice el texto de esta venta`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), null) } returns pideGerente
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), "1234") } returns ResultadoDeDeclaracion.SinConexion
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        viewModel.enviarPinDeGerente("1234")
+        advanceUntilIdle()
+
+        // 🔴 Online-only A PROPÓSITO: el teclado se cierra y la pantalla lo dice. La duda es de ESTA venta, así que el texto
+        // no invita a cobrarla en efectivo.
+        assertNull(viewModel.pidiendoPinDeGerente.value)
+        val estado = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, estado.message)
+        assertFalse(estado.checking)
+        // Nadie la reenvía después (el PIN no se queda en ningún lado).
+        advanceTimeBy(10 * 60_000L)
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any(), "1234") }
+        coVerify(exactly = 2) { terminalPaymentService.declararNoCobrado(any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 EXECUTION_STILL_ACTIVE muestra el texto de que se libera sola`() = runTest {
+        // P5: el texto del servidor («Espera unos segundos y vuelve a consultar») invitaba a insistir sobre algo que no cede en
+        // segundos. La tablet dice lo que pasa y qué hacer si urge. Literal de la tabla de textos, igual en iOS.
+        assertEquals(
+            "La terminal reporta este cobro sin terminar. Se libera sola en unos minutos; si urge, llama a soporte de Avoqado.",
+            CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR,
+        )
+        assertEquals("Pide a un gerente que ingrese su PIN", CancelacionDeCobro.PIN_DE_GERENTE_TITULO)
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), any()) } returns ResultadoDeDeclaracion.Rechazada(
+            mensaje = "La terminal dice que este cobro sigue en curso. Espera unos segundos y vuelve a consultar.",
+            code = "EXECUTION_STILL_ACTIVE",
+        )
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals(CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR, estado.message)
+        assertTrue("en ámbar: se ve que el servidor contestó", estado.declaracionRechazada)
+        assertFalse(estado.checking)
+        assertNull("no es un asunto de PIN: no hay teclado", viewModel.pidiendoPinDeGerente.value)
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════
@@ -3352,7 +3574,7 @@ class PaymentFlowViewModelTest {
         val estado = viewModel.state.value
         assertTrue(estado is PaymentFlowState.Undetermined)
         assertEquals(CancelacionDeCobro.DECLARACION_SESION_RENOVADA, (estado as PaymentFlowState.Undetermined).message)
-        assertNotEquals(CancelacionDeCobro.DECLARACION_SIN_RED, estado.message)
+        assertNotEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, estado.message)
     }
 
     @Test
@@ -3504,7 +3726,7 @@ class PaymentFlowViewModelTest {
         assertTrue(aviso.texto.contains("SÍ pasó"))
     }
 
-    @Test fun `el aviso de otra venta se calla a los 10 min`() = runTest {
+    @Test fun `P2 el aviso de una duda de otra venta NO se calla a los 10 min`() = runTest {
         stubOrderCreation()
         every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
         every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-viejo", "orden-7", haceMin = 11))
@@ -3515,7 +3737,7 @@ class PaymentFlowViewModelTest {
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
 
-        assertNull(viewModel.avisoDeOtroCobro.value)
+        assertEquals("una duda vieja sigue avisada (P3)", "r-viejo", viewModel.avisoDeOtroCobro.value?.requestId)
         assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
@@ -4005,13 +4227,16 @@ class PaymentFlowViewModelTest {
     // --- Lote final (26-sep): H7 el aviso vence con la pantalla abierta · M-5 título · B7b-5 sin red ---
 
     @Test
-    fun `H7 el aviso sin confirmar se calla solo a los 10 min con la pantalla abierta, sin red y sin tocar el disco`() = runTest {
-        // Reloj VIRTUAL: la pantalla se abre con una duda de 9 min 55 s y se queda abierta.
+    fun `P1 una duda sin resolver sigue en el aviso pasados los 10 min y no se republica en bucle`() = runTest {
+        // Reloj VIRTUAL: la pantalla se abre con una duda de 9 min 55 s y se queda abierta. Una duda NO se esconde por reloj:
+        // sigue hasta que alguien la resuelva (un cobro de tarjeta sin resolver no puede desaparecer de la vista del cajero).
         val base = System.currentTimeMillis()
         viewModel.reloj = { base + testScheduler.currentTime }
-        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(
-            ContextoDeCobro("r-casi", "v", "t1", "orden-7", 1500, 0, desdeMillis = base - (10 * 60_000L - 5_000)),
-        )
+        var lecturas = 0
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } answers {
+            lecturas++
+            listOf(ContextoDeCobro("r-casi", "v", "t1", "orden-7", 1500, 0, desdeMillis = base - (10 * 60_000L - 5_000)))
+        }
         coEvery { terminalPaymentService.resolveOutcome("r-casi") } returns
             TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-casi")
 
@@ -4020,13 +4245,15 @@ class PaymentFlowViewModelTest {
         runCurrent()
         assertEquals("montaje: se avisa", "r-casi", viewModel.avisoDeOtroCobro.value?.requestId)
 
-        advanceTimeBy(4_000); runCurrent()
-        assertEquals("a los 9:59 sigue", "r-casi", viewModel.avisoDeOtroCobro.value?.requestId)
-        advanceTimeBy(2_000); runCurrent()
-        assertNull("a los 10:01 se calla, con la pantalla abierta", viewModel.avisoDeOtroCobro.value)
+        advanceTimeBy(11 * 60_000L); runCurrent()
+        assertEquals("a los 11 min la duda sigue", "r-casi", viewModel.avisoDeOtroCobro.value?.requestId)
+        val lecturasA = lecturas
+        advanceTimeBy(30 * 60_000L); runCurrent()
+        assertEquals("sin cobros que vencen no hay temporizador: no se relee en bucle", lecturasA, lecturas)
+        assertEquals("y la duda sigue ahí", "r-casi", viewModel.avisoDeOtroCobro.value?.requestId)
 
         assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
-        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("r-casi") } // vencer no consulta la red
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("r-casi") } // el aviso no consulta la red
         verify(exactly = 0) { terminalPaymentService.reconocerCobro(any()) }        // ni borra nada del disco
         verify(exactly = 0) { terminalPaymentService.soltarLlaveSiEs(any()) }
     }

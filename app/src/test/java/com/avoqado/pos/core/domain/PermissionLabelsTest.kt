@@ -24,6 +24,13 @@ class PermissionLabelsTest {
     }
 
     @Test
+    fun `P2 declarar que un cobro no se realizo dice la accion`() {
+        // C4 (22-oct): el teclado del PIN de gerente dice «Para confirmar que un cobro no se realizó». Nombre EXACTO del
+        // permiso del servidor; en minúscula porque entra dentro de una frase. Igual en `PermissionLabels.swift`.
+        assertEquals("confirmar que un cobro no se realizó", PermissionLabels.of("payments:reconcile-uncharged"))
+    }
+
+    @Test
     fun `un permiso desconocido cae a un texto neutro, nunca a la string tecnica`() {
         assertEquals("esta acción", PermissionLabels.of("cosas:raras"))
         assertEquals("esta acción", PermissionLabels.of(""))

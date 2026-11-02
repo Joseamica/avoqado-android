@@ -74,8 +74,14 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.data.model.PeticionDePinDeGerente
 import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
+import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
+import com.avoqado.pos.core.data.network.OverrideResult
+import com.avoqado.pos.core.domain.PermissionLabels
+import com.avoqado.pos.designsystem.components.ManagerOverrideSheet
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
+import com.avoqado.pos.payment.domain.CardChargeDecision
 
 @Composable
 fun PaymentResultScreen(
@@ -687,6 +693,11 @@ fun PaymentErrorView(
      * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
      */
     sinRed: Boolean = false,
+    /**
+     * C1 (22-oct): «Revisar ese cobro» — la terminal (o la venta) la ocupa otro cobro y se puede consultar cómo quedó.
+     * `null` ⇒ no se ofrece (cualquier otro error, o el servidor no dijo cuál es).
+     */
+    onRevisarCobro: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -724,6 +735,19 @@ fun PaymentErrorView(
             onClick = onRetry,
             modifier = Modifier.sinTeclasDeClic(LocalEsEscritorio.current),
         )
+
+        // C1: la salida de «Terminal ocupada». Sólo consulta (nunca cobra): abre «Cobro sin confirmar» sobre el cobro
+        // que ocupa, con «Volver a consultar» y «Ya revisé la terminal: no se cobró».
+        if (onRevisarCobro != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            OutlinedButton(
+                onClick = onRevisarCobro,
+                // Acotado como el resto de la pantalla: en una tablet de 1920 px una píldora de lado a lado se pierde.
+                modifier = Modifier.widthIn(max = 400.dp),
+            ) {
+                Text(CardChargeDecision.REVISAR_ESE_COBRO)
+            }
+        }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
@@ -775,6 +799,7 @@ fun PaymentUndeterminedView(
      * cuál se está declarando. `null` cuando no consta: el texto dice «ese cobro».
      */
     montoDelCobro: String? = null,
+    terminalLibreVentaEnDuda: Boolean = false,
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
     var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
@@ -803,7 +828,11 @@ fun PaymentUndeterminedView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = if (fromPreviousSale) "Cobro anterior sin confirmar" else "Cobro sin confirmar",
+            text = when {
+                terminalLibreVentaEnDuda -> CancelacionDeCobro.TERMINAL_LIBRE_VENTA_EN_DUDA
+                fromPreviousSale -> "Cobro anterior sin confirmar"
+                else -> "Cobro sin confirmar"
+            },
             style = MaterialTheme.typography.headlineLarge,
             textAlign = TextAlign.Center,
         )
@@ -831,21 +860,13 @@ fun PaymentUndeterminedView(
         )
 
         // 🔴 La salida que faltaba: el cajero MIRA la terminal y lo declara. No cobra — libera.
-        // Va en segundo plano visual (contorno ámbar, no botón primario) porque la acción
-        // recomendada sigue siendo consultar: preguntar nunca se equivoca.
         if (onDeclararNoCobrado != null) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-            OutlinedButton(
-                onClick = { pedirConfirmacionDeclaracion = true },
+            BotonDeclararNoCobrado(
                 enabled = !isChecking,
-                border = BorderStroke(1.5.dp, Warning),
-                // 🔴 Nada de `fillMaxWidth()`: en una tablet de 1920 px dejaba una píldora de lado a
-                // lado con el texto diminuto en el centro (founder, 21-sep, viéndolo en la D3). Se acota
-                // igual que el mensaje de arriba para que la columna quede alineada.
-                modifier = Modifier.widthIn(max = 400.dp),
-            ) {
-                Text(CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO, color = Warning)
-            }
+                onClick = { pedirConfirmacionDeclaracion = true },
+                texto = if (terminalLibreVentaEnDuda) CancelacionDeCobro.NO_SE_COBRO_COBRAR_OTRA_VEZ else CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
+            )
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -863,39 +884,12 @@ fun PaymentUndeterminedView(
         }
     }
 
-    // Declarar mueve el estado de una venta, así que nunca en un solo toque: se repite con
-    // todas sus letras QUÉ se está afirmando y que queda firmado con su nombre.
     if (pedirConfirmacionDeclaracion && onDeclararNoCobrado != null) {
-        AvoqadoDialog(
-            title = CancelacionDeCobro.DECLARACION_TITULO,
-            description = CancelacionDeCobro.cuerpoDeLaDeclaracion(montoDelCobro),
-            onDismiss = { pedirConfirmacionDeclaracion = false },
-            actionButton = {
-                // Los dos botones en la MISMA ranura: `AvoqadoDialog` no tiene una secundaria, y
-                // «Mejor no» tiene que estar a la vista — la X de la esquina no es una salida
-                // evidente cuando lo que se pide es confirmar algo sobre dinero.
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    PrimaryButton(
-                        text = CancelacionDeCobro.DECLARACION_CONFIRMAR,
-                        onClick = {
-                            pedirConfirmacionDeclaracion = false
-                            onDeclararNoCobrado()
-                        },
-                        fullWidth = true,
-                    )
-                    TextButton(onClick = { pedirConfirmacionDeclaracion = false }) {
-                        Text(CancelacionDeCobro.DECLARACION_CANCELAR)
-                    }
-                }
-            },
-        ) {
-            Icon(
-                imageVector = Icons.Filled.HelpOutline,
-                contentDescription = null,
-                tint = Warning,
-                modifier = Modifier.size(24.dp),
-            )
-        }
+        DialogoDeclararNoCobrado(
+            montoDelCobro = montoDelCobro,
+            onConfirmar = onDeclararNoCobrado,
+            onCerrar = { pedirConfirmacionDeclaracion = false },
+        )
     }
 
     // Salir está permitido (bloquear la caja sería peor), pero nunca en silencio: se dice
@@ -925,6 +919,101 @@ fun PaymentUndeterminedView(
             )
         }
     }
+}
+
+/**
+ * «Ya revisé la terminal: no se cobró». C2 (22-oct): lo comparten «Cobro sin confirmar» y «Cancelación pendiente», para
+ * que se vea igual en las dos.
+ *
+ * Va en segundo plano visual (contorno ámbar, no botón primario) porque la acción recomendada sigue siendo consultar:
+ * preguntar nunca se equivoca.
+ */
+@Composable
+private fun BotonDeclararNoCobrado(
+    enabled: Boolean,
+    onClick: () -> Unit,
+    texto: String = CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        border = BorderStroke(1.5.dp, Warning),
+        // 🔴 Nada de `fillMaxWidth()`: en una tablet de 1920 px dejaba una píldora de lado a
+        // lado con el texto diminuto en el centro (founder, 21-sep, viéndolo en la D3). Se acota
+        // igual que el mensaje de arriba para que la columna quede alineada.
+        modifier = Modifier.widthIn(max = 400.dp),
+    ) {
+        Text(texto, color = Warning)
+    }
+}
+
+/**
+ * La confirmación de «Ya revisé la terminal: no se cobró». C2 (22-oct): sacada de [PaymentUndeterminedView] sin cambiar un
+ * solo texto, para que «Cancelación pendiente» pida exactamente lo mismo.
+ *
+ * Declarar mueve el estado de una venta, así que nunca en un solo toque: se repite con todas sus letras QUÉ se está
+ * afirmando y que queda firmado con su nombre.
+ *
+ * @param montoDelCobro el importe DEL COBRO que se declara; `null` ⇒ el texto dice «ese cobro».
+ */
+@Composable
+private fun DialogoDeclararNoCobrado(montoDelCobro: String?, onConfirmar: () -> Unit, onCerrar: () -> Unit) {
+    AvoqadoDialog(
+        title = CancelacionDeCobro.DECLARACION_TITULO,
+        description = CancelacionDeCobro.cuerpoDeLaDeclaracion(montoDelCobro),
+        onDismiss = onCerrar,
+        actionButton = {
+            // Los dos botones en la MISMA ranura: `AvoqadoDialog` no tiene una secundaria, y
+            // «Mejor no» tiene que estar a la vista — la X de la esquina no es una salida
+            // evidente cuando lo que se pide es confirmar algo sobre dinero.
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                PrimaryButton(
+                    text = CancelacionDeCobro.DECLARACION_CONFIRMAR,
+                    onClick = {
+                        onCerrar()
+                        onConfirmar()
+                    },
+                    fullWidth = true,
+                )
+                TextButton(onClick = onCerrar) {
+                    Text(CancelacionDeCobro.DECLARACION_CANCELAR)
+                }
+            }
+        },
+    ) {
+        Icon(
+            imageVector = Icons.Filled.HelpOutline,
+            contentDescription = null,
+            tint = Warning,
+            modifier = Modifier.size(24.dp),
+        )
+    }
+}
+
+/**
+ * C4 (22-oct, P4): el teclado donde un gerente teclea su PIN para que el mesero —sin `payments:reconcile-uncharged`—
+ * declare «no se cobró». Lo pide el SERVIDOR (`SUPERVISOR_AUTHORIZATION_REQUIRED`); la tablet nunca decide quién puede.
+ *
+ * Reusa [ManagerOverrideSheet]: el mismo teclado, los mismos textos de error en línea, el mismo «tocar fuera no cancela».
+ * Pero NO pasa por `ManagerOverrideCoordinator`: aquí no hay token de un solo uso. El PIN viaja en el CUERPO de la misma
+ * declaración, que es lo que espera el servidor. Cerrarlo = la declaración falla como antes, con el motivo del servidor.
+ */
+@Composable
+fun TecladoDelPinDeGerente(
+    peticion: PeticionDePinDeGerente,
+    onEnviar: suspend (String) -> OverrideResult,
+    onCerrar: () -> Unit,
+) {
+    ManagerOverrideSheet(
+        prompt = ManagerOverrideCoordinator.Prompt(
+            id = peticion.id,
+            permission = CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO,
+            actionLabel = PermissionLabels.of(CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO),
+        ),
+        onSubmit = onEnviar,
+        onDismiss = onCerrar,
+        title = CancelacionDeCobro.PIN_DE_GERENTE_TITULO,
+    )
 }
 
 // MARK: - Cancelación del cobro (§C.4)
@@ -974,7 +1063,23 @@ fun CancelacionPendienteView(
     isChecking: Boolean,
     onVolverAConsultar: () -> Unit,
     onSalir: () -> Unit,
+    /**
+     * C2 (22-oct): «Ya revisé la terminal: no se cobró» sobre el cobro que se pidió cancelar. `null` ⇒ no se ofrece (la
+     * intención es sólo de la orden: no hubo cobro que declarar) y la pantalla es la de siempre.
+     */
+    onDeclararNoCobrado: (() -> Unit)? = null,
+    /** El importe DEL COBRO que se declara, para el diálogo; `null` ⇒ el texto dice «ese cobro». */
+    montoDelCobro: String? = null,
+    /** Lo que contestó la declaración cuando no liberó (motivo del servidor, sin red, sesión renovada); va en ámbar. */
+    avisoDeDeclaracion: String? = null,
+    /**
+     * C2 (fix 1, I1): la declaración va en vuelo. Es lo ÚNICO que apaga el botón de declarar: que el coordinador esté
+     * consultando ([isChecking]) no lo apaga, para que su consulta de fondo no deje el botón muerto.
+     */
+    declarando: Boolean = false,
 ) {
+    var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1007,6 +1112,19 @@ fun CancelacionPendienteView(
             modifier = Modifier.widthIn(max = 400.dp),
         )
 
+        // 🔴 La respuesta de la declaración, en ámbar: sin esto la pantalla quedaba idéntica tras el toque y el botón
+        // parecía muerto (founder, 21-sep, en «Cobro sin confirmar»).
+        if (avisoDeDeclaracion != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = avisoDeDeclaracion,
+                style = MaterialTheme.typography.bodyLarge,
+                color = Warning,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 400.dp),
+            )
+        }
+
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
         PrimaryButton(
@@ -1016,11 +1134,26 @@ fun CancelacionPendienteView(
             isLoading = isChecking,
         )
 
+        // C2: la salida de Amaena (20-oct). El cajero mira la terminal y lo declara; si el servidor libera, la venta se
+        // cancela sola por el camino de siempre (el coordinador), nunca desde aquí.
+        if (onDeclararNoCobrado != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            BotonDeclararNoCobrado(enabled = !declarando, onClick = { pedirConfirmacionDeclaracion = true })
+        }
+
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
         TextButton(onClick = onSalir, enabled = !isChecking) {
             Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE)
         }
+    }
+
+    if (pedirConfirmacionDeclaracion && onDeclararNoCobrado != null) {
+        DialogoDeclararNoCobrado(
+            montoDelCobro = montoDelCobro,
+            onConfirmar = onDeclararNoCobrado,
+            onCerrar = { pedirConfirmacionDeclaracion = false },
+        )
     }
 }
 

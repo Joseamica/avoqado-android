@@ -70,6 +70,21 @@ class TerminalPaymentService @Inject constructor(
         }
         .build()
 
+    /**
+     * C4 (P7, fix 0 de la duda 3, 22-oct): el cliente de la LISTA de terminales. Corto en la RED —5 s para conectar, 8 s
+     * sin recibir un byte—, pero SIN tope de llamada entera (`callTimeout`) y SIN la marca de no esperar un PIN.
+     *
+     * 🔴 Por qué no [statusClient]: la ruta pide `payments:create`, y un mesero sin él pasa por el override de gerente
+     * (`ForbiddenInterceptor` bloquea el hilo de la llamada hasta que el gerente teclea; puede tardar más de 10 s). Con el
+     * `callTimeout` de 10 s esa espera mataba la llamada, y con `FAIL_FAST_HEADER` el teclado ni se abría: el mesero veía
+     * «No tienes permiso» donde antes listaba con el PIN. Los topes de conexión y de lectura sólo corren mientras se habla
+     * con el servidor, nunca mientras se espera a una persona, y el reintento con el token estrena los suyos.
+     */
+    private val listClient = baseClient.newBuilder()
+        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
     /** Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL]. */
     @androidx.annotation.VisibleForTesting
     internal var baseUrl: String = ApiConstants.BASE_URL
@@ -176,6 +191,18 @@ class TerminalPaymentService @Inject constructor(
      * ni reescribir — o la rechaza si entretanto apareció evidencia de cobro.
      */
     private val clienteDeLaDeclaracion by lazy { statusClient }
+
+    /**
+     * C4 (P4): el MISMO cliente de la declaración, sin el registro de cuerpos. Con `supervisorPin` el cuerpo lleva el PIN de
+     * un gerente, y el `HttpLoggingInterceptor` del cliente compartido (nivel BODY en las compilaciones de depuración,
+     * `NetworkModule`) lo escribiría en logcat. 🔴 El PIN nunca se registra, nunca se guarda y nunca va en la URL.
+     * Comparte el pool de conexiones (`newBuilder`): la reconexión de una conexión rancia sigue igual.
+     */
+    private val clienteDeLaDeclaracionConPin by lazy {
+        clienteDeLaDeclaracion.newBuilder()
+            .apply { interceptors().removeAll { it is okhttp3.logging.HttpLoggingInterceptor } }
+            .build()
+    }
 
     /**
      * Contexto guardado del cobro (su entrada en la lista durable), si corresponde a ESA solicitud.
@@ -524,8 +551,11 @@ class TerminalPaymentService @Inject constructor(
                 .get()
                 .build()
 
+            // C4 (P7, 22-oct): el cliente CORTO EN LA RED. El de 310 s existe porque alguien tiene que pasar la tarjeta; con
+            // él, un servidor que acepta la conexión y no contesta dejaba «Buscando terminales…» minutos. El override de
+            // gerente de esta ruta sigue igual que antes (fix 0): ver [listClient].
             val (responseCode, body) = withContext(io) {
-                client.newCall(request).execute().use { response ->
+                listClient.newCall(request).execute().use { response ->
                     // N6 (Codex r2): llegaron las cabeceras, el servidor SÍ contestó: su estado se conserva aunque el cuerpo se corte.
                     response.code to (try { response.body?.string() } catch (_: java.io.IOException) { null } ?: "")
                 }
@@ -727,6 +757,8 @@ class TerminalPaymentService @Inject constructor(
                             amountCents = it.blockingRequest?.amountCents,
                             ageSeconds = it.blockingRequest?.ageSeconds,
                             senderDevice = it.blockingRequest?.senderDevice,
+                            // C1: opcional; un servidor viejo no lo manda y se ve como hoy.
+                            scope = it.details?.scope,
                         )
                     }
                     // 🔴 La UNA excepción del 409: el server se negó a CREAR este intento porque
@@ -742,6 +774,9 @@ class TerminalPaymentService @Inject constructor(
                             CardChargeDecision.busyMessage(busyByAnother, errorMsg),
                             requestId = requestId,
                             noSeCreo = true,
+                            // C1 (22-oct): QUIÉN ocupa, para que la pantalla ofrezca «Revisar ese cobro». Es OTRA solicitud
+                            // —quizá de otro aparato—: se puede consultar, nunca se hace propia (ver `resolveOutcome(ajeno)`).
+                            bloqueador = busyByAnother.blockingRequestId?.let { BloqueadorDeCobro(it, busyByAnother.scope) },
                         )
                     }
                     // 🔴 Misma familia que el 409 de arriba y la MISMA garantía: la CORRELACIÓN.
@@ -882,15 +917,20 @@ class TerminalPaymentService @Inject constructor(
      *
      * @param enSegundoPlano D2 (mesas40): la consulta automática de «Cobro sin confirmar», que corre sola cada 5 s. Sus
      *   GET van marcados: un 403 no saca el aviso global de permisos encima de la pantalla del cajero.
+     * @param ajeno C1 (22-oct): el cobro que OCUPA la terminal según un 409 («Revisar ese cobro»). Es de otra solicitud,
+     *   casi siempre de otro aparato: se consulta y se muestra, pero su desenlace NO entra a la lista durable de este
+     *   aparato (ni se arma su llave ni se marca «SÍ pasó»). Su aparato lo cuida y el servidor lo concilia; guardarlo aquí
+     *   pondría en el aviso de cada venta de ESTE POS un cobro que nunca fue suyo.
      */
-    suspend fun resolveOutcome(requestId: String, enSegundoPlano: Boolean = false): TerminalPaymentResult =
-        resolveOutcome(requestId, fromPost = false, enSegundoPlano = enSegundoPlano)
+    suspend fun resolveOutcome(requestId: String, enSegundoPlano: Boolean = false, ajeno: Boolean = false): TerminalPaymentResult =
+        resolveOutcome(requestId, fromPost = false, enSegundoPlano = enSegundoPlano, ajeno = ajeno)
 
     private suspend fun resolveOutcome(
         requestId: String,
         fromPost: Boolean,
         mensajeDeLaTerminal: String? = null,
         enSegundoPlano: Boolean = false,
+        ajeno: Boolean = false,
     ): TerminalPaymentResult {
         val (flight, owner) = synchronized(attemptLock) {
             val selected = recoveryFlights[requestId]?.let { it to false } ?: RecoveryFlight().let {
@@ -913,7 +953,9 @@ class TerminalPaymentService @Inject constructor(
         }
         if (!owner) return forConsumer(flight.result.await())
         try {
-            val result = resolveOutcomeOnce(requestId, mensajeDeLaTerminal, enSegundoPlano)
+            // C1: la consulta en vuelo es UNA por `requestId` y la decide quien la abrió. Un cobro ajeno sólo lo abre
+            // «Revisar ese cobro»; la revisión de fondo sólo consulta cobros que ya están en la lista de este aparato.
+            val result = resolveOutcomeOnce(requestId, mensajeDeLaTerminal, enSegundoPlano, ajeno)
             synchronized(attemptLock) {
                 if (requestId in activePosts && result !is TerminalPaymentResult.Undetermined) recoveredPosts[requestId] = result
             }
@@ -930,16 +972,29 @@ class TerminalPaymentService @Inject constructor(
         }
     }
 
-    private suspend fun resolveOutcomeOnce(requestId: String, mensajeDeLaTerminal: String?, enSegundoPlano: Boolean): TerminalPaymentResult {
+    private suspend fun resolveOutcomeOnce(
+        requestId: String,
+        mensajeDeLaTerminal: String?,
+        enSegundoPlano: Boolean,
+        ajeno: Boolean = false,
+    ): TerminalPaymentResult {
         // Tope de reloj de pared también AQUÍ: `statusClient` acota cada llamada, pero un
         // "Consultando…" que nunca termina es el mismo pecado que el "Procesando pago…" eterno.
+        // O1 (fix round 1 de C1): ¿ALGUNA consulta recibió respuesta? Si ninguna, la duda es por falta de red.
+        var huboRespuesta = false
+        var terminalLibreVentaEnDuda = false
         val resolved = kotlinx.coroutines.withTimeoutOrNull(RECONCILE_CEILING_MS) {
             val attempts = 3
             repeat(attempts) { attempt ->
                 // Respiro entre consultas (500ms → 2s): darle un momento a la terminal para asentarse.
                 if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
 
-                val probe = consultarEstado(requestId, venueId = null, enSegundoPlano).probe
+                val consulta = consultarEstado(requestId, venueId = null, enSegundoPlano)
+                if (!consulta.sinRespuesta) huboRespuesta = true
+                val probe = consulta.probe
+                // Libera el aparato, no la venta: sólo cambia las palabras de la duda.
+                terminalLibreVentaEnDuda = probe is ChargeStatusProbe.Known && probe.status == "TIMED_OUT" &&
+                    (probe.failureCode == "AUTO_RELEASED" || probe.failureCode == "MANUAL_RELEASE") && probe.outcome == "UNRESOLVED"
                 when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1, mensajeDeLaTerminal)) {
                     is ProbeDecision.Resolved -> return@withTimeoutOrNull decision.outcome
                     ProbeDecision.KeepPolling -> Unit // seguir preguntando
@@ -953,17 +1008,31 @@ class TerminalPaymentService @Inject constructor(
             // NUNCA sobre un cobro acreditado. Si esta consulta acaba de confirmar que el dinero salió,
             // una declaración de «no se cobró» guardada antes no puede taparlo.
             val desenlace = resolved ?: CardChargeDecision.exhausted()
-            if (desenlace is CardChargeOutcome.Charged) desenlace.toResult(requestId)
-            else recoveredPosts[requestId] ?: desenlace.toResult(requestId)
+            val resultado = if (desenlace is CardChargeOutcome.Charged) desenlace.toResult(requestId, ajeno)
+            else recoveredPosts[requestId] ?: desenlace.toResult(requestId, ajeno)
+            // O1: sólo dice POR QUÉ sigue la duda; el desenlace no cambia.
+            if (resultado is TerminalPaymentResult.Undetermined) resultado.copy(
+                sinRed = !huboRespuesta,
+                terminalLibreVentaEnDuda = terminalLibreVentaEnDuda,
+            ) else resultado
         }
     }
 
-    /** El desenlace, traducido al resultado que consume el flujo de pago. */
-    private fun CardChargeOutcome.toResult(requestId: String): TerminalPaymentResult = when (this) {
+    /**
+     * El desenlace, traducido al resultado que consume el flujo de pago.
+     *
+     * @param ajeno C1: el cobro que ocupa la terminal, de otra solicitud. No se arma su llave ni se marca «SÍ pasó»: la
+     *   lista durable es de los cobros que mandó ESTE aparato. Un «no se cobró» sí suelta lo que hubiera (nada, si es ajeno).
+     */
+    private fun CardChargeOutcome.toResult(requestId: String, ajeno: Boolean = false): TerminalPaymentResult = when (this) {
         is CardChargeOutcome.Charged -> {
             // Consta que se cobró (H2): la entrada se MARCA, no se borra. Sale con el «Entendido» de ESE cobro o cuando el
             // flujo que lo mandó lo aplica como su pago; una consulta de fondo no revive lo que alguien ya reconoció.
-            marcarCobrado(requestId)
+            if (ajeno) {
+                Log.d("💳", "🔎 El cobro que ocupaba la terminal ($requestId) SÍ pasó: es ajeno, no entra a la lista de este aparato")
+            } else {
+                marcarCobrado(requestId)
+            }
             Log.d("💳", "✅ Cobro confirmado por estado durable (paymentId=$paymentId)")
             TerminalPaymentResult.Success(paymentId = paymentId, requestId = requestId).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
@@ -979,7 +1048,11 @@ class TerminalPaymentService @Inject constructor(
         }
         is CardChargeOutcome.Undetermined -> {
             // Sigue sin saberse: se conserva el requestId para poder volver a preguntar.
-            if (yaDeclaradoSinCobro(requestId)) {
+            if (ajeno) {
+                // C1 (Review Focus #5): la duda de OTRO aparato se muestra, pero no se guarda: no frena ninguna venta de
+                // éste ni sale en su aviso. «Volver a consultar» la vuelve a preguntar por la misma revisión.
+                Log.i("💳", "🔎 El cobro que ocupa la terminal ($requestId) sigue en duda: es ajeno, no entra a la lista de este aparato")
+            } else if (yaDeclaradoSinCobro(requestId)) {
                 // Su desenlace ya consta por la declaración del cajero: no se re-arma (P2 Codex).
                 Log.i("💳", "🧾 Desenlace indeterminado IGNORADO: $requestId ya se declaró sin cobro")
             } else {
@@ -1064,8 +1137,16 @@ class TerminalPaymentService @Inject constructor(
      * 🔴 El mensaje de un rechazo viaja tal cual desde el servidor: cada código tiene el suyo
      * («tiene señales de haber pasado», «sigue en curso», «no tienes permiso»…) y uno local
      * mentiría en los otros casos.
+     *
+     * @param supervisorPin C4 (P4, 22-oct): el PIN del gerente cuando el servidor lo pidió (`SUPERVISOR_AUTHORIZATION_REQUIRED`:
+     *   quien opera la tablet no tiene `payments:reconcile-uncharged`). Viaja SÓLO en el cuerpo y sólo si no es `null`; nunca
+     *   se registra (va por [clienteDeLaDeclaracionConPin]) ni se guarda. Es la misma declaración, igual de online-only.
      */
-    suspend fun declararNoCobrado(requestId: String, venueId: String? = null): ResultadoDeDeclaracion {
+    suspend fun declararNoCobrado(
+        requestId: String,
+        venueId: String? = null,
+        supervisorPin: String? = null,
+    ): ResultadoDeDeclaracion {
         // 🔴 Codex (etapa 2, P2-5): el venue del COBRO, no el de la SESIÓN. Un usuario con acceso a
         // dos sucursales que deja un pendiente en A y cambia a B mandaría `/venues/B/…/requestA/`,
         // el servidor rechazaría —con razón, es una fila ajena— y el pendiente quedaría
@@ -1077,7 +1158,7 @@ class TerminalPaymentService @Inject constructor(
         return try {
             val cuerpo = json.encodeToString(
                 DeclaracionSinCobroDto.serializer(),
-                DeclaracionSinCobroDto(resolutionId = resolutionIdDe(requestId)),
+                DeclaracionSinCobroDto(resolutionId = resolutionIdDe(requestId), supervisorPin = supervisorPin),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -1092,8 +1173,9 @@ class TerminalPaymentService @Inject constructor(
                 .post(cuerpo)
                 .build()
 
+            val cliente = if (supervisorPin != null) clienteDeLaDeclaracionConPin else clienteDeLaDeclaracion
             val (code, body) = withContext(io) {
-                clienteDeLaDeclaracion.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
+                cliente.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
             }
             val dto = runCatching { json.decodeFromString(RespuestaDeDeclaracionDto.serializer(), body) }.getOrNull()
             Log.d("💳", "Declaracion no-cobrado: $code (released=${dto?.released}, code=${dto?.code})")
@@ -1308,11 +1390,14 @@ sealed class TerminalPaymentResult {
      *   durable la necesita para preguntar por ella en vez de borrar la orden a ciegas.
      * @param noSeCreo el servidor rechazó la ADMISIÓN nombrando a esta solicitud: consta que el
      *   cobro no se envió a la terminal, así que no hay nada que preguntarle.
+     * @param bloqueador C1: el 409 `TERMINAL_BUSY` nombró a OTRA solicitud que ocupa la terminal (o la venta). Sólo dice
+     *   quién es, para poder revisarla; no resuelve nada de ella.
      */
     data class Error(
         val message: String,
         val requestId: String? = null,
         val noSeCreo: Boolean = false,
+        val bloqueador: BloqueadorDeCobro? = null,
     ) : TerminalPaymentResult()
 
     /**
@@ -1320,7 +1405,37 @@ sealed class TerminalPaymentResult {
      * desenlace, el que faltaba. Nunca se pinta como pantalla de Error, y nunca habilita un
      * reintento a ciegas: `requestId` es la llave para volver a preguntar.
      */
-    data class Undetermined(val message: String, val requestId: String, val inherited: Boolean = false) : TerminalPaymentResult()
+    data class Undetermined(
+        val message: String,
+        val requestId: String,
+        val inherited: Boolean = false,
+        /**
+         * Fix round 1 de C1 (O1): NINGUNA consulta de esta revisión recibió respuesta del servidor. Es el criterio de
+         * siempre ([ConsultaDeEstado.sinRespuesta]): un 5xx o un 403 SÍ son respuesta. No resuelve nada del cobro; sólo
+         * deja a la pantalla decir por qué no se supo.
+         */
+        val sinRed: Boolean = false,
+        /** Sólo presentación; la venta sigue pendiente hasta evidencia o declaración. */
+        val terminalLibreVentaEnDuda: Boolean = false,
+    ) : TerminalPaymentResult()
+}
+
+/**
+ * C1 (22-oct): el cobro que ocupa la terminal según el 409 `TERMINAL_BUSY` (`blockingRequest.requestId`), y su alcance.
+ *
+ * @param requestId puede ser `"unknown"`: una lápida del servidor que no guardó quién ocupaba. Ahí no hay a quién
+ *   preguntar ([revisable] es `null`).
+ * @param scope `TERMINAL` = el aparato está ocupado; `ORDER` = ESTA venta tiene un cobro pendiente, en cualquier terminal.
+ *   Opcional: un servidor anterior al 20-oct no lo manda (`null`) y todo se ve como hoy.
+ */
+data class BloqueadorDeCobro(val requestId: String, val scope: String?) {
+    /** El id que se puede consultar con «Revisar ese cobro»; `null` si el servidor no sabe cuál es. */
+    val revisable: String? get() = requestId.trim().takeIf { it.isNotEmpty() && it != SIN_ID }
+
+    companion object {
+        /** Lo que manda el servidor cuando no guardó el bloqueador (`terminal-payment.service.ts`). */
+        const val SIN_ID = "unknown"
+    }
 }
 
 /**
@@ -1350,6 +1465,12 @@ private data class DeclaracionSinCobroDto(
     val resolutionId: String,
     val statement: String = "UNCHARGED_VERIFIED",
     val statementVersion: Int = 1,
+    /**
+     * C4 (P4): el PIN del gerente cuando quien declara —el mesero— no tiene `payments:reconcile-uncharged`. `null` NO viaja
+     * (`explicitNulls = false`): sin PIN el cuerpo es el de siempre, byte por byte. El servidor lo separa antes de calcular
+     * la huella (`bodyHash`), así que la declaración con PIN es la MISMA que sin él.
+     */
+    val supervisorPin: String? = null,
 )
 
 @Serializable
@@ -1503,6 +1624,11 @@ data class TerminalPaymentRejectionDto(
 @Serializable
 data class RejectionDetailsDto(
     val requestId: String? = null,
+    /**
+     * C1: en el 409 `TERMINAL_BUSY`, `TERMINAL` (el aparato está ocupado) u `ORDER` (la venta tiene un cobro pendiente).
+     * Texto libre y opcional: un servidor viejo no lo manda.
+     */
+    val scope: String? = null,
 )
 
 @Serializable

@@ -94,6 +94,7 @@ class PaymentFlowCancelacionDurableTest {
     private val kdsRepository = mockk<KDSRepository>(relaxed = true)
     private val cashDrawerRepository = mockk<CashDrawerRepository>(relaxed = true)
     private val tableSession = TableSession()
+    private val syncOutbox = mockk<com.avoqado.pos.core.data.sync.SyncOutbox>(relaxed = true)
 
     private val almacen = AlmacenQuePuedeFallar()
     private val store = CancelacionesDeCobroEnTexto(almacen)
@@ -146,7 +147,7 @@ class PaymentFlowCancelacionDurableTest {
         )
         viewModel = PaymentFlowViewModel(
             tableSession = tableSession,
-            syncOutbox = mockk(relaxed = true),
+            syncOutbox = syncOutbox,
             orderRepository = orderRepository,
             cashPaymentRepository = cashPaymentRepository,
             tenderTypeRepository = mockk(relaxed = true),
@@ -621,6 +622,447 @@ class PaymentFlowCancelacionDurableTest {
 
         assertNull(viewModel.cancelFailure.value)
         assertFalse(viewModel.debeSalir.value)
+    }
+
+    // MARK: - C2 (22-oct): «Cancelación pendiente» con «Ya revisé la terminal: no se cobró»
+    //
+    // Amaena, 20-oct: la Nexgo se trabó 35 min con un cobro que la tablet había pedido cancelar. La pantalla «Cancelación
+    // pendiente» sólo ofrecía «Volver a consultar» y «Salir»: el cajero no tenía cómo decir lo que veía en la terminal.
+
+    private val noCobrado = ChargeStatusProbe.Known("FAILED", inProgress = false, outcome = "NOT_CHARGED")
+
+    /**
+     * Deja al ViewModel en «Cancelación pendiente» del cobro `req-1`, cuya orden `order-1` creó este flujo.
+     *
+     * @param venueDelCobro el venue con el que salió el cobro (el que guarda la intención). La sesión siempre es `venue-1`.
+     * @param venueDelContexto el venue que dice el contexto durable del cobro.
+     */
+    private fun kotlinx.coroutines.test.TestScope.enCancelacionPendiente(
+        venueDelCobro: String = "venue-1",
+        venueDelContexto: String = "venue-1",
+    ) {
+        stubOrdenCreada()
+        cobroEnVuelo()
+        every { terminalPaymentService.intentoEnVuelo() } returns IntentoDeCobroEnVuelo("req-1", "t1", venueDelCobro)
+        every { terminalPaymentService.contextoDe("req-1") } returns ContextoDeCobro(
+            requestId = "req-1", venueId = venueDelContexto, terminalId = "t1", orderId = "order-1", amountCents = 1500, tipCents = 0,
+        )
+        transporte.programarEstados(ChargeStatusProbe.Known("UNKNOWN", false))
+
+        cobrarConTarjeta()
+        advanceTimeBy(1_000)
+        viewModel.cancelarVenta()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertTrue("montaje: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.CancelacionPendiente)
+        assertNotNull("montaje: la intención sigue viva", store.leer("req-1"))
+        assertTrue("montaje: la orden no se ha tocado", transporte.llamadasBorrar.isEmpty())
+    }
+
+    @Test
+    fun `P1 desde Cancelacion pendiente declarar no cobrado cancela la orden y cierra el flujo`() = runTest {
+        // Fix 1, m3: tres venues distintos (sesión `venue-1`, cobro y contexto), para fijar que manda el de la INTENCIÓN.
+        enCancelacionPendiente(venueDelCobro = "venue-del-cobro", venueDelContexto = "venue-del-contexto")
+        assertEquals("montaje: la intención guarda el venue del cobro", "venue-del-cobro", store.leer("req-1")!!.venueId)
+        val antes = transporte.llamadas.toList()
+        // El botón se ofrece sobre ESE cobro: su id, el venue de la intención y el importe de su contexto durable.
+        assertEquals(
+            com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion(
+                requestId = "req-1", venueId = "venue-del-cobro", montoCentavos = 1500,
+            ),
+            viewModel.objetivoDeLaDeclaracionDeCancelacion(),
+        )
+        coEvery { terminalPaymentService.declararNoCobrado(any(), any()) } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Liberada
+        // Tras la declaración, el servidor ya dice que no se cobró.
+        transporte.programarEstados(noCobrado)
+
+        viewModel.declararDesdeCancelacion()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any()) }
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-1", "venue-del-cobro") }
+        // 🔴 El ViewModel NO borra la orden por su cuenta: el coordinador vuelve a preguntar y, sólo porque CONSTA que no
+        // se cobró, cancela la orden. Es la misma barrera de siempre (cancel → desenlace → borrado).
+        assertEquals(antes + listOf("GET:req-1", "DELETE:order-1"), transporte.llamadas)
+        coVerify(exactly = 0) { orderRepository.cancelOrder(any(), any(), any()) }
+        assertNull("la intención se cerró", store.leer("req-1"))
+        assertTrue("con la orden cancelada, el flujo se cierra", viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `P1 una intencion solo de orden (requestId null) no ofrece declarar`() = runTest {
+        // Un rechazo correlacionado prueba que el cobro no se creó: la intención es SÓLO de la orden. Hoy una intención así
+        // no llega a «Cancelación pendiente» (el coordinador la da por «no se cobró, falta la orden»); la guarda es para
+        // que nunca se declare sobre un cobro que no existe. Se mira con el borrado en vuelo.
+        stubOrdenCreada()
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Error(CancelacionDeCobro.RECHAZO_TERMINAL_NO_CONECTADA, requestId = "req-1", noSeCreo = true)
+        val borrado = CompletableDeferred<Unit>()
+        transporte.antesDeContestarBorrar = { borrado.await() }
+
+        cobrarConTarjeta()
+        advanceUntilIdle()
+        viewModel.cancelarVenta()
+        runCurrent()
+
+        val intencion = store.leer("orden:order-1")
+        assertNotNull("montaje: la intención observada es la de la orden", intencion)
+        assertNull("montaje: no hubo cobro", intencion!!.requestId)
+        assertEquals(listOf("DELETE:order-1"), transporte.llamadas)
+
+        assertNull("sin cobro no hay nada que declarar: el botón no se ofrece", viewModel.objetivoDeLaDeclaracionDeCancelacion())
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        coVerify(exactly = 0) { terminalPaymentService.declararNoCobrado(any(), any()) }
+
+        borrado.complete(Unit)
+        advanceUntilIdle()
+        assertTrue(viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `P2 un rechazo de la declaracion se queda en Cancelacion pendiente con el motivo`() = runTest {
+        enCancelacionPendiente()
+        val antes = transporte.llamadas.toList()
+        val delServidor = "Este cobro sí tiene señales de haber pasado. No lo declares: consulta su resultado."
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Rechazada(mensaje = delServidor, code = "POSITIVE_EVIDENCE_EXISTS")
+
+        viewModel.declararDesdeCancelacion()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        val estado = viewModel.state.value
+        assertTrue("$estado", estado is PaymentFlowState.CancelacionPendiente)
+        estado as PaymentFlowState.CancelacionPendiente
+        // 🔴 El texto lo escribe el SERVIDOR (cada código tiene el suyo) y se ve en la MISMA pantalla.
+        assertEquals(delServidor, estado.avisoDeDeclaracion)
+        assertFalse("se puede volver a consultar", estado.checking)
+        // Nada se resolvió: ni consulta nueva del coordinador ni borrado, y la intención sigue viva.
+        assertEquals(antes, transporte.llamadas)
+        assertNotNull(store.leer("req-1"))
+        assertFalse(viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `P1 sin red la declaracion desde Cancelacion pendiente no invita al efectivo y no se encola`() = runTest {
+        enCancelacionPendiente()
+        var declaraciones = 0
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } coAnswers {
+            declaraciones++
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.SinConexion
+        }
+
+        viewModel.declararDesdeCancelacion()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        val estado = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        // La duda es de ESTA venta (su propio cobro): nunca «puedes cobrar en efectivo».
+        assertEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, estado.avisoDeDeclaracion)
+        assertFalse(estado.checking)
+        assertNotNull("la intención sigue viva", store.leer("req-1"))
+        assertTrue(transporte.llamadasBorrar.isEmpty())
+        // 🔴 Online-only A PROPÓSITO: se intentó una vez y no queda en ninguna cola.
+        assertEquals(1, declaraciones)
+        coVerify(exactly = 0) {
+            syncOutbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    // MARK: - C2, fix round 1 (revisión de tarea)
+
+    @Test
+    fun `P1 con el coordinador consultando la declaracion sale una vez y su respuesta se aplica`() = runTest {
+        // I1: el cajero abre el diálogo; mientras lo lee, el coordinador corre solo (su reloj o al reconectar) y la
+        // pantalla pasa a «consultando». Su «Sí, no se cobró» NO puede perderse por eso.
+        enCancelacionPendiente()
+        val consulta = CompletableDeferred<Unit>()
+        transporte.antesDeContestarEstado = { consulta.await() }
+        coordinador.procesarAhora("req-1")
+        runCurrent()
+        assertTrue(
+            "montaje: el coordinador está consultando",
+            (viewModel.state.value as PaymentFlowState.CancelacionPendiente).checking,
+        )
+        val delServidor = "Este cobro sí tiene señales de haber pasado. No lo declares: consulta su resultado."
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Rechazada(mensaje = delServidor, code = "POSITIVE_EVIDENCE_EXISTS")
+
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-1", "venue-1") }
+        assertEquals(delServidor, (viewModel.state.value as PaymentFlowState.CancelacionPendiente).avisoDeDeclaracion)
+
+        // La corrida del coordinador termina sin desenlace: el motivo sigue a la vista (es la respuesta a lo que hizo el
+        // cajero, y sólo él la reemplaza con otra consulta o declaración).
+        consulta.complete(Unit)
+        advanceTimeBy(5_000)
+        runCurrent()
+        val fin = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertFalse(fin.checking)
+        assertFalse(fin.declarando)
+        assertEquals(delServidor, fin.avisoDeDeclaracion)
+        assertNotNull(store.leer("req-1"))
+    }
+
+    @Test
+    fun `P1 con la declaracion en vuelo un pendiente del coordinador no deja declarar otra vez`() = runTest {
+        // Carrera 2 del reporte: el coordinador publica «pendiente» mientras la declaración va en vuelo. El botón sigue
+        // apagado y un segundo toque no manda otra declaración.
+        enCancelacionPendiente()
+        val respuesta = CompletableDeferred<com.avoqado.pos.payment.data.ResultadoDeDeclaracion>()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } coAnswers { respuesta.await() }
+
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        coordinador.procesarAhora("req-1") // corre solo y vuelve a publicar «pendiente»
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        val enVuelo = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertTrue("la declaración sigue en vuelo: el botón sigue apagado", enVuelo.declarando)
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any()) }
+
+        respuesta.complete(com.avoqado.pos.payment.data.ResultadoDeDeclaracion.SinConexion)
+        runCurrent()
+        val fin = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertFalse(fin.declarando)
+        assertEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, fin.avisoDeDeclaracion)
+    }
+
+    @Test
+    fun `P2 si una corrida vieja del coordinador contesta pendiente tras liberar se vuelve a preguntar y la orden se cancela`() = runTest {
+        // m1: la declaración vuelve «liberada» mientras una corrida del coordinador tiene el candado (su `procesarAhora` se
+        // pierde), y esa corrida contesta con lo que vio ANTES de la liberación.
+        enCancelacionPendiente()
+        val antes = transporte.llamadas.toList()
+        val respuesta = CompletableDeferred<com.avoqado.pos.payment.data.ResultadoDeDeclaracion>()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } coAnswers { respuesta.await() }
+        val consulta = CompletableDeferred<Unit>()
+        transporte.antesDeContestarEstado = { consulta.await() }
+        transporte.programarEstados(ChargeStatusProbe.Known("UNKNOWN", false), noCobrado)
+
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        coordinador.procesarAhora("req-1") // la corrida vieja: su GET queda retenido
+        runCurrent()
+        respuesta.complete(com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Liberada)
+        runCurrent()
+        consulta.complete(Unit) // contesta lo de antes: «no consta»
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        // 🔴 Se vuelve a preguntar UNA vez; recién con NOT_CHARGED se cancela la orden.
+        assertEquals(antes + listOf("GET:req-1", "GET:req-1", "DELETE:order-1"), transporte.llamadas)
+        assertNull(store.leer("req-1"))
+        assertTrue(viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `P1 tras liberar la pantalla sigue en Cancelacion pendiente hasta que el coordinador cierre`() = runTest {
+        // m4 (a) y m2: el ViewModel no cierra nada por su cuenta, y el motivo de un rechazo anterior no se queda al lado
+        // de «Consultando…».
+        enCancelacionPendiente()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Rechazada(mensaje = "Todavía no.", code = "EXECUTION_STILL_ACTIVE")
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        // C4 (P5): con `EXECUTION_STILL_ACTIVE` la pantalla dice el texto honesto, también desde «Cancelación pendiente».
+        assertEquals("montaje: un primer intento rechazado", CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR,
+            (viewModel.state.value as PaymentFlowState.CancelacionPendiente).avisoDeDeclaracion)
+
+        val consulta = CompletableDeferred<Unit>()
+        transporte.antesDeContestarEstado = { consulta.await() }
+        transporte.programarEstados(noCobrado)
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Liberada
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+
+        val intermedio = viewModel.state.value
+        assertTrue("sigue en la cancelación: $intermedio", intermedio is PaymentFlowState.CancelacionPendiente)
+        intermedio as PaymentFlowState.CancelacionPendiente
+        assertTrue("consultando mientras el coordinador pregunta", intermedio.checking)
+        assertNull("el rechazo viejo ya no se muestra", intermedio.avisoDeDeclaracion)
+        assertFalse(viewModel.debeSalir.value)
+        assertTrue("la orden todavía no se toca", transporte.llamadasBorrar.isEmpty())
+
+        consulta.complete(Unit)
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(listOf("DELETE:order-1"), transporte.llamadasBorrar)
+        assertTrue(viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `P2 una sesion vencida al declarar desde Cancelacion pendiente pide confirmar otra vez`() = runTest {
+        // m4 (b): la red funcionó; decir «sin conexión» sería falso. La declaración no se reenvió sola.
+        enCancelacionPendiente()
+        val antes = transporte.llamadas.toList()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.SesionRenovada
+
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+
+        val estado = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertEquals(CancelacionDeCobro.DECLARACION_SESION_RENOVADA, estado.avisoDeDeclaracion)
+        assertFalse(estado.declarando)
+        assertEquals(antes, transporte.llamadas)
+        assertNotNull(store.leer("req-1"))
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any()) }
+    }
+
+    @Test
+    fun `P2 una respuesta de la declaracion que llega con la cancelacion ya cerrada no repinta la pantalla`() = runTest {
+        // m4 (c): mientras la declaración va en vuelo, la terminal confirma sola y el coordinador cierra la cancelación.
+        // La generación no cambió: lo que impide repintar es que la pantalla ya no observa ESA cancelación.
+        enCancelacionPendiente()
+        val respuesta = CompletableDeferred<com.avoqado.pos.payment.data.ResultadoDeDeclaracion>()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } coAnswers { respuesta.await() }
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+
+        transporte.programarEstados(cancelado)
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertTrue("montaje: el coordinador cerró y el flujo sale", viewModel.debeSalir.value)
+        val tras = viewModel.state.value
+        val llamadas = transporte.llamadas.toList()
+
+        respuesta.complete(com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Rechazada(mensaje = "tarde", code = null))
+        runCurrent()
+
+        assertEquals("la respuesta tardía no repinta nada", tras, viewModel.state.value)
+        assertFalse(viewModel.state.value is PaymentFlowState.CancelacionPendiente)
+        assertEquals(llamadas, transporte.llamadas)
+    }
+
+    @Test
+    fun `P2 una respuesta de la declaracion que llega despues de Salir no repinta la pantalla`() = runTest {
+        // m4 (c), el caso que nombró la revisión: el cajero sale con la declaración en vuelo.
+        enCancelacionPendiente()
+        val respuesta = CompletableDeferred<com.avoqado.pos.payment.data.ResultadoDeDeclaracion>()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } coAnswers { respuesta.await() }
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+
+        viewModel.salirDejandoPendiente()
+        val tras = viewModel.state.value
+        val llamadas = transporte.llamadas.toList()
+        respuesta.complete(com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Liberada)
+        runCurrent()
+
+        assertEquals(tras, viewModel.state.value)
+        assertTrue(viewModel.debeSalir.value)
+        assertEquals("la intención sigue para el coordinador", 1, store.todas().size)
+        assertEquals(llamadas, transporte.llamadas)
+    }
+
+    // MARK: - C4 (22-oct, P4): el MESERO declara desde «Cancelación pendiente» con el PIN de un gerente
+    //
+    // El PIN entra en el camino ÚNICO de la declaración (`declarar`), así que vale igual aquí que en «Cobro sin confirmar».
+    // La bandera propia (`declarando`) se respeta mientras se pide el PIN y se repite la declaración.
+
+    private val pideGerente = com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Rechazada(
+        mensaje = "Pide a un gerente que ingrese su PIN para confirmar que este cobro no pasó.",
+        code = "SUPERVISOR_AUTHORIZATION_REQUIRED",
+    )
+
+    @Test
+    fun `P1 mesero en Cancelacion pendiente - PIN, declara y el coordinador cancela la orden`() = runTest {
+        enCancelacionPendiente()
+        val antes = transporte.llamadas.toList()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1", null) } returns pideGerente
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1", "1234") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Liberada
+        // Tras la declaración, el servidor ya dice que no se cobró.
+        transporte.programarEstados(noCobrado)
+
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+
+        val peticion = viewModel.pidiendoPinDeGerente.value
+        assertNotNull("el servidor pidió gerente: se abre el teclado", peticion)
+        assertEquals(com.avoqado.pos.payment.data.model.OrigenDeLaDeclaracion.CANCELACION_PENDIENTE, peticion!!.origen)
+        assertTrue(
+            "la bandera propia se respeta mientras se pide el PIN",
+            (viewModel.state.value as PaymentFlowState.CancelacionPendiente).declarando,
+        )
+        viewModel.declararDesdeCancelacion() // un segundo toque no manda otra declaración
+        runCurrent()
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any(), any()) }
+        assertEquals("nada se resolvió todavía", antes, transporte.llamadas)
+
+        viewModel.enviarPinDeGerente("1234")
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertNull("con el PIN aceptado el teclado se cierra", viewModel.pidiendoPinDeGerente.value)
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-1", "venue-1", "1234") }
+        // 🔴 Igual que con la declaración del cajero: el ViewModel NO borra la orden. El coordinador vuelve a preguntar y,
+        // sólo porque CONSTA que no se cobró, la cancela.
+        assertEquals(antes + listOf("GET:req-1", "DELETE:order-1"), transporte.llamadas)
+        coVerify(exactly = 0) { orderRepository.cancelOrder(any(), any(), any()) }
+        assertNull("la intención se cerró", store.leer("req-1"))
+        assertTrue("con la orden cancelada, el flujo se cierra", viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `P1 cerrar el teclado del PIN sin teclear deja el boton vivo y la bandera en falso`() = runTest {
+        enCancelacionPendiente()
+        val antes = transporte.llamadas.toList()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1", null) } returns pideGerente
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        val peticion = viewModel.pidiendoPinDeGerente.value
+        assertNotNull("montaje: el teclado está abierto", peticion)
+
+        viewModel.cerrarTecladoDelPin(peticion!!.id)
+        runCurrent()
+
+        assertNull(viewModel.pidiendoPinDeGerente.value)
+        val estado = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertFalse("el teclado cerrado no deja muerto el botón", estado.declarando)
+        // Cerrar = cancelar: la declaración falla como fallaba antes de C4, con el motivo del SERVIDOR.
+        assertEquals(pideGerente.mensaje, estado.avisoDeDeclaracion)
+        assertEquals(antes, transporte.llamadas)
+        assertNotNull("la intención sigue viva", store.leer("req-1"))
+
+        // La bandera volvió a falso: un toque nuevo SÍ declara.
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        coVerify(exactly = 2) { terminalPaymentService.declararNoCobrado("req-1", "venue-1", null) }
+        assertNotNull("y el servidor vuelve a pedir el PIN", viewModel.pidiendoPinDeGerente.value)
+    }
+
+    @Test
+    fun `P2 si la cancelacion se resuelve sola con el teclado abierto el teclado se va y un PIN tardio no declara`() = runTest {
+        enCancelacionPendiente()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1", null) } returns pideGerente
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        assertNotNull("montaje: el teclado está abierto", viewModel.pidiendoPinDeGerente.value)
+
+        // La terminal confirma sola: el coordinador cierra la cancelación.
+        transporte.programarEstados(cancelado)
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertTrue("montaje: el coordinador cerró y el flujo sale", viewModel.debeSalir.value)
+        assertNull("ya no hay nada que declarar: el teclado se va", viewModel.pidiendoPinDeGerente.value)
+        viewModel.enviarPinDeGerente("1234")
+        runCurrent()
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado(any(), any(), any()) }
     }
 
     private companion object {

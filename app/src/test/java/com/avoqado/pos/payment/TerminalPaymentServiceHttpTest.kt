@@ -2,7 +2,9 @@ package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.payment.data.BloqueadorDeCobro
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
+import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.domain.CardChargeDecision
@@ -73,6 +75,41 @@ class TerminalPaymentServiceHttpTest {
 
     private fun enqueue(code: Int, body: String = "{}") {
         server.enqueue(MockResponse().setResponseCode(code).setBody(body))
+    }
+
+    @Test
+    fun `P1 con TIMED_OUT AUTO_RELEASED y UNRESOLVED la terminal esta libre y la venta sigue en duda`() = runBlocking {
+        terminalLibreCon("AUTO_RELEASED")
+    }
+
+    @Test
+    fun `P1 con MANUAL_RELEASE de soporte la terminal esta libre y la venta sigue en duda`() = runBlocking {
+        terminalLibreCon("MANUAL_RELEASE")
+    }
+
+    private suspend fun terminalLibreCon(code: String) {
+        pendientes = PendientesDeTarjeta.agregar(null, "pending", null, "{}")
+        enqueue(200, """{"status":"TIMED_OUT","inProgress":false,"failureCode":"$code","outcome":"UNRESOLVED"}""")
+        val result = service.resolveOutcome("pending")
+        assertTrue("la venta sigue pendiente", result is TerminalPaymentResult.Undetermined)
+        assertEquals(listOf("pending"), idsPendientes())
+        assertTrue("terminal libre con $code", (result as TerminalPaymentResult.Undetermined).terminalLibreVentaEnDuda)
+    }
+
+    @Test
+    fun `P2 UNKNOWN servidor viejo y otros codigos no afirman terminal libre`() = runBlocking {
+        for (body in listOf(
+            """{"status":"UNKNOWN","failureCode":"AUTO_RELEASED","outcome":"UNRESOLVED"}""",
+            """{"status":"CANCEL_REQUESTED","failureCode":"MANUAL_RELEASE","outcome":"UNRESOLVED"}""",
+            """{"status":"TIMED_OUT","outcome":"UNRESOLVED"}""",
+            """{"status":"TIMED_OUT","failureCode":"AUTO_RELEASED"}""",
+            """{"status":"TIMED_OUT","failureCode":"FUTURE_CODE","outcome":"UNRESOLVED"}""",
+        )) {
+            enqueue(200, body)
+            val result = service.resolveOutcome("pending")
+            assertTrue(result is TerminalPaymentResult.Undetermined)
+            assertFalse(body, (result as TerminalPaymentResult.Undetermined).terminalLibreVentaEnDuda)
+        }
     }
 
     private suspend fun charge() = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25)
@@ -309,8 +346,65 @@ class TerminalPaymentServiceHttpTest {
 
     // MARK: - 409 TERMINAL_BUSY al CREAR el intento: correlacionado por request
 
-    private fun busyBody(blockerId: String) =
-        """{"success":false,"status":"failed","code":"TERMINAL_BUSY","errorMessage":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","message":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","blockingRequest":{"requestId":"$blockerId","amountCents":12550,"senderDevice":"Sunmi D3","ageSeconds":200}}"""
+    /**
+     * El cuerpo del 409. Con [scope] es el del SERVIDOR del 20-oct en adelante (`details` lleva el bloqueador y el alcance,
+     * `terminal-payment.mobile.controller.ts`); sin él, el de un servidor viejo, que no manda `details`.
+     */
+    private fun busyBody(blockerId: String, scope: String? = null): String {
+        val bloqueador = """{"requestId":"$blockerId","amountCents":12550,"senderDevice":"Sunmi D3","ageSeconds":200}"""
+        val details = scope?.let { ""","details":{"blockingRequest":$bloqueador,"scope":"$it"}""" }.orEmpty()
+        return """{"success":false,"status":"failed","code":"TERMINAL_BUSY","errorMessage":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","message":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","blockingRequest":$bloqueador$details}"""
+    }
+
+    // MARK: - C1 (22-oct): «Terminal ocupada» con salida — el id del cobro que ocupa viaja hasta la pantalla
+
+    @Test
+    fun `P1 el 409 ocupada conserva el id del cobro que ocupa la terminal`() = runBlocking {
+        // Servidor nuevo (con `details.scope`) y servidor viejo (sin `details`): el id del bloqueador llega igual; el
+        // alcance es opcional y sin él queda en null.
+        for ((cuerpo, alcance) in listOf(busyBody("otra-solicitud", scope = "TERMINAL") to "TERMINAL", busyBody("otra-solicitud") to null)) {
+            enqueue(409, cuerpo)
+            val antes = server.requestCount
+            val result = charge()
+            assertTrue("$result", result is TerminalPaymentResult.Error)
+            val error = result as TerminalPaymentResult.Error
+            assertEquals(BloqueadorDeCobro(requestId = "otra-solicitud", scope = alcance), error.bloqueador)
+            // Lo de siempre no cambia: consta que ESTE cobro no se creó, no se guarda nada y no se pregunta nada.
+            assertTrue(error.noSeCreo)
+            assertTrue(error.message, error.message.contains("NO se envió"))
+            assertTrue(idsPendientes().isEmpty())
+            assertEquals(antes + 1, server.requestCount)
+        }
+    }
+
+    @Test
+    fun `P1 el 409 de la orden llega del servidor con su texto y el id de su cobro pendiente`() = runBlocking {
+        enqueue(409, busyBody("cobro-de-la-orden", scope = "ORDER"))
+        val result = charge()
+        assertTrue("$result", result is TerminalPaymentResult.Error)
+        val error = result as TerminalPaymentResult.Error
+        assertEquals("Esta venta tiene un cobro pendiente de confirmar.", error.message)
+        assertEquals(BloqueadorDeCobro(requestId = "cobro-de-la-orden", scope = "ORDER"), error.bloqueador)
+        assertTrue(idsPendientes().isEmpty())
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `P1 la consulta que nunca recibe respuesta es sin red y un 500 no lo es`() = runBlocking {
+        // Fix round 1 de C1 (O1): el MISMO criterio que ya usa la app (`ConsultaDeEstado.sinRespuesta`). Sólo la ausencia de
+        // TODA respuesta es falta de red; un 5xx es el servidor contestando.
+        repeat(3) { enqueue(500) }
+        val conServidor = service.resolveOutcome("r-x")
+        assertTrue("$conServidor", conServidor is TerminalPaymentResult.Undetermined)
+        assertFalse("un 500 SÍ es una respuesta del servidor", (conServidor as TerminalPaymentResult.Undetermined).sinRed)
+
+        // Nadie escucha en ese puerto: ninguna de las tres consultas recibe respuesta.
+        val puertoCerrado = java.net.ServerSocket(0).use { it.localPort }
+        service.baseUrl = "http://127.0.0.1:$puertoCerrado/api/v1"
+        val sinRespuesta = service.resolveOutcome("r-x")
+        assertTrue("$sinRespuesta", sinRespuesta is TerminalPaymentResult.Undetermined)
+        assertTrue("sin ninguna respuesta = sin red", (sinRespuesta as TerminalPaymentResult.Undetermined).sinRed)
+    }
 
     @Test
     fun `un 409 TERMINAL_BUSY que nombra OTRA solicitud no es incertidumbre — se libera la llave y no se pregunta`() = runBlocking {
@@ -671,6 +765,61 @@ class TerminalPaymentServiceHttpTest {
 
         assertNull(server.takeRequest().getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
     }
+
+    @Test
+    fun `P2 la lista de terminales usa el cliente corto`() = runBlocking {
+        // C4 (P7, 22-oct): la lista iba por el cliente de 310 s, el del cobro, que espera a que alguien pase la tarjeta.
+        // Una CONSULTA no espera a nadie: un servidor que acepta la conexión y no contesta dejaba «Buscando terminales…»
+        // minutos. Con el cliente corto en la RED (`listClient`: 5 s de conexión, 8 s sin recibir nada) se rinde y ofrece
+        // «Reintentar». Sin tope de llamada entera: la espera del PIN del override no cuenta (prueba de abajo).
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody("""{"success":true,"terminals":[]}""")
+                .setHeadersDelay(12, java.util.concurrent.TimeUnit.SECONDS),
+        )
+
+        val inicio = System.nanoTime()
+        val r = service.fetchOnlineTerminals()
+        val ms = (System.nanoTime() - inicio) / 1_000_000
+
+        assertTrue("una lista que no contesta es un error, no una lista (fue $r)", r is TerminalListResult.Error)
+        assertTrue("y se rinde en 11 s como mucho (tardó $ms ms)", ms <= 11_000)
+    }
+
+    @Test
+    fun `P1 sin payments create la lista de terminales abre el teclado del gerente y con el PIN lista`() = runBlocking {
+        // C4, fix 0 (duda 3): el tope corto de P7 mide la RED, no la llamada entera. Un mesero sin `payments:create` toca
+        // «Cobrar con terminal»: el 403 overridable abre el teclado del override (dentro del `ForbiddenInterceptor`, que
+        // bloquea el hilo de red hasta que el gerente teclea) y el reintento con el token lista. El gerente tarda MÁS de
+        // 10 s en llegar: con un tope de llamada entera (`callTimeout`) o con la marca de no esperar PIN, esto moría.
+        val gerente = object : com.avoqado.pos.core.data.network.ManagerOverrideCoordinator(mockk(relaxed = true)) {
+            var pidio: String? = null
+            override fun awaitToken(permission: String): String? {
+                pidio = permission
+                Thread.sleep(11_000) // el gerente viene del otro lado del local
+                return "tok-gerente"
+            }
+        }
+        val conOverride = TerminalPaymentService(
+            secureStorage,
+            OkHttpClient.Builder()
+                .addInterceptor(ForbiddenInterceptor(com.avoqado.pos.core.data.network.ErrorNotifier(), gerente))
+                .build(),
+        )
+        conOverride.baseUrl = service.baseUrl
+        enqueue(
+            403,
+            """{"error":"Forbidden","message":"Permission 'payments:create' required","required":"payments:create","userRole":"WAITER","overridable":true}""",
+        )
+        enqueue(200, """{"success":true,"terminals":[{"terminalId":"t1","name":"Terminal 1"}]}""")
+
+        val r = conOverride.fetchOnlineTerminals()
+
+        assertEquals("se pidió el PIN del gerente para ESTE permiso", "payments:create", gerente.pidio)
+        assertTrue("con el PIN, la lista llega aunque el gerente tardó más de 10 s (fue $r)", r is TerminalListResult.Success)
+        assertEquals(listOf("t1"), (r as TerminalListResult.Success).terminals.map { it.terminalId })
+        server.takeRequest()
+        assertEquals("el reintento lleva el token del gerente", "tok-gerente", server.takeRequest().getHeader(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER))
+    }
     // ══════════════════════════════════════════════════════════════════════════════════════
     // La declaración del cajero, contra un SERVIDOR REAL. Las del ViewModel sustituyen el
     // servicio entero, así que no ven nada de esto — crítica de Codex que resultó exacta: un
@@ -816,6 +965,70 @@ class TerminalPaymentServiceHttpTest {
             r,
         )
         assertEquals("un rechazo NO suelta la entrada", listOf("req-1"), idsPendientes())
+    }
+
+    // MARK: - C4 (22-oct, P4): el mesero declara con el PIN de un gerente
+
+    private val pideGerente =
+        """{"success":false,"released":false,"code":"SUPERVISOR_AUTHORIZATION_REQUIRED","message":"Pide a un gerente que ingrese su PIN para confirmar que este cobro no pasó."}"""
+
+    @Test
+    fun `P1 la declaracion manda supervisorPin solo cuando hay PIN`() = runBlocking {
+        // El mesero no tiene `payments:reconcile-uncharged`: el servidor contesta 403 SUPERVISOR_AUTHORIZATION_REQUIRED y la
+        // MISMA declaración se repite con el PIN del gerente en el CUERPO. Sin PIN, la llave ni siquiera viaja: los cuerpos de
+        // siempre, que el servidor viejo y el nuevo ya conocen.
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
+        enqueue(403, pideGerente)
+        enqueue(200, """{"success":true,"released":true,"status":"FAILED"}""")
+
+        val sinPin = service.declararNoCobrado("req-1")
+        val conPin = service.declararNoCobrado("req-1", supervisorPin = "4321")
+
+        assertEquals(
+            ResultadoDeDeclaracion.Rechazada(
+                "Pide a un gerente que ingrese su PIN para confirmar que este cobro no pasó.",
+                "SUPERVISOR_AUTHORIZATION_REQUIRED",
+            ),
+            sinPin,
+        )
+        assertEquals(ResultadoDeDeclaracion.Liberada, conPin)
+        val primero = server.takeRequest()
+        val segundo = server.takeRequest()
+        val cuerpo1 = kotlinx.serialization.json.Json.parseToJsonElement(primero.body.readUtf8()) as kotlinx.serialization.json.JsonObject
+        val cuerpo2 = kotlinx.serialization.json.Json.parseToJsonElement(segundo.body.readUtf8()) as kotlinx.serialization.json.JsonObject
+        assertFalse("sin PIN la llave no viaja, ni siquiera en null: $cuerpo1", "supervisorPin" in cuerpo1)
+        assertEquals("4321", (cuerpo2["supervisorPin"] as? kotlinx.serialization.json.JsonPrimitive)?.content)
+        // Es la MISMA declaración: el servidor la reconoce por su `resolutionId` (el PIN no entra a su huella).
+        assertEquals(cuerpo1["resolutionId"], cuerpo2["resolutionId"])
+        // 🔴 El PIN sólo en el cuerpo: nunca en la URL ni en una cabecera.
+        assertFalse(segundo.path!!.contains("4321"))
+        assertFalse(segundo.headers.toString().contains("4321"))
+        assertTrue("liberada con el PIN, la entrada se suelta", idsPendientes().isEmpty())
+    }
+
+    @Test
+    fun `P1 el PIN del gerente no se escribe en el registro de depuracion`() = runBlocking {
+        // En las compilaciones de depuración el cliente compartido registra los CUERPOS (`HttpLoggingInterceptor`, BODY:
+        // `NetworkModule`). Con la declaración con PIN, eso escribiría el PIN del gerente en logcat.
+        val renglones = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val registro = okhttp3.logging.HttpLoggingInterceptor { renglones.add(it) }
+            .apply { level = okhttp3.logging.HttpLoggingInterceptor.Level.BODY }
+        val conRegistro = TerminalPaymentService(secureStorage, OkHttpClient.Builder().addInterceptor(registro).build())
+        conRegistro.baseUrl = service.baseUrl
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
+        enqueue(403, pideGerente)
+        enqueue(403, pideGerente)
+
+        conRegistro.declararNoCobrado("req-1")
+        assertTrue("montaje: el registro sí ve los cuerpos", renglones.any { "resolutionId" in it })
+        conRegistro.declararNoCobrado("req-1", supervisorPin = "90817263")
+
+        server.takeRequest()
+        assertTrue("montaje: el PIN sí llegó al servidor", "90817263" in server.takeRequest().body.readUtf8())
+        assertTrue(
+            "el PIN no aparece en ningún renglón del registro: ${renglones.filter { "90817263" in it }}",
+            renglones.none { "90817263" in it },
+        )
     }
 
     @Test

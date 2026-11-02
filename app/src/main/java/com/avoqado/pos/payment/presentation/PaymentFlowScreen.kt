@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
+import com.avoqado.pos.payment.data.model.OrigenDeLaDeclaracion
 import com.avoqado.pos.core.util.formatMoneyFromCents
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
@@ -68,6 +69,9 @@ fun PaymentFlowScreen(
     val terminals by viewModel.onlineTerminals.collectAsState()
     val avisoDeOtroCobro by viewModel.avisoDeOtroCobro.collectAsState()
     val segundoAviso by viewModel.segundoAviso.collectAsState()
+    // C4: el servidor pidió el PIN de un gerente para declarar «no se cobró». El teclado sale sólo sobre la pantalla que
+    // declaró (su `origen`).
+    val pinDeGerente by viewModel.pidiendoPinDeGerente.collectAsState()
     // 🔴 Se COLECTA, no se lee del ViewModel a pelo: el refresh del catálogo es
     // asíncrono, y sin observarlo la hoja de "¿cómo pagó el cliente?" se quedaba
     // con la lista vacía de cuando se compuso — la primera venta tras abrir la app
@@ -248,12 +252,28 @@ fun PaymentFlowScreen(
                 CancelandoCobroView(onSalir = { viewModel.salirDejandoPendiente() })
             }
             is PaymentFlowState.CancelacionPendiente -> {
+                // C2: el objetivo sale de la intención que se está cancelando (su cobro, su venue y el importe de su
+                // contexto durable), nunca del carrito. Sin cobro (intención sólo de la orden) no se ofrece declarar.
+                val objetivo = viewModel.objetivoDeLaDeclaracionDeCancelacion()
                 CancelacionPendienteView(
                     sinRed = currentState.sinRed,
-                    isChecking = currentState.checking,
+                    // «Volver a consultar» y «Salir» esperan a lo que esté en vuelo: la consulta del coordinador o la
+                    // declaración. El botón de declarar sólo espera a la declaración (fix 1, I1).
+                    isChecking = currentState.checking || currentState.declarando,
                     onVolverAConsultar = { viewModel.volverAConsultarCancelacion() },
                     onSalir = { viewModel.salirDejandoPendiente() },
+                    onDeclararNoCobrado = { viewModel.declararDesdeCancelacion() }.takeIf { objetivo != null },
+                    montoDelCobro = objetivo?.montoCentavos?.let { formatMoneyFromCents(it) },
+                    avisoDeDeclaracion = currentState.avisoDeDeclaracion,
+                    declarando = currentState.declarando,
                 )
+                pinDeGerente?.takeIf { it.origen == OrigenDeLaDeclaracion.CANCELACION_PENDIENTE }?.let { peticion ->
+                    TecladoDelPinDeGerente(
+                        peticion = peticion,
+                        onEnviar = { pin -> viewModel.enviarPinDeGerente(pin) },
+                        onCerrar = { viewModel.cerrarTecladoDelPin(peticion.id) },
+                    )
+                }
             }
             is PaymentFlowState.Success -> {
                 // El dinero ya se comprometió. Consumir el carrito ahora mantiene la
@@ -373,6 +393,8 @@ fun PaymentFlowScreen(
                     // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si
                     // llegó a existir) y sólo cuando conste que no se cobró se cancela la venta.
                     onCancel = { viewModel.cancelarVenta() },
+                    // C1: «Terminal ocupada» con salida. Sólo si el servidor nombró el cobro que la ocupa.
+                    onRevisarCobro = { viewModel.revisarCobroQueOcupa() }.takeIf { currentState.revisarCobroId != null },
                 )
             }
             // 🔴 Ni éxito ni fracaso: no se sabe si la tarjeta se cobró. Pantalla propia,
@@ -380,7 +402,8 @@ fun PaymentFlowScreen(
             is PaymentFlowState.Undetermined -> {
                 // D2 (mesas40): el servidor resuelve el cobro hasta ~30 s después y Android no tiene socket. Se le vuelve
                 // a preguntar cada 5 s por el MISMO camino de «Volver a consultar», en segundo plano: sólo lee, nunca
-                // cobra, y «no se sabe» (sin red incluido) deja la pantalla como está. Vive mientras se vea esta pantalla.
+                // cobra. «No se sabe» conserva el mensaje; la señal acreditada de terminal libre cambia sólo sus palabras.
+                // Vive mientras se vea esta pantalla.
                 LaunchedEffect(Unit) {
                     while (true) {
                         kotlinx.coroutines.delay(5_000)
@@ -393,6 +416,7 @@ fun PaymentFlowScreen(
                     // M-5: el título dice «anterior» sólo si el cobro es de OTRA venta; «…de esta venta.» lleva el neutro.
                     fromPreviousSale = viewModel.revisaCobroDeOtraVenta(),
                     declaracionRechazada = currentState.declaracionRechazada,
+                    terminalLibreVentaEnDuda = currentState.terminalLibreVentaEnDuda,
                     onRecheck = { viewModel.recheckCardCharge() },
                     onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },
                     onSalir = { viewModel.salirDejandoPendiente() },
@@ -408,6 +432,13 @@ fun PaymentFlowScreen(
                     // un pendiente de otra venta es un importe distinto. P1 de Codex (19-sep).
                     montoDelCobro = viewModel.objetivoDeLaDeclaracion()?.montoCentavos?.let { formatMoneyFromCents(it) },
                 )
+                pinDeGerente?.takeIf { it.origen == OrigenDeLaDeclaracion.COBRO_SIN_CONFIRMAR }?.let { peticion ->
+                    TecladoDelPinDeGerente(
+                        peticion = peticion,
+                        onEnviar = { pin -> viewModel.enviarPinDeGerente(pin) },
+                        onCerrar = { viewModel.cerrarTecladoDelPin(peticion.id) },
+                    )
+                }
             }
         }
 

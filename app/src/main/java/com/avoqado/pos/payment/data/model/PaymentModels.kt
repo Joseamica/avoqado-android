@@ -106,7 +106,11 @@ sealed class PaymentFlowState {
          */
         val cobroTrasCancelar: Boolean = false,
     ) : PaymentFlowState()
-    data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
+    /**
+     * @param revisarCobroId C1 (22-oct): la terminal (o la venta) la ocupa OTRO cobro y éste es su id: la pantalla ofrece
+     *   «Revisar ese cobro». `null` cuando no hay a quién preguntar (cualquier otro error, o el servidor mandó `"unknown"`).
+     */
+    data class Error(val message: String, val source: PaymentErrorSource, val revisarCobroId: String? = null) : PaymentFlowState()
 
     /**
      * 🔴 Tercer desenlace del cobro con tarjeta: **no se sabe si se cobró**.
@@ -137,6 +141,8 @@ sealed class PaymentFlowState {
          * parecía muerto. Con esto el motivo se pinta en ámbar: se ve que algo contestó.
          */
         val declaracionRechazada: Boolean = false,
+        /** Sólo presentación; la venta sigue pendiente hasta evidencia o declaración. */
+        val terminalLibreVentaEnDuda: Boolean = false,
     ) : PaymentFlowState()
 
     /**
@@ -152,11 +158,19 @@ sealed class PaymentFlowState {
      * desenlace llegue, y el cajero puede salir — la intención vive en disco y sigue reproduciéndose.
      *
      * @param sinRed el último intento murió sin respuesta del servidor.
+     * @param avisoDeDeclaracion C2 (22-oct): lo que contestó «Ya revisé la terminal: no se cobró» cuando NO liberó el
+     *   cobro —el motivo del servidor, el texto sin red o la sesión renovada—. Se pinta en ámbar debajo del cuerpo, para
+     *   que se vea que algo contestó (el «botón muerto» del 21-sep). `null` ⇒ la pantalla de siempre. Se queda hasta que
+     *   el cajero consulte o declare otra vez; una corrida de fondo del coordinador no lo borra.
+     * @param declarando C2 (fix 1): la declaración va en vuelo. Es PROPIO de la declaración y distinto de [checking], que
+     *   también mueve el coordinador cuando consulta solo: sólo esto apaga el botón de declarar.
      */
     data class CancelacionPendiente(
         val totalAmount: Int,
         val sinRed: Boolean = false,
         val checking: Boolean = false,
+        val avisoDeDeclaracion: String? = null,
+        val declarando: Boolean = false,
     ) : PaymentFlowState()
 }
 
@@ -462,4 +476,31 @@ data class ObjetivoDeLaDeclaracion(
     val requestId: String,
     val venueId: String?,
     val montoCentavos: Int?,
+)
+
+/**
+ * C2 (22-oct): desde qué pantalla se declara «Ya revisé la terminal: no se cobró». La declaración es UNA sola (mismo
+ * servicio, misma regla online-only y, desde C4, el mismo PIN de gerente); el origen sólo decide qué pantalla espera la
+ * respuesta y qué sigue cuando el servidor libera el cobro.
+ */
+enum class OrigenDeLaDeclaracion {
+    /** «Cobro sin confirmar»: al liberar, el cajero decide si vuelve a cobrar. */
+    COBRO_SIN_CONFIRMAR,
+
+    /** «Cancelación pendiente»: al liberar, el coordinador consulta, ve NOT_CHARGED y cancela la orden. */
+    CANCELACION_PENDIENTE,
+}
+
+/**
+ * C4 (22-oct, P4): el SERVIDOR pidió el PIN de un gerente para declarar «no se cobró» (`SUPERVISOR_AUTHORIZATION_REQUIRED`:
+ * quien opera la tablet —el mesero— no tiene `payments:reconcile-uncharged`). Mientras exista, la pantalla de [origen]
+ * muestra el teclado.
+ *
+ * 🔴 No lleva el PIN ni nada de la declaración: el PIN sólo vive en la llamada que lo manda, en el cuerpo.
+ *
+ * @param id llave del teclado: un teclado nuevo nace vacío (nunca con el PIN de otro).
+ */
+data class PeticionDePinDeGerente(
+    val id: Long,
+    val origen: OrigenDeLaDeclaracion,
 )
