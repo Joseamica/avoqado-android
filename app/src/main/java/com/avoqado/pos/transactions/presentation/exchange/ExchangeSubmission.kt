@@ -1,6 +1,7 @@
 package com.avoqado.pos.transactions.presentation.exchange
 
 import com.avoqado.pos.transactions.data.*
+import com.avoqado.pos.transactions.data.model.esRechazoDefinitivoDeSaldo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,7 +13,7 @@ enum class ExchangeSendPhase { EDITING, SENDING, UNCERTAIN, READY_CARD, PROCESSI
 enum class ExchangeCardEvidence { STARTED, CHARGED, NOT_CHARGED }
 data class ExchangeSendState(val phase: ExchangeSendPhase = ExchangeSendPhase.EDITING, val message: String? = null,
     val action: String? = null, val locked: Boolean = false, val calculation: ExchangeServerCalculation? = null,
-    val result: ExchangeResult? = null)
+    val result: ExchangeResult? = null, /** El `code` del último rechazo del servidor. */ val code: String? = null)
 
 /** Owns a frozen financial operation, independently of the editable selection. */
 class ExchangeSubmission(private val repository: ExchangeRepository, private val store: ExchangePendingStore) {
@@ -106,22 +107,27 @@ class ExchangeSubmission(private val repository: ExchangeRepository, private val
 
     private suspend fun failure(error: Exception, creation: Boolean) {
         val e = error as? ExchangeApiException
-        val definitive = creation && e != null && e.code != "ACTOR_MISMATCH" && (
+        // Saldo a favor (A2): la regla es por prefijo, la misma del Reembolso; nunca se borra por IDEMPOTENCY_KEY_REUSED.
+        val storeCredit = pending?.let { runCatching { jsonReembolsos.parseToJsonElement(it.body).jsonObject["settlement"]
+            ?.jsonObject?.get("method")?.jsonPrimitive?.contentOrNull }.getOrNull() } == "STORE_CREDIT"
+        val definitive = creation && e != null && if (storeCredit) esRechazoDefinitivoDeSaldo(e.statusCode, e.code)
+            else e.code != "ACTOR_MISMATCH" && (
             e.statusCode in setOf(400, 404) ||
             (e.statusCode == 422 && e.code in setOf("EXCHANGES_DISABLED", "EXCHANGE_ITEM_NOT_RETURNABLE",
                 "EXCHANGE_TAKEN_NOT_SELLABLE", "EXCHANGE_SETTLEMENT_UNAVAILABLE")) ||
             (e.statusCode == 409 && e.code in setOf("EXCHANGE_DIFFERENCE_CHANGED", "IDEMPOTENCY_KEY_REUSED")))
-        val calculation = if (e?.code == "EXCHANGE_DIFFERENCE_CHANGED") runCatching {
+        // Con saldo a favor, la diferencia que cambió llega envuelta en STORE_CREDIT_REJECTED con su `calculation`.
+        val calculation = if (e?.code == "EXCHANGE_DIFFERENCE_CHANGED" || e?.code == "STORE_CREDIT_REJECTED") runCatching {
             jsonReembolsos.decodeFromJsonElement<ExchangeServerCalculation>(e.details!!.jsonObject.getValue("calculation"))
         }.getOrNull() else null
         val message = when (e?.code) {
             "ACTOR_MISMATCH" -> TextosCambio.ACTOR_MISMATCH.replace("{nombre}", pending?.actorName.orEmpty())
-            "IDEMPOTENCY_KEY_REUSED" -> TextosCambio.IDEMPOTENCY_KEY_REUSED
+            "IDEMPOTENCY_KEY_REUSED" -> if (storeCredit) TextosCambio.SALDO_LLAVE_REUSADA else TextosCambio.IDEMPOTENCY_KEY_REUSED
             else -> e?.message ?: TextosCambio.ENVIO_SIN_CONFIRMAR
         }
         if (definitive) { pending?.let { store.remove(it) }; pending = null }
         _state.value = ExchangeSendState(if (calculation != null) ExchangeSendPhase.RECONFIRM
             else if (definitive) ExchangeSendPhase.EDITING else ExchangeSendPhase.UNCERTAIN,
-            message, if (definitive) null else TextosCambio.REINTENTAR, !definitive, calculation)
+            message, if (definitive) null else TextosCambio.REINTENTAR, !definitive, calculation, code = e?.code)
     }
 }

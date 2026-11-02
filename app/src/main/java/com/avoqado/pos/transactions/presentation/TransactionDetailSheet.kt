@@ -50,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -326,6 +327,21 @@ private fun LoadedDetailView(
             com.avoqado.pos.transactions.presentation.exchange.ExchangeRecoveryNotice(transaction) {
                 viewModel.resumePendingExchange(transaction)
             }
+            // Reembolso a saldo a favor sin confirmar (A3): sólo «Confirmar estado» lo reenvía (Opción A); mientras siga, no se empieza otro.
+            val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
+            val reembolsoBloqueado by viewModel.reembolsoBloqueado.collectAsState()
+            val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
+            if (reembolsoPendiente != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
+                    Text(com.avoqado.pos.transactions.data.avisoDelPendiente(reembolsoPendiente!!), Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = viewModel::confirmarReembolsoPendiente) { Text(TextosCambio.CONFIRMAR_ESTADO) }
+                }
+            }
+            avisoDeReembolso?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm))
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -340,7 +356,7 @@ private fun LoadedDetailView(
                         ActionButton(
                             label = TextosCambio.EMITIR_REEMBOLSO,
                             modifier = Modifier.weight(1f),
-                            enabled = transaction.remainingRefundable > 0.001,
+                            enabled = transaction.remainingRefundable > 0.001 && !reembolsoBloqueado,
                             locked = !canRefund,
                             // Con candado esto pide el PIN PRIMERO y sólo abre el
                             // formulario si alguien autoriza. Sin candado, abre
@@ -537,6 +553,9 @@ private fun LoadedDetailView(
                 viewModel.invalidateAndRefresh()
                 viewModel.selectTransaction(transaction.id)
             },
+            // El envío a saldo a favor lo lleva el detalle, para que sobreviva a la hoja (I2).
+            enviarASaldo = { cuerpo, llave -> viewModel.enviarReembolsoASaldo(transaction.id, cuerpo, llave) },
+            antesDeReembolsar = { viewModel.motivoParaNoReembolsar(transaction.id) },
         )
     }
 
@@ -1065,11 +1084,13 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
     val reachable by viewModel.customerServerReachable.collectAsState()
     val online = connected && reachable
     var createSearch by remember(transaction.id) { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember(transaction.id) { mutableStateOf<Long?>(null) }
 
     // Misma forma que «Pago» y «Artículos»: título, línea y un renglón con ícono. Sin cliente y con
     // permiso, el renglón ES el botón (como «Agregar cliente» del carrito); con cliente, sólo lo muestra.
     val metrics = LocalDetailMetrics.current
-    val hasCustomer = transaction.customerId != null
+    val hasCustomer = transaction.customerId != null || transaction.storeCredit?.customerName?.isNotBlank() == true
     val canTap = !hasCustomer && viewModel.canAssignCustomer
     val enabled = canTap && online && !busy
     Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
@@ -1091,7 +1112,7 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
                 modifier = Modifier.size(metrics.iconSize), tint = tint)
             Text(
                 text = when {
-                    hasCustomer -> transaction.customerName ?: "Cliente asignado"
+                    hasCustomer -> transaction.clienteVisible ?: "Cliente asignado"
                     canTap -> "Agregar cliente"
                     else -> "Sin cliente"
                 },
@@ -1134,13 +1155,15 @@ private fun CustomerAssignmentSection(transaction: Transaction, viewModel: Trans
                         initialName = search.takeUnless { it.any(Char::isDigit) },
                         onCustomerCreated = { createSearch = null; viewModel.chooseCustomer(it) },
                         onBack = { createSearch = null },
+                        alta = altaDelFormulario,
+                        onAlta = { altaDelFormulario = it },
                     )
                 } else {
                     CustomersView(
                         viewModel = customers,
                         onCustomerSelected = viewModel::chooseCustomer,
                         onDismiss = viewModel::cancelCustomerAssignment,
-                        onCreateCustomer = { createSearch = it },
+                        onCreateCustomer = { altaDelFormulario = null; createSearch = it },
                         canCreateCustomer = viewModel.canCreateCustomerForAssignment && online,
                     )
                 }

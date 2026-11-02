@@ -298,6 +298,18 @@ class SecureStorage @Inject constructor(
         get() = prefs.getBoolean(KEY_EXCHANGES_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_EXCHANGES_ENABLED, value).apply() }
 
+    /** «Sólo saldo a favor» y si el servidor sabe darlo, de la sucursal activa; se borran al dejarla, como el «Cambio». */
+    var storeCreditOnly: Boolean
+        get() = prefs.getBoolean(KEY_STORE_CREDIT_ONLY, false)
+        set(value) { prefs.edit().putBoolean(KEY_STORE_CREDIT_ONLY, value).apply() }
+    /** `null` = el servidor no lo dijo (servidor anterior): la opción no aparece; `false` = sin llaves: sale en gris. */
+    var storeCreditAvailable: Boolean?
+        get() = if (prefs.contains(KEY_STORE_CREDIT_AVAILABLE)) prefs.getBoolean(KEY_STORE_CREDIT_AVAILABLE, false) else null
+        set(value) {
+            if (value == null) prefs.edit().remove(KEY_STORE_CREDIT_AVAILABLE).apply()
+            else prefs.edit().putBoolean(KEY_STORE_CREDIT_AVAILABLE, value).apply()
+        }
+
     /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
      * Server resolves these per-venue from role + custom overrides; client mirrors them
@@ -734,6 +746,8 @@ class SecureStorage @Inject constructor(
         // candados que ese local no activó, y al tocarlos saldría el 403 pelón.
         this.managerPinOverrideEnabled = false
         this.exchangesEnabled = false
+        this.storeCreditOnly = false
+        this.storeCreditAvailable = null
     }
 
     fun saveBiometricCredentials(
@@ -803,6 +817,8 @@ class SecureStorage @Inject constructor(
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
             .remove(KEY_EXCHANGES_ENABLED)
+            .remove(KEY_STORE_CREDIT_ONLY)
+            .remove(KEY_STORE_CREDIT_AVAILABLE)
             .remove(KEY_VENUE_PERMISSIONS)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
@@ -879,6 +895,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"
         private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
         private const val KEY_EXCHANGES_ENABLED = "exchangesEnabled"
+        private const val KEY_STORE_CREDIT_ONLY = "storeCreditOnly"
+        private const val KEY_STORE_CREDIT_AVAILABLE = "storeCreditAvailable"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"

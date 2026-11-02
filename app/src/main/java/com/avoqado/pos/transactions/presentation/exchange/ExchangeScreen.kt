@@ -21,11 +21,17 @@ import com.avoqado.pos.designsystem.components.FullscreenHeaderNav
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
+import androidx.compose.ui.text.input.KeyboardType
+import com.avoqado.pos.customers.presentation.CreateCustomerView
+import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.payment.presentation.PaymentProcessingView
 import com.avoqado.pos.payment.presentation.PaymentErrorView
 import com.avoqado.pos.payment.presentation.PaymentUndeterminedView
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
     payments: ExchangePaymentViewModel = androidx.hilt.navigation.compose.hiltViewModel(), onStartAgain: () -> Unit = onClose) {
@@ -36,6 +42,12 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
     val message by payments.message.collectAsState()
     val draft by payments.draft.collectAsState()
     val terminals by payments.terminals.collectAsState()
+    val storeCreditCustomer by payments.storeCreditCustomer.collectAsState()
+    val online by viewModel.online.collectAsState()
+    var pickingCustomer by remember { mutableStateOf(false) }
+    var createSearch by remember { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(state.transaction?.id) { state.transaction?.let { payments.open(it) } }
     LaunchedEffect(send.locked, ready, busy, draft) { viewModel.lockSubmission(send.locked || !ready || busy || draft != null) }
     LaunchedEffect(send.calculation) { send.calculation?.let(viewModel::applyServerCalculation) }
@@ -70,6 +82,9 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                         else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(AvoqadoTheme.spacing.lg),
                             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
                             Text(message ?: send.message.orEmpty(), style = MaterialTheme.typography.titleMedium)
+                            if (send.phase == ExchangeSendPhase.COMPLETED) send.result?.settlement?.storeCredit?.let { sc ->
+                                exchangeStoreCreditNotice(sc).forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                            }
                             if (send.phase == ExchangeSendPhase.COMPLETED) PrimaryButton(TextosCambio.IMPRIMIR, payments::print, fullWidth = true)
                             else send.action?.let { PrimaryButton(it, payments::retry, fullWidth = true) }
                             PrimaryButton(TextosCambio.CERRAR, onClose, fullWidth = true)
@@ -100,7 +115,8 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
             }
         }
     }
-    if (draft != null && !send.locked) {
+    if (draft != null && !send.locked && !pickingCustomer) {
+        val options = payments.options(draft!!, online)
         AvoqadoDialog(title = if (terminals.isNotEmpty()) TextosCambio.EN_CUAL_TERMINAL
             else if (draft!!.settlement.kind == "PAYOUT") TextosCambio.ELIGE_DEVOLUCION else TextosCambio.ELIGE_METODO,
             description = exchangeBar(draft!!.settlement.expectedDifferenceCents).label,
@@ -108,12 +124,48 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 if (terminals.isNotEmpty()) terminals.forEach { terminal ->
                     PrimaryButton(terminal.name, { payments.chooseTerminal(terminal.terminalId) }, enabled = !busy, fullWidth = true)
-                } else payments.options(draft!!).forEach { option ->
+                } else options.forEach { option ->
                     if (option.requiresPin) Text(TextosCambio.PIN_EFECTIVO, style = MaterialTheme.typography.bodySmall)
                     PrimaryButton(option.label, { payments.choose(option) }, enabled = !busy && option.disabledReason == null, fullWidth = true)
                     option.disabledReason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
+                // «Saldo a favor para: Ana López · 55 1234 5678 [Cambiar]» (spec §4): sólo si el saldo a favor se puede dar aquí.
+                if (terminals.isEmpty() && options.any { it.method == "STORE_CREDIT" && it.disabledReason != TextosCambio.SALDO_PIDE_A_AVOQADO }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(ExchangeSettlement.storeCreditCustomerLabel(storeCreditCustomer),
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = { pickingCustomer = true }, enabled = !busy) { Text(TextosCambio.CAMBIAR) }
+                    }
+                    // Teléfono obligatorio (spec §4): si el cliente no lo tiene, se pide aquí y se guarda en su ficha.
+                    storeCreditCustomer?.takeIf { it.phoneChecked && it.phone.isNullOrBlank() }?.let { c ->
+                        var phone by rememberSaveable(c.id) { mutableStateOf("") }
+                        AvoqadoPillTextField(value = phone, onValueChange = { phone = it }, placeholder = TextosCambio.TELEFONO,
+                            enabled = !busy, keyboardType = KeyboardType.Phone)
+                        PrimaryButton(TextosCambio.GUARDAR_TELEFONO, { payments.saveStoreCreditPhone(phone) },
+                            enabled = !busy && phone.isNotBlank(), fullWidth = true)
+                    }
+                }
                 message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            }
+        }
+    }
+    if (pickingCustomer) {
+        // «Cambiar» reusa la búsqueda y el alta de clientes de siempre; al volver, el diálogo sigue con lo capturado.
+        val customers: com.avoqado.pos.customers.presentation.CustomersViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+        AvoqadoModalBottomSheet(onDismissRequest = { createSearch = null; pickingCustomer = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), conXPropia = true, dragHandle = null,
+            containerColor = MaterialTheme.colorScheme.surface) {
+            Box(Modifier.fillMaxSize()) {
+                val search = createSearch
+                if (search != null) CreateCustomerView(viewModel = customers,
+                    initialPhone = search.takeIf { it.any(Char::isDigit) }, initialName = search.takeUnless { it.any(Char::isDigit) },
+                    onCustomerCreated = { payments.chooseCustomer(it); createSearch = null; pickingCustomer = false },
+                    onBack = { createSearch = null }, alta = altaDelFormulario, onAlta = { altaDelFormulario = it },
+                    requirePhone = true)
+                else CustomersView(viewModel = customers,
+                    onCustomerSelected = { payments.chooseCustomer(it); pickingCustomer = false },
+                    onDismiss = { pickingCustomer = false }, onCreateCustomer = { altaDelFormulario = null; createSearch = it },
+                    canCreateCustomer = payments.canCreateCustomer)
             }
         }
     }

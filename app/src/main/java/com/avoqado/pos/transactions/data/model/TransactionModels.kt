@@ -200,6 +200,12 @@ data class Transaction(
     val exchange: ExchangeLinks? = null,
     val refundToGiftCardBalance: Boolean? = null,
     val esSaldoDeTarjeta: Boolean? = null,
+    /** Saldo a favor (aditivo): ¿puede la cajera escoger «Saldo a favor» al devolver? `null` = servidor anterior. */
+    @Serializable(with = StoreCreditOptionTolerante::class)
+    val storeCreditOption: StoreCreditOption? = null,
+    /** Saldo a favor (aditivo): en la devolución a saldo, a quién y cuánto se abonó (reimpresión). `null` = sin saldo o servidor anterior. */
+    @Serializable(with = StoreCreditAbonoTolerante::class)
+    val storeCredit: StoreCreditAbono? = null,
 ) {
     val paymentMethod: String? get() = method
 
@@ -211,9 +217,16 @@ data class Transaction(
     val formattedAmount: String get() = formatMoney(amount)
     val formattedTip: String get() = formatMoney(tipAmount)
 
-    /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. */
+    /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. Una devolución a saldo a favor (W-3, A5) se llama así, no «Otro». */
     val methodDescription: String
-        get() = if (esSaldoDeTarjeta == true) "Tarjeta de regalo" else PaymentMethodDisplay.label(method, cardBrand, maskedPan)
+        get() = when {
+            esSaldoDeTarjeta == true -> "Tarjeta de regalo"
+            storeCredit != null -> com.avoqado.pos.transactions.presentation.exchange.TextosCambio.SALDO_A_FAVOR
+            else -> PaymentMethodDisplay.label(method, cardBrand, maskedPan)
+        }
+
+    /** W-3 (A5): la clienta que se ve. En una devolución a saldo a favor, a quién se abonó (la destinataria), no «Sin cliente». */
+    val clienteVisible: String? get() = storeCredit?.customerName?.takeIf { it.isNotBlank() } ?: customerName
 
     val statusDisplay: String
         get() = when (status) {

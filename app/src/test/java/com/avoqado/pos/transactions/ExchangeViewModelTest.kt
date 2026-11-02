@@ -259,6 +259,43 @@ class ExchangeViewModelTest {
         assertNull(vm.state.value.blockedReason)
     }
 
+    @Test fun `a server offering only STORE_CREDIT lets the exchange continue to its option`() {
+        val p = Product("other", "Blusa", priceValue = 1.0, active = true)
+        catalog.value = listOf(p)
+        val decoded = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<Transaction>(
+            """{"id":"payment","payoutOptions":[{"method":"STORE_CREDIT","maxCents":1000000,"maxSameCents":0,"needsRefundToCash":false}]}""")
+        val vm = ExchangeViewModel(products, monitor)
+        vm.start(sale(item()).copy(payoutOptions = decoded.payoutOptions))
+        vm.toggleReturned("line")
+        vm.setReason("line", ExchangeReason.SIZE)
+        vm.addTaken(p)
+        assertNull(vm.state.value.blockedReason)
+        assertEquals(listOf("STORE_CREDIT"), vm.state.value.transaction?.payoutOptions?.map { it.method })
+    }
+
+    @Test fun `la red que vuelve llega al diálogo del saldo a favor`() {
+        val vm = vm(item())
+        assertTrue(vm.online.value)
+        connected.value = false
+        assertFalse(vm.online.value)
+        connected.value = true
+        assertTrue(vm.online.value)
+    }
+
+    @Test fun `una venta con tarjeta sin las llaves explica que falta activar el saldo a favor`() {
+        val p = Product("other", "Blusa", priceValue = 1.0, active = true)
+        catalog.value = listOf(p)
+        val porActivar = com.avoqado.pos.transactions.data.model.StoreCreditOption(false, "Pide a Avoqado que active el saldo a favor.")
+        for ((kind, expected) in listOf(null to TextosCambio.SALDO_PIDE_A_AVOQADO, "GIFT_CARD" to TextosCambio.SIN_OPCIONES_DEVOLUCION)) {
+            val vm = ExchangeViewModel(products, monitor)
+            vm.start(sale(item()).copy(payoutOptions = emptyList(), storeCreditOption = porActivar, tenderSystemKind = kind))
+            vm.toggleReturned("line")
+            vm.setReason("line", ExchangeReason.SIZE)
+            vm.addTaken(p)
+            assertEquals("$kind", expected, vm.state.value.blockedReason)
+        }
+    }
+
     @Test fun `overflow is blocked instead of silently narrowing Long cents`() {
         val vm = vm(item().copy(chargedTotalCents = Int.MAX_VALUE.toLong() + 1))
         vm.toggleReturned("line")

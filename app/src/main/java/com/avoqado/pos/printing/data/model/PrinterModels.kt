@@ -359,6 +359,8 @@ data class ReceiptData(
     val remainingAmount: Int? = null,
     val kind: String? = null,
     val exchange: com.avoqado.pos.printing.receiptlayout.ReceiptExchange? = null,
+    /** La etiqueta del renglón del pago; `null` = «Pago:». La reimpresión de una devolución a saldo dice «Devuelto con:». */
+    val paymentRowLabel: String? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"

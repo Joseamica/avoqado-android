@@ -47,6 +47,32 @@ class TpvSettingsRepositoryExchangesTest {
         assertFalse(fixture.stored)
     }
 
+    @Test fun `storeCreditAvailable ausente queda nulo, falso y verdadero se guardan, y con el panel caído se conserva`() = runTest {
+        val fixture = Fixture()
+        val repo = fixture.repository()
+        assertNull(repo.storeCreditAvailable.value)
+        fixture.body = """{"data":{"storeCreditAvailable":false}}"""
+        repo.refreshSettingsForVenue("venue-a")
+        assertEquals(false, repo.storeCreditAvailable.value); assertEquals(false, fixture.storedAvailable)
+        fixture.body = """{"data":{"storeCreditAvailable":true}}"""
+        repo.refreshSettingsForVenue("venue-a")
+        assertEquals(true, repo.storeCreditAvailable.value); assertEquals(true, fixture.storedAvailable)
+        fixture.body = """{"data":{"storeCreditAvailable":false,"componentsStatus":{"promotionsPanel":"failed"}}}"""
+        repo.refreshSettingsForVenue("venue-a")
+        assertEquals(true, repo.storeCreditAvailable.value); assertEquals(true, fixture.storedAvailable)
+        fixture.failure = IOException("offline")
+        repo.refreshSettingsForVenue("venue-a")
+        assertEquals(true, repo.storeCreditAvailable.value)
+        fixture.failure = null
+        fixture.body = """{"data":{}}"""
+        repo.refreshSettingsForVenue("venue-a")
+        assertNull(repo.storeCreditAvailable.value); assertNull(fixture.storedAvailable)
+        fixture.storedAvailable = false
+        assertEquals(false, fixture.repository().storeCreditAvailable.value)
+        repo.clearCache()
+        assertNull(repo.storeCreditAvailable.value); assertNull(fixture.storedAvailable)
+    }
+
     @Test fun `missing or null settings disable exchanges on a successful component read`() = runTest {
         val fixture = Fixture()
         val repo = fixture.repository()
@@ -100,6 +126,7 @@ class TpvSettingsRepositoryExchangesTest {
     private class Fixture {
         var venue = "venue-a"
         var stored = false
+        var storedAvailable: Boolean? = null
         var body = """{"data":{}}"""
         var failure: IOException? = null
         var beforeResponse: () -> Unit = {}
@@ -108,6 +135,8 @@ class TpvSettingsRepositoryExchangesTest {
             every { s.venueId } answers { venue }
             every { s.exchangesEnabled } answers { stored }
             every { s.exchangesEnabled = any() } answers { stored = firstArg() }
+            every { s.storeCreditAvailable } answers { storedAvailable }
+            every { s.storeCreditAvailable = any() } answers { storedAvailable = firstArg() }
         }
 
         fun repository(): TpvSettingsRepository {

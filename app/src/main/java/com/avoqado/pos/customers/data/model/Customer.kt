@@ -1,5 +1,7 @@
 package com.avoqado.pos.customers.data.model
 
+import com.avoqado.pos.transactions.data.model.CustomerStoreCredit
+import com.avoqado.pos.transactions.data.model.CustomerStoreCreditTolerante
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -21,6 +23,9 @@ data class Customer(
     val totalSpent: Double? = null,
     val loyaltyPoints: Int? = null,
     val groups: List<String>? = null,
+    /** Saldo a favor (aditivo): `null` = sin sobre o servidor anterior. */
+    @Serializable(with = CustomerStoreCreditTolerante::class)
+    val storeCredit: CustomerStoreCredit? = null,
 ) {
     val fullName: String
         get() {

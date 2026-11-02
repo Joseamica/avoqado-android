@@ -54,6 +54,10 @@ fun normalizarTelefono(texto: String): String {
 }
 
 private val TELEFONO_VALIDO = Regex("^\\+?[0-9]{10,15}$")
+
+/** La regla de teléfono (10 a 15 dígitos): la de «Guardar teléfono», la de editar y la del alta con teléfono obligatorio. */
+fun telefonoValido(texto: String): Boolean = TELEFONO_VALIDO.matches(normalizarTelefono(texto))
+
 /** La MISMA regla que `z.string().email()` (zod 3.25) del servidor: lo que aquí pasa, allá pasa (Codex r2 #5). */
 private val CORREO_VALIDO = Regex(
     "^(?!\\.)(?!.*\\.\\.)([A-Z0-9_'+\\-.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\\-]*\\.)+[A-Z]{2,}$",
