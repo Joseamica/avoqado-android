@@ -186,7 +186,9 @@ fun PaymentMethodSelectionScreen(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         Text(
-            text = "Envía el cobro a una terminal para procesar el pago",
+            // Sin terminal, «envía el cobro a una terminal» mandaba a algo que no se puede (iPad, 31-oct; igual en iOS).
+            text = if (terminalsUnavailable && metodosHabilitados) "Cobra en efectivo o conecta una terminal"
+            else "Envía el cobro a una terminal para procesar el pago",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
