@@ -581,6 +581,27 @@ class OnlineOrdersViewModelTest {
     }
 
     @Test
+    fun `a 409 CONFIRMING received when rejecting also blocks accepting if the reread fails`() = runTest(dispatcher) {
+        fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+            Result.failure(RuntimeException("500")),
+        )
+        coEvery { repo.reject("p1", "OTHER", null) } returns AccionResultado.ConfirmandoPago("El banco aún confirma")
+        val vm = armar()
+        vm.refrescar()
+        vm.rechazar("p1", "OTHER")
+        runCurrent()
+        assertEquals("El banco aún confirma", vm.aviso.value)
+        val visto = vm.secciones.value.porAceptar.single()
+        assertEquals("CONFIRMING", visto.cardStatus)
+        assertFalse(sePuedeAceptar(visto))
+        vm.aceptar("p1", 15)
+        runCurrent()
+        coVerify(exactly = 0) { repo.accept(any(), any()) }
+    }
+
+    @Test
     fun `a read started before the 409 cannot lift the block, only one started after it can`() = runTest(dispatcher) {
         fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
         val enElAire = CompletableDeferred<Unit>()

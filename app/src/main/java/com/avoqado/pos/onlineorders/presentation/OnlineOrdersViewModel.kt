@@ -398,7 +398,7 @@ class OnlineOrdersViewModel internal constructor(
             // lo hace por `needsPrint`.
             alHechoYReleido = { buscar(orderId)?.takeIf { it.status in IMPRIMIBLES }?.let { imprimir(it) } },
         ) {
-            repositorio.accept(orderId, minutos).also { if (it is AccionResultado.ConfirmandoPago) marcarConfirmando(orderId) }
+            repositorio.accept(orderId, minutos)
         }
     }
 
@@ -642,6 +642,8 @@ class OnlineOrdersViewModel internal constructor(
                 } catch (e: Exception) {
                     AccionResultado.Error(e.message ?: "No se pudo completar la acción")
                 }
+                // Cualquier acción puede recibirlo: rechazar también, si otro aparato ya está cobrando (Codex ANDROID r2).
+                if (resultado is AccionResultado.ConfirmandoPago) marcarConfirmando(clave)
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
                     is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
