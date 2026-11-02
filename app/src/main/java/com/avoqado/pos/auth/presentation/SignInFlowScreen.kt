@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,7 +49,9 @@ import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.AuthButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.BackButton
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
 
@@ -125,6 +128,11 @@ fun SignInFlowScreen(
                         isLoading = uiState.isLoading,
                         errorMessage = uiState.errorMessage,
                         onChangeEmail = viewModel::goBackToEmail,
+                        pidiendoEnlace = uiState.pidiendoEnlace,
+                        onOlvide = {
+                            keyboardController?.hide()
+                            viewModel.pedirEnlaceDeContrasena()
+                        },
                         onLogin = {
                             keyboardController?.hide()
                             viewModel.loginWithPassword(onLoginSuccess)
@@ -132,6 +140,19 @@ fun SignInFlowScreen(
                     )
                 }
             }
+        }
+    }
+
+    // Mismo aviso que iOS («Restablecer contraseña» + OK), exista o no la cuenta.
+    uiState.avisoContrasena?.let { aviso ->
+        AvoqadoDialog(
+            title = "Restablecer contraseña",
+            onDismiss = viewModel::cerrarAvisoContrasena,
+            actionButton = {
+                PrimaryButton(text = "OK", onClick = viewModel::cerrarAvisoContrasena, fullWidth = true)
+            },
+        ) {
+            Text(text = aviso, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -225,6 +246,8 @@ private fun PasswordStepContent(
     isLoading: Boolean,
     errorMessage: String?,
     onChangeEmail: () -> Unit,
+    pidiendoEnlace: Boolean,
+    onOlvide: () -> Unit,
     onLogin: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -290,13 +313,20 @@ private fun PasswordStepContent(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
-        // "Forgot password" link (underlined like iOS)
-        Text(
-            text = "¿Olvidaste tu contraseña?",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface,
-            textDecoration = TextDecoration.Underline,
-        )
+        // «¿Olvidaste tu contraseña?» (subrayado, como iOS). Antes era sólo texto: tocarlo no hacía nada (1-nov-2026).
+        if (pidiendoEnlace) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        } else {
+            Text(
+                text = "¿Olvidaste tu contraseña?",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textDecoration = TextDecoration.Underline,
+                modifier = Modifier
+                    .clickable(enabled = !isLoading, onClick = onOlvide)
+                    .padding(vertical = AvoqadoTheme.spacing.xs),
+            )
+        }
 
         if (errorMessage != null) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
