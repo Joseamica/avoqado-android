@@ -6,9 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.avoqado.pos.transactions.data.model.DEVOLVER_CON_SALDO
 import com.avoqado.pos.transactions.data.model.esRechazoDefinitivoDeSaldo
-import com.avoqado.pos.transactions.data.model.textoDeSinPermisoParaReembolsar
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -21,19 +19,13 @@ import javax.inject.Singleton
 private val Context.refundPendingDataStore by preferencesDataStore(name = "refund_pending")
 
 /**
- * Un Reembolso a saldo a favor ya mandado (o por mandar) cuya respuesta no consta: el cuerpo EXACTO, su llave y QUIÉN lo pidió
- * ([staffId] y [staffName] de la sesión al tocar «Reembolsar»). Un pendiente guardado por una versión anterior no los trae (`null`).
+ * Un Reembolso a saldo a favor ya mandado (o por mandar) cuya respuesta no consta: el cuerpo EXACTO, su llave y el nombre de QUIEN
+ * lo pidió ([staffName], de la sesión al tocar «Reembolsar»), sólo para el aviso. Un pendiente guardado por una versión anterior no
+ * lo trae (`null`); el `staffId` que guardaba una versión de esta rama se ignora al leer (`ignoreUnknownKeys`).
  */
 @Serializable
 data class PendingRefund(val venueId: String, val paymentId: String, val body: String, val idempotencyKey: String,
-                         val staffId: String? = null, val staffName: String? = null)
-
-/**
- * Revisión final, «Quién lo pidió»: el reenvío automático al abrir la venta sólo sale con la sesión de QUIEN lo pidió. Con otra (o
- * con un pendiente viejo, sin quién) no sale nada: lo confirma a mano quien esté («Confirmar estado»), con SU sesión y la misma llave.
- * Así un POST que nunca llegó (un WiFi «conectado sin datos») no se escribe solo a nombre de otra persona.
- */
-fun seReenviaSolo(pending: PendingRefund, sesion: String?): Boolean = pending.staffId != null && pending.staffId == sesion
+                         val staffName: String? = null)
 
 /** El aviso del pendiente: de quién es, si se sabe. */
 fun avisoDelPendiente(pending: PendingRefund): String =
@@ -42,8 +34,9 @@ fun avisoDelPendiente(pending: PendingRefund): String =
 
 /**
  * Lo pendiente del Reembolso a saldo a favor (spec 2026-10-30 §7, Codex r1 h4), en disco como `ExchangePendingStore`. Se guarda
- * ANTES del POST; al abrir la venta se reenvía con la MISMA llave (el SERVIDOR reconoce la repetición y no abona dos veces); se borra
- * sólo con éxito o con un rechazo definitivo. Espejo de `RefundPendingStore.swift`.
+ * ANTES del POST. Opción A (founder, 2-nov): al abrir la venta NO se reenvía nada; el detalle lo muestra y sólo «Confirmar estado»
+ * (un toque humano, con la sesión de quien toca) lo reenvía con la MISMA llave (el SERVIDOR reconoce la repetición y no abona dos
+ * veces). Se borra sólo con éxito o con un rechazo definitivo. Espejo de `RefundPendingStore.swift`.
  */
 @Singleton
 class RefundPendingStore internal constructor(private val dataStore: DataStore<Preferences>) {
@@ -82,7 +75,7 @@ sealed interface DesenlaceDeSaldo {
     data class Hecho(val data: AssociatedRefundData) : DesenlaceDeSaldo
     /** Rechazo definitivo (nada se escribió): lo pendiente se borró y la cajera corrige con lo capturado. */
     data class Rechazado(val mensaje: String, val code: String?) : DesenlaceDeSaldo
-    /** No consta: lo pendiente se CONSERVA y se reenvía con la misma llave al abrir la venta. */
+    /** No consta: lo pendiente se CONSERVA y «Confirmar estado» lo reenvía con la misma llave. */
     data class Pendiente(val mensaje: String) : DesenlaceDeSaldo
     /** Ya había otro sin confirmar de esa venta (otra llave): no se mandó nada; el detalle lo muestra y se confirma ése primero. */
     data object OtroPendiente : DesenlaceDeSaldo
@@ -93,22 +86,22 @@ sealed interface DesenlaceDeSaldo {
 /** Qué decirle a la cajera cuando lo pendiente se conserva. */
 fun mensajeDeReembolsoPendiente(status: Int?, code: String?, mensaje: String?): String = when {
     code == "IDEMPOTENCY_KEY_REUSED" -> TextosCambio.REEMBOLSO_LLAVE_REUSADA
-    status == 403 -> textoDeSinPermisoParaReembolsar(DEVOLVER_CON_SALDO)
+    status == 403 -> TextosCambio.REEMBOLSO_PIDE_GERENTE
     status != null && status in 400..499 && status !in setOf(401, 408, 429) && !mensaje.isNullOrBlank() -> mensaje
     else -> TextosCambio.REEMBOLSO_NO_CONFIRMADO
 }
 
 /**
- * Manda lo pendiente con SU cuerpo y SU llave. Borra sólo con éxito o con un rechazo definitivo (`esRechazoDefinitivoDeSaldo`, o un 403
- * con el eco de su petición).
+ * Manda lo pendiente con SU cuerpo y SU llave. Borra sólo con éxito o con un rechazo definitivo (`esRechazoDefinitivoDeSaldo`) que
+ * trae el eco de su petición. Siempre lo pide una persona («Reembolsar», «Confirmar estado»): va en primer plano y un 403 puede pedir
+ * el PIN de gerente, que reenvía AHÍ la misma petición con la misma llave (su consentimiento).
  *
- * [segundoPlano]: el reenvío que nadie pidió (al abrir la venta) va de fondo, así que un 403 nunca le saca el PIN de gerente a quien
- * abrió la venta. Lo que pide una persona («Reembolsar», «Confirmar estado») sí puede pedirlo: si el gerente autoriza, se reenvía
- * AHÍ la misma petición, con la misma llave y con su consentimiento (Revisión final I-1).
+ * 🔴 Un 403 NUNCA borra lo pendiente, ni con el eco (Opción A, Codex apps r7 #2): el SERVIDOR revisa el permiso ANTES de reconocer la
+ * llave, así que un 403 no prueba que no se escribió (el gerente autorizó con PIN, se perdió la respuesta y quien reabre no tiene
+ * permiso). Se conserva y se pide que lo confirme un gerente.
  */
-suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund,
-                                     segundoPlano: Boolean = false): DesenlaceDeSaldo {
-    val resultado = repo.enviarCuerpo(pending.paymentId, pending.body, segundoPlano)
+suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund): DesenlaceDeSaldo {
+    val resultado = repo.enviarCuerpo(pending.paymentId, pending.body)
     resultado.getOrNull()?.let { borrarALoMejor(store, pending); return DesenlaceDeSaldo.Hecho(it) }
     val e = resultado.exceptionOrNull()
     if (e is CancellationException) throw e
@@ -118,20 +111,12 @@ suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendin
         borrarALoMejor(store, pending)
         return DesenlaceDeSaldo.Rechazado(api.message.ifBlank { TextosCambio.REEMBOLSO_NO_CONFIRMADO }, api.code)
     }
-    // Revisión final I-1: un 403 de NUESTRO servidor (con el eco) sale de `checkPermission`, antes de escribir nada. Es definitivo
-    // SÓLO aquí, en el Reembolso a saldo: si se conservara, al abrir la venta alguien con permiso lo reenviaría solo, con SU sesión, y
-    // se crearía un saldo a favor que los permisos negaron y que nadie con permiso decidió. El Cambio no se reenvía solo: ahí un 403
-    // sigue sin ser definitivo (`esRechazoDefinitivoDeSaldo` no cambia).
-    if (api != null && api.statusCode == 403) {
-        borrarALoMejor(store, pending)
-        return DesenlaceDeSaldo.Rechazado(textoDeSinPermisoParaReembolsar(DEVOLVER_CON_SALDO), api.code)
-    }
     return DesenlaceDeSaldo.Pendiente(mensajeDeReembolsoPendiente(api?.statusCode, api?.code, api?.message))
 }
 
 /**
- * Borrar después del desenlace es a lo mejor posible (como el `try?` de iOS): si el disco falla, lo pendiente se queda y al abrir la
- * venta se reenvía con la misma llave; el SERVIDOR repite la respuesta. Nunca tumba la app.
+ * Borrar después del desenlace es a lo mejor posible (como el `try?` de iOS): si el disco falla, lo pendiente se queda y «Confirmar
+ * estado» lo reenvía con la misma llave; el SERVIDOR repite la respuesta. Nunca tumba la app.
  */
 private suspend fun borrarALoMejor(store: RefundPendingStore, pending: PendingRefund) {
     try {
@@ -145,9 +130,8 @@ private suspend fun borrarALoMejor(store: RefundPendingStore, pending: PendingRe
 
 /** El envío: guarda ANTES de tocar la red y manda. Si no se pudo guardar, no se manda nada. */
 class SaldoAFavorEnvio(private val repo: RefundRepository, private val store: RefundPendingStore) {
-    suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String,
-                       staffId: String? = null, staffName: String? = null): DesenlaceDeSaldo {
-        val pending = PendingRefund(venue, paymentId, body, idempotencyKey, staffId, staffName?.takeIf { it.isNotBlank() })
+    suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String, staffName: String? = null): DesenlaceDeSaldo {
+        val pending = PendingRefund(venue, paymentId, body, idempotencyKey, staffName?.takeIf { it.isNotBlank() })
         try {
             store.guardar(pending)
         } catch (e: CancellationException) {

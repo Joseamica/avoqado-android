@@ -94,9 +94,9 @@ class ReembolsoASaldoTest {
         repo.cuerpoDeReembolso(reason = "RETURNED_GOODS", amountCents = 50000, refundMethod = DEVOLVER_CON_SALDO,
             customerId = customerId, idempotencyKey = llave, defective = defective)
 
-    /** Lo pendiente que deja la cajera de esta sesión («actor», Lupita): «Quién lo pidió» (Revisión final). */
-    private fun pendiente(llave: String = "llave-del-reembolso", staffId: String? = "actor", staffName: String? = "Lupita") =
-        PendingRefund("venue", "payment", cuerpo(llave), llave, staffId, staffName)
+    /** Lo pendiente que deja la cajera de esta sesión (Lupita): su nombre, para el aviso. */
+    private fun pendiente(llave: String = "llave-del-reembolso", staffName: String? = "Lupita") =
+        PendingRefund("venue", "payment", cuerpo(llave), llave, staffName)
 
     // MARK: - La pastilla y sus estados
 
@@ -249,7 +249,7 @@ class ReembolsoASaldoTest {
                 return respuesta(201, ok)
             }
         }
-        val desenlace = SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "actor", "Lupita")
+        val desenlace = SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "Lupita")
         assertEquals(pendiente(), alLlegar)
         assertEquals("Lucía", (desenlace as DesenlaceDeSaldo.Hecho).data.storeCredit?.customerName)
         assertNull(store.pendiente("venue", "payment"))
@@ -285,7 +285,7 @@ class ReembolsoASaldoTest {
             assertEquals(DesenlaceDeSaldo.Pendiente("Reintenta en un momento."), enviarReembolsoPendiente(repo, store, pendiente()))
             assertEquals(pendiente(), store.pendiente("venue", "payment"))
         }
-        // Un 403 SIN el eco de su petición (un proxy, Cloudflare) no prueba nada: se conserva (I-1: con eco, es definitivo).
+        // Un 403 SIN el eco de su petición (un proxy, Cloudflare) no prueba nada: se conserva (con eco, también: Opción A).
         server.enqueue(sinEco(respuesta(403, """{"success":false,"message":"Permission 'payments:refund' required"}""")))
         assertEquals(DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_NO_CONFIRMADO), enviarReembolsoPendiente(repo, store, pendiente()))
         for (status in listOf(401, 408, 429)) {
@@ -304,48 +304,55 @@ class ReembolsoASaldoTest {
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
     }
 
-    // MARK: - Revisión final, «Quién lo pidió»: el reenvío automático sólo con la sesión de quien lo pidió
+    // MARK: - Opción A (founder, 2-nov): nada se reenvía solo; sólo «Confirmar estado», un toque humano
 
-    @Test fun `quién lo pidió - con la misma sesión, al abrir la venta se reenvía solo`() = runBlocking {
-        store.guardar(pendiente())                              // lo pidió «actor», la sesión de ahora
-        server.enqueue(respuesta(201, ok))
+    @Test fun `Opción A - al abrir la venta no sale ningún reenvío, ni con la sesión de quien lo pidió ni con la de otra persona`() = runBlocking {
         val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
-        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 0.0))
-        vm.selectTransaction("payment")
-        val reenvio = server.takeRequest(5, TimeUnit.SECONDS)!!
-        assertEquals(pendiente().body, reenvio.body.readUtf8())
-        // Se espera a que el modelo termine con la respuesta: si no, la sigue procesando cuando ya se restauró `Dispatchers.Main`.
-        assertEquals("Se confirmó el reembolso a saldo a favor\nSaldo a favor para Lucía: \$500.00 · saldo nuevo \$500.00",
-            withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } })
-        assertNull(store.pendiente("venue", "payment"))
+        for (pidio in listOf(pendiente(), pendiente(staffName = "Beatriz López"))) {
+            store.guardar(pidio)
+            val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 0.0))
+            vm.selectTransaction("payment")
+            withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+            repeat(20) { yield(); kotlinx.coroutines.delay(10) }
+            assertEquals("al abrir la venta no sale nada (${pidio.staffName})", 0, server.requestCount)
+            assertNull(vm.avisoDeReembolso.value)
+            assertTrue(vm.reembolsoBloqueado.value)
+            assertNotNull(vm.motivoParaNoReembolsar("payment"))
+            store.borrar(pidio)
+        }
+        assertEquals("Reembolso a saldo a favor de Lupita sin confirmar", avisoDelPendiente(pendiente()))
     }
 
-    @Test fun `quién lo pidió - con otra sesión no sale nada, el aviso dice de quién y Confirmar estado manda la misma llave`() = runBlocking {
-        val deBeatriz = pendiente(staffId = "otra-cajera", staffName = "Beatriz López")
+    @Test fun `Confirmar estado - lo decide quien está, con SU sesión, la misma llave y en primer plano`() = runBlocking {
+        val deBeatriz = pendiente(staffName = "Beatriz López")
         store.guardar(deBeatriz)
         val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
         val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 0.0))
         vm.selectTransaction("payment")
         withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
         repeat(20) { yield(); kotlinx.coroutines.delay(10) }
-        assertEquals("no se reenvía solo con la sesión de otra persona", 0, server.requestCount)
+        assertEquals(0, server.requestCount)
         assertEquals("Reembolso a saldo a favor de Beatriz López sin confirmar", avisoDelPendiente(vm.reembolsoPendiente.value!!))
         assertTrue(vm.reembolsoBloqueado.value)
-        // «Confirmar estado»: lo decide quien está, con SU sesión y la MISMA llave.
         server.enqueue(respuesta(201, ok))
         vm.confirmarReembolsoPendiente()
         val confirmado = server.takeRequest(5, TimeUnit.SECONDS)!!
         assertEquals(deBeatriz.body, confirmado.body.readUtf8())
+        // Lo pide una persona: puede salir el PIN de gerente (su consentimiento); nunca va marcado de fondo.
         assertNull(confirmado.getHeader("X-Avoqado-Background"))
-        withTimeout(10_000) { while (vm.reembolsoPendiente.value != null) yield() }
+        assertEquals("Se confirmó el reembolso a saldo a favor\nSaldo a favor para Lucía: \$500.00 · saldo nuevo \$500.00",
+            withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } })
+        assertNull(vm.reembolsoPendiente.value)
         assertNull(store.pendiente("venue", "payment"))
     }
 
-    @Test fun `quién lo pidió - un pendiente viejo sin quién lo pidió se trata como de otra sesión`() = runBlocking {
-        // Lo que guardó una versión anterior de esta rama: sin `staffId` ni `staffName`.
-        val viejo = jsonReembolsos.decodeFromString(PendingRefund.serializer(),
-            """{"venueId":"venue","paymentId":"payment","body":${kotlinx.serialization.json.JsonPrimitive(cuerpo())},"idempotencyKey":"llave-del-reembolso"}""")
-        assertNull(viejo.staffId)
+    @Test fun `un pendiente de una versión anterior - sin nombre, o con el staffId que ya no se usa - se lee y no sale nada solo`() = runBlocking {
+        val base = """"venueId":"venue","paymentId":"payment","body":${kotlinx.serialization.json.JsonPrimitive(cuerpo())},"idempotencyKey":"llave-del-reembolso""""
+        // Con `staffId` y `staffName` (la versión de «Quién lo pidió»): el `staffId` se ignora.
+        assertEquals(pendiente(), jsonReembolsos.decodeFromString(PendingRefund.serializer(), """{$base,"staffId":"actor","staffName":"Lupita"}"""))
+        // Sin ninguno de los dos: el aviso genérico.
+        val viejo = jsonReembolsos.decodeFromString(PendingRefund.serializer(), """{$base}""")
+        assertNull(viejo.staffName)
         store.guardar(viejo)
         val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
         val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 0.0))
@@ -356,49 +363,70 @@ class ReembolsoASaldoTest {
         assertEquals(TextosCambio.REEMBOLSO_SIN_CONFIRMAR, avisoDelPendiente(vm.reembolsoPendiente.value!!))
     }
 
-    // MARK: - Revisión final I-1: un 403 PROBADO de NUESTRO servidor no se reenvía solo con la sesión de otra persona
-
-    @Test fun `I-1 un 403 con eco borra lo pendiente, dice sin permiso y al abrir la venta no se reenvía nada`() = runBlocking {
+    @Test fun `Opción A - un 403 NUNCA borra lo pendiente, ni con eco - se conserva y dice que lo confirme un gerente`() = runBlocking {
+        // El SERVIDOR revisa el permiso ANTES de reconocer la llave: un 403 con eco no prueba que no se escribió (Codex apps r7 #2).
         server.enqueue(respuesta(403, """{"success":false,"message":"Permission 'payments:refund' required"}"""))
-        val desenlace = SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "actor", "Lupita")
-        assertEquals(DesenlaceDeSaldo.Rechazado(textoDeSinPermisoParaReembolsar(DEVOLVER_CON_SALDO), null), desenlace)
-        assertNull(store.pendiente("venue", "payment"))
-        // Después, alguien con permiso abre esa venta en este aparato, con red: no sale ningún reembolso.
-        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
-        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 500.0))
-        vm.selectTransaction("payment")
-        withTimeout(5_000) { while (vm.selectedTransaction.value == null) yield() }
-        repeat(20) { yield(); kotlinx.coroutines.delay(10) }
-        assertEquals(1, server.requestCount)
-        assertNull(vm.reembolsoPendiente.value)
-    }
-
-    @Test fun `I-1 un 403 sin eco se conserva, y el reenvío automático al abrir la venta va de fondo, sin pedir PIN de gerente`() = runBlocking {
-        store.guardar(pendiente())
+        val desenlace = SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "Lupita")
+        assertEquals(DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_PIDE_GERENTE), desenlace)
+        assertEquals(pendiente(), store.pendiente("venue", "payment"))
+        server.enqueue(respuesta(403, """{"success":false,"message":"Permission 'payments:refund' required"}"""))
+        assertEquals(DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_PIDE_GERENTE), enviarReembolsoPendiente(repo, store, pendiente()))
+        // Sin eco (un proxy) tampoco prueba nada: se conserva.
         server.enqueue(sinEco(respuesta(403, """{"success":false,"message":"Permission 'payments:refund' required"}""")))
         assertEquals(DesenlaceDeSaldo.Pendiente(TextosCambio.REEMBOLSO_NO_CONFIRMADO), enviarReembolsoPendiente(repo, store, pendiente()))
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
-        assertNull("lo que pide una persona sí puede pedir el PIN", server.takeRequest().getHeader("X-Avoqado-Background"))
-        // Al abrir la venta se reenvía solo: de fondo (nadie lo pidió), así que un 403 nunca saca el PIN de gerente a quien la abrió.
-        server.enqueue(sinEco(respuesta(503, """{"success":false,"message":"Servicio no disponible"}""")))
+        assertEquals(TextosCambio.REEMBOLSO_PIDE_GERENTE, mensajeDeReembolsoPendiente(403, null, "Permission 'payments:refund' required"))
+        // Ningún envío va marcado de fondo.
+        assertTrue(List(3) { server.takeRequest() }.all { it.getHeader("X-Avoqado-Background") == null })
+    }
+
+    @Test fun `Codex r7 #2 - se escribió y se perdió la respuesta, un 403 al confirmar no lo borra y el gerente lo confirma con la misma llave`() = runBlocking {
+        // 1) La cajera manda (el gerente autorizó con PIN): el servidor lo escribe y la respuesta se pierde.
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        assertTrue(SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "Lupita")
+            is DesenlaceDeSaldo.Pendiente)
+        val enviado = server.takeRequest().body.readUtf8()
+        // 2) Se reabre la venta: no sale nada y «Emitir reembolso» queda apagado.
         val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
-        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 500.0))
+        val vm = vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 400.0))
         vm.selectTransaction("payment")
-        val automatico = server.takeRequest(5, TimeUnit.SECONDS)!!
-        assertEquals("1", automatico.getHeader("X-Avoqado-Background"))
-        // «Confirmar estado» lo pide una persona: no va de fondo.
-        withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } }
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        repeat(20) { yield(); kotlinx.coroutines.delay(10) }
+        assertEquals(1, server.requestCount)
+        assertTrue(vm.reembolsoBloqueado.value)
+        // 3) «Confirmar estado» y un rechazo sin eco (un proxy): se conserva.
+        server.enqueue(sinEco(respuesta(400, """{"success":false,"code":"STORE_CREDIT_REJECTED","message":"x"}""")))
+        vm.confirmarReembolsoPendiente()
+        assertEquals(TextosCambio.REEMBOLSO_NO_CONFIRMADO,
+            withTimeout(10_000) { vm.avisoDeReembolso.first { it == TextosCambio.REEMBOLSO_NO_CONFIRMADO } })
+        assertEquals(pendiente(), store.pendiente("venue", "payment"))
+        assertTrue(vm.reembolsoBloqueado.value)
+        // 4) Quien está no tiene permiso: 403 con eco. NO se borra (el permiso se revisa antes de reconocer la llave).
+        server.enqueue(respuesta(403, """{"success":false,"message":"Permission 'payments:refund' required"}"""))
+        vm.confirmarReembolsoPendiente()
+        assertEquals(TextosCambio.REEMBOLSO_PIDE_GERENTE,
+            withTimeout(10_000) { vm.avisoDeReembolso.first { it == TextosCambio.REEMBOLSO_PIDE_GERENTE } })
+        assertEquals(pendiente(), store.pendiente("venue", "payment"))
+        assertNotNull(vm.reembolsoPendiente.value)
+        assertTrue(vm.reembolsoBloqueado.value)
+        assertEquals(TextosCambio.REEMBOLSO_SIN_CONFIRMAR, vm.motivoParaNoReembolsar("payment"))
+        // 5) El gerente toca «Confirmar estado»: misma llave; el servidor reconoce la repetición y contesta lo de la primera vez.
         server.enqueue(respuesta(201, ok))
         vm.confirmarReembolsoPendiente()
-        assertNull(server.takeRequest(5, TimeUnit.SECONDS)!!.getHeader("X-Avoqado-Background"))
-        // Se espera a que el modelo termine con la respuesta (si no, la procesa con `Dispatchers.Main` ya restaurado).
-        withTimeout(10_000) { while (vm.reembolsoPendiente.value != null) yield() }
+        assertEquals("Se confirmó el reembolso a saldo a favor\nSaldo a favor para Lucía: \$500.00 · saldo nuevo \$500.00",
+            withTimeout(10_000) { vm.avisoDeReembolso.first { it?.startsWith("Se confirmó") == true } })
+        assertNull(store.pendiente("venue", "payment"))
+        assertFalse(withTimeout(5_000) { vm.reembolsoBloqueado.first { !it } })
+        // Los tres envíos llevan los MISMOS bytes (misma llave), ninguno de fondo, y no salió ninguno más.
+        val confirmaciones = List(3) { server.takeRequest(5, TimeUnit.SECONDS)!! }
+        assertTrue(confirmaciones.all { it.body.readUtf8() == enviado && it.getHeader("X-Avoqado-Background") == null })
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun `un pendiente de otra llave no se pisa, se dice que hay uno sin confirmar y no se borra con la llave equivocada`() = runBlocking {
         store.guardar(pendiente())
         assertEquals(DesenlaceDeSaldo.OtroPendiente,
-            SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo("otra-llave-123"), "otra-llave-123", "actor", "Lupita"))
+            SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo("otra-llave-123"), "otra-llave-123", "Lupita"))
         assertEquals(0, server.requestCount)
         store.borrar(pendiente("otra-llave-123"))
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
@@ -420,38 +448,48 @@ class ReembolsoASaldoTest {
             mockk(relaxed = true), pendientes))
     }
 
-    @Test fun `Reembolso completo a saldo, se pierde la respuesta, se mata la app y al reabrir la venta se reenvía con la misma llave`() = runBlocking {
+    @Test fun `Reembolso completo a saldo, se pierde la respuesta, se mata la app y al reabrir la venta Confirmar estado manda la misma llave`() = runBlocking {
         // 1) La cajera manda el reembolso completo a saldo: se guarda y el servidor SÍ lo escribe, pero la respuesta se pierde.
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
-        val primero = SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "actor", "Lupita")
+        val primero = SaldoAFavorEnvio(repo, store).enviar("venue", "payment", cuerpo(), "llave-del-reembolso", "Lupita")
         assertTrue(primero is DesenlaceDeSaldo.Pendiente)
         val enviado = server.takeRequest().body.readUtf8()
         // 2) Se mata la app: el pendiente sobrevive en disco.
         reiniciarApp()
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
-        // 3) Se reabre la venta por la navegación real; con todo devuelto el botón de Reembolso sale apagado.
-        server.enqueue(respuesta(201, ok))
+        // 3) Se reabre la venta por la navegación real (con todo devuelto el botón de Reembolso sale apagado): no sale nada solo.
         val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
         val venta = Transaction("payment", amount = 500.0, remainingRefundable = 0.0, customerName = "Mamá")
         val vm = vm(online, venta)
         vm.selectTransaction("payment")
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        repeat(20) { yield(); kotlinx.coroutines.delay(10) }
+        assertEquals(1, server.requestCount)
+        // 4) La cajera toca «Confirmar estado»: se reenvía lo MISMO (misma llave), se muestra el resultado y lo pendiente se borra.
+        server.enqueue(respuesta(201, ok))
+        vm.confirmarReembolsoPendiente()
         val aviso = withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } }
-        // 4) Se reenvió lo MISMO (misma llave) y se muestra el resultado; lo pendiente se borró.
         assertEquals(enviado, server.takeRequest(5, TimeUnit.SECONDS)!!.body.readUtf8())
         assertEquals("Se confirmó el reembolso a saldo a favor\nSaldo a favor para Lucía: \$500.00 · saldo nuevo \$500.00", aviso)
         assertNull(vm.reembolsoPendiente.value)
         assertNull(store.pendiente("venue", "payment"))
     }
 
-    @Test fun `sin red el detalle no reenvía, avisa y deja el pendiente para Confirmar estado`() = runBlocking {
+    @Test fun `sin red, al abrir la venta sólo se muestra lo pendiente y Confirmar estado avisa que necesita conexión`() = runBlocking {
         store.guardar(pendiente())
         val sinRed = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
         val vm = vm(sinRed, Transaction("payment", amount = 500.0, remainingRefundable = 500.0))
         vm.selectTransaction("payment")
-        assertEquals("El saldo a favor necesita conexión", withTimeout(5_000) { vm.avisoDeReembolso.first { it != null } })
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        repeat(20) { yield(); kotlinx.coroutines.delay(10) }
+        assertNull(vm.avisoDeReembolso.value)
         assertEquals(pendiente(), vm.reembolsoPendiente.value)
+        // «Confirmar estado» sin red: lo dice y no toca la red.
+        vm.confirmarReembolsoPendiente()
+        assertEquals("El saldo a favor necesita conexión", withTimeout(5_000) { vm.avisoDeReembolso.first { it != null } })
         assertEquals(0, server.requestCount)
-        // Vuelve la red y la cajera toca «Confirmar estado»: un rechazo definitivo libera.
+        assertEquals(pendiente(), store.pendiente("venue", "payment"))
+        // Vuelve la red y la cajera toca «Confirmar estado»: un rechazo definitivo (con eco) libera.
         every { sinRed.isOnline() } returns true
         server.enqueue(respuesta(422, """{"success":false,"code":"STORE_CREDIT_OVER_CAP","message":"El saldo a favor de Lucía pasaría de ${'$'}10,000."}"""))
         vm.confirmarReembolsoPendiente()

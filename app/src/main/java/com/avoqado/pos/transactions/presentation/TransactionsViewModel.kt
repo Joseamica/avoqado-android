@@ -25,7 +25,6 @@ import com.avoqado.pos.transactions.data.PendingRefund
 import com.avoqado.pos.transactions.data.RefundPendingStore
 import com.avoqado.pos.transactions.data.SaldoAFavorEnvio
 import com.avoqado.pos.transactions.data.enviarReembolsoPendiente
-import com.avoqado.pos.transactions.data.seReenviaSolo
 import com.avoqado.pos.transactions.presentation.exchange.exchangeStoreCreditNotice
 import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.ResultadoDeReimpresion
@@ -255,8 +254,8 @@ class TransactionsViewModel @Inject constructor(
 
     /**
      * 🔴 La guarda de TODA devolución que manda la hoja (efectivo, transferencia, tarjeta, terminal y saldo a favor): con un saldo a favor
-     * de esa venta sin confirmar (en el aparato) o en vuelo, no se manda otro; ése se confirma con su misma llave («Confirmar estado», o
-     * solo al abrir la venta), que no pasa por aquí. Si había uno, el detalle lo muestra. `null` = se puede mandar.
+     * de esa venta sin confirmar (en el aparato) o en vuelo, no se manda otro; ése se confirma con su misma llave («Confirmar estado»),
+     * que no pasa por aquí. Si había uno, el detalle lo muestra. `null` = se puede mandar.
      */
     suspend fun motivoParaNoReembolsar(paymentId: String): String? {
         if (paymentId in enVuelo.value) return TextosCambio.REEMBOLSO_SIN_CONFIRMAR
@@ -274,7 +273,7 @@ class TransactionsViewModel @Inject constructor(
     private val versionDelPendiente = java.util.concurrent.atomic.AtomicLong()
 
     /** Lee lo pendiente de la venta abierta y, si [reenviar] y hay red, lo reenvía con su MISMA llave. */
-    private suspend fun recuperarReembolsoPendiente(scope: DetailScope, reenviar: Boolean, segundoPlano: Boolean = false) {
+    private suspend fun recuperarReembolsoPendiente(scope: DetailScope, reenviar: Boolean) {
         val store = refundPendingStore ?: return
         val venue = scope.venueId ?: return
         val version = versionDelPendiente.incrementAndGet()
@@ -287,14 +286,12 @@ class TransactionsViewModel @Inject constructor(
         }
         if (!current(scope) || version != versionDelPendiente.get()) return
         _reembolsoPendiente.value = pending
-        // «Quién lo pidió»: el reenvío que nadie pidió (al abrir la venta) sólo sale con la sesión de quien lo pidió; con otra, el
-        // detalle muestra de quién es y espera a que alguien toque «Confirmar estado».
-        if (pending == null || !reenviar || (segundoPlano && !seReenviaSolo(pending, scope.actorId))) return
+        if (pending == null || !reenviar) return
         if (!marcarEnVuelo(scope.paymentId)) return
         try {
             if (!connectivityMonitor.isOnline()) { _avisoDeReembolso.value = TextosCambio.SALDO_SIN_RED; return }
             _avisoDeReembolso.value = null
-            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending, segundoPlano)
+            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending)
             detalleAbierto(scope.paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = true) }
         } finally { soltarEnVuelo(scope.paymentId) }
     }
@@ -310,8 +307,8 @@ class TransactionsViewModel @Inject constructor(
             val venue = secureStorage.venueId ?: return@async DesenlaceDeSaldo.GuardadoFallido
             if (!marcarEnVuelo(paymentId)) return@async DesenlaceDeSaldo.OtroPendiente
             val desenlace = try {
-                // «Quién lo pidió»: la sesión de ahora, al tocar «Reembolsar».
-                SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey, secureStorage.userId,
+                // «Quién lo pidió» (para el aviso): el nombre de la sesión de ahora, al tocar «Reembolsar».
+                SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey,
                     listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim())
             } finally { soltarEnVuelo(paymentId) }
             detalleAbierto(paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = false) }
@@ -348,7 +345,7 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
-    /** «Confirmar estado»: reenvía lo pendiente de la venta abierta. */
+    /** «Confirmar estado»: el ÚNICO reenvío de lo pendiente (un toque humano, con la sesión de quien toca y la misma llave). */
     fun confirmarReembolsoPendiente() {
         val scope = detailScope ?: return
         viewModelScope.launch { recuperarReembolsoPendiente(scope, reenviar = true) }
@@ -723,7 +720,8 @@ class TransactionsViewModel @Inject constructor(
             if (!current(scope)) return@launch
             _selectedTransaction.value = detail?.takeIf { it.id == scope.paymentId }
             _isLoadingDetail.value = false
-            if (detail?.id == scope.paymentId) launch { recuperarReembolsoPendiente(scope, reenviar = true, segundoPlano = true) }
+            // Opción A (founder, 2-nov): al abrir la venta sólo se LEE lo pendiente; nada se reenvía solo, para nadie.
+            if (detail?.id == scope.paymentId) launch { recuperarReembolsoPendiente(scope, reenviar = false) }
             if (detail != null && detail.id == scope.paymentId && roleManager.canAttachCustomer && roleManager.hasVenuePermission("customers:read")) {
                 try {
                     readPending(scope)?.let { pending ->

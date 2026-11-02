@@ -327,7 +327,7 @@ private fun LoadedDetailView(
             com.avoqado.pos.transactions.presentation.exchange.ExchangeRecoveryNotice(transaction) {
                 viewModel.resumePendingExchange(transaction)
             }
-            // Reembolso a saldo a favor sin confirmar (A3): se reenvía solo al abrir la venta; mientras siga, no se empieza otro.
+            // Reembolso a saldo a favor sin confirmar (A3): sólo «Confirmar estado» lo reenvía (Opción A); mientras siga, no se empieza otro.
             val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
             val reembolsoBloqueado by viewModel.reembolsoBloqueado.collectAsState()
             val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()

@@ -218,7 +218,7 @@ class RefundRepository @Inject constructor(
     )
 
     /** Manda un cuerpo ya armado (el reenvío de lo pendiente usa exactamente el que se guardó). */
-    suspend fun enviarCuerpo(paymentId: String, body: String, segundoPlano: Boolean = false): Result<AssociatedRefundData> {
+    suspend fun enviarCuerpo(paymentId: String, body: String): Result<AssociatedRefundData> {
         val venueId = secureStorage.venueId
             ?: return Result.failure(Exception("No venue ID"))
 
@@ -226,8 +226,6 @@ class RefundRepository @Inject constructor(
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/refund")
                 .post(body.toRequestBody("application/json".toMediaType()))
-                // Un reenvío que nadie pidió no le pide el PIN de gerente a nadie (Revisión final I-1).
-                .apply { if (segundoPlano) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1") }
                 .build()
 
             val (code, responseBody, delServidor) = withContext(Dispatchers.IO) {

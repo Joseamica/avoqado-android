@@ -981,8 +981,8 @@ fun IssueRefundSheet(
                             // Primero la guarda: con un saldo a favor de esta venta sin confirmar o en vuelo, no sale ningún medio.
                             val motivo = antesDeReembolsar()
                             if (motivo != null) { submitting = false; errorMsg = motivo; return@launch }
-                            // 🔴 Saldo a favor: se GUARDA en el aparato antes del POST y, si la respuesta no consta, se reenvía con la
-                            // misma llave al abrir la venta (spec §7). Nunca se encola sin red.
+                            // 🔴 Saldo a favor: se GUARDA en el aparato antes del POST y, si la respuesta no consta, «Confirmar estado»
+                            // la reenvía con la misma llave (spec §7, Opción A). Nunca se encola sin red.
                             val enviar = enviarASaldo
                             if (aSaldoAFavor && enviar != null) {
                                 val llave = java.util.UUID.randomUUID().toString()
