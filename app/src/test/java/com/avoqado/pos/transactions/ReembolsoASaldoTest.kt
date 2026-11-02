@@ -420,6 +420,25 @@ class ReembolsoASaldoTest {
         assertNotNull(store.pendiente("venue", "payment"))
     }
 
+    @Test fun `Codex r9 - frenado por el cambio de sesión, el siguiente toque ya sale con la sesión de quien está y la misma llave`() = runBlocking {
+        conLaCredencialDeVerdad(); entroOtraPersonaAlSalir()
+        val pidio = pendiente()
+        store.guardar(pidio)
+        val vm = ventaAbierta()
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        vm.confirmarReembolsoPendiente()
+        withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } }
+        assertEquals(0, server.requestCount)
+        // Beatriz ya está en la pantalla y toca ella: su sesión es la de ahora.
+        every { secure.generacion } returns 2L
+        server.enqueue(respuesta(201, ok))
+        vm.confirmarReembolsoPendiente()
+        val confirmado = server.takeRequest(5, TimeUnit.SECONDS)!!
+        assertEquals("Bearer token-de-beatriz", confirmado.getHeader("Authorization"))
+        assertEquals(pidio.body, confirmado.body.readUtf8())
+        withTimeout(10_000) { while (store.pendiente("venue", "payment") != null) yield() }
+    }
+
     @Test fun `Codex r8 1 - con la misma sesión, Confirmar estado sale con la credencial de quien tocó`() = runBlocking {
         conLaCredencialDeVerdad()
         every { secure.generacion } returns 1L
