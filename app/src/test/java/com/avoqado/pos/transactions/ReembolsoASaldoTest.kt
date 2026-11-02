@@ -1,6 +1,7 @@
 package com.avoqado.pos.transactions
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.avoqado.pos.core.data.network.AuthInterceptor
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.refresh.RefreshGate
@@ -378,6 +379,59 @@ class ReembolsoASaldoTest {
         assertEquals(TextosCambio.REEMBOLSO_PIDE_GERENTE, mensajeDeReembolsoPendiente(403, null, "Permission 'payments:refund' required"))
         // Ningún envío va marcado de fondo.
         assertTrue(List(3) { server.takeRequest() }.all { it.getHeader("X-Avoqado-Background") == null })
+    }
+
+    // MARK: - Codex apps r8 #1: el envío sale con la sesión de quien tocó, o no sale
+
+    /** El cliente con el [AuthInterceptor] de verdad: es ahí donde la petición toma su credencial. */
+    private fun conLaCredencialDeVerdad() {
+        repo = RefundRepository(secure, OkHttpClient.Builder().retryOnConnectionFailure(false).addInterceptor(AuthInterceptor(secure)).build())
+        repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
+    }
+
+    /** Lupita toca con la sesión 1; cuando la petición va a salir, un relevo por PIN ya instaló a Beatriz (sesión 2). */
+    private fun entroOtraPersonaAlSalir() {
+        every { secure.generacion } returns 1L
+        every { secure.selloYAccess() } returns (2L to "token-de-beatriz")
+    }
+
+    private suspend fun ventaAbierta(): TransactionsViewModel {
+        val online = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns true }
+        return vm(online, Transaction("payment", amount = 500.0, remainingRefundable = 500.0)).also { it.selectTransaction("payment") }
+    }
+
+    @Test fun `Codex r8 1 - si entra otra persona entre Confirmar estado y el envío, no sale con su sesión y lo pendiente se conserva`() = runBlocking {
+        conLaCredencialDeVerdad(); entroOtraPersonaAlSalir()
+        store.guardar(pendiente())
+        val vm = ventaAbierta()
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        vm.confirmarReembolsoPendiente()
+        assertEquals(TextosCambio.REEMBOLSO_NO_CONFIRMADO, withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } })
+        assertEquals(0, server.requestCount)
+        assertNotNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `Codex r8 1 - el primer envío de la hoja tampoco sale con la sesión de otra persona y queda sin confirmar`() = runBlocking {
+        conLaCredencialDeVerdad(); entroOtraPersonaAlSalir()
+        val vm = ventaAbierta()
+        val desenlace = withTimeout(10_000) { vm.enviarReembolsoASaldo("payment", cuerpo(), "llave-del-reembolso").await() }
+        assertTrue(desenlace is DesenlaceDeSaldo.Pendiente)
+        assertEquals(0, server.requestCount)
+        assertNotNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `Codex r8 1 - con la misma sesión, Confirmar estado sale con la credencial de quien tocó`() = runBlocking {
+        conLaCredencialDeVerdad()
+        every { secure.generacion } returns 1L
+        every { secure.selloYAccess() } returns (1L to "token-de-lupita")
+        store.guardar(pendiente())
+        val vm = ventaAbierta()
+        withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
+        server.enqueue(respuesta(201, ok))
+        vm.confirmarReembolsoPendiente()
+        assertEquals("Bearer token-de-lupita", server.takeRequest(5, TimeUnit.SECONDS)!!.getHeader("Authorization"))
+        withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } }
+        assertNull(store.pendiente("venue", "payment"))
     }
 
     @Test fun `Codex r7 #2 - se escribió y se perdió la respuesta, un 403 al confirmar no lo borra y el gerente lo confirma con la misma llave`() = runBlocking {

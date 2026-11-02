@@ -32,6 +32,7 @@ import com.avoqado.pos.transactions.data.model.StoreCreditAbonoTolerante
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.SelloDePeticion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -217,8 +218,8 @@ class RefundRepository @Inject constructor(
         ),
     )
 
-    /** Manda un cuerpo ya armado (el reenvío de lo pendiente usa exactamente el que se guardó). */
-    suspend fun enviarCuerpo(paymentId: String, body: String): Result<AssociatedRefundData> {
+    /** Manda un cuerpo ya armado (el reenvío de lo pendiente usa exactamente el que se guardó). Con [sello], sólo sale con esa sesión. */
+    suspend fun enviarCuerpo(paymentId: String, body: String, sello: Long? = null): Result<AssociatedRefundData> {
         val venueId = secureStorage.venueId
             ?: return Result.failure(Exception("No venue ID"))
 
@@ -226,6 +227,7 @@ class RefundRepository @Inject constructor(
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/refund")
                 .post(body.toRequestBody("application/json".toMediaType()))
+                .apply { sello?.let { tag(SelloDePeticion::class.java, SelloDePeticion(it)) } }
                 .build()
 
             val (code, responseBody, delServidor) = withContext(Dispatchers.IO) {

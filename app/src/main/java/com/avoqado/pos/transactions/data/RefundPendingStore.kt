@@ -100,8 +100,8 @@ fun mensajeDeReembolsoPendiente(status: Int?, code: String?, mensaje: String?): 
  * llave, así que un 403 no prueba que no se escribió (el gerente autorizó con PIN, se perdió la respuesta y quien reabre no tiene
  * permiso). Se conserva y se pide que lo confirme un gerente.
  */
-suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund): DesenlaceDeSaldo {
-    val resultado = repo.enviarCuerpo(pending.paymentId, pending.body)
+suspend fun enviarReembolsoPendiente(repo: RefundRepository, store: RefundPendingStore, pending: PendingRefund, sello: Long? = null): DesenlaceDeSaldo {
+    val resultado = repo.enviarCuerpo(pending.paymentId, pending.body, sello)
     resultado.getOrNull()?.let { borrarALoMejor(store, pending); return DesenlaceDeSaldo.Hecho(it) }
     val e = resultado.exceptionOrNull()
     if (e is CancellationException) throw e
@@ -130,7 +130,7 @@ private suspend fun borrarALoMejor(store: RefundPendingStore, pending: PendingRe
 
 /** El envío: guarda ANTES de tocar la red y manda. Si no se pudo guardar, no se manda nada. */
 class SaldoAFavorEnvio(private val repo: RefundRepository, private val store: RefundPendingStore) {
-    suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String, staffName: String? = null): DesenlaceDeSaldo {
+    suspend fun enviar(venue: String, paymentId: String, body: String, idempotencyKey: String, staffName: String? = null, sello: Long? = null): DesenlaceDeSaldo {
         val pending = PendingRefund(venue, paymentId, body, idempotencyKey, staffName?.takeIf { it.isNotBlank() })
         try {
             store.guardar(pending)
@@ -141,6 +141,6 @@ class SaldoAFavorEnvio(private val repo: RefundRepository, private val store: Re
         } catch (_: Exception) {
             return DesenlaceDeSaldo.GuardadoFallido
         }
-        return enviarReembolsoPendiente(repo, store, pending)
+        return enviarReembolsoPendiente(repo, store, pending, sello)
     }
 }

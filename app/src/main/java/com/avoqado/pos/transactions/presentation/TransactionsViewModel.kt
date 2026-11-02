@@ -274,6 +274,7 @@ class TransactionsViewModel @Inject constructor(
 
     /** Lee lo pendiente de la venta abierta y, si [reenviar] y hay red, lo reenvía con su MISMA llave. */
     private suspend fun recuperarReembolsoPendiente(scope: DetailScope, reenviar: Boolean) {
+        val selloDelToque = secureStorage.generacion // Antes de leer el disco: el envío sale con la sesión de quien tocó, o no sale.
         val store = refundPendingStore ?: return
         val venue = scope.venueId ?: return
         val version = versionDelPendiente.incrementAndGet()
@@ -291,7 +292,7 @@ class TransactionsViewModel @Inject constructor(
         try {
             if (!connectivityMonitor.isOnline()) { _avisoDeReembolso.value = TextosCambio.SALDO_SIN_RED; return }
             _avisoDeReembolso.value = null
-            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending)
+            val desenlace = enviarReembolsoPendiente(refundRepository, store, pending, selloDelToque)
             detalleAbierto(scope.paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = true) }
         } finally { soltarEnVuelo(scope.paymentId) }
     }
@@ -303,13 +304,14 @@ class TransactionsViewModel @Inject constructor(
      */
     fun enviarReembolsoASaldo(paymentId: String, body: String, idempotencyKey: String): Deferred<DesenlaceDeSaldo> =
         viewModelScope.async {
+            val selloDelToque = secureStorage.generacion // Antes de escribir en disco: sale con la sesión de quien tocó, o no sale.
             val store = refundPendingStore ?: return@async DesenlaceDeSaldo.GuardadoFallido
             val venue = secureStorage.venueId ?: return@async DesenlaceDeSaldo.GuardadoFallido
             if (!marcarEnVuelo(paymentId)) return@async DesenlaceDeSaldo.OtroPendiente
             val desenlace = try {
                 // «Quién lo pidió» (para el aviso): el nombre de la sesión de ahora, al tocar «Reembolsar».
                 SaldoAFavorEnvio(refundRepository, store).enviar(venue, paymentId, body, idempotencyKey,
-                    listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim())
+                    listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim(), selloDelToque)
             } finally { soltarEnVuelo(paymentId) }
             detalleAbierto(paymentId)?.let { aplicarDesenlace(it, desenlace, reenvio = false) }
             desenlace
