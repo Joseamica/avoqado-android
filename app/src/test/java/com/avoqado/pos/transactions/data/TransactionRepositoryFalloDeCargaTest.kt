@@ -3,6 +3,7 @@ package com.avoqado.pos.transactions.data
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.data.network.SesionSinRenovar
+import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -25,20 +26,30 @@ import java.util.concurrent.TimeUnit
  */
 class TransactionRepositoryFalloDeCargaTest {
     private val server = MockWebServer()
+    private var usuario = "ana"
     private val storage = mockk<SecureStorage>(relaxed = true) {
         every { venueId } returns "venue"
         every { accessToken } returns "token"
+        every { userId } answers { usuario }
     }
     private val unaVenta = """{"success":true,"data":[{"id":"pago-1","amount":120.5}],"meta":{"pageCount":1}}"""
 
     /** [falla] = lo que lanza la red en lugar de contestar (null = deja pasar al servidor de prueba). */
     private var falla: Exception? = null
 
+    /** Lo que decía `isLoading` mientras la petición iba en camino. */
+    private val cargandoVisto = mutableListOf<Boolean>()
+    private var repoEnPrueba: TransactionRepository? = null
+
     private fun repo(client: OkHttpClient = clienteQueFalla()) =
         TransactionRepository(storage, client).apply { baseUrl = server.url("/api/v1").toString().trimEnd('/') }
+            .also { repoEnPrueba = it }
 
     private fun clienteQueFalla() = OkHttpClient.Builder()
-        .addInterceptor { chain -> falla?.let { throw it } ?: chain.proceed(chain.request()) }
+        .addInterceptor { chain ->
+            repoEnPrueba?.let { cargandoVisto += it.isLoading.value }
+            falla?.let { throw it } ?: chain.proceed(chain.request())
+        }
         .build()
 
     @After fun apagar() = server.shutdown()
@@ -129,5 +140,52 @@ class TransactionRepositoryFalloDeCargaTest {
         repo.clearCache()
 
         assertNull(repo.falloDeCarga.value)
+    }
+
+    // MARK: - D18 r2: la lista va ligada a su consulta (Codex r1 #1 y #3)
+
+    @Test fun `la lista guarda la consulta que la trajo - sucursal, quien y busqueda`() = runBlocking {
+        val repo = repo()
+        server.enqueue(MockResponse().setBody(unaVenta))
+        assertTrue(repo.fetchTransactions(page = 1, search = "café").isSuccess)
+
+        assertEquals(ConsultaDeVentas("venue", "ana", "café"), repo.consultaDeLaLista.value)
+        assertEquals(repo.consultaPara("café"), repo.consultaDeLaLista.value)
+    }
+
+    @Test fun `si falla, la lista y su consulta se quedan como estaban`() = runBlocking {
+        val repo = repo()
+        server.enqueue(MockResponse().setBody(unaVenta))
+        assertTrue(repo.fetchTransactions(page = 1, search = null).isSuccess)
+
+        falla = UnknownHostException("sin red de prueba")
+        assertTrue(repo.fetchTransactions(page = 1, search = "otra").isFailure)
+
+        assertEquals(ConsultaDeVentas("venue", "ana", ""), repo.consultaDeLaLista.value)
+    }
+
+    @Test fun `una pagina siguiente de otra consulta no se pega a la lista`() = runBlocking {
+        val repo = repo()
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":[{"id":"pago-1"}],"meta":{"pageCount":3}}"""))
+        assertTrue(repo.fetchTransactions(page = 1, search = "café").isSuccess)
+
+        usuario = "beto" // entró otra persona por PIN
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":[{"id":"de-beto"}],"meta":{"pageCount":3}}"""))
+        repo.fetchTransactions(page = 2, search = "café")
+
+        assertEquals(listOf("pago-1"), repo.transactions.value.map { it.id })
+    }
+
+    @Test fun `la primera pagina siempre dice que va en camino, aunque ya haya lista`() = runBlocking {
+        val repo = repo()
+        server.enqueue(MockResponse().setBody(unaVenta))
+        assertTrue(repo.fetchTransactions().isSuccess)
+        cargandoVisto.clear()
+
+        server.enqueue(MockResponse().setBody(unaVenta))
+        assertTrue(repo.fetchTransactions(page = 1, search = "otra").isSuccess)
+
+        assertEquals(listOf(true), cargandoVisto)
+        assertEquals(false, repo.isLoading.value)
     }
 }

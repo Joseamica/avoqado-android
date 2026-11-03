@@ -4,7 +4,13 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.avoqado.pos.core.data.network.FalloDeLectura
+import com.avoqado.pos.core.data.sync.VueltaDeLaRed
+import com.avoqado.pos.core.domain.refresh.RefreshOutcome
+import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
@@ -104,14 +110,19 @@ class TransactionsViewModel @Inject constructor(
     private val exchangePendingStore: ExchangePendingStore,
     /** Reembolso a saldo a favor sin confirmar (A3). `null` sólo en pruebas que no lo usan: no se reenvía nada. */
     private val refundPendingStore: RefundPendingStore? = null,
+    /** D18: la vuelta REAL de la red, con la cola sin red ya arriba. `null` sólo en pruebas que no la usan. */
+    private val vueltaDeLaRed: VueltaDeLaRed? = null,
 ) : ViewModel() {
 
     val transactions = repository.transactions
     val isLoading = repository.isLoading
     val isLoadingMore = repository.isLoadingMore
 
-    /** D18: por qué falló la última carga (`null` si salió bien). Con la lista vacía, la pantalla lo dice. */
+    /** D18: por qué falló la última carga (`null` si salió bien). Sin lista de la consulta vigente, la pantalla lo dice. */
     val falloDeCarga = repository.falloDeCarga
+
+    /** D18 (Codex r1 #1 y #3): de qué consulta es la lista guardada. */
+    val consultaDeLaLista = repository.consultaDeLaLista
 
     private val _pendingExchangeNotices = MutableStateFlow<List<PendingExchangeNotice>>(emptyList())
     val pendingExchangeNotices = _pendingExchangeNotices.asStateFlow()
@@ -146,6 +157,21 @@ class TransactionsViewModel @Inject constructor(
     // Search
     private val _searchText = MutableStateFlow("")
     val searchText: StateFlow<String> = _searchText.asStateFlow()
+
+    private val _consultaVigente = MutableStateFlow(repository.consultaPara(null))
+
+    /**
+     * D18 (Codex r1 #1 y #3): la consulta de esta pantalla —sucursal, quién y búsqueda—. La lista sólo se enseña si es de
+     * ESTA consulta: cambia al pedir la primera página y en cuanto sale una búsqueda, aunque el gate no la pida.
+     */
+    val consultaVigente: StateFlow<ConsultaDeVentas> = _consultaVigente.asStateFlow()
+
+    /** La consulta de la última primera página que salió (para saber si la que se unió en vuelo era otra búsqueda). */
+    private var ultimaPedida: ConsultaDeVentas? = null
+
+    /** La lista guardada, sólo si es de la consulta vigente (D18). */
+    private fun listaVigente(): List<Transaction> =
+        if (repository.consultaDeLaLista.value == _consultaVigente.value) transactions.value else emptyList()
 
     // Filters
     private val _filters = MutableStateFlow(TransactionFilters())
@@ -587,8 +613,13 @@ class TransactionsViewModel @Inject constructor(
             _customerPickerVisible.value || _customerCandidate.value != null || _isAssigningCustomer.value
 
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
-    suspend fun refreshNow(): Result<Unit> =
-        repository.fetchTransactions(page = 1, search = _searchText.value.ifBlank { null })
+    suspend fun refreshNow(): Result<Unit> {
+        val busqueda = _searchText.value.ifBlank { null }
+        val consulta = repository.consultaPara(busqueda)
+        _consultaVigente.value = consulta
+        ultimaPedida = consulta
+        return repository.fetchTransactions(page = 1, search = busqueda)
+    }
 
     fun autoRefresh() {
         viewModelScope.launch {
@@ -608,20 +639,31 @@ class TransactionsViewModel @Inject constructor(
     }
 
     /**
-     * D18: mientras la lista está a la vista (la llama la pantalla). Al volver la red —de «sin red o sin servidor» a
-     * «con los dos», y tras dejar que la ruta suba, como la cola de cobros—, si la lista se quedó vacía porque no hubo
-     * red, se recarga sola por el mismo camino del gesto. Con ventas en la mano no hace nada: la lista se queda.
+     * D18: al volver la red DE VERDAD —sin red → con red, con el servidor contestando y la cola sin red ya arriba ([VueltaDeLaRed])—,
+     * si la lista se quedó en «Sin conexión», se recarga sola por el gate, con su enfriamiento (Codex r1 #2 y #4). Con
+     * ventas de la consulta en la mano no hace nada: la lista se queda.
      */
     suspend fun vigilarLaRed() {
-        com.avoqado.pos.payment.data.PaymentSyncService.alReconectar(
-            combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { red, servidor -> red && servidor },
-        ) { recargarSiSeQuedoSinRed() }
+        val vuelta = vueltaDeLaRed ?: return
+        vuelta.alVolver { recargarSiSeQuedoSinRed() }
+    }
+
+    /** Sólo mientras la lista se ve (RESUMED): en segundo plano o con otra pantalla encima no vigila (Codex r1 #4). */
+    internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { vigilarLaRed() }
     }
 
     private suspend fun recargarSiSeQuedoSinRed() {
-        if (repository.transactions.value.isNotEmpty() || repository.falloDeCarga.value != FalloDeLectura.SIN_RED) return
-        // manual = true: lo pide la vuelta de la red, no el reloj; el enfriamiento por fallos no la detiene.
-        gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+        val lista = listaVigente()
+        val estado = estadoDeLaListaDeVentas(
+            deLaConsulta = repository.consultaDeLaLista.value == _consultaVigente.value,
+            cargadas = lista.size,
+            visibles = lista.size,
+            cargando = repository.isLoading.value,
+            fallo = repository.falloDeCarga.value,
+        )
+        if (estado != EstadoDeLaListaDeVentas.NoSeCargo(FalloDeLectura.SIN_RED)) return
+        gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
     }
 
     /** Mutación local (devolución, etc.) = identidad nueva: invalida el TTL y re-pide (spec §4.4).
@@ -645,8 +687,14 @@ class TransactionsViewModel @Inject constructor(
                 .debounce(400)
                 .distinctUntilChanged()
                 .collect {
+                    // D18 (Codex r1 #3): la búsqueda nueva es la consulta YA. Si no se puede pedir (sin red), no se queda
+                    // a la vista lo de la búsqueda anterior bajo el texto nuevo.
+                    _consultaVigente.value = repository.consultaPara(it.ifBlank { null })
                     gate.invalidate()
-                    gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+                    do {
+                        val salida = gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+                        // Si iba en camino otra búsqueda, el gate se unió a ella: al terminar, se pide la vigente.
+                    } while (salida == RefreshOutcome.Joined && ultimaPedida != _consultaVigente.value)
                 }
         }
     }
@@ -656,7 +704,7 @@ class TransactionsViewModel @Inject constructor(
     }
 
     fun loadMoreIfNeeded(currentItem: Transaction) {
-        val list = transactions.value
+        val list = listaVigente()
         if (list.isEmpty()) return
         if (currentItem.id != list.last().id) return
         if (!repository.canLoadMore()) return
@@ -674,7 +722,7 @@ class TransactionsViewModel @Inject constructor(
     /** Apply client-side filters to the loaded list */
     val filteredTransactions: List<Transaction>
         get() {
-            val list = transactions.value
+            val list = listaVigente()
             return if (_filters.value.hasActiveFilters) {
                 _filters.value.apply(list)
             } else {
@@ -705,7 +753,7 @@ class TransactionsViewModel @Inject constructor(
     // MARK: - Dynamic filter options (built from loaded data)
 
     fun methodOptions(): List<Pair<String, String>> {
-        val methods = transactions.value.mapNotNull { it.method }.toSet()
+        val methods = listaVigente().mapNotNull { it.method }.toSet()
         return methods.sorted().map { m ->
             when (m) {
                 "CASH" -> m to "Efectivo"
@@ -720,7 +768,7 @@ class TransactionsViewModel @Inject constructor(
     }
 
     fun staffOptions(): List<Pair<String, String>> {
-        val names = transactions.value
+        val names = listaVigente()
             .mapNotNull { it.staffName }
             .filter { it.isNotEmpty() }
             .toSet()

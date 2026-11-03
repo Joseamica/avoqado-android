@@ -93,6 +93,17 @@ class EstadoDelInformeTest {
     }
 
     @Test
+    fun `con el selector de fechas abierto no se ensena ningun informe - ni el del periodo anterior`() {
+        // Codex r1 #5: «Personalizado» elegido, fechas nuevas arriba y el resumen del mes anterior debajo.
+        for (informe in listOf(informeDeHoy, null)) {
+            assertEquals(
+                EstadoDelInforme.EligiendoFechas,
+                estadoDelInforme(hoy, informe, cargando = false, fallo = null, eligiendoFechas = true),
+            )
+        }
+    }
+
+    @Test
     fun `los textos son los del encargo`() {
         assertEquals(
             TextosDeLecturaFallida(

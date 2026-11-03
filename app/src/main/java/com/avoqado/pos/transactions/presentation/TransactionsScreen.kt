@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import com.avoqado.pos.designsystem.components.SearchPillField
@@ -272,6 +273,8 @@ private fun TransactionListPanel(
     val selectedTransactionId by viewModel.selectedTransactionId.collectAsState()
     val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
     val falloDeCarga by viewModel.falloDeCarga.collectAsState()
+    val consultaDeLaLista by viewModel.consultaDeLaLista.collectAsState()
+    val consultaVigente by viewModel.consultaVigente.collectAsState()
 
     // Disparadores del spec §4.8: entrada + regreso de background/re-selección de tab.
     // La doble llamada la absorbe el single-flight del gate, no el TTL.
@@ -280,11 +283,15 @@ private fun TransactionListPanel(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
-    // D18: mientras la lista está a la vista, al volver la red se recarga sola si se quedó en «Sin conexión».
-    LaunchedEffect(viewModel) { viewModel.vigilarLaRed() }
+    // D18: sólo mientras la lista se ve (RESUMED), al volver la red se recarga sola si se quedó en «Sin conexión».
+    val owner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, owner) { viewModel.vigilarLaRedMientrasSeVe(owner) }
 
-    val filteredTransactions = remember(transactions, filters) {
-        if (filters.hasActiveFilters) filters.apply(transactions) else transactions
+    // D18 (Codex r1 #1 y #3): la lista guardada sólo cuenta si es de la consulta vigente (sucursal, quién y búsqueda).
+    val deLaConsulta = consultaDeLaLista == consultaVigente
+    val listaDeLaConsulta = if (deLaConsulta) transactions else emptyList()
+    val filteredTransactions = remember(listaDeLaConsulta, filters) {
+        if (filters.hasActiveFilters) filters.apply(listaDeLaConsulta) else listaDeLaConsulta
     }
     val grouped = remember(filteredTransactions) {
         filteredTransactions.groupBy { it.dateGroup }.toList()
@@ -422,7 +429,7 @@ private fun TransactionListPanel(
             onRefresh = viewModel::manualRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            when (val estado = estadoDeLaListaDeVentas(transactions.size, filteredTransactions.size, isLoading, falloDeCarga)) {
+            when (val estado = estadoDeLaListaDeVentas(deLaConsulta, listaDeLaConsulta.size, filteredTransactions.size, isLoading, falloDeCarga)) {
                 EstadoDeLaListaDeVentas.Cargando -> {
                     AvoqadoLoadingState(message = "Cargando transacciones...")
                 }

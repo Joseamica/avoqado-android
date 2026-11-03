@@ -6,7 +6,10 @@ import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshOutcome
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
-import com.avoqado.pos.core.util.ConnectivityMonitor
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.core.data.sync.VueltaDeLaRed
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.ReportPeriod
@@ -14,7 +17,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -28,8 +30,8 @@ class ReportsViewModel @Inject constructor(
     private val repository: ReportsRepository,
     private val planManager: PlanManager,
     refreshGateFactory: RefreshGateFactory,
-    /** D18: para recargar sola al volver la red. `null` sólo en pruebas que no la usan. */
-    private val connectivityMonitor: ConnectivityMonitor? = null,
+    /** D18: la vuelta REAL de la red, con la cola sin red ya arriba. `null` sólo en pruebas que no la usan. */
+    private val vueltaDeLaRed: VueltaDeLaRed? = null,
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
@@ -77,6 +79,14 @@ class ReportsViewModel @Inject constructor(
     private val _showCustomDatePicker = MutableStateFlow(false)
     val showCustomDatePicker: StateFlow<Boolean> = _showCustomDatePicker.asStateFlow()
 
+    /**
+     * D18 (Codex r1 #5): el periodo cuyo informe se pide y se enseña. Es el de la pestaña marcada, salvo con el selector
+     * de fechas abierto: ahí la pestaña es «Personalizado» y esto sigue siendo el de antes hasta «Aplicar» (o vuelve a él
+     * con «Cancelar»). Las fechas del selector tampoco cuentan hasta «Aplicar».
+     */
+    private var periodoAplicado = ReportPeriod.TODAY
+    private var fechasAplicadas = _customStartDate.value to _customEndDate.value
+
     // MARK: - Detail Expansion
 
     private val _showDetailedSummary = MutableStateFlow(false)
@@ -109,9 +119,11 @@ class ReportsViewModel @Inject constructor(
         }
         _selectedPeriod.value = period
         if (period == ReportPeriod.CUSTOM) {
+            // Se eligen fechas: el informe que se ve debajo no es de ellas (lo esconde la pantalla) y nada se pide aún.
             _showCustomDatePicker.value = true
         } else {
             _showCustomDatePicker.value = false
+            periodoAplicado = period
             // D18: el periodo nuevo se elige YA, aunque el gate no vuelva a pedir: el informe de otro periodo no se
             // queda a la vista bajo esta pestaña.
             _consultaElegida.value = consultaYFin().first
@@ -130,9 +142,23 @@ class ReportsViewModel @Inject constructor(
 
     fun applyCustomDates() {
         _showCustomDatePicker.value = false
+        _selectedPeriod.value = ReportPeriod.CUSTOM
+        periodoAplicado = ReportPeriod.CUSTOM
+        fechasAplicadas = _customStartDate.value to _customEndDate.value
         _consultaElegida.value = consultaYFin().first
         // Otras fechas = otra identidad (spec §4.4).
         invalidateAndRefresh()
+    }
+
+    /**
+     * D18 (Codex r1 #5): cerrar el selector sin aplicar vuelve al periodo que tenía, con su informe (nada se pidió con las
+     * fechas sin aplicar), y las fechas del selector vuelven a las aplicadas.
+     */
+    fun cancelCustomDates() {
+        _showCustomDatePicker.value = false
+        _selectedPeriod.value = periodoAplicado
+        _customStartDate.value = fechasAplicadas.first
+        _customEndDate.value = fechasAplicadas.second
     }
 
     fun toggleDetailedSummary() {
@@ -148,22 +174,27 @@ class ReportsViewModel @Inject constructor(
     }
 
     /**
-     * D18: mientras Informes está a la vista (la llama la pantalla). Al volver la red —de «sin red o sin servidor» a
-     * «con los dos», y tras dejar que la ruta suba, como la cola de cobros—, si la pantalla se quedó en «Sin conexión»,
-     * se recarga sola por el mismo camino del gesto.
+     * D18: al volver la red DE VERDAD —sin red → con red, con el servidor contestando y la cola sin red ya arriba
+     * ([VueltaDeLaRed])—, si Informes se quedó en «Sin conexión», se recarga solo por el gate, con su enfriamiento
+     * (Codex r1 #2 y #4).
      */
     suspend fun vigilarLaRed() {
-        val monitor = connectivityMonitor ?: return
-        com.avoqado.pos.payment.data.PaymentSyncService.alReconectar(
-            combine(monitor.isConnected, monitor.isServerReachable) { red, servidor -> red && servidor },
-        ) { recargarSiSeQuedoSinRed() }
+        val vuelta = vueltaDeLaRed ?: return
+        vuelta.alVolver { recargarSiSeQuedoSinRed() }
+    }
+
+    /** Sólo mientras Informes se ve (RESUMED): en segundo plano no vigila (Codex r1 #4). */
+    internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { vigilarLaRed() }
     }
 
     private suspend fun recargarSiSeQuedoSinRed() {
-        val estado = estadoDelInforme(_consultaElegida.value, informe.value, isLoading.value, ultimoFallo.value)
+        val estado = estadoDelInforme(
+            _consultaElegida.value, informe.value, isLoading.value, ultimoFallo.value,
+            eligiendoFechas = _showCustomDatePicker.value,
+        )
         if (estado != EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED)) return
-        // manual = true: lo pide la vuelta de la red, no el reloj; el enfriamiento por fallos no la detiene.
-        gate.run(workInProgress = { false }, manual = true, block = ::refreshNow)
+        gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
     }
 
     // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
@@ -203,8 +234,8 @@ class ReportsViewModel @Inject constructor(
      * en la consulta: la hora de cada recarga no hace otro informe); el personalizado lleva sus dos fechas.
      */
     private fun consultaYFin(): Pair<ConsultaDeInforme, String> {
-        val periodo = _selectedPeriod.value
-        val (inicio, fin) = getDateRange()
+        val periodo = periodoAplicado
+        val (inicio, fin) = getDateRange(periodo)
         val consulta = ConsultaDeInforme(
             sucursal = repository.sucursalActiva().orEmpty(),
             inicio = inicio,
@@ -214,12 +245,11 @@ class ReportsViewModel @Inject constructor(
         return consulta to fin
     }
 
-    private fun getDateRange(): Pair<String, String> {
-        val period = _selectedPeriod.value
+    private fun getDateRange(period: ReportPeriod): Pair<String, String> {
         if (period == ReportPeriod.CUSTOM) {
             return Pair(
-                formatISODate(_customStartDate.value),
-                formatISODate(_customEndDate.value),
+                formatISODate(fechasAplicadas.first),
+                formatISODate(fechasAplicadas.second),
             )
         }
 

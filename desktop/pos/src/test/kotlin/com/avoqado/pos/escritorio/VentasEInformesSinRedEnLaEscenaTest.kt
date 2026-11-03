@@ -77,6 +77,7 @@ class VentasEInformesSinRedEnLaEscenaTest {
                     onStartDateChanged = {},
                     onEndDateChanged = {},
                     onApplyCustomDates = {},
+                    onCancelCustomDates = {},
                     showDetailedSummary = false,
                     onToggleDetailedSummary = {},
                     onReintentar = onReintentar,

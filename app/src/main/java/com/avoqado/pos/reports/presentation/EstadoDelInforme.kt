@@ -20,6 +20,12 @@ internal sealed interface EstadoDelInforme {
 
     /** No hay informe del periodo elegido porque la lectura falló. */
     data class NoSeCargo(val fallo: FalloDeLectura) : EstadoDelInforme
+
+    /**
+     * Con el selector de «Personalizado» abierto: ningún informe es de las fechas que se están eligiendo, así que debajo
+     * no se enseña ninguno (Codex r1 #5). «Aplicar» lo pide; «Cancelar» vuelve al periodo de antes con su informe.
+     */
+    data object EligiendoFechas : EstadoDelInforme
 }
 
 /**
@@ -28,14 +34,17 @@ internal sealed interface EstadoDelInforme {
  *
  * Un informe sólo se enseña bajo SU consulta: con red o sin ella, el de «Hoy» nunca se ve bajo «1M» (ni el de otra
  * sucursal). Bajo su consulta se ve aunque la recarga vaya en camino o haya fallado: la recarga es silenciosa.
- * Sin informe del periodo y sin fallo, la consulta va en camino (el gate la pide al elegir el periodo).
+ * Sin informe del periodo y sin fallo, la consulta va en camino (el gate la pide al elegir el periodo). Con el selector de
+ * fechas abierto ([eligiendoFechas]) no se enseña ninguno.
  */
 internal fun estadoDelInforme(
     elegida: ConsultaDeInforme,
     informe: InformeConsultado?,
     cargando: Boolean,
     fallo: FalloDeLectura?,
+    eligiendoFechas: Boolean = false,
 ): EstadoDelInforme = when {
+    eligiendoFechas -> EstadoDelInforme.EligiendoFechas
     informe != null && informe.consulta == elegida -> EstadoDelInforme.Listo(informe.datos)
     cargando -> EstadoDelInforme.Cargando
     fallo != null -> EstadoDelInforme.NoSeCargo(fallo)

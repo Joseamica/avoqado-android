@@ -52,6 +52,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import androidx.compose.ui.Alignment
@@ -119,8 +120,9 @@ fun ReportsScreen(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
-    // D18: mientras Informes está a la vista, al volver la red se recarga solo si se quedó en «Sin conexión».
-    LaunchedEffect(viewModel) { viewModel.vigilarLaRed() }
+    // D18: sólo mientras Informes se ve (RESUMED), al volver la red se recarga solo si se quedó en «Sin conexión».
+    val owner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, owner) { viewModel.vigilarLaRedMientrasSeVe(owner) }
 
     val informe by viewModel.informe.collectAsState()
     val consultaElegida by viewModel.consultaElegida.collectAsState()
@@ -144,7 +146,7 @@ fun ReportsScreen(
             modifier = Modifier.fillMaxSize(),
         ) {
             CuerpoDeInformes(
-                estado = estadoDelInforme(consultaElegida, informe, isLoading, ultimoFallo),
+                estado = estadoDelInforme(consultaElegida, informe, isLoading, ultimoFallo, eligiendoFechas = showCustomDatePicker),
                 selectedPeriod = selectedPeriod,
                 onPeriodSelected = viewModel::selectPeriod,
                 historyLocked = !viewModel.hasAdvancedReports,
@@ -155,6 +157,7 @@ fun ReportsScreen(
                 onStartDateChanged = viewModel::setCustomStartDate,
                 onEndDateChanged = viewModel::setCustomEndDate,
                 onApplyCustomDates = viewModel::applyCustomDates,
+                onCancelCustomDates = viewModel::cancelCustomDates,
                 showDetailedSummary = showDetailedSummary,
                 onToggleDetailedSummary = viewModel::toggleDetailedSummary,
                 onReintentar = viewModel::manualRefresh,
@@ -180,6 +183,7 @@ internal fun CuerpoDeInformes(
     onStartDateChanged: (Long) -> Unit,
     onEndDateChanged: (Long) -> Unit,
     onApplyCustomDates: () -> Unit,
+    onCancelCustomDates: () -> Unit,
     showDetailedSummary: Boolean,
     onToggleDetailedSummary: () -> Unit,
     onReintentar: () -> Unit,
@@ -210,11 +214,15 @@ internal fun CuerpoDeInformes(
                     onStartDateChanged = onStartDateChanged,
                     onEndDateChanged = onEndDateChanged,
                     onApply = onApplyCustomDates,
+                    onCancel = onCancelCustomDates,
                 )
             }
         }
 
         when (estado) {
+            // El selector de arriba es todo: el informe de otro periodo no se enseña bajo fechas nuevas (D18, Codex r1 #5).
+            EstadoDelInforme.EligiendoFechas -> Unit
+
             EstadoDelInforme.Cargando -> item {
                 AvoqadoLoadingState(
                     message = "Cargando informes...",
@@ -458,6 +466,7 @@ private fun CustomDatePickerSection(
     onStartDateChanged: (Long) -> Unit,
     onEndDateChanged: (Long) -> Unit,
     onApply: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     val spacing = AvoqadoTheme.spacing
     val cornerRadius = AvoqadoTheme.cornerRadius
@@ -577,11 +586,20 @@ private fun CustomDatePickerSection(
                 }
             }
 
-            Button(
-                onClick = onApply,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(spacing.sm),
             ) {
-                Text(text = "Aplicar")
+                // D18: cerrar sin aplicar vuelve al periodo de antes con su informe.
+                TextButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
+                    Text(text = "Cancelar")
+                }
+                Button(
+                    onClick = onApply,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(text = "Aplicar")
+                }
             }
         }
     }

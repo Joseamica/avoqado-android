@@ -19,23 +19,26 @@ internal sealed interface EstadoDeLaListaDeVentas {
 }
 
 /**
- * PURA. [cargadas] = las ventas que trajo el servidor; [visibles] = las que quedan tras los filtros; [fallo] = por qué
- * falló la última carga (`null` si salió bien).
+ * PURA. [deLaConsulta] = la lista guardada es de la consulta vigente (sucursal, quién y búsqueda); [cargadas] = las ventas
+ * de esa lista; [visibles] = las que quedan tras los filtros; [fallo] = por qué falló la última carga (`null` si salió bien).
  *
- * Con ventas en la mano, un fallo NO cambia nada: la lista se queda (la banda «Sin conexión» de arriba ya lo dice). Sin
- * ninguna, el fallo manda aunque haya filtros o búsqueda: no se pudo buscar, así que «Sin transacciones» o «No se
- * encontraron resultados» serían mentira.
+ * Con ventas de ESTA consulta en la mano, un fallo NO cambia nada: la lista se queda (la banda «Sin conexión» de arriba ya
+ * lo dice). Una lista de OTRA consulta no se enseña nunca (otra sucursal, otra persona, otra búsqueda: Codex r1 #1 y #3):
+ * sin la de esta consulta, el fallo manda, aunque haya filtros o búsqueda —no se pudo buscar, así que «Sin transacciones»
+ * o «No se encontraron resultados» serían mentira—. Sin fallo, la consulta va en camino: el esqueleto.
  */
 internal fun estadoDeLaListaDeVentas(
+    deLaConsulta: Boolean,
     cargadas: Int,
     visibles: Int,
     cargando: Boolean,
     fallo: FalloDeLectura?,
 ): EstadoDeLaListaDeVentas = when {
-    cargadas == 0 && cargando -> EstadoDeLaListaDeVentas.Cargando
-    cargadas == 0 && fallo != null -> EstadoDeLaListaDeVentas.NoSeCargo(fallo)
-    visibles == 0 -> EstadoDeLaListaDeVentas.Vacia
-    else -> EstadoDeLaListaDeVentas.Lista
+    deLaConsulta && cargadas > 0 -> if (visibles == 0) EstadoDeLaListaDeVentas.Vacia else EstadoDeLaListaDeVentas.Lista
+    cargando -> EstadoDeLaListaDeVentas.Cargando
+    fallo != null -> EstadoDeLaListaDeVentas.NoSeCargo(fallo)
+    deLaConsulta -> EstadoDeLaListaDeVentas.Vacia
+    else -> EstadoDeLaListaDeVentas.Cargando
 }
 
 /** Título y texto de la lista cuando [EstadoDeLaListaDeVentas.NoSeCargo]. */
