@@ -62,7 +62,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -70,9 +69,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.avoqado.pos.core.domain.ActionVisibility
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.pos.presentation.product.MiniaturaConIniciales
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionRefund
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -803,18 +802,15 @@ private fun ItemsSection(transaction: Transaction) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // Product image
-                item.productImageUrl?.let { url ->
-                    AsyncImage(
-                        model = url,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                    )
-                }
+                // D16 (3-nov): la miniatura en todo renglón, como Square. Sin foto, o si no carga (sin red), salen las
+                // iniciales de lo que dice el renglón; antes sólo se dibujaba con foto y los renglones quedaban chuecos.
+                MiniaturaConIniciales(
+                    url = item.productImageUrl,
+                    nombre = item.productName,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(6.dp)),
+                )
 
                 // Name + modifiers
                 Column(

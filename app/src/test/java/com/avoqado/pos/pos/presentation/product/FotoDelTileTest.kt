@@ -2,6 +2,7 @@ package com.avoqado.pos.pos.presentation.product
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -61,5 +62,26 @@ class FotoDelTileTest {
     fun `un emoji no se parte en dos`() {
         assertEquals("🍔H", inicialesDeTile("🍔 Hamburguesa"))
         assertEquals("🍔", inicialesDeTile("🍔"))
+    }
+
+    // MARK: - La letra de las iniciales en una miniatura (D16, 3-nov)
+
+    @Test
+    fun `la letra de las iniciales crece con la miniatura`() {
+        assertEquals(13.2f, letraDeIniciales(anchoDp = 44f, altoDp = 44f) ?: -1f, 0.001f)
+        assertEquals(31.2f, letraDeIniciales(anchoDp = 104f, altoDp = 104f) ?: -1f, 0.001f)
+    }
+
+    @Test
+    fun `en una miniatura que no es cuadrada manda el lado menor`() {
+        assertEquals(12f, letraDeIniciales(anchoDp = 64f, altoDp = 40f) ?: -1f, 0.001f)
+        assertEquals(16.8f, letraDeIniciales(anchoDp = Float.POSITIVE_INFINITY, altoDp = 56f) ?: -1f, 0.001f)
+    }
+
+    @Test
+    fun `sin tamano la miniatura no inventa una letra`() {
+        assertNull(letraDeIniciales(anchoDp = Float.POSITIVE_INFINITY, altoDp = Float.POSITIVE_INFINITY))
+        assertNull(letraDeIniciales(anchoDp = 0f, altoDp = 44f))
+        assertNull(letraDeIniciales(anchoDp = Float.NaN, altoDp = 44f))
     }
 }

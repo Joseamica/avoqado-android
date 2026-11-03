@@ -1,10 +1,14 @@
 package com.avoqado.pos.pos.presentation.product
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -14,6 +18,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -52,10 +59,23 @@ internal fun inicialesDeTile(nombre: String): String {
 private fun primeros(texto: String, n: Int): String =
     texto.substring(0, texto.offsetByCodePoints(0, minOf(n, texto.codePointCount(0, texto.length))))
 
+/** De qué tamaño son las iniciales de una miniatura: 3/10 de su lado menor («AM» queda holgado en cualquier tamaño). */
+private const val LETRA_POR_LADO = 0.3f
+
+/**
+ * La letra de las iniciales de una [MiniaturaConIniciales], en dp: 3/10 de su lado menor, para que quepan igual en 44 dp (el
+ * detalle de una venta) que en 104 dp (la pantalla del cliente). Sin un tamaño de verdad (infinito, cero o NaN: quien la usa
+ * no le dio uno), `null` y se usa la letra de siempre.
+ */
+internal fun letraDeIniciales(anchoDp: Float, altoDp: Float): Float? {
+    val lado = minOf(anchoDp, altoDp)
+    return if (lado.isFinite() && lado > 0f) lado * LETRA_POR_LADO else null
+}
+
 /**
  * El recuadro de la foto de una tarjeta: la foto cuando llega; sin foto, mientras carga o si falla, [respaldo] (el color y las
  * iniciales). Con [colorDelIndicador], además un indicador mientras carga (las tarjetas; la miniatura del carrito de iOS no lo
- * lleva). Lo comparten la tarjeta del producto, la de una familia y la miniatura del carrito.
+ * lleva). Lo comparten la tarjeta del producto, la de una familia, la miniatura del carrito y [MiniaturaConIniciales].
  */
 @Composable
 internal fun FotoConRespaldo(
@@ -86,6 +106,47 @@ internal fun FotoConRespaldo(
                 contentScale = ContentScale.Crop,
                 onSuccess = { estado = EstadoDeFoto.LISTA },
                 onError = { estado = EstadoDeFoto.FALLO },
+            )
+        }
+    }
+}
+
+/**
+ * D16 (3-nov-2026), el founder: «si no tiene fotos, que salgan las iniciales, como Square». La miniatura de un artículo fuera
+ * de la cuadrícula (el detalle de una venta, las promociones, las sugerencias en la caja y en la pantalla del cliente, el
+ * detalle de inventario): sin foto, mientras carga y si falla, sus iniciales sobre un fondo neutro; sólo la foto lista las tapa.
+ * Sin red es justo lo que se ve: la foto que no está guardada falla y quedan las iniciales. Sin indicador de carga, como la
+ * miniatura del carrito. El tamaño y el recorte los pone quien la usa en [modifier]; la letra se ajusta a ese tamaño. Es
+ * decorativa: el nombre ya está escrito junto a ella. iOS tiene la misma pieza con el mismo nombre.
+ */
+@Composable
+internal fun MiniaturaConIniciales(url: String?, nombre: String, modifier: Modifier = Modifier) {
+    FotoConRespaldo(
+        url = url?.takeIf { it.isNotBlank() },
+        contentDescription = null,
+        colorDelIndicador = null,
+        modifier = modifier,
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
+        ) {
+            val letraEnDp = letraDeIniciales(maxWidth.value, maxHeight.value)
+            val estilo = MaterialTheme.typography.labelLarge
+            Text(
+                text = inicialesDeTile(nombre),
+                // La letra sigue al recuadro y no al tamaño de letra del aparato: tiene que caber en él.
+                style = if (letraEnDp == null) {
+                    estilo
+                } else {
+                    estilo.copy(fontSize = with(LocalDensity.current) { letraEnDp.dp.toSp() }, lineHeight = TextUnit.Unspecified)
+                },
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
