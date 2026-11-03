@@ -238,6 +238,8 @@ class KDSRepository @Inject constructor(
                     "DINE_IN" -> "En tienda"
                     "TAKEOUT" -> "Para llevar"
                     "DELIVERY" -> "Delivery"
+                    // Pedido de la tienda web (1c): el cliente lo recoge, no es de una app de delivery.
+                    "PICKUP" -> "Para recoger"
                     else -> orderType
                 }
             }

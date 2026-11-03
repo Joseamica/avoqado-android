@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Print
@@ -221,6 +222,31 @@ fun PrinterSettingsSheet(
                 onAbrir = { configPrinter = it },
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            // D2 (founder, 28-oct): sin cocina el cobro ya no avisa «No salió la comanda» en cada venta (una tienda no
+            // tiene cocina). Aquí se dice una vez, para el restaurante que nunca configuró la suya.
+            if (sinImpresoraDeCocina(savedPrinters, printConfig)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.xl))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .padding(AvoqadoTheme.spacing.lg),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                    Column {
+                        Text(text = "Comandas de cocina: sin impresora", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Al cobrar no se manda comanda a cocina. Si tu negocio prepara pedidos, agrega una impresora de cocina abajo o configúrala en el panel.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            }
 
             val otras = otrasDeEstaCaja(savedPrinters)
             if (otras.isNotEmpty()) {

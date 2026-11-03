@@ -33,6 +33,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -64,6 +65,9 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.reservations.data.model.ClassSession
+import com.avoqado.pos.reservations.data.model.ClassSessionAttendee
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowOverlays
 import kotlinx.coroutines.launch
 import java.time.ZonedDateTime
 import java.time.ZoneId
@@ -81,6 +85,8 @@ fun ClassSessionDetailScreen(
 ) {
     val session by viewModel.session.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
+    val undoUi by viewModel.undo.ui.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var success by remember { mutableStateOf<String?>(null) }
@@ -138,7 +144,15 @@ fun ClassSessionDetailScreen(
                 if (selectedTab == 0) {
                     DetailsTab(s, viewModel.zone, onCancel = { showCancelConfirm = true })
                 } else {
-                    AttendeesTab(s, onAdd = { showAdd = true }, onRemove = viewModel::removeAttendee)
+                    AttendeesTab(
+                        s,
+                        onAdd = { showAdd = true },
+                        onRemove = viewModel::removeAttendee,
+                        canUndo = viewModel::canUndo,
+                        onUndo = viewModel::undoNoShow,
+                        online = isOnline,
+                        undoBusyId = undoUi.busyId,
+                    )
                 }
             }
         }
@@ -178,6 +192,7 @@ fun ClassSessionDetailScreen(
     success?.let { label ->
         AvoqadoSuccessToast(message = label, onDismiss = { success = null })
     }
+    UndoNoShowOverlays(viewModel.undo)
 }
 
 @Composable
@@ -206,6 +221,10 @@ private fun AttendeesTab(
     session: ClassSession,
     onAdd: () -> Unit,
     onRemove: (String) -> Unit,
+    canUndo: (ClassSessionAttendee) -> Boolean,
+    onUndo: (ClassSessionAttendee) -> Unit,
+    online: Boolean,
+    undoBusyId: String?,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -247,6 +266,56 @@ private fun AttendeesTab(
                 )
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+        // D4: quienes quedaron como «No se presentó», debajo de los asistentes y sin contar en el cupo. «Sí llegó» se
+        // ofrece aunque la clase ya haya pasado; la falta de un pase sólo se etiqueta (se corrige desde su app).
+        if (session.noShows.isNotEmpty()) {
+            item {
+                Text(
+                    UndoNoShowTexts.NO_SHOW,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = AvoqadoTheme.spacing.lg),
+                )
+            }
+            items(session.noShows, key = { "no-show-${it.id}" }) { noShow ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(UndoNoShowTexts.shortName(noShow.customer, noShow.guestName), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                        Text(UndoNoShowTexts.NO_SHOW, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (noShow.aggregatorBooking != null) {
+                        Text(
+                            UndoNoShowTexts.PASS,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = AvoqadoTheme.spacing.xxs),
+                        )
+                    } else if (canUndo(noShow)) {
+                        OutlinedButton(
+                            onClick = { onUndo(noShow) },
+                            enabled = online && undoBusyId == null,
+                            shape = RoundedCornerShape(50),
+                        ) { Text(if (undoBusyId == noShow.id) "…" else UndoNoShowTexts.BUTTON) }
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            if (session.moreNoShows > 0) {
+                item {
+                    Text(UndoNoShowTexts.more(session.moreNoShows), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (!online && session.noShows.any(canUndo)) {
+                item { Text(UndoNoShowTexts.OFFLINE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
         }
     }
 }

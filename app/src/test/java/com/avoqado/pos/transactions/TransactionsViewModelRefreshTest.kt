@@ -49,6 +49,8 @@ class TransactionsViewModelRefreshTest {
             printerService = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
             refreshGateFactory = factory,
+            connectivityMonitor = mockk(relaxed = true),
+            exchangePendingStore = mockk(relaxed = true),
         )
     }
 

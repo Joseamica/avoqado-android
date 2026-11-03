@@ -44,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -79,6 +80,8 @@ fun SplitPaymentSheet(
     totalCents: Int,
     items: List<CartItem>,
     allowByProduct: Boolean = true,
+    /** D10: «Por producto» se ve pero en gris, con esta razón (null = se puede). Apagado se ve y se explica. */
+    porProductoApagado: String? = null,
     onDismiss: () -> Unit,
     onConfirm: (SplitConfig) -> Unit,
 ) {
@@ -133,7 +136,8 @@ fun SplitPaymentSheet(
                 if (allowByProduct) {
                     SplitOptionRow(
                         title = "Por producto",
-                        description = "Selecciona los productos para este pago",
+                        description = porProductoApagado ?: "Selecciona los productos para este pago",
+                        enabled = porProductoApagado == null,
                         onClick = { selectedOption = SplitType.BY_PRODUCT },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -202,12 +206,14 @@ fun SplitPaymentSheet(
 private fun SplitOptionRow(
     title: String,
     description: String,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.45f)
             .padding(vertical = AvoqadoTheme.spacing.lg),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -268,8 +274,12 @@ private fun ByProductContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            if (isSelected) selectedIds.remove(item.id)
-                            else selectedIds.add(item.id)
+                            // D4 (27-oct): una pieza de un combo marca/desmarca TODO su combo: se cobra completo o nada
+                            // (el carrito quita el combo entero; una pieza suelta dejaba dinero sin renglón).
+                            val grupo = item.promotionInstanceId
+                                ?.let { combo -> items.filter { it.promotionInstanceId == combo }.map { it.id } }
+                                ?: listOf(item.id)
+                            if (isSelected) selectedIds.removeAll(grupo) else grupo.filterNot { it in selectedIds }.forEach { selectedIds.add(it) }
                         }
                         .padding(vertical = AvoqadoTheme.spacing.md),
                     verticalAlignment = Alignment.CenterVertically,

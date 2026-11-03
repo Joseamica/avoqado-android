@@ -3,6 +3,8 @@ package com.avoqado.pos.transactions.data.model
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.pos.data.model.OpcionesDeVarianteTolerantes
+import com.avoqado.pos.pos.data.model.VariantOption
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
@@ -43,6 +45,7 @@ object PaymentMethodDisplay {
             "DIGITAL_WALLET" -> "Cartera digital"
             "BANK_TRANSFER", "TRANSFER" -> "Transferencia"
             "CRYPTOCURRENCY" -> "Criptomoneda"
+            "GIFT_CARD" -> "Tarjeta de regalo"
             "OTHER" -> "Otro"
             null -> "—"
             else -> method.replace("_", " ").replaceFirstChar { it.uppercase() }
@@ -64,6 +67,8 @@ data class TicketTotalsDto(
     val tip: Double,
     val total: Double,
     val discount: Double? = null,
+    /** D15 (servidor, aditivo): sólo viene, en `true`, en el comprobante de UNA parte de una venta dividida. */
+    val parcial: Boolean? = null,
 )
 
 /**
@@ -86,6 +91,57 @@ internal object TicketTotalsTolerante : KSerializer<TicketTotalsDto?> {
     }
 
     override fun serialize(encoder: Encoder, value: TicketTotalsDto?) = encoder.encodeSerializableValue(estricto.nullable, value)
+}
+
+/**
+ * D1 «fotocopia del ticket» (servidor, aditivo, 28-oct): los renglones que imprimió el cobro de UNA parte de una venta dividida, tal
+ * cual los mandó la app en `/pay` (`CopiaDelTicket`). El SERVIDOR sólo la guarda si cuadra exacto con lo que registró:
+ * `subtotalCents − descuentoCents` = el importe del pago sin propina. Centavos enteros.
+ */
+@Serializable
+data class LineasDelTicketDto(
+    val lineas: List<LineaDelTicketDto>,
+    val subtotalCents: Int,
+    val descuentoCents: Int,
+)
+
+@Serializable
+data class LineaDelTicketDto(
+    val nombre: String,
+    /** Número del contrato (`> 0`); las apps mandan enteros. */
+    val cantidad: Double,
+    val unitarioCents: Int,
+    val totalCents: Int,
+    val modificadores: List<String>? = null,
+    val cortesia: Boolean? = null,
+    /** Componente de un combo, en $0 (el combo lleva el precio). */
+    val pieza: Boolean? = null,
+    /** Resumen impreso de un producto pesado («0.435 kg × $420.00/kg»). */
+    val peso: String? = null,
+    val nota: String? = null,
+    /** Etiqueta del área de un vale. */
+    val area: String? = null,
+)
+
+/**
+ * La copia se lee TOLERANTE, como el comprobante ([TicketTotalsTolerante]): una copia rara o sin renglones cuenta como AUSENTE y
+ * la reimpresión queda como hoy, en vez de tumbar el detalle de la venta (sin detalle no se reimprime ni se devuelve).
+ */
+internal object LineasDelTicketTolerante : KSerializer<LineasDelTicketDto?> {
+    private val estricto = LineasDelTicketDto.serializer()
+    override val descriptor: SerialDescriptor = estricto.nullable.descriptor
+
+    override fun deserialize(decoder: Decoder): LineasDelTicketDto? {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeSerializableValue(estricto.nullable)
+        val elemento = json.decodeJsonElement()
+        return try {
+            json.json.decodeFromJsonElement(estricto, elemento).takeIf { it.lineas.isNotEmpty() }
+        } catch (e: IllegalArgumentException) { // SerializationException y NumberFormatException lo son
+            null
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: LineasDelTicketDto?) = encoder.encodeSerializableValue(estricto.nullable, value)
 }
 
 @Serializable
@@ -112,6 +168,8 @@ data class Transaction(
     /** Nombre del método del negocio («Vale de despensa»), para la pastilla «mismo medio». */
     val tenderLabel: String? = null,
     val customerName: String? = null,
+    val customerId: String? = null,
+    val canAssignCustomer: Boolean? = null,
     val createdAt: String? = null,
     val staffName: String? = null,
     val cardBrand: String? = null,
@@ -120,12 +178,34 @@ data class Transaction(
     /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior (o comprobante raro, A7-R8): se cae a importe y propina del pago. */
     @Serializable(with = TicketTotalsTolerante::class)
     val ticketTotals: TicketTotalsDto? = null,
+    /** D1: la copia del papel de esta parte, APARTE de [ticketTotals]. Null = sin copia (app vieja, tarjeta, cobro de antes). */
+    @Serializable(with = LineasDelTicketTolerante::class)
+    val lineasDelTicket: LineasDelTicketDto? = null,
     /**
      * D4 (mesas40), aditivos: el tipo de la orden (DINE_IN, TAKEOUT…) y el número de su mesa, para que la reimpresión diga
      * «Mesa 5» / «Para llevar» como el ticket del cobro. 🔴 El servidor todavía no los manda: sin ellos, «En tienda».
      */
     val orderType: String? = null,
     val tableNumber: String? = null,
+    val exchangeable: Boolean? = null,
+    val notExchangeableReason: String? = null,
+    val tenderSystemKind: String? = null,
+    val chainRefundMethod: String? = null,
+    val chainRefundLabel: String? = null,
+    val chainRefundBlockedCode: String? = null,
+    val chainRefundBlockedReason: String? = null,
+    @Serializable(with = PayoutOptionsTolerante::class)
+    val payoutOptions: List<PayoutOption>? = null,
+    @Serializable(with = ExchangeLinksTolerante::class)
+    val exchange: ExchangeLinks? = null,
+    val refundToGiftCardBalance: Boolean? = null,
+    val esSaldoDeTarjeta: Boolean? = null,
+    /** Saldo a favor (aditivo): ¿puede la cajera escoger «Saldo a favor» al devolver? `null` = servidor anterior. */
+    @Serializable(with = StoreCreditOptionTolerante::class)
+    val storeCreditOption: StoreCreditOption? = null,
+    /** Saldo a favor (aditivo): en la devolución a saldo, a quién y cuánto se abonó (reimpresión). `null` = sin saldo o servidor anterior. */
+    @Serializable(with = StoreCreditAbonoTolerante::class)
+    val storeCredit: StoreCreditAbono? = null,
 ) {
     val paymentMethod: String? get() = method
 
@@ -137,9 +217,16 @@ data class Transaction(
     val formattedAmount: String get() = formatMoney(amount)
     val formattedTip: String get() = formatMoney(tipAmount)
 
-    /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. */
+    /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. Una devolución a saldo a favor (W-3, A5) se llama así, no «Otro». */
     val methodDescription: String
-        get() = PaymentMethodDisplay.label(method, cardBrand, maskedPan)
+        get() = when {
+            esSaldoDeTarjeta == true -> "Tarjeta de regalo"
+            storeCredit != null -> com.avoqado.pos.transactions.presentation.exchange.TextosCambio.SALDO_A_FAVOR
+            else -> PaymentMethodDisplay.label(method, cardBrand, maskedPan)
+        }
+
+    /** W-3 (A5): la clienta que se ve. En una devolución a saldo a favor, a quién se abonó (la destinataria), no «Sin cliente». */
+    val clienteVisible: String? get() = storeCredit?.customerName?.takeIf { it.isNotBlank() } ?: customerName
 
     val statusDisplay: String
         get() = when (status) {
@@ -203,6 +290,20 @@ data class TransactionItem(
     /** Quantity still available to refund = quantity − refundedQty. */
     val remainingQty: Int = 0,
     val modifiers: List<TransactionItemModifier> = emptyList(),
+    val productId: String? = null,
+    val chargedTotalCents: Long? = null,
+    val returnedQtyOrder: Int? = null,
+    val returnedCentsOrder: Long? = null,
+    val remainingQtyOrder: Int? = null,
+    val productGroupId: String? = null,
+    @Serializable(with = OpcionesDeVarianteTolerantes::class)
+    val variantOptions: List<VariantOption>? = null,
+    val productType: String? = null,
+    val isPromotionLine: Boolean? = null,
+    val orderPromotionId: String? = null,
+    val notExchangeableReason: String? = null,
+    val restockable: Boolean? = null,
+    val currentListPriceCents: Long? = null,
 ) {
     val name: String get() = productName
     val formattedTotal: String get() = formatMoney(amount)
@@ -355,3 +456,13 @@ data class TransactionFilters(
         true
     }
 }
+
+/** Confirmación pendiente: se recupera sólo al abrir SU venta con la misma identidad, nunca por el outbox. */
+@Serializable
+data class PendingCustomerAssignment(
+    val actorId: String,
+    val venueId: String,
+    val paymentId: String,
+    val customerId: String,
+    val customerName: String,
+)

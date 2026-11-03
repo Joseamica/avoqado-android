@@ -83,18 +83,21 @@ class CancelacionDeCobroCoordinator internal constructor(
     private val reloj: () -> Long = { System.currentTimeMillis() },
     private val esperasDeSondeo: List<Long> = listOf(1_000L, 2_000L),
     private val tickMs: Long = 30_000L,
+    private val saldoPendiente: (String, String) -> Boolean = { _, _ -> false },
 ) {
     @Inject
     constructor(
         store: CancelacionesDeCobroStore,
         transporte: CancelacionDeCobroTransport,
         connectivityMonitor: ConnectivityMonitor,
+        secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
     ) : this(
         store = store,
         transporte = transporte,
         conectado = connectivityMonitor.isConnected,
         servidorAlcanzable = connectivityMonitor.isServerReachable,
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        saldoPendiente = { venue, order -> com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.cuentaTrabada(secureStorage.giftCardRequestsJson, venue, order) },
     )
 
     private val _pendientes = MutableStateFlow(store.todas())
@@ -284,6 +287,8 @@ class CancelacionDeCobroCoordinator internal constructor(
                 FaseDeCancelacion.BORRAR_ORDEN -> {
                     val orderId = intencion.orderId
                     if (!intencion.borrarOrden || orderId == null) return cerrar(intencion)
+                    if (saldoPendiente(intencion.venueId, orderId)) return quedarPendiente(intencion, sinRed = false,
+                        motivo = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.COMPROBANDO_COBRO)
                     val resultado = transporte.cancelarOrden(intencion.venueId, orderId)
                     when (val paso = CancelacionDeCobro.trasBorrar(resultado, intencion.requestId)) {
                         is PasoTrasBorrar.Cerrar -> return cerrar(intencion)

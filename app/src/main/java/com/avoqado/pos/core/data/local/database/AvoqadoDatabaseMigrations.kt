@@ -275,6 +275,29 @@ object AvoqadoDatabaseMigrations {
         }
     }
 
+    /** Las dos variantes17 conservan su evidencia; se completa sólo la columna o tabla que les falta. */
+    val MIGRATION_17_18 = object : Migration(17, 18) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            val tieneCaja = db.query("PRAGMA table_info(pending_payments)", emptyArray()).use { columnas ->
+                var encontrada = false
+                while (columnas.moveToNext()) if (columnas.getString(1) == "cashDrawerSessionId") encontrada = true
+                encontrada
+            }
+            if (!tieneCaja) db.execSQL("ALTER TABLE pending_payments ADD COLUMN cashDrawerSessionId TEXT")
+            db.execSQL(com.avoqado.pos.sync.data.SALES_NOTICE_CREATE_SQL)
+        }
+    }
+
+    /**
+     * v19 — D1 «fotocopia del ticket» (28-oct): la copia de los renglones del papel de una parte, en columna propia y nula. Nada que
+     * migrar: una fila vieja no recibe una copia inventada y sube como hoy.
+     */
+    val MIGRATION_18_19 = object : Migration(18, 19) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE pending_payments ADD COLUMN lineasDelTicketJson TEXT")
+        }
+    }
+
     /** Identity-only legacy link, inside the migration transaction. Evidence and monetary fields stay NULL. */
     fun restaurarReferenciasQ15(db: SupportSQLiteDatabase) {
         fun tabla(nombre: String, venueCol: String, originalCol: String, payload: Boolean) {
@@ -298,6 +321,12 @@ object AvoqadoDatabaseMigrations {
         }
         tabla("pending_payments","venueId","orderId",false)
         tabla("pos_sync_intents","venue_id","payload_json",true)
+    }
+
+    val MIGRATION_16_17 = object : Migration(16, 17) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(com.avoqado.pos.sync.data.SALES_NOTICE_CREATE_SQL)
+        }
     }
 
 }

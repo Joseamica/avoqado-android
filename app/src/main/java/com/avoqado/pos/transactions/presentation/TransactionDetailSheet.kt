@@ -34,7 +34,10 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.PersonAddAlt1
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Lock
@@ -47,6 +50,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +75,17 @@ import com.avoqado.pos.core.domain.ActionVisibility
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionRefund
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.material3.rememberModalBottomSheetState
+import com.avoqado.pos.customers.presentation.CustomersViewModel
+import com.avoqado.pos.customers.presentation.CustomersView
+import com.avoqado.pos.customers.presentation.CreateCustomerView
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeEntry
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 
 // MARK: - Responsive metrics
 //
@@ -208,6 +223,8 @@ private fun LoadedDetailView(
 ) {
     // Receipt dialog states
     var showReceiptMethodDialog by remember { mutableStateOf(false) }
+    var showMoreActions by remember(transaction.id) { mutableStateOf(false) }
+    val exchangeMessage by viewModel.exchangeMessage.collectAsState()
 
     // 🔴 Quién abre este formulario vive en el ViewModel, no aquí: con el candado
     // hay que pedir el PIN ANTES de abrirlo, y esa decisión tiene que poder
@@ -301,38 +318,45 @@ private fun LoadedDetailView(
             // status='REFUNDED'. Re-enable only after the 5 server bugs are fixed.
             val isPrintingReceipt by viewModel.isPrintingReceipt.collectAsState()
             val printReceiptResult by viewModel.printReceiptResult.collectAsState()
+            val overrideEnabled by viewModel.tpvSettingsRepository.managerPinOverrideEnabled.collectAsState()
+            val exchangesEnabled by viewModel.tpvSettingsRepository.exchangesEnabled.collectAsState()
+            val connected by viewModel.customerConnection.collectAsState()
+            val reachable by viewModel.customerServerReachable.collectAsState()
+            val canRefund = viewModel.roleManager.canIssueRefund
+            val exchangeEntry = ExchangeEntry.decide(transaction, exchangesEnabled, connected && reachable, canRefund, overrideEnabled)
+            com.avoqado.pos.transactions.presentation.exchange.ExchangeRecoveryNotice(transaction) {
+                viewModel.resumePendingExchange(transaction)
+            }
+            // Reembolso a saldo a favor sin confirmar (A3): sólo «Confirmar estado» lo reenvía (Opción A); mientras siga, no se empieza otro.
+            val reembolsoPendiente by viewModel.reembolsoPendiente.collectAsState()
+            val reembolsoBloqueado by viewModel.reembolsoBloqueado.collectAsState()
+            val avisoDeReembolso by viewModel.avisoDeReembolso.collectAsState()
+            if (reembolsoPendiente != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.sm)) {
+                    Text(com.avoqado.pos.transactions.data.avisoDelPendiente(reembolsoPendiente!!), Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = viewModel::confirmarReembolsoPendiente) { Text(TextosCambio.CONFIRMAR_ESTADO) }
+                }
+            }
+            avisoDeReembolso?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm))
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // Direct print — visible action, Square-style (not hidden in a dialog).
-                ActionButton(
-                    label = if (isPrintingReceipt) "Imprimiendo…" else "Imprimir",
-                    modifier = Modifier.weight(1f),
-                    enabled = !isPrintingReceipt,
-                    onClick = { viewModel.printTransactionReceipt(transaction) },
-                )
-                ActionButton(
-                    label = "Recibo nuevo",
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        viewModel.clearReceiptResult()
-                        showReceiptMethodDialog = true
-                    },
-                )
                 // 🔴 Sin el candado, el PIN de gerente es inalcanzable aquí: un
                 // botón que no existe nunca produce el 403 que abre el teclado.
                 // Con el switch OFF se esconde exactamente como hoy.
-                val overrideEnabled by viewModel.tpvSettingsRepository.managerPinOverrideEnabled.collectAsState()
-                val canRefund = viewModel.roleManager.canIssueRefund
                 when (viewModel.roleManager.visibilityOf(canRefund, overrideEnabled)) {
                     ActionVisibility.HIDDEN -> Unit
                     ActionVisibility.ALLOWED, ActionVisibility.LOCKED -> {
                         ActionButton(
-                            label = "Emitir reembolso",
+                            label = TextosCambio.EMITIR_REEMBOLSO,
                             modifier = Modifier.weight(1f),
-                            enabled = transaction.remainingRefundable > 0.001,
+                            enabled = transaction.remainingRefundable > 0.001 && !reembolsoBloqueado,
                             locked = !canRefund,
                             // Con candado esto pide el PIN PRIMERO y sólo abre el
                             // formulario si alguien autoriza. Sin candado, abre
@@ -341,6 +365,29 @@ private fun LoadedDetailView(
                         )
                     }
                 }
+                if (exchangeEntry.visible) {
+                    ActionButton(label = TextosCambio.CAMBIO, modifier = Modifier.weight(1f),
+                        locked = exchangeEntry.requiresPin, blockedReason = exchangeEntry.blockedReason,
+                        onClick = viewModel::onExchangeTapped)
+                }
+                Box {
+                    IconButton(onClick = { showMoreActions = true }) {
+                        Icon(Icons.Filled.MoreHoriz, contentDescription = TextosCambio.MAS_OPCIONES)
+                    }
+                    DropdownMenu(expanded = showMoreActions, onDismissRequest = { showMoreActions = false }) {
+                        DropdownMenuItem(text = { Text(TextosCambio.IMPRIMIR) }, enabled = !isPrintingReceipt,
+                            onClick = { showMoreActions = false; viewModel.printTransactionReceipt(transaction) })
+                        DropdownMenuItem(text = { Text(TextosCambio.RECIBO_NUEVO) }, onClick = {
+                            showMoreActions = false
+                            viewModel.clearReceiptResult()
+                            showReceiptMethodDialog = true
+                        })
+                    }
+                }
+            }
+            exchangeEntry.blockedReason?.let { reason ->
+                Text(reason, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm))
             }
 
             // Print status
@@ -374,6 +421,20 @@ private fun LoadedDetailView(
                 Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
             }
 
+            // MARK: - Cliente Section
+            val exchangeLinks = ExchangeEntry.links(transaction)
+            if (exchangeLinks.isNotEmpty()) {
+                Text(TextosCambio.CAMBIOS, style = MaterialTheme.typography.titleLarge)
+                ThinDivider()
+                exchangeLinks.forEach { link ->
+                    Text(link.label, style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.fillMaxWidth().clickable { viewModel.openExchangeOrder(link.orderId) }
+                            .padding(vertical = AvoqadoTheme.spacing.lg))
+                }
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+            }
+            CustomerAssignmentSection(transaction, viewModel)
+
             // MARK: - Pago Section
             PaymentSection(transaction)
 
@@ -387,6 +448,11 @@ private fun LoadedDetailView(
 
             Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
         }
+    }
+
+    exchangeMessage?.let { reason ->
+        AvoqadoDialog(title = TextosCambio.CAMBIO, description = reason,
+            onDismiss = viewModel::clearExchangeMessage, content = {})
     }
 
     // Receipt method chooser dialog
@@ -487,6 +553,9 @@ private fun LoadedDetailView(
                 viewModel.invalidateAndRefresh()
                 viewModel.selectTransaction(transaction.id)
             },
+            // El envío a saldo a favor lo lleva el detalle, para que sobreviva a la hoja (I2).
+            enviarASaldo = { cuerpo, llave -> viewModel.enviarReembolsoASaldo(transaction.id, cuerpo, llave) },
+            antesDeReembolsar = { viewModel.motivoParaNoReembolsar(transaction.id) },
         )
     }
 
@@ -513,20 +582,29 @@ private fun ActionButton(
      * avisa que va a pedir el código de un encargado.
      */
     locked: Boolean = false,
+    blockedReason: String? = null,
     onClick: () -> Unit,
 ) {
     val metrics = LocalDetailMetrics.current
+    var showBlockedReason by remember(blockedReason) { mutableStateOf(false) }
+    val available = enabled && blockedReason == null
+    if (showBlockedReason) {
+        AvoqadoDialog(title = label, description = blockedReason,
+            onDismiss = { showBlockedReason = false }, content = {})
+    }
     Box(
         modifier = modifier
             .height(metrics.actionButtonHeight)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(50))
             .background(
-                if (enabled) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer,
+                if (available) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer,
             )
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(enabled = enabled || blockedReason != null) {
+                if (blockedReason != null) showBlockedReason = true else onClick()
+            },
         contentAlignment = Alignment.Center,
     ) {
-        val contentColor = if (enabled) {
+        val contentColor = if (available) {
             MaterialTheme.colorScheme.onSurface
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant
@@ -991,5 +1069,130 @@ private fun PhoneReceiptDialog(
                 color = MaterialTheme.colorScheme.error,
             )
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CustomerAssignmentSection(transaction: Transaction, viewModel: TransactionsViewModel) {
+    val candidate by viewModel.customerCandidate.collectAsState()
+    val picker by viewModel.customerPickerVisible.collectAsState()
+    val busy by viewModel.isAssigningCustomer.collectAsState()
+    val message by viewModel.customerAssignmentMessage.collectAsState()
+    val succeeded by viewModel.customerAssignmentSucceeded.collectAsState()
+    val connected by viewModel.customerConnection.collectAsState()
+    val reachable by viewModel.customerServerReachable.collectAsState()
+    val online = connected && reachable
+    var createSearch by remember(transaction.id) { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember(transaction.id) { mutableStateOf<Long?>(null) }
+
+    // Misma forma que «Pago» y «Artículos»: título, línea y un renglón con ícono. Sin cliente y con
+    // permiso, el renglón ES el botón (como «Agregar cliente» del carrito); con cliente, sólo lo muestra.
+    val metrics = LocalDetailMetrics.current
+    val hasCustomer = transaction.customerId != null || transaction.storeCredit?.customerName?.isNotBlank() == true
+    val canTap = !hasCustomer && viewModel.canAssignCustomer
+    val enabled = canTap && online && !busy
+    Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
+        Text("Cliente", fontSize = metrics.sectionTitleSize, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.height(12.dp))
+        ThinDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (canTap) Modifier.clickable(enabled = enabled, onClick = viewModel::openCustomerPicker) else Modifier)
+                .padding(vertical = metrics.iconRowVerticalPadding),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            val tint = if (canTap && !enabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            Icon(if (canTap) Icons.Filled.PersonAddAlt1 else Icons.Filled.AccountCircle, contentDescription = null,
+                modifier = Modifier.size(metrics.iconSize), tint = tint)
+            Text(
+                text = when {
+                    hasCustomer -> transaction.clienteVisible ?: "Cliente asignado"
+                    canTap -> "Agregar cliente"
+                    else -> "Sin cliente"
+                },
+                fontSize = metrics.bodySize,
+                fontWeight = if (canTap) FontWeight.SemiBold else FontWeight.Normal,
+                color = when {
+                    canTap && !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    hasCustomer -> MaterialTheme.colorScheme.onSurface
+                    canTap -> MaterialTheme.colorScheme.onSurface
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.weight(1f),
+            )
+            if (canTap) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null,
+                modifier = Modifier.size(metrics.iconSize), tint = tint)
+        }
+        ThinDivider()
+        val nota = message ?: if (canTap && !online) "Necesitas conexión para asignar un cliente a esta venta" else null
+        nota?.let {
+            Text(it, fontSize = metrics.smallSize, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm))
+        }
+    }
+
+    if (picker && viewModel.canAssignCustomer) {
+        val customers: CustomersViewModel = hiltViewModel()
+        AvoqadoModalBottomSheet(
+            onDismissRequest = { createSearch = null; viewModel.cancelCustomerAssignment() },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            conXPropia = true,
+            dragHandle = null,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                if (createSearch != null && viewModel.canCreateCustomerForAssignment) {
+                    val search = createSearch.orEmpty()
+                    CreateCustomerView(
+                        viewModel = customers,
+                        initialPhone = search.takeIf { it.any(Char::isDigit) },
+                        initialName = search.takeUnless { it.any(Char::isDigit) },
+                        onCustomerCreated = { createSearch = null; viewModel.chooseCustomer(it) },
+                        onBack = { createSearch = null },
+                        alta = altaDelFormulario,
+                        onAlta = { altaDelFormulario = it },
+                    )
+                } else {
+                    CustomersView(
+                        viewModel = customers,
+                        onCustomerSelected = viewModel::chooseCustomer,
+                        onDismiss = viewModel::cancelCustomerAssignment,
+                        onCreateCustomer = { altaDelFormulario = null; createSearch = it },
+                        canCreateCustomer = viewModel.canCreateCustomerForAssignment && online,
+                    )
+                }
+            }
+        }
+    }
+    if (candidate != null && viewModel.canAssignCustomer) {
+        AvoqadoDialog(
+            title = "Confirmar cliente",
+            description = "El cliente quedará asociado a esta venta. No se puede reemplazar después.",
+            onDismiss = viewModel::cancelCustomerAssignment,
+            dismissOnClickOutside = !busy,
+            actionButton = {
+                PrimaryButton(
+                    text = if (message != null) "Reintentar" else "Agregar cliente",
+                    onClick = viewModel::confirmCustomerAssignment,
+                    enabled = online && !busy,
+                    isLoading = busy,
+                    fullWidth = true,
+                )
+            },
+        ) {
+            Text("Agregar a ${candidate!!.fullName}", style = MaterialTheme.typography.titleMedium)
+            if (!online) Text("Necesitas conexión para asignar un cliente a esta venta",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+    if (succeeded) {
+        AvoqadoSuccessToast(message = "Cliente asignado", onDismiss = viewModel::clearCustomerAssignmentSuccess)
     }
 }

@@ -5,6 +5,7 @@ import com.avoqado.pos.kiosk.system.KioskBootReceiver.Companion.shouldLaunchOnBo
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * ¿Se levanta sola la app cuando enciende el aparato?
@@ -26,9 +27,25 @@ class KioskBootReceiverTest {
         assertTrue(shouldLaunchOnBoot(Intent.ACTION_BOOT_COMPLETED, kioskEnabled = true))
     }
 
+    /**
+     * 🔴 D6 (medido el 28-oct en la D3): con el arranque temprano Android creaba el proceso antes del
+     * desbloqueo, y `AvoqadoApp.onCreate` tronaba al abrir sus datos cifrados (SecureStorage): «Avoqado POS
+     * se detuvo» en cada encendido. Antes de desbloquear la app no puede leer nada suyo, así que ese aviso
+     * no sirve; el kiosco vuelve con el `BOOT_COMPLETED` normal.
+     */
     @Test
-    fun `tambien con el arranque temprano, antes de desbloquear`() {
-        assertTrue(shouldLaunchOnBoot(Intent.ACTION_LOCKED_BOOT_COMPLETED, kioskEnabled = true))
+    fun `el arranque temprano, antes de desbloquear, no levanta nada`() {
+        assertFalse(shouldLaunchOnBoot(Intent.ACTION_LOCKED_BOOT_COMPLETED, kioskEnabled = true))
+    }
+
+    /** La causa vive en el manifiesto: un componente nuestro que corre antes del desbloqueo levanta el proceso entero. */
+    @Test
+    fun `ningun componente de la app corre antes del desbloqueo`() {
+        val manifest = listOf(File("src/main/AndroidManifest.xml"), File("app/src/main/AndroidManifest.xml"))
+            .first { it.exists() }
+            .readText()
+        assertFalse("LOCKED_BOOT_COMPLETED en el manifiesto", "LOCKED_BOOT_COMPLETED" in manifest)
+        assertFalse("directBootAware=\"true\" en el manifiesto", Regex("""directBootAware\s*=\s*"true"""").containsMatchIn(manifest))
     }
 
     @Test

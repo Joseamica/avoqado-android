@@ -11,6 +11,7 @@ import com.avoqado.pos.areatickets.data.AreaTicketScanData
 import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
 import com.avoqado.pos.areatickets.data.AreaTicketTerminalCapabilities
 import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
+import com.avoqado.pos.core.data.local.LlaveDeEmisionDeVales
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.ComandaMoment
@@ -47,7 +48,7 @@ class AreaTicketComandaAlEmitirTest {
 
     private val repository = mockk<AreaTicketRepository>()
     private val printerService = mockk<PrinterService>(relaxed = true)
-    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true; every { guardarIntentoDeVale(any(), any(), any()) } returns LlaveDeEmisionDeVales.Guardado.SI } // D2: el disco guarda la llave
     private val comandaDispatcher = mockk<ComandaDispatcher>()
     private val lineas = slot<List<RoutableItem>>()
 

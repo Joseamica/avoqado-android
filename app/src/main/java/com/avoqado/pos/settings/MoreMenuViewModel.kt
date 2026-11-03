@@ -53,7 +53,49 @@ class MoreMenuViewModel @Inject constructor(
     private val bloqueoDeMerma: com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan,
     private val pendingWasteDao: com.avoqado.pos.inventory.waste.data.PendingWasteDao,
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
+    private val vigilanteDePedidos: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea,
+    private val pedidosEnLineaRepository: com.avoqado.pos.onlineorders.data.OnlineOrdersRepository,
+    /** Las llegadas del kiosco guardadas sin red (Modo Autoservicio 0.e): también bloquean el cambio de sucursal. */
+    private val pendingReservationDao: com.avoqado.pos.reservations.data.PendingReservationActionDao,
 ) : ViewModel() {
+
+    // MARK: - Pedidos en línea (A3)
+
+    /** Los pedidos por aceptar de ahora: su número es la insignia de la entrada. */
+    val pedidosEnLineaPendientes = vigilanteDePedidos.pendientes
+
+    /** `pendientes + activos > 0`: con eso la entrada se atiende aunque el plan haya vencido (R14). */
+    val hayPedidosEnLineaAbiertos = vigilanteDePedidos.hayPedidosAbiertos
+
+    /** «Ver» del banner pidió abrir la bandeja (el NavGraph ya nos trajo aquí). */
+    val bandejaSolicitada = vigilanteDePedidos.bandejaSolicitada
+    fun bandejaAtendida() = vigilanteDePedidos.bandejaAtendida()
+
+    /** Rappi 2b: este aparato ya vio pedidos de reparto por cobrar (la lista guardada): la entrada se atiende sin plan (R14). */
+    private val _hayRepartoPorCobrarGuardado = MutableStateFlow(false)
+    val hayRepartoPorCobrarGuardado: StateFlow<Boolean> = _hayRepartoPorCobrarGuardado
+
+    init {
+        viewModelScope.launch {
+            _hayRepartoPorCobrarGuardado.value = runCatching { pedidosEnLineaRepository.porCobrarGuardado() }
+                .getOrNull()?.pedidos?.isNotEmpty() == true
+        }
+    }
+
+    /**
+     * OCULTA sin `orders:read`; TEASER sin plan, sin pedidos abiertos y sin reparto; ABIERTA en cualquier otro caso. El teaser
+     * también abre la pantalla, que descubre con red los pedidos de reparto por cobrar (plan vencido en un aparato sin lista).
+     */
+    val entradaPedidosEnLinea: com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea
+        get() = com.avoqado.pos.onlineorders.presentation.entradaDePedidosEnLinea(
+            puedeLeer = roleManager.canReadOnlineOrders,
+            tienePlan = planManager.hasFeature("ONLINE_ORDERING"),
+            hayPedidosAbiertos = vigilanteDePedidos.hayPedidosAbiertos.value,
+            tieneReparto = planManager.hasFeature("DELIVERY_CHANNELS") || hayRepartoPorCobrarGuardado.value,
+        )
+
+    val pedidosEnLineaTierLabel: String
+        get() = planManager.requiredTierLabel("ONLINE_ORDERING") ?: "Pro"
 
     /** Cómo se llama este aparato en el panel, para la pantalla «Impresoras y cajón». null = no se sabe. */
     val nombreDeEsteAparato: StateFlow<String?> = tpvSettingsRepository.terminalNavigation
@@ -201,7 +243,13 @@ class MoreMenuViewModel @Inject constructor(
             val currentVenueId = secureStorage.venueId
             val blocking = paymentSyncService.blockingWorkCount() +
                 (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
-                secureStorage.areaTicketRecoveryCount(currentVenueId)
+                secureStorage.areaTicketRecoveryCount(currentVenueId) +
+                // Cada llegada guarda su sucursal y sólo se manda con esa sucursal activa: cambiar la dejaría esperando.
+                com.avoqado.pos.kiosk.data.KioskTap.pendingFor(
+                    pendingReservationDao.all(),
+                    currentVenueId,
+                    com.avoqado.pos.reservations.data.ReservationRepository.MAX_ATTEMPTS,
+                )
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."

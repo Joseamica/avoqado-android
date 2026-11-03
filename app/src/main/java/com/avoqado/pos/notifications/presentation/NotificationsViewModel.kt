@@ -2,7 +2,9 @@ package com.avoqado.pos.notifications.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.notifications.data.NotificationsRepository
+import com.avoqado.pos.notifications.data.model.AppNotification
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -13,9 +15,14 @@ import javax.inject.Inject
 @HiltViewModel
 class NotificationsViewModel @Inject constructor(
     private val repository: NotificationsRepository,
+    private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
     val notifications = repository.notifications
+
+    /** A dónde lleva el aviso, contra la sucursal activa y las del selector ([decidirDestino]). */
+    internal fun destinoDe(aviso: AppNotification): DestinoDelAviso? =
+        decidirDestino(aviso, secureStorage.venueId, secureStorage.venuesList)
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()

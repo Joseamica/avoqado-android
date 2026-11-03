@@ -117,6 +117,14 @@ fun PaymentResultScreen(
     canPrintOnTerminal: Boolean = false,
     onPrintOnTerminalReceipt: (() -> Unit)? = null,
     onClearPrintResult: (() -> Unit)? = null,
+    /**
+     * D2 (founder, 28-oct): sin impresora de recibos la fila lo dice ANTES de tocarla («Sin impresora · Configurar») y al
+     * tocarla ofrece imprimir en la terminal (si hay) y «Configurar impresora», que abre «Impresoras y cajón».
+     */
+    hayImpresoraDeRecibos: Boolean = true,
+    onConfigurarImpresora: (() -> Unit)? = null,
+    /** Se revisa al entrar a la pantalla: la impresora pudo agregarse o quitarse desde la venta anterior. */
+    onRevisarImpresora: (() -> Unit)? = null,
     customerName: String? = null,
     customerResultMessage: String? = null,
     onClearCustomerResult: (() -> Unit)? = null,
@@ -129,6 +137,8 @@ fun PaymentResultScreen(
      */
     offerReceipt: Boolean = true,
     onDone: () -> Unit,
+    saldoPagado: com.avoqado.pos.giftcards.data.CobroConSaldo? = null,
+    accionesDeRedHabilitadas: Boolean = true,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
     var whatsAppPhoneDigits by remember { mutableStateOf("") }
@@ -146,6 +156,8 @@ fun PaymentResultScreen(
         resultMessage == "Recibo impreso" ||
         resultMessage == "Recibo impreso en TPV" ||
         resultMessage?.startsWith("Cliente agregado") == true
+
+    androidx.compose.runtime.LaunchedEffect(Unit) { onRevisarImpresora?.invoke() }
 
     androidx.compose.runtime.LaunchedEffect(printResultMessage, canPrintOnTerminal) {
         if (printResultMessage == LOCAL_PRINTER_UNAVAILABLE && canPrintOnTerminal) {
@@ -210,6 +222,8 @@ fun PaymentResultScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
+
             // Cobro hecho sin red: lo que la cola dice de él AHORA, no lo que decía al cobrar.
             val avisoDeCola = when (sincronizacion) {
                 SincronizacionDelCobro.NINGUNA -> null
@@ -267,6 +281,14 @@ fun PaymentResultScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            saldoPagado?.let { saldo ->
+                if (saldo.orderRemaining > 0) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.cobroConfirmadoFaltan(kotlin.math.round(saldo.orderRemaining * 100).toInt()))
+                saldo.redeemed.forEach { tarjeta ->
+                    Text("•••• ${tarjeta.last4} · ${com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SALDO_DISPONIBLE}: ${formatMoney(tarjeta.balanceAfter)}",
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
             if (method == PaymentMethod.CASH && methodLabel == null && changeCents > 0) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
@@ -304,19 +326,30 @@ fun PaymentResultScreen(
                         if (resultMessage != null && isResultSuccess) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
                     ),
                 )
-                Surface(
-                    color = if (renglonDelSello.positivo) Success.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                    modifier = Modifier
-                        .widthIn(max = 400.dp)
-                        .fillMaxWidth(),
-                ) {
-                    Text(
-                        text = renglonDelSello.texto,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (renglonDelSello.positivo) Success else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                // Si SÍ sumó: la tarjetita (sellos llenos, los que faltan y el premio). Los motivos siguen en texto.
+                val tarjeta = renglonDelSello.tarjeta
+                if (tarjeta != null) {
+                    TarjetaDeSellos(
+                        tarjeta = tarjeta,
+                        modifier = Modifier
+                            .widthIn(max = 400.dp)
+                            .fillMaxWidth(),
                     )
+                } else {
+                    Surface(
+                        color = if (renglonDelSello.positivo) Success.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                        modifier = Modifier
+                            .widthIn(max = 400.dp)
+                            .fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = renglonDelSello.texto,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (renglonDelSello.positivo) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                        )
+                    }
                 }
             }
 
@@ -330,9 +363,12 @@ fun PaymentResultScreen(
                 ReceiptOptionRow(
                     icon = rememberVectorPainter(Icons.Filled.Print),
                     title = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir recibo",
+                    detalle = if (!hayImpresoraDeRecibos && !isPrintingReceipt) "Sin impresora · Configurar" else null,
                     enabled = !isPrintingReceipt,
                     onClick = {
-                        if (onPrintReceipt != null) {
+                        if (!hayImpresoraDeRecibos && onConfigurarImpresora != null) {
+                            showNoPrinterDialog = true
+                        } else if (onPrintReceipt != null) {
                             onClearCustomerResult?.invoke()
                             onClearPrintResult?.invoke()
                             onClearWhatsAppResult?.invoke()
@@ -350,7 +386,7 @@ fun PaymentResultScreen(
                     ReceiptOptionRow(
                         icon = rememberVectorPainter(Icons.Filled.Email),
                         title = "Enviar por correo",
-                        enabled = canSendReceipt && onSendEmail != null,
+                        enabled = accionesDeRedHabilitadas && canSendReceipt && onSendEmail != null,
                         onClick = {
                             onClearCustomerResult?.invoke()
                             onClearEmailResult?.invoke()
@@ -364,7 +400,7 @@ fun PaymentResultScreen(
                     ReceiptOptionRow(
                         icon = painterResource(R.drawable.ic_whatsapp),
                         title = "Enviar por WhatsApp",
-                        enabled = canSendReceipt && onSendWhatsApp != null,
+                        enabled = accionesDeRedHabilitadas && canSendReceipt && onSendWhatsApp != null,
                         onClick = {
                             onClearCustomerResult?.invoke()
                             onClearWhatsAppResult?.invoke()
@@ -385,7 +421,7 @@ fun PaymentResultScreen(
     if (showWhatsAppInput) {
         WhatsAppReceiptDialog(
             title = "Enviar recibo por WhatsApp",
-            description = "Selecciona el país y escribe el número del cliente",
+            description = if (!accionesDeRedHabilitadas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED else "Selecciona el país y escribe el número del cliente",
             country = whatsAppCountry,
             onCountryChange = { whatsAppCountry = it },
             digits = whatsAppPhoneDigits,
@@ -393,13 +429,13 @@ fun PaymentResultScreen(
             isSending = isSendingWhatsApp,
             onConfirm = {
                 val digits = whatsAppPhoneDigits.trim()
-                if (digits.isNotEmpty()) {
+                if (accionesDeRedHabilitadas && digits.isNotEmpty()) {
                     onSendWhatsApp?.invoke("+${whatsAppCountry.dialCode}$digits")
-                    showWhatsAppInput = false
+                    if (cerrarDialogoDeRecibo(true)) showWhatsAppInput = false
                 }
             },
             onDismiss = { if (!isSendingWhatsApp) showWhatsAppInput = false },
-            confirmEnabled = whatsAppPhoneDigits.trim().isNotEmpty() && !isSendingWhatsApp,
+            confirmEnabled = accionesDeRedHabilitadas && whatsAppPhoneDigits.trim().isNotEmpty() && !isSendingWhatsApp,
             dismissEnabled = !isSendingWhatsApp,
         )
     }
@@ -408,20 +444,20 @@ fun PaymentResultScreen(
     if (showEmailInput) {
         ReceiptInputDialog(
             title = "Enviar recibo por correo",
-            description = "Ingresa el correo electronico del cliente",
+            description = if (!accionesDeRedHabilitadas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED else "Ingresa el correo electronico del cliente",
             placeholder = "cliente@ejemplo.com",
             value = emailAddress,
             onValueChange = { emailAddress = it },
             isSending = isSendingEmail,
             onConfirm = {
                 val email = emailAddress.trim()
-                if (email.isNotEmpty()) {
+                if (accionesDeRedHabilitadas && email.isNotEmpty()) {
                     onSendEmail?.invoke(email)
-                    showEmailInput = false
+                    if (cerrarDialogoDeRecibo(true)) showEmailInput = false
                 }
             },
             onDismiss = { if (!isSendingEmail) showEmailInput = false },
-            confirmEnabled = emailAddress.trim().isNotEmpty() && !isSendingEmail,
+            confirmEnabled = accionesDeRedHabilitadas && emailAddress.trim().isNotEmpty() && !isSendingEmail,
             dismissEnabled = !isSendingEmail,
             keyboardType = KeyboardType.Email,
         )
@@ -453,16 +489,43 @@ fun PaymentResultScreen(
 
     // No printer configured dialog
     if (showNoPrinterDialog) {
+        val enTerminal = canPrintOnTerminal && onPrintOnTerminalReceipt != null
         AvoqadoDialog(
-            title = "Sin impresora configurada",
-            description = "No hay una impresora de recibos configurada. Ve a Configuración > Impresoras para conectar una.",
+            title = "Sin impresora de recibos",
+            description = if (enTerminal) {
+                "Esta caja no tiene impresora de recibos. Imprímelo en la terminal o configura una impresora."
+            } else {
+                "Esta caja no tiene impresora de recibos. Configura una para imprimir tickets y abrir el cajón."
+            },
             onDismiss = { showNoPrinterDialog = false },
             actionButton = {
-                PrimaryButton(
-                    text = "Entendido",
-                    onClick = { showNoPrinterDialog = false },
-                    fullWidth = true,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    if (enTerminal) {
+                        PrimaryButton(
+                            text = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir en la terminal",
+                            onClick = {
+                                showNoPrinterDialog = false
+                                onClearPrintResult?.invoke()
+                                onPrintOnTerminalReceipt?.invoke()
+                            },
+                            enabled = !isPrintingReceipt,
+                            fullWidth = true,
+                        )
+                    }
+                    if (onConfigurarImpresora != null) {
+                        val configurar = {
+                            showNoPrinterDialog = false
+                            onConfigurarImpresora()
+                        }
+                        if (enTerminal) {
+                            OutlinedButton(onClick = configurar, modifier = Modifier.fillMaxWidth()) { Text("Configurar impresora") }
+                        } else {
+                            PrimaryButton(text = "Configurar impresora", onClick = configurar, fullWidth = true)
+                        }
+                    } else {
+                        PrimaryButton(text = "Entendido", onClick = { showNoPrinterDialog = false }, fullWidth = true)
+                    }
+                }
             },
         ) {
             Icon(
@@ -477,7 +540,7 @@ fun PaymentResultScreen(
     if (showTerminalPrintDialog) {
         AvoqadoDialog(
             title = "Sin impresora local",
-            description = "No hay una impresora de recibos disponible en este dispositivo.",
+            description = if (!accionesDeRedHabilitadas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED else "No hay una impresora de recibos disponible en este dispositivo.",
             onDismiss = {
                 showTerminalPrintDialog = false
                 onClearPrintResult?.invoke()
@@ -486,11 +549,12 @@ fun PaymentResultScreen(
                 PrimaryButton(
                     text = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir en TPV",
                     onClick = {
-                        showTerminalPrintDialog = false
+                        if (!accionesDeRedHabilitadas) return@PrimaryButton
+                        if (cerrarDialogoDeRecibo(true)) showTerminalPrintDialog = false
                         onClearPrintResult?.invoke()
                         onPrintOnTerminalReceipt?.invoke()
                     },
-                    enabled = !isPrintingReceipt && onPrintOnTerminalReceipt != null,
+                    enabled = accionesDeRedHabilitadas && !isPrintingReceipt && onPrintOnTerminalReceipt != null,
                     fullWidth = true,
                 )
             },
@@ -594,6 +658,8 @@ private fun ReceiptOptionRow(
     title: String,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    /** D2: a la derecha, en ámbar (p. ej. «Sin impresora · Configurar»). */
+    detalle: String? = null,
 ) {
     val contentColor = if (enabled) {
         MaterialTheme.colorScheme.onSurfaceVariant
@@ -625,6 +691,9 @@ private fun ReceiptOptionRow(
             color = titleColor,
             modifier = Modifier.weight(1f),
         )
+        if (detalle != null) {
+            Text(text = detalle, style = MaterialTheme.typography.bodySmall, color = Warning)
+        }
         Icon(
             imageVector = Icons.Filled.ChevronRight,
             contentDescription = null,
@@ -641,6 +710,7 @@ fun PaymentProcessingView(
     /** Sólo con el cobro ya en la terminal. Un efectivo o una orden que se registra no espera a ninguna (iOS: «Procesando…»). */
     esperandoTerminal: Boolean,
     onCancel: (() -> Unit)? = null,
+    title: String? = null,
 ) {
     Column(
         modifier = Modifier
@@ -654,7 +724,7 @@ fun PaymentProcessingView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = "Procesando pago...",
+            text = title ?: "Procesando pago...",
             style = MaterialTheme.typography.headlineMedium,
         )
 
@@ -698,6 +768,10 @@ fun PaymentErrorView(
      * `null` ⇒ no se ofrece (cualquier otro error, o el servidor no dijo cuál es).
      */
     onRevisarCobro: (() -> Unit)? = null,
+    retryLabel: String = "Reintentar",
+    cancelLabel: String = "Cancelar",
+    titleLabel: String? = null,
+    accionesDeRedHabilitadas: Boolean = true,
 ) {
     Column(
         modifier = Modifier
@@ -706,6 +780,7 @@ fun PaymentErrorView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
         Icon(
             if (sinRed) Icons.Filled.WifiOff else Icons.Filled.Error,
             contentDescription = if (sinRed) "Sin conexión" else "Error",
@@ -716,7 +791,7 @@ fun PaymentErrorView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = if (sinRed) "Sin conexión" else "Error en el pago",
+            text = titleLabel ?: if (sinRed) "Sin conexión" else "Error en el pago",
             style = MaterialTheme.typography.headlineLarge,
         )
 
@@ -731,8 +806,9 @@ fun PaymentErrorView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
         PrimaryButton(
-            text = "Reintentar",
+            text = retryLabel,
             onClick = onRetry,
+            enabled = accionesDeRedHabilitadas,
             modifier = Modifier.sinTeclasDeClic(LocalEsEscritorio.current),
         )
 
@@ -752,7 +828,7 @@ fun PaymentErrorView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
         TextButton(onClick = onCancel) {
-            Text("Cancelar")
+            Text(cancelLabel)
         }
     }
 }
@@ -800,6 +876,8 @@ fun PaymentUndeterminedView(
      */
     montoDelCobro: String? = null,
     terminalLibreVentaEnDuda: Boolean = false,
+    recheckLabel: String? = null,
+    accionesDeRedHabilitadas: Boolean = true,
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
     var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
@@ -818,6 +896,7 @@ fun PaymentUndeterminedView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
         Icon(
             Icons.Filled.HelpOutline,
             contentDescription = null,
@@ -853,9 +932,9 @@ fun PaymentUndeterminedView(
 
         // Acción segura y destacada: sólo pregunta, nunca cobra.
         PrimaryButton(
-            text = if (isChecking) "Consultando..." else "Volver a consultar",
+            text = if (isChecking) "Consultando..." else recheckLabel ?: "Volver a consultar",
             onClick = onRecheck,
-            enabled = !isChecking,
+            enabled = accionesDeRedHabilitadas && !isChecking,
             isLoading = isChecking,
         )
 
@@ -863,7 +942,7 @@ fun PaymentUndeterminedView(
         if (onDeclararNoCobrado != null) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
             BotonDeclararNoCobrado(
-                enabled = !isChecking,
+                enabled = accionesDeRedHabilitadas && !isChecking,
                 onClick = { pedirConfirmacionDeclaracion = true },
                 texto = if (terminalLibreVentaEnDuda) CancelacionDeCobro.NO_SE_COBRO_COBRAR_OTRA_VEZ else CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
             )
@@ -889,6 +968,8 @@ fun PaymentUndeterminedView(
             montoDelCobro = montoDelCobro,
             onConfirmar = onDeclararNoCobrado,
             onCerrar = { pedirConfirmacionDeclaracion = false },
+            accionesDeRedHabilitadas = accionesDeRedHabilitadas,
+            confirmarHabilitado = !isChecking,
         )
     }
 
@@ -957,10 +1038,16 @@ private fun BotonDeclararNoCobrado(
  * @param montoDelCobro el importe DEL COBRO que se declara; `null` ⇒ el texto dice «ese cobro».
  */
 @Composable
-private fun DialogoDeclararNoCobrado(montoDelCobro: String?, onConfirmar: () -> Unit, onCerrar: () -> Unit) {
+private fun DialogoDeclararNoCobrado(
+    montoDelCobro: String?,
+    onConfirmar: () -> Unit,
+    onCerrar: () -> Unit,
+    accionesDeRedHabilitadas: Boolean = true,
+    confirmarHabilitado: Boolean = true,
+) {
     AvoqadoDialog(
         title = CancelacionDeCobro.DECLARACION_TITULO,
-        description = CancelacionDeCobro.cuerpoDeLaDeclaracion(montoDelCobro),
+        description = if (!accionesDeRedHabilitadas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED else CancelacionDeCobro.cuerpoDeLaDeclaracion(montoDelCobro),
         onDismiss = onCerrar,
         actionButton = {
             // Los dos botones en la MISMA ranura: `AvoqadoDialog` no tiene una secundaria, y
@@ -969,8 +1056,10 @@ private fun DialogoDeclararNoCobrado(montoDelCobro: String?, onConfirmar: () -> 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 PrimaryButton(
                     text = CancelacionDeCobro.DECLARACION_CONFIRMAR,
+                    enabled = accionesDeRedHabilitadas && confirmarHabilitado,
                     onClick = {
-                        onCerrar()
+                        if (!accionesDeRedHabilitadas || !confirmarHabilitado) return@PrimaryButton
+                        if (cerrarDialogoDeRecibo(true)) onCerrar()
                         onConfirmar()
                     },
                     fullWidth = true,
@@ -1077,6 +1166,7 @@ fun CancelacionPendienteView(
      * consultando ([isChecking]) no lo apaga, para que su consulta de fondo no deje el botón muerto.
      */
     declarando: Boolean = false,
+    accionesDeRedHabilitadas: Boolean = true,
 ) {
     var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
 
@@ -1087,6 +1177,7 @@ fun CancelacionPendienteView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
         Icon(
             Icons.Filled.HelpOutline,
             contentDescription = null,
@@ -1130,7 +1221,7 @@ fun CancelacionPendienteView(
         PrimaryButton(
             text = CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR,
             onClick = onVolverAConsultar,
-            enabled = !isChecking,
+            enabled = accionesDeRedHabilitadas && !isChecking,
             isLoading = isChecking,
         )
 
@@ -1138,7 +1229,7 @@ fun CancelacionPendienteView(
         // cancela sola por el camino de siempre (el coordinador), nunca desde aquí.
         if (onDeclararNoCobrado != null) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-            BotonDeclararNoCobrado(enabled = !declarando, onClick = { pedirConfirmacionDeclaracion = true })
+            BotonDeclararNoCobrado(enabled = accionesDeRedHabilitadas && !declarando, onClick = { pedirConfirmacionDeclaracion = true })
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -1153,6 +1244,8 @@ fun CancelacionPendienteView(
             montoDelCobro = montoDelCobro,
             onConfirmar = onDeclararNoCobrado,
             onCerrar = { pedirConfirmacionDeclaracion = false },
+            accionesDeRedHabilitadas = accionesDeRedHabilitadas,
+            confirmarHabilitado = !declarando,
         )
     }
 }
@@ -1178,3 +1271,6 @@ fun PaymentLoadingView() {
         )
     }
 }
+
+internal fun controlDeReciboDeTarjeta(cuenta: Boolean, conectado: Boolean, servidor: Boolean, disponible: Boolean): Boolean = disponible && (!cuenta || conectado && servidor)
+internal fun cerrarDialogoDeRecibo(peticionDespachada: Boolean): Boolean = peticionDespachada

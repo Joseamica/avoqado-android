@@ -75,6 +75,7 @@ class ComandaPrinter @Inject constructor(
         serverName: String? = null,
         comboNames: Map<String, String> = emptyMap(),
         internalPrinter: SavedPrinter? = null,
+        encabezado: List<String>? = null,
     ): ResolvedComanda {
         val station = plan.stationId?.let { id -> config.stations.firstOrNull { it.id == id } }
         // Etapa 3 del KDS (3.4): una estación «sólo pantalla» que sale de RESPALDO no tiene impresora propia — usa la de
@@ -101,6 +102,7 @@ class ComandaPrinter @Inject constructor(
             ),
             serverName = serverName,
             stationName = if (deRespaldo) KitchenDeliveryPolicy.encabezadoDeRespaldo(stationLabel) else stationLabel,
+            encabezado = encabezado,
         )
 
         return ResolvedComanda(
@@ -183,6 +185,8 @@ class ComandaPrinter @Inject constructor(
          * compartidos, y las copias no son cosa del RUTEO sino de la entrega.
          */
         copiasPendientes: Map<String?, Int> = emptyMap(),
+        /** Líneas extra del ticket (pedido en línea). `null` = la comanda de siempre. */
+        encabezado: List<String>? = null,
     ): Result {
         // PEREZOSO a propósito: sólo se le pregunta al hardware por la integrada cuando la
         // config trae alguna impresora POS_INTERNAL — el resto de los venues no paga el bind.
@@ -212,7 +216,7 @@ class ComandaPrinter @Inject constructor(
             // sepa decir de QUÉ estación era la comanda que no salió.
             var stationLabel = UNROUTED_STATION_LABEL
             try {
-                val resolved = resolve(plan, config, orderNumber, orderType, serverName, comboNames, internalPrinter)
+                val resolved = resolve(plan, config, orderNumber, orderType, serverName, comboNames, internalPrinter, encabezado)
                 stationLabel = resolved.stationLabel
                 val printer = resolved.savedPrinter
                     ?: printerService.getDefaultPrinter(PrinterRole.KITCHEN)

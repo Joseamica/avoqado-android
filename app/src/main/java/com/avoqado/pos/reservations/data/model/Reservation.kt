@@ -50,6 +50,8 @@ data class Reservation(
     val tags: List<String> = emptyList(),
     val createdAt: String,
     val updatedAt: String,
+    /** D4: la corrección de un «No asistió» («Sí llegó»). Null si nunca se corrigió o en un servidor viejo. */
+    val noShowCorrection: NoShowCorrection? = null,
 ) {
     val displayName: String get() = customer?.fullName ?: guestName ?: "Sin nombre"
     val displayPhone: String? get() = customer?.phone ?: guestPhone

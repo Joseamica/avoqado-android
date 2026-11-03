@@ -16,6 +16,7 @@ import javax.inject.Inject
 @HiltAndroidApp
 class AvoqadoApp : Application() {
     @Inject lateinit var secureStorage: SecureStorage
+    @Inject lateinit var solicitudesDeTarjeta: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
     @Inject lateinit var reservationActionsRetrier: ReservationActionsRetrier
     @Inject lateinit var kioskDriver: com.avoqado.pos.kiosk.domain.KioskDriver
     @Inject lateinit var kioskPrefs: com.avoqado.pos.kiosk.domain.KioskPrefs
@@ -27,6 +28,12 @@ class AvoqadoApp : Application() {
      * volver la red) para que el precio que muestra no pase de las 72 h que el servidor respeta.
      */
     @Inject lateinit var refrescoDelCatalogo: com.avoqado.pos.pos.data.RefrescoDelCatalogo
+
+    /**
+     * «Pedidos en línea»: el vigilante global (insignia, banner y sonido que insiste) vive con el PROCESO y se detiene en
+     * segundo plano. Espejo obligatorio en `desktop/.../Arranque.iniciar`.
+     */
+    @Inject lateinit var vigilanteDePedidosEnLinea: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 
     /**
      * 🔴 Las cancelaciones de cobro se reproducen desde el ARRANQUE DEL PROCESO, no desde la
@@ -51,17 +58,22 @@ class AvoqadoApp : Application() {
         // mudarse de display y no debe multiplicar el scheduler.
         ProcessLifecycleOwner.get().lifecycle.addObserver(deviceCapabilitySyncCoordinator)
         ProcessLifecycleOwner.get().lifecycle.addObserver(refrescoDelCatalogo)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(vigilanteDePedidosEnLinea)
         // Hydrate the global venue timezone holder so DTO-level formatters
         // (TransactionModel.timeDisplay etc.) work from the very first compose.
         VenueTimeZone.set(secureStorage.venueTimezone)
         reservationActionsRetrier.start(appScope)
         cancelacionDeCobroCoordinator.start()
+        solicitudesDeTarjeta.start()
         vigilanteDeImpresoras.start()
 
         // El kiosco: el interruptor del aparato manda, y el motor sólo se
         // enchufa una vez. Apagado (lo normal) esto no hace absolutamente
         // nada — la segunda pantalla sigue siendo el espejo del mostrador.
         kioskDriver.attach()
+        // Llave propia del kiosco (antes compartida con «Esconder barras»): se migra UNA vez, ANTES de observar.
+        // Sólo una pantalla de presentación (D3) conserva un kiosco que venía "prendido" por la llave vieja.
+        kioskPrefs.migrateLegacyFlag(com.avoqado.pos.kiosk.system.KioskBootReceiver.hasPresentationDisplay(this))
         // Se OBSERVA, no se lee una vez: si el negocio prende o apaga el kiosco
         // desde Ajustes, tiene que surtir efecto en el momento y no hasta el
         // siguiente arranque de la app.

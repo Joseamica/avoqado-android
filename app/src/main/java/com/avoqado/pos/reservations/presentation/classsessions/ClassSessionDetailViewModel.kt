@@ -4,25 +4,35 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.data.StaffMember
 import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.reservations.data.ClassSessionRepository
+import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.AddAttendeeRequest
 import com.avoqado.pos.reservations.data.model.ClassSession
+import com.avoqado.pos.reservations.data.model.ClassSessionAttendee
 import com.avoqado.pos.reservations.data.model.UpdateClassSessionRequest
+import com.avoqado.pos.reservations.domain.ReservationsCapability
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowFlow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.ZoneId
 import javax.inject.Inject
+import javax.inject.Provider
 
 @HiltViewModel
 class ClassSessionDetailViewModel @Inject constructor(
@@ -32,6 +42,9 @@ class ClassSessionDetailViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val classCheckoutSeed: ClassCheckoutSeed,
     savedStateHandle: SavedStateHandle,
+    reservationRepository: ReservationRepository,
+    capabilityProvider: Provider<ReservationsCapability>,
+    connectivity: ConnectivityMonitor,
 ) : ViewModel() {
     private val sessionId: String = savedStateHandle.get<String>("sessionId").orEmpty()
     val zone: ZoneId get() = ZoneId.of(secureStorage.venueTimezone ?: "America/Mexico_City")
@@ -55,6 +68,26 @@ class ClassSessionDetailViewModel @Inject constructor(
      *  screen should navigate to the Checkout tab so the cashier can charge. */
     private val _navigateToCheckout = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val navigateToCheckout: SharedFlow<Unit> = _navigateToCheckout.asSharedFlow()
+
+    // MARK: - D4 · «Sí llegó» desde la lista de la clase (también de una clase que ya pasó)
+
+    private val capability = capabilityProvider.get()
+
+    val isOnline: StateFlow<Boolean> = combine(connectivity.isConnected, connectivity.isServerReachable) { red, servidor -> red && servidor }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, connectivity.isFullyConnected)
+
+    /** Al corregirse (o si ya no aplicaba), la lista se vuelve a pedir: la persona pasa de «No se presentó» a los asistentes. */
+    val undo = UndoNoShowFlow(reservationRepository, viewModelScope, { secureStorage.venueTimezone }, onStale = { refresh() }) { refresh() }
+
+    /** Con permiso de editar reservaciones; nunca en la falta de un pase (se corrige desde su app). */
+    fun canUndo(noShow: ClassSessionAttendee): Boolean = capability.canUpdate && noShow.aggregatorBooking == null
+
+    fun undoNoShow(noShow: ClassSessionAttendee) {
+        val s = _session.value ?: return
+        if (!canUndo(noShow)) return
+        val time = UndoNoShowTexts.hhmm(s.startsAt, secureStorage.venueTimezone) ?: "--:--"
+        undo.start(noShow.id, UndoNoShowTexts.title(UndoNoShowTexts.shortName(noShow.customer, noShow.guestName), s.title, time))
+    }
 
     init {
         refresh()

@@ -95,7 +95,7 @@ jobs:
     needs: decidir
     if: needs.decidir.outputs.publicar == 'true'
     # macOS ARM64 como desktop.yml: es donde el build de escritorio ya está probado.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 75   # hasta 30 min esperando el Release de Android + el build
     steps:
       - uses: actions/checkout@v4

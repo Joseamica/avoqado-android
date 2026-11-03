@@ -108,6 +108,8 @@ fun KioskScreen(
                 onDelete = { state.onDelete?.invoke() },
                 onSearch = { state.onSearch?.invoke() },
                 onBack = { state.onRestart?.invoke() },
+                onPickCountry = { state.onPickCountry?.invoke() },
+                onCountry = { state.onCountry?.invoke(it) },
             )
 
             is KioskContent.Found -> Found(
@@ -126,7 +128,7 @@ fun KioskScreen(
                 onBack = { state.onRestart?.invoke() },
             )
 
-            is KioskContent.Paying -> Paying(c)
+            is KioskContent.Paying -> Paying(c, onBack = { state.onRestart?.invoke() })
 
             is KioskContent.Purchased -> Purchased(c)
 
@@ -286,6 +288,11 @@ private fun Roster(
         if (content.failed) {
             Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
             Note("No se pudo confirmar. Avisa en el mostrador.")
+        }
+        // Sin red NO es error (la llegada quedó guardada): en gris, nunca en el rojo de [Note].
+        if (content.offline) {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+            Sub("Sin conexión · Tu llegada quedó guardada y se envía sola.")
         }
 
         // 🔴 ZONA DE CONFIRMACIÓN, de alto FIJO y DEBAJO de la lista.

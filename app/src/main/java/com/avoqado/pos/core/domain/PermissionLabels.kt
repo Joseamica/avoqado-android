@@ -23,6 +23,10 @@ package com.avoqado.pos.core.domain
  */
 object PermissionLabels {
     private val LABELS = mapOf(
+        "giftCards:read" to "consultar tarjetas de regalo",
+        "giftCards:sell" to "vender tarjetas de regalo",
+        "giftCards:redeem" to "cobrar con tarjeta de regalo",
+        "giftCards:manage" to "administrar tarjetas de regalo",
         // MARK: - Terminales de cobro (PAX)
         //
         // 🔴 `tpv:read` NO es "cobrar". Desde 2026-08-16 (server c74f6593) la
@@ -66,10 +70,16 @@ object PermissionLabels {
         "tender-types:read" to "ver los tipos de pago",
         "tender-types:manage" to "configurar los tipos de pago",
 
+        "giftCards:read" to "ver tarjetas de regalo",
+        "giftCards:sell" to "vender tarjetas de regalo",
+        "giftCards:redeem" to "cobrar con tarjeta de regalo",
+        "giftCards:manage" to "administrar tarjetas de regalo",
+
         // MARK: - Cuentas
         "orders:read" to "ver las cuentas",
         "orders:create" to "abrir una cuenta",
         "orders:update" to "modificar la cuenta",
+        "orders:attach-customer" to "asignar un cliente a una venta cobrada",
         "orders:cancel" to "cancelar la cuenta",
         // 🔴 NO es lo mismo que `orders:cancel`, y la diferencia es el mostrador.
         // El POS crea la orden ANTES de cobrar, así que si el cliente se arrepiente
@@ -126,7 +136,7 @@ object PermissionLabels {
         "loyalty:update" to "editar el programa de lealtad",
         "loyalty:delete" to "borrar el programa de lealtad",
         "loyalty:redeem" to "canjear puntos",
-        "loyalty:adjust" to "ajustar los puntos de un cliente",
+        "loyalty:adjust" to "ajustar los puntos o sellos de un cliente",
         "loyalty:expire" to "vencer puntos",
         "referral:read" to "ver el programa de referidos",
         "referral:override-existing-customer" to "referir a un cliente que ya existía",
@@ -166,6 +176,8 @@ object PermissionLabels {
         "reservations:cancel" to "cancelar una reservación",
         // Fase 8 del kiosco — estrecho a propósito: SU clase, no la agenda del negocio.
         "class-sessions:read-assigned" to "ver la clase que estás dando",
+        // Modo Autoservicio 0.e — la lista y el check-in del kiosco, nada más.
+        "self-service:check-in" to "hacer check-in en el kiosco",
 
         // MARK: - Paquetes de crédito (clases, prepagos)
         "creditPacks:read" to "ver los paquetes de crédito",

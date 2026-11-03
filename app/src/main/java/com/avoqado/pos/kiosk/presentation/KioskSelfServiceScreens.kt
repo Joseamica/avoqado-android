@@ -2,26 +2,39 @@ package com.avoqado.pos.kiosk.presentation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.customerdisplay.CountryChip
+import com.avoqado.pos.customerdisplay.CountryPicker
 import com.avoqado.pos.customerdisplay.NumericPad
 import com.avoqado.pos.customerdisplay.QrCode
+import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.kiosk.domain.KioskContent
@@ -56,50 +69,106 @@ internal fun Identify(
     onDelete: () -> Unit,
     onSearch: () -> Unit,
     onBack: () -> Unit,
+    onPickCountry: () -> Unit,
+    onCountry: (Country) -> Unit,
 ) {
-    // Con scroll: en la cara del cliente de la D3 (800 px) el teclado no cabe entero, y sin
-    // esto su última fila —el 0, el borrar y "Buscar"— quedaba cortada fuera de la pantalla.
-    Screen(scrollable = true) {
-        Big("Tu teléfono")
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+    // El selector de país es de la pantalla, no del estado: si la pantalla se vence, se va con ella.
+    var picking by remember { mutableStateOf(false) }
+    val openPicker = { onPickCountry(); picking = true }
+    // 🔴 La cara del cliente de la D3 puede estar ACOSTADA (1280×800, demo de Mindform 26-oct):
+    // en una columna el teclado ocupaba todo el alto, «Buscar» quedaba cortado abajo y al
+    // bajar a buscarlo se perdía de vista el número tecleado. Acostada va en dos mitades —el
+    // número y los botones a la izquierda, el teclado a la derecha— y todo cabe sin scroll.
+    // Sólo si hay alto para el teclado entero (la D3 da ~600 dp); una pantalla acostada más
+    // chica conserva la columna con scroll de antes (Codex r1, 26-oct).
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth > maxHeight && maxHeight >= TWO_HALVES_MIN_HEIGHT) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xl),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xl),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    IdentifyHeader(content, openPicker)
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                    IdentifyActions(content, onSearch, onBack)
+                }
+                Box(Modifier.weight(1f)) {
+                    NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
+                }
+            }
+        } else {
+            // Parada: con scroll, porque en 800 px de ancho el teclado no cabe entero con todo.
+            Screen(scrollable = true) {
+                IdentifyHeader(content, openPicker)
+                Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+                NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
+                // Espaciador FIJO, no `weight`: dentro de un Column con scroll la altura deja de
+                // estar acotada y `weight` no vale.
+                Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+                IdentifyActions(content, onSearch, onBack)
+            }
+        }
+        if (picking) {
+            CountryPicker(
+                onPick = { onCountry(it); picking = false },
+                onClose = { onPickCountry(); picking = false },
+            )
+        }
+    }
+}
 
+@Composable
+private fun IdentifyHeader(content: KioskContent.Identify, onPickCountry: () -> Unit) {
+    Big("Tu teléfono")
+    Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+
+    // La lada se ve y se cambia: con +52 fijo, un teléfono de EE.UU. caía en la ficha de otra persona (Codex r1, D3).
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+    ) {
+        CountryChip(country = content.country, onClick = onPickCountry)
         Text(
             text = formatNational(content.national),
             fontSize = KDigits,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
         )
+    }
 
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+    Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
-        // Dos fracasos DISTINTOS, y decirlo importa: "no te encontramos" manda
-        // a la persona con el mostrador; "se cayó la red" le dice que vuelva a
-        // intentar. Un mensaje genérico la deja parada sin saber qué hacer.
-        when {
-            content.notFound -> Note("No encontramos ese número. Pregunta en el mostrador.")
-            content.failed -> Note("No pudimos conectarnos. Inténtalo otra vez.")
-            else -> Sub("Con el número que usaste al reservar.")
-        }
-
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-        NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
-        // Espaciador FIJO, no `weight`: dentro de un Column con scroll la altura deja de
-        // estar acotada y `weight` no vale.
-        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-
-        if (content.searching) {
-            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-        } else {
-            PrimaryAction("Buscar", enabled = content.canSearch, onClick = onSearch)
-        }
-        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
-        GhostAction("Cancelar", onClick = onBack)
+    // Dos fracasos DISTINTOS, y decirlo importa: "no te encontramos" manda
+    // a la persona con el mostrador; "se cayó la red" le dice que vuelva a
+    // intentar. Un mensaje genérico la deja parada sin saber qué hacer.
+    when {
+        // Para comprar: no se busca a nadie, sólo se guarda a su nombre.
+        content.forPack != null -> Sub("Para guardar tus clases a tu nombre.")
+        content.notFound -> Note("No encontramos ese número. Pregunta en el mostrador.")
+        content.failed -> Note("No pudimos conectarnos. Inténtalo otra vez.")
+        else -> Sub("Con el número que usaste al reservar.")
     }
 }
 
-/** "5512345678" -> "55 1234 5678". Sólo presentación. */
+@Composable
+private fun IdentifyActions(content: KioskContent.Identify, onSearch: () -> Unit, onBack: () -> Unit) {
+    if (content.searching) {
+        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+    } else {
+        PrimaryAction(if (content.forPack != null) "Continuar" else "Buscar", enabled = content.canSearch, onClick = onSearch)
+    }
+    Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+    // «Regresar» y no «Cancelar»: lleva de vuelta a la lista de la clase.
+    GhostAction("Regresar", onClick = onBack)
+}
+
+private val TWO_HALVES_MIN_HEIGHT = 480.dp
+
+/** "5512345678" -> "55 1234 5678". Sólo presentación; más de 10 dígitos (otra lada) van seguidos. */
 private fun formatNational(digits: String): String = when {
     digits.isEmpty() -> "—"
+    digits.length > 10 -> digits
     digits.length <= 2 -> digits
     digits.length <= 6 -> "${digits.take(2)} ${digits.drop(2)}"
     else -> "${digits.take(2)} ${digits.drop(2).take(4)} ${digits.drop(6)}"
@@ -187,7 +256,11 @@ internal fun CheckedIn(content: KioskContent.CheckedIn) {
         // El separador sólo si hay las dos partes: por el respaldo del teléfono la hora
         // llega vacía (el servidor devuelve la clase, no su etiqueta formateada) y quedaba
         // un "·" colgando al final. Se vio en la D3, de frente al cliente.
-        Sub(listOf(content.session.title, content.session.timeLabel).filter { it.isNotBlank() }.joinToString(" · "))
+        // Lugar y coach, lo mismo que dice el renglón al tocar su nombre en la lista.
+        val s = content.session
+        Sub(listOfNotNull(s.title.takeIf { it.isNotBlank() }, s.timeLabel.takeIf { it.isNotBlank() }, s.spotLabel, s.staffLabel).joinToString(" · "))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text("Puedes pasar", fontSize = KBody, fontWeight = FontWeight.SemiBold, color = Success)
         Spacer(Modifier.weight(1f))
     }
 }
@@ -207,12 +280,20 @@ internal fun Offer(
         Sub("Elige uno y págalo con tu teléfono.")
         Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
 
-        content.packs.forEach { p ->
-            PackCard(p, selected = p.id == content.selectedId) { onToggle(p.id) }
-            Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        // 🔴 Sólo la lista se desliza; «Comprar» y «Cancelar» siempre a la vista. En la cara del cliente de la D3
+        // (800 px) tres paquetes empujaban «Cancelar» fuera de la pantalla y quien entró sin querer esperaba 45 s
+        // (D3 de la oficina, 28-oct). Mismo molde que la lista de la clase: encabezado y pie fijos.
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+        ) {
+            content.packs.forEach { p ->
+                PackCard(p, selected = p.id == content.selectedId) { onToggle(p.id) }
+                Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+            }
         }
-
-        Spacer(Modifier.weight(1f))
         PrimaryAction(
             label = content.selected?.let { "Comprar ${it.name}" } ?: "Elige un paquete",
             enabled = content.selected != null,
@@ -258,37 +339,64 @@ private fun pesos(cents: Int): String {
 // MARK: - 6. Pasa tu tarjeta
 
 @Composable
-internal fun Paying(content: KioskContent.Paying) {
-    Screen {
-        Spacer(Modifier.weight(1f))
-        Big("Escanea para pagar")
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-        // 🔴 Se paga en SU teléfono, no aquí: este aparato no tiene lector y, sobre todo,
-        // nadie debería meter su tarjeta en la pantalla compartida de la entrada.
-        Sub("Con la cámara de tu teléfono.")
-        Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
-
-        when {
-            content.failed -> Sub("No pudimos preparar el pago. Pide ayuda en el mostrador.")
-            content.payUrl == null -> CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-            else -> QrCode(content = content.payUrl, size = 260.dp)
+internal fun Paying(content: KioskContent.Paying, onBack: () -> Unit) {
+    // 🔴 «Regresar» SIEMPRE a la vista (D3): antes esta pantalla no tenía salida ni vencía, y quien
+    // se arrepentía dejaba su QR en la entrada. Acostada (la cara del cliente de la D3, ~600 dp de
+    // alto) el QR va a la izquierda y lo demás a la derecha: en una columna el botón quedaba cortado.
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        if (maxWidth > maxHeight) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xl),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xl),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { PayingQr(content) }
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    PayingInfo(content)
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                    GhostAction("Regresar", onClick = onBack)
+                }
+            }
+        } else {
+            Screen(scrollable = true) {
+                PayingQr(content)
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                PayingInfo(content)
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                GhostAction("Regresar", onClick = onBack)
+            }
         }
-
-        Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
-        Text(
-            text = pesos(content.pack.priceCents),
-            fontSize = 56.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
-        Sub(content.pack.name)
-        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-        // 🔴 El kiosco NO sabe si el pago terminó: eso lo confirma Stripe contra el
-        // servidor. Decir "ya está en tu cuenta" aquí sería inventarlo — la pantalla
-        // promete lo único que sí es cierto.
-        Sub("Tus clases aparecen solas al terminar el pago.")
-        Spacer(Modifier.weight(1f))
     }
+}
+
+@Composable
+private fun PayingQr(content: KioskContent.Paying) {
+    when {
+        content.failed -> Note("No pudimos preparar el pago. Pide ayuda en el mostrador.")
+        content.payUrl == null -> CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+        else -> QrCode(content = content.payUrl, size = 260.dp)
+    }
+}
+
+@Composable
+private fun PayingInfo(content: KioskContent.Paying) {
+    Big("Escanea para pagar")
+    Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+    // 🔴 Se paga en SU teléfono, no aquí: este aparato no tiene lector y, sobre todo,
+    // nadie debería meter su tarjeta en la pantalla compartida de la entrada.
+    Sub("Con la cámara de tu teléfono.")
+    Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+    Text(
+        text = pesos(content.pack.priceCents),
+        fontSize = 56.sp,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+    Sub(content.pack.name)
+    Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+    // La pantalla cambia sola a «¡Listo!» cuando el servidor ya entregó las clases; antes de
+    // eso no se promete nada que no haya pasado.
+    Sub("Tus clases aparecen solas al terminar el pago.")
 }
 
 @Composable
@@ -297,7 +405,7 @@ internal fun Purchased(content: KioskContent.Purchased) {
         Spacer(Modifier.weight(1f))
         Checkmark()
         Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
-        Big("Gracias, ${content.customerName}")
+        Big(if (content.customerName.isBlank()) "¡Listo!" else "Gracias, ${content.customerName}")
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Sub("${content.pack.name} ya está en tu cuenta.")
         Spacer(Modifier.weight(1f))

@@ -366,6 +366,64 @@ class CartViewModelReferralTest {
         assertNull(viewModel.cartState.value.pendingStampReward)
     }
 
+    @Test
+    fun `P1 quitar cliente deja la venta sin cliente, sin su premio y sin su referido`() = runTest {
+        // «Quitar cliente» del carrito (founder, 23-oct): lo que era del cliente se va con él.
+        val viewModel = createViewModel()
+        viewModel.setSelectedCustomer("cust-7", "Ana")
+        viewModel.setPendingStampReward(
+            com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Un café gratis", "FREE_PRODUCT", null),
+        )
+        viewModel.onReferralCodeChange("AMIGO10")
+
+        viewModel.setSelectedCustomer(null)
+
+        assertNull(viewModel.selectedCustomer.value)
+        assertNull(viewModel.cartState.value.pendingStampReward)
+        assertEquals("", viewModel.referralCode.value)
+    }
+
+    @Test
+    fun `P1 la respuesta tardia del referido no regresa el descuento si ya quitaron al cliente`() = runTest {
+        // Codex (cliente en cobrar r1 #2): «Validar», y mientras responde se quita al cliente. La respuesta vieja
+        // volvía a poner el descuento y la venta salía anónima con el descuento del cliente que ya no está.
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<ValidationResult>>()
+        coEvery { validateReferralUseCase(any(), any(), any()) } coAnswers { respuesta.await() }
+        val viewModel = createViewModel()
+        selectCustomer(viewModel)
+        viewModel.onReferralCodeChange("ANA-2026")
+
+        viewModel.validateReferralCode()
+        advanceUntilIdle()
+        viewModel.setSelectedCustomer(null)
+        respuesta.complete(Result.success(ValidationResult.Valid("Ana López", 10, "cust-ana")))
+        advanceUntilIdle()
+
+        assertNull(viewModel.cartState.value.orderDiscount)
+        assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Idle)
+    }
+
+    @Test
+    fun `P1 la respuesta tardia tampoco vuelve si quitaron al cliente y lo eligieron otra vez`() = runTest {
+        // Codex (cliente en cobrar r2 #1): quitar y volver a elegir a Ana antes de que responda; el id coincide otra vez,
+        // pero el código quedó vacío: la respuesta vieja no aplica descuento ni deja «Validando» pegado.
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<ValidationResult>>()
+        coEvery { validateReferralUseCase(any(), any(), any()) } coAnswers { respuesta.await() }
+        val viewModel = createViewModel()
+        selectCustomer(viewModel, "cust-7")
+        viewModel.onReferralCodeChange("ANA-2026")
+
+        viewModel.validateReferralCode()
+        advanceUntilIdle()
+        viewModel.setSelectedCustomer(null)
+        viewModel.setSelectedCustomer("cust-7")
+        respuesta.complete(Result.success(ValidationResult.Valid("Ana López", 10, "cust-ana")))
+        advanceUntilIdle()
+
+        assertNull(viewModel.cartState.value.orderDiscount)
+        assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Idle)
+    }
+
     // MARK: - captureReferralOnPayment
 
     @Test

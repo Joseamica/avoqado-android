@@ -6,6 +6,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.foundation.layout.Column
 import com.avoqado.pos.designsystem.components.sinTeclasDetrasDelCobro
 import androidx.compose.ui.input.key.type
@@ -29,6 +33,9 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.withKeyDown
 import androidx.compose.ui.test.runComposeUiTest
 import com.avoqado.escritorio.ActividadDeEscritorio
@@ -56,6 +63,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 /**
  * Las teclas del cobro en el POS de Windows (founder, 19-oct): F5 efectivo, F4 terminal, Esc regresa, 1-9 elige
@@ -448,5 +459,531 @@ class AtajosDelCobroEnLaEscenaTest {
         onNodeWithText("Esc").assertDoesNotExist()
         runOnIdle { assertFalse(AtajosDeTeclado.atender(Key.F5)) }
         assertNull(cobro.efectivo)
+    }
+
+    /** Mismos módulos y Guice de producción; sólo se sustituye el transporte HTTP, sin sockets de producto. */
+    private class R6Entorno : AutoCloseable {
+        private val contextoAnterior = Escritorio.contexto
+        private val inyectorAnterior = Escritorio.inyector
+        private val actividad = ActividadDeEscritorio(Files.createTempDirectory("Avoqado R6 aislado"))
+        val peticiones = java.util.concurrent.CopyOnWriteArrayList<String>()
+        var alConsultarCuenta: (() -> String)? = null
+        private val cliente = okhttp3.OkHttpClient.Builder().addInterceptor { cadena ->
+            val r = cadena.request()
+            peticiones += "${r.method} ${r.url.encodedPath}"
+            val body = when {
+                r.url.encodedPath.endsWith("/terminals/online") -> """{"terminals":[{"terminalId":"c123456789012345678901234","name":"Caja"}]}"""
+                "/gift-cards/orders/" in r.url.encodedPath -> """{"orderId":"c223456789012345678901234","orderNumber":"n","total":500.0,"paymentStatus":"PENDING","orderStatus":"CONFIRMED","sobres":[{"id":"c323456789012345678901234","ultimos4":"1234","monto":500.0,"saldo":500.0,"status":"${alConsultarCuenta?.invoke() ?: "ACTIVE"}","deliveryChannel":"PRINTED","usada":false,"puedeReenviar":false,"puedeCambiarDestino":false,"puedeRevelar":false}],"cancel":{"allowed":true}}"""
+                else -> "{}"
+            }
+            val respuesta = if ("/gift-cards/orders/" in r.url.encodedPath) """{"success":true,"data":$body}""" else body
+            okhttp3.Response.Builder().request(r).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("R6 local")
+                .header("Content-Type", "application/json")
+                .body(respuesta.toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val inyector = com.google.inject.Guice.createInjector(
+            object : com.google.inject.AbstractModule() {
+                override fun configure() {
+                    binder().disableCircularProxies()
+                    binder().requireAtInjectOnConstructors()
+                    bind(android.content.Context::class.java).toInstance(actividad)
+                    bind(com.google.inject.Key.get(android.content.Context::class.java,
+                        dagger.hilt.android.qualifiers.ApplicationContext::class.java)).toInstance(actividad)
+                }
+            },
+            com.avoqado.escritorio.ModulosDeDagger(*Inyector.modulosDeLaApp) { if (it is okhttp3.OkHttpClient) cliente else it },
+        )
+        val storage = inyector.getInstance(com.avoqado.pos.core.data.local.SecureStorage::class.java)
+        val red = inyector.getInstance(com.avoqado.pos.core.util.ConnectivityMonitor::class.java)
+        val owner = object : androidx.lifecycle.ViewModelStoreOwner { override val viewModelStore = androidx.lifecycle.ViewModelStore() }
+        private var app: com.avoqado.pos.auth.presentation.AppState? = null
+        init { Escritorio.instalar(actividad, inyector); ruta(true); servidor(true) }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun bandera(nombre: String, valor: Boolean) {
+            (red.javaClass.getDeclaredField(nombre).apply { isAccessible = true }.get(red) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>).value = valor
+        }
+        fun ruta(valor: Boolean) = bandera("_isConnected", valor)
+        fun servidor(valor: Boolean) = bandera("_isServerReachable", valor)
+        fun sesion(venue: String = "c423456789012345678901234") {
+            storage.venueId = venue; storage.userId = "c523456789012345678901234"; storage.accessToken = "fixture-r6"
+        }
+        @Suppress("UNCHECKED_CAST")
+        fun modelo(): com.avoqado.pos.payment.presentation.PaymentFlowViewModel {
+            sesion()
+            val ajustes = inyector.getInstance(com.avoqado.pos.tpvsettings.data.TpvSettingsRepository::class.java)
+            (ajustes.javaClass.getDeclaredField("_settings").apply { isAccessible = true }.get(ajustes)
+                as kotlinx.coroutines.flow.MutableStateFlow<com.avoqado.pos.tpvsettings.data.TpvSettings>).value =
+                com.avoqado.pos.tpvsettings.data.TpvSettings(showReviewScreen = false, showTipScreen = false)
+            return Escritorio.crearViewModel(com.avoqado.pos.payment.presentation.PaymentFlowViewModel::class.java,
+                androidx.lifecycle.SavedStateHandle()).also { owner.viewModelStore.put("cobro", it) }
+        }
+        fun estadoDeLaApp(): com.avoqado.pos.auth.presentation.AppState =
+            inyector.getInstance(com.avoqado.pos.auth.presentation.AppState::class.java).also { vm ->
+                app = vm; owner.viewModelStore.put("app", vm)
+                // Vecinos de I/O fuera del caso: no arrancar LAN, cocina ni aparatos desde una prueba de sesión.
+                listOf("transporteLan", "lanHubService", "preparationDelivery", "replayDeEntregasKds",
+                    "wasteSyncCoordinator", "deviceCapabilitySyncCoordinator", "customerDisplayState").forEach {
+                    vm.javaClass.getDeclaredField(it).apply { isAccessible = true }.set(vm, null)
+                }
+            }
+        override fun close() {
+            app?.onLogout()
+            app?.let { vm -> kotlinx.coroutines.runBlocking {
+                check(kotlinx.coroutines.withTimeoutOrNull(5000) { vm.isLoggedIn.first { !it } } == false) {
+                    "La sesión de la fixture no terminó su limpieza"
+                }
+            } }
+            owner.viewModelStore.clear()
+            inyector.getInstance(com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta::class.java).onSessionChanged(false)
+            Escritorio.instalar(contextoAnterior, inyectorAnterior)
+            cliente.dispatcher.executorService.shutdown()
+            cliente.connectionPool.evictAll()
+        }
+    }
+
+    private fun esperarMetodos(m: com.avoqado.pos.payment.presentation.PaymentFlowViewModel, habilitados: Boolean) {
+        val observados = kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeoutOrNull(2000) { m.metodosHabilitados.first { it == habilitados } }
+        }
+        assertEquals(habilitados, observados, "El motor debe publicar el cambio de red de la cuenta")
+    }
+
+    @Composable
+    private fun PantallaR6(e: R6Entorno, m: com.avoqado.pos.payment.presentation.PaymentFlowViewModel, cobro: Cobro, tarjetas: Boolean = true) {
+        CompositionLocalProvider(androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides e.owner) {
+            EnWindows {
+                com.avoqado.pos.payment.presentation.PaymentFlowScreen(
+                    cartState = com.avoqado.pos.pos.presentation.cart.CartState(items = listOf(
+                        com.avoqado.pos.pos.data.model.CartItem(type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
+                            name = "Tarjetas de regalo", unitPrice = 13_700))),
+                    onPaymentCommitted = { error("No debe cobrar en este recorrido") }, onDone = { error("No debe terminar una venta") },
+                    onCancel = { cobro.cancelado++ }, onPreviousChargeResolved = { error("Sin otro cobro") },
+                    resumeOrderId = "c623456789012345678901234", viewModel = m, cuentaDeTarjetas = tarjetas,
+                )
+            }
+        }
+    }
+
+    @Test fun `R6 Guice inyecta el singleton y el callback final despierta sin transicion de red`() = kotlinx.coroutines.runBlocking {
+        R6Entorno().use { e ->
+            val app = e.estadoDeLaApp()
+            val resolver = e.inyector.getInstance(com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta::class.java)
+            kotlin.test.assertSame(resolver, app.solicitudesDeTarjeta)
+            val store = e.inyector.getInstance(com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore::class.java)
+            assertTrue(store.guardar(com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo = "GIFT_CARD_SALE", llave = "c723456789012345678901234",
+                venueId = "c423456789012345678901234", creadaEn = 1, orderId = "c223456789012345678901234", cuerpo = "{}")))
+            e.sesion(); app.onLoginSuccess()
+            val listas = kotlinx.coroutines.withTimeoutOrNull(2000) {
+                resolver.ventasListas.first { it.isNotEmpty() }
+            }
+            assertEquals(listOf("c723456789012345678901234"), listas)
+            assertEquals(1, e.peticiones.count { "/gift-cards/orders/" in it })
+        }
+    }
+
+    @Test fun `R6 el cobro real observa ambas banderas y bloquea filas F4 F5 manteniendo X y Esc`() = runComposeUiTest {
+        R6Entorno().use { e ->
+            val m = e.modelo(); val cobro = Cobro()
+            setContent { PantallaR6(e, m, cobro) }
+            onNodeWithText("\$150").assertIsEnabled()
+            for (bandera in listOf<(Boolean) -> Unit>(e::ruta, e::servidor)) {
+                runOnIdle { bandera(false) }
+                esperarMetodos(m, false)
+                listOf("\$150", "Personalizado", "Cobrar con terminal", "Ya pagó de otra forma").forEach {
+                    onNodeWithText(it).assertIsNotEnabled()
+                }
+                onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED).assertExists()
+                runOnIdle {
+                    assertFalse(AtajosDeTeclado.atender(Key.F4)); assertFalse(AtajosDeTeclado.atender(Key.F5))
+                }
+                onNodeWithText("Monto recibido").assertDoesNotExist()
+                runOnIdle { bandera(true) }
+                esperarMetodos(m, true)
+                onNodeWithText("\$150").assertIsEnabled()
+            }
+            runOnIdle { e.ruta(false); assertTrue(AtajosDeTeclado.atender(Key.Escape)) }
+            onNodeWithContentDescription("Cerrar").performClick()
+            runOnIdle { assertEquals(2, cobro.cancelado); assertFalse(e.peticiones.any { it.startsWith("POST ") }) }
+        }
+    }
+
+    @Test fun `R6 al caer red se cierran las hojas abiertas y no vuelven solas ni mandan pagos`() = runComposeUiTest {
+        R6Entorno().use { e ->
+            val m = e.modelo(); val cobro = Cobro()
+            setContent { PantallaR6(e, m, cobro) }
+            onNodeWithText("Personalizado").performClick()
+            onNodeWithText("Monto recibido").assertExists()
+            runOnIdle { e.ruta(false) }
+            esperarMetodos(m, false)
+            onNodeWithText("Monto recibido").assertDoesNotExist()
+            runOnIdle { e.ruta(true) }
+            esperarMetodos(m, true)
+            onNodeWithText("Monto recibido").assertDoesNotExist()
+            onNodeWithText("Ya pagó de otra forma").performClick()
+            onNodeWithText("¿Cómo pagó el cliente?").assertExists()
+            runOnIdle { e.servidor(false) }
+            esperarMetodos(m, false)
+            onNodeWithText("¿Cómo pagó el cliente?").assertDoesNotExist()
+            runOnIdle { e.servidor(true) }
+            esperarMetodos(m, true)
+            onNodeWithText("¿Cómo pagó el cliente?").assertDoesNotExist()
+            assertFalse(e.peticiones.any { it.startsWith("POST ") })
+        }
+    }
+
+    @Test fun `R6 el preset bloqueado usa el gris del tema en el texto real`() = runComposeUiTest {
+        var gris = androidx.compose.ui.graphics.Color.Unspecified
+        setContent {
+            EnWindows {
+                gris = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                PaymentMethodSelectionScreen(paymentContext = PaymentContext(subtotalCents = 13_700), onMethodSelected = {},
+                    onCancel = {}, metodosHabilitados = false,
+                    motivoDeshabilitado = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED)
+            }
+        }
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        onNodeWithText("\$150").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertEquals(gris, layouts.single().layoutInput.style.color)
+    }
+
+    @Test fun `R6 la venta ordinaria conserva efectivo con cualquiera de las banderas sin red`() = runComposeUiTest {
+        R6Entorno().use { e ->
+            val m = e.modelo(); val cobro = Cobro()
+            e.ruta(false); e.servidor(false)
+            setContent { PantallaR6(e, m, cobro, tarjetas = false) }
+            onNodeWithText("\$150").assertIsEnabled()
+            onNodeWithText("Personalizado").assertIsEnabled()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED).assertDoesNotExist()
+            runOnIdle { assertTrue(AtajosDeTeclado.atender(Key.F5)) }
+            onNodeWithText("Monto recibido").assertExists()
+        }
+    }
+
+    @Test fun `R6 una respuesta de la sesion anterior no repuebla las listas tras invalidar y volver a entrar`() = kotlinx.coroutines.runBlocking {
+        R6Entorno().use { e ->
+            e.sesion()
+            val resolver = e.inyector.getInstance(com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta::class.java)
+            val store = e.inyector.getInstance(com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore::class.java)
+            assertTrue(store.guardar(com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta(tipo = "GIFT_CARD_SALE", llave = "c723456789012345678901234",
+                venueId = "c423456789012345678901234", creadaEn = 1, orderId = "c223456789012345678901234", cuerpo = "{}")))
+            val control = e.inyector.getInstance(com.avoqado.pos.giftcards.data.GiftCardsRepository::class.java)
+                .cuenta("c423456789012345678901234", "c223456789012345678901234")
+            assertTrue(control is com.avoqado.pos.giftcards.data.Respuesta.Ok, "El transporte de la fixture debe llegar al parser real")
+            val esperando = java.util.concurrent.CountDownLatch(1)
+            val continuar = java.util.concurrent.CountDownLatch(1)
+            val consultas = java.util.concurrent.atomic.AtomicInteger()
+            e.alConsultarCuenta = {
+                if (consultas.getAndIncrement() == 0) {
+                    esperando.countDown()
+                    check(continuar.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    "ACTIVE"
+                } else "PENDING"
+            }
+            val primera = async(kotlinx.coroutines.Dispatchers.IO) { resolver.resolverAhora() }
+            try {
+                assertTrue(esperando.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                resolver.onSessionChanged(false)
+                resolver.onSessionChanged(true)
+                continuar.countDown()
+                primera.await()
+                assertTrue(resolver.ventasListas.value.isEmpty(), "La respuesta vieja no pertenece a la sesión nueva")
+            } finally { continuar.countDown() }
+        }
+    }
+    private class ConsultaR3(e: R6Entorno) : AutoCloseable {
+        val cuerpos = java.util.concurrent.CopyOnWriteArrayList<String>()
+        private val cliente = okhttp3.OkHttpClient.Builder().addInterceptor { cadena ->
+            val req = cadena.request()
+            val buffer = okio.Buffer(); req.body?.writeTo(buffer); cuerpos += buffer.readUtf8()
+            okhttp3.Response.Builder().request(req).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("fixtureR3")
+                .body("""{"success":true,"data":{"usableBalance":0,"cards":[]}}""".toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val vm: com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel
+        init {
+            e.sesion(); e.storage.venuePermissions = listOf("giftCards:read")
+            e.storage.guardarAjustesDeTarjetas(e.storage.venueId!!,
+                """{"enabled":true,"suggestedAmounts":[],"minAmount":100,"maxAmount":10000,"sale":{"sellable":true},"capacidades":["PAGE_TOKEN"]}""")
+            vm = com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel(
+                com.avoqado.pos.giftcards.data.GiftCardsRepository(cliente,e.storage), e.storage,e.red,
+                com.avoqado.pos.pos.data.LectorHidBus(),com.avoqado.pos.core.domain.RoleManager(e.storage))
+        }
+        fun esperarConsulta() = kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeoutOrNull(1500) { while(cuerpos.isEmpty()) kotlinx.coroutines.delay(10) }
+            assertEquals(listOf("""{"code":"abcd"}"""),cuerpos.toList(),"El campo debe consultar UNA vez, sin otra entrada del llamador")
+        }
+        override fun close() { vm.cerrar();cliente.dispatcher.executorService.shutdown();cliente.connectionPool.evictAll() }
+    }
+    @Test fun `R3 campo real de identificar conserva tecleo y Enter consulta una vez`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaR3(e).use { q ->
+            setContent { EnWindows {
+                com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!,null,onIdentificada={},onCerrar={},viewModel=q.vm)
+            } }
+            onNode(hasSetTextAction()).performTextInput("abcd")
+            runOnIdle { assertEquals("abcd",q.vm.codigo.value);assertTrue(q.cuerpos.isEmpty()) }
+            onNode(hasSetTextAction()).performKeyInput { pressKey(Key.Enter) }
+            q.esperarConsulta()
+        } }
+    }
+    @Test fun `R3 Listo del campo real de identificar consulta una vez`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaR3(e).use { q ->
+            setContent { EnWindows {
+                com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!,null,onIdentificada={},onCerrar={},viewModel=q.vm)
+            } }
+            onNode(hasSetTextAction()).performTextInput("abcd")
+            onNode(hasSetTextAction()).assert(androidx.compose.ui.test.SemanticsMatcher.expectValue(
+                androidx.compose.ui.semantics.SemanticsProperties.ImeAction,androidx.compose.ui.text.input.ImeAction.Done))
+            onNode(hasSetTextAction()).performImeAction()
+            q.esperarConsulta()
+        } }
+    }
+
+    private class ConsultaG(val e: R6Entorno, capacidades: Set<String>) : AutoCloseable {
+        val apertura = ajustes(capacidades)
+        @Volatile private var actuales: com.avoqado.pos.giftcards.data.AjustesDeTarjetas? = apertura
+        val consultas = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val lector = com.avoqado.pos.pos.data.LectorHidBus()
+        private val cliente = okhttp3.OkHttpClient.Builder().addInterceptor { cadena ->
+            val req = cadena.request()
+            val settings = req.url.encodedPath.endsWith("/settings")
+            val vigente = actuales
+            val datos = if (settings) vigente?.let {
+                kotlinx.serialization.json.Json.encodeToString(com.avoqado.pos.giftcards.data.AjustesDeTarjetas.serializer(), it)
+            } else {
+                consultas += req.url.encodedPath
+                """{"usableBalance":0,"cards":[]}"""
+            }
+            okhttp3.Response.Builder().request(req).protocol(okhttp3.Protocol.HTTP_1_1)
+                .code(if (settings && vigente == null) 404 else 200).message("fixtureG")
+                .body((datos?.let { """{"success":true,"data":$it}""" } ?: """{"message":"Sin soporte"}""")
+                    .toResponseBody("application/json".toMediaType())).build()
+        }.build()
+        val repo: com.avoqado.pos.giftcards.data.GiftCardsRepository
+        val vm: com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel
+        private val store = androidx.lifecycle.ViewModelStore()
+        init {
+            e.sesion(); e.storage.venuePermissions = listOf("giftCards:read")
+            guardarApertura(apertura)
+            repo = com.avoqado.pos.giftcards.data.GiftCardsRepository(cliente, e.storage)
+            vm = com.avoqado.pos.giftcards.presentation.IdentificarTarjetaViewModel(repo, e.storage, e.red,
+                lector, com.avoqado.pos.core.domain.RoleManager(e.storage))
+            store.put("identificarG", vm)
+        }
+        fun ajustes(caps: Set<String>) = com.avoqado.pos.giftcards.data.AjustesDeTarjetas(true, emptyList(), 100.0, 10000.0,
+            sale = com.avoqado.pos.giftcards.data.VentaPermitida(true), capacidades = caps)
+        fun guardarApertura(a: com.avoqado.pos.giftcards.data.AjustesDeTarjetas) {
+            e.storage.guardarAjustesDeTarjetas(e.storage.venueId!!,
+                kotlinx.serialization.json.Json.encodeToString(com.avoqado.pos.giftcards.data.AjustesDeTarjetas.serializer(), a))
+        }
+        fun refrescar(caps: Set<String>?) = kotlinx.coroutines.runBlocking {
+            actuales = caps?.let(::ajustes)
+            repo.refrescarAjustes(e.storage.venueId!!)
+        }
+        fun escanear() = lector.recibirDelLectorIntegrado("https://pay.avoqado.io/tarjeta/Xk3pQ9vLabcdefghij12")
+        fun recibioEscaneo() = vm.estado.value is com.avoqado.pos.giftcards.presentation.EstadoDeIdentificacion.Saldo ||
+            vm.estado.value == com.avoqado.pos.giftcards.presentation.EstadoDeIdentificacion.Desconocido
+        override fun close() { vm.cerrar(); store.clear(); cliente.dispatcher.executorService.shutdown(); cliente.connectionPool.evictAll() }
+    }
+
+    @Test fun `union G hoja real no amplia PAGE_TOKEN con refresco y props nuevos`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            var apertura by mutableStateOf(q.apertura)
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle()
+            q.refrescar(setOf("ENTREGA", "PAGE_TOKEN"))
+            runOnIdle { apertura = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN")) }
+            waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty(), "Una recomposición no autoriza lookup nuevo") }
+        } }
+    }
+
+    @Test fun `union G hoja real sigue angostando al quitar PAGE_TOKEN`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "PAGE_TOKEN")).use { q ->
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA")); waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+
+    private fun hojaGSeCierra(caps: Set<String>?) = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "PAGE_TOKEN")).use { q ->
+            var cierres = 0
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = { cierres++ }, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(caps)
+            waitUntil(timeoutMillis = 5000) { cierres == 1 }
+            onAllNodes(hasSetTextAction()).assertCountEquals(0)
+            runOnIdle { q.escanear() }
+            waitForIdle()
+            runOnIdle { assertFalse(q.vm.contextoVigente()); assertTrue(q.consultas.isEmpty()); assertEquals(1, cierres) }
+        } }
+    }
+    @Test fun `union G hoja real cierra con capacidades vacias`() = hojaGSeCierra(emptySet())
+    @Test fun `union G hoja real cierra al perder entrada 404`() = hojaGSeCierra(null)
+
+    @Test fun `union G recreacion de hoja conserva el argumento de apertura`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            var recreacion by mutableStateOf(0)
+            setContent { EnWindows { androidx.compose.runtime.key(recreacion) {
+                com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { recreacion++ }; waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+
+    @Test fun `union G cerrar y abrir expresamente permite capacidades de la nueva apertura`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            var visible by mutableStateOf(true)
+            var apertura by mutableStateOf(q.apertura)
+            setContent { EnWindows { if (visible) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { visible = false }; waitForIdle()
+            runOnIdle { apertura = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN")); visible = true }; waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            runOnIdle {
+                assertTrue(q.vm.estado.value is com.avoqado.pos.giftcards.presentation.EstadoDeIdentificacion.Saldo)
+                assertEquals(1, q.consultas.size)
+                assertTrue(q.consultas.single().endsWith("/lookup"))
+            }
+        } }
+    }
+
+    @Test fun `union G cambiar negocio usa limite propio y no lo amplia en su refresco`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "PAGE_TOKEN")).use { q ->
+            var venue by mutableStateOf(e.storage.venueId!!)
+            var apertura by mutableStateOf(q.apertura)
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                venue, apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle()
+            runOnIdle {
+                e.sesion("c823456789012345678901234")
+                apertura = q.ajustes(setOf("ENTREGA")); q.guardarApertura(apertura); venue = e.storage.venueId!!
+            }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+    @Test fun `union G argumento inicial amplio no vence el limite vigente al abrir`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.ajustes(setOf("ENTREGA", "PAGE_TOKEN")),
+                onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN")); waitForIdle()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+    @Test fun `union G la hoja tampoco agrega el modo Telefono durante la apertura`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            setContent { EnWindows { com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm) } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "TELEFONO")); waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertDoesNotExist()
+            runOnIdle { assertTrue(q.consultas.isEmpty()) }
+        } }
+    }
+
+    /**
+     * G2 (Codex unión r4): lo que reconstruye la hoja sin que el cajero lo decida (girar la tableta, volver del fondo, restaurar la
+     * app) pasa por el estado guardado: se guarda, se desmonta y se vuelve a montar con lo guardado, con el MISMO modelo y el mismo
+     * argumento. El argumento amplio y un refresco que amplía no pueden abrir ligas ni el modo Teléfono tras esa reconstrucción.
+     */
+    @Test fun `union G2 reconstruir la hoja con su estado guardado no amplia el techo aunque el argumento sea amplio`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            val amplio = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO"))
+            var registro by mutableStateOf(androidx.compose.runtime.saveable.SaveableStateRegistry(null) { true })
+            var montada by mutableStateOf(true)
+            setContent { EnWindows { androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.runtime.saveable.LocalSaveableStateRegistry provides registro) {
+                if (montada) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, amplio, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO")); waitForIdle()
+            runOnIdle {
+                val guardado = registro.performSave()
+                montada = false
+                registro = androidx.compose.runtime.saveable.SaveableStateRegistry(guardado) { true }
+            }
+            waitForIdle()
+            runOnIdle { montada = true }; waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertDoesNotExist()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            onNodeWithText("Producto no encontrado").assertExists()
+            runOnIdle { assertTrue(q.consultas.isEmpty(), "La reconstrucción no es una apertura nueva") }
+        } }
+    }
+
+    /** G2, control: sin estado guardado (el llamador la quitó y la volvió a poner) SÍ es una apertura nueva con lo vigente. */
+    @Test fun `union G2 control quitarla sin estado guardado es una apertura nueva`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA")).use { q ->
+            val amplio = q.ajustes(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO"))
+            var registro by mutableStateOf(androidx.compose.runtime.saveable.SaveableStateRegistry(null) { true })
+            var montada by mutableStateOf(true)
+            setContent { EnWindows { androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.runtime.saveable.LocalSaveableStateRegistry provides registro) {
+                if (montada) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, amplio, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle(); q.refrescar(setOf("ENTREGA", "PAGE_TOKEN", "TELEFONO")); waitForIdle()
+            runOnIdle { montada = false }; waitForIdle()
+            runOnIdle { montada = true }; waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertExists()
+            runOnIdle { q.escanear() }
+            waitUntil(timeoutMillis = 5000) { q.recibioEscaneo() }
+            runOnIdle { assertEquals(1, q.consultas.size); assertTrue(q.consultas.single().endsWith("/lookup")) }
+        } }
+    }
+
+    /**
+     * G2 (Codex unión r5 #2): tras girar, el llamador real vuelve a `muestraSaldo = false` (remember) y lo guardado de la hoja queda
+     * esperando. La cajera abre OTRA identificación cuando «Teléfono» ya no está: esa apertura no puede heredar el techo de la
+     * anterior, y un refresco que lo devuelve no lo enseña.
+     */
+    @Test fun `union G2 una apertura nueva tras girar no hereda el techo de la anterior`() = runComposeUiTest {
+        R6Entorno().use { e -> ConsultaG(e, setOf("ENTREGA", "TELEFONO")).use { q ->
+            var registro by mutableStateOf(androidx.compose.runtime.saveable.SaveableStateRegistry(null) { true })
+            var montada by mutableStateOf(true)
+            setContent { EnWindows { androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.runtime.saveable.LocalSaveableStateRegistry provides registro) {
+                if (montada) com.avoqado.pos.giftcards.presentation.IdentificarTarjetaSheet(
+                    e.storage.venueId!!, q.apertura, onIdentificada = {}, onCerrar = {}, viewModel = q.vm)
+            } } }
+            waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertExists()
+            // Gira: se guarda, se desmonta y el padre ya no la enseña (su `muestraSaldo` no se guarda).
+            runOnIdle {
+                val guardado = registro.performSave()
+                montada = false
+                registro = androidx.compose.runtime.saveable.SaveableStateRegistry(guardado) { true }
+            }
+            waitForIdle(); q.refrescar(setOf("ENTREGA")); waitForIdle()
+            runOnIdle { montada = true }; waitForIdle()  // la cajera abre otra
+            q.refrescar(setOf("ENTREGA", "TELEFONO")); waitForIdle()
+            onNodeWithText(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.TELEFONO).assertDoesNotExist()
+        } }
     }
 }

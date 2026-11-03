@@ -16,6 +16,7 @@ object ReceiptInputMapper {
 
     private fun sale(r: ReceiptData, timezone: String, appVersion: String?) = ReceiptSale(
         kind = when {
+            r.kind == "EXCHANGE" -> "EXCHANGE"
             r.isRefund -> "REFUND"
             r.isPreBill -> "PRE_BILL"
             else -> "SALE"
@@ -57,6 +58,7 @@ object ReceiptInputMapper {
         autofacturaAvailable = r.autofacturaAvailable,
         paidCents = r.paidAmount?.toLong(),
         remainingCents = r.remainingAmount?.toLong(),
+        exchange = r.exchange,
     )
 
     /**
@@ -69,7 +71,7 @@ object ReceiptInputMapper {
             r.isCashPayment -> ReceiptTender(kind = "CASH", label = label, tenderedCents = r.cashTendered?.toLong(), changeCents = r.changeAmount?.toLong())
             r.cardLastFour != null || r.cardBrand != null || label == "Tarjeta" ->
                 ReceiptTender(kind = "CARD", label = label, cardBrand = r.cardBrand, cardLastFour = r.cardLastFour)
-            else -> ReceiptTender(kind = "OTHER", label = label)
+            else -> ReceiptTender(kind = "OTHER", label = label, rowLabel = r.paymentRowLabel)
         }
     }
 

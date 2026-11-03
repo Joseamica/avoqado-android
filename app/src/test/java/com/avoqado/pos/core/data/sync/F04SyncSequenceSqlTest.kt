@@ -99,6 +99,10 @@ class F04SyncSequenceSqlTest {
         }
         override suspend fun referenciasSinResolverQ16(venueId: String, refs: List<String>): List<String> = error("Q16 price reads are outside the F04 sequence fixture")
         override suspend fun hayCapturaSinResolverQ16(venueId: String): Boolean = error("Q16 price reads are outside the F04 sequence fixture")
+        override suspend fun referenciasSinResolverSqlQ16(venueId: String, refs: List<String>): List<String> = error("Q16 price reads are outside the F04 sequence fixture")
+        override suspend fun hayCapturaSinResolverSqlQ16(venueId: String): Boolean = error("Q16 price reads are outside the F04 sequence fixture")
+        override suspend fun canceladosCandidatosQ16(venueId: String, cursor: String): List<PendingPaymentEntity> = error("Q16 price reads are outside the F04 sequence fixture")
+        override suspend fun canceladosPorReferenciaQ16(venueId: String, refs: List<String>, cursor: String): List<PendingPaymentEntity> = error("Q16 price reads are outside the F04 sequence fixture")
         override fun observarRevisionesQ15(venueId: String, revisadas: Boolean, busqueda: String): kotlinx.coroutines.flow.Flow<Int> = error("Q15 history observations are outside the F04 sequence fixture")
         override suspend fun retenerIntentQ15(venueId: String, id: String, motivo: String, ahora: Long): Int = error("Q15 holds are outside the F04 sequence fixture")
         override suspend fun soltarRetenidoSqlQ16(venueId: String, id: String): Int = error("Q16 releases are outside the F04 sequence fixture")

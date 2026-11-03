@@ -357,6 +357,10 @@ data class ReceiptData(
     /** Saldo autoritativo de la lectura de precuenta, en centavos. Null = no disponible. */
     val paidAmount: Int? = null,
     val remainingAmount: Int? = null,
+    val kind: String? = null,
+    val exchange: com.avoqado.pos.printing.receiptlayout.ReceiptExchange? = null,
+    /** La etiqueta del renglón del pago; `null` = «Pago:». La reimpresión de una devolución a saldo dice «Devuelto con:». */
+    val paymentRowLabel: String? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"
@@ -484,6 +488,8 @@ data class KitchenTicketData(
      *  shown in the ticket header when per-station routing is active. Additive:
      *  null (the default) reproduces today's ticket exactly. */
     val stationName: String? = null,
+    /** Líneas extra bajo el bloque tipo/folio y sobre los renglones (pedido en línea: cliente, hora, pago, nota). `null` = el ticket de siempre, byte por byte. */
+    val encabezado: List<String>? = null,
 ) {
     val formattedTime: String
         get() = timestamp.toInstant()
@@ -528,3 +534,6 @@ enum class KitchenPriority {
             VIP -> "*** VIP ***"
         }
 }
+
+/** Una línea del encabezado que empieza con esta marca se imprime en negrita (la marca no sale en el papel). */
+const val MARCA_NEGRITA_ENCABEZADO = "\u0001"

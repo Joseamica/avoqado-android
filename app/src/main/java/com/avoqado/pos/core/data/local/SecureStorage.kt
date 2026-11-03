@@ -5,10 +5,15 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.avoqado.pos.areatickets.data.IntentoDeVale
+import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
+import com.avoqado.pos.areatickets.data.ValeSinConfirmar
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
+import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import com.avoqado.pos.core.domain.PlanSnapshot
 import com.avoqado.pos.core.domain.retainNewestPlan
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -25,8 +30,20 @@ class SecureStorage @Inject constructor(
     /// authenticator). Before, nothing observed this, so the UI stayed in the
     /// main scaffold with every request silently 401ing until a force-restart
     /// (zombie session). AppState collects this and flips isLoggedIn=false.
-    private val _sessionInvalidated = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val sessionInvalidated: kotlinx.coroutines.flow.SharedFlow<Unit> = _sessionInvalidated
+    /// Lleva la [generacion] que dejó el cierre: quien lo procese tarde (ya entró otra persona) no la apaga (D4, 29-oct).
+    private val _sessionInvalidated = kotlinx.coroutines.flow.MutableSharedFlow<Long>(extraBufferCapacity = 1)
+    val sessionInvalidated: kotlinx.coroutines.flow.SharedFlow<Long> = _sessionInvalidated
+
+    /**
+     * El sello de sesión (D4, 29-oct): sube cada vez que cambia quién está adentro, al instalar una sesión (contraseña,
+     * PIN, huella) y al cerrarla. No sube al renovar las llaves ni al cambiar de sucursal. Una petición, un aviso, un
+     * cierre o un intento de entrar que llegue con otra generación es de una sesión que ya no está: no renueva, no
+     * reenvía, no instala y no cierra. Se muta bajo el candado de esta clase; vive en memoria y empieza en 0 con el
+     * proceso.
+     */
+    @Volatile
+    var generacion: Long = 0L
+        private set
 
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -42,6 +59,22 @@ class SecureStorage @Inject constructor(
 
     private val plainPrefs: SharedPreferences =
         context.getSharedPreferences("avoqado_prefs", Context.MODE_PRIVATE)
+
+    fun readPendingCustomerAssignment(actorId: String, venueId: String, paymentId: String): PendingCustomerAssignment? =
+        prefs.getString(customerAssignmentKey(actorId, venueId, paymentId), null)?.let {
+            json.decodeFromString<PendingCustomerAssignment>(it)
+        }
+
+    fun writePendingCustomerAssignment(pending: PendingCustomerAssignment): Boolean =
+        prefs.edit().putString(
+            customerAssignmentKey(pending.actorId, pending.venueId, pending.paymentId), json.encodeToString(pending),
+        ).commit()
+
+    fun clearPendingCustomerAssignment(pending: PendingCustomerAssignment): Boolean =
+        prefs.edit().remove(customerAssignmentKey(pending.actorId, pending.venueId, pending.paymentId)).commit()
+
+    private fun customerAssignmentKey(actorId: String, venueId: String, paymentId: String) =
+        "pendingCustomerAssignment.$actorId.$venueId.$paymentId"
 
     // MARK: - Session Data
 
@@ -129,9 +162,36 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_AREA_TICKET_MATERIALIZE_KEY, null)
         set(value) = prefs.edit().putString(KEY_AREA_TICKET_MATERIALIZE_KEY, value).apply()
 
-    var pendingAreaTicketIssueKey: String?
-        get() = prefs.getString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, null)
-        set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, value).apply()
+    /** 🔴 D2 (vales-ciclo): la llave de emisión de vales de [venueId]; ver [LlaveDeEmisionDeVales]. */
+    fun llaveDeEmisionDeVales(venueId: String): String? = LlaveDeEmisionDeVales.leer(prefs, venueId)
+
+    /** `true` sólo si la llave quedó en disco. */
+    fun guardarLlaveDeEmisionDeVales(venueId: String, llave: String): Boolean = LlaveDeEmisionDeVales.guardar(prefs, venueId, llave)
+
+    /** Suelta la llave de [venueId] (y lo que se mandó con ella); con [siEs], sólo si sigue siendo ésa. */
+    fun soltarLlaveDeEmisionDeVales(venueId: String, siEs: String? = null) {
+        LlaveDeEmisionDeVales.soltar(prefs, venueId, siEs)
+    }
+
+    /** 🔴 D5: llave + lo que se manda, juntos en disco ANTES del POST. Ver [LlaveDeEmisionDeVales.guardar]. */
+    internal fun guardarIntentoDeVale(venueId: String, llave: String, intento: IntentoDeVale) =
+        LlaveDeEmisionDeVales.guardar(prefs, venueId, llave, intento)
+
+    /** 🔴 D5: primera vez de [venueId] en este proceso. Ver [LlaveDeEmisionDeVales.alArrancar]. */
+    fun revisarValeAMedias(venueId: String): Boolean = LlaveDeEmisionDeVales.alArrancar(prefs, venueId)
+
+    fun valeSinConfirmar(venueId: String) = LlaveDeEmisionDeVales.valeSinConfirmar(prefs, venueId)
+
+    /** 🔴 D5: ver [LlaveDeEmisionDeVales.mercanciaEnDuda]. */
+    fun mercanciaDeValeEnDuda(venueId: String, lineas: List<IssueAreaTicketLineRequest>): Boolean =
+        LlaveDeEmisionDeVales.mercanciaEnDuda(prefs, venueId, lineas)
+
+    fun olvidarValeSinConfirmar(venueId: String, llave: String) = LlaveDeEmisionDeVales.olvidarSinConfirmar(prefs, venueId, llave)
+
+    /** 🔴 D5: papel pendiente + olvidar el vale sin confirmar, juntos. Ver [LlaveDeEmisionDeVales.recuperado]. */
+    fun valeRecuperado(venueId: String, llave: String, codigo: String): Boolean = LlaveDeEmisionDeVales.recuperado(
+        prefs, venueId, llave, codigo, KEY_PENDING_AREA_TICKET_PRINT_CODE, KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID,
+    )
 
     var pendingAreaTicketPrintCode: String?
         get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_CODE, null)
@@ -233,6 +293,23 @@ class SecureStorage @Inject constructor(
         get() = prefs.getBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, value).apply() }
 
+    /** Last known switch for the active venue, cleared when leaving that venue. */
+    var exchangesEnabled: Boolean
+        get() = prefs.getBoolean(KEY_EXCHANGES_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_EXCHANGES_ENABLED, value).apply() }
+
+    /** «Sólo saldo a favor» y si el servidor sabe darlo, de la sucursal activa; se borran al dejarla, como el «Cambio». */
+    var storeCreditOnly: Boolean
+        get() = prefs.getBoolean(KEY_STORE_CREDIT_ONLY, false)
+        set(value) { prefs.edit().putBoolean(KEY_STORE_CREDIT_ONLY, value).apply() }
+    /** `null` = el servidor no lo dijo (servidor anterior): la opción no aparece; `false` = sin llaves: sale en gris. */
+    var storeCreditAvailable: Boolean?
+        get() = if (prefs.contains(KEY_STORE_CREDIT_AVAILABLE)) prefs.getBoolean(KEY_STORE_CREDIT_AVAILABLE, false) else null
+        set(value) {
+            if (value == null) prefs.edit().remove(KEY_STORE_CREDIT_AVAILABLE).apply()
+            else prefs.edit().putBoolean(KEY_STORE_CREDIT_AVAILABLE, value).apply()
+        }
+
     /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
      * Server resolves these per-venue from role + custom overrides; client mirrors them
@@ -265,6 +342,17 @@ class SecureStorage @Inject constructor(
         prefs.edit().putString("drawerAdoptionNotices.$venueId", value).commit()
     }
 
+    /**
+     * Alias de las cajas de ESTE aparato, POR VENUE (JSON): «id local de la caja → id que le dio el servidor» (efectivo sin
+     * red en el turno correcto, 21-oct-2026). Un cobro guardado con el id local de su caja viaja con el del servidor. Durable
+     * y con `commit()` por lo mismo que la cola del cajón: se escribe ANTES de reapuntar la cola, y si se perdiera, el cobro
+     * subiría sin su caja. Ver `CashDrawerRepository.idDeCajaParaElServidor`.
+     */
+    fun drawerSessionAliasesJson(venueId: String): String? = prefs.getString("drawerSessionAliases.$venueId", null)
+    fun setDrawerSessionAliasesJson(venueId: String, value: String?) {
+        prefs.edit().putString("drawerSessionAliases.$venueId", value).commit()
+    }
+
     var venuePermissions: List<String>
         get() {
             val raw = prefs.getString(KEY_VENUE_PERMISSIONS, null) ?: return emptyList()
@@ -277,6 +365,13 @@ class SecureStorage @Inject constructor(
         set(value) {
             prefs.edit().putString(KEY_VENUE_PERMISSIONS, json.encodeToString(value)).apply()
         }
+
+    /** Ajustes sin secretos por negocio; "null" distingue un 404 de una caché que nunca existió. */
+    fun leerAjustesDeTarjetas(venueId: String): String? = plainPrefs.getString("giftCardSettings.$venueId", null)
+
+    fun guardarAjustesDeTarjetas(venueId: String, json: String?) {
+        plainPrefs.edit().putString("giftCardSettings.$venueId", json ?: "null").apply()
+    }
 
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
@@ -355,6 +450,31 @@ class SecureStorage @Inject constructor(
     }
 
     // MARK: - Biometric Data (NOT cleared on logout)
+
+    private var solicitudesCargadas = false
+    private var solicitudesConfirmadas: String? = null
+    private var respaldoSolicitudesConfirmado: String? = null
+    val giftCardRequestsJson: String?
+        @Synchronized get() {
+            if (!solicitudesCargadas) {
+                solicitudesConfirmadas = prefs.getString(KEY_GIFT_CARD_REQUESTS, null)
+                respaldoSolicitudesConfirmado = prefs.getString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, null)
+                solicitudesCargadas = true
+            }
+            return solicitudesConfirmadas
+        }
+    @Synchronized
+    fun escribirSolicitudesDeTarjeta(nueva: (String?) -> String?): Boolean {
+        val raw = giftCardRequestsJson
+        val siguiente = nueva(raw) ?: return false
+        val editor = prefs.edit().putString(KEY_GIFT_CARD_REQUESTS, siguiente)
+        val ilegible = com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.ilegible(raw)
+        ilegible?.let { editor.putString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, it) }
+        if (!editor.commit()) return false
+        solicitudesConfirmadas = siguiente
+        if (ilegible != null) respaldoSolicitudesConfirmado = ilegible
+        return true
+    }
 
     var isBiometricLoginEnabled: Boolean
         get() = plainPrefs.getBoolean(KEY_BIOMETRIC_ENABLED, false)
@@ -502,6 +622,7 @@ class SecureStorage @Inject constructor(
     val isLoggedIn: Boolean
         get() = accessToken != null && userId != null
 
+    @Synchronized
     fun saveLogin(
         userId: String,
         email: String,
@@ -528,11 +649,85 @@ class SecureStorage @Inject constructor(
         this.accessToken = accessToken
         this.refreshToken = refreshToken
         this.venuePermissions = venuePermissions
+        generacion++
     }
 
+    /** La generación y el access, leídos juntos: con qué sesión sale una petición. */
+    @Synchronized
+    fun selloYAccess(): Pair<Long, String?> = generacion to accessToken
+
+    /** El access sólo si la sesión sigue siendo la de [sello]; si no, `null` (ya entró o salió alguien). */
+    @Synchronized
+    fun accessSiSigue(sello: Long): String? = if (generacion == sello) accessToken else null
+
+    /** El refresh sólo si la sesión sigue siendo la de [sello] y la sucursal la de [venueId], leídos juntos (Codex código r1 #1). */
+    @Synchronized
+    fun refreshSiSigue(sello: Long, venueId: String): String? =
+        if (generacion == sello && this.venueId == venueId) refreshToken?.takeIf { it.isNotBlank() } else null
+
+    /** Corre [efecto] sólo si la sesión sigue siendo la de [sello], sin que nada se cuele entre mirar y hacer. */
+    @Synchronized
+    fun siSigueLaGeneracion(sello: Long, efecto: () -> Unit = {}): Boolean {
+        if (generacion != sello) return false
+        efecto()
+        return true
+    }
+
+    /**
+     * Instala la sesión de un intento de entrar ([efecto] hace el `saveLogin` y lo demás de ESE login) sólo si nadie
+     * entró ni salió desde que empezó ([sello]). Devuelve la generación que quedó, para quien publique después; `null`
+     * si se descartó.
+     */
+    @Synchronized
+    fun instalarSiSigue(sello: Long, efecto: () -> Unit): Long? {
+        if (generacion != sello) return null
+        efecto()
+        return generacion
+    }
+
+    /** Cierra sólo si la sesión sigue siendo la de [sello]: un cierre que se quedó esperando no saca a quien entró. */
+    @Synchronized
+    fun clearSessionSiSigueLaGeneracion(sello: Long): Boolean {
+        if (generacion != sello) return false
+        clearSession()
+        return true
+    }
+
+    @Synchronized
     fun updateTokens(accessToken: String, refreshToken: String) {
         this.accessToken = accessToken
         this.refreshToken = refreshToken
+    }
+
+    /**
+     * Guarda una sesión RENOVADA sólo si sigue siendo la que se mandó a renovar ([refreshUsado]). Mientras la renovación
+     * viajaba, otra persona pudo entrar con su PIN o cerrarse la sesión: pisarla dejaba el nombre y los permisos de B con
+     * las llaves de A (Codex, D9 del Cambio, 29-oct). Comparar y escribir van bajo el mismo candado que [saveLogin] y
+     * [clearSession].
+     */
+    @Synchronized
+    fun updateTokensSiSigue(refreshUsado: String, accessToken: String, refreshToken: String): Boolean {
+        if (this.refreshToken != refreshUsado) return false
+        updateTokens(accessToken, refreshToken)
+        return true
+    }
+
+    /** Cierra la sesión sólo si sigue siendo la de [refreshUsado]: un rechazo de la renovación que llega tarde no
+     *  expulsa a quien entró después con su PIN (Codex, D9 del Cambio r2, 29-oct). */
+    @Synchronized
+    fun clearSessionSiSigue(refreshUsado: String?): Boolean {
+        if (this.refreshToken != refreshUsado) return false
+        clearSession()
+        return true
+    }
+
+    /** Igual, para una petición ya reintentada que vuelve 401: cierra sólo si la sesión sigue con el access con que
+     *  salió [accessUsado]. Sin access no se sabe de quién es, y no se cierra. */
+    @Synchronized
+    fun clearSessionSiSigueElAccess(accessUsado: String?): Boolean {
+        if (accessUsado == null || this.accessToken != accessUsado) return false
+        clearSession()
+        return true
     }
 
     fun switchVenue(venue: StoredVenue) {
@@ -550,6 +745,9 @@ class SecureStorage @Inject constructor(
         // lleguen los ajustes de la nueva sucursal: heredar un ON ajeno pintaría
         // candados que ese local no activó, y al tocarlos saldría el 403 pelón.
         this.managerPinOverrideEnabled = false
+        this.exchangesEnabled = false
+        this.storeCreditOnly = false
+        this.storeCreditAvailable = null
     }
 
     fun saveBiometricCredentials(
@@ -567,6 +765,20 @@ class SecureStorage @Inject constructor(
         isBiometricLoginEnabled = true
     }
 
+    /**
+     * La llave de la huella que el servidor ya rotó se guarda aunque la entrada se descarte: con la vieja, la siguiente
+     * huella presentaría un refresh consumido y el servidor revocaría la sesión (Codex plan r1 #2). Sólo si la reserva
+     * sigue siendo la que se mandó.
+     */
+    @Synchronized
+    fun guardarRotadaDeLaHuellaSiSigue(enviado: String, nuevo: String): Boolean {
+        if (biometricRefreshToken != enviado) return false
+        biometricRefreshToken = nuevo
+        return true
+    }
+
+    /** Entrar con huella también es instalar una sesión: sube el sello como [saveLogin]. */
+    @Synchronized
     fun restoreBiometricSession(venue: StoredVenue?): Boolean {
         val restoredUserId = biometricUserId ?: return false
         val restoredVenue = venue ?: return false
@@ -574,11 +786,14 @@ class SecureStorage @Inject constructor(
         userId = restoredUserId
         userEmail = biometricUserEmail
         switchVenue(restoredVenue)
+        generacion++
         return true
     }
 
+    @Synchronized
     fun clearSession() {
-        _sessionInvalidated.tryEmit(Unit)
+        generacion++
+        _sessionInvalidated.tryEmit(generacion)
         prefs.edit()
             .remove(KEY_USER_ID)
             .remove(KEY_USER_EMAIL)
@@ -601,11 +816,23 @@ class SecureStorage @Inject constructor(
             // y vale pendiente permite recuperarlos tras volver a iniciar.
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
+            .remove(KEY_EXCHANGES_ENABLED)
+            .remove(KEY_STORE_CREDIT_ONLY)
+            .remove(KEY_STORE_CREDIT_AVAILABLE)
             .remove(KEY_VENUE_PERMISSIONS)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_TERMINAL_ID)
             .apply()
+    }
+
+    /** Borra la huella sólo si su llave sigue siendo la que mandó el intento que falló: un error que llega tarde no
+     *  borra la que otro intento acaba de renovar (Codex plan r2 #5). */
+    @Synchronized
+    fun clearBiometricCredentialsSiSigue(enviado: String): Boolean {
+        if (biometricRefreshToken != enviado) return false
+        clearBiometricCredentials()
+        return true
     }
 
     fun clearBiometricCredentials() {
@@ -621,14 +848,22 @@ class SecureStorage @Inject constructor(
             .apply()
     }
 
+    @Synchronized
     fun clearAll() {
+        val solicitudes = giftCardRequestsJson
+        val respaldo = respaldoSolicitudesConfirmado
         clearSession()
         clearBiometricCredentials()
-        prefs.edit().clear().apply()
+        prefs.edit().clear().apply {
+            solicitudes?.let { putString(KEY_GIFT_CARD_REQUESTS, it) }
+            respaldo?.let { putString(KEY_GIFT_CARD_REQUESTS_ILEGIBLE, it) }
+        }.commit()
         plainPrefs.edit().clear().apply()
     }
 
     companion object {
+        private const val KEY_GIFT_CARD_REQUESTS = "giftCardRequests"
+        private const val KEY_GIFT_CARD_REQUESTS_ILEGIBLE = "giftCardRequestsIlegible"
         // Session
         private const val KEY_USER_ID = "userId"
         private const val KEY_USER_EMAIL = "userEmail"
@@ -652,7 +887,6 @@ class SecureStorage @Inject constructor(
         private const val KEY_AREA_TICKET_CHECKOUT_VENUE_ID = "areaTicketCheckoutVenueId"
         private const val KEY_AREA_TICKET_CREATE_KEY = "areaTicketCreateKey"
         private const val KEY_AREA_TICKET_MATERIALIZE_KEY = "areaTicketMaterializeKey"
-        private const val KEY_PENDING_AREA_TICKET_ISSUE_KEY = "pendingAreaTicketIssueKey"
         private const val KEY_PENDING_AREA_TICKET_PRINT_CODE = "pendingAreaTicketPrintCode"
         private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
         private const val KEY_PENDING_AREA_TICKET_PRINT_RECORDS = "pendingAreaTicketPrintRecords"
@@ -660,6 +894,9 @@ class SecureStorage @Inject constructor(
         private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"
         private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
+        private const val KEY_EXCHANGES_ENABLED = "exchangesEnabled"
+        private const val KEY_STORE_CREDIT_ONLY = "storeCreditOnly"
+        private const val KEY_STORE_CREDIT_AVAILABLE = "storeCreditAvailable"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"
@@ -746,5 +983,130 @@ fun roleDisplayName(role: String?): String? {
         "VIEWER" -> "Observador"
         "STAFF" -> "Staff"
         else -> normalized
+    }
+}
+
+/**
+ * 🔴 D2 (vales-ciclo): la llave de emisión de vales, POR NEGOCIO (`pendingAreaTicketIssueKey_<venueId>`), como la deduplica el
+ * SERVIDOR (negocio + llave). Todo va con `commit()`: `apply()` cambia la memoria y escribe después sin avisar si el disco
+ * falla (ANDROID), y en WINDOWS un disco que falla deja lo de antes. Aparte de [SecureStorage] para probarla sin el cifrado.
+ */
+internal object LlaveDeEmisionDeVales {
+    /** La de versiones anteriores: una sola para todo el aparato. Nunca se escribe ni se borra. */
+    private const val GLOBAL = "pendingAreaTicketIssueKey"
+    private fun clave(venueId: String) = "${GLOBAL}_$venueId"
+    private fun yaNoHereda(venueId: String) = "${GLOBAL}_sinHeredar_$venueId"
+
+    /**
+     * La llave de [venueId]. Si nunca tuvo, la global de una versión anterior (Codex r7 #1): puede ser la de un vale cuya
+     * respuesta se perdió antes de actualizar y no dice de qué negocio era, así que la ve CADA negocio hasta que ése la suelta
+     * ([soltar]). Dársela a uno solo (al primero que emitía o al activo al arrancar) fallaba cuando era otro (r8 #1, r9 #1-#3).
+     */
+    fun leer(prefs: SharedPreferences, venueId: String): String? = prefs.getString(clave(venueId), null)
+        ?: prefs.getString(GLOBAL, null)?.takeUnless { prefs.getBoolean(yaNoHereda(venueId), false) }
+
+    /** `true` sólo si [llave] quedó en disco. */
+    fun guardar(prefs: SharedPreferences, venueId: String, llave: String): Boolean =
+        prefs.edit().putString(clave(venueId), llave).commit() && prefs.getString(clave(venueId), null) == llave
+
+    /**
+     * Con [siEs] (el SERVIDOR contestó por esa llave), sólo si la de [venueId] sigue siendo ésa: una confirmación tardía no suelta
+     * la de otra emisión (r7 #4), y lo que se mandó con ella se borra. Sin [siEs] («Vaciar»), D5: lo pedido sin respuesta NO se
+     * tira en silencio; pasa a «sin confirmar» y sólo «Descartar» lo olvida (si no, el vale que sí salió quedaba ISSUED).
+     */
+    fun soltar(prefs: SharedPreferences, venueId: String, siEs: String? = null) {
+        if (siEs != null && leer(prefs, venueId) != siEs) return
+        if (siEs == null) apartarSinConfirmar(prefs, venueId)
+        prefs.edit().remove(clave(venueId)).remove(intentos(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+    }
+
+    // ── 🔴 D5 (vales-ciclo): el vale a medias. Lo que se mandó vive y muere con su llave. ──────────────────────────────────
+
+    /** Tope de contenidos distintos con una misma llave: un sexto no se podría recuperar, así que no se manda. */
+    const val TOPE_DE_INTENTOS = 5
+    private fun intentos(venueId: String) = "pendingAreaTicketIssueAttempts_$venueId"
+    private fun sinConfirmar(venueId: String) = "valeSinConfirmar_$venueId"
+    private val json = Json { ignoreUnknownKeys = true }
+    private val listaDeIntentos = ListSerializer(IntentoDeVale.serializer())
+
+    enum class Guardado { SI, NO, TOPE }
+
+    private fun leerIntentos(prefs: SharedPreferences, venueId: String): List<IntentoDeVale> =
+        prefs.getString(intentos(venueId), null)?.let { runCatching { json.decodeFromString(listaDeIntentos, it) }.getOrNull() }
+            ?: emptyList()
+
+    /**
+     * Llave + [intento] en UN `commit()` y relectura, ANTES del POST. Un contenido distinto con la misma llave se AGREGA: nunca se
+     * pisa el que pudo crear el vale (Codex r1 #3). Si la llave guardada es otra (o es la global de una versión anterior), los
+     * intentos empiezan de cero.
+     */
+    fun guardar(prefs: SharedPreferences, venueId: String, llave: String, intento: IntentoDeVale): Guardado {
+        val previos = if (prefs.getString(clave(venueId), null) == llave) leerIntentos(prefs, venueId) else emptyList()
+        val todos = if (previos.any { it.mismoQue(intento) }) previos else previos + intento
+        if (todos.size > TOPE_DE_INTENTOS) return Guardado.TOPE
+        val texto = json.encodeToString(listaDeIntentos, todos)
+        val ok = prefs.edit().putString(clave(venueId), llave).putString(intentos(venueId), texto).commit() &&
+            prefs.getString(clave(venueId), null) == llave && prefs.getString(intentos(venueId), null) == texto
+        return if (ok) Guardado.SI else Guardado.NO
+    }
+
+    /**
+     * La PRIMERA vez que este proceso usa [venueId]: lo que se pidió en la vez anterior de la app y nunca se confirmó pasa a «sin
+     * confirmar», con SU llave, y el negocio queda sin llave viva (lo siguiente sale con otra). `true` si hay uno.
+     */
+    fun alArrancar(prefs: SharedPreferences, venueId: String): Boolean {
+        if (apartarSinConfirmar(prefs, venueId)) {
+            prefs.edit().remove(clave(venueId)).remove(intentos(venueId)).putBoolean(yaNoHereda(venueId), true).commit()
+        }
+        return valeSinConfirmar(prefs, venueId) != null
+    }
+
+    /** Lo pedido con la llave viva de [venueId] y sin respuesta pasa a «sin confirmar» con SU llave. `true` si había. */
+    private fun apartarSinConfirmar(prefs: SharedPreferences, venueId: String): Boolean {
+        val llave = prefs.getString(clave(venueId), null)
+        val pedidos = leerIntentos(prefs, venueId)
+        if (llave == null || pedidos.isEmpty()) return false
+        // ponytail: ya hay uno sin confirmar ⇒ no se pisa; mientras exista, «Emitir vale» no deja pedir otro (④).
+        if (prefs.getString(sinConfirmar(venueId), null) == null) {
+            prefs.edit()
+                .putString(sinConfirmar(venueId), json.encodeToString(ValeSinConfirmar.serializer(), ValeSinConfirmar(llave, pedidos)))
+                .commit()
+        }
+        return true
+    }
+
+    /** D5 (Codex r6): ¿hay un vale de esta mercancía pedido sin respuesta (en curso o sin confirmar) en [venueId]? */
+    fun mercanciaEnDuda(prefs: SharedPreferences, venueId: String, lineas: List<IssueAreaTicketLineRequest>): Boolean =
+        (leerIntentos(prefs, venueId) + (valeSinConfirmar(prefs, venueId)?.intentos ?: emptyList())).any { it.mismaMercanciaQue(lineas) }
+
+    fun valeSinConfirmar(prefs: SharedPreferences, venueId: String): ValeSinConfirmar? =
+        prefs.getString(sinConfirmar(venueId), null)
+            ?.let { runCatching { json.decodeFromString(ValeSinConfirmar.serializer(), it) }.getOrNull() }
+            ?.takeIf { it.intentos.isNotEmpty() }
+
+    /**
+     * «Recuperar» confirmó el vale de [llave]: en UN `commit()` queda su papel pendiente (D12, claves [clavePapel] y
+     * [claveNegocioDelPapel]) y se olvida el vale sin confirmar (Codex r3 #1: con dos escrituras sueltas, en WINDOWS una podía
+     * fallar y perderse el papel, o quedar el registro y salir el original dos veces). `false` = no quedó; no se imprime.
+     */
+    fun recuperado(
+        prefs: SharedPreferences, venueId: String, llave: String, codigo: String, clavePapel: String, claveNegocioDelPapel: String,
+    ): Boolean {
+        if (valeSinConfirmar(prefs, venueId)?.llave != llave) return false
+        val antes = listOf(clavePapel, claveNegocioDelPapel, sinConfirmar(venueId)).associateWith { prefs.getString(it, null) }
+        val ok = prefs.edit().putString(clavePapel, codigo).putString(claveNegocioDelPapel, venueId).remove(sinConfirmar(venueId))
+            .commit() && prefs.getString(clavePapel, null) == codigo && prefs.getString(sinConfirmar(venueId), null) == null
+        if (!ok) {
+            // Codex r4 #3: las preferencias de ANDROID cambian la memoria ANTES de escribir; si el disco falló, la memoria
+            // decía que ya no había vale sin confirmar (el aviso se iba y «Emitir» salía con otra llave). Se regresa.
+            prefs.edit().apply { antes.forEach { (k, v) -> if (v == null) remove(k) else putString(k, v) } }.commit()
+        }
+        return ok
+    }
+
+    /** Recuperado o descartado: se olvida, sólo si sigue siendo el de [llave]. */
+    fun olvidarSinConfirmar(prefs: SharedPreferences, venueId: String, llave: String) {
+        if (valeSinConfirmar(prefs, venueId)?.llave != llave) return
+        prefs.edit().remove(sinConfirmar(venueId)).commit()
     }
 }

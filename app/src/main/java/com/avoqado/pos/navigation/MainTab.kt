@@ -40,7 +40,7 @@ enum class MainTab(
     ),
     TRANSACTIONS(
         route = "transactions",
-        label = "Transacciones",
+        label = "Ventas",
         shortLabel = "Ventas",
         selectedIcon = Icons.Filled.Receipt,
         unselectedIcon = Icons.Outlined.Receipt,

@@ -76,6 +76,9 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.domain.MENSAJE_SUBIR_PRECIO
+import com.avoqado.pos.pos.domain.ajusteAGuardar
+import com.avoqado.pos.pos.domain.ajusteDePrecioPermitido
 
 /**
  * Product detail panel matching iOS.
@@ -961,7 +964,7 @@ private fun CortesiaSubView(
 private fun PriceAdjustSubView(
     originalPriceCents: Int,
     currentAdjustment: Int?,
-    onConfirm: (Int) -> Unit,
+    onConfirm: (Int?) -> Unit,
     onClear: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -1006,6 +1009,17 @@ private fun PriceAdjustSubView(
                     fontSize = 40.sp,
                 ),
             )
+
+            // D12: el ajuste sólo baja el precio; si escribe más que el original, se dice por qué no se puede confirmar.
+            if (priceCents > originalPriceCents) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = MENSAJE_SUBIR_PRECIO,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                )
+            }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
@@ -1064,8 +1078,8 @@ private fun PriceAdjustSubView(
         ) {
             PrimaryButton(
                 text = "Confirmar precio",
-                onClick = { onConfirm(priceCents) },
-                enabled = priceCents > 0,
+                onClick = { onConfirm(ajusteAGuardar(priceCents, originalPriceCents)) },
+                enabled = ajusteDePrecioPermitido(priceCents, originalPriceCents),
                 modifier = Modifier.fillMaxWidth(),
             )
         }

@@ -5,6 +5,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -37,6 +38,7 @@ import com.avoqado.pos.escritorio.teclado.AtajosDeLaVentana
 import com.avoqado.pos.escritorio.teclado.emisorDelBus
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import com.avoqado.pos.kiosk.domain.KioskState
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.pos.data.LectorHidBus
 import java.awt.GraphicsEnvironment
 import java.nio.file.Path
@@ -93,11 +95,20 @@ fun main() {
             CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides alTronar, LocalEsEscritorio provides true) {
                 // Atajos de teclado del cobro (F12, F5, F4, Esc…): sólo lo que la pantalla no usó, una vez por apretón.
                 val atajos = remember { AtajosDeLaVentana(AtajosDeTeclado::atender) }
+                val estadoDeLaVentana = rememberWindowState(placement = WindowPlacement.Maximized, size = Arranque.TAMANO_INICIAL)
+                // «Pedidos en línea»: el ciclo de vida de RaizDeEscritorio se queda en RESUMED aunque la ventana se minimice, así que
+                // aquí se publica si la ventana se ve. Minimizada, la bandeja deja de mandar su cabecera de latido (Codex plan r2 #5).
+                DisposableEffect(estadoDeLaVentana) {
+                    onDispose { VentanaALaVista.publicar(true) }
+                }
+                LaunchedEffect(estadoDeLaVentana) {
+                    snapshotFlow { !estadoDeLaVentana.isMinimized }.collect { VentanaALaVista.publicar(it) }
+                }
                 Window(
                     onCloseRequest = ::exitApplication,
                     title = "Avoqado POS",
                     icon = remember { iconoDeLaVentana() },
-                    state = rememberWindowState(placement = WindowPlacement.Maximized, size = Arranque.TAMANO_INICIAL),
+                    state = estadoDeLaVentana,
                     onPreviewKeyEvent = atajos::antes,
                     onKeyEvent = atajos::despues,
                 ) {

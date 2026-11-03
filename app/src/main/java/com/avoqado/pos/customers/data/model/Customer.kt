@@ -1,5 +1,7 @@
 package com.avoqado.pos.customers.data.model
 
+import com.avoqado.pos.transactions.data.model.CustomerStoreCredit
+import com.avoqado.pos.transactions.data.model.CustomerStoreCreditTolerante
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -21,6 +23,9 @@ data class Customer(
     val totalSpent: Double? = null,
     val loyaltyPoints: Int? = null,
     val groups: List<String>? = null,
+    /** Saldo a favor (aditivo): `null` = sin sobre o servidor anterior. */
+    @Serializable(with = CustomerStoreCreditTolerante::class)
+    val storeCredit: CustomerStoreCredit? = null,
 ) {
     val fullName: String
         get() {
@@ -93,6 +98,18 @@ data class PaginaDeClientes(
 data class CreateCustomerResponse(
     val message: String? = null,
     val customer: Customer? = null,
+)
+
+/**
+ * `PUT /mobile/venues/:venueId/customers/:customerId`: sólo datos de contacto, y sólo los que cambiaron. Los `null` NO
+ * viajan (el repositorio serializa con `encodeDefaults = false`): el servidor rechaza cualquier otro campo.
+ */
+@Serializable
+data class UpdateCustomerRequest(
+    val firstName: String? = null,
+    val lastName: String? = null,
+    val phone: String? = null,
+    val email: String? = null,
 )
 
 @Serializable

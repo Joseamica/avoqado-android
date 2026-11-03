@@ -1,0 +1,334 @@
+package com.avoqado.pos.transactions
+
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.transactions.data.*
+import com.avoqado.pos.transactions.presentation.exchange.*
+import io.mockk.*
+import kotlinx.coroutines.*
+import kotlinx.serialization.json.*
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.*
+import org.junit.*
+import org.junit.Assert.*
+import org.junit.rules.TemporaryFolder
+
+class ExchangeRepositoryHttpTest {
+    @get:Rule val temporary = TemporaryFolder()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private lateinit var server: MockWebServer
+    private lateinit var repo: ExchangeRepository
+    private lateinit var store: ExchangePendingStore
+    private lateinit var flow: ExchangeSubmission
+    private val storage = mockk<SecureStorage>(relaxed=true)
+    @Before fun setup() {
+        server=MockWebServer(); server.dispatcher=ComoElServidor(); server.start()
+        every { storage.venueId } returns "venue"
+        every { storage.userId } returns "actor"
+        repo=ExchangeRepository(storage, OkHttpClient.Builder().retryOnConnectionFailure(false).build())
+        repo.baseUrl=server.url("/api/v1").toString().trimEnd('/')
+        store=ExchangePendingStore(PreferenceDataStoreFactory.create(scope=scope, produceFile={ temporary.root.resolve("exchange.preferences_pb") }))
+        flow=ExchangeSubmission(repo,store)
+    }
+    @After fun cleanup() { scope.cancel(); server.shutdown() }
+    private fun pending()=PendingExchange("venue","payment","ORD-1","Ana", """{"idempotencyKey":"ABCDEFGHIJKLMNOPQRSTUVWXYZ123456","originalPaymentId":"payment","staffId":"actor","deviceId":"device","createdAtLocal":"2026-10-26T10:00:00-06:00","returned":[{"orderItemId":"line","quantity":1,"restock":true,"reason":"SIZE"}],"taken":[{"productId":"product","quantity":1,"displayedUnitPriceCents":2200000000}],"settlement":{"kind":"COLLECT","method":"CASH","expectedDifferenceCents":125,"cashDrawerSessionId":"drawer"}}""")
+    private fun enqueue(status:String, code:Int=200) { server.enqueue(MockResponse().setResponseCode(code).setBody("""{"success":true,"data":{"exchange":{"id":"exchange","status":"$status","originalOrderId":"original","originalOrderNumber":"ORD-1","newOrderId":"new","newOrderNumber":"ORD-2","returnedCents":100,"takenCents":225,"differenceCents":125,"settlement":{"kind":"COLLECT","method":"CARD_TERMINAL","amountCents":125,"sources":[]},"lines":{"returned":[],"taken":[]},"amountToChargeCents":125}}}""")) }
+    @Test fun `frozen body is durable before POST and retry sends identical integer bytes`()=runBlocking {
+        val bytes=pending().body
+        server.dispatcher=object:Dispatcher() { override fun dispatch(request:RecordedRequest):MockResponse {
+            runBlocking { assertEquals(bytes, store.load("venue","payment")!!.body) }
+            return MockResponse().setResponseCode(503).setBody("{}")
+        } }
+        flow.submit(pending())
+        assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+        assertTrue(flow.state.value.locked)
+        assertEquals(bytes,server.takeRequest().body.readUtf8())
+        val reopened=ExchangeSubmission(repo,store)
+        reopened.open("venue","payment")
+        assertEquals(TextosCambio.CONFIRMAR_ESTADO,reopened.state.value.action)
+        server.dispatcher=ComoElServidor(); enqueue("COMPLETED")
+        reopened.retry()
+        assertEquals(bytes,server.takeRequest().body.readUtf8())
+        assertEquals(ExchangeSendPhase.COMPLETED,reopened.state.value.phase)
+        assertNull(store.load("venue","payment"))
+    }
+    @Test fun `network drop retains body and offers retry`()=runBlocking {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        flow.submit(pending())
+        assertEquals(TextosCambio.REINTENTAR,flow.state.value.action)
+        assertEquals(pending().body,store.load("venue","payment")!!.body)
+    }
+    @Test fun `pending payment survives process death with order and amount without automatic request`()=runBlocking {
+        enqueue("PENDING_PAYMENT",201); flow.submit(pending())
+        server.takeRequest()
+        val saved=store.load("venue","payment")!!
+        assertEquals("new",saved.result!!.newOrderId); assertEquals(125L,saved.result!!.amountToChargeCents)
+        val reopened=ExchangeSubmission(repo,store); reopened.open("venue","payment")
+        assertTrue(reopened.state.value.locked); assertEquals(0,server.requestCount-1)
+        enqueue("NEEDS_REVIEW"); reopened.retry()
+        assertEquals(ExchangeSendPhase.REVIEW,reopened.state.value.phase)
+        assertNull(store.load("venue","payment"))
+    }
+    @Test fun `reopening an unstarted pending payment offers to collect the difference`()=runBlocking {
+        enqueue("PENDING_PAYMENT"); flow.submit(pending())
+        assertEquals("Cobrar la diferencia",flow.state.value.action)
+        val reopened=ExchangeSubmission(repo,store)
+        reopened.open("venue","payment")
+        assertEquals("Cobrar la diferencia",reopened.state.value.action)
+        assertTrue(reopened.state.value.locked)
+        assertEquals(1,server.requestCount)
+    }
+    @Test fun `reopening a started card payment only offers to confirm its state`()=runBlocking {
+        enqueue("PENDING_PAYMENT"); flow.submit(pending()); flow.markCardStarted("request")
+        val reopened=ExchangeSubmission(repo,store)
+        reopened.open("venue","payment")
+        assertEquals("Confirmar estado",reopened.state.value.action)
+        assertEquals(1,server.requestCount)
+    }
+    @Test fun `actor mismatch and 403 never erase pending`()=runBlocking {
+        for ((http,code) in listOf(400 to "ACTOR_MISMATCH",403 to "FORBIDDEN")) {
+            server.enqueue(MockResponse().setResponseCode(http).setBody("""{"code":"$code","message":"blocked"}"""))
+            if(store.load("venue","payment")==null) flow.submit(pending()) else flow.retry()
+            assertEquals(pending().body,store.load("venue","payment")!!.body)
+            assertTrue(flow.state.value.locked)
+        }
+    }
+    @Test fun `difference changed reads calculation and releases only for explicit reconfirmation`()=runBlocking {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"code":"EXCHANGE_DIFFERENCE_CHANGED","message":"new price","details":{"calculation":{"kind":"PAYOUT","differenceCents":-50,"returnedCents":100,"takenCents":50,"lines":{"returned":[],"taken":[]}}}}"""))
+        flow.submit(pending())
+        assertEquals(ExchangeSendPhase.RECONFIRM,flow.state.value.phase)
+        assertEquals(-50L,flow.state.value.calculation!!.differenceCents)
+        assertEquals("PAYOUT",flow.state.value.calculation!!.kind)
+        assertNull(store.load("venue","payment"))
+        enqueue("COMPLETED")
+        flow.submit(pending().copy(body=pending().body.replace("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456","123456ABCDEFGHIJKLMNOPQRSTUVWXYZ").replace("125","-50").replace("COLLECT","PAYOUT")))
+        val a=server.takeRequest().body.readUtf8(); val b=server.takeRequest().body.readUtf8()
+        assertNotEquals(a,b)
+    }
+    @Test fun `422 message survives and status wins over repeated HTTP 200`()=runBlocking {
+        server.enqueue(MockResponse().setResponseCode(422).setBody("""{"code":"EXCHANGE_ITEM_NOT_RETURNABLE","message":"No quedan piezas."}"""))
+        flow.submit(pending()); assertEquals("No quedan piezas.",flow.state.value.message)
+        assertNull(store.load("venue","payment"))
+        for((status,phase) in listOf("CANCELLED" to ExchangeSendPhase.CANCELLED,"NEEDS_REVIEW" to ExchangeSendPhase.REVIEW,"FUTURE" to ExchangeSendPhase.REVIEW)) {
+            enqueue(status); flow.submit(pending()); assertEquals(phase,flow.state.value.phase)
+            if(status=="FUTURE") assertNotNull(store.load("venue","payment"))
+        }
+    }
+    @Test fun `complete and cancel use exact mobile routes and reason body`()=runBlocking {
+        enqueue("COMPLETED"); repo.complete("exchange")
+        assertEquals("/api/v1/mobile/venues/venue/exchanges/exchange/complete",server.takeRequest().path)
+        enqueue("CANCELLED"); repo.cancel("exchange","no charge")
+        val req=server.takeRequest(); assertEquals("POST",req.method)
+        assertEquals("/api/v1/mobile/venues/venue/exchanges/exchange/cancel",req.path)
+        assertEquals("""{"reason":"no charge"}""",req.body.readUtf8())
+    }
+    @Test fun `even body preserves required null method and excludes unused fields`() {
+        val draft=ExchangeDraft("payment",listOf(ExchangeReturnedInput("line",1,true,"SIZE")),listOf(ExchangeTakenInput("product",1,displayedUnitPriceCents=2200000000L)),ExchangeSettlementDraft("EVEN",0))
+        val bytes=freezeExchange(draft,ExchangeSettlementInput("EVEN",null,0),"actor","device","2026-10-26T10:00:00Z")
+        val obj=Json.parseToJsonElement(bytes).jsonObject
+        assertTrue(obj["idempotencyKey"]!!.jsonPrimitive.content.matches(Regex("[A-Za-z0-9]{32}")))
+        assertEquals(JsonNull,obj["settlement"]!!.jsonObject["method"])
+        assertFalse(obj["settlement"]!!.jsonObject.containsKey("cashFromNonCash"))
+        assertTrue(bytes.contains("2200000000")); assertFalse(bytes.contains("2200000000.0"))
+        assertEquals(Json.parseToJsonElement("""{"originalPaymentId":"payment","returned":[{"orderItemId":"line","quantity":1,"restock":true,"reason":"SIZE"}],"taken":[{"productId":"product","quantity":1,"displayedUnitPriceCents":2200000000}],"staffId":"actor","deviceId":"device","createdAtLocal":"2026-10-26T10:00:00Z","settlement":{"kind":"EVEN","method":null,"expectedDifferenceCents":0}}""").jsonObject,
+            JsonObject(obj - "idempotencyKey"))
+    }
+    @Test fun `storage failure prevents POST and a different body cannot replace an uncertain operation`()=runBlocking {
+        val failing=mockk<ExchangePendingStore>()
+        coEvery { failing.save(any()) } throws java.io.IOException("disk full")
+        val guarded=ExchangeSubmission(repo,failing)
+        assertTrue(runCatching { guarded.submit(pending()) }.isFailure)
+        assertEquals(0,server.requestCount)
+        server.enqueue(MockResponse().setResponseCode(503).setBody("{}"))
+        flow.submit(pending()); server.takeRequest()
+        flow.submit(pending().copy(body="other body"))
+        assertEquals(1,server.requestCount)
+        assertEquals(pending().body,store.load("venue","payment")!!.body)
+    }
+    @Test fun `a 400 or 404 from an intermediary or with an unreadable body keeps the pending`()=runBlocking {
+        for ((http,body) in listOf(404 to "<html><body>Tunnel not found</body></html>", 400 to "", 400 to """{"error":"bad gateway"}""")) {
+            server.enqueue(sinEco(MockResponse().setResponseCode(http).setBody(body)))
+            if(store.load("venue","payment")==null) flow.submit(pending()) else flow.retry()
+            assertEquals(pending().body,store.load("venue","payment")!!.body)
+            assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+            assertTrue(flow.state.value.locked)
+        }
+        // An intermediary can also answer JSON that looks like ours: its header still says it is not the API (rE2).
+        for (contentType in listOf("application/json", "text/html; charset=utf-8")) {
+            server.enqueue(sinEco(MockResponse().setResponseCode(404).addHeader("ngrok-error-code", "ERR_NGROK_3200")
+                .addHeader("Content-Type", contentType).setBody("""{"message":"Endpoint offline","code":"NOT_FOUND"}""")))
+            flow.retry()
+            assertEquals(pending().body,store.load("venue","payment")!!.body)
+            assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+        }
+    }
+    @Test fun `structured validation releases a 400 and key reuse is explicit`()=runBlocking {
+        for ((code,body) in listOf(400 to """{"message":"invalid","details":[{"path":["body","taken"],"code":"too_small"}]}""",
+            409 to """{"message":"reused","code":"IDEMPOTENCY_KEY_REUSED"}""")) {
+            server.enqueue(MockResponse().setResponseCode(code).setBody(body))
+            flow.submit(pending())
+            assertNull(store.load("venue","payment"))
+            if(code==409) assertEquals(TextosCambio.IDEMPOTENCY_KEY_REUSED,flow.state.value.message)
+        }
+    }
+    @Test fun `error code and calculation are read from root rather than message`()=runBlocking {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"message":"changed","code":"EXCHANGE_DIFFERENCE_CHANGED","details":{"calculation":{"kind":"EVEN","differenceCents":0,"returnedCents":100,"takenCents":100,"lines":{"returned":[],"taken":[]}}}}"""))
+        val error=runCatching { repo.create(pending().body) }.exceptionOrNull() as ExchangeApiException
+        assertEquals(409,error.statusCode); assertEquals("EXCHANGE_DIFFERENCE_CHANGED",error.code)
+        assertEquals(0,error.details!!.jsonObject["calculation"]!!.jsonObject["differenceCents"]!!.jsonPrimitive.int)
+    }
+
+    @Test fun `stale pending writer cannot forget that card authorization has started`()=runBlocking {
+        store.save(pending().copy(cardStarted=true,cardRequestId="request"))
+        store.save(pending())
+        val saved=store.load("venue","payment")!!
+        assertTrue(saved.cardStarted); assertEquals("request",saved.cardRequestId)
+        assertTrue(runCatching { store.save(pending().copy(body="different")) }.isFailure)
+        assertEquals(pending().body,store.load("venue","payment")!!.body)
+    }
+
+    private suspend fun assertDefinitiveRejection(status:Int, code:String?=null) {
+        val body=buildJsonObject { put("message","rejected"); code?.let { put("code",it) } }.toString()
+        server.enqueue(MockResponse().setResponseCode(status).setBody(body))
+        flow.submit(pending())
+        assertEquals(ExchangeSendPhase.EDITING,flow.state.value.phase)
+        assertEquals("rejected",flow.state.value.message)
+        assertFalse(flow.state.value.locked)
+        assertNull(flow.state.value.action)
+        assertNull(flow.pending)
+        assertNull(store.load("venue","payment"))
+    }
+
+    @Test fun `400 validation without details releases pending`()=runBlocking {
+        assertDefinitiveRejection(400)
+    }
+    @Test fun `400 duplicate line releases pending`()=runBlocking {
+        assertDefinitiveRejection(400,"EXCHANGE_DUPLICATE_LINE")
+    }
+    @Test fun `400 with another code releases pending`()=runBlocking {
+        assertDefinitiveRejection(400,"OTHER")
+    }
+    @Test fun `404 releases pending`()=runBlocking {
+        assertDefinitiveRejection(404)
+    }
+    @Test fun `422 disabled exchanges releases pending`()=runBlocking {
+        assertDefinitiveRejection(422,"EXCHANGES_DISABLED")
+    }
+    @Test fun `422 unsellable taken item releases pending`()=runBlocking {
+        assertDefinitiveRejection(422,"EXCHANGE_TAKEN_NOT_SELLABLE")
+    }
+    @Test fun `422 unavailable settlement releases pending`()=runBlocking {
+        assertDefinitiveRejection(422,"EXCHANGE_SETTLEMENT_UNAVAILABLE")
+    }
+    @Test fun `server errors and nondefinitive conflict codes retain the exact pending body`()=runBlocking {
+        for ((status,code) in listOf(500 to "INTERNAL_ERROR",503 to "UNAVAILABLE",
+            409 to "OTHER",422 to "OTHER",404 to "ACTOR_MISMATCH")) {
+            server.enqueue(MockResponse().setResponseCode(status).setBody("""{"code":"$code","message":"retry later"}"""))
+            if(flow.pending==null) flow.submit(pending()) else flow.retry()
+            assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+            assertTrue(flow.state.value.locked)
+            assertEquals(pending().body,store.load("venue","payment")!!.body)
+        }
+    }
+
+    // MARK: - Saldo a favor (A2): la regla es por prefijo; lo que queda en el almacén después de cada respuesta.
+    private fun saldo()=PendingExchange("venue","payment","ORD-1","Ana", """{"idempotencyKey":"SALDOABCDEFGHIJKLMNOPQRSTUVWXYZ1","originalPaymentId":"payment","staffId":"actor","deviceId":"device","createdAtLocal":"2026-10-26T10:00:00-06:00","returned":[{"orderItemId":"line","quantity":1,"restock":true,"reason":"SIZE"}],"taken":[{"productId":"product","quantity":1,"displayedUnitPriceCents":800}],"settlement":{"kind":"PAYOUT","method":"STORE_CREDIT","expectedDifferenceCents":-200,"customerId":"customer"}}""")
+    private suspend fun respondeAlSaldo(status:Int, body:String, eco:Boolean=true) {
+        val r=MockResponse().setResponseCode(status).setHeader("Content-Type","application/json").setBody(body)
+        server.enqueue(if(eco) r else sinEco(r))
+        if(flow.pending==null) flow.submit(saldo()) else flow.retry()
+    }
+    private suspend fun assertLibera(message:String) {
+        assertNull(flow.pending); assertNull(store.load("venue","payment"))
+        assertFalse(flow.state.value.locked); assertNull(flow.state.value.action)
+        assertEquals(ExchangeSendPhase.EDITING,flow.state.value.phase); assertEquals(message,flow.state.value.message)
+    }
+    private suspend fun assertConserva() {
+        assertEquals(saldo().body,store.load("venue","payment")!!.body)
+        assertTrue(flow.state.value.locked); assertEquals(TextosCambio.REINTENTAR,flow.state.value.action)
+    }
+    @Test fun `un 409 STORE_CREDIT_TERMINAL_REFUND_IN_PROGRESS libera lo pendiente`()=runBlocking {
+        respondeAlSaldo(409,"""{"code":"STORE_CREDIT_TERMINAL_REFUND_IN_PROGRESS","message":"La terminal está devolviendo este cobro"}""")
+        assertLibera("La terminal está devolviendo este cobro")
+    }
+    @Test fun `IDEMPOTENCY_KEY_REUSED conserva`()=runBlocking {
+        respondeAlSaldo(409,"""{"code":"IDEMPOTENCY_KEY_REUSED","message":"Esta llave ya se usó para otro cambio."}""")
+        assertConserva()
+        // No promete «cierra y vuelve a abrir»: al reabrir sigue igual de pendiente (r1 M3).
+        assertEquals("Este cambio ya se había mandado con otros datos y esta caja no puede confirmarlo. Revisa la venta en el panel antes de hacer otro cambio.",
+            flow.state.value.message)
+    }
+    @Test fun `un 503 sigue pendiente y bloqueado`()=runBlocking {
+        respondeAlSaldo(503,"""{"message":"Servidor ocupado"}""")
+        assertConserva(); assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":true,"data":{"exchange":{"id":"exchange","status":"COMPLETED","originalOrderId":"original","originalOrderNumber":"ORD-1","newOrderId":"new","newOrderNumber":"ORD-2","returnedCents":1000,"takenCents":800,"differenceCents":-200,"settlement":{"kind":"PAYOUT","method":"STORE_CREDIT","amountCents":200,"sources":[],"storeCredit":{"customerId":"customer","customerName":"Ana López","amountCents":200,"newBalanceCents":200,"phoneLast4":"5678","phoneMismatch":false}},"lines":{"returned":[],"taken":[]}}}}"""))
+        flow.retry()
+        assertEquals(saldo().body,server.takeRequest().body.readUtf8()); assertEquals(saldo().body,server.takeRequest().body.readUtf8())
+        assertEquals(ExchangeSendPhase.COMPLETED,flow.state.value.phase)
+        assertEquals("Ana López",flow.state.value.result!!.settlement.storeCredit!!.customerName)
+        assertNull(store.load("venue","payment"))
+    }
+    @Test fun `un STORE_CREDIT_ con un nombre que la app no conoce también libera`()=runBlocking {
+        respondeAlSaldo(422,"""{"code":"STORE_CREDIT_UN_NOMBRE_QUE_LA_APP_NO_CONOCE","message":"No se puede dar saldo a favor."}""")
+        assertLibera("No se puede dar saldo a favor.")
+    }
+    @Test fun `STORE_CREDIT_REJECTED libera y muestra el mensaje del servidor`()=runBlocking {
+        respondeAlSaldo(422,"""{"code":"STORE_CREDIT_REJECTED","message":"No se puede devolver $500.00","details":{"originalCode":null}}""")
+        assertLibera("No se puede devolver $500.00")
+    }
+    @Test fun `401 y 403 no son definitivos`()=runBlocking {
+        respondeAlSaldo(401,"""{"code":"UNAUTHORIZED","message":"Token expired"}"""); assertConserva()
+        respondeAlSaldo(403,"""{"message":"Permission 'payments:refund' required"}"""); assertConserva()
+    }
+    @Test fun `400 sin code es definitivo sólo con el eco de su X-Correlation-ID`()=runBlocking {
+        respondeAlSaldo(400,"""{"message":"El cuerpo no es válido"}""",eco=false)
+        assertConserva()
+        respondeAlSaldo(400,"""{"message":"El cuerpo no es válido"}""")
+        assertLibera("El cuerpo no es válido")
+    }
+
+    // MARK: - Codex apps r3: la prueba de origen del Cambio, con TODOS los medios (efectivo, tarjeta, saldo)
+    @Test fun `sin el eco de su X-Correlation-ID ningún rechazo definitivo del Cambio libera lo pendiente, con él sí`()=runBlocking {
+        val definitivos=listOf(400 to """{"message":"invalid"}""", 404 to """{"message":"rejected"}""",
+            409 to """{"message":"reused","code":"IDEMPOTENCY_KEY_REUSED"}""", 422 to """{"message":"off","code":"EXCHANGES_DISABLED"}""",
+            400 to """{"message":"Bad Request"}""")
+        var intentos=0
+        for ((status,body) in definitivos) for (ajeno in listOf(false,true)) {
+            val r=MockResponse().setResponseCode(status).setHeader("Content-Type","application/json").setBody(body)
+            server.enqueue(if(ajeno) conEcoAjeno(r) else sinEco(r))
+            if(flow.pending==null) flow.submit(pending()) else flow.retry()
+            intentos++
+            assertEquals("$status $body ajeno=$ajeno",pending().body,store.load("venue","payment")!!.body)
+            assertEquals(ExchangeSendPhase.UNCERTAIN,flow.state.value.phase)
+            assertTrue(flow.state.value.locked); assertEquals(TextosCambio.REINTENTAR,flow.state.value.action)
+            assertEquals(TextosCambio.ENVIO_SIN_CONFIRMAR,flow.state.value.message)
+        }
+        // Cada envío y cada reenvío con la MISMA llave lleva su propio id.
+        val ids=List(intentos) { server.takeRequest().getHeader(ECO) }
+        assertTrue(ids.toString(),ids.all { !it.isNullOrBlank() }); assertEquals(ids.size,ids.toSet().size)
+        // Con el eco de su petición, el mismo 400 sí es definitivo.
+        server.enqueue(MockResponse().setResponseCode(400).setHeader("Content-Type","application/json").setBody("""{"message":"invalid"}"""))
+        flow.retry()
+        assertNull(store.load("venue","payment")); assertEquals(ExchangeSendPhase.EDITING,flow.state.value.phase)
+        // complete/cancel también llevan su id; un 2xx sin eco sigue siendo el éxito.
+        server.enqueue(sinEco(MockResponse().setResponseCode(200).setBody("""{"success":true,"data":{"exchange":{"id":"exchange","status":"COMPLETED","originalOrderId":"original","originalOrderNumber":"ORD-1","newOrderId":"new","newOrderNumber":"ORD-2","returnedCents":100,"takenCents":225,"differenceCents":125,"settlement":{"kind":"COLLECT","method":"CARD_TERMINAL","amountCents":125,"sources":[]},"lines":{"returned":[],"taken":[]},"amountToChargeCents":125}}}""")))
+        assertEquals("COMPLETED",repo.complete("exchange","venue").status)
+        server.takeRequest()
+        val completar=server.takeRequest()
+        assertTrue(completar.path!!.endsWith("/exchange/complete")); assertFalse(completar.getHeader(ECO).isNullOrBlank())
+    }
+    @Test fun `una diferencia que cambió envuelta en STORE_CREDIT_REJECTED vuelve a mostrar la cuenta`()=runBlocking {
+        respondeAlSaldo(409,"""{"code":"STORE_CREDIT_REJECTED","message":"La diferencia cambió","details":{"originalCode":"EXCHANGE_DIFFERENCE_CHANGED","calculation":{"kind":"PAYOUT","differenceCents":-150,"returnedCents":1000,"takenCents":850,"lines":{"returned":[],"taken":[]}}}}""")
+        assertEquals(ExchangeSendPhase.RECONFIRM,flow.state.value.phase)
+        assertEquals(-150L,flow.state.value.calculation!!.differenceCents)
+        assertNull(store.load("venue","payment")); assertFalse(flow.state.value.locked)
+    }
+    @Test fun `el cambio a saldo manda a quién se abona y los demás medios no mandan cliente`() {
+        val draft=ExchangeDraft("payment",listOf(ExchangeReturnedInput("line",1,true,"SIZE")),listOf(ExchangeTakenInput("product",1,displayedUnitPriceCents=800)),ExchangeSettlementDraft("PAYOUT",-200))
+        val saldo=Json.parseToJsonElement(freezeExchange(draft,ExchangeSettlementInput("PAYOUT","STORE_CREDIT",-200,customerId="customer"),"actor","device","2026-10-26T10:00:00Z")).jsonObject
+        assertEquals("customer",saldo["settlement"]!!.jsonObject["customerId"]!!.jsonPrimitive.content)
+        val cash=Json.parseToJsonElement(freezeExchange(draft,ExchangeSettlementInput("PAYOUT","CASH",-200),"actor","device","2026-10-26T10:00:00Z")).jsonObject
+        assertFalse(cash["settlement"]!!.jsonObject.containsKey("customerId"))
+    }
+
+}

@@ -52,7 +52,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.avoqado.pos.giftcards.presentation.AvisoDeSaldo
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,6 +95,9 @@ import com.avoqado.pos.settings.MoreMenuScreen
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 import com.avoqado.pos.transactions.presentation.TransactionsScreen
+import com.avoqado.pos.transactions.presentation.TransactionsViewModel
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeScreen
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeViewModel
 import dagger.hilt.android.EntryPointAccessors
 import java.time.format.DateTimeFormatter
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -103,7 +111,10 @@ interface FormatterEntryPoint {
     fun formatter(): VenueDateTimeFormatter
     fun errorNotifier(): com.avoqado.pos.core.data.network.ErrorNotifier
     fun managerOverrideCoordinator(): com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
+    fun solicitudesDeTarjetas(): com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore
+    fun resolutorDeTarjetas(): com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
     fun secureStorage(): com.avoqado.pos.core.data.local.SecureStorage
+    fun vigilanteDePedidosEnLinea(): com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 }
 
 @Composable
@@ -112,9 +123,10 @@ fun AvoqadoNavGraph(
     appState: AppState = hiltViewModel(),
 ) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var reservationObservationRevision by remember { mutableStateOf(0) }
     DisposableEffect(lifecycle, appState) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) appState.refreshPaidAccess()
+            if (event == Lifecycle.Event.ON_RESUME) { appState.refreshPaidAccess();reservationObservationRevision++ }
         }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
@@ -127,6 +139,11 @@ fun AvoqadoNavGraph(
     val avisoDeCocinaSinRed by appState.avisoDeCocinaSinRed.collectAsState()
     val avisoDeRacha by appState.avisoDeRacha.collectAsState()
     val reconciliationCount by appState.reconciliationCount.collectAsState()
+    var reservationIssueCount:Int? by remember { mutableStateOf(null) }
+    LaunchedEffect(appState,reservationObservationRevision) {
+        reservationIssueCount=null
+        com.avoqado.pos.sync.presentation.collectSalesNoticeReservations(appState.reservationQuarantinedCount) { reservationIssueCount=it }
+    }
     val q15HistoryUnavailable by appState.q15HistoryUnavailable.collectAsState()
     val sessionGuardMessage by appState.sessionGuardMessage.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
@@ -137,11 +154,13 @@ fun AvoqadoNavGraph(
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (isLoggedIn) {
+
             // 🔴 Cambiar de sucursal o de modo RECREA todo (como Square): la
             // llave incluye venueId + modo, así que el NavHost y cada pantalla
             // montan de cero y recargan datos del contexto NUEVO. Antes las
             // pantallas ya montadas seguían con los datos del venue anterior.
             key(mainNavigation.contentKey) {
+                val payLaterReviewCount by appState.payLaterReviewCount.collectAsState(initial = 0)
                 MainScaffold(
                     isTablet = isTablet,
                     onLogout = { appState.onLogout() },
@@ -156,6 +175,8 @@ fun AvoqadoNavGraph(
                     avisoDeCocinaSinRed = avisoDeCocinaSinRed,
                     avisoDeRacha = avisoDeRacha,
                     syncIssueCount = reconciliationCount,
+                    payLaterReviewCount = payLaterReviewCount,
+                    reservationIssueCount = reservationIssueCount,
                     q15HistoryUnavailable = q15HistoryUnavailable,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
@@ -240,6 +261,8 @@ private fun MainScaffold(
     /** Ver `AppState.avisoDeRacha`: tras 3 entregas sin acuse, la pantalla que no se alcanza se DICE, con o sin red (KDS 3.5). */
     avisoDeRacha: String? = null,
     syncIssueCount: Int = 0,
+    payLaterReviewCount: Int = 0,
+    reservationIssueCount: Int? = null,
     q15HistoryUnavailable:Boolean=false,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
@@ -273,10 +296,39 @@ private fun MainScaffold(
     val startTab = graphSnapshot.startTab
     val registeredTabs = graphSnapshot.registeredTabs
 
+    fun navigateToTab(tab: MainTab) {
+        navController.navigate(tab.route) {
+            popUpTo(navController.graph.findStartDestination().id) {
+                saveState = true
+            }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     // Cuarentena de sincronización: hoja de resolución de rechazos.
     var showQuarantineSheet by remember { mutableStateOf(false) }
+    var pendingSalesRequest by remember { mutableStateOf(0) }
+    var pendingCourtesyId by remember { mutableStateOf<String?>(null) }
+    val salesNotices:com.avoqado.pos.sync.presentation.SalesNoticesViewModel=hiltViewModel()
+    val courtesyOnline by salesNotices.courtesyOnline.collectAsState()
+    val salesSummary by salesNotices.summary.collectAsState()
+    val globalPendingSalesCount by salesNotices.globalPendingCount.collectAsState()
+    LaunchedEffect(salesNotices) { salesNotices.observeAlertChanges() }
+    LaunchedEffect(salesNotices) { salesNotices.observeContextChanges() }
+    androidx.lifecycle.compose.LifecycleResumeEffect(salesNotices) { salesNotices.refreshAlertSummary();onPauseOrDispose { } }
+    val pendingSalesCount=if(salesNotices.canRead) globalPendingSalesCount else 0
+    val salesBannerCount=com.avoqado.pos.sync.presentation.salesNoticeBannerCount(
+        salesSummary,reservationIssueCount,syncIssueCount,payLaterReviewCount)
+    val salesBannerActionLabel=com.avoqado.pos.sync.presentation.salesNoticeBannerActionLabel(
+        salesNotices.opensPendingSales,payLaterReviewCount)
     if (showQuarantineSheet) {
-        com.avoqado.pos.sync.presentation.QuarantineSheet(onDismissSheet = { showQuarantineSheet = false })
+        com.avoqado.pos.sync.presentation.QuarantineSheet(
+            onDismissSheet={ showQuarantineSheet=false },courtesyReviewOnline=courtesyOnline,courtesyCanPreview=salesNotices.canPreviewCourtesy,
+            onReviewCourtesy=if(salesNotices.opensPendingSales && MainTab.TRANSACTIONS in registeredTabs) ({ id:String ->
+                showQuarantineSheet=false;pendingCourtesyId=id;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS)
+            }) else null,
+        )
     }
 
     val context = LocalContext.current
@@ -287,6 +339,38 @@ private fun MainScaffold(
         )
     }
     val formatter = remember { entryPoint.formatter() }
+    val solicitudesDeTarjetas = remember { entryPoint.solicitudesDeTarjetas() }
+    val resolutorDeTarjetas = remember { entryPoint.resolutorDeTarjetas() }
+    val pendientesDeTarjetas by solicitudesDeTarjetas.solicitudes.collectAsState()
+    val resultadosRecuperados by resolutorDeTarjetas.ventasListas.collectAsState()
+    val cobrosRecuperadosDeSaldo by resolutorDeTarjetas.recuperados.collectAsState()
+    val cuentasPorOfrecerDeSaldo by resolutorDeTarjetas.porOfrecerAlArrancar.collectAsState()
+    val almacenDeTarjetas = remember { entryPoint.secureStorage() }
+    val contextoDeTarjetas = remember { almacenDeTarjetas.userId to almacenDeTarjetas.venueId }
+    var cuentasDeSaldoCerradas by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
+    val resultadosDeTarjetas = remember { mutableStateListOf<Pair<String?,String>>() }
+    val resultadosVistos = remember { mutableStateListOf<String>() }
+    fun abrirResultadoDeTarjetas(orderId: String) {
+        val s = solicitudesDeTarjetas.delNegocio(entryPoint.secureStorage().venueId.orEmpty())
+            .firstOrNull { it.tipo == "GIFT_CARD_SALE" && it.orderId == orderId }
+        if (resultadosDeTarjetas.none { it.second == orderId }) resultadosDeTarjetas.add(s?.llave to orderId)
+        s?.llave?.let { if (it !in resultadosVistos) resultadosVistos.add(it) }
+    }
+    LaunchedEffect(resultadosRecuperados, pendientesDeTarjetas) {
+        pendientesDeTarjetas.filter { it.venueId == entryPoint.secureStorage().venueId && it.tipo == "GIFT_CARD_SALE" &&
+            it.llave in resultadosRecuperados && it.llave !in resultadosVistos }.forEach { s -> s.orderId?.let(::abrirResultadoDeTarjetas) }
+    }
+    resultadosDeTarjetas.firstOrNull()?.let { (llave, orderId) ->
+        key(orderId) {
+            androidx.compose.ui.window.Dialog(onDismissRequest={resultadosDeTarjetas.removeAt(0)},
+                properties=androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth=false)) {
+                com.avoqado.pos.designsystem.components.ImmersiveWindow()
+                com.avoqado.pos.giftcards.presentation.ResultadoDeVentaScreen(llave,orderId,onSalir={resultadosDeTarjetas.removeAt(0)})
+            }
+        }
+    }
+
+    val vigilanteDePedidos = remember { entryPoint.vigilanteDePedidosEnLinea() }
     // Los rechazos por permiso (403) eran invisibles: el botón simplemente no
     // hacía nada. Se taparon con un Toast, que en la Sunmi con pantalla de cliente
     // vuelve a ser invisible — el mismo agujero, otra forma.
@@ -335,16 +419,6 @@ private fun MainScaffold(
         )
     }
 
-    fun navigateToTab(tab: MainTab) {
-        navController.navigate(tab.route) {
-            popUpTo(navController.graph.findStartDestination().id) {
-                saveState = true
-            }
-            launchSingleTop = true
-            restoreState = true
-        }
-    }
-
     var showTimeClock by remember { mutableStateOf(false) }
     var moreTabReselectionTick by remember { mutableIntStateOf(0) }
 
@@ -356,6 +430,13 @@ private fun MainScaffold(
     var ultimaPestana by remember { mutableStateOf(startTab) }
     LaunchedEffect(pestanaDeLaRuta) { if (pestanaDeLaRuta != null) ultimaPestana = pestanaDeLaRuta }
     val pestanaMarcada = PestanaDeLaBarra.marcada(pestanaDeLaRuta, ultimaPestana, graphVisibleTabs, startTab)
+    // «Ver» del banner de «Pedidos en línea»: debe abrir la bandeja desde CUALQUIER pantalla. Aquí (siempre compuesto) se lleva
+    // a la pestaña «Más»; allí `MoreMenuScreen` abre la superposición y llama `bandejaAtendida()`. Es un StateFlow, no un evento,
+    // para que el toque no se pierda si «Más» todavía no está compuesta.
+    val bandejaSolicitada by vigilanteDePedidos.bandejaSolicitada.collectAsState()
+    LaunchedEffect(bandejaSolicitada) {
+        if (bandejaSolicitada && pestanaDeLaRuta != MainTab.MORE) navigateToTab(MainTab.MORE)
+    }
     fun tocarPestana(tab: MainTab) {
         if (tab == MainTab.MORE && tab == pestanaMarcada) moreTabReselectionTick++
         when (PestanaDeLaBarra.alTocar(tab, pestanaMarcada, enUnaPestana = pestanaDeLaRuta != null)) {
@@ -364,6 +445,30 @@ private fun MainScaffold(
             PestanaDeLaBarra.AlTocar.NAVEGAR -> navigateToTab(tab)
         }
     }
+
+    val isExchanging = currentDestination?.route == EXCHANGE_ROUTE
+    var carritoVivo by remember { mutableStateOf<com.avoqado.pos.pos.presentation.cart.CartViewModel?>(null) }
+    var cuentaConSaldoDeArranque by rememberSaveable { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.CompositionLocalProvider(
+        com.avoqado.pos.payment.presentation.LocalResultadoDeTarjetas provides ::abrirResultadoDeTarjetas,
+        com.avoqado.pos.payment.presentation.LocalCuentaDelCarrito provides { carritoVivo?.cuentaLigada() },
+        com.avoqado.pos.payment.presentation.LocalSolicitudesDeSaldo provides pendientesDeTarjetas,
+        com.avoqado.pos.payment.presentation.LocalCuentasDeSaldoCerradas provides cuentasDeSaldoCerradas,
+        com.avoqado.pos.payment.presentation.LocalCerrarCuentaDeSaldo provides { id ->
+            if (contextoDeTarjetas == (almacenDeTarjetas.userId to almacenDeTarjetas.venueId) && id !in cuentasDeSaldoCerradas)
+                cuentasDeSaldoCerradas = ArrayList(cuentasDeSaldoCerradas + id)
+        },
+    ) {
+    com.avoqado.pos.giftcards.presentation.AvisoDeCobroRecuperado(cobrosRecuperadosDeSaldo, cuentasPorOfrecerDeSaldo,
+        contextoDeTarjetas, contextoActual = { almacenDeTarjetas.userId to almacenDeTarjetas.venueId }, alVer = { aviso ->
+            when (aviso) {
+                is AvisoDeSaldo.Cobro -> { resolutorDeTarjetas.visto(aviso.cobro.paymentId); resolutorDeTarjetas.ofrecido(aviso.cobro.orderId) }
+                is AvisoDeSaldo.Cuenta -> aviso.cuenta.orderId?.let(resolutorDeTarjetas::ofrecido)
+            }
+        }, onAbrirCuenta = { cuentaConSaldoDeArranque = it },
+        otraPantallaAbierta = resultadosDeTarjetas.isNotEmpty() || cuentaConSaldoDeArranque != null)
+    cuentaConSaldoDeArranque?.let { id -> com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id,
+        onSalir = { cuentaConSaldoDeArranque = null }) }
 
     if (isTablet) {
         // iPad-style: custom capsule tab bar at bottom.
@@ -384,7 +489,16 @@ private fun MainScaffold(
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
                     )
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
+                    com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
+                        historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
+                        actionLabel=salesBannerActionLabel) {
+                        com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
+                            salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
+                            onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
+                            onQuarantine={ showQuarantineSheet=true },
+                        )
+                    }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
                     com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
@@ -393,12 +507,13 @@ private fun MainScaffold(
             bottomBar = {
                 // Durante el cobro el tab bar se esconde: el diálogo del pago no
                 // cubre la pantalla completa y este quedaba asomando y tocable.
-                if (!isPaying) TabletTabBar(
+                if (!isPaying && !isExchanging) TabletTabBar(
                     visibleTabs = graphVisibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab -> tocarPestana(tab) },
                     onClockTap = { showTimeClock = true },
                     pendingPaymentCount = pendingPaymentCount,
+                    pendingSalesCount = pendingSalesCount,
                 )
             },
         ) { innerPadding ->
@@ -408,7 +523,11 @@ private fun MainScaffold(
                 modifier = Modifier.padding(innerPadding),
             ) {
                 if (MainTab.CHECKOUT in registeredTabs) {
-                    composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = true, roleManager = roleManager) }
+                    composable(MainTab.CHECKOUT.route) {
+                        val carrito: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
+                        SideEffect { carritoVivo = carrito }
+                        CheckoutScreen(isTablet = true, cartViewModel = carrito, roleManager = roleManager, onResultadoDeTarjetas = ::abrirResultadoDeTarjetas)
+                    }
                     composable(MainTab.TABLES.route) {
                         com.avoqado.pos.tables.presentation.TablesScreen(
                             // Same save/restore discipline the bottom bar uses —
@@ -433,7 +552,10 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
+                    composable(MainTab.TRANSACTIONS.route) {
+                        TransactionsScreen(isTablet = true, openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }, onOpenExchange = { navController.navigate(EXCHANGE_ROUTE) { launchSingleTop = true } })
+                    }
+                    composable(EXCHANGE_ROUTE) { ExchangeDestination(navController) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -446,6 +568,8 @@ private fun MainScaffold(
                                 restoreState = true
                             }
                         },
+                        // «Ver reserva»: la misma ruta del detalle que abre el calendario.
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
                     )
                 }
                 composable(MainTab.MORE.route) {
@@ -666,7 +790,16 @@ private fun MainScaffold(
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
                     )
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
+                    com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
+                        historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
+                        actionLabel=salesBannerActionLabel) {
+                        com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
+                            salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
+                            onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
+                            onQuarantine={ showQuarantineSheet=true },
+                        )
+                    }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
                     com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
@@ -675,7 +808,7 @@ private fun MainScaffold(
             bottomBar = {
                 // Mismo criterio que el layout de tablet: durante el cobro no se
                 // muestra, porque asoma por debajo del diálogo del pago.
-                if (!isPaying) NavigationBar {
+                if (!isPaying && !isExchanging) NavigationBar {
                     graphVisibleTabs.forEach { tab ->
                         val selected = tab == pestanaMarcada
                         NavigationBarItem(
@@ -686,6 +819,11 @@ private fun MainScaffold(
                                 when {
                                     tab == MainTab.CHECKOUT && pendingPaymentCount > 0 -> {
                                         BadgedBox(badge = { Badge { Text("$pendingPaymentCount") } }) {
+                                            Icon(icon, contentDescription = tab.label)
+                                        }
+                                    }
+                                    tab == MainTab.TRANSACTIONS && pendingSalesCount > 0 -> {
+                                        BadgedBox(badge = { Badge { Text("$pendingSalesCount") } }) {
                                             Icon(icon, contentDescription = tab.label)
                                         }
                                     }
@@ -709,7 +847,11 @@ private fun MainScaffold(
                 modifier = Modifier.padding(innerPadding),
             ) {
                 if (MainTab.CHECKOUT in registeredTabs) {
-                    composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = false, roleManager = roleManager) }
+                    composable(MainTab.CHECKOUT.route) {
+                        val carrito: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
+                        SideEffect { carritoVivo = carrito }
+                        CheckoutScreen(isTablet = false, cartViewModel = carrito, roleManager = roleManager, onResultadoDeTarjetas = ::abrirResultadoDeTarjetas)
+                    }
                     composable(MainTab.TABLES.route) {
                         com.avoqado.pos.tables.presentation.TablesScreen(
                             // Same save/restore discipline the bottom bar uses —
@@ -734,7 +876,10 @@ private fun MainScaffold(
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }
                 }
                 if (MainTab.TRANSACTIONS in registeredTabs) {
-                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
+                    composable(MainTab.TRANSACTIONS.route) {
+                        TransactionsScreen(openPendingsRequest = pendingSalesRequest, reviewCourtesyPaymentId = pendingCourtesyId, onCourtesyNavigationConsumed = { pendingCourtesyId=null }, onOpenExchange = { navController.navigate(EXCHANGE_ROUTE) { launchSingleTop = true } })
+                    }
+                    composable(EXCHANGE_ROUTE) { ExchangeDestination(navController) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
                     NotificationsScreen(
@@ -747,6 +892,8 @@ private fun MainScaffold(
                                 restoreState = true
                             }
                         },
+                        // «Ver reserva»: la misma ruta del detalle que abre el calendario.
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
                     )
                 }
                 composable(MainTab.MORE.route) {
@@ -956,6 +1103,7 @@ private fun MainScaffold(
             }
         }
     }
+    }
 
     // TimeClockSheet overlay
     if (showTimeClock) {
@@ -975,6 +1123,7 @@ private fun TabletTabBar(
     onTabSelected: (MainTab) -> Unit,
     onClockTap: () -> Unit,
     pendingPaymentCount: Int = 0,
+    pendingSalesCount: Int = 0,
 ) {
     Box(
         modifier = Modifier
@@ -1042,7 +1191,7 @@ private fun TabletTabBar(
                         tab = tab,
                         isSelected = isSelected,
                         onClick = { onTabSelected(tab) },
-                        badgeCount = if (tab == MainTab.CHECKOUT) pendingPaymentCount else 0,
+                        badgeCount = when(tab) { MainTab.CHECKOUT->pendingPaymentCount;MainTab.TRANSACTIONS->pendingSalesCount;else->0 },
                     )
                 }
             }
@@ -1114,6 +1263,46 @@ private fun TabBarItem(
             )
         }
     }
+}
+
+private const val EXCHANGE_ROUTE = "exchange"
+
+@Composable
+private fun ExchangeDestination(navController: androidx.navigation.NavHostController) {
+    val parent = remember(navController) { navController.getBackStackEntry(MainTab.TRANSACTIONS.route) }
+    val transactions: TransactionsViewModel = hiltViewModel(parent)
+    val exchange: ExchangeViewModel = hiltViewModel()
+    val exchangePayments: com.avoqado.pos.transactions.presentation.exchange.ExchangePaymentViewModel = hiltViewModel()
+    val send by exchangePayments.state.collectAsState()
+    val exchangeScope = rememberCoroutineScope()
+    val transaction by transactions.exchangeTransaction.collectAsState()
+    var leaving by remember { mutableStateOf(false) }
+    LaunchedEffect(transaction?.id) {
+        val sale = transaction
+        if (sale == null && !leaving) {
+            leaving = true
+            navController.popBackStack()
+        } else if (sale != null) exchange.start(sale)
+    }
+    LaunchedEffect(send.phase) {
+        if (send.phase in setOf(com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.COMPLETED,
+                com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.CANCELLED,
+                com.avoqado.pos.transactions.presentation.exchange.ExchangeSendPhase.REVIEW)) transactions.refreshForExchange()
+    }
+    if (transaction != null) ExchangeScreen(exchange, payments = exchangePayments, onStartAgain = {
+        exchangeScope.launch {
+            transactions.refreshForExchange()?.let { fresh ->
+                exchange.restart(fresh)
+                exchangePayments.open(fresh, force = true)
+            }
+        }
+    }, onClose = {
+        if (!leaving) {
+            leaving = true
+            transactions.dismissExchange()
+            navController.popBackStack()
+        }
+    })
 }
 
 /**

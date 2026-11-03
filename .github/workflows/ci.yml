@@ -45,12 +45,14 @@ jobs:
       # 🔑 Se acota desde GRADLE_USER_HOME, no editando el archivo del repo: ese
       # gradle.properties GANA sobre el del proyecto, así que la máquina del founder
       # conserva sus 6 GB y el runner usa lo que le cabe.
+      # Kotlin compila DENTRO de Gradle (un solo tope), como en desktop.yml: con el daemon aparte de 2 GB,
+      # `:app:compileDebugKotlin` se quedó sin memoria (2-nov, 2 de 3 en el mismo commit).
       - name: Acotar memoria al tamaño del runner
         run: |
           mkdir -p ~/.gradle
           cat >> ~/.gradle/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.jvmargs=-Xmx4608m -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+          kotlin.compiler.execution.strategy=in-process
           org.gradle.workers.max=2
           org.gradle.daemon=false
           org.gradle.parallel=false

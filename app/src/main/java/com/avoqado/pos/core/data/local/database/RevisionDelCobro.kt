@@ -3,6 +3,96 @@ package com.avoqado.pos.core.data.local.database
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
+import com.avoqado.pos.payment.data.ConciliacionDelCobro
+
+internal object RevisionCanceladoCero {
+    const val MOTIVO = "CANCELLED_ZERO_PAYMENT"
+    const val AVISO = "Intento cancelado de $0. La cortesía no quedó registrada; revisa el inventario."
+    private val gerentes = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+    fun esGerente(role: String) = role.uppercase() in gerentes
+    private fun objeto(raw: String?) = raw?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
+    private fun JsonObject.texto(key: String) = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+    private fun JsonObject.fecha(key: String) = (get(key) as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.takeIf { it > 0 }
+    fun externalId(row: PendingPaymentEntity): String? {
+        if (row.paymentType != "ORDER" || row.amountCents != 0 || row.tipCents != 0 ||
+            row.id.isBlank() || row.venueId.isBlank() || row.orderId?.isBlank() == true) return null
+        val body = objeto(row.orderRequestJson) ?: return null
+        if (row.syncStatus == "FAILED") return body.texto("externalId")
+        if (row.syncStatus != "EN_VUELO" ||
+            (row.q15Reason != ConciliacionDelCobro.RESULTADO_NO_COMPROBADO && row.q15Reason != MOTIVO) ||
+            row.method != "CASH" || row.tenderTypeId != null || row.tenderRevision != null) return null
+        val capture = ConciliacionDelCobro.leerCaptura(row.q15CaptureJson, row.venueId, row.id) ?: return null
+        if (objeto(ConciliacionDelCobro.guardarCaptura(capture)) != objeto(row.q15CaptureJson) ||
+            capture.amountCents != 0 || capture.tipCents != 0 || capture.method != "CASH" ||
+            capture.tenderTypeId != null || capture.tenderRevision != null || capture.splitType != row.splitType ||
+            capture.customerId != row.customerId || capture.cashTenderedCents != row.cashTenderedCents ||
+            capture.changeCents != row.changeCents || (capture.orderId != null && capture.orderId != row.orderId)) return null
+        val captured = objeto(capture.orderRequestJson) ?: return null
+        val external = captured.texto("externalId") ?: return null
+        if (body == captured) return external
+        // Old re-reservation rewrote these two fields; only server proof of the original capture can review it.
+        if (row.orderId == null || capture.orderId != null || row.capturedOrderRef != row.id || external != row.id ||
+            body.texto("externalId") != "offline-order:${row.id}" || captured.fecha("createdAtLocal") == null ||
+            body.fecha("createdAtLocal") != row.createdAt ||
+            body.filterKeys { it != "externalId" && it != "createdAtLocal" } !=
+            captured.filterKeys { it != "externalId" && it != "createdAtLocal" }) return null
+        return external
+    }
+    private fun valida(row: PendingPaymentEntity, proof: JsonObject): Boolean {
+        val external = externalId(row) ?: return false
+        val orderId = proof.texto("orderId") ?: return false
+        val version = proof["version"] as? JsonPrimitive ?: return false
+        fun falso(key: String) = (proof[key] as? JsonPrimitive)?.let { !it.isString && it.booleanOrNull == false } == true
+        return !version.isString && version.intOrNull == 1 && proof.texto("venueId") == row.venueId &&
+            (row.orderId == null || orderId == row.orderId) && proof.texto("externalId") == external &&
+            proof.texto("orderStatus") == "CANCELLED" && falso("hasPayments") && falso("hasTerminalRequests") &&
+            proof.texto("verifiedAt")?.let { runCatching { java.time.Instant.parse(it) }.isSuccess } == true
+    }
+    fun evidencia(row: PendingPaymentEntity, recoveryJson: String): String? {
+        if (row.q15ReviewedAt != null || (row.syncStatus == "EN_VUELO" && row.q15Reason != ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)) return null
+        val external = externalId(row) ?: return null
+        val data = objeto(recoveryJson)?.get("data") as? JsonObject ?: return null
+        val record = (data["orders"] as? JsonArray)?.singleOrNull() as? JsonObject ?: return null
+        val orderId = record.texto("orderId") ?: return null
+        if (record.texto("externalId") != external) return null
+        val proof = record["cancelledPaymentEvidence"] as? JsonObject ?: return null
+        if (proof.texto("orderId") != orderId) return null
+        return if (valida(row, proof)) JsonObject(mapOf("cancelledPaymentEvidence" to proof)).toString() else null
+    }
+    /** Canonical identity from strict evidence, without filling the durable original NULL. */
+    fun ordenAcreditada(row: PendingPaymentEntity, resultadoJson: String?): String? {
+        val proof = objeto(resultadoJson)?.get("cancelledPaymentEvidence") as? JsonObject ?: return null
+        return proof.texto("orderId")?.takeIf { valida(row, proof) }
+    }
+    fun revisado(row: PendingPaymentEntity): Boolean = row.q15Reason == MOTIVO &&
+        row.q15ReviewedAt?.let { it > 0 } == true && !row.q15ReviewedBy.isNullOrBlank() &&
+        row.q15ReviewRole?.let(::esGerente) == true &&
+        ordenAcreditada(row, row.q15ResultJson) != null
+
+    /** A retained FAILED with no pending Q15 card must remain visible in quarantine. */
+    fun mostrarFallido(row: PendingPaymentEntity) = !revisado(row) && (row.q15Reason == null || row.q15ReviewedAt != null)
+}
+
+const val Q15_CANCELLED_ZERO_PAYMENT_REVIEW_SQL = """UPDATE pending_payments SET q15ResultJson=:resultadoJson,
+ q15Reason='CANCELLED_ZERO_PAYMENT',q15DetectedAt=COALESCE(q15DetectedAt,:ahora),q15ReviewedAt=:ahora,q15ReviewedBy=:actor,q15ReviewRole=:rol
+ WHERE venueId=:venueId AND id=:id AND syncStatus=:originalSyncStatus AND syncStatus IN ('FAILED','EN_VUELO') AND paymentType='ORDER' AND amountCents=0 AND tipCents=0
+ AND orderId IS :originalOrderId AND orderRequestJson IS :originalOrderRequestJson AND q15ResultJson IS :originalResultJson
+ AND q15Reason IS :originalReason AND q15CaptureJson IS :originalCaptureJson AND createdAt=:originalCreatedAt AND capturedOrderRef IS :originalCapturedOrderRef
+ AND (syncStatus='FAILED' OR (q15Reason='RESULTADO_NO_COMPROBADO' AND method='CASH' AND tenderTypeId IS NULL AND tenderRevision IS NULL
+ AND splitType IS :originalSplitType AND customerId IS :originalCustomerId AND cashTenderedCents IS :originalCashTenderedCents AND changeCents IS :originalChangeCents))
+ AND q15ReviewedAt IS NULL AND TRIM(:actor)!='' AND UPPER(:rol) IN ('MANAGER','ADMIN','OWNER','SUPERADMIN')"""
+
+// Only a candidate: every reader must validate its original identity and proof in Kotlin, without SQLite JSON1.
+internal const val Q15_CANCELLED_CANDIDATE_SQL = "COALESCE(id!='' AND syncStatus IN ('FAILED','EN_VUELO') AND paymentType='ORDER' AND amountCents=0 AND tipCents=0 AND q15Reason='CANCELLED_ZERO_PAYMENT' AND q15ReviewedAt IS NOT NULL AND q15ReviewedBy IS NOT NULL AND q15ReviewRole IS NOT NULL AND q15ResultJson IS NOT NULL,0)"
+internal const val Q15_CANCELLED_PAGE_SQL = "SELECT * FROM pending_payments WHERE venueId=:venueId AND $Q15_CANCELLED_CANDIDATE_SQL AND id>:cursor ORDER BY id LIMIT 50"
+internal const val Q15_CANCELLED_STATE_PAGE_SQL = "SELECT * FROM pending_payments WHERE syncStatus=:estado AND $Q15_CANCELLED_CANDIDATE_SQL AND id>:cursor ORDER BY id LIMIT 50"
+internal const val Q15_EN_VUELO_COUNT_SQL = "SELECT COUNT(*) FROM pending_payments WHERE syncStatus='EN_VUELO' AND NOT ($Q15_CANCELLED_CANDIDATE_SQL)"
+internal const val Q15_FAILED_ORDINARY_SQL = "SELECT * FROM pending_payments WHERE syncStatus='FAILED' AND NOT ($Q15_CANCELLED_CANDIDATE_SQL) ORDER BY createdAt DESC"
+internal const val Q15_FAILED_ORDINARY_COUNT_SQL = "SELECT COUNT(*) FROM pending_payments WHERE syncStatus='FAILED' AND (q15Reason IS NULL OR q15ReviewedAt IS NOT NULL) AND NOT ($Q15_CANCELLED_CANDIDATE_SQL)"
 
 /** Only original nonblank STRING IDs; numeric JSON, amounts and dates never establish identity. */
 fun referenciaOriginalDelCobro(payloadJson: String): String? {

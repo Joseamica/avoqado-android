@@ -28,6 +28,10 @@ data class SignInUiState(
     val errorMessage: String? = null,
     val canUseBiometric: Boolean = false,
     val biometricEmail: String? = null,
+    /** «¿Olvidaste tu contraseña?»: el pedido va en camino. */
+    val pidiendoEnlace: Boolean = false,
+    /** El aviso tras pedir el enlace (mismo texto que iOS); null = cerrado. */
+    val avisoContrasena: String? = null,
 ) {
     val isEmailValid: Boolean
         // Real format check — "a@" used to advance to the password step and
@@ -88,9 +92,39 @@ class SignInViewModel @Inject constructor(
         }
     }
 
+    /**
+     * «¿Olvidaste tu contraseña?» (1-nov-2026: en ANDROID no hacía nada). Como iOS: pide el enlace al correo ya escrito
+     * y avisa con el mismo texto, exista o no la cuenta. Sin red no promete un correo: lo dice.
+     */
+    fun pedirEnlaceDeContrasena() {
+        val state = _uiState.value
+        if (state.pidiendoEnlace || state.isLoading || !state.isEmailValid) return
+        val correo = state.email.trim()
+        viewModelScope.launch {
+            _uiState.update { it.copy(pidiendoEnlace = true, errorMessage = null) }
+            val salio = authRepository.pedirRestablecerContrasena(correo)
+            _uiState.update {
+                it.copy(
+                    pidiendoEnlace = false,
+                    avisoContrasena = if (salio) {
+                        "Si existe una cuenta con $correo, recibirás un enlace para restablecer tu contraseña."
+                    } else {
+                        null
+                    },
+                    errorMessage = if (salio) null else SIN_RED_PARA_EL_ENLACE,
+                )
+            }
+        }
+    }
+
+    fun cerrarAvisoContrasena() {
+        _uiState.update { it.copy(avisoContrasena = null) }
+    }
+
     fun loginWithPassword(onSuccess: () -> Unit) {
         val state = _uiState.value
-        if (!state.isEmailValid || state.password.length < 4) return
+        // El «Done» del teclado no mira si ya hay un login en camino: dos seguidos con distinto correo cruzaban sesiones (D4).
+        if (state.isLoading || !state.isEmailValid || state.password.length < 4) return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -108,7 +142,11 @@ class SignInViewModel @Inject constructor(
     }
 
     fun loginWithBiometric(activity: FragmentActivity, onSuccess: () -> Unit) {
+        // Un segundo toque mientras el primero espera la red mandaría la misma llave dos veces (D4, Codex código r4 #1).
+        if (_uiState.value.isLoading) return
         val refreshToken = secureStorage.biometricRefreshToken ?: return
+        // D4: si mientras se pone la huella y viaja la renovación entra o sale alguien, esta entrada no se instala.
+        val sello = secureStorage.generacion
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -125,14 +163,14 @@ class SignInViewModel @Inject constructor(
                     return@launch
                 }
 
-                authRepository.refreshTokensForBiometric(refreshToken)
-
                 val biometricVenues = secureStorage.biometricVenuesList
                 val restoredVenue = biometricVenues.firstOrNull { it.id == secureStorage.biometricVenueId }
                     ?: biometricVenues.firstOrNull()
 
-                if (!secureStorage.restoreBiometricSession(restoredVenue)) {
-                    throw IllegalStateException("Missing biometric session data")
+                if (!authRepository.entrarConHuella(refreshToken, restoredVenue, sello)) {
+                    // No es que la huella haya vencido: entró otra persona. Sus credenciales se quedan.
+                    _uiState.update { it.copy(isLoading = false, errorMessage = AuthRepository.OTRA_PERSONA_ENTRO) }
+                    return@launch
                 }
 
                 Log.d("🔐", "✅ Biometric login success")
@@ -146,9 +184,13 @@ class SignInViewModel @Inject constructor(
                         canUseBiometric = false,
                     )
                 }
-                // Clear expired biometric credentials
-                secureStorage.clearBiometricCredentials()
+                // Clear expired biometric credentials (sólo si siguen siendo las que mandó ESTE intento)
+                secureStorage.clearBiometricCredentialsSiSigue(refreshToken)
             }
         }
+    }
+
+    companion object {
+        const val SIN_RED_PARA_EL_ENLACE = "Sin conexión: conéctate a internet para recibir el enlace."
     }
 }

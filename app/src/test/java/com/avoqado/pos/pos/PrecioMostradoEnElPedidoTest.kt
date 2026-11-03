@@ -105,6 +105,70 @@ class PrecioMostradoEnElPedidoTest {
         assertEquals(4500, l.getValue("displayedUnitPrice").jsonPrimitive.int)
     }
 
+    // MARK: - D12: el «Ajuste de precio» viaja como adjustedUnitPrice
+
+    private fun playera(
+        ajuste: Int? = 8000,
+        precio: Int = 10000,
+        cortesia: Boolean = false,
+        tipo: CartItemType = CartItemType.ProductItem("playera"),
+        catalogAt: String? = cat,
+    ) = CartItem(
+        id = "p1", type = tipo, name = "Playera", unitPrice = precio, priceAdjustment = ajuste,
+        isCortesia = cortesia, catalogAt = catalogAt,
+    )
+
+    @Test
+    fun `el ajuste de un producto viaja como adjustedUnitPrice`() {
+        val l = pedido(playera()).linea()
+        assertEquals(8000, l.getValue("adjustedUnitPrice").jsonPrimitive.int)
+        // El precio mostrado sigue siendo el del catálogo, no el ajustado.
+        assertEquals(10000, l.getValue("displayedUnitPrice").jsonPrimitive.int)
+        assertFalse(l.containsKey("unitPrice"))
+    }
+
+    @Test
+    fun `sin ajuste no viaja la llave`() {
+        assertFalse(pedido(playera(ajuste = null)).linea().containsKey("adjustedUnitPrice"))
+    }
+
+    @Test
+    fun `un ajuste igual o mayor al precio no viaja`() {
+        assertFalse(pedido(playera(ajuste = 10000)).linea().containsKey("adjustedUnitPrice"))
+        assertFalse(pedido(playera(ajuste = 12000)).linea().containsKey("adjustedUnitPrice"))
+    }
+
+    @Test
+    fun `una cortesía no lo manda`() {
+        val l = pedido(playera(cortesia = true)).linea()
+        assertFalse(l.containsKey("adjustedUnitPrice"))
+        assertTrue(l.getValue("isCortesia").jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `un Otro importe no lo manda y sigue con unitPrice`() {
+        val l = pedido(playera(tipo = CartItemType.CustomAmount, catalogAt = null)).linea()
+        assertFalse(l.containsKey("adjustedUnitPrice"))
+        assertEquals(8000, l.getValue("unitPrice").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `en la cola sin red (isOfflineReplay) también viaja`() {
+        val l = pedido(playera(), isOfflineReplay = true, createdAtLocal = 1_760_000_000_000L).linea()
+        assertEquals(8000, l.getValue("adjustedUnitPrice").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `por peso viaja el precio por kg ajustado`() {
+        val l = pedido(
+            CartItem(id = "w1", type = CartItemType.ProductItem("jamon"), name = "Jamón", unitPrice = 42000,
+                priceAdjustment = 40000, weightKg = 0.435, catalogAt = cat),
+        ).linea()
+        assertEquals(40000, l.getValue("adjustedUnitPrice").jsonPrimitive.int)
+        assertEquals(42000, l.getValue("displayedUnitPrice").jsonPrimitive.int)
+        assertEquals(0.435, l.getValue("weightQuantity").jsonPrimitive.double, 0.0)
+    }
+
     @Test
     fun `venta por peso manda el precio por kilo`() {
         val l = pedido(CartItem(id = "w1", type = CartItemType.ProductItem("jamon"), name = "Jamón", unitPrice = 42000, weightKg = 0.435, catalogAt = cat)).linea()

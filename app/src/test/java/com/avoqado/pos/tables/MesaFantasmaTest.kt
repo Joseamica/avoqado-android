@@ -207,12 +207,28 @@ class MesaFantasmaTest {
         assertTrue(repository.tables.value.single().primaryCheck!!.isProvisional)
     }
 
-    @Test fun `una cuenta cancelada en el servidor no se suelta - un abono sin red que llega tarde la reabre`() = conDrafts { drafts ->
-        // Codex r7 #1: sólo COBRADA es definitiva; cancelada o borrada se reabren si reciben dinero ya cobrado.
+    @Test fun `una cuenta anulada en una mesa archivada se conserva - un abono sin red que llega tarde la reabriria sin verse`() = conDrafts { drafts ->
+        // Codex r7 #1: cancelada o borrada se reabren si reciben dinero ya cobrado; en una mesa archivada /tables no la volvería
+        // a mostrar, así que la provisional es lo único que la deja ver.
         val repository = escenario(drafts, outbox("ACKED") { 0 })
+        coEvery { api.getTables(venue) } returns TablesResponse(data = emptyList())
         coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } returns cuenta("CANCELLED")
         repository.refresh(venue).getOrThrow()
         assertTrue(repository.tables.value.single().primaryCheck!!.isProvisional)
+    }
+
+    // Codex r2 de la iOS 1.15.5: abierta sin red y anulada ⇒ el servidor dice CANCELLED y la mesa quedaba ocupada para
+    // siempre. En una mesa activa se suelta: si un abono tardío la reabre, vuelve a salir en /tables.
+    @Test fun `una cuenta anulada en una mesa activa se suelta`() = seSueltaEnMesaActiva("CANCELLED")
+    @Test fun `una cuenta borrada en una mesa activa se suelta`() = seSueltaEnMesaActiva("DELETED")
+
+    private fun seSueltaEnMesaActiva(estado: String) = conDrafts { drafts ->
+        val repository = escenario(drafts, outbox("ACKED") { 0 })
+        coEvery { api.getOrderDetailEnSegundoPlano(venue, "real") } returns cuenta(estado)
+        repository.refresh(venue).getOrThrow()
+        val m11 = repository.tables.value.single()
+        assertTrue("$estado: la mesa activa ya no debe quedar ocupada", m11.openOrders.isEmpty())
+        assertFalse(m11.isOccupied)
     }
 
     @Test fun `si no se puede preguntar al servidor por la cuenta se conserva`() = conDrafts { drafts ->

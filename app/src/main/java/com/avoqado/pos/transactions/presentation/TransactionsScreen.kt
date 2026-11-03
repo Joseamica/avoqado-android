@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -56,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -87,19 +89,92 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 @Composable
 fun TransactionsScreen(
     isTablet: Boolean = false,
-    viewModel: TransactionsViewModel = hiltViewModel(),
+    openPendingsRequest: Int = 0,
+    reviewCourtesyPaymentId:String? = null,
+    onCourtesyNavigationConsumed:()->Unit = {},
+    notices: com.avoqado.pos.sync.presentation.SalesNoticesViewModel = hiltViewModel(),
+    onOpenExchange: () -> Unit = {},
 ) {
+    var pending by remember { mutableStateOf(openPendingsRequest > 0) }
+    var legacy by remember { mutableStateOf(false) }
+    val courtesyOnline by notices.courtesyOnline.collectAsState()
+    val globalPendingCount by notices.globalPendingCount.collectAsState()
+    val noticeMessage by notices.message.collectAsState()
+    val noticeSummary by notices.summary.collectAsState()
+    val pendingLabel=remember(globalPendingCount,noticeMessage,noticeSummary,isTablet) { notices.presentation(isTablet).pendingLabel }
+    LaunchedEffect(openPendingsRequest,reviewCourtesyPaymentId) {
+        if(openPendingsRequest > 0) pending=true
+        reviewCourtesyPaymentId?.let { pending=true;notices.openCourtesyPayment(it);onCourtesyNavigationConsumed() }
+    }
+    LaunchedEffect(notices) { notices.observeChanges() }
+    LaunchedEffect(notices) { notices.observeContextChanges() }
+    LifecycleResumeEffect(notices) { notices.refresh();onPauseOrDispose { } }
+    Column(Modifier.fillMaxSize()) {
+        Text("Ventas",style=MaterialTheme.typography.headlineSmall,
+            modifier=Modifier.padding(horizontal=AvoqadoTheme.spacing.lg,vertical=AvoqadoTheme.spacing.sm))
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            androidx.compose.material3.TextButton(onClick={pending=false},modifier=Modifier.height(48.dp)) {
+                Text("Registradas",fontWeight=if(!pending) FontWeight.Bold else FontWeight.Normal)
+            }
+            if(notices.canRead) androidx.compose.material3.TextButton(onClick={pending=true},modifier=Modifier.height(48.dp)) {
+                Text(pendingLabel,fontWeight=if(pending) FontWeight.Bold else FontWeight.Normal)
+            }
+        }
+        HorizontalDivider()
+        Box(Modifier.weight(1f)) {
+            if(pending && notices.canRead) com.avoqado.pos.sync.presentation.SalesNoticesContent(
+                isTablet=isTablet,onOpenLegacyReview={legacy=true},viewModel=notices)
+            else RegisteredTransactionsScreen(isTablet=isTablet, onOpenExchange=onOpenExchange)
+        }
+    }
+    if(legacy) com.avoqado.pos.sync.presentation.QuarantineSheet(
+        onDismissSheet={legacy=false;notices.refresh()},courtesyReviewOnline=courtesyOnline,courtesyCanPreview=notices.canPreviewCourtesy,
+        onReviewCourtesy={ id -> legacy=false;pending=true;notices.openCourtesyPayment(id) },
+    )
+}
+
+@Composable
+private fun RegisteredTransactionsScreen(
+    isTablet: Boolean = false,
+    viewModel: TransactionsViewModel = hiltViewModel(),
+    onOpenExchange: () -> Unit = {},
+) {
+    val exchangeTransaction by viewModel.exchangeTransaction.collectAsState()
+    LaunchedEffect(exchangeTransaction?.id) { if (exchangeTransaction != null) onOpenExchange() }
     val activeFilter by viewModel.activeFilter.collectAsState()
     val showRefundSheet by viewModel.showRefundSheet.collectAsState()
+    val pendingExchangeNotices by viewModel.pendingExchangeNotices.collectAsState()
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshPendingExchanges()
+        onPauseOrDispose { }
+    }
     val adaptive = AvoqadoTheme.adaptive
     val denseTabletLandscape = !adaptive.isPortrait && adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
 
     Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0)) { innerPadding ->
-        Box(modifier = Modifier.padding(innerPadding)) {
-            if (isTablet) {
-                TabletTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
-            } else {
-                PhoneTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+        Column(modifier = Modifier.padding(innerPadding)) {
+            if (pendingExchangeNotices.isNotEmpty()) {
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = AvoqadoTheme.dimensions.buttonLarge * 3)) {
+                    items(pendingExchangeNotices, key = { it.paymentId }) { notice ->
+                        Text(
+                            text = notice.message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.secondaryContainer)
+                                .clickable(role = Role.Button) { viewModel.openPendingExchange(notice.paymentId) }
+                                .heightIn(min = AvoqadoTheme.dimensions.buttonLarge)
+                                .padding(AvoqadoTheme.spacing.lg),
+                        )
+                    }
+                }
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                if (isTablet) {
+                    TabletTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+                } else {
+                    PhoneTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+                }
             }
         }
     }
@@ -220,20 +295,6 @@ private fun TransactionListPanel(
     Column(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
     ) {
-        // Header (tablet only)
-        if (isTablet) {
-            Text(
-                text = "Transacciones",
-                style = if (denseList) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineLarge,
-                modifier = Modifier.padding(
-                    start = horizontalPadding,
-                    end = horizontalPadding,
-                    top = if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.xl,
-                    bottom = dateHeaderBottomPadding,
-                ),
-            )
-        }
-
         // TODO [HIGH RISK - DISABLED]: Unassociated Refund button
         //
         // This feature is HIDDEN until the backend financial integrity bugs are fixed.
@@ -278,6 +339,8 @@ private fun TransactionListPanel(
         //
         // **RE-ENABLING CHECKLIST**
         // Before uncommenting this button:
+        //   [ ] RefundRepository.kt:221 manda PESOS y POST /mobile/venues/:venueId/refunds espera CENTAVOS (deuda del 18-oct): convertir antes de prender.
+        //   [ ] En negocios que alguna vez cobraron una tarjeta de regalo el servidor responde 409 GIFT_CARD_UNLINKED_REFUND_BLOCKED: la devolución se hace desde su venta.
         //   [ ] Fix the 5 server bugs above (with tests).
         //   [ ] Decide single source of truth for cash impact (Payment vs CashDrawerEvent).
         //   [ ] Pass `items` from controller -> service and restore inventory atomically

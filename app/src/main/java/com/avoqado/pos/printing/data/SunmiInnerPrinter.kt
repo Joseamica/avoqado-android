@@ -92,7 +92,7 @@ class SunmiInnerPrinter @Inject constructor(
      * texto.
      */
     val paperWidthMm: Int
-        get() = runCatching { if (service?.printerPaper == 2) 80 else 58 }.getOrDefault(58)
+        get() = anchoDeLaIntegrada(android.os.Build.MODEL, runCatching { service?.printerPaper }.getOrNull())
 
     private val callback = object : InnerPrinterCallback() {
         override fun onConnected(printerService: SunmiPrinterService?) {
@@ -258,4 +258,15 @@ class SunmiInnerPrinter @Inject constructor(
         /** Código del SDK de Sunmi: el servicio existe pero no hay cabezal. */
         const val NO_PRINTER_DETECTED = 505
     }
+}
+
+/**
+ * Ancho del cabezal de la integrada (1 = 58 mm, 2 = 80 mm según el servicio de Sunmi; ante la duda, 58: sobra papel en vez
+ * de perderse texto). D5 (28-oct): la Sunmi D3 contesta 1 aunque su rollo es de 80 mm — confirmado con un ticket real en la
+ * D3 D40625C1J0816 (renglones de 47 caracteres y un Code 128 de 444 puntos completos). Sólo el modelo exacto «D3».
+ */
+internal fun anchoDeLaIntegrada(modelo: String?, printerPaper: Int?): Int = when {
+    modelo?.trim().equals("D3", ignoreCase = true) -> 80
+    printerPaper == 2 -> 80
+    else -> 58
 }

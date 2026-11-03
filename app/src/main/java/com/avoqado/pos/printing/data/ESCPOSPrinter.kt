@@ -3,6 +3,7 @@ package com.avoqado.pos.printing.data
 import com.avoqado.pos.inventory.data.ConteoNoAplicado
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
 import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
@@ -711,6 +712,18 @@ class ESCPOSPrinter(
             printTwoColumns("Mesero:", it)
         }
 
+        // Pedido en línea: a quién se le entrega y cuánto cobrar. Sin encabezado no se emite NI un byte.
+        // El texto viene de fuera (la tienda web): sin bytes de control, nunca un comando a la impresora (PR #53).
+        ticket.encabezado?.forEach { linea ->
+            if (linea.startsWith(MARCA_NEGRITA_ENCABEZADO)) {
+                setBold(true)
+                printLine(linea.removePrefix(MARCA_NEGRITA_ENCABEZADO).filterNot { it.isISOControl() })
+                setBold(false)
+            } else {
+                printLine(linea.filterNot { it.isISOControl() })
+            }
+        }
+
         printDoubleDivider()
 
         // Items - Large and clear
@@ -1015,6 +1028,45 @@ class ESCPOSPrinter(
         printLine("Registró: ____________________")
         feedLines(2)
         printLine("Revisó: ______________________")
+        cut()
+        return getData()
+    }
+
+    fun generateGiftCardCertificate(c: CertificadoDeTarjeta): ByteArray {
+        reset()
+        fun printWrapped(text: String) {
+            ReceiptText.wrap(ReceiptText.force(text), paperWidth.charsPerLine).forEach { printLine(it) }
+        }
+        setAlignment(TextAlignment.CENTER)
+        c.negocio?.let(::printWrapped)
+        printTitle(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_TITULO, bold = true)
+        printLine(com.avoqado.pos.core.util.formatMoney(c.monto))
+        setAlignment(TextAlignment.LEFT)
+        c.para?.let { printWrapped("Para: $it") }
+        c.de?.let { printWrapped("De: $it") }
+        c.mensaje?.let { printWrapped("\"$it\"") }
+        printWrapped("Código: ${c.codigo}")
+        printWrapped("Folio: ${c.folio}")
+        printWrapped("Vence: ${c.vence ?: com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_SIN_VENCIMIENTO}")
+        c.liga?.let {
+            setAlignment(TextAlignment.CENTER)
+            printQr(it, moduleSize = if (paperWidth == PaperWidth.MM58) 6 else 7)
+            setAlignment(TextAlignment.LEFT)
+            printWrapped(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_ESCANEA)
+        }
+        val codigo = c.codigo.replace("-", "").lowercase()
+        val symbology = BarcodeSymbology.CODE128_B
+        val moduleWidth = fittingModuleWidth(codigo, symbology, DEFAULT_MODULE_WIDTH, paperWidth)
+        if (barcodeWidthInModules(codigo, symbology) * moduleWidth <= paperWidth.dots) {
+            setAlignment(TextAlignment.CENTER)
+            val impreso = printBarcode(codigo, symbology, moduleWidth = moduleWidth, hriPosition = HriPosition.NONE)
+            setAlignment(TextAlignment.LEFT)
+            if (impreso) {
+                printLine()
+                printWrapped(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_BARRAS)
+            }
+        }
+        printWrapped(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CERT_NO_EFECTIVO)
         cut()
         return getData()
     }

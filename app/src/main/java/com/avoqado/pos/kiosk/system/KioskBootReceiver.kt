@@ -3,8 +3,10 @@ package com.avoqado.pos.kiosk.system
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.util.Log
 import com.avoqado.pos.MainActivity
+import com.avoqado.pos.kiosk.domain.KioskPrefs
 
 /**
  * Levanta la app sola cuando el aparato enciende, **si y sólo si** esta pantalla trabaja
@@ -56,20 +58,25 @@ class KioskBootReceiver : BroadcastReceiver() {
          * La decisión, aparte del sistema para poder probarla: se levanta SÓLO si el aviso
          * es de arranque Y este aparato trabaja como kiosco.
          */
-        fun shouldLaunchOnBoot(action: String?, kioskEnabled: Boolean): Boolean {
-            val esArranque = action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_LOCKED_BOOT_COMPLETED
-            return esArranque && kioskEnabled
-        }
+        fun shouldLaunchOnBoot(action: String?, kioskEnabled: Boolean): Boolean =
+            // Sólo el arranque ya desbloqueado: antes, la app no puede leer sus datos cifrados (D6).
+            action == Intent.ACTION_BOOT_COMPLETED && kioskEnabled
 
         private const val TAG = "KioskBoot"
 
-        /** Mismas llaves que `KioskPrefs`; si allá cambian, aquí también. */
-        private const val PREFS = "avoqado_kiosk"
-        private const val KEY_ENABLED = "kiosk_enabled"
+        /** ¿Hay una segunda pantalla (de presentación)? Es lo que distingue una D3 de una tableta con «Esconder barras». */
+        fun hasPresentationDisplay(context: Context): Boolean =
+            runCatching {
+                (context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
+                    .getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).isNotEmpty()
+            }.getOrDefault(false)
 
+        /** Las llaves y la migración son de [KioskPrefs] (una sola fuente); aquí sólo se lee sin Hilt. */
         private fun kioskEnabled(context: Context): Boolean =
             runCatching {
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
+                KioskPrefs.readOrMigrate(context.getSharedPreferences(KioskPrefs.PREFS, Context.MODE_PRIVATE)) {
+                    hasPresentationDisplay(context)
+                }
             }.getOrDefault(false)
     }
 }

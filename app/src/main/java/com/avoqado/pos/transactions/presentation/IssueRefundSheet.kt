@@ -42,6 +42,9 @@ import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,10 +70,14 @@ import com.avoqado.pos.transactions.data.AssociatedRefundItem
 import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.model.OpcionDeDevolucion
+import com.avoqado.pos.transactions.data.model.refundChainRules
+import com.avoqado.pos.transactions.data.model.refundMethodForSubmit
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
 import com.avoqado.pos.transactions.data.model.avisoDeSoloRegistro
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
 import com.avoqado.pos.transactions.data.model.importeAjustadoAlTope
+import com.avoqado.pos.transactions.data.model.importeParaDevolver
+import com.avoqado.pos.transactions.data.model.puedeEnviarDevolucion
 import com.avoqado.pos.transactions.data.model.leyendaDeDevolucion
 import com.avoqado.pos.transactions.data.model.opcionesParaDevolver
 import com.avoqado.pos.transactions.data.model.propinaMarcadaPorDefecto
@@ -82,10 +89,40 @@ import com.avoqado.pos.transactions.data.model.tipRefundCentsPorArticulos
 import com.avoqado.pos.transactions.data.model.topeReembolsable
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionItem
+import com.avoqado.pos.transactions.data.DesenlaceDeSaldo
+import com.avoqado.pos.transactions.data.model.DEVOLVER_CON_SALDO
+import com.avoqado.pos.transactions.data.model.bloqueoDeLaCadena
+import com.avoqado.pos.transactions.data.model.defectoParaEnvio
+import com.avoqado.pos.transactions.data.model.devolucionEscogida
+import com.avoqado.pos.transactions.data.model.excepcionDeSoloSaldo
+import com.avoqado.pos.transactions.data.model.faltaParaSaldo
+import com.avoqado.pos.transactions.data.model.ofrecerEsPorDefecto
+import com.avoqado.pos.transactions.data.model.restringe
+import com.avoqado.pos.transactions.data.model.opcionesConSaldo
+import com.avoqado.pos.transactions.data.model.pastillaDeSaldo
+import com.avoqado.pos.transactions.data.model.soloSaldoEfectivo
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeSettlement
+import com.avoqado.pos.transactions.presentation.exchange.ExchangeStoreCreditCustomer
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.launch
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 private enum class RefundTab { ITEMS, AMOUNT }
+
+@dagger.hilt.android.lifecycle.HiltViewModel
+class ConexionDeDevolucionViewModel @javax.inject.Inject constructor(
+    red: com.avoqado.pos.core.util.ConnectivityMonitor,
+    val almacen: com.avoqado.pos.core.data.local.SecureStorage,
+) : androidx.lifecycle.ViewModel() {
+    val conectado = red.isConnected
+    val servidor = red.isServerReachable
+
+    internal suspend fun <T> iniciar(necesitaRed: Boolean, vigente: () -> Boolean, peticion: suspend () -> T): T? {
+        if (!vigente() || necesitaRed && (!conectado.value || !servidor.value)) return null
+        return peticion()
+    }
+}
 
 private data class ReasonOption(val code: String, val label: String)
 
@@ -114,20 +151,81 @@ fun IssueRefundSheet(
     codigoDeEncargadoActivo: Boolean,
     onDismiss: () -> Unit,
     onRefunded: () -> Unit,
+    soloCompleto: Boolean = false,
+    /**
+     * El envío a saldo a favor lo lleva quien abre la hoja (el detalle, `TransactionsViewModel.enviarReembolsoASaldo`) en un ámbito que
+     * sobrevive a la hoja (I2): si la cierran con el POST en vuelo, el envío sigue y el detalle se entera. Sin él no se ofrece saldo.
+     */
+    enviarASaldo: ((cuerpo: String, idempotencyKey: String) -> kotlinx.coroutines.Deferred<DesenlaceDeSaldo>)? = null,
+    /**
+     * 🔴 La guarda de TODA devolución de la hoja (efectivo, transferencia, tarjeta, terminal y saldo): con un saldo a favor de esta venta
+     * sin confirmar o en vuelo, devuelve el motivo y no se manda (`TransactionsViewModel.motivoParaNoReembolsar`). `null` = adelante.
+     */
+    antesDeReembolsar: suspend () -> String? = { null },
+    conexion: ConexionDeDevolucionViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
+    saldo: SaldoAFavorDelReembolsoViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
 ) {
     val spacing = AvoqadoTheme.spacing
     val corners = AvoqadoTheme.cornerRadius
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
+    val conectado by conexion.conectado.collectAsState()
+    val servidor by conexion.servidor.collectAsState()
+    val aSaldo = transaction.refundToGiftCardBalance == true
+
+    // --- Saldo a favor (spec 2026-10-30 §4, §5.5; A3) ---
+    LaunchedEffect(transaction.id) { saldo.abrir(transaction) }
+    val storeCreditOnly by saldo.storeCreditOnly.collectAsState()
+    val storeCreditAvailable by saldo.storeCreditAvailable.collectAsState()
+    val clienteDelSaldo by saldo.cliente.collectAsState()
+    val guardandoTelefono by saldo.guardando.collectAsState()
+    val mensajeDelSaldo by saldo.mensaje.collectAsState()
+    var escogiendoCliente by remember(transaction.id) { mutableStateOf(false) }
+    var altaDesde by remember(transaction.id) { mutableStateOf<String?>(null) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember(transaction.id) { mutableStateOf<Long?>(null) }
+    var reason by remember(transaction.id) { mutableStateOf<ReasonOption?>(null) }
+    var esPorDefecto by remember(transaction.id) { mutableStateOf(false) }
+    val soloSaldo = soloSaldoEfectivo(storeCreditOnly, storeCreditAvailable)
+
+    // Sólo la tarjeta que cobró NUESTRA terminal se devuelve allá; lo demás se reembolsa como el efectivo.
+    val chain = refundChainRules(transaction.tenderSystemKind, transaction.chainRefundMethod,
+        transaction.chainRefundLabel, transaction.chainRefundBlockedCode)
+    // «Devolver con»: null = por el mismo medio. Sólo hay selector si el servidor lo dice (`canChooseRefundMethod`), o si se puede
+    // devolver a saldo a favor (entonces también una tarjeta de la terminal gana su pastilla del mismo medio). La venta de una
+    // tarjeta de regalo (`soloCompleto`) no se devuelve a saldo.
+    var devolverConAMano by remember(transaction.id) { mutableStateOf<String?>(null) }
+    val pastillaDelSaldo = if (soloCompleto || enviarASaldo == null) null else pastillaDeSaldo(transaction.storeCreditOption, storeCreditAvailable,
+        ExchangeSettlement.storeCreditApplies(transaction), conectado && servidor)
+    val opcionesDeDevolucion = opcionesConSaldo(
+        base = if (chain.isCredit) chain.options else if (aSaldo || (!soloCompleto && transaction.canChooseRefundMethod == true)) {
+            opcionesParaDevolver(transaction.method, transaction.tenderLabel, transaction.refundToGiftCardBalance)
+        } else {
+            emptyList()
+        },
+        original = opcionesParaDevolver(transaction.method, transaction.tenderLabel).first(),
+        saldo = pastillaDelSaldo,
+        restringe = restringe(soloSaldo, reason?.code, esPorDefecto),
+    )
+    val devolverCon = devolucionEscogida(opcionesDeDevolucion, devolverConAMano)
+    // O-1 (A5): lo que se ve elegido se queda mientras se siga ofreciendo (marcar «Es por defecto» ya no pasa solo a «Efectivo»).
+    SideEffect { if (devolverConAMano != devolverCon) devolverConAMano = devolverCon }
+    val aSaldoAFavor = devolverCon == DEVOLVER_CON_SALDO
+    val bloqueo = bloqueoDeLaCadena(chain, devolverCon)
+    val enTerminal = !chain.isCredit && !aSaldo && !aSaldoAFavor && seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
+    val necesitaRed = aSaldo || soloCompleto || aSaldoAFavor
+    val contexto = remember(transaction.id) { conexion.almacen.venueId to conexion.almacen.userId }
+    val montada = remember(transaction.id) { java.util.concurrent.atomic.AtomicBoolean(true) }
+    DisposableEffect(montada) { onDispose { montada.set(false) } }
+    fun vigente() = montada.get() && (!necesitaRed || contexto == (conexion.almacen.venueId to conexion.almacen.userId))
 
     var tab by remember(transaction.id) {
-        mutableStateOf(if (transaction.items.isNotEmpty()) RefundTab.ITEMS else RefundTab.AMOUNT)
+        mutableStateOf(if (!soloCompleto && transaction.items.isNotEmpty()) RefundTab.ITEMS else RefundTab.AMOUNT)
     }
     var selectedItemIds by remember(transaction.id) { mutableStateOf(emptySet<String>()) }
     var refundQtyByItem by remember(transaction.id) { mutableStateOf(emptyMap<String, Int>()) }
     var restockItemIds by remember(transaction.id) { mutableStateOf(emptySet<String>()) }
     var amountStr by remember(transaction.id) { mutableStateOf("") }
-    var reason by remember(transaction.id) { mutableStateOf<ReasonOption?>(null) }
     var reasonMenuOpen by remember(transaction.id) { mutableStateOf(false) }
     var submitting by remember(transaction.id) { mutableStateOf(false) }
     var errorMsg by remember(transaction.id) { mutableStateOf<String?>(null) }
@@ -142,17 +240,26 @@ fun IssueRefundSheet(
     var terminalesParaElegir by remember(transaction.id) {
         mutableStateOf<List<com.avoqado.pos.payment.data.OnlineTerminal>>(emptyList())
     }
+    fun puedeEnviar() = vigente() &&
+        puedeEnviarDevolucion(aSaldo || aSaldoAFavor, soloCompleto, conectado && servidor, submitting || enviandoATerminal || guardandoTelefono)
 
     fun mandarATerminal(terminalId: String) {
+        if (!puedeEnviar() || terminalAbierta) return
+        enviandoATerminal = true
         scope.launch {
-            enviandoATerminal = true
             terminalMsg = null
-            val resultado = terminalPaymentService.requestRefundOnTerminal(
+            val motivo = antesDeReembolsar()
+            if (motivo != null) { enviandoATerminal = false; terminalMsg = motivo; return@launch }
+            val resultado = conexion.iniciar(necesitaRed, ::vigente) { terminalPaymentService.requestRefundOnTerminal(
                 terminalId = terminalId,
                 paymentId = transaction.id,
                 reason = reason?.label,
-            )
+                // «Sólo saldo a favor»: la terminal exige la excepción que invoca la cajera; sin «sólo saldo» no viaja.
+                storeCreditOnlyException = excepcionDeSoloSaldo(soloSaldo, reason?.code, esPorDefecto),
+            ) }
             enviandoATerminal = false
+            if (!vigente()) return@launch
+            if (resultado == null) { terminalMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
             resultado.fold(
                 onSuccess = {
                     // 🔴 NO se cierra como "reembolsado": todavía no se devolvió
@@ -169,10 +276,15 @@ fun IssueRefundSheet(
     }
 
     fun abrirEnTerminal() {
+        if (!puedeEnviar() || terminalAbierta) return
+        enviandoATerminal = true
         scope.launch {
-            enviandoATerminal = true
             terminalMsg = null
-            when (val lista = terminalPaymentService.fetchOnlineTerminals()) {
+            val lista = conexion.iniciar(necesitaRed, ::vigente) { terminalPaymentService.fetchOnlineTerminals() }
+            enviandoATerminal = false
+            if (!vigente()) return@launch
+            if (lista == null) { terminalMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
+            when (lista) {
                 is com.avoqado.pos.payment.data.TerminalListResult.Error -> {
                     enviandoATerminal = false
                     terminalMsg = lista.message
@@ -196,18 +308,7 @@ fun IssueRefundSheet(
     val paymentTipAmount = transaction.tipAmount
     var includeTip by remember(transaction.id) { mutableStateOf(true) }
 
-    // Sólo la tarjeta que cobró NUESTRA terminal se devuelve allá; lo demás se reembolsa como el efectivo.
-    val enTerminal = seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
-
-    // «Devolver con»: null = por el mismo medio. Sólo hay selector si el servidor lo dice (`canChooseRefundMethod`).
-    var devolverCon by remember(transaction.id) { mutableStateOf<String?>(null) }
-    val opcionesDeDevolucion = if (transaction.canChooseRefundMethod == true) {
-        opcionesParaDevolver(transaction.method, transaction.tenderLabel)
-    } else {
-        emptyList()
-    }
-
-    val parsedAmount = amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val parsedAmount = importeParaDevolver(amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0, maxRefundable, soloCompleto)
     val selectedItems = transaction.items.filter { item ->
         item.id != null && selectedItemIds.contains(item.id)
     }
@@ -260,10 +361,24 @@ fun IssueRefundSheet(
             includeTip = includeTip,
         )
     }
+    // Lo que le falta al saldo a favor: red, a quién abonar y su teléfono (los textos del Cambio).
+    val faltaSaldo = if (aSaldoAFavor) pastillaDelSaldo?.disabledReason ?: faltaParaSaldo(conectado && servidor, clienteDelSaldo) else null
+    val itemsParaEnvio = selectedItems.mapNotNull { item ->
+        item.id?.let { id ->
+            AssociatedRefundItem(
+                orderItemId = id,
+                // Lo que QUEDA de la línea: con la original, una línea ya devuelta en parte rebotaba con 400.
+                quantity = refundQtyByItem[id] ?: item.refundableQty,
+            )
+        }
+    }
+    val restockParaEnvio = restockableItems.mapNotNull { it.id }.filter { restockItemIds.contains(it) }
     val canSubmit = reason != null &&
+        bloqueo == null &&
+        faltaSaldo == null &&
         amountToRefund > 0 &&
         amountToRefund <= topeActual + 0.001 &&
-        !submitting
+        puedeEnviar() && !(soloCompleto && enTerminal)
 
     if (terminalesParaElegir.isNotEmpty()) {
         com.avoqado.pos.designsystem.components.AvoqadoDialog(
@@ -272,12 +387,16 @@ fun IssueRefundSheet(
             onDismiss = { terminalesParaElegir = emptyList() },
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                if (necesitaRed && (!conectado || !servidor)) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
                 terminalesParaElegir.forEach { terminal ->
                     PrimaryButton(
                         text = terminal.name.ifBlank { terminal.terminalId },
+                        enabled = controlDeTerminalDeDevolucion(necesitaRed, conectado, servidor),
                         onClick = {
-                            terminalesParaElegir = emptyList()
-                            mandarATerminal(terminal.terminalId)
+                            if (controlDeTerminalDeDevolucion(necesitaRed, conexion.conectado.value, conexion.servidor.value)) {
+                                terminalesParaElegir = emptyList()
+                                mandarATerminal(terminal.terminalId)
+                            }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -370,7 +489,7 @@ fun IssueRefundSheet(
                 Spacer(modifier = Modifier.size(36.dp))
             }
 
-            Row(
+            if (!soloCompleto) Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = spacing.md),
@@ -406,7 +525,7 @@ fun IssueRefundSheet(
             // artículos, y el aviso que de verdad importa —«esto no devuelve el dinero a
             // la tarjeta»— se repite literal en el pie. Lo que NO puede desaparecer es el
             // pie, que es donde se decide y se confirma el dinero.
-            if (!apretado) {
+            if (!apretado || soloCompleto && enTerminal) {
             Box(modifier = Modifier.weight(1f, fill = false)) {
             Column(
                 modifier = Modifier
@@ -462,7 +581,7 @@ fun IssueRefundSheet(
                         PrimaryButton(
                             text = if (enviandoATerminal) "Abriendo…" else "Abrir en la terminal",
                             onClick = { abrirEnTerminal() },
-                            enabled = !enviandoATerminal && !submitting,
+                            enabled = puedeEnviar() && !terminalAbierta,
                             modifier = mod,
                         )
                     }
@@ -583,7 +702,7 @@ fun IssueRefundSheet(
             // la propina del mesero se devuelve, o sea que es DINERO. Con el teclado
             // abierto la banda se encoge tanto que la casilla salía de la pantalla y el
             // cajero confirmaba «incluir propina» sin poder verla (Sunmi, 2026-09-11).
-            if (tab == RefundTab.AMOUNT) {
+            if (tab == RefundTab.AMOUNT && !soloCompleto) {
                 AmountBody(
                     amountStr = amountStr,
                     onAmountChange = { amountStr = it },
@@ -591,7 +710,7 @@ fun IssueRefundSheet(
                 )
             }
 
-            if (tab == RefundTab.AMOUNT && paymentTipAmount > 0) {
+            if (tab == RefundTab.AMOUNT && paymentTipAmount > 0 && !soloCompleto) {
                 FilaIncluirPropina(
                     paymentTipAmount = paymentTipAmount,
                     includeTip = includeTip,
@@ -628,14 +747,38 @@ fun IssueRefundSheet(
                 FilaDevolverCon(
                     opciones = opcionesDeDevolucion,
                     escogido = devolverCon,
-                    leyenda = leyendaDeDevolucion(transaction.method, devolverCon),
+                    leyenda = if (aSaldo && !aSaldoAFavor) "Se devuelve por el mismo medio con que se pagó." else leyendaDeDevolucion(transaction.method, devolverCon),
                     avisoDeAutorizacion = textoDeAutorizacionParaEfectivo(devolverCon, puedeDevolverEnEfectivo, codigoDeEncargadoActivo),
                     onEscoger = {
-                        devolverCon = it
+                        devolverConAMano = it
                         errorMsg = null // el rechazo era de la opción anterior
                     },
+                    // Con la cadena bloqueada, el saldo a favor sigue siendo una salida (no necesita la terminal).
                     enabled = !submitting,
                     modifier = Modifier.padding(top = spacing.md),
+                )
+            }
+
+            // «Es por defecto» (spec §4): sólo con «Sólo saldo a favor» y un motivo que restringe; marcado, salen todas.
+            if (ofrecerEsPorDefecto(soloSaldo, reason?.code)) {
+                FilaEsPorDefecto(
+                    marcada = esPorDefecto,
+                    onCambiar = { esPorDefecto = it; errorMsg = null },
+                    enabled = !submitting,
+                    modifier = Modifier.padding(top = spacing.sm),
+                )
+            }
+
+            // «Saldo a favor para: Ana López · 55 1234 5678 [Cambiar]» (spec §4), con el teléfono obligatorio, como en el Cambio.
+            if (aSaldoAFavor) {
+                FilaClienteDelSaldo(
+                    cliente = clienteDelSaldo,
+                    guardando = guardandoTelefono,
+                    mensaje = mensajeDelSaldo,
+                    enabled = !submitting,
+                    onCambiar = { escogiendoCliente = true },
+                    onGuardarTelefono = saldo::guardarTelefono,
+                    modifier = Modifier.padding(top = spacing.sm),
                 )
             }
 
@@ -764,7 +907,11 @@ fun IssueRefundSheet(
             // fue justo lo que pasó cuando el motivo quedaba fuera de cuadro.
             // Aquí se dice qué falta, en el orden en que hay que resolverlo.
             val faltaParaReembolsar = when {
+                bloqueo != null -> bloqueo
                 submitting -> null
+                faltaSaldo != null -> faltaSaldo
+                necesitaRed && (!conectado || !servidor) -> com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED
+                soloCompleto && enTerminal -> "Abre la devolución en la terminal."
                 amountToRefund <= 0.0 -> if (tab == RefundTab.ITEMS) {
                     "Selecciona al menos un artículo."
                 } else {
@@ -798,7 +945,7 @@ fun IssueRefundSheet(
                 )
             }
 
-            if (avisoDeSoloRegistro(enTerminal, opcionesDeDevolucion.isNotEmpty(), transaction.method)) {
+            if (avisoDeSoloRegistro(enTerminal, opcionesDeDevolucion.isNotEmpty(), transaction.method, transaction.refundToGiftCardBalance)) {
                 Text(
                     text = "Esto sólo lo registra: devuélvele el dinero por el mismo medio con que pagó.",
                     style = MaterialTheme.typography.labelSmall,
@@ -825,31 +972,59 @@ fun IssueRefundSheet(
                 PrimaryButton(
                     text = "Reembolsar",
                     onClick = {
+                        if (!puedeEnviar() || soloCompleto && enTerminal) return@PrimaryButton
                         val chosenReason = reason ?: return@PrimaryButton
                         submitting = true
                         errorMsg = null
 
                         scope.launch {
-                            val result = if (tab == RefundTab.ITEMS) {
+                            // Primero la guarda: con un saldo a favor de esta venta sin confirmar o en vuelo, no sale ningún medio.
+                            val motivo = antesDeReembolsar()
+                            if (motivo != null) { submitting = false; errorMsg = motivo; return@launch }
+                            // 🔴 Saldo a favor: se GUARDA en el aparato antes del POST y, si la respuesta no consta, «Confirmar estado»
+                            // la reenvía con la misma llave (spec §7, Opción A). Nunca se encola sin red.
+                            val enviar = enviarASaldo
+                            if (aSaldoAFavor && enviar != null) {
+                                val llave = java.util.UUID.randomUUID().toString()
+                                val cuerpo = refundRepository.cuerpoDeReembolso(
+                                    reason = chosenReason.code,
+                                    amountCents = centavosDelImporte(parsedAmount).takeIf { tab == RefundTab.AMOUNT },
+                                    items = itemsParaEnvio.takeIf { tab == RefundTab.ITEMS },
+                                    restockItemIds = restockParaEnvio.takeIf { tab == RefundTab.ITEMS },
+                                    tipRefundCents = if (tab == RefundTab.ITEMS) propinaArticulosCents else tipRefundCentsParaEnvio(paymentTipAmount, includeTip),
+                                    refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, DEVOLVER_CON_SALDO),
+                                    customerId = clienteDelSaldo?.id,
+                                    idempotencyKey = llave,
+                                    defective = defectoParaEnvio(soloSaldo, chosenReason.code, esPorDefecto),
+                                )
+                                // Aquí sólo se ESPERA: si la hoja se cierra, se cancela la espera, no el envío.
+                                val envio = conexion.iniciar(true, ::vigente) { enviar(cuerpo, llave) }
+                                val desenlace = envio?.await()
+                                submitting = false
+                                if (!vigente()) return@launch
+                                when (desenlace) {
+                                    null -> errorMsg = TextosCambio.SALDO_SIN_RED
+                                    // El detalle ya muestra el abono y lo pendiente (I1): sólo se cierra la hoja.
+                                    is DesenlaceDeSaldo.Hecho, is DesenlaceDeSaldo.Pendiente -> onDismiss()
+                                    is DesenlaceDeSaldo.Rechazado -> {
+                                        errorMsg = desenlace.mensaje
+                                        if (desenlace.code == "STORE_CREDIT_CUSTOMER_PHONE_REQUIRED") saldo.pedirTelefono()
+                                    }
+                                    DesenlaceDeSaldo.OtroPendiente -> errorMsg = TextosCambio.REEMBOLSO_SIN_CONFIRMAR
+                                    DesenlaceDeSaldo.GuardadoFallido -> errorMsg = TextosCambio.REEMBOLSO_GUARDADO_FALLIDO
+                                }
+                                return@launch
+                            }
+                            val result = conexion.iniciar(necesitaRed, ::vigente) { if (tab == RefundTab.ITEMS) {
                                 refundRepository.issueAssociatedRefund(
                                     paymentId = transaction.id,
                                     reason = chosenReason.code,
-                                    items = selectedItems.mapNotNull { item ->
-                                        item.id?.let { id ->
-                                            AssociatedRefundItem(
-                                                orderItemId = id,
-                                                // Lo que QUEDA de la línea: con la original, una
-                                                // línea ya devuelta en parte rebotaba con 400.
-                                                quantity = refundQtyByItem[id] ?: item.refundableQty,
-                                            )
-                                        }
-                                    },
-                                    restockItemIds = restockableItems
-                                        .mapNotNull { it.id }
-                                        .filter { restockItemIds.contains(it) },
+                                    items = itemsParaEnvio,
+                                    restockItemIds = restockParaEnvio,
                                     // null ⇒ el campo no viaja (casilla desmarcada): sólo artículos.
                                     tipRefundCents = propinaArticulosCents,
-                                    refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() },
+                                    refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }),
+                                    defective = defectoParaEnvio(soloSaldo, chosenReason.code, esPorDefecto),
                                 )
                             } else {
                                 // When the user unchecks "Incluir propina" and
@@ -863,11 +1038,14 @@ fun IssueRefundSheet(
                                     reason = chosenReason.code,
                                     amountCents = centavosDelImporte(parsedAmount),
                                     tipRefundCents = tipRefundCentsParaEnvio(paymentTipAmount, includeTip),
-                                    refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() },
+                                    refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }),
+                                    defective = defectoParaEnvio(soloSaldo, chosenReason.code, esPorDefecto),
                                 )
-                            }
+                            } }
 
                             submitting = false
+                            if (!vigente()) return@launch
+                            if (result == null) { errorMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
                             result.fold(
                                 onSuccess = {
                                     Log.d("💸", "Refund OK: $it")
@@ -910,6 +1088,27 @@ fun IssueRefundSheet(
             }
             }
         }
+        }
+    }
+
+    if (escogiendoCliente) {
+        // «Cambiar» reusa la búsqueda y el alta de clientes de siempre (alta con teléfono obligatorio), como el Cambio.
+        val clientes: com.avoqado.pos.customers.presentation.CustomersViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+        AvoqadoModalBottomSheet(onDismissRequest = { altaDesde = null; escogiendoCliente = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), conXPropia = true, dragHandle = null,
+            containerColor = MaterialTheme.colorScheme.surface) {
+            Box(Modifier.fillMaxSize()) {
+                val busqueda = altaDesde
+                if (busqueda != null) com.avoqado.pos.customers.presentation.CreateCustomerView(viewModel = clientes,
+                    initialPhone = busqueda.takeIf { it.any(Char::isDigit) }, initialName = busqueda.takeUnless { it.any(Char::isDigit) },
+                    onCustomerCreated = { saldo.escoger(it); altaDesde = null; escogiendoCliente = false },
+                    onBack = { altaDesde = null }, alta = altaDelFormulario, onAlta = { altaDelFormulario = it },
+                    requirePhone = true)
+                else com.avoqado.pos.customers.presentation.CustomersView(viewModel = clientes,
+                    onCustomerSelected = { saldo.escoger(it); escogiendoCliente = false },
+                    onDismiss = { escogiendoCliente = false }, onCreateCustomer = { altaDelFormulario = null; altaDesde = it },
+                    canCreateCustomer = saldo.puedeCrearCliente)
+            }
         }
     }
 }
@@ -1311,10 +1510,18 @@ private fun FilaDevolverCon(
                     label = op.label,
                     active = op.refundMethod == escogido,
                     modifier = Modifier.weight(1f).semantics { selected = op.refundMethod == escogido },
-                    enabled = enabled,
+                    // En gris con su razón (el saldo a favor sin red o sin las llaves): apagado se ve y se explica.
+                    enabled = enabled && op.disabledReason == null,
                     onClick = { onEscoger(op.refundMethod) },
                 )
             }
+        }
+        opciones.mapNotNull { it.disabledReason }.distinct().forEach { razon ->
+            Text(
+                text = razon,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Text(
             text = leyenda,
@@ -1385,3 +1592,58 @@ private fun FilaIncluirPropina(
         }
     }
 }
+
+/** «Es por defecto» con «Sólo saldo a favor» (spec §4, §6): marcada, se devuelve como se pagó. */
+@Composable
+private fun FilaEsPorDefecto(marcada: Boolean, onCambiar: (Boolean) -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
+    val spacing = AvoqadoTheme.spacing
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+            .clickable(enabled = enabled) { onCambiar(!marcada) }
+            .padding(horizontal = spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+    ) {
+        Checkbox(checked = marcada, onCheckedChange = onCambiar, enabled = enabled)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = TextosCambio.ES_POR_DEFECTO, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+            Text(
+                text = TextosCambio.SOLO_SALDO_EXCEPCIONES,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** «Saldo a favor para: {nombre · teléfono}» con «Cambiar» y, si no tiene teléfono, el campo para guardarlo (como el Cambio). */
+@Composable
+private fun FilaClienteDelSaldo(
+    cliente: ExchangeStoreCreditCustomer?,
+    guardando: Boolean,
+    mensaje: String?,
+    enabled: Boolean,
+    onCambiar: () -> Unit,
+    onGuardarTelefono: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = AvoqadoTheme.spacing
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(ExchangeSettlement.storeCreditCustomerLabel(cliente), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            TextButton(onClick = onCambiar, enabled = enabled && !guardando) { Text(TextosCambio.CAMBIAR) }
+        }
+        cliente?.takeIf { it.phoneChecked && it.phone.isNullOrBlank() }?.let { c ->
+            var telefono by androidx.compose.runtime.saveable.rememberSaveable(c.id) { mutableStateOf("") }
+            AvoqadoPillTextField(value = telefono, onValueChange = { telefono = it }, placeholder = TextosCambio.TELEFONO,
+                enabled = enabled && !guardando, keyboardType = KeyboardType.Phone)
+            PrimaryButton(TextosCambio.GUARDAR_TELEFONO, { onGuardarTelefono(telefono) },
+                enabled = enabled && !guardando && telefono.isNotBlank(), fullWidth = true)
+        }
+        mensaje?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+internal fun controlDeTerminalDeDevolucion(necesitaRed: Boolean, conectado: Boolean, servidor: Boolean): Boolean = !necesitaRed || conectado && servidor

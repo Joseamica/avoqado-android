@@ -7,10 +7,14 @@ import com.avoqado.pos.areatickets.data.AreaTicket
 import com.avoqado.pos.areatickets.data.AreaTicketException
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
+import com.avoqado.pos.areatickets.data.IntentoDeVale
 import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
 import com.avoqado.pos.areatickets.data.PendingAreaTicketPrintRecord
+import com.avoqado.pos.areatickets.data.RenglonDeComandaDeVale
 import com.avoqado.pos.areatickets.data.SETTLEMENT_ROUTE_EXTERNAL
 import com.avoqado.pos.areatickets.data.toAreaTicketData
+import com.avoqado.pos.areatickets.data.ValeSinConfirmar
+import com.avoqado.pos.core.data.local.LlaveDeEmisionDeVales
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.ComandaMoment
@@ -24,6 +28,7 @@ import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.routing.RoutableItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
@@ -59,6 +64,12 @@ data class AreaTicketOperationsState(
     val settings: AreaTicketSettingsData? = null,
     val pending: List<AreaTicket> = emptyList(),
     val pendingReprintCode: String? = null,
+    /** 🔴 D5: el vale que se pidió en una vez anterior de la app y nunca se confirmó (de este negocio). */
+    val valeSinConfirmar: ValeSinConfirmar? = null,
+    /** D5: su aviso está abierto (al abrir la pantalla, o al tocar «Emitir vale» mientras exista). */
+    val mostrarValeSinConfirmar: Boolean = false,
+    /** D5 (Codex r3 #3): el [error] salió de «Recuperar»: se enseña aunque no haya configuración de vales (sin red). */
+    val errorDelValeSinConfirmar: Boolean = false,
     val pdfExport: AreaTicketPdfExport? = null,
     val message: String? = null,
     val error: String? = null,
@@ -92,8 +103,12 @@ data class AreaTicketOperationsState(
             "PAPER_OR_SCAN",
         )
 
+    /** D5: su aviso se ve aunque haya un error (lo lleva adentro) y aunque no haya configuración (Codex r3 #3). */
+    val valeSinConfirmarVisible: Boolean
+        get() = mostrarValeSinConfirmar && valeSinConfirmar != null && pendingReprintCode == null
+
     val checkoutBlockingError: String?
-        get() = error.takeIf { settings != null || pendingReprintCode != null }
+        get() = error.takeIf { (settings != null || pendingReprintCode != null || errorDelValeSinConfirmar) && !valeSinConfirmarVisible }
 
     /**
      * Codex final #3: se está emitiendo (o reimprimiendo) un vale desde el modo de vales. El vale sale con la foto del
@@ -126,8 +141,35 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private val _state = MutableStateFlow(AreaTicketOperationsState())
     val state: StateFlow<AreaTicketOperationsState> = _state.asStateFlow()
     private var refreshRequestId = 0L
-    private var issueIdempotencyKey = secureStorage.pendingAreaTicketIssueKey
-        ?: UUID.randomUUID().toString().also { secureStorage.pendingAreaTicketIssueKey = it }
+
+    /**
+     * 🔴 D2 (vales-ciclo): la llave de emisión vive en el aparato, una por negocio (`SecureStorage.llaveDeEmisionDeVales`), no
+     * en esta pantalla. Se suelta sólo ① al confirmar el servidor el vale de ESA llave (abajo, en [issue]; si otra pantalla ya
+     * la cambió, no se toca) y ② al vaciar el carrito a mano (`CartViewModel.vaciar`); sin llave, se crea y se guarda en disco
+     * ANTES del POST, y si el disco no la confirmó (Codex r6 #1, r7 #2) da null y el vale no se pide. Un 409, reimprimir o el PDF no la tocan: con llave nueva, el carrito
+     * cambiado tras una respuesta perdida era un SEGUNDO vale. Antes había una copia en memoria que quedaba vieja.
+     */
+    private fun llaveDeEmision(venueId: String, intento: IntentoDeVale): Pair<String, LlaveDeEmisionDeVales.Guardado> =
+        // r8 #2: también la que ya estaba se vuelve a guardar: tras un commit fallido sólo vive en la memoria del proceso.
+        // D5: junto con lo que se va a mandar, en el mismo commit, para pedirlo igual si la app se cierra antes de saber.
+        (secureStorage.llaveDeEmisionDeVales(venueId) ?: UUID.randomUUID().toString())
+            .let { it to secureStorage.guardarIntentoDeVale(venueId, it, intento) }
+
+    /**
+     * 🔴 D5: la primera vez que este proceso ve [venueId], lo que quedó a medias de la vez anterior pasa a «sin confirmar»
+     * (`SecureStorage.revisarValeAMedias`). Devuelve el de este negocio, si hay. El filtro deja fuera lo que no es un registro
+     * de verdad (un `SecureStorage` falso de prueba devuelve llaves vacías).
+     */
+    private fun cargarValeSinConfirmar(venueId: String?, mostrar: Boolean = false): ValeSinConfirmar? {
+        if (venueId.isNullOrBlank()) return null
+        if (ValesRevisadosEnEsteProceso.primeraVez(venueId)) secureStorage.revisarValeAMedias(venueId)
+        val vale = secureStorage.valeSinConfirmar(venueId)?.takeIf { it.llave.isNotBlank() && it.intentos.isNotEmpty() }
+        _state.value = _state.value.copy(
+            valeSinConfirmar = vale,
+            mostrarValeSinConfirmar = vale != null && (mostrar || _state.value.mostrarValeSinConfirmar),
+        )
+        return vale
+    }
 
     // D12. Antes del `init`: su `refresh()` ya manda los registros pendientes.
     private val pendingRecordsJson = Json { ignoreUnknownKeys = true }
@@ -143,6 +185,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
      */
     private var outputWarning: String? = null
 
+    /**
+     * J7 (vales-ciclo r0): la venta del carrito que emitió el vale pendiente de papel. Reimprimir o guardar su PDF sólo puede
+     * terminar ESA venta. Sólo en memoria: tras reiniciar no se sabe y no se termina ninguna.
+     */
+    private var ventaDelValePendiente: String? = null
+
     init {
         _state.value = _state.value.copy(
             pendingReprintCode = secureStorage.pendingAreaTicketPrintCode.takeIf {
@@ -150,6 +198,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 pendingVenue == null || pendingVenue == secureStorage.venueId
             },
         )
+        cargarValeSinConfirmar(secureStorage.venueId, mostrar = true)
         refresh()
     }
 
@@ -210,7 +259,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
         }
     }
 
-    fun issue(cart: CartState, onIssued: () -> Unit) {
+    fun issue(
+        cart: CartState,
+        /** D1: corre ya validado, justo antes de pedir el vale (marca la copia guardada). `false` = no se emite. */
+        antesDeEmitir: () -> Boolean = { true },
+        onIssued: (ventaQueEmitio: String?) -> Unit,
+    ) {
         if (_state.value.submitting) return
         val invalid = cart.items.any { it.locked || it.type !is CartItemType.ProductItem }
         if (cart.items.isEmpty() || invalid) {
@@ -223,10 +277,34 @@ class AreaTicketOperationsViewModel @Inject constructor(
             _state.value = _state.value.copy(error = motivo)
             return
         }
+        // 🔴 D5 ④: con un vale sin confirmar de este negocio no se pide otro (ni la copia guardada restaurada ni un carrito
+        // armado de nuevo sacan un segundo vale sin que el cajero decida). Se abre su aviso. Cobrar sí se puede.
+        if (cargarValeSinConfirmar(secureStorage.venueId) != null) {
+            _state.value = _state.value.copy(mostrarValeSinConfirmar = true)
+            return
+        }
+        // D1 (vales-ciclo, Codex r4): ya validado y ANTES de pedir. Marcar antes de validar dejaba «ya se mandó a cobrar» en una
+        // copia cuyo vale nunca se pidió.
+        if (!antesDeEmitir()) {
+            _state.value = _state.value.copy(error = "No se pudo preparar el vale del carrito guardado. Intenta de nuevo.")
+            return
+        }
         // El negocio de ESTE vale, leído al tocar: la sesión puede cerrarse desde el hilo de OkHttp mientras sale el papel.
         val venueId = secureStorage.venueId
+        // D5: lo que se manda se arma UNA vez, al tocar; es lo mismo que queda en disco con la llave.
+        val intento = intentoDeVale(cart)
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
+            // D2 (Codex r10 #1): la llave se toma (y se guarda) AL TOCAR, antes de esperar lo pendiente. Si mientras tanto otra
+            // pantalla recupera el vale y la suelta, este reintento sale con ELLA y el servidor compara; con una nueva, otro vale.
+            val (llave, guardado) = llaveDeEmision(venueId.orEmpty(), intento)
+            if (guardado != LlaveDeEmisionDeVales.Guardado.SI) {
+                _state.value = _state.value.copy(
+                    submitting = false,
+                    error = if (guardado == LlaveDeEmisionDeVales.Guardado.TOPE) VALE_CAMBIO_DEMASIADO else "No se pudo preparar el vale. Intenta de nuevo.",
+                )
+                return@launch
+            }
             // Codex r2 #3: DESPUÉS de `submitting`; si no, mientras esto espera a la red un segundo toque emitiría otro vale.
             runCatching { flushWithinBudget() }
             // Task 13: si en esa espera se cambió de negocio, el vale nacería en el NUEVO y su registro y su reimpresión
@@ -239,38 +317,33 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 return@launch
             }
             runCatching {
-                val lines = cart.items.map { item ->
-                    IssueAreaTicketLineRequest(
-                        clientLineId = item.id.ifBlank { UUID.randomUUID().toString() },
-                        productId = (item.type as CartItemType.ProductItem).productId,
-                        quantity = item.quantity.toString(),
-                        weightKg = item.weightKg?.let { String.format(Locale.US, "%.3f", it) },
-                        notes = item.itemNote,
-                        modifierIds = item.selectedModifiers.map { it.modifierId },
-                        discountId = item.itemDiscountId,
-                    )
+                val ticket = repository.issue(intento.lineas, llave)
+                // D5 (Codex r1 #5): la misma llave puede traer de vuelta un vale que ya no sirve (vencido, cancelado, cobrado).
+                // La llave ya se usó: se suelta; el carrito se queda y el siguiente intento sale como vale nuevo.
+                valeQueYaNoSirve(ticket)?.let { motivo ->
+                    secureStorage.soltarLlaveDeEmisionDeVales(venueId.orEmpty(), siEs = llave)
+                    throw IllegalStateException(motivo)
                 }
-                val ticket = repository.issue(lines, issueIdempotencyKey)
                 // Primero persiste la recuperación: si la app muere al limpiar el
                 // carrito, el mismo vale todavía puede reimprimirse al volver.
                 secureStorage.pendingAreaTicketPrintCode = ticket.code
                 secureStorage.pendingAreaTicketPrintVenueId = venueId
                 _state.value = _state.value.copy(pendingReprintCode = ticket.code)
+                ventaDelValePendiente = cart.identidadDeVenta
                 // La llave protege la creación, no la impresión. Una vez que el
                 // servidor aceptó este vale, el siguiente carrito necesita otra
                 // llave aunque todavía quede pendiente reimprimir el papel.
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
+                secureStorage.soltarLlaveDeEmisionDeVales(venueId.orEmpty(), siEs = llave)
                 // El vale ya quedó emitido en servidor. Desde este punto el carrito no
                 // puede seguir cobrable aunque falle la salida en papel: imprimir es una
                 // recuperación secundaria del mismo vale, no parte de su creación.
-                onIssued()
+                onIssued(cart.identidadDeVenta)
                 try {
                     printAndRecord(ticket, reprint = false, venueId)
                 } finally {
                     // Después del vale (si comparten impresora, el vale sale primero) y aunque su papel falle: el vale ya
                     // existe y la cocina tiene que enterarse. La reimpresión NO pasa por aquí: no repite la comanda.
-                    despacharComanda(ticket, cart, venueId)
+                    despacharComanda(ticket, intento.comanda, venueId)
                 }
                 ticket
             }.onSuccess { ticket ->
@@ -281,13 +354,10 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pendingReprintCode = null,
                     message = consumeOutputWarning() ?: "Vale ${ticket.code} emitido correctamente.",
                 )
+                ventaDelValePendiente = null
             }.onFailure { error ->
-                if ((error as? AreaTicketException)?.code == "AREA_TICKET_IDEMPOTENCY_CONFLICT") {
-                    // Esta llave ya creó un vale con OTRO carrito (respuesta perdida o la app murió y el
-                    // carrito se rearmó). Sin rotarla, ningún vale nuevo saldría jamás (spec §4.2).
-                    issueIdempotencyKey = UUID.randomUUID().toString()
-                    secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
-                }
+                // D2: un 409 `AREA_TICKET_IDEMPOTENCY_CONFLICT` NO rota la llave (antes sí: segundo vale con todo). El aviso
+                // dice cómo salir: el carrito como estaba recupera ESE vale, y «Vaciar» suelta la llave.
                 _state.value = _state.value.copy(
                     submitting = false,
                     error = areaTicketIssueFailureMessage(
@@ -299,7 +369,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
         }
     }
 
-    fun reprintPending(onIssued: () -> Unit = {}) {
+    fun reprintPending(onIssued: (ventaQueEmitio: String?) -> Unit = {}) {
         val code = _state.value.pendingReprintCode ?: return
         if (_state.value.submitting || _state.value.preparingPdf) return
         val venueId = secureStorage.venueId
@@ -312,8 +382,6 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 printAndRecord(ticket, reprint = true, venueId)
                 ticket
             }.onSuccess { ticket ->
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
                 secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
@@ -321,7 +389,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pendingReprintCode = null,
                     message = consumeOutputWarning() ?: "Vale ${ticket.code} reimpreso correctamente.",
                 )
-                onIssued()
+                onIssued(ventaDelValePendiente.also { ventaDelValePendiente = null })
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     submitting = false,
@@ -378,7 +446,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
         )
     }
 
-    fun confirmPendingPdfSaved(onIssued: () -> Unit) {
+    fun confirmPendingPdfSaved(onIssued: (ventaQueEmitio: String?) -> Unit) {
         val export = _state.value.pdfExport ?: return
         if (_state.value.submitting) return
         viewModelScope.launch {
@@ -386,8 +454,6 @@ class AreaTicketOperationsViewModel @Inject constructor(
             runCatching {
                 recordOutput(export.venueId, export.ticketId, export.code, reprint = false, reason = "Vale guardado como PDF por el operador.")
             }.onSuccess {
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
                 secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
@@ -396,7 +462,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pdfExport = null,
                     message = consumeOutputWarning() ?: "Vale ${export.code} guardado como PDF.",
                 )
-                onIssued()
+                onIssued(ventaDelValePendiente.also { ventaDelValePendiente = null })
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     submitting = false,
@@ -474,8 +540,117 @@ class AreaTicketOperationsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 D5 ⑤: pide el vale sin confirmar con SU llave y lo que se mandó, del intento más nuevo al más viejo (un 409 de llave
+     * con otro contenido pasa al anterior). El SERVIDOR devuelve el que ya existía o lo crea si nunca llegó. Sale como un vale
+     * recién emitido: papel, registro de impresión y comanda. Otro error (sin red) se detiene y el aviso se queda.
+     * [onRecuperado] recibe el intento que respondió (`CartViewModel.alRecuperarVale`: su copia guardada y la venta en pantalla).
+     */
+    fun recuperarValeSinConfirmar(onRecuperado: (IntentoDeVale) -> Boolean = { true }) {
+        if (_state.value.submitting) return
+        val venueId = secureStorage.venueId
+        val vale = cargarValeSinConfirmar(venueId) ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(submitting = true, error = null, errorDelValeSinConfirmar = false)
+            val respuesta = try {
+                vale.intentos.asReversed().firstNotNullOfOrNull { intento ->
+                    try {
+                        repository.issue(intento.lineas, vale.llave) to intento
+                    } catch (conflicto: AreaTicketException) {
+                        if (conflicto.code != "AREA_TICKET_IDEMPOTENCY_CONFLICT") throw conflicto
+                        null
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                fallaDelValeSinConfirmar(
+                    areaTicketIssueFailureMessage(
+                        error,
+                        externalArea = _state.value.settings?.terminal?.fulfillmentArea?.settlementRoute == SETTLEMENT_ROUTE_EXTERNAL,
+                    ),
+                )
+                return@launch
+            }
+            if (respuesta == null) {
+                fallaDelValeSinConfirmar(VALE_NO_SE_PUDO_RECUPERAR)
+                return@launch
+            }
+            val (ticket, intento) = respuesta
+            valeQueYaNoSirve(ticket)?.let { motivo ->
+                secureStorage.olvidarValeSinConfirmar(venueId.orEmpty(), vale.llave)
+                _state.value = _state.value.copy(valeSinConfirmar = null, mostrarValeSinConfirmar = false)
+                fallaDelValeSinConfirmar(motivo)
+                return@launch
+            }
+            // Codex r3 #2: la copia guardada (D1) se retira ANTES de olvidar el registro, que es lo único que la liga al vale; si
+            // no se pudo retirar (r4 #6), el registro se queda para reintentarlo.
+            if (!onRecuperado(intento)) {
+                fallaDelValeSinConfirmar("No se pudo retirar la copia guardada de este vale. Intenta de nuevo.")
+                return@launch
+            }
+            // Codex r3 #1: el papel pendiente y olvidar el registro, en UN commit. Si no quedó, no se imprime: el registro
+            // sigue y «Recuperar» otra vez trae el mismo vale.
+            if (!secureStorage.valeRecuperado(venueId.orEmpty(), vale.llave, ticket.code)) {
+                fallaDelValeSinConfirmar("No se pudo guardar en este aparato. Intenta de nuevo.")
+                return@launch
+            }
+            _state.value = _state.value.copy(pendingReprintCode = ticket.code, valeSinConfirmar = null, mostrarValeSinConfirmar = false)
+            ventaDelValePendiente = null
+            // Codex r4 #4: el SERVIDOR dice si su papel ya salió (PRINTED no se deshace). Entonces no sale otro ORIGINAL ni otra
+            // comanda: queda su reimpresión, como cualquier papel pendiente.
+            if (ticket.printStatus == "PRINTED") {
+                _state.value = _state.value.copy(submitting = false)
+                return@launch
+            }
+            runCatching {
+                try {
+                    printAndRecord(ticket, reprint = false, venueId)
+                } finally {
+                    despacharComanda(ticket, intento.comanda, venueId)
+                }
+            }.onSuccess {
+                secureStorage.pendingAreaTicketPrintCode = null
+                secureStorage.pendingAreaTicketPrintVenueId = null
+                _state.value = _state.value.copy(
+                    submitting = false,
+                    pendingReprintCode = null,
+                    message = consumeOutputWarning() ?: "Vale ${ticket.code} recuperado.",
+                )
+            }.onFailure { error ->
+                _state.value = _state.value.copy(submitting = false, error = error.message ?: "No se pudo imprimir el vale ${ticket.code}.")
+            }
+        }
+    }
+
+    private fun fallaDelValeSinConfirmar(mensaje: String) {
+        _state.value = _state.value.copy(submitting = false, error = mensaje, errorDelValeSinConfirmar = true)
+    }
+
+    /** D5 ⑥: el cajero ya no lo quiere. Sin red. Si el vale sí se creó, queda en el SERVIDOR como hoy (cancelar puede dar merma). */
+    fun descartarValeSinConfirmar() {
+        if (_state.value.submitting) return
+        val venueId = secureStorage.venueId.orEmpty()
+        _state.value.valeSinConfirmar?.let { secureStorage.olvidarValeSinConfirmar(venueId, it.llave) }
+        cargarValeSinConfirmar(venueId)
+    }
+
+    /** D5: el texto del aviso, con la hora del negocio. `null` si no hay vale sin confirmar. */
+    fun avisoDeValeSinConfirmar(): String? = _state.value.valeSinConfirmar?.let { vale ->
+        val hora = vale.intentos.last().hora.takeIf { it > 0 }?.let {
+            com.avoqado.pos.core.util.VenueTimeZone.at(Instant.ofEpochMilli(it), secureStorage.venueTimezone)
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+        }
+        avisoDeValeSinConfirmar(vale, hora)
+    }
+
+    /** D5: cerrar el aviso sin decidir; vuelve al tocar «Emitir vale». */
+    fun ocultarValeSinConfirmar() {
+        _state.value = _state.value.copy(mostrarValeSinConfirmar = false)
+    }
+
     fun dismissFeedback() {
-        _state.value = _state.value.copy(message = null, error = null)
+        _state.value = _state.value.copy(message = null, error = null, errorDelValeSinConfirmar = false)
     }
 
     /** El toast de éxito se cierra solo: no se lleva un aviso que llegó mientras tanto (una comanda que no salió). */
@@ -574,16 +749,17 @@ class AreaTicketOperationsViewModel @Inject constructor(
      * (Cocina, Bebidas…). Corre aparte: con reintentos tarda hasta ~1 min y jamás frena el vale. Una que se rindió
      * se DICE, sin tapar el aviso del vale si lo hay.
      */
-    private fun despacharComanda(ticket: AreaTicket, cart: CartState, venueId: String?) {
-        val lineas = cart.items.map { item ->
+    private fun despacharComanda(ticket: AreaTicket, renglones: List<RenglonDeComandaDeVale>, venueId: String?) {
+        // D5: de los renglones guardados con el intento (con su categoría, Codex r2 #3), no del carrito vivo: «Recuperar» no tiene.
+        val lineas = renglones.map { renglon ->
             RoutableItem(
-                orderItemId = item.id,
-                productId = (item.type as? CartItemType.ProductItem)?.productId,
-                categoryId = item.categoryId,
-                productName = item.nombreEnCocina,
-                quantity = item.quantity,
-                modifiers = item.selectedModifiers.map { it.modifierName },
-                notes = item.itemNote,
+                orderItemId = renglon.id,
+                productId = renglon.productId,
+                categoryId = renglon.categoryId,
+                productName = renglon.nombre,
+                quantity = renglon.cantidad,
+                modifiers = renglon.modificadores,
+                notes = renglon.notas,
             )
         }
         val avisar: (String?, List<String>) -> Unit = { causa, estaciones ->
@@ -770,6 +946,75 @@ internal fun areaTicketPrintFailureMessage(code: String, error: Throwable): Stri
         "También puedes guardarlo como PDF."
 }
 
+/** 🔴 D5: el proceso de la app. La primera vez que ve un negocio, lo que quedó a medias pasa a «sin confirmar». */
+internal object ValesRevisadosEnEsteProceso {
+    private val negocios = mutableSetOf<String>()
+
+    @Synchronized fun primeraVez(venueId: String): Boolean = negocios.add(venueId)
+
+    /** Las pruebas simulan así que la app se cerró y se volvió a abrir. */
+    @Synchronized fun olvidar() = negocios.clear()
+}
+
+internal const val VALE_CAMBIO_DEMASIADO =
+    "Este vale cambió demasiadas veces sin confirmarse. Vacía el carrito para empezar otro."
+internal const val VALE_NO_SE_PUDO_RECUPERAR =
+    "No se pudo recuperar: Avoqado tiene ese vale con otros productos. Descártalo y vuelve a armar el carrito."
+
+/** D5: mismo texto en iOS (`avisoDeValeSinConfirmar`). */
+internal fun avisoDeValeSinConfirmar(vale: ValeSinConfirmar, hora: String?): String {
+    val productos = vale.intentos.last().lineas.size.let { if (it == 1) "1 producto" else "$it productos" }
+    return "Un vale quedó sin confirmar ($productos${hora?.let { ", $it" } ?: ""}): no se sabe si salió. " +
+        "«Recuperar» lo trae sin duplicarlo; si nunca llegó, lo crea ahora."
+}
+
+/** D5: lo que se manda al pedir el vale de [cart], armado una sola vez (es lo que se guarda con la llave). */
+internal fun intentoDeVale(cart: CartState, ahora: Long = System.currentTimeMillis()): IntentoDeVale = IntentoDeVale(
+    lineas = cart.items.map { item ->
+        IssueAreaTicketLineRequest(
+            clientLineId = item.id.ifBlank { UUID.randomUUID().toString() },
+            productId = (item.type as CartItemType.ProductItem).productId,
+            quantity = item.quantity.toString(),
+            weightKg = item.weightKg?.let { String.format(Locale.US, "%.3f", it) },
+            notes = item.itemNote,
+            modifierIds = item.selectedModifiers.map { it.modifierId },
+            discountId = item.itemDiscountId,
+        )
+    },
+    comanda = cart.items.map { item ->
+        RenglonDeComandaDeVale(
+            id = item.id,
+            productId = (item.type as? CartItemType.ProductItem)?.productId,
+            categoryId = item.categoryId,
+            nombre = item.nombreEnCocina,
+            cantidad = item.quantity,
+            modificadores = item.selectedModifiers.map { it.modifierName },
+            notas = item.itemNote,
+        )
+    },
+    carritoGuardadoId = cart.carritoGuardadoId,
+    hora = ahora,
+)
+
+/**
+ * 🔴 D5 (Codex r1 #5): la misma llave devuelve el vale que ya existía, en el estado que tenga hoy. Uno vencido, cancelado o
+ * cobrado no se imprime como si fuera nuevo. `null` = sirve. Un estado de paso (CLAIMED) o uno que esta versión no conoce no se
+ * frena (como hoy).
+ */
+internal fun valeQueYaNoSirve(ticket: AreaTicket, ahora: Instant = Instant.now()): String? {
+    val vencido = ticket.expiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() }?.let { !it.isAfter(ahora) } == true
+    val estado = when (ticket.status) {
+        "ISSUED" -> if (vencido) "vencido" else return null
+        "EXPIRED" -> "vencido"
+        "CANCELLED" -> "cancelado"
+        "PAID" -> "cobrado"
+        "DELIVERED" -> "entregado"
+        // CLAIMED (en un cobro de vales) es de paso: el papel es el mismo código que la caja ya tiene.
+        else -> return null
+    }
+    return "El vale ${ticket.code} ya está $estado: no se imprime."
+}
+
 /**
  * D13: lo que el vale NO puede representar. El vale sólo manda producto, cantidad, peso, nota, extras y
  * descuento por renglón (su id de catálogo); todo lo demás —cortesía, precio manual, promoción y lo de la
@@ -790,9 +1035,9 @@ internal fun areaTicketIssueBlocker(cart: CartState): String? {
 internal fun areaTicketIssueFailureMessage(error: Throwable, externalArea: Boolean): String {
     val code = (error as? AreaTicketException)?.code
     return when {
+        // D2: la llave ya creó un vale con otro contenido (su respuesta se perdió y el carrito cambió). Mismo texto en iOS.
         code == "AREA_TICKET_IDEMPOTENCY_CONFLICT" ->
-            "Un vale anterior pudo quedar creado sin imprimirse. Revísalo en el dashboard antes de cobrarlo " +
-                "otra vez; ya puedes emitir este de nuevo."
+            "Este vale ya se creó con otro contenido. Deja el carrito como estaba para recuperarlo, o vacíalo."
         // Sin red en caja externa: decir qué hacer, no prometer «el POS normal» (ahí cobra otra caja).
         externalArea && code == "AREA_TICKETS_REQUIRE_CONNECTION" ->
             "Sin conexión con Avoqado no se puede emitir el vale. Reintenta cuando vuelva la conexión; " +

@@ -57,7 +57,7 @@ class PaymentSyncServiceTest {
         coEvery { cajon.sincronizarCajonPrimero() } returns true
 
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
-        service = PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon, outbox)
+        service = PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon, outbox, io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true))
     }
 
     @After
@@ -109,30 +109,38 @@ class PaymentSyncServiceTest {
         coVerify(exactly = 0) { dao.updateStatus(any(), any()) }
     }
 
+    /**
+     * La pausa entre reintentos (Codex apps r8 #2: la versión anterior no arrancaba el servicio y el cobro no traía su captura, así que
+     * no se mandaba por OTRAS razones). Ahora arranca de verdad: recién reintentado se lee pero no se manda; sin pausa, sí sale.
+     */
     @Test
     fun `syncNow skips payment when backoff not elapsed`() = runTest {
-        val payment = com.avoqado.pos.core.data.local.database.PendingPaymentEntity(
-            id = "pay-001",
-            venueId = "venue-123",
-            staffId = "user-456",
-            amountCents = 10000,
-            tipCents = 0,
-            method = "CASH",
-            paymentType = "FAST",
-            retryCount = 1,
-            // lastRetryAt is just now — backoff not elapsed
-            lastRetryAt = System.currentTimeMillis(),
-            syncStatus = "PENDING",
+        fun cobro(ultimo: Long) = PendingPaymentEntity(
+            id = "pay-001", venueId = "venue-123", staffId = "user-456", amountCents = 10000, tipCents = 0, method = "CASH",
+            paymentType = "FAST", retryCount = 3, lastRetryAt = ultimo, syncStatus = "PENDING",
             createdAt = System.currentTimeMillis() - 5000,
+            q15CaptureJson = ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(
+                venueId = "venue-123", key = "pay-001", orderId = null, amountCents = 10000, tipCents = 0, method = "CASH",
+                splitType = "FULLPAYMENT",
+            )),
         )
+        fun sincronizar() {
+            service.usarContextoDeSincronizacion(kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+            service.start()
+            testScheduler.runCurrent()
+            service.stop()
+        }
 
-        coEvery { dao.getPendingPayments(any()) } returns listOf(payment)
-
-        service.syncNow()
-        Thread.sleep(100)
-
-        // Payment should be skipped — no SYNCING status update
+        // Recién reintentado (8 s de espera): se lee la fila, pero no se manda.
+        coEvery { dao.getPendingPayments(any()) } returns listOf(cobro(ultimo = System.currentTimeMillis()))
+        sincronizar()
+        coVerify(atLeast = 1) { dao.getPendingPayments(any()) }
         coVerify(exactly = 0) { dao.updateStatus("pay-001", "SYNCING") }
+
+        // Control: la misma fila sin pausa vigente sí sale.
+        coEvery { dao.getPendingPayments(any()) } returns listOf(cobro(ultimo = 0L))
+        sincronizar()
+        coVerify(exactly = 1) { dao.updateStatus("pay-001", "SYNCING") }
     }
 
     // MARK: - Backoff calculation (tested via formula — calculateBackoff is private)
@@ -461,4 +469,19 @@ class PaymentSyncServiceTest {
         coVerify(exactly = 0) { dao.retryFailed(any()) }
     }
 
+
+    /**
+     * P1 (A4, efectivo sin red en el turno correcto) — un 409 `SHIFT_CLOSE_IN_PROGRESS` en `/pay` o `/fast` dura milisegundos
+     * (el servidor está cerrando ese turno): el cobro se queda PENDIENTE SIN gastar un reintento y la fila se detiene. Diez
+     * cierres seguidos no pueden mandar un efectivo a cuarentena.
+     */
+    @Test fun `P1 un 409 SHIFT_CLOSE_IN_PROGRESS deja el cobro pendiente sin gastar reintento y detiene la fila`() = runTest {
+        val cobro = pendingPayment(retryCount = 10)
+        val detener = service.handleSyncResult(cobro, 409, """{"message":"El cierre de turno ya está en proceso.","code":"SHIFT_CLOSE_IN_PROGRESS"}""")
+
+        assertTrue(detener)
+        coVerify(exactly = 1) { dao.updateStatus(cobro.id, PaymentSyncStatus.PENDING.name) }
+        coVerify(exactly = 0) { dao.incrementRetry(any(), any()) }
+        coVerify(exactly = 0) { dao.updateStatusWithError(any(), PaymentSyncStatus.FAILED.name, any()) }
+    }
 }

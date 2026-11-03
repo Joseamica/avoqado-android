@@ -36,6 +36,7 @@ dependencies {
     implementation("net.java.dev.jna:jna-platform:5.19.1")   // puente táctil de Windows (WM_POINTER); no-op fuera de Windows
     runtimeOnly("org.jetbrains.compose.desktop:desktop-jvm-macos-arm64:$cmp")   // Skia nativo para la Mac; Windows usa su propio artefacto (tarea 9)
 
+    testRuntimeOnly("org.jetbrains.compose.desktop:desktop-jvm-${rootProject.extra["skiaDeEstaMaquina"]}:$cmp")   // D3: las pruebas, con el de esta máquina
     testImplementation(kotlin("test-junit"))
     testImplementation("androidx.room:room-testing:2.8.4")
     testImplementation("org.jetbrains.compose.ui:ui-test-junit4:$cmp")

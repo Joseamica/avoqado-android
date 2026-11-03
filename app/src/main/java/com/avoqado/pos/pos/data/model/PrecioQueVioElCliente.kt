@@ -27,7 +27,10 @@ data class CambioDePrecio(
 
 const val TITULO_AVISO_DE_PRECIO = "Revisa el precio"
 
-/** El retiro durable de la reserva de un cobro que el servidor rechazó no se pudo escribir: no se estrena llave ni se cobra. */
+/**
+ * D2 v7: la venta se cobró por otro camino y el borrado del apartado de un intento anterior no se pudo escribir en el aparato. Se
+ * reintenta antes del siguiente cobro; mientras no quede escrito, no se cobra.
+ */
 const val MENSAJE_RESERVA_SIN_RETIRAR = "No se pudo guardar en el aparato que el cobro anterior no se hizo. Vuelve a intentar."
 
 /**

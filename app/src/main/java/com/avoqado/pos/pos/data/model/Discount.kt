@@ -36,6 +36,12 @@ data class Discount(
      * backend doesn't consume this column; safe for all serialization paths.
      */
     val source: String? = null,
+    /**
+     * Descuento máximo del catálogo, en PESOS (`null` o ausente = sin tope). El servidor lo aplica siempre
+     * (`calculateDiscountPesos`: `min(descuento, tope)`); sin leerlo aquí la caja cobraba de menos y la venta quedaba
+     * debiendo. La línea del carrito lo congela en [CartItem.itemDiscountMax].
+     */
+    val maxDiscountAmount: Double? = null,
 ) {
     val discountScope: DiscountScope
         get() = when (scope.uppercase()) {
@@ -93,14 +99,25 @@ data class Discount(
     }
 
     fun calculateDiscount(subtotalCents: Int): Int {
+        // D13: el tope máximo del catálogo, tras calcular el monto y antes de topar a la cuenta (igual que el servidor y que
+        // [descuentoDeLineaCents]).
         return when (discountType) {
             // Redondean las dos: truncar le daba al cliente un centavo MENOS de
             // descuento del que el negocio configuró.
-            DiscountType.PERCENTAGE -> (subtotalCents * value / 100.0).roundToInt()
-            DiscountType.FIXED -> value.aCentavos().coerceAtMost(subtotalCents)
+            DiscountType.PERCENTAGE -> conTopeEnCents((subtotalCents * value / 100.0).roundToInt(), maxDiscountAmount)
+            DiscountType.FIXED -> conTopeEnCents(value.aCentavos(), maxDiscountAmount).coerceAtMost(subtotalCents)
         }
     }
 }
+
+/**
+ * D13: recorta el descuento [brutoCents] al descuento máximo del catálogo ([maxPesos], en PESOS; `null` = sin tope):
+ * `min(bruto, round(maxPesos × 100))`, redondeo half-up como el resto de la aritmética. Un tope en 0 deja el descuento en 0,
+ * igual que el servidor. La única fuente del tope: la usan [descuentoDeLineaCents] y [Discount.calculateDiscount].
+ */
+internal fun conTopeEnCents(brutoCents: Int, maxPesos: Double?): Int =
+    if (maxPesos == null) brutoCents
+    else minOf(brutoCents.toLong(), Math.round(maxPesos * 100)).coerceAtLeast(0L).toInt()
 
 /**
  * El descuento, EN CENTAVOS, que el server le aplicaría a una línea cuyo total
@@ -122,8 +139,12 @@ data class Discount(
  *
  * Un tipo desconocido devuelve 0 — se cobra completo, que es la dirección segura:
  * nunca inventar un descuento que el server no va a reconocer.
+ *
+ * D13: [maxPesos] es el descuento máximo del catálogo (`Discount.maxDiscountAmount`, en pesos). Tras calcular el bruto
+ * se recorta a `round(maxPesos × 100)` —igual que el server: un tope en 0 deja el descuento en 0— y luego el clamp a la
+ * línea. `null` = sin tope.
  */
-fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int): Int {
+fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int, maxPesos: Double? = null): Int {
     val valor = value ?: return 0
     if (baseCents <= 0) return 0
     val bruto = when (type?.uppercase()) {
@@ -133,7 +154,7 @@ fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int): Int {
         "COMP" -> baseCents
         else -> 0
     }
-    return bruto.coerceIn(0, baseCents)
+    return conTopeEnCents(bruto, maxPesos).coerceIn(0, baseCents)
 }
 
 @Serializable

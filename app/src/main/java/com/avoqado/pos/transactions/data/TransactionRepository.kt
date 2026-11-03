@@ -2,6 +2,8 @@ package com.avoqado.pos.transactions.data
 
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.transactions.data.model.PaginationMeta
 import com.avoqado.pos.transactions.data.model.ReceiptLinkResponse
@@ -14,13 +16,28 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
+import okhttp3.Authenticator
+import okhttp3.ConnectionPool
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** El SERVIDOR contestó y la venta nueva de un cambio no tiene pago cobrado: espera la diferencia o se canceló (F4, 28-oct). */
+class ExchangeOrderNotCharged(val cancelled: Boolean) : Exception()
 
 @Singleton
 class TransactionRepository @Inject constructor(
@@ -40,6 +57,7 @@ class TransactionRepository @Inject constructor(
     // es anulable y con eso basta — lo prueba `TransactionDecodeNullsTest`, que pasa SIN
     // coerción. Tolerar nulos se hace campo por campo, nunca en bloque sobre dinero.
     private val json = Json { ignoreUnknownKeys = true }
+    internal var baseUrl = ApiConstants.BASE_URL
 
     private val _transactions = MutableStateFlow<List<Transaction>>(emptyList())
     val transactions: StateFlow<List<Transaction>> = _transactions.asStateFlow()
@@ -74,7 +92,7 @@ class TransactionRepository @Inject constructor(
 
         return try {
             val urlBuilder = StringBuilder(
-                "${ApiConstants.BASE_URL}/mobile/venues/$venueId/transactions?page=$page&pageSize=$pageSize",
+                "$baseUrl/mobile/venues/$venueId/transactions?page=$page&pageSize=$pageSize",
             )
             if (!search.isNullOrBlank()) {
                 urlBuilder.append("&search=${URLEncoder.encode(search, "UTF-8")}")
@@ -110,32 +128,53 @@ class TransactionRepository @Inject constructor(
         }
     }
 
-    suspend fun fetchTransactionDetail(paymentId: String): Transaction? {
-        val venueId = secureStorage.venueId ?: return null
-        val token = secureStorage.accessToken ?: return null
+    suspend fun fetchTransactionDetail(paymentId: String): Transaction? =
+        fetchTransactionDetail(paymentId, secureStorage.userId, secureStorage.venueId)
 
+    /** Exchange links contain order ids; the transaction detail route requires a payment id. */
+    suspend fun paymentIdForExchangeOrder(orderId: String, actorId: String?, venueId: String?): String? {
+        if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
         return try {
-            val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/transactions/$paymentId"
             val request = Request.Builder()
-                .url(url)
-                .header("Authorization", "Bearer $token")
+                .url("$baseUrl/mobile/venues/$venueId/orders/${URLEncoder.encode(orderId, "UTF-8")}")
+                .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
                 .build()
+            val (code, body) = leerComo(actorId, venueId, request) ?: return null
+            if (!sameIdentity(actorId, venueId)) return null
+            if (code == 403) throw SecurityException("orders:read")
+            if (code !in 200..299) return null
+            val order = json.decodeFromString<com.avoqado.pos.tables.data.OrderDetailResponse>(body).order ?: return null
+            if (order.id != orderId) return null
+            order.payments.firstOrNull { it.status == "COMPLETED" && it.id.isNotBlank() }?.id
+                // Sólo SIN ningún pago se puede afirmar que no se cobró: PROCESSING o REFUNDED no lo prueban (Codex f4-r2).
+                ?: if (order.payments.isEmpty()) throw ExchangeOrderNotCharged(cancelled = order.status == "CANCELLED") else null
+        } catch (e: CancellationException) { throw e }
+        catch (e: SecurityException) { throw e }
+        catch (e: ExchangeOrderNotCharged) { throw e }
+        catch (_: Exception) { null }
+    }
 
-            val (responseCode, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
-            }
-
+    suspend fun fetchTransactionDetail(paymentId: String, actorId: String?, venueId: String?): Transaction? {
+        if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/transactions/$paymentId")
+                .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
+                .build()
+            val (responseCode, body) = leerComo(actorId, venueId, request) ?: return null
+            if (!sameIdentity(actorId, venueId)) return null
             if (responseCode in 200..299 && body.isNotEmpty()) {
-                val result = json.decodeFromString<TransactionDetailResponse>(body)
-                Log.d("📦", "✅ Loaded transaction detail: $paymentId")
-                result.transaction
+                json.decodeFromString<TransactionDetailResponse>(body).transaction?.takeIf { it.id == paymentId }
             } else {
-                Log.e("📦", "❌ Transaction detail fetch failed: $responseCode")
+                Log.e("📦", "Transaction detail fetch failed: $responseCode")
                 null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e("📦", "❌ Transaction detail fetch error: ${e.message}")
+            Log.e("📦", "Transaction detail fetch error: ${e.message}")
             null
         }
     }
@@ -192,6 +231,101 @@ class TransactionRepository @Inject constructor(
             ResultadoLigaRecibo.FalloDelServidor(0)
         }
     }
+
+    suspend fun assignCustomer(pending: PendingCustomerAssignment): Result<Unit> {
+        if (!sameIdentity(pending.actorId, pending.venueId)) return Result.failure(IllegalStateException("La sesión o la sucursal cambió. Abre de nuevo esta venta."))
+        val token = secureStorage.accessToken
+            ?: return Result.failure(IllegalStateException("Inicia sesión para asignar un cliente"))
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/${pending.venueId}/transactions/${pending.paymentId}/customer")
+                .header("Authorization", "Bearer $token")
+                .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
+                .post(soloUnEnvio(buildJsonObject { put("customerId", pending.customerId) }.toString().toRequestBody("application/json".toMediaType())))
+                .build()
+            val scopedClient = scopedCustomerClient(pending.actorId, pending.venueId, token, isRead = false)
+            withContext(Dispatchers.IO) {
+                scopedClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) Result.success(Unit)
+                    else {
+                        val message = runCatching {
+                            (json.parseToJsonElement(response.body?.string().orEmpty()) as? JsonObject)
+                                ?.get("message")?.jsonPrimitive?.content
+                        }.getOrNull()
+                        Result.failure(IllegalStateException(when (response.code) {
+                            401 -> "Tu sesión necesita renovarse. Abre de nuevo esta venta e inténtalo de nuevo."
+                            403 -> "No tienes permiso para asignar un cliente a esta venta"
+                            404 -> "Esta venta o el cliente ya no están disponibles"
+                            409 -> ServerErrorText.humanize(message, "La venta cambió y ya no permite esta asignación. Vuelve a abrirla.")
+                            else -> "No se pudo confirmar la asignación. Revisa la conexión y reintenta."
+                        }))
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** OkHttp repite un POST ante «503 Retry-After: 0» aunque no reintente conexiones; un cuerpo de un solo envío lo impide. */
+    private fun soloUnEnvio(cuerpo: RequestBody): RequestBody = object : RequestBody() {
+        override fun contentType() = cuerpo.contentType()
+        override fun contentLength() = cuerpo.contentLength()
+        override fun writeTo(sink: okio.BufferedSink) = cuerpo.writeTo(sink)
+        override fun isOneShot() = true
+    }
+
+    private fun sameIdentity(actorId: String, venueId: String): Boolean =
+        secureStorage.userId == actorId && secureStorage.venueId == venueId
+
+    /**
+     * GET con la credencial de [actorId]. La sesión del POS dura 10 min (D9, 28-oct): el autenticador de la app la renueva
+     * pero no reenvía (NO_AUTO_RETRY). Se repite UNA vez con la nueva, y sólo si sigue siendo la misma persona en la misma
+     * sucursal. Sin token, null.
+     */
+    private suspend fun leerComo(actorId: String, venueId: String, request: Request): Pair<Int, String>? {
+        // D4: la repetición es de la MISMA sesión, no sólo de la misma persona: si salió y volvió a entrar, ya es otra.
+        val (sello, primero) = secureStorage.selloYAccess()
+        var token = primero ?: return null
+        for (intento in 0..1) {
+            val (code, body) = withContext(Dispatchers.IO) {
+                scopedCustomerClient(actorId, venueId, token, isRead = true, sello = sello).newCall(request).execute().use {
+                    it.code to it.body?.string().orEmpty()
+                }
+            }
+            val renovado = secureStorage.accessSiSigue(sello)
+            if (code != 401 || intento == 1 || renovado == null || renovado == token || !sameIdentity(actorId, venueId)) {
+                return code to body
+            }
+            token = renovado
+        }
+        return null
+    }
+
+    /**
+     * GET y POST históricos comparten autoridad: sin PIN, replay ni salto a otro origen. El POST tampoco renueva la sesión;
+     * el GET sí la deja renovar (D9) y [leerComo] decide si repite.
+     * Una conexión guardada que el servidor ya cerró tumbaba el detalle (D3, 23-oct): el GET puede
+     * reintentar (leer dos veces no cambia nada); el POST no reintenta y por eso usa una conexión nueva.
+     */
+    private fun scopedCustomerClient(actorId: String, venueId: String, token: String, isRead: Boolean, sello: Long? = null): OkHttpClient =
+        client.newBuilder()
+            .apply { if (!isRead) authenticator(Authenticator.NONE) }
+            .retryOnConnectionFailure(isRead)
+            .apply { if (!isRead) connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS)) }
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .callTimeout(20, TimeUnit.SECONDS)
+            .addNetworkInterceptor { chain ->
+                check(sameIdentity(actorId, venueId)) { "La sesión o la sucursal cambió. Abre de nuevo esta venta." }
+                // D4 (Codex código r3 #4): la lectura es de SU sesión hasta el momento de salir; si mientras pasaba a IO la
+                // misma persona salió y volvió a entrar, ya es otra sesión y no sale.
+                check(sello == null || secureStorage.siSigueLaGeneracion(sello)) { "La sesión cambió. Abre de nuevo esta venta." }
+                chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer $token").build())
+            }.build()
 
     fun canLoadMore(): Boolean = hasMore && !_isLoadingMore.value
 

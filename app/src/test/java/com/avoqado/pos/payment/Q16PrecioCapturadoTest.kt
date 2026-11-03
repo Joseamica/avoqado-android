@@ -44,7 +44,7 @@ class Q16PrecioCapturadoTest {
         var code = 503
         private fun connect() = DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("q16.sqlite").absolutePath)
         init {
-            sql("CREATE TABLE pending_payments(id TEXT PRIMARY KEY,venueId TEXT NOT NULL,syncStatus TEXT NOT NULL,createdAt INTEGER NOT NULL, retryCount INTEGER NOT NULL DEFAULT 0,lastRetryAt INTEGER,lastError TEXT,orderId TEXT,original TEXT NOT NULL)")
+            sql("CREATE TABLE pending_payments(id TEXT PRIMARY KEY,venueId TEXT NOT NULL,syncStatus TEXT NOT NULL,createdAt INTEGER NOT NULL, retryCount INTEGER NOT NULL DEFAULT 0,lastRetryAt INTEGER,lastError TEXT,orderId TEXT,original TEXT NOT NULL,paymentType TEXT NOT NULL DEFAULT 'ORDER',amountCents INTEGER NOT NULL DEFAULT 0,tipCents INTEGER NOT NULL DEFAULT 0,orderRequestJson TEXT,method TEXT NOT NULL DEFAULT 'CASH',tenderTypeId TEXT,tenderRevision INTEGER,splitType TEXT NOT NULL DEFAULT 'FULLPAYMENT',customerId TEXT,cashTenderedCents INTEGER,changeCents INTEGER)")
             sql("CREATE TABLE pos_sync_intents(id TEXT PRIMARY KEY,venue_id TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,type TEXT NOT NULL,seq INTEGER NOT NULL DEFAULT 1,payload_json TEXT NOT NULL DEFAULT '{}',staff_id TEXT)")
             Q15_MIGRATION_SQL.forEach { sql(it) }
             every { storage.venueId } returns VENUE
@@ -55,6 +55,15 @@ class Q16PrecioCapturadoTest {
             every { dao.getPendingCount() } returns flowOf(0); every { dao.getFailedCount() } returns flowOf(0)
             coEvery { dao.getPendingPayments(any()) } answers { query("SELECT * FROM pending_payments WHERE syncStatus='PENDING' ORDER BY createdAt,id LIMIT :n",mapOf("n" to firstArg<Int>())).map(::decode) }
             coEvery { dao.findForVenue(any(),any()) } answers { query("SELECT * FROM pending_payments WHERE venueId=:v AND id=:id",mapOf("v" to firstArg<String>(),"id" to secondArg<String>())).firstOrNull()?.let(::decode) }
+            coEvery { dao.revisarCanceladoSinCobroQ15(any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any()) } answers {
+                sql(Q15_CANCELLED_ZERO_PAYMENT_REVIEW_SQL,mapOf("venueId" to firstArg<String>(),"id" to secondArg<String>(),
+                    "originalOrderId" to arg<String?>(2),"originalOrderRequestJson" to arg<String?>(3),"originalResultJson" to arg<String?>(4),
+                    "originalSyncStatus" to arg<String>(5),"originalCaptureJson" to arg<String?>(6),"originalCreatedAt" to arg<Long>(7),
+                    "originalCapturedOrderRef" to arg<String?>(8),"originalSplitType" to arg<String>(9),"originalCustomerId" to arg<String?>(10),
+                    "originalCashTenderedCents" to arg<Int?>(11),"originalChangeCents" to arg<Int?>(12),
+                    "originalReason" to arg<String?>(13),
+                    "resultadoJson" to arg<String>(14),"actor" to arg<String>(15),"rol" to arg<String>(16),"ahora" to arg<Long>(17)))
+            }
             coEvery { dao.recuperarOrdenQ16(any(),any(),any(),any()) } answers {
                 sql(Q16_RECOVER_ORDER_SQL,mapOf("venueId" to firstArg<String>(),"id" to secondArg<String>(),"originalOrderId" to arg<String?>(2),"recoveredOrderId" to arg<String>(3)))
             }
@@ -73,7 +82,16 @@ class Q16PrecioCapturadoTest {
                 val sent = chain.request()
                 chain.proceed(sent.newBuilder().url(server.url(sent.url.encodedPath)).build())
             }.build()
-            service = PaymentSyncService(dao,storage,client,network,drawer,outbox)
+            service = PaymentSyncService(dao,storage,client,network,drawer,outbox,io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true))
+        }
+        fun realWriters() {
+            coEvery { dao.findByIdQ15(any()) } answers {
+                query("SELECT * FROM pending_payments WHERE id=:id", mapOf("id" to firstArg<String>())).firstOrNull()?.let(::decode)
+            }
+            coEvery { dao.insert(any()) } coAnswers { callOriginal() }
+            coEvery { dao.insertTransactionQ16(any()) } coAnswers { callOriginal() }
+            coEvery { dao.insertRaw(any()) } coAnswers { callOriginal() }
+            coEvery { dao.insertRawSqlQ16(any()) } answers { insertCaptured(firstArg()); Unit }
         }
         @Synchronized fun reopen() { db.close(); db = connect() }
         @Synchronized fun sql(text: String, args: Map<String,Any?> = emptyMap()): Int = statement(text,args).use { it.executeUpdate() }
@@ -88,27 +106,29 @@ class Q16PrecioCapturadoTest {
         fun seed(id:String="p1",order:String?=null,kind:String="ORDER",items:String?=null,request:String=ORIGINAL,captured:String?=request) {
             val capture=ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(VENUE,id,order,10005,500,splitType="CUSTOM_AMOUNT",method="CASH",customerId="customer",orderRequestJson=captured))
             val payload=JSONObject().put("order",order ?: JSONObject.NULL).put("kind",kind).put("amount",10005).put("tip",500).put("items",items ?: JSONObject.NULL).put("orderRequest",if(kind=="ORDER") request else JSONObject.NULL).toString()
-            sql("INSERT INTO pending_payments(id,venueId,syncStatus,createdAt,original,q15CaptureJson,capturedOrderRef,orderId) VALUES(:id,:v,'PENDING',1,:o,:c,:r,:r)",mapOf("id" to id,"v" to VENUE,"o" to payload,"c" to capture,"r" to order))
+            sql("INSERT INTO pending_payments(id,venueId,syncStatus,createdAt,original,q15CaptureJson,capturedOrderRef,orderId,paymentType,amountCents,tipCents,orderRequestJson) VALUES(:id,:v,'PENDING',1,:o,:c,:r,:r,:kind,10005,500,:request)",mapOf("id" to id,"v" to VENUE,"o" to payload,"c" to capture,"r" to order,"kind" to kind,"request" to if(kind=="ORDER") request else null))
         }
         /** La fila tal como la dejó la 2.24.0: retenida por `requierePruebaDePrecio`, con el MISMO SQL de producción. */
         fun retenerComo2240(id:String="p1")=check(sql(Q15_PAYMENT_HOLD_SQL,mapOf("venueId" to VENUE,"id" to id,"motivo" to ConciliacionDelCobro.PRICE_PROOF_PENDING,"ahora" to 7L))==1)
         /** El escritor REAL de la cola (`CashPaymentRepository.queueCashPayment`), como la caja guarda la venta sin red.
          *  Igual que `PaymentFlowViewModel`: el `externalId` de la orden es la misma llave del cobro. */
         suspend fun venta(key:String,subtotal:Int=10000,tip:Int=500,discount:Int=0,amount:Int=subtotal-discount,split:String="FULLPAYMENT",
-                          tender:com.avoqado.pos.payment.domain.TenderTypeOption?=null,customer:String?="customer-A",orden:String=key):String {
+                          tender:com.avoqado.pos.payment.domain.TenderTypeOption?=null,customer:String?="customer-A",orden:String=key,
+                          caja:String?=null):String {
             val request=com.avoqado.pos.payment.data.model.CreateOrderRequest(
                 items=listOf(com.avoqado.pos.payment.data.model.OrderItemRequest(productId="product-A",name="Artículo A",quantity=1,unitPrice=subtotal)),
                 subtotal=subtotal,discount=discount,tip=tip,total=subtotal-discount+tip,paymentMethod="CASH")
             return CashPaymentRepository(storage,dao).queueCashPayment(request,"staff-A",null,null,null,orderExternalId=orden,
-                customerId=customer,idempotencyKey=key,tenderType=tender,amountCents=amount,tipCents=tip,splitType=split,venueId=VENUE)
+                customerId=customer,idempotencyKey=key,tenderType=tender,amountCents=amount,tipCents=tip,splitType=split,venueId=VENUE,
+                cajaDelCobro=caja)
         }
         /** Venta de importe libre (FAST sin artículos) con el mismo escritor real: no tiene orden ni pedido. */
-        suspend fun importeLibre(key:String,amount:Int):String {
+        suspend fun importeLibre(key:String,amount:Int,caja:String?=null):String {
             val request=com.avoqado.pos.payment.data.model.CreateOrderRequest(
                 items=listOf(com.avoqado.pos.payment.data.model.OrderItemRequest(name="Importe libre",quantity=1,unitPrice=amount)),
                 subtotal=amount,total=amount,paymentMethod="CASH")
             return CashPaymentRepository(storage,dao).queueCashPayment(request,"staff-A",null,null,null,
-                idempotencyKey=key,amountCents=amount,tipCents=0,splitType="FULLPAYMENT",venueId=VENUE)
+                idempotencyKey=key,amountCents=amount,tipCents=0,splitType="FULLPAYMENT",venueId=VENUE,cajaDelCobro=caja)
         }
         // Adaptador de prueba para el writer real CashPaymentRepository. SQL en disco, no Room/JVM.
         fun insertCaptured(row: PendingPaymentEntity) {
@@ -118,22 +138,30 @@ class Q16PrecioCapturadoTest {
                 .put("staff", row.staffId).put("customer", row.customerId ?: JSONObject.NULL)
                 .put("method", row.method).put("split", row.splitType)
                 .put("tender", row.tenderTypeId ?: JSONObject.NULL).put("revision", row.tenderRevision ?: JSONObject.NULL)
-                .put("cashTendered", row.cashTenderedCents ?: JSONObject.NULL).put("change", row.changeCents ?: JSONObject.NULL).toString()
+                .put("cashTendered", row.cashTenderedCents ?: JSONObject.NULL).put("change", row.changeCents ?: JSONObject.NULL)
+                .put("caja", row.cashDrawerSessionId ?: JSONObject.NULL).toString()
             // REPLACE, como `@Insert(onConflict = REPLACE)`: la reserva del efectivo se vuelve la fila de la cola con la misma llave.
-            sql("INSERT OR REPLACE INTO pending_payments(id,venueId,syncStatus,createdAt,original,q15CaptureJson,capturedOrderRef,orderId) VALUES(:id,:v,:s,:at,:o,:c,:ref,:orderId)",
+            sql("INSERT OR REPLACE INTO pending_payments(id,venueId,syncStatus,createdAt,original,q15CaptureJson,capturedOrderRef,orderId,paymentType,amountCents,tipCents,orderRequestJson,lastError,q15ResultJson,q15Reason,q15ReviewedAt,q15ReviewedBy,q15ReviewRole,method,tenderTypeId,tenderRevision,splitType,customerId,cashTenderedCents,changeCents) VALUES(:id,:v,:s,:at,:o,:c,:ref,:orderId,:kind,:amount,:tip,:request,:error,:result,:reason,:reviewed,:actor,:role,:method,:tender,:revision,:split,:customer,:cash,:change)",
                 mapOf("id" to row.id,"v" to row.venueId,"s" to row.syncStatus,"at" to row.createdAt,"o" to original,
-                    "c" to row.q15CaptureJson,"ref" to row.capturedOrderRef,"orderId" to row.orderId))
+                    "c" to row.q15CaptureJson,"ref" to row.capturedOrderRef,"orderId" to row.orderId,"kind" to row.paymentType,
+                    "amount" to row.amountCents,"tip" to row.tipCents,"request" to row.orderRequestJson,"error" to row.lastError,
+                    "result" to row.q15ResultJson,"reason" to row.q15Reason,"reviewed" to row.q15ReviewedAt,"actor" to row.q15ReviewedBy,"role" to row.q15ReviewRole,
+                    "method" to row.method,"tender" to row.tenderTypeId,"revision" to row.tenderRevision,
+                    "split" to row.splitType,"customer" to row.customerId,"cash" to row.cashTenderedCents,"change" to row.changeCents))
         }
-        private fun decode(row:Map<String,Any?>):PendingPaymentEntity {
+        fun decode(row:Map<String,Any?>):PendingPaymentEntity {
             val p=JSONObject(row["original"] as String)
             fun nullable(k:String)=if(p.isNull(k)) null else p.getString(k)
-            return PendingPaymentEntity(row["id"] as String,row["venueId"] as String,p.optString("staff","staff"),p.getInt("amount"),p.getInt("tip"),p.optString("method","CASH"),p.getString("kind"),
-                orderId=row["orderId"] as String?,orderRequestJson=nullable("orderRequest"),itemsJson=nullable("items"),customerId=if(p.has("customer")) nullable("customer") else "customer",splitType=p.optString("split","CUSTOM_AMOUNT"),
+            return PendingPaymentEntity(row["id"] as String,row["venueId"] as String,p.optString("staff","staff"),(row["amountCents"] as Number).toInt(),(row["tipCents"] as Number).toInt(),p.optString("method","CASH"),row["paymentType"] as String,
+                orderId=row["orderId"] as String?,orderRequestJson=row["orderRequestJson"] as String?,itemsJson=nullable("items"),customerId=if(p.has("customer")) nullable("customer") else "customer",splitType=p.optString("split","CUSTOM_AMOUNT"),
                 tenderTypeId=if(p.has("tender")) nullable("tender") else null,tenderRevision=if(p.has("revision")&&!p.isNull("revision")) p.getInt("revision") else null,
                 cashTenderedCents=if(p.has("cashTendered")&&!p.isNull("cashTendered")) p.getInt("cashTendered") else null,
                 changeCents=if(p.has("change")&&!p.isNull("change")) p.getInt("change") else null,
+                cashDrawerSessionId=if(p.has("caja")) nullable("caja") else null,
                 syncStatus=row["syncStatus"] as String,retryCount=(row["retryCount"] as Number).toInt(),lastRetryAt=(row["lastRetryAt"] as? Number)?.toLong(),
                 createdAt=(row["createdAt"] as Number).toLong(),
+                lastError=row["lastError"] as String?,q15InitialResultJson=row["q15InitialResultJson"] as String?,q15ResultJson=row["q15ResultJson"] as String?,
+                q15ReviewedAt=(row["q15ReviewedAt"] as? Number)?.toLong(),q15ReviewedBy=row["q15ReviewedBy"] as String?,q15ReviewRole=row["q15ReviewRole"] as String?,
                 q15CaptureJson=row["q15CaptureJson"] as String?,q15Reason=row["q15Reason"] as String?,capturedOrderRef=row["capturedOrderRef"] as String?)
         }
         fun row(id:String="p1")=query("SELECT * FROM pending_payments WHERE id=:id",mapOf("id" to id)).single()

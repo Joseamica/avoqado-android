@@ -342,4 +342,35 @@ class RefundSubmitRulesTest {
         assertEquals("No tienes permiso para emitir reembolsos", textoDeSinPermisoParaReembolsar(refundMethod = null))
         assertEquals("No tienes permiso para emitir reembolsos", textoDeSinPermisoParaReembolsar(refundMethod = "BANK_TRANSFER"))
     }
+
+    @Test fun `AN7 con saldo la unica opcion es Regresar a la tarjeta`() {
+        for (metodo in listOf("OTHER", "CASH", "BANK_TRANSFER", "CREDIT_CARD", null)) {
+            assertEquals(listOf(OpcionDeDevolucion(null, "Regresar a la tarjeta")), opcionesParaDevolver(metodo, "Tarjeta de regalo", true))
+        }
+    }
+    @Test fun `AN7 sin bandera o con false conserva las opciones existentes`() {
+        assertEquals(listOf(OpcionDeDevolucion(null,"Efectivo de la caja"),OpcionDeDevolucion("BANK_TRANSFER","Transferencia")), opcionesParaDevolver("CASH",null,false))
+        assertEquals(listOf(OpcionDeDevolucion(null,"Transferencia"),OpcionDeDevolucion("CASH","Efectivo de la caja")), opcionesParaDevolver("BANK_TRANSFER",null,null))
+    }
+    @Test fun `AN7 saldo nunca anuncia solo registro`() {
+        assertFalse(avisoDeSoloRegistro(false,false,"OTHER",true))
+        assertFalse(avisoDeSoloRegistro(false,true,"OTHER",true))
+    }
+    @Test fun `AN7 el detalle conserva la bandera y el servidor viejo deja null`() {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        assertEquals(true,json.decodeFromString(Transaction.serializer(), """{"id":"p","refundToGiftCardBalance":true}""").refundToGiftCardBalance)
+        assertNull(json.decodeFromString(Transaction.serializer(), """{"id":"p"}""").refundToGiftCardBalance)
+    }
+    @Test fun `AN7 sin red no devuelve saldo ni cancela venta y un doble toque no envia`() {
+        assertFalse(puedeEnviarDevolucion(true,false,false,false))
+        assertFalse(puedeEnviarDevolucion(false,true,false,false))
+        assertFalse(puedeEnviarDevolucion(true,true,true,true))
+        assertTrue(puedeEnviarDevolucion(true,false,true,false))
+        assertTrue(puedeEnviarDevolucion(false,false,false,false))
+    }
+    @Test fun `AN7 solo completo ignora el importe parcial y conserva los centavos del disponible`() {
+        assertEquals(500.01,importeParaDevolver(20.0,500.01,true),0.0)
+        assertEquals(20.0,importeParaDevolver(20.0,500.01,false),0.0)
+        assertEquals(0.0,importeParaDevolver(20.0,0.0,true),0.0)
+    }
 }

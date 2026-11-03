@@ -27,9 +27,12 @@ package com.avoqado.pos.transactions.data
 // See full audit in TransactionsScreen.kt next to the disabled refund button.
 // ============================================================================
 
+import com.avoqado.pos.transactions.data.model.StoreCreditAbono
+import com.avoqado.pos.transactions.data.model.StoreCreditAbonoTolerante
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.SelloDePeticion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -46,6 +49,13 @@ private const val TAG = "💸 RefundRepo"
 class RefundApiException(
     val statusCode: Int,
     override val message: String,
+    /** El `code` del rechazo (p. ej. `STORE_CREDIT_…`): decide si lo pendiente se borra (`esRechazoDefinitivoDeSaldo`). */
+    val code: String? = null,
+    /**
+     * ¿Lo dijo NUESTRO servidor? Sólo si la respuesta devolvió el `X-Correlation-ID` de SU petición (`conPruebaDeOrigen`). Sin esa
+     * prueba (`false`, el default) lo pendiente del saldo a favor se conserva (Codex apps r2-r3, P1).
+     */
+    val delServidor: Boolean = false,
 ) : Exception(message)
 
 @Serializable
@@ -98,8 +108,12 @@ internal data class AssociatedRefundRequest(
      * =amount => refund only the tip (accidental tip charge case).
      */
     val tipRefundCents: Int? = null,
-    /** «CASH» | «BANK_TRANSFER»; null => por el mismo medio (la llave no viaja). */
+    /** «CASH» | «BANK_TRANSFER» | «STORE_CREDIT»; null => por el mismo medio (la llave no viaja). */
     val refundMethod: String? = null,
+    /** Saldo a favor (aditivos, opcionales; nulos no viajan): a quién se abona, la llave del reintento y «Es por defecto». */
+    val customerId: String? = null,
+    val idempotencyKey: String? = null,
+    val defective: Boolean? = null,
 )
 
 @Serializable
@@ -107,6 +121,7 @@ private data class AssociatedRefundResponse(
     val success: Boolean = false,
     val data: AssociatedRefundData? = null,
     val message: String? = null,
+    val code: String? = null,
 )
 
 @Serializable
@@ -115,6 +130,9 @@ data class AssociatedRefundData(
     val amount: Double,
     val remainingRefundable: Double,
     val status: String,
+    /** Saldo a favor (aditivo): sólo viene si la devolución fue a saldo. `null` = devolución normal o servidor anterior. */
+    @Serializable(with = StoreCreditAbonoTolerante::class)
+    val storeCredit: StoreCreditAbono? = null,
 )
 
 /**
@@ -149,6 +167,8 @@ class RefundRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
 ) {
+    internal var baseUrl = ApiConstants.BASE_URL
+
     /**
      * Issue an associated refund against an existing payment.
      * Supports either amount-based (`amountCents`) or item-based (`items`) refunds,
@@ -163,32 +183,55 @@ class RefundRepository @Inject constructor(
         note: String? = null,
         tipRefundCents: Int? = null,
         refundMethod: String? = null,
-    ): Result<AssociatedRefundData> {
+        /** «Es por defecto» con «Sólo saldo a favor» (`defectoParaEnvio`); null => no viaja. */
+        defective: Boolean? = null,
+    ): Result<AssociatedRefundData> = enviarCuerpo(
+        paymentId,
+        cuerpoDeReembolso(reason, amountCents, items, restockItemIds, note, tipRefundCents, refundMethod, defective = defective),
+    )
+
+    /** El JSON del reembolso. El de saldo a favor se guarda tal cual en `RefundPendingStore` y se reenvía con los MISMOS bytes. */
+    fun cuerpoDeReembolso(
+        reason: String,
+        amountCents: Int? = null,
+        items: List<AssociatedRefundItem>? = null,
+        restockItemIds: List<String>? = null,
+        note: String? = null,
+        tipRefundCents: Int? = null,
+        refundMethod: String? = null,
+        customerId: String? = null,
+        idempotencyKey: String? = null,
+        defective: Boolean? = null,
+    ): String = jsonReembolsos.encodeToString(
+        AssociatedRefundRequest.serializer(),
+        AssociatedRefundRequest(
+            amount = amountCents,
+            items = items?.takeIf { it.isNotEmpty() },
+            restockItemIds = restockItemIds?.takeIf { it.isNotEmpty() },
+            reason = reason,
+            note = note,
+            tipRefundCents = tipRefundCents,
+            refundMethod = refundMethod,
+            customerId = customerId,
+            idempotencyKey = idempotencyKey,
+            defective = defective,
+        ),
+    )
+
+    /** Manda un cuerpo ya armado (el reenvío de lo pendiente usa exactamente el que se guardó). Con [sello], sólo sale con esa sesión. */
+    suspend fun enviarCuerpo(paymentId: String, body: String, sello: Long? = null): Result<AssociatedRefundData> {
         val venueId = secureStorage.venueId
             ?: return Result.failure(Exception("No venue ID"))
 
         return try {
-            val body = jsonReembolsos.encodeToString(
-                AssociatedRefundRequest.serializer(),
-                AssociatedRefundRequest(
-                    amount = amountCents,
-                    items = items?.takeIf { it.isNotEmpty() },
-                    restockItemIds = restockItemIds?.takeIf { it.isNotEmpty() },
-                    reason = reason,
-                    note = note,
-                    tipRefundCents = tipRefundCents,
-                    refundMethod = refundMethod,
-                ),
-            )
-
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/$paymentId/refund")
+                .url("$baseUrl/mobile/venues/$venueId/payments/$paymentId/refund")
                 .post(body.toRequestBody("application/json".toMediaType()))
+                .apply { sello?.let { tag(SelloDePeticion::class.java, SelloDePeticion(it)) } }
                 .build()
 
-            val (code, responseBody) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+            val (code, responseBody, delServidor) = withContext(Dispatchers.IO) {
+                client.conPruebaDeOrigen(request) { response, delServidor -> Triple(response.code, response.body?.string() ?: "", delServidor) }
             }
 
             if (code in 200..299) {
@@ -205,10 +248,8 @@ class RefundRepository @Inject constructor(
                 }
             } else {
                 Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
-                val message = runCatching {
-                    jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody).message
-                }.getOrNull() ?: "Error $code"
-                Result.failure(RefundApiException(code, message))
+                val error = runCatching { jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody) }.getOrNull()
+                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code, delServidor))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Associated refund error: ${e.message}")

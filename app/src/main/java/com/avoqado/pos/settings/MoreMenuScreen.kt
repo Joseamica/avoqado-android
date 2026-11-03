@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.LocalOffer
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Monitor
 import androidx.compose.material.icons.outlined.Payments
@@ -156,6 +157,7 @@ fun MoreMenuScreen(
     var showPendingWaste by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
+    var showOnlineOrders by rememberSaveable { mutableStateOf(false) }
     // Task 7b: filtro con el que arranca la lista de Pedidos al abrirla.
     // null = "Pedidos" normal, sin tocar filtro. Con valor: Cierre del día
     // → "Cuentas abiertas" abre la lista YA filtrada a abiertas.
@@ -190,6 +192,7 @@ fun MoreMenuScreen(
         showPendingWaste = false
         showReports = false
         showOrders = false
+        showOnlineOrders = false
         ordersInitialStatusFilter = null
         showCashDrawer = false
         showEndOfDay = false
@@ -209,6 +212,22 @@ fun MoreMenuScreen(
     LaunchedEffect(moreTabReselectionTick) {
         if (moreTabReselectionTick > 0) {
             closeAllOverlays()
+        }
+    }
+
+    // «Ver» del banner de «Pedidos en línea»: el NavGraph nos trajo a «Más»; aquí se abre la bandeja y se atiende la solicitud.
+    // Siempre se atiende (aun sin permiso) para que la bandera no se quede prendida.
+    val bandejaSolicitada by viewModel.bandejaSolicitada.collectAsState()
+    val pedidosEnLineaPendientes by viewModel.pedidosEnLineaPendientes.collectAsState()
+    val hayPedidosEnLineaAbiertos by viewModel.hayPedidosEnLineaAbiertos.collectAsState()
+    val hayRepartoPorCobrarGuardado by viewModel.hayRepartoPorCobrarGuardado.collectAsState()
+    LaunchedEffect(bandejaSolicitada) {
+        if (bandejaSolicitada) {
+            if (com.avoqado.pos.onlineorders.presentation.debeAbrirBandeja(true, viewModel.entradaPedidosEnLinea)) {
+                closeAllOverlays()
+                showOnlineOrders = true
+            }
+            viewModel.bandejaAtendida()
         }
     }
 
@@ -534,6 +553,30 @@ fun MoreMenuScreen(
                     },
                 ),
             )
+            // «Pedidos en línea»: por `orders:read`, NO por plan (R14). Sin plan y sin pedidos abiertos se queda a la vista
+            // con su candado (teaser); `hayPedidosEnLineaAbiertos` se lee aquí para que el menú se repinte al cambiar.
+            @Suppress("UNUSED_EXPRESSION") hayPedidosEnLineaAbiertos
+            @Suppress("UNUSED_EXPRESSION") hayRepartoPorCobrarGuardado
+            when (viewModel.entradaPedidosEnLinea) {
+                com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea.ABIERTA -> add(
+                    MenuEntry(
+                        icon = Icons.Outlined.ShoppingBag,
+                        label = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.MENU,
+                        badgeCount = pedidosEnLineaPendientes.size,
+                        onClick = { showOnlineOrders = true },
+                    ),
+                )
+                com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea.TEASER -> add(
+                    MenuEntry(
+                        icon = Icons.Outlined.ShoppingBag,
+                        label = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.MENU,
+                        subtitle = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.teaserPlan(viewModel.pedidosEnLineaTierLabel),
+                        tierBadgeLabel = viewModel.pedidosEnLineaTierLabel,
+                        onClick = { showOnlineOrders = true },
+                    ),
+                )
+                com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea.OCULTA -> Unit
+            }
             if (viewModel.canCreateProducts && visible(PreferenciasDelMenu.ARTICULOS)) {
                 add(
                     MenuEntry(
@@ -876,6 +919,27 @@ fun MoreMenuScreen(
                 isTablet = isTablet,
                 onDismiss = { showOrders = false },
                 initialStatusFilter = ordersInitialStatusFilter,
+            )
+        }
+    }
+
+    // Pedidos en línea Fullscreen Overlay
+    if (showOnlineOrders) {
+        val overlayInteraction = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
+        ) {
+            com.avoqado.pos.onlineorders.presentation.OnlineOrdersScreen(
+                onDismiss = { showOnlineOrders = false },
+                planRequerido = viewModel.pedidosEnLineaTierLabel,
             )
         }
     }
@@ -1564,6 +1628,8 @@ private data class MenuEntry(
     val tierBadgeLabel: String? = null,
     /** Apagada se VE y se explica en el subtítulo: nunca desaparece en silencio. */
     val enabled: Boolean = true,
+    /** Número de pendientes junto al título (0 = sin insignia). Ej.: «Pedidos en línea» por aceptar. */
+    val badgeCount: Int = 0,
 )
 
 @Composable
@@ -1668,6 +1734,10 @@ private fun MenuRow(
                 if (entry.tierBadgeLabel != null) {
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                     TierBadge(tierLabel = entry.tierBadgeLabel)
+                }
+                if (entry.badgeCount > 0) {
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                    androidx.compose.material3.Badge { Text(if (entry.badgeCount > 99) "99+" else "${entry.badgeCount}") }
                 }
             }
             if (entry.subtitle != null) {

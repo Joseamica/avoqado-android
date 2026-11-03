@@ -101,6 +101,7 @@ class SyncOutbox @Inject constructor(
 
     private val _q15ReviewCount=MutableStateFlow(0)
     val q15ReviewCount:StateFlow<Int> = _q15ReviewCount.asStateFlow()
+    fun contextoDeSesionQ15(): Long = tableSession.contextoActual()
     private val _q15HistoryUnavailable=MutableStateFlow(false)
     val q15HistoryUnavailable:StateFlow<Boolean> = _q15HistoryUnavailable.asStateFlow()
     private var reviewCountJob:Job?=null
@@ -478,13 +479,15 @@ class SyncOutbox @Inject constructor(
         if (!admitted && continuation.isActive) continuation.resumeWith(Result.failure(AdmisionDePrecioQ16.Changed()))
     }
 
-    suspend fun replayNow(venueId: String) {
+    /** @return cuántos intents resolvió el servidor en esta corrida (lo usan las vueltas de `PaymentSyncService.syncNow`). */
+    suspend fun replayNow(venueId: String): Int {
+        var resueltos = 0
         if (
             activeVenueId != venueId ||
             !connectivityMonitor.isConnected.value ||
             !connectivityMonitor.isServerReachable.value
         ) {
-            return
+            return 0
         }
         // 🔴 EL CAJÓN VA PRIMERO, TAMBIÉN POR ESTA PUERTA (P2-3). Es el MISMO punto de entrada y el
         // MISMO candado de un solo vuelo que usa `PaymentSyncService`: si ya hay un replay del
@@ -493,6 +496,9 @@ class SyncOutbox @Inject constructor(
         val cobrosPuedenSalir = runCatching { cajon.sincronizarCajonPrimero() }
             .onFailure { Log.e(TAG, "❌ No se pudo sincronizar el cajón antes del outbox: ${it.message}") }
             .getOrDefault(true)
+        // 🔴 La barrera de la apertura POR CAJA (efectivo sin red en el turno correcto): un intent con caja espera a la apertura de
+        // SU caja, no a la de cualquiera. Barrera de datos, no de errores: si no se pudo leer, no detiene nada (como arriba).
+        val cajasEsperando = runCatching { cajon.cajasQueEsperanSuApertura() }.getOrDefault(emptySet())
         replayMutex.withLock {
             val soltadasEnEsteCiclo = mutableSetOf<String>()
             val lanes: List<Boolean?> = if (preparationLanesNegotiated(venueId)) listOf(false, true) else listOf(null)
@@ -528,7 +534,11 @@ class SyncOutbox @Inject constructor(
                     // que hace que una mesa se abra antes de que le agreguen artículos: adelantar lo
                     // que no es dinero rompería ese orden. Lo que NO es dinero sigue fluyendo; el
                     // cobro en efectivo y todo lo posterior esperan a que la caja aterrice.
-                    val cuantos = cuantosIntentsSePuedenMandar(antesDeLaRetenida.map { it.type }, cobrosPuedenSalir)
+                    // 🔴 Y POR CAJA (Codex r4 #1): un `PAY_CASH` o un `OPEN_TABLE` CON caja espera a la apertura de SU caja; el
+                    // `OPEN_TABLE` de una mesa abierta en la caja B ya no puede adelantarse a la apertura de B.
+                    val cuantos = cuantosIntentsSePuedenMandarPorCaja(
+                        antesDeLaRetenida.map { it.type to cajaDelIntent(it) }, cobrosPuedenSalir, cajasEsperando,
+                    )
                     val antesDeCaja = antesDeLaRetenida.take(cuantos)
                     val firstUnknown = antesDeCaja.indexOfFirst { it.type == SyncIntentTypes.PAY_CASH &&
                         (it.q15Reason != null || com.avoqado.pos.payment.data.ConciliacionDelCobro.leerCaptura(it.q15CaptureJson,it.venueId,it.id) == null) }
@@ -550,7 +560,7 @@ class SyncOutbox @Inject constructor(
                                 id = it.id,
                                 seq = it.seq,
                                 type = it.type,
-                                payload = json.decodeFromString(JsonObject.serializer(), it.payloadJson),
+                                payload = payloadParaElCable(it),
                                 staffId = it.staffId,
                                 createdAtLocal = it.createdAt,
                             )
@@ -620,6 +630,7 @@ class SyncOutbox @Inject constructor(
                             sawRetry = true
                             break
                         }
+                        resueltos++
                         if (activeVenueId == venueId) _acks.emit(ack.copy(contextoDeSesion = contextoDeSesion))
                         if (!ack.isAcked) {
                             Log.w(TAG, "🚫 Intent ${ack.id} RECHAZADO: ${ack.errorCode} — ${ack.message}")
@@ -638,6 +649,28 @@ class SyncOutbox @Inject constructor(
                 }
             }
         }
+        return resueltos
+    }
+
+    /** La caja de la venta que trae un `PAY_CASH` o un `OPEN_TABLE` (efectivo sin red en el turno correcto); los demás no la llevan. */
+    private fun cajaDelIntent(row: SyncIntentEntity): String? =
+        if (row.type != SyncIntentTypes.PAY_CASH && row.type != SyncIntentTypes.OPEN_TABLE) null
+        else com.avoqado.pos.cashdrawer.data.PendingCashSales.cajaDelPayload(row.payloadJson)
+
+    /**
+     * 🔴 EL PAYLOAD QUE SALE AL SERVIDOR: el de disco, con la caja de la venta TRADUCIDA al id del servidor
+     * (`CashDrawerRepository.idDeCajaParaElServidor`). Una caja local sin alias se QUITA: nunca sale un id que el servidor no
+     * conoce, y sin el campo el intent sube como hoy. Lo de disco no cambia: la captura Q15 sigue siendo la original. Un intent
+     * sin caja sale tal cual.
+     */
+    private fun payloadParaElCable(row: SyncIntentEntity): JsonObject {
+        val payload = json.decodeFromString(JsonObject.serializer(), row.payloadJson)
+        val campo = com.avoqado.pos.cashdrawer.data.PendingCashSales.CAMPO_DE_LA_CAJA
+        if ((row.type != SyncIntentTypes.PAY_CASH && row.type != SyncIntentTypes.OPEN_TABLE) || !payload.containsKey(campo)) return payload
+        val traducida = (payload[campo] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            ?.let { cajon.idDeCajaParaElServidor(it, row.venueId) }
+            ?.takeIf { it.isNotBlank() && it.length <= 64 }
+        return if (traducida == null) JsonObject(payload - campo) else JsonObject(payload + (campo to JsonPrimitive(traducida)))
     }
 
     /** Both HTTP replay and readonly recovery must use this same local commit before emitting ACK. */
@@ -756,6 +789,28 @@ class SyncOutbox @Inject constructor(
             if (cobrosPuedenSalir) return tipos.size
             val primerCobro = tipos.indexOf(TIPO_PAGO_EN_EFECTIVO)
             return if (primerCobro < 0) tipos.size else primerCobro
+        }
+
+        /**
+         * 🔴 El corte del outbox POR CAJA (efectivo sin red en el turno correcto, Codex r4 #1): cada entrada es (tipo, caja del
+         * payload). Un `PAY_CASH` o un `OPEN_TABLE` CON caja espera mientras la apertura de SU caja no llegue ([cajasEsperando]);
+         * un `PAY_CASH` SIN caja conserva la regla global de hoy; lo demás nunca espera. FIFO: se corta en la primera que espera.
+         */
+        internal fun cuantosIntentsSePuedenMandarPorCaja(
+            intents: List<Pair<String, String?>>,
+            sinCajaPuedenSalir: Boolean,
+            cajasEsperando: Set<String>,
+        ): Int {
+            for ((indice, intent) in intents.withIndex()) {
+                val (tipo, caja) = intent
+                val espera = when {
+                    tipo == TIPO_PAGO_EN_EFECTIVO && caja == null -> !sinCajaPuedenSalir
+                    (tipo == TIPO_PAGO_EN_EFECTIVO || tipo == SyncIntentTypes.OPEN_TABLE) && caja != null -> caja in cajasEsperando
+                    else -> false
+                }
+                if (espera) return indice
+            }
+            return intents.size
         }
 
         /** Cuántas entradas del lote van ANTES de la primera ronda retenida (todas si no hay). Pura, como la del cajón. */

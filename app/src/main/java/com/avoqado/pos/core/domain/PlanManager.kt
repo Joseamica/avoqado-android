@@ -105,6 +105,8 @@ class PlanManager @Inject constructor(
         // Todo código que la app consulte con hasFeature() TIENE que estar aquí: uno ausente
         // se permite en cualquier plan. PlanManagerTest barre el código fuente y lo exige.
         val FEATURE_REQUIRED_TIER: Map<String, PlanTier> = mapOf(
+            // Sólo para la etiqueta Pro: quién vende lo decide settings.sale del servidor.
+            "GIFT_CARDS" to PlanTier.PRO,
             "RESERVATIONS" to PlanTier.PRO,
             "PROMOTIONS" to PlanTier.PRO,
             "REFERRAL_PROGRAM" to PlanTier.PRO,
@@ -120,6 +122,9 @@ class PlanManager @Inject constructor(
             // Pantalla de cocina por estación (etapa 3, decisión D-A del 27-sep: Pro con lo de sin internet incluido).
             // Gobierna PRENDERLA y lo que ve la tablet; el servidor arma la comanda por la casilla. Espejo en iOS.
             "KITCHEN_DISPLAY" to PlanTier.PRO,
+            // Menú del aparato (Pro). Sólo espejo: la app no esconde ni bloquea nada por plan; el SERVIDOR manda
+            // `null` (= todo) a un negocio sin Pro. Espejo en iOS.
+            "DEVICE_MENUS" to PlanTier.PRO,
             "INVENTORY_TRACKING" to PlanTier.PREMIUM,
             "CFDI" to PlanTier.PREMIUM,
             "SCALE_INTEGRATION" to PlanTier.PREMIUM,
@@ -128,6 +133,12 @@ class PlanManager @Inject constructor(
             // Una función comprada suelta SÍ llega: con `accessSchemaVersion == 1` la app obedece la lista
             // `grantedFeatureCodes` que confirma el servidor, no este mapa (ver hasFeature).
             "OFFLINE_LAN_HUB" to PlanTier.PREMIUM,
+            // Pedidos en línea (la tienda web del negocio, 1c). El servidor deja ATENDER los pedidos que ya existen aunque el plan
+            // venza (R14): este mapa sólo manda sobre el teaser y el candado de la entrada. Espejo en iOS.
+            "ONLINE_ORDERING" to PlanTier.PRO,
+            // Canales de reparto (Rappi, 2b): mismo tier que `featureCatalog.ts` del servidor. Sólo abre la entrada «Pedidos en línea»
+            // para la sección «Rappi · por cobrar»; los pedidos ya por cobrar se atienden aunque el plan venza (R14). Espejo en iOS.
+            "DELIVERY_CHANNELS" to PlanTier.PREMIUM,
         )
     }
 }

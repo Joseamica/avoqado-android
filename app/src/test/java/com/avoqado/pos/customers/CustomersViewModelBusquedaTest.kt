@@ -9,6 +9,7 @@ import com.avoqado.pos.customers.domain.AVISO_SERVIDOR_FALLO_CLIENTES
 import com.avoqado.pos.customers.domain.AVISO_SIN_RED_CLIENTES
 import com.avoqado.pos.customers.presentation.ContenidoDeLaLista
 import com.avoqado.pos.customers.presentation.CustomersViewModel
+import com.avoqado.pos.customers.presentation.desenlaceDelFormulario
 import com.avoqado.pos.customers.presentation.estadoDeLaListaDeClientes
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -24,6 +25,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -57,7 +59,7 @@ class CustomersViewModelBusquedaTest {
     fun setup() {
         coEvery { repository.buscarClientes(any()) } returns pagina()
         every { repository.clientesGuardados() } returns emptyList()
-        viewModel = CustomersViewModel(repository, roleManager)
+        viewModel = CustomersViewModel(repository, roleManager, mockk(relaxed = true), mockk(relaxed = true))
     }
 
     @Test
@@ -113,7 +115,7 @@ class CustomersViewModelBusquedaTest {
         assertEquals(listOf(dany), viewModel.customers.value)
         assertTrue(viewModel.offline.value)
         assertEquals(AVISO_SIN_RED_CLIENTES, viewModel.avisoDeGuardados.value)
-        assertNull("sin red no es un error que haya que explicar en un diálogo", viewModel.error.value)
+        assertNull("sin red no es un error que haya que explicar en un diálogo", viewModel.altaTerminada.value)
     }
 
     @Test
@@ -151,7 +153,7 @@ class CustomersViewModelBusquedaTest {
 
         assertFalse("una respuesta del servidor no es «sin conexión»", viewModel.offline.value)
         assertEquals(AVISO_SERVIDOR_FALLO_CLIENTES, viewModel.avisoDeGuardados.value)
-        assertNull("el error de una búsqueda no abre el diálogo de crear cliente", viewModel.error.value)
+        assertNull("el error de una búsqueda no abre el diálogo de crear cliente", viewModel.altaTerminada.value)
         assertEquals("la caja no se queda sin lista", listOf(dany), viewModel.customers.value)
 
         viewModel.fetchCustomers()
@@ -168,22 +170,19 @@ class CustomersViewModelBusquedaTest {
     }
 
     @Test
-    fun `un error viejo se limpia al abrir la lista y con una busqueda que si contesta`() = runTest {
+    fun `un rechazo viejo sólo lo ve el formulario que lo pidió, nunca uno nuevo`() = runTest {
+        // Codex apps r5: el desenlace del alta lleva su número; un formulario nuevo nace sin alta pedida y no lo hereda.
         coEvery { repository.createCustomer(any()) } returns Result.failure(Exception("Este número de teléfono ya está registrado."))
-        coEvery { repository.buscarClientes("Dany") } returns pagina(dany)
 
-        viewModel.createCustomer("Ana", null, "+528112345678", null) {}
+        val alta = viewModel.createCustomer("Ana", null, "+528112345678", null)
         advanceUntilIdle()
-        assertNotNull(viewModel.error.value)
-        viewModel.abrirLista()
-        assertNull("al volver a abrir no se arrastra un error de antes", viewModel.error.value)
+        val primera = viewModel.altaTerminada.value
+        assertNotNull(desenlaceDelFormulario(primera, alta)?.error)
+        assertNull("un formulario nuevo no arrastra un error de antes", desenlaceDelFormulario(primera, null))
 
-        viewModel.createCustomer("Ana", null, "+528112345678", null) {}
-        advanceUntilIdle()
-        assertNotNull(viewModel.error.value)
-        viewModel.onQueryChange("Dany")
-        advanceUntilIdle()
-        assertNull(viewModel.error.value)
+        val otra = viewModel.createCustomer("Ana", null, "+528112345678", null)
+        assertNotEquals(alta, otra)
+        assertNull("el desenlace de la primera no es el de la segunda", desenlaceDelFormulario(primera, otra))
     }
 
     // Revisión A2 (Minor): el ViewModel vive con la pantalla de navegación; al reabrir se veían los resultados de la

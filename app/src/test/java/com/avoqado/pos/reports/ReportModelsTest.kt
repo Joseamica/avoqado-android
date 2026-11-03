@@ -58,4 +58,26 @@ class ReportModelsTest {
         val breakdown = PaymentMethodBreakdown(method = "CRYPTO")
         assertEquals("CRYPTO", breakdown.label)
     }
+    @Test
+    fun `GIFT_CARD se llama Tarjeta de regalo con su icono`() {
+        val breakdown = PaymentMethodBreakdown(method = "GIFT_CARD")
+        assertEquals("Tarjeta de regalo", breakdown.label)
+        assertEquals("giftcard", breakdown.iconName)
+    }
+
+    @Test
+    fun `PaymentMethodDisplay nombra GIFT_CARD`() {
+        assertEquals("Tarjeta de regalo", com.avoqado.pos.transactions.data.model.PaymentMethodDisplay.label("GIFT_CARD"))
+    }
+
+    // Revisión visual (30-oct): el informe decía «BANK_TRANSFER». Ningún valor del enum PaymentMethod del servidor sale crudo.
+    @Test
+    fun `el informe nombra en espanol todos los metodos del enum del servidor`() {
+        assertEquals("Transferencia", PaymentMethodBreakdown(method = "BANK_TRANSFER").label)
+        assertEquals("arrow_forward", PaymentMethodBreakdown(method = "BANK_TRANSFER").iconName)
+        assertEquals("Cartera digital", PaymentMethodBreakdown(method = "DIGITAL_WALLET").label)
+        assertEquals("wallet", PaymentMethodBreakdown(method = "DIGITAL_WALLET").iconName)
+        assertEquals("Criptomoneda", PaymentMethodBreakdown(method = "CRYPTOCURRENCY").label)
+        assertEquals("Otro", PaymentMethodBreakdown(method = "OTHER").label)
+    }
 }

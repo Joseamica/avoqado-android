@@ -78,12 +78,14 @@ jobs:
       # El runner tiene 7 GB y el repo pide 6 sólo para Gradle; el daemon de Kotlin
       # arranca aparte con otros 2. Es la combinación que mató un build de 32 min
       # en la Mac. Se acota desde GRADLE_USER_HOME, que gana sobre el del proyecto.
+      # Kotlin compila DENTRO de Gradle (un solo tope), como en desktop.yml: con el daemon aparte de 2 GB,
+      # `:app:compileDebugKotlin` se quedó sin memoria (2-nov, 2 de 3 en el mismo commit).
       - name: Acotar memoria al tamaño del runner
         run: |
           mkdir -p ~/.gradle
           cat >> ~/.gradle/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.jvmargs=-Xmx4608m -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+          kotlin.compiler.execution.strategy=in-process
           org.gradle.workers.max=2
           org.gradle.daemon=false
           org.gradle.parallel=false

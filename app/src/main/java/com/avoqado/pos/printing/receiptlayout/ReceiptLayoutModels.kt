@@ -104,7 +104,16 @@ data class ReceiptSale(
     /** Saldo de una PRE_BILL, en centavos; ausente en documentos legacy. */
     val paidCents: Long? = null,
     val remainingCents: Long? = null,
+    val exchange: ReceiptExchange? = null,
 )
+
+@Serializable
+data class ReceiptExchange(val originalOrderNumber: String, val returned: List<ReceiptExchangeLine>,
+    val taken: List<ReceiptExchangeLine>, val differenceCents: Long, val methodLabel: String?,
+    /** Saldo a favor: a quién se abonó, cuánto, su saldo nuevo y el teléfono con que se usa (spec §4, §5.2). */
+    val storeCredit: com.avoqado.pos.transactions.data.model.StoreCreditAbono? = null)
+@Serializable
+data class ReceiptExchangeLine(val name: String, val quantity: Int, val totalCents: Long)
 
 @Serializable
 data class ReceiptReprint(val printedAt: String)
@@ -136,6 +145,8 @@ data class ReceiptTender(
     val tenderedCents: Long? = null,
     val changeCents: Long? = null,
     val merchantAccountId: String? = null,
+    /** Sólo de las apps (el SERVIDOR no lo manda): la etiqueta del renglón; `null` = «Pago:». */
+    val rowLabel: String? = null,
 )
 
 /**

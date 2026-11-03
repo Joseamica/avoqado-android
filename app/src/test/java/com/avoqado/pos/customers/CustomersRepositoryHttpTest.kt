@@ -2,8 +2,10 @@ package com.avoqado.pos.customers
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.customers.data.CustomersRepository
+import com.avoqado.pos.customers.data.model.CreateCustomerRequest
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.data.model.PaginaDeClientes
+import com.avoqado.pos.customers.data.model.UpdateCustomerRequest
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -158,5 +160,96 @@ class CustomersRepositoryHttpTest {
         server.enqueue(MockResponse().setBody(lista("c1", "c2")))
 
         assertEquals(listOf("c1", "c2"), repository.fetchCustomers().getOrThrow().map { it.id })
+    }
+
+    // MARK: - Editar cliente (26-oct-2026)
+
+    @Test
+    fun `P1 editar hace PUT a la ruta del cliente, manda solo lo cambiado y conserva visitas y gasto`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"message":"Cliente actualizado","customer":{"id":"c1","firstName":"Ana","lastName":null,"phone":"+527351748538","email":null}}""",
+            ),
+        )
+        val original = Customer(id = "c1", phone = "+527351748538", totalVisits = 1, totalSpent = 65.0)
+
+        val resultado = repository.updateCustomer(original, UpdateCustomerRequest(firstName = "Ana")).getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/customers/c1", request.requestUrl!!.encodedPath)
+        assertEquals("""{"firstName":"Ana"}""", request.body.readUtf8())
+        assertEquals("Ana", resultado.firstName)
+        assertEquals(1, resultado.totalVisits)
+        assertEquals(65.0, resultado.totalSpent!!, 0.0)
+        // Queda guardado para buscar sin red.
+        assertEquals("Ana", repository.clientesGuardados().single().firstName)
+    }
+
+    // D4: la búsqueda del carrito sale, se edita el cliente y la respuesta (con el nombre viejo) llega después.
+    @Test
+    fun `P1 una busqueda que salio antes de editar no regresa el nombre viejo a lo guardado`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"data":[{"id":"c1","firstName":"Viejo"}]}""").setHeadersDelay(500, TimeUnit.MILLISECONDS))
+        server.enqueue(MockResponse().setBody("""{"customer":{"id":"c1","firstName":"Ana"}}"""))
+        server.enqueue(MockResponse().setBody("""{"data":[{"id":"c1","firstName":"Otro"}]}"""))
+
+        val tardia = launch(Dispatchers.Default) { repository.fetchCustomers() }
+        server.takeRequest() // ya salió con el dato viejo
+        repository.updateCustomer(Customer(id = "c1", firstName = "Viejo"), UpdateCustomerRequest(firstName = "Ana")).getOrThrow()
+        tardia.join()
+        assertEquals("Ana", repository.clientesGuardados().single().firstName)
+
+        // Una búsqueda que sale DESPUÉS de guardar sí actualiza.
+        repository.fetchCustomers()
+        assertEquals("Otro", repository.clientesGuardados().single().firstName)
+    }
+
+    // Codex r1 #1: el alta salió, se editó el mismo cliente y la respuesta del alta llegó al último.
+    @Test
+    fun `P1 un alta que contesta despues de editar al cliente no regresa el dato viejo`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"customer":{"id":"c1","firstName":"Viejo"}}""").setHeadersDelay(500, TimeUnit.MILLISECONDS))
+        server.enqueue(MockResponse().setBody("""{"customer":{"id":"c1","firstName":"Ana"}}"""))
+
+        val alta = launch(Dispatchers.Default) { repository.createCustomer(CreateCustomerRequest(firstName = "Viejo")) }
+        server.takeRequest()
+        repository.updateCustomer(Customer(id = "c1", firstName = "Viejo"), UpdateCustomerRequest(firstName = "Ana")).getOrThrow()
+        alta.join()
+
+        assertEquals("Ana", repository.clientesGuardados().single().firstName)
+    }
+
+    // Codex r1 #3: con la memoria llena, lo editado entra igual para buscarlo sin red.
+    @Test
+    fun `P1 con la memoria llena el cliente editado entra igual`() = runBlocking {
+        server.enqueue(MockResponse().setBody(lista(*Array(CustomersRepository.TOPE_GUARDADOS) { "c$it" })))
+        repository.fetchCustomers()
+        server.enqueue(MockResponse().setBody("""{"customer":{"id":"fuera","firstName":"Ana"}}"""))
+
+        repository.updateCustomer(Customer(id = "fuera"), UpdateCustomerRequest(firstName = "Ana")).getOrThrow()
+
+        val guardados = repository.clientesGuardados()
+        assertEquals("Ana", guardados.first { it.id == "fuera" }.firstName)
+        assertEquals("sigue el tope: sale el más viejo", CustomersRepository.TOPE_GUARDADOS, guardados.size)
+        assertTrue(guardados.none { it.id == "c0" })
+    }
+
+    @Test
+    fun `los repetidos se traducen por codigo, no por el texto en ingles`() {
+        assertEquals(
+            "Ese teléfono ya es de otro cliente.",
+            repository.errorAlEditar(400, """{"message":"Customer with phone 5512345678 already exists","code":"CUSTOMER_PHONE_TAKEN"}"""),
+        )
+        assertEquals(
+            "Ese correo ya es de otro cliente.",
+            repository.errorAlEditar(400, """{"message":"Customer with email a@b.mx already exists","code":"CUSTOMER_EMAIL_TAKEN"}"""),
+        )
+        assertEquals("No tienes permiso para editar clientes.", repository.errorAlEditar(403, """{"error":"Forbidden"}"""))
+        assertEquals("Este cliente ya no existe en el negocio.", repository.errorAlEditar(404, "{}"))
+        assertEquals("No se pudo guardar el cliente. Intenta de nuevo.", repository.errorAlEditar(500, "<html>"))
+        // Un 400 de validación dice QUÉ dato está mal (el servidor ya lo manda en español).
+        assertEquals(
+            "El correo no es válido",
+            repository.errorAlEditar(400, """{"message":"Error de validación: email: El correo no es válido"}"""),
+        )
     }
 }

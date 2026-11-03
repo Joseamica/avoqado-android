@@ -182,7 +182,7 @@ fun BarcodeScannerView(
                                                 barcodes.firstOrNull()?.rawValue?.let { value ->
                                                     if (!hasScanned) {
                                                         hasScanned = true
-                                                        Log.d("📷", "Barcode scanned: $value")
+                                                        Log.d("📷", "Barcode scanned")
                                                         onBarcodeScanned(value)
                                                     }
                                                 }
@@ -205,7 +205,7 @@ fun BarcodeScannerView(
                                 imageAnalysis,
                             )
                         } catch (e: Exception) {
-                            Log.e("📷", "Camera bind failed: ${e.message}")
+                            Log.e("📷", "Camera bind failed")
                         }
                     }, ContextCompat.getMainExecutor(ctx))
 

@@ -17,6 +17,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -39,6 +40,11 @@ import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.reservations.data.model.displayLabel
 import com.avoqado.pos.reservations.domain.ReservationAction
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.NoticeToast
+import com.avoqado.pos.reservations.presentation.undo.PendingPanel
+import com.avoqado.pos.reservations.presentation.undo.SiLlegoButton
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowOverlays
 import com.avoqado.pos.reservations.presentation.components.ReservationStatusBadge
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,6 +58,8 @@ fun ReservationDetailScreen(
     viewModel: ReservationDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
+    val undoUi by viewModel.undo.ui.collectAsStateWithLifecycle()
     val snack = remember { SnackbarHostState() }
     var successLabel by remember { mutableStateOf<String?>(null) }
 
@@ -109,6 +117,28 @@ fun ReservationDetailScreen(
                     ) {
                         Text(r.displayName, style = MaterialTheme.typography.headlineSmall)
                         ReservationStatusBadge(r.status)
+                        // D4: quedó «Llegó» por una corrección; lo que falte, en ámbar con «Marcar resuelto».
+                        r.noShowCorrection?.let { c -> UndoNoShowTexts.correctedNote(c, c.createdAt?.let { formatter.formatTime(it) }) }?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (state.openPendingTexts.isNotEmpty()) {
+                            PendingPanel(UndoNoShowTexts.BANNER_TITLE, state.openPendingTexts) {
+                                if (state.capability.canUpdate) {
+                                    OutlinedButton(
+                                        onClick = viewModel::resolvePending,
+                                        enabled = isOnline && !state.resolvingPending,
+                                        shape = RoundedCornerShape(50),
+                                    ) {
+                                        if (state.resolvingPending) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        else Text(UndoNoShowTexts.RESOLVE)
+                                    }
+                                    if (!isOnline) Text(UndoNoShowTexts.OFFLINE_RESOLVE, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                        if (state.canUndoNoShow) {
+                            SiLlegoButton(online = isOnline, busy = undoUi.busyId != null, onClick = viewModel::undoNoShow)
+                        }
                         InfoSection("Cita") {
                             InfoRow("Fecha", formatter.formatDate(r.startsAt))
                             InfoRow("Hora", "${formatter.formatTime(r.startsAt)} – ${formatter.formatTime(r.endsAt)}")
@@ -144,6 +174,9 @@ fun ReservationDetailScreen(
     successLabel?.let { label ->
         AvoqadoSuccessToast(message = label, onDismiss = { successLabel = null })
     }
+    state.notice?.let { AvoqadoSuccessToast(message = it, onDismiss = viewModel::consumeNotice) }
+    state.resolveNotice?.let { NoticeToast(it, viewModel::consumeResolveNotice) }
+    UndoNoShowOverlays(viewModel.undo)
 }
 
 private fun successCopy(action: ReservationAction): String = when (action) {

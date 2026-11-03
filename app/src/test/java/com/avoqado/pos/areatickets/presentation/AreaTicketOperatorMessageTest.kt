@@ -39,10 +39,11 @@ class AreaTicketOperatorMessageTest {
     }
 
     @Test
-    fun `el conflicto de llave avisa del vale que pudo quedar creado`() {
+    fun `el conflicto de llave avisa del vale que ya se creo y como salir`() {
+        // D2 (vales-ciclo): el mismo texto que iOS; la llave ya no rota sola.
         val conflicto = AreaTicketException("AREA_TICKET_IDEMPOTENCY_CONFLICT", "La llave de idempotencia ya fue utilizada…", false)
         assertEquals(
-            "Un vale anterior pudo quedar creado sin imprimirse. Revísalo en el dashboard antes de cobrarlo otra vez; ya puedes emitir este de nuevo.",
+            "Este vale ya se creó con otro contenido. Deja el carrito como estaba para recuperarlo, o vacíalo.",
             areaTicketIssueFailureMessage(conflicto, externalArea = false),
         )
     }

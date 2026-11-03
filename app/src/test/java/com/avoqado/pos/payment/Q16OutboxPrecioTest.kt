@@ -38,13 +38,23 @@ class Q16OutboxPrecioTest {
             val cache=mockk<CachedPayloadDao>(relaxed=true)
             coEvery { dao.soltarRetenidos() } answers { booted.complete(Unit); 0 }
             coEvery { dao.pendingFifo(any(),any()) } answers { pending(firstArg(),secondArg()) }
-            coEvery { dao.hayCapturaSinResolverQ16(any()) } answers {
+            coEvery { dao.hayCapturaSinResolverQ16(any()) } coAnswers { callOriginal() }
+            coEvery { dao.referenciasSinResolverQ16(any(),any()) } coAnswers { callOriginal() }
+            coEvery { dao.hayCapturaSinResolverSqlQ16(any()) } answers {
                 (disk.query(Q16_VENUE_CAPTURE_UNRESOLVED_SQL,mapOf("venueId" to firstArg<String>())).single().values.single() as Number).toInt() != 0
             }
-            coEvery { dao.referenciasSinResolverQ16(any(),any()) } answers {
+            coEvery { dao.referenciasSinResolverSqlQ16(any(),any()) } answers {
                 val refs=secondArg<List<String>>()
                 disk.query(Q16_CAPTURED_UNRESOLVED_REFS_SQL.replace(":refs",refs.indices.joinToString(",") { ":r$it" }),
                     mapOf("venueId" to firstArg<String>()) + refs.mapIndexed { i,s -> "r$i" to s }).map { it["capturedOrderRef"] as String }
+            }
+            coEvery { dao.canceladosCandidatosQ16(any(),any()) } answers {
+                disk.query(Q15_CANCELLED_PAGE_SQL,mapOf("venueId" to firstArg<String>(),"cursor" to secondArg<String>())).map(disk::decode)
+            }
+            coEvery { dao.canceladosPorReferenciaQ16(any(),any(),any()) } answers {
+                val refs=secondArg<List<String>>()
+                disk.query("SELECT * FROM pending_payments WHERE venueId=:venueId AND capturedOrderRef IN (${refs.indices.joinToString(",") { ":r$it" }}) AND $Q15_CANCELLED_CANDIDATE_SQL AND id>:cursor ORDER BY id LIMIT 50",
+                    mapOf("venueId" to firstArg<String>(),"cursor" to arg<String>(2)) + refs.mapIndexed { i,s -> "r$i" to s }).map(disk::decode)
             }
             coEvery { dao.resolve(any(),any(),any(),any(),any()) } answers {
                 disk.sql("UPDATE pos_sync_intents SET status=:s WHERE id=:id",mapOf("s" to secondArg<String>(),"id" to firstArg<String>()));Unit

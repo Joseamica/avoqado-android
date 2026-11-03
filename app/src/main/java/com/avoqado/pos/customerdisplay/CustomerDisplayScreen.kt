@@ -1408,20 +1408,7 @@ private fun PhoneEntryPad(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Chip de país + lada, tocable → abre el selector.
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                    .clickable(onClick = onPickCountry)
-                    .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-            ) {
-                Text(text = country.flag, fontSize = 30.sp)
-                Text(text = "+${country.dialCode}", fontSize = 30.sp, fontWeight = FontWeight.Bold)
-                Text(text = "▾", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            CountryChip(country = country, onClick = onPickCountry)
             // Número nacional tecleado.
             Text(
                 text = national.ifBlank { "número" },
@@ -1462,8 +1449,26 @@ private fun PhoneEntryPad(
     }
 }
 
+/** Chip de país + lada, tocable → abre el selector. Lo comparten el recibo por WhatsApp y el teclado del kiosco. */
 @Composable
-private fun CountryPicker(onPick: (Country) -> Unit, onClose: () -> Unit) {
+internal fun CountryChip(country: Country, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick)
+            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Text(text = country.flag, fontSize = 30.sp)
+        Text(text = "+${country.dialCode}", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+        Text(text = "▾", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+internal fun CountryPicker(onPick: (Country) -> Unit, onClose: () -> Unit) {
     // Overlay a pantalla completa con un scrim; la lista se toca con el dedo.
     Box(
         modifier = Modifier

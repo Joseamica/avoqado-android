@@ -55,6 +55,8 @@ fun AvoqadoFullscreenHeader(
     primaryActionDisabledReason: String? = null,
     primaryActionIcon: ImageVector? = null,
     showDivider: Boolean = false,
+    backContentDescription: String = "Regresar",
+    navEnabled: Boolean = true,
 ) {
     val compact = AvoqadoTheme.adaptive.sizeClass == AvoqadoAdaptiveSizeClass.Compact ||
         AvoqadoTheme.adaptive.isAggressiveCompact
@@ -85,8 +87,8 @@ fun AvoqadoFullscreenHeader(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 when (navStyle) {
-                    FullscreenHeaderNav.CLOSE -> CloseButton(onClick = onNav)
-                    FullscreenHeaderNav.BACK -> BackButton(onClick = onNav)
+                    FullscreenHeaderNav.CLOSE -> CloseButton(onClick = onNav, enabled = navEnabled)
+                    FullscreenHeaderNav.BACK -> BackButton(onClick = onNav, enabled = navEnabled, contentDescription = backContentDescription)
                 }
                 Spacer(modifier = Modifier.weight(1f))
 

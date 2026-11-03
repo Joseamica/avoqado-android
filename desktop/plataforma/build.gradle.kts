@@ -26,7 +26,7 @@ dependencies {
     implementation("net.java.dev.jna:jna-platform:5.19.1")   // DPAPI (Crypt32Util) de las preferencias cifradas; la MISMA de :pos
     implementation("org.jmdns:jmdns:3.6.1")   // Hub LAN: anunciar y encontrar los POS del local por mDNS (aprobada por el founder, 3-oct)
     testImplementation(kotlin("test-junit"))
-    testRuntimeOnly("org.jetbrains.compose.desktop:desktop-jvm-macos-arm64:$cmp")
+    testRuntimeOnly("org.jetbrains.compose.desktop:desktop-jvm-${rootProject.extra["skiaDeEstaMaquina"]}:$cmp")   // D3: el de esta máquina
 }
 
 tasks.test {

@@ -37,7 +37,7 @@ object RefundAmountCalculator {
         return totalCents / 100.0
     }
 
-    private fun unitRefundCents(
+    internal fun unitRefundCents(
         totalCents: Int,
         quantity: Int,
         offset: Int,

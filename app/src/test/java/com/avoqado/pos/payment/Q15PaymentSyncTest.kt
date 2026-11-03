@@ -34,7 +34,7 @@ class Q15PaymentSyncTest {
         val drawer=mockk<CashDrawerRepository>(relaxed=true)
         coEvery { drawer.sincronizarCajonPrimero() } returns true
         every { dao.getPendingCount() } returns flowOf(0); every { dao.getFailedCount() } returns flowOf(0)
-        return PaymentSyncService(dao,storage,client,red,drawer,outbox).also { it.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler)) }
+        return PaymentSyncService(dao,storage,client,red,drawer,outbox,io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true)).also { it.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler)) }
     }
     private fun captured() = PendingPaymentEntity("p1","FULLTEST-A","staff",10005,500,"CASH","ORDER",orderId="o1",
         q15CaptureJson=ConciliacionDelCobro.guardarCaptura(CapturaDelCobro("FULLTEST-A","p1","o1",10005,500)),capturedOrderRef="o1")

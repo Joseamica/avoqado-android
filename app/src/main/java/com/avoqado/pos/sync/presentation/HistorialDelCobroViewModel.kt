@@ -133,6 +133,7 @@ class HistorialDelCobroViewModel @Inject constructor(
         tenderTypeId?.takeIf { method!=null }?.let { "tipo de pago personalizado" },
     ).joinToString(" · ")
     fun motivo(row:RevisionDelCobroRecord)=when(row.q15Reason) {
+        com.avoqado.pos.core.data.local.database.RevisionCanceladoCero.MOTIVO -> com.avoqado.pos.core.data.local.database.RevisionCanceladoCero.AVISO
         ConciliacionDelCobro.DIFERENCIA->"El registro del pago cambió al sincronizar."
         ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA->"Falta la evidencia original de este pago."
         ConciliacionDelCobro.PRICE_PROOF_PENDING->"El pago espera comprobar el precio original."

@@ -138,7 +138,7 @@ class Q16VentaSinRedTest {
     /** El proceso muere y la app vuelve a abrir: servicio nuevo sobre el MISMO disco; el backoff ya pasó. */
     private suspend fun Q16PrecioCapturadoTest.Fixture.reiniciar(anterior: PaymentSyncService): PaymentSyncService {
         anterior.stop(); reopen(); sql("UPDATE pending_payments SET lastRetryAt=0")
-        return PaymentSyncService(dao, storage, client, network, drawer, outbox).also {
+        return PaymentSyncService(dao, storage, client, network, drawer, outbox, io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true)).also {
             it.usarContextoDeSincronizacion(Dispatchers.Unconfined); it.primera()
         }
     }

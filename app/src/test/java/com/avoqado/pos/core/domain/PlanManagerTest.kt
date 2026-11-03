@@ -30,6 +30,12 @@ class PlanManagerTest {
         assertFalse(planManager.hasFeature("OFFLINE_LAN_HUB"))
     }
 
+    @Test fun `GIFT_CARDS is PRO`() {
+        stubPlan("FREE"); assertFalse(planManager.hasFeature("GIFT_CARDS"))
+        stubPlan("PRO"); assertTrue(planManager.hasFeature("GIFT_CARDS"))
+        assertEquals("Pro", planManager.requiredTierLabel("GIFT_CARDS"))
+    }
+
     // MARK: - Fail-open (THE LAW: a gating bug must never brick a POS)
 
     @Test
@@ -260,6 +266,12 @@ class PlanManagerTest {
         stubPlan(tier = "PRO")
         assertTrue(planManager.hasFeature("KITCHEN_DISPLAY"))
         assertEquals("Pro", planManager.requiredTierLabel("KITCHEN_DISPLAY"))
+    }
+
+    @Test
+    fun `DEVICE_MENUS is PRO in the mirror`() {
+        assertEquals(PlanTier.PRO, PlanManager.FEATURE_REQUIRED_TIER["DEVICE_MENUS"])
+        assertEquals("Pro", planManager.requiredTierLabel("DEVICE_MENUS"))
     }
 
     /**

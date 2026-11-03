@@ -176,12 +176,26 @@ open class ManagerOverrideCoordinator @Inject constructor(
     @Synchronized
     private fun peekPreauthorized(permission: String): String? = vigente(preauthorized, permission)?.token
 
+    /**
+     * Tira el token adelantado de [permission] sin usarlo. Lo llama quien lo pidió cuando la acción se abandona
+     * (cerrar «Editar cliente»): si no, durante sus 45 s autorizaría otra acción igual sin que nadie tecleara el PIN.
+     */
+    @Synchronized
+    open fun descartarPreautorizado(permission: String) {
+        if (preauthorized?.permission == permission) preauthorized = null
+    }
+
     /** Un solo uso también de este lado: al entregarlo, se borra. */
     @Synchronized
     private fun takePreauthorized(permission: String): String? {
         val vivo = vigente(preauthorized, permission) ?: return null
         preauthorized = null
         return vivo.token
+    }
+
+    @Synchronized
+    open fun discardPreauthorized(permission: String) {
+        if (preauthorized?.permission == permission) preauthorized = null
     }
 
     /** La UI llama esto al teclear el código. Sólo `Granted` cierra el diálogo. */

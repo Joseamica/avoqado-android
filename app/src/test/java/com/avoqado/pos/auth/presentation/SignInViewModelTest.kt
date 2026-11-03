@@ -7,10 +7,13 @@ import com.avoqado.pos.auth.data.BiometricAuthManager
 import com.avoqado.pos.auth.data.model.LoginResult
 import com.avoqado.pos.core.data.local.SecureStorage
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -78,9 +81,8 @@ class SignInViewModelTest {
         every { secureStorage.biometricRefreshToken } returns "refresh-1"
         every { secureStorage.biometricUserEmail } returns "cajera@avoqado.io"
         every { secureStorage.biometricVenuesList } returns emptyList()
-        every { secureStorage.restoreBiometricSession(any()) } returns true
         coEvery { biometricAuthManager.authenticate(any()) } returns true
-        coEvery { authRepository.refreshTokensForBiometric("refresh-1") } returns ("access-2" to "refresh-2")
+        coEvery { authRepository.entrarConHuella("refresh-1", any(), any()) } returns true
         val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
 
         var entro = false
@@ -90,5 +92,60 @@ class SignInViewModelTest {
         val alVolver = viewModel.uiState.value
         assertFalse("la ruedita no debe seguir girando", alVolver.isLoading)
         assertTrue("la huella sigue disponible para la siguiente entrada", alVolver.canUseBiometric)
+    }
+
+    @Test
+    fun `D4 H2-d una huella cuya respuesta llega despues de que entro otra persona no entra ni borra la huella`() {
+        every { secureStorage.isBiometricLoginEnabled } returns true
+        every { secureStorage.biometricRefreshToken } returns "refresh-1"
+        every { secureStorage.biometricVenuesList } returns emptyList()
+        coEvery { biometricAuthManager.authenticate(any()) } returns true
+        coEvery { authRepository.entrarConHuella("refresh-1", any(), any()) } returns false // ya entró otra persona
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+
+        var entro = false
+        viewModel.loginWithBiometric(mockk<FragmentActivity>(relaxed = true)) { entro = true }
+
+        assertFalse("no navega como si hubiera entrado", entro)
+        assertEquals(AuthRepository.OTRA_PERSONA_ENTRO, viewModel.uiState.value.errorMessage)
+        verify(exactly = 0) { secureStorage.clearBiometricCredentials() }
+        verify(exactly = 0) { secureStorage.clearBiometricCredentialsSiSigue(any()) }
+    }
+
+    // «¿Olvidaste tu contraseña?» no hacía nada en ANDROID (1-nov-2026). Mismo texto que iOS (LandingView.requestPasswordReset).
+    @Test
+    fun `olvide mi contraseña pide el enlace y avisa como iOS sin decir si la cuenta existe`() {
+        coEvery { authRepository.pedirRestablecerContrasena("cajera@avoqado.io") } returns true
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+
+        viewModel.onEmailChange("cajera@avoqado.io")
+        viewModel.goToPassword()
+        viewModel.pedirEnlaceDeContrasena()
+
+        coVerify(exactly = 1) { authRepository.pedirRestablecerContrasena("cajera@avoqado.io") }
+        val estado = viewModel.uiState.value
+        assertEquals(
+            "Si existe una cuenta con cajera@avoqado.io, recibirás un enlace para restablecer tu contraseña.",
+            estado.avisoContrasena,
+        )
+        assertFalse("la ruedita del enlace ya terminó", estado.pidiendoEnlace)
+        assertNull(estado.errorMessage)
+
+        viewModel.cerrarAvisoContrasena()
+        assertNull(viewModel.uiState.value.avisoContrasena)
+    }
+
+    @Test
+    fun `olvide mi contraseña sin red no promete un correo`() {
+        coEvery { authRepository.pedirRestablecerContrasena(any()) } returns false
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+
+        viewModel.onEmailChange("cajera@avoqado.io")
+        viewModel.goToPassword()
+        viewModel.pedirEnlaceDeContrasena()
+
+        val estado = viewModel.uiState.value
+        assertNull("sin red no se dice que llegará un correo", estado.avisoContrasena)
+        assertEquals(SignInViewModel.SIN_RED_PARA_EL_ENLACE, estado.errorMessage)
     }
 }

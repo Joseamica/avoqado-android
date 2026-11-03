@@ -35,7 +35,10 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 @Composable
 fun CartCreditsCard(
     customerId: String,
-    viewModel: CustomerCreditsViewModel = hiltViewModel(),
+    // 🔴 Un ViewModel POR cliente: con uno compartido, al cambiar o quitar y elegir a otro, la tarjeta enseñaba (y
+    // dejaba canjear) los créditos del anterior mientras cargaban los del nuevo, y una respuesta tardía del anterior
+    // los volvía a escribir (Codex, cliente en cobrar r3 #2).
+    viewModel: CustomerCreditsViewModel = hiltViewModel(key = "creditos-del-carrito-$customerId"),
 ) {
     val balances by viewModel.balances.collectAsStateWithLifecycle()
     val busyId by viewModel.busyBalanceId.collectAsStateWithLifecycle()

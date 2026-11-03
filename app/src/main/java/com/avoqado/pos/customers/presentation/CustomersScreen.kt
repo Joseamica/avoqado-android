@@ -1,7 +1,6 @@
 package com.avoqado.pos.customers.presentation
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
@@ -37,6 +37,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -58,7 +59,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import java.util.Locale
@@ -88,6 +93,20 @@ fun CustomersScreen(
 
     LaunchedEffect(Unit) {
         viewModel.abrirLista()
+    }
+
+    // Quien no puede editar y el PIN de gerente está apagado: por qué no y qué hacer (nunca un botón que no hace nada).
+    val avisoSinPermiso by viewModel.avisoSinPermiso.collectAsState()
+    avisoSinPermiso?.let { aviso ->
+        AvoqadoDialog(
+            title = "No puedes editar clientes",
+            onDismiss = viewModel::cerrarAvisoSinPermiso,
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = viewModel::cerrarAvisoSinPermiso, fullWidth = true)
+            },
+        ) {
+            Text(text = aviso, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 
     if (isTablet) {
@@ -124,6 +143,25 @@ private fun TabletCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
+    val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
+    var clienteActualizado by remember { mutableStateOf(false) }
+
+    // Edit Customer overlay
+    clienteEnEdicion?.let { cliente ->
+        EditCustomerView(
+            viewModel = viewModel,
+            cliente = cliente,
+            onGuardado = { actualizado ->
+                selectedCustomer = actualizado
+                clienteActualizado = true
+            },
+            onBack = viewModel::cerrarEdicion,
+        )
+        return
+    }
+    if (clienteActualizado) AvoqadoSuccessToast(message = "¡Cliente actualizado!", onDismiss = { clienteActualizado = false })
 
     // Create Customer overlay
     if (showCreateCustomer) {
@@ -136,6 +174,8 @@ private fun TabletCustomersLayout(
                 selectedCustomer = customer
             },
             onBack = { showCreateCustomer = false },
+            alta = altaDelFormulario,
+            onAlta = { altaDelFormulario = it },
         )
         return
     }
@@ -189,6 +229,7 @@ private fun TabletCustomersLayout(
                                 text = { Text("Crear cliente") },
                                 onClick = {
                                     showMenu = false
+                                    altaDelFormulario = null
                                     showCreateCustomer = true
                                 },
                             )
@@ -208,19 +249,15 @@ private fun TabletCustomersLayout(
                 }
             }
 
-            // Search bar (outlined style)
+            // Search bar: relleno gris, igual que Pedidos (`OrderSearchBar`). Era el único buscador con contorno (revisión
+            // visual del 30-oct, en iOS y aquí).
             TextField(
                 value = searchText,
                 onValueChange = { onSearchTextChange(it) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AvoqadoTheme.spacing.lg)
-                    .padding(bottom = AvoqadoTheme.spacing.md)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(25.dp),
-                    ),
+                    .padding(bottom = AvoqadoTheme.spacing.md),
                 placeholder = { Text("Buscar") },
                 leadingIcon = {
                     Icon(
@@ -240,10 +277,10 @@ private fun TabletCustomersLayout(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(25.dp),
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,
                 ),
@@ -338,6 +375,7 @@ private fun TabletCustomersLayout(
             if (selectedCustomer != null) {
                 CustomerDetailPanel(
                     customer = selectedCustomer!!,
+                    onEditar = { viewModel.onEditarTocado(selectedCustomer!!) },
                 )
             } else {
                 CustomerEmptyState()
@@ -363,6 +401,25 @@ private fun PhoneCustomersLayout(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
+    // El alta que pidió el formulario abierto: misma persistencia que su bandera, y se borra al abrir otro (Codex apps r5).
+    var altaDelFormulario by remember { mutableStateOf<Long?>(null) }
+    val clienteEnEdicion by viewModel.clienteEnEdicion.collectAsState()
+    var clienteActualizado by remember { mutableStateOf(false) }
+
+    // Edit Customer overlay
+    clienteEnEdicion?.let { cliente ->
+        EditCustomerView(
+            viewModel = viewModel,
+            cliente = cliente,
+            onGuardado = { actualizado ->
+                selectedCustomer = actualizado
+                clienteActualizado = true
+            },
+            onBack = viewModel::cerrarEdicion,
+        )
+        return
+    }
+    if (clienteActualizado) AvoqadoSuccessToast(message = "¡Cliente actualizado!", onDismiss = { clienteActualizado = false })
 
     // Create Customer overlay
     if (showCreateCustomer) {
@@ -375,6 +432,8 @@ private fun PhoneCustomersLayout(
                 selectedCustomer = customer
             },
             onBack = { showCreateCustomer = false },
+            alta = altaDelFormulario,
+            onAlta = { altaDelFormulario = it },
         )
         return
     }
@@ -407,6 +466,7 @@ private fun PhoneCustomersLayout(
 
             CustomerDetailPanel(
                 customer = selectedCustomer!!,
+                onEditar = { viewModel.onEditarTocado(selectedCustomer!!) },
             )
         }
         return
@@ -457,6 +517,7 @@ private fun PhoneCustomersLayout(
                         DropdownMenuItem(
                             text = { Text("Crear cliente") },
                             onClick = {
+                                altaDelFormulario = null
                                 showMenu = false
                                 showCreateCustomer = true
                             },
@@ -466,19 +527,14 @@ private fun PhoneCustomersLayout(
             }
         }
 
-        // Search bar
+        // Search bar: relleno gris, igual que en tableta y que Pedidos (Codex r1 #4: el teléfono seguía con contorno).
         TextField(
             value = searchText,
             onValueChange = { onSearchTextChange(it) },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AvoqadoTheme.spacing.lg)
-                .padding(bottom = AvoqadoTheme.spacing.md)
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    shape = RoundedCornerShape(25.dp),
-                ),
+                .padding(bottom = AvoqadoTheme.spacing.md),
             placeholder = { Text("Buscar") },
             leadingIcon = {
                 Icon(
@@ -498,10 +554,10 @@ private fun PhoneCustomersLayout(
                 }
             },
             singleLine = true,
-            shape = RoundedCornerShape(25.dp),
+            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.Transparent,
-                unfocusedContainerColor = Color.Transparent,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                 focusedIndicatorColor = Color.Transparent,
                 unfocusedIndicatorColor = Color.Transparent,
             ),
@@ -653,6 +709,7 @@ private fun CustomerListRow(
 @Composable
 private fun CustomerDetailPanel(
     customer: Customer,
+    onEditar: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -698,6 +755,13 @@ private fun CustomerDetailPanel(
                     )
                 }
             }
+
+            // Siempre visible (founder, 26-oct): quien no es gerente+ teclea el PIN de un gerente al tocarlo.
+            OutlinedButton(onClick = onEditar, shape = RoundedCornerShape(50)) {
+                Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+                Text("Editar", style = MaterialTheme.typography.labelLarge)
+            }
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -735,6 +799,20 @@ private fun CustomerDetailPanel(
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        // Saldo a favor (A4): sólo si el cliente tiene sobre; sin él no se pinta nada, ni «$0.00».
+        lineaSaldoAFavorDeLaFicha(customer)?.let { linea ->
+            // O-4 (A5): el renglón ya dice «Saldo a favor: $X»; sin título encima que lo repita.
+            DetailSectionCard(title = null) {
+                Text(
+                    text = linea,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
+                )
+            }
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        }
 
         // Activity section
         DetailSectionCard(title = "Actividad") {
@@ -776,6 +854,9 @@ private fun CustomerDetailPanel(
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        // Tarjeta de sellos (ajuste a mano; online-only)
+        CustomerStampsSection(customerId = customer.id)
 
         // Prepaid credit packs / memberships (sell in person + redeem)
         CustomerCreditsSection(customer = customer)
@@ -822,10 +903,10 @@ private fun CustomerEmptyState() {
 
 @Composable
 private fun DetailSectionCard(
-    title: String,
+    title: String?,
     content: @Composable () -> Unit,
 ) {
-    Text(
+    if (title != null) Text(
         text = title,
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,

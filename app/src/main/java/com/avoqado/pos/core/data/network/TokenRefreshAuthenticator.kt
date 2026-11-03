@@ -53,6 +53,10 @@ class TokenRefreshAuthenticator @Inject constructor(
     @Volatile
     private var lastRefreshOutcome: RefreshOutcome? = null
 
+    /** El sello de la petición cuyo refresco dejó [lastRefreshOutcome] (D4). Un seguidor de otra sesión no lo reusa. */
+    @Volatile
+    private var selloDelUltimoRefresco: Long? = null
+
     /**
      * Cliente y base URL PROPIOS del refresco, deliberadamente separados del
      * OkHttpClient que arma NetworkModule — ese cliente necesita a este
@@ -130,6 +134,10 @@ class TokenRefreshAuthenticator @Inject constructor(
          *  token ya no sirve. El ÚNICO caso (junto con no tener refresh
          *  token guardado) que cierra sesión. */
         data class Rejected(val httpCode: Int) : RefreshOutcome()
+
+        /** La renovación salió bien, pero mientras viajaba la sesión cambió (otra persona entró con su PIN, o se
+         *  cerró): sus llaves no se guardan ni se reenvía nada con ellas (Codex, D9 del Cambio, 29-oct). */
+        object SesionCambiada : RefreshOutcome()
     }
 
     /**
@@ -190,8 +198,20 @@ class TokenRefreshAuthenticator @Inject constructor(
             // 401. Un fallo de RED nunca produce un reintento, así que esta
             // rama sólo se alcanza con una respuesta HTTP real del servidor:
             // es rechazo de negocio de verdad.
-            Log.e("🔐", "Token refresh failed - logging out")
-            secureStorage.clearSession()
+            // Sólo si la sesión sigue con el access con que salió: si mientras tanto entró otra persona, no se la expulsa.
+            val accessUsado = response.request.header("Authorization")?.removePrefix("Bearer ")
+            if (secureStorage.clearSessionSiSigueElAccess(accessUsado)) Log.e("🔐", "Token refresh failed - logging out")
+            else Log.w("🔐", "401 tras renovar, pero la sesión ya es otra: no se cierra")
+            return null
+        }
+
+        // 🔴 D4 (29-oct): la petición salió con la sesión de [sello]. Si mientras viajaba entró o salió alguien, su 401
+        // es de una sesión que ya no está: no se renueva la de quien está ahora ni se le reenvía lo de otra persona. El
+        // 401 llega a quien la mandó, que lo trata como siempre (pausa, aviso), sin cerrar la sesión de nadie. Sin sello
+        // (no pasó por `AuthInterceptor`; en la app no pasa) se queda como antes.
+        val sello = response.request.sello
+        if (sello != null && !secureStorage.siSigueLaGeneracion(sello)) {
+            Log.w("🔐", "401 de una sesión que ya no está: no se renueva ni se reenvía")
             return null
         }
 
@@ -215,7 +235,10 @@ class TokenRefreshAuthenticator @Inject constructor(
                 if (delLider is RefreshOutcome.NetworkFailure || delLider is RefreshOutcome.TransientServerFailure) {
                     fallarSinRed(response, delLider, reportar = false)
                 }
-                return if (noReenviar(response)) null else buildRetry(response, delLider)
+                // D4 (Codex código r1 #5): el resultado del líder es de SU sesión. Si este seguidor salió con otra (entró B
+                // mientras se renovaba A), no lo hereda: reenviar con el access vencido de B terminaba borrando a B.
+                if (sello != null && selloDelUltimoRefresco != sello) return null
+                return if (noReenviar(response)) null else buildRetry(response, delLider, sello)
             }
             // 🔴 Ráfaga (QA en la D3, 16-oct): al reabrir con el servidor caído, cada petición del arranque
             // disparaba su propio refresco en cuanto el anterior fallaba — 17 en 4 s. Si el último falló por
@@ -238,19 +261,36 @@ class TokenRefreshAuthenticator @Inject constructor(
             // justo el doble refresco que este candado existe para evitar.
             val outcome = refrescoExclusivo.enExclusiva {
                 val refreshToken = secureStorage.refreshToken
-                if (refreshToken == null) {
+                if (sello != null && !secureStorage.siSigueLaGeneracion(sello)) {
+                    // Entró o salió alguien mientras esta petición esperaba turno: el refresh guardado ya es de otra
+                    // sesión, y renovarla por un 401 ajeno no le toca (Codex plan r1 #3, mismo caso en ANDROID).
+                    RefreshOutcome.SesionCambiada
+                } else if (refreshToken == null) {
                     // Sin refresh token no hay nada que intentar: no es un fallo
-                    // de red, es una sesión que ya no existe localmente.
-                    RefreshOutcome.Rejected(httpCode = 0)
+                    // de red, es una sesión que ya no existe localmente. Si además ya no hay nadie adentro (una
+                    // consulta que salió después del cierre), no hay nada que cerrar otra vez (D4, iPhone 30-oct).
+                    if (secureStorage.userId == null) RefreshOutcome.SesionCambiada
+                    else if (secureStorage.clearSessionSiSigue(null)) RefreshOutcome.Rejected(httpCode = 0)
+                    else RefreshOutcome.SesionCambiada
                 } else {
-                    refreshTokens(refreshToken)
+                    // Se guarda aquí, comparando con la llave que se mandó: si la sesión ya es otra, no se pisa.
+                    when (val r = refreshTokens(refreshToken)) {
+                        is RefreshOutcome.Success ->
+                            if (secureStorage.updateTokensSiSigue(refreshToken, r.accessToken, r.refreshToken)) r
+                            else RefreshOutcome.SesionCambiada
+                        // El rechazo cierra sólo la sesión que se renovó: uno tardío no expulsa a quien entró después.
+                        is RefreshOutcome.Rejected ->
+                            if (secureStorage.clearSessionSiSigue(refreshToken)) r else RefreshOutcome.SesionCambiada
+                        else -> r
+                    }
                 }
             }
+            selloDelUltimoRefresco = sello
             lastRefreshOutcome = outcome
             if (outcome is RefreshOutcome.NetworkFailure || outcome is RefreshOutcome.TransientServerFailure) {
                 ultimoFalloMs = reloj()
             }
-            return applyOutcome(response, outcome)
+            return applyOutcome(response, outcome, sello)
         } finally {
             synchronized(refreshLock) {
                 isRefreshing = false
@@ -259,15 +299,11 @@ class TokenRefreshAuthenticator @Inject constructor(
         }
     }
 
-    private fun applyOutcome(response: Response, outcome: RefreshOutcome): Request? {
+    private fun applyOutcome(response: Response, outcome: RefreshOutcome, sello: Long?): Request? {
         return when (outcome) {
             is RefreshOutcome.Success -> {
-                secureStorage.updateTokens(
-                    accessToken = outcome.accessToken,
-                    refreshToken = outcome.refreshToken,
-                )
                 Log.d("🔐", "Token refreshed successfully")
-                if (noReenviar(response)) null else buildRetry(response, outcome)
+                if (noReenviar(response)) null else buildRetry(response, outcome, sello)
             }
             is RefreshOutcome.NetworkFailure -> {
                 // offline-first-y-hub-lan.md §2.3: un fallo de RED se
@@ -286,14 +322,18 @@ class TokenRefreshAuthenticator @Inject constructor(
                 Log.e("🔐", "Token refresh failed: error transitorio del servidor (${outcome.httpCode}) - la sesion sigue viva")
                 fallarSinRed(response, outcome, reportar = true)
             }
+            RefreshOutcome.SesionCambiada -> {
+                Log.w("🔐", "La sesión cambió mientras se renovaba: no se guarda ni se reenvía")
+                null
+            }
             is RefreshOutcome.Rejected -> {
                 // El servidor respondió 401/403: dijo explícitamente que el
                 // refresh token ya no sirve (vencido de verdad, o
                 // reutilización detectada y la familia entera fue
                 // revocada), o no había refresh token guardado. Eso SÍ es
                 // logout real.
+                // La sesión ya se cerró al decidir (bajo el candado de SecureStorage, sólo si era la renovada).
                 Log.e("🔐", "Token refresh rejected by server (${outcome.httpCode}) - logging out")
-                secureStorage.clearSession()
                 null
             }
         }
@@ -327,10 +367,15 @@ class TokenRefreshAuthenticator @Inject constructor(
     private fun noReenviar(response: Response): Boolean =
         response.request.header(NO_AUTO_RETRY_HEADER) != null
 
-    private fun buildRetry(response: Response, outcome: RefreshOutcome?): Request? {
+    /**
+     * El reenvío sale con el access de SU sesión, leído al armarlo: si entre guardar la renovación y reenviar entró
+     * otra persona, no se reenvía (D4). Sin sello, con el del refresco, como antes.
+     */
+    private fun buildRetry(response: Response, outcome: RefreshOutcome?, sello: Long?): Request? {
         val success = outcome as? RefreshOutcome.Success ?: return null
+        val access = if (sello == null) success.accessToken else secureStorage.accessSiSigue(sello) ?: return null
         return response.request.newBuilder()
-            .header("Authorization", "Bearer ${success.accessToken}")
+            .header("Authorization", "Bearer $access")
             .header("X-Retry-After-Refresh", "true")
             .build()
     }

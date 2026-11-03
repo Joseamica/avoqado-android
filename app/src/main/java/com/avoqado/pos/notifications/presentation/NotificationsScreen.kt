@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
@@ -42,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,10 +58,12 @@ import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.announcements.presentation.AnnouncementDialog
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.core.data.local.StoredVenue
 import com.avoqado.pos.notifications.data.model.AppNotification
 import com.avoqado.pos.notifications.data.model.NotificationCategory
 import com.avoqado.pos.notifications.data.model.NotificationTab
 import com.avoqado.pos.notifications.data.model.NotificationType
+import kotlinx.coroutines.launch
 
 @Composable
 fun NotificationsScreen(
@@ -72,6 +77,30 @@ fun NotificationsScreen(
      * ninguna parte enseña a no tocarla, y entonces el aviso deja de servir.
      */
     onOpenTab: (MainTab) -> Unit = {},
+    /** «Ver reserva» (`reservations/<id>`): el detalle de ESA reserva, donde está «Marcar resuelto». */
+    onOpenReservation: (String) -> Unit = {},
+) {
+    // «Ver reserva» de otra sucursal sale como aviso pasajero en el Snackbar de la pantalla, no en un Toast (en la Sunmi
+    // con pantalla de cliente no se ve). Uno a la vez: tocar dos avisos seguidos no los encola.
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    Box(Modifier.fillMaxSize()) {
+        NotificationsContent(viewModel, onOpenTab, onOpenReservation) { texto ->
+            scope.launch {
+                snackbar.currentSnackbarData?.dismiss()
+                snackbar.showSnackbar(texto)
+            }
+        }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+@Composable
+private fun NotificationsContent(
+    viewModel: NotificationsViewModel,
+    onOpenTab: (MainTab) -> Unit,
+    onOpenReservation: (String) -> Unit,
+    onAvisoPasajero: (String) -> Unit,
 ) {
     val notifications by viewModel.notifications.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -218,7 +247,12 @@ fun NotificationsScreen(
                                 ) {
                                     anuncioAbierto = notification.entityId
                                 } else {
-                                    destinoDe(notification.actionUrl)?.let(onOpenTab)
+                                    when (val destino = viewModel.destinoDe(notification)) {
+                                        is DestinoDelAviso.Pestana -> onOpenTab(destino.tab)
+                                        is DestinoDelAviso.Reserva -> onOpenReservation(destino.id)
+                                        is DestinoDelAviso.OtraSucursal -> onAvisoPasajero(destino.mensaje)
+                                        null -> Unit
+                                    }
                                 }
                             },
                         )
@@ -336,21 +370,52 @@ private fun NotificationType.toIcon(): ImageVector = when (this) {
     NotificationType.GENERAL -> Icons.Filled.Notifications
 }
 
+/** A dónde lleva un aviso: una pestaña, el detalle de UNA reserva, o (si la reserva es de otra sucursal) sólo un aviso. */
+internal sealed interface DestinoDelAviso {
+    data class Pestana(val tab: MainTab) : DestinoDelAviso
+    data class Reserva(val id: String) : DestinoDelAviso
+    data class OtraSucursal(val mensaje: String) : DestinoDelAviso
+}
+
 /**
- * Traduce el `actionUrl` del aviso a una pestaña de la app.
+ * El destino del aviso, sabiendo de qué sucursal es. La campanita junta los de TODAS las sucursales del usuario, pero el
+ * detalle de la reserva es de la ACTIVA («Sí llegó», check-in, cancelar y reprogramar van contra ella): una reserva de otra
+ * no se abre (daría 404) y se dice a cuál cambiarse, con el nombre del selector de sucursal si lo hay. Sin sucursal en el
+ * aviso, o con la activa, abre como siempre; las demás rutas no cambian. Mismo texto en iOS.
+ */
+internal fun decidirDestino(aviso: AppNotification, sucursalActiva: String?, sucursales: List<StoredVenue>): DestinoDelAviso? {
+    val destino = destinoDe(aviso.actionUrl)
+    val suya = aviso.venueId?.takeIf { it.isNotBlank() }
+    if (destino !is DestinoDelAviso.Reserva || suya == null || suya == sucursalActiva) return destino
+    val nombre = sucursales.firstOrNull { it.id == suya }?.name?.trim()?.takeIf { it.isNotEmpty() } ?: "esa sucursal"
+    return DestinoDelAviso.OtraSucursal("Este aviso es de otra sucursal: cámbiate a $nombre para abrir la reserva.")
+}
+
+/** Las subrutas fijas de `reservations/` en el DASHBOARD (`venueRoutes.tsx`): todo lo demás ahí es `:reservationId`. */
+private val SUBRUTAS_DE_RESERVAS = setOf("calendar", "waitlist", "passes", "settings", "online-booking", "branding")
+
+/**
+ * Traduce el `actionUrl` del aviso a un destino de la app.
  *
  * Las rutas vienen en formato del dashboard web ("/inventory/raw-materials?…"),
  * así que se mapea por el PRIMER segmento: es lo único estable entre las dos
  * superficies. Un destino desconocido devuelve null y la fila sólo se marca
  * como leída, en vez de llevar a un sitio equivocado.
+ *
+ * Las de reservas llegan también SIN «/» («reservations/<id>», como el SERVIDOR las arma para el DASHBOARD): con id abren
+ * el detalle de esa reserva; sin id, o con una subruta del DASHBOARD, la pestaña Calendario. Las demás, sólo con «/».
  */
-private fun destinoDe(actionUrl: String?): MainTab? {
-    val ruta = actionUrl?.trim()?.takeIf { it.startsWith("/") } ?: return null
-    return when (ruta.removePrefix("/").substringBefore('/').substringBefore('?')) {
-        "inventory" -> MainTab.INVENTORY
-        "orders", "payments", "transactions" -> MainTab.TRANSACTIONS
-        "tables" -> MainTab.TABLES
-        "reservations", "calendar" -> MainTab.CALENDAR
+internal fun destinoDe(actionUrl: String?): DestinoDelAviso? {
+    val url = actionUrl?.trim() ?: return null
+    val segmentos = url.removePrefix("/").substringBefore('?').split('/')
+    if (!url.startsWith("/") && segmentos.first() != "reservations") return null
+    return when (segmentos.first()) {
+        "inventory" -> DestinoDelAviso.Pestana(MainTab.INVENTORY)
+        "orders", "payments", "transactions" -> DestinoDelAviso.Pestana(MainTab.TRANSACTIONS)
+        "tables" -> DestinoDelAviso.Pestana(MainTab.TABLES)
+        "reservations" -> segmentos.getOrNull(1)?.takeIf { it.isNotBlank() && it !in SUBRUTAS_DE_RESERVAS }
+            ?.let { DestinoDelAviso.Reserva(it) } ?: DestinoDelAviso.Pestana(MainTab.CALENDAR)
+        "calendar" -> DestinoDelAviso.Pestana(MainTab.CALENDAR)
         else -> null
     }
 }

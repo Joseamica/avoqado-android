@@ -17,6 +17,15 @@ private const val TAG = "TableServiceRepository"
  * que llega tarde la reabre (avoqado-server `estadoAlRecibirDinero`, `services/shared/orderBalance.ts`; Codex r7).
  */
 private const val CUENTA_COBRADA = "COMPLETED"
+private val CUENTA_ANULADA = setOf("CANCELLED", "DELETED")
+
+/**
+ * ¿Cerrada para siempre a ojos del plano? Cobrada no se reabre (otro cobro es venta nueva). Anulada o borrada SÍ se reabre si
+ * le llega un abono ya cobrado (Codex r7): en una mesa activa volvería a salir en /tables, en una archivada no, y ahí se
+ * conserva. Sin esto, la mesa abierta sin red y anulada quedaba ocupada para siempre (Codex r2 de la iOS 1.15.5).
+ */
+internal fun cerradaParaElPlano(estado: String?, mesaActiva: Boolean): Boolean =
+    estado == CUENTA_COBRADA || (estado in CUENTA_ANULADA && mesaActiva)
 
 /**
  * TABLE_SERVICE (PRO) — floor-plan state + table lifecycle for the restaurant
@@ -205,12 +214,12 @@ class TableServiceRepository @Inject constructor(
     } catch (_: Exception) { false }
 
     /**
-     * El servidor dice que la cuenta real ya está COBRADA (no se reabre). Que falte en /tables no lo prueba: una mesa
-     * archivada no viene, ni una cuenta movida a ella (Codex r5 #2, r6). Sin respuesta, retiene.
+     * Estado de la cuenta real en el servidor ([cerradaParaElPlano] decide). Que falte en /tables no prueba que se cerró: una
+     * mesa archivada no viene, ni una cuenta movida a ella (Codex r5 #2, r6). Sin respuesta, null (retiene).
      */
-    private suspend fun cerradaEnServidor(venueId: String, checkId: String): Boolean = try {
-        apiService.getOrderDetailEnSegundoPlano(venueId, draftStore.loadResolved(venueId, checkId).first).order?.status == CUENTA_COBRADA
-    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { false }
+    private suspend fun estadoEnServidor(venueId: String, checkId: String): String? = try {
+        apiService.getOrderDetailEnSegundoPlano(venueId, draftStore.loadResolved(venueId, checkId).first).order?.status
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
 
     /** Provisionales que ya no retenían nada ANTES del GET: sólo a éstas las puede soltar su respuesta (una respuesta vieja no). */
     private suspend fun sueltasAntesDelGet(venueId: String): Set<String> =
@@ -253,7 +262,11 @@ class TableServiceRepository @Inject constructor(
         try {
             val response = apiService.getTables(venueId)
             // Fuera del candado del plano: es una consulta de red por cuenta suelta (casi siempre ninguna).
-            val cerradas = sueltas.filterTo(mutableSetOf()) { cerradaEnServidor(venueId, it) }
+            val mesasActivas = response.data.map { it.id }.toSet()
+            val mesaDe = (cachedFloor(venueId)?.tables ?: _tables.value).flatMap { t -> t.openOrders.map { it.id to t.id } }.toMap()
+            val cerradas = sueltas.filterTo(mutableSetOf()) {
+                cerradaParaElPlano(estadoEnServidor(venueId, it), mesaActiva = mesaDe[it]?.let { mesa -> mesa in mesasActivas } == true)
+            }
             floorWrites.withLock {
                 check(loadedVenueId == venueId) { "La sucursal cambió" }
                 val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value, cerradas)
@@ -364,8 +377,8 @@ class TableServiceRepository @Inject constructor(
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
     /** Menús del venue con su horario y cuál aplica ahora. Cache-first al fallar red. */
-    suspend fun getMenus(venueId: String): Result<MenusPayload> = runCatching {
-        val payload = apiService.getMenus(venueId).data ?: MenusPayload()
+    suspend fun getMenus(venueId: String, enFondo: Boolean = false): Result<MenusPayload> = runCatching {
+        val payload = apiService.getMenus(venueId, if (enFondo) "1" else null).data ?: MenusPayload()
         payloadCache.save(
             com.avoqado.pos.core.data.local.PayloadCache.TYPE_MENUS,
             venueId,
@@ -373,6 +386,8 @@ class TableServiceRepository @Inject constructor(
         )
         payload
     }.recoverCatching { e ->
+        // De fondo un error no cambia nada: ni caché ni nada (se reintenta en el siguiente refresco).
+        if (enFondo) throw e
         // Sin red: los menús cacheados siguen sirviendo (horarios se evalúan local).
         val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_MENUS, venueId)
             ?: throw e
@@ -577,6 +592,11 @@ class TableServiceRepository @Inject constructor(
     }.onFailure { Log.e(TAG, "❌ compItem failed: ${it.message}") }
 
     /** "Anular cuenta": cancels the table's open order (server releases the table). */
+    suspend fun cancelarEnLinea(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
+        apiService.cancelOrder(venueId, orderId, CancelOrderRequest(reason))
+        Unit
+    }
+
     suspend fun cancelOrder(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
         apiService.cancelOrder(venueId, orderId, CancelOrderRequest(reason))
         Unit

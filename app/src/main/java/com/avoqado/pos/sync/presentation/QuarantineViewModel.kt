@@ -7,9 +7,15 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.payment.data.CortesiaPersistida
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.kiosk.data.KioskTap
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
+import com.avoqado.pos.reservations.data.ReservationApiException
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.domain.ReservationsCapability
+import com.avoqado.pos.reservations.domain.UndoNoShowTexts
+import com.avoqado.pos.reservations.presentation.undo.UndoNoShowFlow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +38,79 @@ class QuarantineViewModel @Inject constructor(
     private val reservationRepository: ReservationRepository,
     private val roleManager: RoleManager,
     private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository,
+    /** «Pagar después» sin red (27-oct). Default para las pruebas que construyen este ViewModel a mano. */
+    private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
 ) : ViewModel() {
+
+    /**
+     * Cuentas de «Pagar después» de esta sucursal que una persona tiene que ver: RECHAZADA (el servidor no la creó: «Reintentar»
+     * o «Descartar») y REVISAR (existe por otro importe, o no se pudo leer: «Descartar» sólo la quita del aparato).
+     */
+    val cuentasPagarDespues: StateFlow<List<com.avoqado.pos.payment.data.PayLaterRow>> =
+        // Sigue a la sucursal de la sesión (Codex A-8); Reintentar y Descartar la revalidan en la fila.
+        (payLaterQueue?.porRevisarEnLaSucursal ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+
+    /** La cuenta que se está reintentando ahora (el botón espera el desenlace real, hasta 15 s). */
+    private val _reintentandoCuenta = MutableStateFlow<String?>(null)
+    val reintentandoCuenta: StateFlow<String?> = _reintentandoCuenta.asStateFlow()
+
+    fun reintentarCuenta(id: String) {
+        val cola = payLaterQueue ?: return
+        if (!canResolve || _reintentandoCuenta.value != null) return
+        _reintentandoCuenta.value = id
+        val cliente = cola.filas.value.firstOrNull { it.id == id }?.customerName
+        viewModelScope.launch {
+            try {
+                when (val d = cola.reintentar(id)) {
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Creada -> {
+                        val fila = cola.filas.value.firstOrNull { it.id == id }
+                        // D9 (Codex código r2): la cuenta existe; si sólo falta retirar su copia (RETIRO_PENDIENTE), quedó
+                        // registrada, como en iOS. Antes salía el motivo del rechazo viejo.
+                        if (fila == null || fila.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.RETIRO_PENDIENTE) {
+                            _successMessage.value = "Cuenta registrada"
+                        } else {
+                            _errorMessage.value = d.motivoRevision ?: com.avoqado.pos.payment.data.detalleDePagarDespues(fila)
+                        }
+                    }
+                    // D1: un rechazo que ya no deja su fila es la venta que volvió a «Carritos guardados» (igual que iOS).
+                    is com.avoqado.pos.payment.data.DesenlacePagarDespues.Rechazada -> _errorMessage.value =
+                        if (cliente != null && cola.filas.value.none { it.id == id }) {
+                            com.avoqado.pos.pos.presentation.cart.pagarDespuesACarritosGuardados(cliente)
+                        } else {
+                            d.mensaje
+                        }
+                    null -> Unit
+                    // Sin red o sin respuesta útil: vuelve a la fila de «por subir» y se sube sola.
+                    else -> _errorMessage.value = "Sin conexión: la cuenta sigue guardada en el aparato y se sube sola."
+                }
+            } finally {
+                _reintentandoCuenta.value = null
+            }
+        }
+    }
+
+    /** Una venta que no se dejó para después ni se pudo guardar: a «Carritos guardados», sin mandar nada al servidor. */
+    fun pasarACarritosGuardados(id: String) {
+        val cola = payLaterQueue ?: return
+        if (!canResolve) return
+        viewModelScope.launch {
+            when (cola.pasarACarritosGuardados(id)) {
+                true -> _successMessage.value = "Venta pasada a carritos guardados"
+                false -> _errorMessage.value = com.avoqado.pos.pos.presentation.cart.PAGAR_DESPUES_NO_SE_GUARDO
+                null -> Unit // ya se está trasladando sola
+            }
+        }
+    }
+
+    /** Ya confirmado en la pantalla. Una REVISAR existe en el servidor: descartarla sólo la quita de este aparato. */
+    fun descartarCuenta(id: String) {
+        val cola = payLaterQueue ?: return
+        if (!canResolve) return
+        viewModelScope.launch {
+            if (cola.descartar(id)) _successMessage.value = "Cuenta descartada"
+        }
+    }
 
     /**
      * Cobros en efectivo que la app guardó ANTES de mandarlos y cuyo intento quedó interrumpido (la
@@ -100,6 +178,8 @@ class QuarantineViewModel @Inject constructor(
      */
     private val _retryingPaymentId = MutableStateFlow<String?>(null)
     val retryingPaymentId: StateFlow<String?> = _retryingPaymentId.asStateFlow()
+    private val _revisionCancelada = MutableStateFlow<PaymentSyncService.PropuestaRevisionCancelada?>(null)
+    val revisionCancelada = _revisionCancelada.asStateFlow()
 
     val rejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
 
@@ -120,10 +200,18 @@ class QuarantineViewModel @Inject constructor(
 
     fun load() {
         val venueId = secureStorage.venueId ?: return
+        val actor = secureStorage.userId
+        val role = secureStorage.userRole
+        val epoch = syncOutbox.contextoDeSesionQ15()
         viewModelScope.launch {
-            _items.value = syncOutbox.rejectedIntents(venueId)
-            _failedPayments.value = paymentSyncService.failedPayments().filter {it.venueId==venueId && it.q15Reason==null}
-            _failedReservationActions.value = reservationRepository.quarantinedActions()
+            val items = syncOutbox.rejectedIntents(venueId)
+            val failed = paymentSyncService.failedPayments().filter {it.venueId==venueId}
+            val reservations = reservationRepository.quarantinedActions()
+            if (secureStorage.venueId != venueId || secureStorage.userId != actor ||
+                secureStorage.userRole != role || syncOutbox.contextoDeSesionQ15() != epoch) return@launch
+            _items.value = items
+            _failedPayments.value = failed
+            _failedReservationActions.value = reservations
         }
     }
 
@@ -150,22 +238,52 @@ class QuarantineViewModel @Inject constructor(
     fun retryPayment(id: String) {
         if (!canResolve) return
         if (_retryingPaymentId.value != null) return // ya hay uno en vuelo
+        _retryingPaymentId.value = id
         viewModelScope.launch {
-            _retryingPaymentId.value = id
             try {
             when (val outcome = paymentSyncService.retryFailedPayment(id)) {
                 is PaymentSyncService.RetryOutcome.Applied ->
                     _successMessage.value = "Cobro sincronizado"
                 is PaymentSyncService.RetryOutcome.StillQueued ->
                     _errorMessage.value = "El pago sigue guardado y su resultado no está confirmado. No vuelvas a cobrar."
+                is PaymentSyncService.RetryOutcome.ConsultaSinPrueba ->
+                    _errorMessage.value = "No se pudo comprobar que esta cuenta esté cancelada y sin cobros. El intento sigue por revisar. No vuelvas a cobrar."
                 is PaymentSyncService.RetryOutcome.Rejected ->
                     _errorMessage.value = outcome.error?.let { detalleRechazo(it) }
                         ?: "El servidor volvió a rechazar el cobro"
+                is PaymentSyncService.RetryOutcome.CancelledZeroPaymentReview -> {
+                    if (canResolve && secureStorage.venueId == outcome.propuesta.original.venueId &&
+                        secureStorage.userId == outcome.propuesta.actor && secureStorage.userRole?.uppercase() == outcome.propuesta.rol &&
+                        syncOutbox.contextoDeSesionQ15() == outcome.propuesta.contexto) _revisionCancelada.value = outcome.propuesta
+                }
             }
             load()
             } finally {
                 _retryingPaymentId.value = null
             }
+        }
+    }
+
+    fun cerrarRevisionCancelada() {
+        if (_retryingPaymentId.value == null) _revisionCancelada.value = null
+    }
+
+    fun confirmarRevisionCancelada() {
+        val proposal = _revisionCancelada.value ?: return
+        if (!canResolve || _retryingPaymentId.value != null) return
+        _retryingPaymentId.value = proposal.original.id
+        viewModelScope.launch {
+            try {
+                val saved = paymentSyncService.confirmarRevisionCancelada(proposal)
+                _revisionCancelada.value = null
+                if (saved) _successMessage.value = "Revisión guardada en el historial."
+                else _errorMessage.value = "No se pudo comprobar la revisión. El intento sigue conservado; no vuelvas a cobrar."
+                load()
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) {
+                _revisionCancelada.value = null
+                _errorMessage.value = "No se pudo guardar la revisión. El intento sigue conservado."
+            } finally { _retryingPaymentId.value = null }
         }
     }
 
@@ -196,6 +314,102 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 
+    // MARK: - D4 · «Sí llegó» en una llegada rechazada, y el aviso cuando el SERVIDOR la corrigió solo
+
+    /**
+     * «Sí llegó» y «Marcar resuelta» del aviso piden lo MISMO que en el detalle de la reserva (`reservations:update`, que
+     * recepción tiene por omisión), no el candado de gerente de [canResolve]: van al SERVIDOR, que las juzga con su propio
+     * permiso, y la fila sólo se borra cuando él ya contestó. Las demás acciones de aquí siguen con [canResolve].
+     */
+    val canFixArrival: Boolean
+        get() = ReservationsCapability.fromPermissions(secureStorage.venuePermissions).canUpdate
+
+    /** La fila de la llegada rechazada que se está corrigiendo: al salir bien, se va de la lista. */
+    private var filaPorCorregir: Long? = null
+
+    /**
+     * La zona de la sucursal de una fila del kiosco ([KioskTap.venueOf]): su aviso y el título de su «Sí llegó» dicen la
+     * hora de ESA sucursal, aunque la sesión ande en otra (Cancún va una hora adelante de CDMX). La toma de la lista de
+     * sucursales del usuario (la del selector). Si no la conoce, o la fila no trae sucursal, la de la activa, como antes:
+     * no se inventa una zona.
+     */
+    fun zonaDe(venueId: String?): String? =
+        venueId?.takeIf { it != secureStorage.venueId }
+            ?.let { v -> secureStorage.venuesList.firstOrNull { it.id == v }?.timezone?.takeIf { it.isNotBlank() } }
+            ?: secureStorage.venueTimezone
+
+    val undo = UndoNoShowFlow(reservationRepository, viewModelScope, ::zonaDe) {
+        filaPorCorregir?.let { reservationRepository.dismissQuarantined(it) }
+        filaPorCorregir = null
+        load()
+    }
+
+    /**
+     * Una llegada del kiosco que el SERVIDOR rechazó porque su «No asistió» le ganó (y no pudo corregirlo solo). La fila
+     * guarda el TEXTO del 409, no su código: se reconoce por él (`kioskCheckIn.service.ts`, «…ya estaba como «No asistió»…»).
+     * ponytail: si el SERVIDOR cambia ese texto el botón deja de salir y queda «Revisa la reserva en Reservaciones»
+     * (falla segura); entonces, guardar el `code` del rechazo en la fila.
+     */
+    fun canUndoNoShow(entry: PendingReservationActionEntity): Boolean =
+        canFixArrival && entry.action == KioskTap.ACTION && entry.lastError?.contains("«No asistió»") == true
+
+    fun undoNoShow(entry: PendingReservationActionEntity) {
+        val ui = undo.ui.value
+        if (!canUndoNoShow(entry) || ui.busyId != null || ui.prompt != null) return
+        filaPorCorregir = entry.rowId
+        // Contra la sucursal DE LA LLEGADA (su toque guardado la trae), aunque la sesión ande en otra.
+        undo.start(entry.reservationId, venueId = KioskTap.venueOf(entry.payloadJson))
+    }
+
+    fun isCorrectionNotice(entry: PendingReservationActionEntity): Boolean = entry.action == KioskTap.CORRECTION
+
+    /** «Karla R. llegó a las 08:49 sin conexión; su «No se presentó» ya quedó como «Llegó».» y un «Pendiente: …» por cada cosa que falta. */
+    fun correctionNoticeLines(entry: PendingReservationActionEntity): List<String> {
+        val c = KioskTap.parseCorrection(entry.payloadJson)
+        val hora = UndoNoShowTexts.hhmm(c?.tappedAt, zonaDe(KioskTap.venueOf(entry.payloadJson)))
+        return listOf(UndoNoShowTexts.kioskNotice(c?.name, hora)) +
+            c?.pending.orEmpty().map { "Pendiente: ${UndoNoShowTexts.pending(it)}" }
+    }
+
+    private val _resolviendoAviso = MutableStateFlow<Long?>(null)
+    val resolviendoAviso: StateFlow<Long?> = _resolviendoAviso.asStateFlow()
+
+    /** «Marcar resuelta» que no salió: sin red en ámbar, un rechazo humanizado; nunca el texto crudo en rojo. */
+    private val _resolveNotice = MutableStateFlow<UndoNoShowFlow.Notice?>(null)
+    val resolveNotice: StateFlow<UndoNoShowFlow.Notice?> = _resolveNotice.asStateFlow()
+
+    fun consumeResolveNotice() {
+        _resolveNotice.value = null
+    }
+
+    /** «Marcar resuelta» del aviso: se resuelve en el SERVIDOR (sólo con red) y entonces sale de la franja. */
+    fun resolveCorrectionNotice(entry: PendingReservationActionEntity) {
+        if (!canFixArrival || !isCorrectionNotice(entry) || _resolviendoAviso.value != null) return
+        _resolviendoAviso.value = entry.rowId
+        _resolveNotice.value = null
+        viewModelScope.launch {
+            try {
+                // Contra la sucursal DEL AVISO (la de la llegada), aunque la sesión ande en otra; un aviso viejo sin ella va
+                // contra la de la sesión, como antes.
+                val venueId = KioskTap.venueOf(entry.payloadJson)
+                val r = reservationRepository.resolveNoShowCorrection(entry.reservationId, venueId = venueId)
+                // 404 en SU sucursal: el SERVIDOR ya no la tiene pendiente. Se quita para que no se atore, sin decir que la
+                // resolvimos; allá siguen su registro, la campanita y el correo. Cualquier otro error deja el aviso, y también
+                // el 404 de un aviso viejo (sin sucursal): pudo venir de la sucursal equivocada.
+                val yaNoEstaba = venueId != null && (r.exceptionOrNull() as? ReservationApiException)?.status == 404
+                if (r.isSuccess || yaNoEstaba) {
+                    reservationRepository.dismissQuarantined(entry.rowId)
+                    _successMessage.value = if (yaNoEstaba) UndoNoShowTexts.NO_LONGER_PENDING else UndoNoShowTexts.RESOLVED
+                    load()
+                } else {
+                    _resolveNotice.value = UndoNoShowFlow.resolveFailure(r.exceptionOrNull())
+                }
+            } finally {
+                _resolviendoAviso.value = null
+            }
+        }
+    }
+
     /** Qué intentaba hacer el mesero, en palabras. */
     fun describeReservationAction(action: String): String = when (action) {
         "CONFIRM" -> "Confirmar reserva"
@@ -206,6 +420,8 @@ class QuarantineViewModel @Inject constructor(
         "RESCHEDULE" -> "Reagendar"
         "CREATE" -> "Crear reserva"
         "UPDATE" -> "Editar reserva"
+        com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Llegada en el kiosco (sin conexión)"
+        KioskTap.CORRECTION -> "Llegada del kiosco corregida"
         else -> action
     }
 
@@ -224,6 +440,8 @@ class QuarantineViewModel @Inject constructor(
         "RESCHEDULE" -> "El cambio de horario no se aplicó. La reserva sigue en su hora original — reagéndala o avisa al cliente."
         "NO_SHOW" -> "No quedó marcada como no presentado. Si aplica un cargo, revísalo antes de descartarla."
         "CHECK_IN" -> "La llegada no quedó registrada. Márcala a mano si el cliente sí llegó."
+        // El texto del servidor (renglón de arriba) ya dice quién llegó, a qué hora y qué pasó; aquí sólo a dónde ir.
+        com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Revisa la reserva en Reservaciones."
         else -> "La operación nunca llegó al servidor. Revisa la reserva y vuelve a hacerla si sigue aplicando."
     }
 
@@ -284,18 +502,32 @@ class QuarantineViewModel @Inject constructor(
      * Visto el 2026-08-09: seis reintentos con ese 400 y el dinero ya estaba
      * registrado desde el primero.
      */
-    fun detalleRechazo(error: String): String = when {
+    fun detalleRechazo(error: String): String {
+        if (error == CortesiaPersistida.AVISO) return CortesiaPersistida.AVISO
+        // These are the two persisted HTTP formats from PaymentSyncService. Body amounts and folios are not codes.
+        val prefix = error.trimStart()
+        val code = Regex("""^(?:Error|HTTP)\s+([1-5]\d{2})(?=$|[\s:])""",RegexOption.IGNORE_CASE)
+            .find(prefix)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""^Order recreate (?:failed|server error)\s+\(([1-5]\d{2})\)(?=$|:)""",RegexOption.IGNORE_CASE)
+                .find(prefix)?.groupValues?.get(1)?.toIntOrNull()
+        return when {
+        code == 401 ->
+            "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
+        code == 403 ->
+            "El empleado no tenía permiso para registrar este cobro. Un gerente debe revisar el rol y reintentarlo."
+        code == 404 ->
+            "La orden vinculada ya no existe. Verifica caja y ventas antes de volver a cobrar."
         error.contains("already paid", ignoreCase = true) ->
             "El servidor informa que la cuenta está pagada. Comprueba este pago por su folio; no vuelvas a cobrar."
-        error.contains("401") ->
-            "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
-        error.contains("403") ->
-            "El empleado no tenía permiso para registrar este cobro. Un gerente debe revisar el rol y reintentarlo."
-        error.contains("404") ->
-            "La orden vinculada ya no existe. Verifica caja y ventas antes de volver a cobrar."
-        error.contains("400") ->
-            "El servidor rechazó los datos. Verifica la orden y la caja antes de reintentar."
+        code == 400 -> {
+            val fallback = "El servidor rechazó los datos. Verifica la orden y la caja antes de reintentar."
+            val start = error.indexOf('{')
+            val detail = if (start >= 0) ServerErrorText.fromResponseBody(error.substring(start),fallback) else fallback
+            detail.replace(Regex("<[^>]*>"), "").filterNot { it.isISOControl() }
+                .replace(Regex("\\s+"), " ").trim().take(500).ifBlank { fallback }
+        }
         else ->
             "El cobro no logró confirmarse. Conserva el efectivo registrado y reintenta cuando el servidor esté disponible."
+        }
     }
 }

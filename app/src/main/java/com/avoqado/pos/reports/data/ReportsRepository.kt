@@ -82,13 +82,7 @@ class ReportsRepository @Inject constructor(
             val body = executeRequest(request)
             if (body.isEmpty()) return null
 
-            val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return null
-
-            val summary = data["summary"]?.jsonObject?.let { parseSalesSummary(it) }
-            val paymentMethods = data["byPaymentMethod"]?.jsonArray
-                ?.mapNotNull { it.jsonObject.let { obj -> parsePaymentMethodBreakdown(obj) } }
-                ?: emptyList()
+            val (summary, paymentMethods) = leerResumenDeVentas(body) ?: return null
 
             Log.d(TAG, "✅ fetchSalesSummary: summary=$summary, methods=${paymentMethods.size}")
             Pair(summary, paymentMethods)
@@ -298,31 +292,49 @@ class ReportsRepository @Inject constructor(
         }
     }
 
-    // MARK: - JSON Parsers
+}
 
-    private fun parseSalesSummary(obj: JsonObject): SalesSummaryReport {
-        return SalesSummaryReport(
-            grossSales = obj["grossSales"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            netSales = obj["netSales"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            discounts = obj["discounts"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            refunds = obj["refunds"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            taxes = obj["taxes"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            tips = obj["tips"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            platformFees = obj["platformFees"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            staffCommissions = obj["staffCommissions"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            totalCollected = obj["totalCollected"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            netProfit = obj["netProfit"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            transactionCount = obj["transactionCount"]?.jsonPrimitive?.intOrNull ?: 0,
-        )
+internal fun leerResumenDeVentas(body: String): Pair<SalesSummaryReport?, List<PaymentMethodBreakdown>>? {
+    return try {
+        val data = Json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return null
+        val summary = data["summary"]?.jsonObject?.let { parseSalesSummary(it) }
+        // Una lista de ventas vacía también manda: no revivir las cargas de byPaymentMethod.
+        val methods = data["salesByPaymentMethod"]?.takeUnless { it == kotlinx.serialization.json.JsonNull }
+            ?: data["byPaymentMethod"]?.takeUnless { it == kotlinx.serialization.json.JsonNull }
+        val paymentMethods = methods?.jsonArray?.map { parsePaymentMethodBreakdown(it.jsonObject) } ?: emptyList()
+        Pair(summary, paymentMethods)
+    } catch (_: Exception) {
+        null
     }
+}
 
-    private fun parsePaymentMethodBreakdown(obj: JsonObject): PaymentMethodBreakdown {
-        return PaymentMethodBreakdown(
-            id = obj["id"]?.jsonPrimitive?.contentOrNull ?: "",
-            method = obj["method"]?.jsonPrimitive?.contentOrNull ?: "",
-            amount = obj["amount"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            count = obj["count"]?.jsonPrimitive?.intOrNull ?: 0,
-            percentage = obj["percentage"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-        )
-    }
+// MARK: - JSON Parsers
+
+private fun parseSalesSummary(obj: JsonObject): SalesSummaryReport {
+    return SalesSummaryReport(
+        grossSales = obj["grossSales"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        netSales = obj["netSales"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        discounts = obj["discounts"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        refunds = obj["refunds"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        taxes = obj["taxes"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        tips = obj["tips"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        platformFees = obj["platformFees"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        staffCommissions = obj["staffCommissions"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        totalCollected = obj["totalCollected"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        netProfit = obj["netProfit"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        transactionCount = obj["transactionCount"]?.jsonPrimitive?.intOrNull ?: 0,
+        giftCardLoads = obj["giftCardLoads"]?.jsonPrimitive?.doubleOrNull,
+        giftCardLoadsCount = obj["giftCardLoadsCount"]?.jsonPrimitive?.intOrNull,
+        paidWithGiftCardBalance = obj["paidWithGiftCardBalance"]?.jsonPrimitive?.doubleOrNull,
+    )
+}
+
+private fun parsePaymentMethodBreakdown(obj: JsonObject): PaymentMethodBreakdown {
+    return PaymentMethodBreakdown(
+        id = obj["id"]?.jsonPrimitive?.contentOrNull ?: "",
+        method = obj["method"]?.jsonPrimitive?.contentOrNull ?: "",
+        amount = obj["amount"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        count = obj["count"]?.jsonPrimitive?.intOrNull ?: 0,
+        percentage = obj["percentage"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+    )
 }
