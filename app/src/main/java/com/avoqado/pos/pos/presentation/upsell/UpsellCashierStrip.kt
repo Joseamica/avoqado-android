@@ -41,15 +41,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.UpsellCard
+import com.avoqado.pos.pos.presentation.product.MiniaturaConIniciales
 
 private val Accent = Color(0xFF7ADD2C)
 
@@ -251,17 +250,14 @@ private fun UpsellRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
-            if (!card.imageUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = card.imageUrl,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(AvoqadoTheme.spacing.sm))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                )
-            }
+            // D16 (3-nov): la miniatura siempre, como Square: sin foto, o si no carga (sin red), las iniciales del producto.
+            MiniaturaConIniciales(
+                url = card.imageUrl,
+                nombre = card.name,
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(AvoqadoTheme.spacing.sm)),
+            )
 
             Column(modifier = Modifier.weight(1f)) {
                 // 🔴 El NOMBRE DEL PRODUCTO manda, y `card.name` ya trae el

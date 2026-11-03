@@ -36,7 +36,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.components.TierBadge
@@ -46,6 +45,7 @@ import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
 import com.avoqado.pos.pos.presentation.checkout.InputTab
+import com.avoqado.pos.pos.presentation.product.MiniaturaConIniciales
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import java.time.LocalTime
 import java.time.temporal.ChronoUnit
@@ -576,16 +576,14 @@ private fun TarjetaPromocion(
             }
         }
 
-        if (!promocion.imageUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = promocion.imageUrl,
-                contentDescription = null,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            )
-        }
+        // D16 (3-nov): la miniatura siempre, como Square: sin foto, o si no carga (sin red), las iniciales de la promoción.
+        MiniaturaConIniciales(
+            url = promocion.imageUrl,
+            nombre = promocion.name,
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm)),
+        )
     }
 }
 

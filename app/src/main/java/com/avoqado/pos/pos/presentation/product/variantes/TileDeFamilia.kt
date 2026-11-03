@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -17,19 +16,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.precioConUnidad
 import com.avoqado.pos.pos.presentation.checkout.TileSize
 import com.avoqado.pos.pos.presentation.product.ChipDeAgotado
+import com.avoqado.pos.pos.presentation.product.FotoConRespaldo
 import com.avoqado.pos.pos.presentation.product.InsigniaDeTile
 import com.avoqado.pos.pos.presentation.product.coloresDeTile
+import com.avoqado.pos.pos.presentation.product.inicialesDeTile
 
 /**
  * Q4 con la regla del tile de un producto suelto (`Product.displayPrice`): el mínimo, «desde» si los precios difieren y «/kg» sólo
@@ -69,16 +68,16 @@ fun TileDeFamilia(familia: Familia, tileSize: TileSize, onTap: () -> Unit) {
                     .aspectRatio(tileSize.productImageAspect)
                     .background(fondo),
             ) {
-                if (!familia.imagenUrl.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = familia.imagenUrl,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
-                } else {
+                // D6 (2-nov): como `ProductTile` y `FamilyTile.fondo` de iOS, el color y las iniciales también mientras la foto
+                // carga y si falla.
+                FotoConRespaldo(
+                    url = familia.imagenUrl,
+                    contentDescription = null,
+                    colorDelIndicador = colorDeIniciales,
+                    modifier = Modifier.matchParentSize(),
+                ) {
                     Text(
-                        text = familia.nombre.take(2).uppercase(),
+                        text = inicialesDeTile(familia.nombre),
                         style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                         color = colorDeIniciales,
                         modifier = Modifier.align(Alignment.BottomStart).padding(AvoqadoTheme.spacing.sm),

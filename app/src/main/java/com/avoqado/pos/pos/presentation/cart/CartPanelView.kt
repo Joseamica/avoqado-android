@@ -63,12 +63,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
@@ -77,6 +75,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.DiscountText
 import com.avoqado.pos.pos.data.model.CartItem
+import com.avoqado.pos.pos.presentation.product.FotoConRespaldo
+import com.avoqado.pos.pos.presentation.product.inicialesDeTile
 import com.avoqado.pos.referrals.presentation.ReferralCaptureSection
 import com.avoqado.pos.referrals.presentation.ReferralCaptureUiState
 
@@ -728,25 +728,22 @@ private fun CartItemRow(
             }
         } ?: MaterialTheme.colorScheme.surfaceVariant
 
-        val initials = item.name.split(" ")
-            .take(2)
-            .joinToString("") { it.take(1) }
-            .uppercase()
+        // Las mismas iniciales que la tarjeta del producto (`Product.initials` de iOS): «Latte» → «LA».
+        val initials = inicialesDeTile(item.name)
 
         Box(
             modifier = Modifier
                 .size(if (useDenseTabletLayout) 52.dp else 60.dp)
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md)),
         ) {
-            if (!item.imageUrl.isNullOrEmpty()) {
-                // Load product image with Coil
-                AsyncImage(
-                    model = item.imageUrl,
-                    contentDescription = item.name,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
+            // D6 (2-nov): si la foto no carga (o mientras carga), el color con las iniciales, como iOS
+            // (`.failure, .empty → colorBackground`, sin indicador). Antes quedaba un hueco.
+            FotoConRespaldo(
+                url = item.imageUrl,
+                contentDescription = item.name,
+                colorDelIndicador = null,
+                modifier = Modifier.matchParentSize(),
+            ) {
                 // Color background with initials
                 Box(
                     modifier = Modifier
