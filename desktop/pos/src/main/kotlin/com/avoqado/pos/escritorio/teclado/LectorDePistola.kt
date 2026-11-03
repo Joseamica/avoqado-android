@@ -43,6 +43,7 @@ class LectorDePistola(
     private val tragarAlSoltar = mutableSetOf<Int>()  // teclas de un código ya emitido: su «soltar» tampoco llega
     private var tragarTipeoDelFinal = false
     private var ultimaMs = 0L
+    private var soltoShift = false                    // se soltó un Shift después de la última tecla que escribe
 
     /** El temporizador soltó una ráfaga que, por el reloj de las teclas, seguía viva (PC trabada): su resto pasa tal cual. */
     private var partida = false
@@ -58,6 +59,7 @@ class LectorDePistola(
         }
         KeyEvent.KEY_RELEASED -> when {
             tragarAlSoltar.remove(e.keyCode) -> true
+            e.keyCode == KeyEvent.VK_SHIFT -> { soltoShift = true; false }
             e.keyCode in MODIFICADORES || retenidas.isEmpty() -> false
             else -> { retenidas += e; abajo -= e.keyCode; true }
         }
@@ -73,8 +75,14 @@ class LectorDePistola(
             partida = false
             return false
         }
-        val seguida = e.`when` - ultimaMs <= maxIntervaloMs
         val esFinal = e.keyCode == KeyEvent.VK_ENTER || e.keyCode == KeyEvent.VK_TAB
+        // De una mayúscula a otra, con el Shift completo en medio (Shift↑ Shift↓), caben dos eventos más que entre dos números, y en
+        // Windows cada uno gasta un salto de su reloj: con SendKeys, 62-64 ms contra 31 (medido el 2-nov en la Alienware). De
+        // «PIZZAS-001» sólo llegaba «S-001». El plazo extra es sólo para ese caso: quien sostiene Shift no lo suelta entre letras, y
+        // el Enter de quien escribe no lo alcanza. Se mantiene debajo de [esperaMs], para que el temporizador siga siendo el que manda.
+        val plazoMs = if (e.isShiftDown && soltoShift && !esFinal) maxIntervaloMs * 3 / 2 else maxIntervaloMs
+        soltoShift = false
+        val seguida = e.`when` - ultimaMs <= plazoMs
         if (partida) {
             if (seguida) {
                 // Su inicio ya se devolvió: emitirla sería un código cortado (un vale que no existe).
