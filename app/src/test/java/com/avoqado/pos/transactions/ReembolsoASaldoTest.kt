@@ -79,6 +79,9 @@ class ReembolsoASaldoTest {
     @After fun cleanup() {
         modelos.forEach { it.viewModelScope.cancel() }
         scope.cancel(); server.shutdown()
+        // Lo que seguía en otro hilo termina AQUÍ, con `Dispatchers.Main` todavía puesto. Cancelar no alcanza: una lectura de
+        // disco que regresa después de restaurarlo tira una excepción que cobra la siguiente clase con `runTest`.
+        runBlocking { withTimeoutOrNull(10_000) { modelos.forEach { it.viewModelScope.coroutineContext[Job]?.join() } } }
     }
 
     /**

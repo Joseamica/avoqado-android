@@ -429,7 +429,7 @@ class TokenRefreshAuthenticator @Inject constructor(
             // kotlinx.serialization trae el cuerpo tras «JSON input:», y ahí
             // viajan los tokens de la sesión — no van a logcat.
             Log.e("🔐", "Token refresh unexpected error: ${e.javaClass.simpleName}")
-            RefreshOutcome.NetworkFailure("red:${e.javaClass.simpleName}")
+            RefreshOutcome.NetworkFailure("servidor:ilegible:${e.javaClass.simpleName}")
         }
     }
 }
