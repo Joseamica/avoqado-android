@@ -335,4 +335,48 @@ class GiftCardsRepositoryTest {
         } finally { seguir.countDown();a.cancelAndJoin() }
     }
 
+
+    private val prendidas = """{"enabled":true,"suggestedAmounts":[500],"minAmount":100,"maxAmount":10000,"llavesConfiguradas":true,"sale":{"sellable":true},"capacidades":["ENTREGA"],"prender":null}"""
+    private val apagadas = """{"enabled":false,"suggestedAmounts":[500],"minAmount":100,"maxAmount":10000,"llavesConfiguradas":true,"sale":{"sellable":false,"code":"GIFT_CARDS_DISABLED"},"capacidades":["ENTREGA"],"prender":{"allowed":true}}"""
+
+    @Test fun `prender manda los terminos a su ruta y guarda lo que responde el servidor`() = runBlocking {
+        ok(prendidas)
+        val repo = GiftCardsRepository(OkHttpClient(), storage)
+        val r = repo.prender("v")
+        val pedido = server.takeRequest()
+        assertEquals("POST", pedido.method)
+        assertTrue(pedido.path!!.endsWith("/mobile/venues/v/gift-cards/settings/turn-on"))
+        assertEquals("""{"aceptaTerminos":true}""", pedido.body.readUtf8())
+        assertTrue(r is Respuesta.Ok)
+        assertTrue((repo.cambiosDeAjustes.value["v"] as EstadoDeAjustes.Disponible).ajustes.enabled)
+        assertTrue((repo.estadoDeAjustes.value as EstadoDeAjustes.Disponible).ajustes.enabled)
+        assertTrue(GiftCardsApi.parsearAjustes(cache["v"]!!).enabled)
+    }
+
+    @Test fun `un rechazo al prender no toca lo guardado`() = runBlocking {
+        ok(apagadas)
+        val repo = GiftCardsRepository(OkHttpClient(), storage)
+        repo.refrescarAjustes("v")
+        responde(403, """{"error":"Forbidden","message":"Permission 'giftCards:enable' required"}""")
+        val r = repo.prender("v")
+        assertEquals(403, (r as Respuesta.Rechazo).fallo.http)
+        assertNull(r.fallo.code)
+        assertFalse(GiftCardsApi.parsearAjustes(cache["v"]!!).enabled)
+    }
+
+    @Test fun `P1 un GET que salio antes de prender no pisa lo prendido al llegar tarde`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+            .setBody("""{"success":true,"data":$apagadas}""").setBodyDelay(600, TimeUnit.MILLISECONDS))
+        ok(prendidas)
+        val repo = GiftCardsRepository(OkHttpClient(), storage)
+        coroutineScope {
+            val lectura = async(Dispatchers.IO) { repo.refrescarAjustes("v") }
+            server.takeRequest(5, TimeUnit.SECONDS)
+            assertTrue(repo.prender("v") is Respuesta.Ok)
+            val tarde = lectura.await()
+            assertTrue((tarde as EstadoDeAjustes.Disponible).ajustes.enabled)
+        }
+        assertTrue((repo.estadoDeAjustes.value as EstadoDeAjustes.Disponible).ajustes.enabled)
+        assertTrue(GiftCardsApi.parsearAjustes(cache["v"]!!).enabled)
+    }
 }

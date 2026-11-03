@@ -2,9 +2,12 @@ package com.avoqado.pos.giftcards
 
 import com.avoqado.pos.giftcards.data.AjustesDeTarjetas
 import com.avoqado.pos.giftcards.data.EstadoDeAjustes
+import com.avoqado.pos.giftcards.data.EstadoParaPrender
+import com.avoqado.pos.giftcards.data.FalloDeTarjeta
 import com.avoqado.pos.giftcards.data.VentaPermitida
 import com.avoqado.pos.giftcards.domain.TextosDeTarjetas
 import com.avoqado.pos.giftcards.domain.estadoDeLaHoja
+import com.avoqado.pos.giftcards.domain.motivoAlPrender
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -123,5 +126,65 @@ class EntradaDeTarjetasTest {
         assertNull(e.vender.motivo)
         assertNull(e.vender.etiquetaDePlan)
         assertNull(e.consultar.motivo)
+    }
+
+    // Prender desde el POS (founder, 3-nov-2026): administrador para arriba, con plan, llaves y red.
+    private fun apagadas(prender: EstadoParaPrender?) = EstadoDeAjustes.Disponible(AjustesDeTarjetas(
+        enabled = false, suggestedAmounts = listOf(500.0), minAmount = 100.0, maxAmount = 10000.0,
+        sale = VentaPermitida(false, code = "GIFT_CARDS_DISABLED", message = "Actívalas en tu panel", howToEnable = "DASHBOARD_SETTINGS"),
+        capacidades = setOf("ENTREGA"), prender = prender,
+    ))
+
+    @Test fun `apagadas un administrador ve prender y vender le dice que aqui se prenden`() {
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(allowed = true)), true, true, true, true, "Pro", puedePrender = true)
+        assertTrue(e.prender.visible)
+        assertTrue(e.prender.habilitada)
+        assertFalse(e.vender.habilitada)
+        assertEquals(TextosDeTarjetas.APAGADAS_PRENDELAS_AQUI, e.vender.motivo)
+    }
+
+    @Test fun `apagadas quien no puede no ve prender y sabe a quien pedirselo`() {
+        val e = hoja(apagadas(EstadoParaPrender(allowed = true)))
+        assertFalse(e.prender.visible)
+        assertEquals(TextosDeTarjetas.APAGADAS_PIDELE_A_UN_ADMIN, e.vender.motivo)
+    }
+
+    @Test fun `apagadas sin plan no ofrece prender y dice por que con la etiqueta del plan`() {
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(false, "GIFT_CARDS_NOT_IN_PLAN", "Vienen en el plan Pro", "PLAN")), true, true, true, true, "Pro", puedePrender = true)
+        assertFalse(e.prender.visible)
+        assertFalse(e.vender.habilitada)
+        assertEquals("Vienen en el plan Pro", e.vender.motivo)
+        assertEquals("Pro", e.vender.etiquetaDePlan)
+    }
+
+    @Test fun `apagadas sin llaves no ofrece prender y no enseña la etiqueta del plan`() {
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(false, "GIFT_CARD_KEYS_MISSING", "Escríbenos", "CONTACT_AVOQADO")), true, true, true, true, "Pro", puedePrender = true)
+        assertFalse(e.prender.visible)
+        assertEquals("Escríbenos", e.vender.motivo)
+        assertNull(e.vender.etiquetaDePlan)
+    }
+
+    @Test fun `sin red prender se ve en gris y explica que hace falta internet`() {
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(allowed = true)), false, true, true, true, "Pro", puedePrender = true)
+        assertTrue(e.prender.visible)
+        assertFalse(e.prender.habilitada)
+        assertEquals(TextosDeTarjetas.SIN_RED, e.prender.motivo)
+    }
+
+    @Test fun `prendidas no hay nada que prender`() {
+        assertFalse(hoja(ajustes()).prender.visible)
+    }
+
+    @Test fun `regresion servidor sin el campo no ofrece prender y deja su mensaje`() {
+        val e = hoja(apagadas(null))
+        assertFalse(e.prender.visible)
+        assertEquals("Actívalas en tu panel", e.vender.motivo)
+    }
+
+    @Test fun `el rechazo al prender se dice en español y por su motivo`() {
+        fun fallo(http: Int, code: String?, msg: String?) = FalloDeTarjeta(http, code, msg, null, null)
+        assertEquals(TextosDeTarjetas.SIN_PERMISO_PRENDER, motivoAlPrender(fallo(403, null, "Permission 'giftCards:enable' required")))
+        assertEquals("Tu plan no incluye", motivoAlPrender(fallo(403, "GIFT_CARDS_NOT_IN_PLAN", "Tu plan no incluye")))
+        assertEquals(TextosDeTarjetas.PRENDER_RECHAZADO, motivoAlPrender(fallo(400, null, "Validation error")))
     }
 }

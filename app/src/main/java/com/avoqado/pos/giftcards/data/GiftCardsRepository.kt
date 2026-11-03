@@ -88,6 +88,27 @@ class GiftCardsRepository @Inject constructor(private val client: OkHttpClient, 
             ajustesPorSucursal.value[venueId] ?: cache(venueId)
         }
     }
+    private fun turnoNuevoDeAjustes(venueId: String) = synchronized(candadoDeAjustes) {
+        turnosDeAjustes[venueId] = (turnosDeAjustes[venueId] ?: 0L) + 1L
+    }
+
+    /**
+     * Prender desde el POS. Toma turno al salir y al volver: un GET anterior, o uno que salió mientras tanto con la foto de antes,
+     * no pisa lo prendido al llegar tarde. Reintentar es seguro: si ya estaban prendidas, el servidor no escribe y responde lo mismo.
+     */
+    suspend fun prender(venueId: String): Respuesta<AjustesDeTarjetas> {
+        turnoNuevoDeAjustes(venueId)
+        val result = pedir(venueId, buildJsonObject { put("aceptaTerminos", true) }.toString(), listOf("gift-cards", "settings", "turn-on"), parsear = GiftCardsApi::parsearAjustes)
+        if (result is Respuesta.Ok) synchronized(candadoDeAjustes) {
+            turnoNuevoDeAjustes(venueId)
+            secureStorage.guardarAjustesDeTarjetas(venueId, GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), result.valor))
+            val nuevo = EstadoDeAjustes.Disponible(result.valor)
+            ajustesPorSucursal.value = ajustesPorSucursal.value + (venueId to nuevo)
+            if (venueObservado == venueId) ajustes.value = nuevo
+        }
+        return result
+    }
+
     suspend fun vender(venueId: String, cuerpo: String): Respuesta<VentaDeTarjetas> = pedir(venueId, cuerpo, listOf("gift-cards", "orders"), parsear = GiftCardsApi::parsearVenta)
     suspend fun consultar(venueId: String, prueba: PruebaDeTarjeta): Respuesta<ConsultaDeSaldo> = pedir(venueId, GiftCardsApi.cuerpoDeConsulta(prueba), listOf("gift-cards", "lookup"), parsear = GiftCardsApi::parsearConsulta)
     suspend fun cobrar(venueId: String, orderId: String, cuerpo: String): Respuesta<CobroConSaldo> = pedir(venueId, cuerpo, listOf("orders", orderId, "pay-gift-card"), parsear = GiftCardsApi::parsearCobro)
