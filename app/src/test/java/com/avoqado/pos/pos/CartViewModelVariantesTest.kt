@@ -4,6 +4,7 @@ import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.giftcards.data.PruebaDeTarjeta
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
@@ -257,5 +258,37 @@ class CartViewModelVariantesTest {
         val vm = createViewModel()
         assertEquals(ScannedBarcodeResult.ProductFound(plMAz), vm.resolveScannedBarcode("PL-M-AZ"))
         assertEquals(ScannedBarcodeResult.ProductFound(plSRo), vm.resolveScannedBarcode("7501000000017"))
+    }
+
+    @Test
+    fun `P1 el codigo se encuentra aunque el lector lo mande con otras mayusculas`() = runTest {
+        // Bloq Mayús prendido o una pistola configurada así: el catálogo dice «PL-M-AZ» y llega «pl-m-az».
+        productos.value = catalogo()
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(plMAz), vm.resolveScannedBarcode("pl-m-az"))
+    }
+
+    @Test
+    fun `P1 dos codigos que solo difieren en mayusculas gana el exacto y sin exacto no se adivina`() = runTest {
+        // El SKU es único distinguiendo mayúsculas: estos dos pueden existir, y agregar el equivocado le cobra otra cosa al cliente.
+        val minusculas = Product(id = "gorra-2", name = "Gorra 2", priceValue = 90.0, sku = "go-1")
+        productos.value = listOf(gorra, minusculas)
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(gorra), vm.resolveScannedBarcode("GO-1"))
+        assertEquals(ScannedBarcodeResult.ProductFound(minusculas), vm.resolveScannedBarcode("go-1"))
+        assertEquals(ScannedBarcodeResult.Unknown("Go-1"), vm.resolveScannedBarcode("Go-1"))
+    }
+
+    @Test
+    fun `P1 una tarjeta de regalo no se vuelve mercancia porque un SKU se le parece`() = runTest {
+        // Codex r1: el parecido iba antes que las tarjetas; se agregaba el producto en vez de abrir la tarjeta.
+        val parecido = Product(id = "x", name = "Se parece", priceValue = 10.0, sku = "abcd2345efgh6789j")
+        productos.value = listOf(parecido)
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.GiftCardFound(PruebaDeTarjeta.Codigo("ABCD2345EFGH6789J")),
+            vm.resolveScannedBarcode("ABCD2345EFGH6789J"),
+        )
+        assertEquals(ScannedBarcodeResult.ProductFound(parecido), vm.resolveScannedBarcode("abcd2345efgh6789j"))
     }
 }

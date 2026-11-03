@@ -180,7 +180,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun searchProducts(query: String): List<Product> =
-        (productsRepository.searchProducts(query) + products.value.filter { query.isNotBlank() && it.barcode == query })
+        (productsRepository.searchProducts(query) + products.value.filter { query.isNotBlank() && it.barcode.equals(query, ignoreCase = true) })
             .distinctBy { it.id }.filter(::sellable)
     private fun sellable(p: Product) = p.active != false && !p.soldByWeight && catalogPriceCents(p) != null &&
         p.type !in setOf("APPOINTMENTS_SERVICE", "CLASS", "EVENT", "DIGITAL", "GIFT_CARD", "DONATION", "SERVICE")

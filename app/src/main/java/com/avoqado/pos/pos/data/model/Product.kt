@@ -13,6 +13,8 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
 import com.avoqado.pos.core.util.aCentavos
+import com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta
+import com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente
 
 @Serializable
 data class Product(
@@ -133,6 +135,17 @@ data class Product(
 }
 
 /** El precio como lo pinta el tile: `$199.00`, o `$199.00/kg` si se vende por peso. Lo comparten el producto y la familia. */
+/**
+ * El ÚLTIMO intento al leer un código: el producto que coincide sin distinguir mayúsculas. El catálogo dice «PIZZAS-001» y el
+ * lector puede mandar «pizzas-001» (Bloq Mayús, pistola configurada así). Va después del exacto. Con forma de tarjeta, de regalo o
+ * de cliente, nunca: esa lectura no puede volverse mercancía, con red o sin ella. El SKU es único distinguiendo mayúsculas: si
+ * coinciden dos, no se adivina (agregar el equivocado cobra otra cosa). Igual que `parecidoACodigo` de iOS.
+ */
+fun List<Product>.parecidoACodigo(codigo: String): Product? {
+    if (ReconocedorDeTarjeta.reconocer(codigo) != null || pareceTarjetaDeCliente(codigo)) return null
+    return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { it.equals(codigo, ignoreCase = true) } }.singleOrNull()
+}
+
 fun precioConUnidad(precio: Double, porPeso: Boolean): String = formatMoney(precio) + if (porPeso) "/kg" else ""
 
 @Serializable
