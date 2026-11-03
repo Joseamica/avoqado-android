@@ -23,6 +23,7 @@ fun estadoDeLaHoja(
     puedeVender: Boolean,
     ventaVacia: Boolean,
     etiquetaPro: String?,
+    puedePrender: Boolean = false,
 ): EstadoDeHoja {
     val oculta = AccionDeHoja(visible = false, habilitada = false)
     if (ajustes == EstadoDeAjustes.NoDisponible || ajustes == EstadoDeAjustes.Desconocido) return EstadoDeHoja(false, oculta, oculta)
@@ -40,13 +41,13 @@ fun estadoDeLaHoja(
         paraPrender != null && !paraPrender.allowed ->
             AccionDeHoja(true, false, paraPrender.message.orEmpty(), etiquetaPro.takeIf { paraPrender.howToEnable == "PLAN" })
         paraPrender != null ->
-            AccionDeHoja(true, false, if (paraPrender.puedeEsteUsuario) TextosDeTarjetas.APAGADAS_PRENDELAS_AQUI else TextosDeTarjetas.APAGADAS_PIDELE_A_UN_ADMIN)
+            AccionDeHoja(true, false, if (puedePrender) TextosDeTarjetas.APAGADAS_PRENDELAS_AQUI else TextosDeTarjetas.APAGADAS_PIDELE_A_UN_ADMIN)
         disponibles?.sale?.sellable == false -> AccionDeHoja(true, false, disponibles.sale.message.orEmpty(), etiquetaPro.takeIf { disponibles.sale.howToEnable == "PLAN" })
         !ventaVacia -> AccionDeHoja(true, false, TextosDeTarjetas.VENTA_CON_ARTICULOS)
         else -> AccionDeHoja(true, true)
     }
     val prender = when {
-        disponibles?.vende != true || paraPrender?.allowed != true || !paraPrender.puedeEsteUsuario -> oculta
+        disponibles?.vende != true || paraPrender?.allowed != true || !puedePrender -> oculta
         !enLinea -> AccionDeHoja(true, false, TextosDeTarjetas.SIN_RED)
         else -> AccionDeHoja(true, true)
     }

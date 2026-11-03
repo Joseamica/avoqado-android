@@ -48,7 +48,7 @@ class TarjetasDeRegaloViewModel @Inject constructor(
             EstadoDeAjustes.NoDisponible, EstadoDeAjustes.Desconocido, EstadoDeAjustes.SinPermiso -> actuales
             else -> ajustes
         },
-        online, roles.canReadGiftCards, roles.canSellGiftCards, vacia, planes.requiredTierLabel("GIFT_CARDS"),
+        online, roles.canReadGiftCards, roles.canSellGiftCards, vacia, planes.requiredTierLabel("GIFT_CARDS"), roles.canEnableGiftCards,
     )
     private val estado = MutableStateFlow(calcular())
     val hoja = estado.asStateFlow()

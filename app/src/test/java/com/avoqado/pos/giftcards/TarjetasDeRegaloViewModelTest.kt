@@ -306,8 +306,9 @@ class TarjetasDeRegaloViewModelTest {
         sale = if (enabled) VentaPermitida(true) else VentaPermitida(false, code = "GIFT_CARDS_DISABLED", message = "Apagadas"),
         capacidades = setOf("ENTREGA"), prender = prender,
     )
-    private val puede = EstadoParaPrender(allowed = true, puedeEsteUsuario = true)
+    private val puede = EstadoParaPrender(allowed = true)
     private fun vmApagadas(): TarjetasDeRegaloViewModel {
+        every { almacen.userRole } returns "ADMIN"
         ajustes.value = EstadoDeAjustes.Disponible(base(false, puede))
         cache["sucursal-a"] = GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), base(false, puede))
         return vm()
@@ -355,6 +356,26 @@ class TarjetasDeRegaloViewModelTest {
         assertEquals(TextosDeTarjetas.PRENDER_SIN_RESPUESTA, vm.errorAlPrender.value)
         assertFalse(vm.prendiendo.value)
         assertTrue(vm.hoja.value.prender.habilitada)
+    }
+
+    @Test fun `P1 prender sigue a la sesion del aparato y no a lo guardado`() = runTest {
+        // Un administrador abrió la hoja; luego entra un cajero en el mismo aparato y negocio: lo guardado es lo mismo.
+        val vm = vmApagadas()
+        assertTrue(vm.hoja.value.prender.visible)
+        every { almacen.userRole } returns "CASHIER"
+        vm.alAbrir(true); runCurrent()
+        assertFalse(vm.hoja.value.prender.visible)
+        assertEquals(TextosDeTarjetas.APAGADAS_PIDELE_A_UN_ADMIN, vm.hoja.value.vender.motivo)
+        vm.prender(); runCurrent()
+        coVerify(exactly = 0) { repo.prender(any()) }
+    }
+
+    @Test fun `el permiso dado a otro rol tambien ofrece prender`() = runTest {
+        permisos = listOf("giftCards:read", "giftCards:sell", "giftCards:enable")
+        val vm = vmApagadas()
+        every { almacen.userRole } returns "MANAGER"
+        vm.alAbrir(true); runCurrent()
+        assertTrue(vm.hoja.value.prender.visible)
     }
 
     @Test fun `sin red no manda nada`() = runTest {

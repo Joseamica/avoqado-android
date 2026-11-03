@@ -18,11 +18,8 @@ fun PruebaDeTarjeta.aJson(): JsonObject = buildJsonObject {
 }
 
 @Serializable data class VentaPermitida(val sellable: Boolean, val code: String? = null, val message: String? = null, val howToEnable: String? = null, val operationLimit: Double? = null)
-/** ¿Estas tarjetas apagadas se pueden prender, y este usuario puede? Lo contesta el servidor: `sale` sólo dice que están apagadas. */
-@Serializable data class EstadoParaPrender(
-    val allowed: Boolean, val code: String? = null, val message: String? = null, val howToEnable: String? = null,
-    val puedeEsteUsuario: Boolean = false,
-)
+/** ¿Estas tarjetas apagadas se pueden prender (plan y llaves)? Lo contesta el servidor: `sale` sólo dice que están apagadas. */
+@Serializable data class EstadoParaPrender(val allowed: Boolean, val code: String? = null, val message: String? = null, val howToEnable: String? = null)
 @Serializable data class AjustesDeTarjetas(
     val enabled: Boolean, val suggestedAmounts: List<Double>, val minAmount: Double, val maxAmount: Double,
     val validityMonths: Int? = null, val termsVersion: String? = null, val topePorOperacion: Double? = null,

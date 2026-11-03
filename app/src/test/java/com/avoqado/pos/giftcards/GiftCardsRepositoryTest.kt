@@ -337,7 +337,7 @@ class GiftCardsRepositoryTest {
 
 
     private val prendidas = """{"enabled":true,"suggestedAmounts":[500],"minAmount":100,"maxAmount":10000,"llavesConfiguradas":true,"sale":{"sellable":true},"capacidades":["ENTREGA"],"prender":null}"""
-    private val apagadas = """{"enabled":false,"suggestedAmounts":[500],"minAmount":100,"maxAmount":10000,"llavesConfiguradas":true,"sale":{"sellable":false,"code":"GIFT_CARDS_DISABLED"},"capacidades":["ENTREGA"],"prender":{"allowed":true,"puedeEsteUsuario":true}}"""
+    private val apagadas = """{"enabled":false,"suggestedAmounts":[500],"minAmount":100,"maxAmount":10000,"llavesConfiguradas":true,"sale":{"sellable":false,"code":"GIFT_CARDS_DISABLED"},"capacidades":["ENTREGA"],"prender":{"allowed":true}}"""
 
     @Test fun `prender manda los terminos a su ruta y guarda lo que responde el servidor`() = runBlocking {
         ok(prendidas)

@@ -136,7 +136,7 @@ class EntradaDeTarjetasTest {
     ))
 
     @Test fun `apagadas un administrador ve prender y vender le dice que aqui se prenden`() {
-        val e = hoja(apagadas(EstadoParaPrender(allowed = true, puedeEsteUsuario = true)))
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(allowed = true)), true, true, true, true, "Pro", puedePrender = true)
         assertTrue(e.prender.visible)
         assertTrue(e.prender.habilitada)
         assertFalse(e.vender.habilitada)
@@ -144,13 +144,13 @@ class EntradaDeTarjetasTest {
     }
 
     @Test fun `apagadas quien no puede no ve prender y sabe a quien pedirselo`() {
-        val e = hoja(apagadas(EstadoParaPrender(allowed = true, puedeEsteUsuario = false)))
+        val e = hoja(apagadas(EstadoParaPrender(allowed = true)))
         assertFalse(e.prender.visible)
         assertEquals(TextosDeTarjetas.APAGADAS_PIDELE_A_UN_ADMIN, e.vender.motivo)
     }
 
     @Test fun `apagadas sin plan no ofrece prender y dice por que con la etiqueta del plan`() {
-        val e = hoja(apagadas(EstadoParaPrender(false, "GIFT_CARDS_NOT_IN_PLAN", "Vienen en el plan Pro", "PLAN", puedeEsteUsuario = true)))
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(false, "GIFT_CARDS_NOT_IN_PLAN", "Vienen en el plan Pro", "PLAN")), true, true, true, true, "Pro", puedePrender = true)
         assertFalse(e.prender.visible)
         assertFalse(e.vender.habilitada)
         assertEquals("Vienen en el plan Pro", e.vender.motivo)
@@ -158,14 +158,14 @@ class EntradaDeTarjetasTest {
     }
 
     @Test fun `apagadas sin llaves no ofrece prender y no enseña la etiqueta del plan`() {
-        val e = hoja(apagadas(EstadoParaPrender(false, "GIFT_CARD_KEYS_MISSING", "Escríbenos", "CONTACT_AVOQADO", puedeEsteUsuario = true)))
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(false, "GIFT_CARD_KEYS_MISSING", "Escríbenos", "CONTACT_AVOQADO")), true, true, true, true, "Pro", puedePrender = true)
         assertFalse(e.prender.visible)
         assertEquals("Escríbenos", e.vender.motivo)
         assertNull(e.vender.etiquetaDePlan)
     }
 
     @Test fun `sin red prender se ve en gris y explica que hace falta internet`() {
-        val e = hoja(apagadas(EstadoParaPrender(allowed = true, puedeEsteUsuario = true)), red = false)
+        val e = estadoDeLaHoja(apagadas(EstadoParaPrender(allowed = true)), false, true, true, true, "Pro", puedePrender = true)
         assertTrue(e.prender.visible)
         assertFalse(e.prender.habilitada)
         assertEquals(TextosDeTarjetas.SIN_RED, e.prender.motivo)
