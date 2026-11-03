@@ -235,8 +235,9 @@ private fun PhoneTransactionsLayout(
     denseTabletLandscape: Boolean,
 ) {
     val selectedTransaction by viewModel.selectedTransaction.collectAsState()
+    val detalleNoDisponible by viewModel.detalleNoDisponible.collectAsState()
 
-    if (selectedTransaction != null) {
+    if (selectedTransaction != null || detalleNoDisponible != null) {
         // Show detail full screen on phone
         TransactionDetailPanel(
             viewModel = viewModel,

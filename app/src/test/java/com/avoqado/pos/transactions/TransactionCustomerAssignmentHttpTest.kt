@@ -128,6 +128,43 @@ class TransactionCustomerAssignmentHttpTest {
         }
     }
 
+    // D3 (Codex r1 #2): «Sin conexión» sólo si nadie contestó. Un 403/404 sí es respuesta, aunque la bandera del aparato siga vieja.
+    @Test fun `una venta que el servidor rechaza no cuenta como sin respuesta`() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(404).setBody("{}"))
+            server.enqueue(MockResponse().setResponseCode(403).setBody("{}"))
+            val repo = repository(server)
+            repeat(2) {
+                val lectura = repo.leerDetalle("payment-a", "actor-a", "venue-a")
+                assertNull(lectura.transaccion)
+                assertFalse(lectura.sinRespuesta)
+            }
+        }
+    }
+
+    @Test fun `una lectura sin red cuenta como sin respuesta, y la siguiente que contesta no`() = runBlocking {
+        val apagado = MockWebServer()
+        val repo = repository(apagado)
+        apagado.shutdown()
+        val sinRed = repo.leerDetalle("payment-a", "actor-a", "venue-a")
+        assertNull(sinRed.transaccion)
+        assertTrue(sinRed.sinRespuesta)
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(404).setBody("{}"))
+            repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
+            assertFalse(repo.leerDetalle("payment-a", "actor-a", "venue-a").sinRespuesta)
+        }
+    }
+
+    // Codex r2 #2: al renovar la sesión, un 503 sí es respuesta del servidor; sólo el fallo de red es «nadie contestó».
+    @Test fun `no poder renovar la sesión sólo cuenta como sin respuesta si fue por la red`() = runBlocking {
+        MockWebServer().use { server ->
+            fun lanzando(motivo: String) = OkHttpClient.Builder().addInterceptor { throw com.avoqado.pos.core.data.network.SesionSinRenovar(motivo) }.build()
+            assertFalse(repository(server, lanzando("servidor:503")).leerDetalle("payment-a", "actor-a", "venue-a").sinRespuesta)
+            assertTrue(repository(server, lanzando("red:UnknownHostException")).leerDetalle("payment-a", "actor-a", "venue-a").sinRespuesta)
+        }
+    }
+
     @Test fun `historical detail forbidden cannot open manager PIN during confirmation`() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","required":"payments:read","overridable":true}"""))

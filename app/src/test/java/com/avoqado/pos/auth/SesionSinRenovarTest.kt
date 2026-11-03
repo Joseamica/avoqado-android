@@ -221,6 +221,14 @@ class SesionSinRenovarTest {
         assertEquals("Bearer access-nuevo", reintento?.header("Authorization"))
     }
 
+    // D3 (Codex r3): un 200 ilegible al renovar sí es respuesta del servidor. Es lo que ya hace iOS.
+    @Test
+    fun `renovar con un cuerpo ilegible no se reporta como fallo de red`() {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+        val motivo = autenticarEsperandoSinRed(original401()).motivo
+        org.junit.Assert.assertTrue(motivo, motivo.startsWith("servidor:"))
+    }
+
     // MARK: - Auditoría de Codex (16-oct)
 
     @Test
