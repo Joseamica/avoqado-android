@@ -1,5 +1,6 @@
 package com.avoqado.pos.transactions
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -181,6 +182,108 @@ class RefundSheetLayoutGuardTest {
             "El envío dejó de usar `tipRefundCentsParaEnvio(...)`.",
             codigo.contains("tipRefundCentsParaEnvio("),
         )
+    }
+
+    // MARK: - La pantalla completa (spec 2026-11-02). Son de fuente: lo que se ve lo comprueba el aparato.
+
+    @Test
+    fun `emitir reembolso abre a pantalla completa y no en la hoja de antes`() {
+        val ventana = ventanaDeLaPantalla()
+
+        listOf("AvoqadoModalBottomSheet(", "rememberModalBottomSheetState", "heightIn(max = 720.dp)", "CircleBackButton")
+            .forEach { assertFalse("Volvió `$it`: era de la hoja vieja.", ventana.contains(it)) }
+        listOf(
+            "usePlatformDefaultWidth = false",
+            "dismissOnClickOutside = false",
+            "AvoqadoFullscreenHeader(",
+            "title = \"Emitir reembolso\"",
+            "navStyle = FullscreenHeaderNav.CLOSE",
+            "showDivider = true",
+            "ImmersiveWindow()",
+        ).forEach { assertTrue("La pantalla perdió `$it`.", ventana.contains(it)) }
+        assertTrue(
+            "`BarreraDeAtajos()` va ANTES del `Dialog`, como en `AvoqadoFullScreenModal`: en Windows ninguna tecla de " +
+                "atajo debe responder detrás de esta pantalla.",
+            // `\b`: el elegir terminal, más arriba, es un `AvoqadoDialog(`.
+            ventana.indexOf("BarreraDeAtajos()") in 1 until Regex("""\bDialog\(""").find(ventana)!!.range.first,
+        )
+    }
+
+    /** Se abre en su propia ventana, arriba de la pantalla; no depende de la hoja vieja. */
+    @Test
+    fun `la hoja de escoger cliente sigue siendo hoja`() {
+        val cliente = leerCodigoSinComentarios(hoja).substringAfter("if (escogiendoCliente)").substringBefore("private fun ItemsBody(")
+        assertTrue("No se pudo recortar el bloque de escoger cliente.", cliente.contains("CustomersView("))
+        assertTrue("La hoja de escoger cliente dejó de ser `AvoqadoModalBottomSheet`.", cliente.contains("AvoqadoModalBottomSheet("))
+    }
+
+    /**
+     * La ✕ y el regreso cierran como hoy, también con un envío en vuelo: el de saldo a favor vive en el modelo del
+     * detalle y sobrevive; la pantalla sólo lo espera.
+     */
+    @Test
+    fun `cerrar no se bloquea ni cancela el envio a saldo a favor`() {
+        val ventana = ventanaDeLaPantalla()
+
+        assertTrue(ventana.contains("onDismissRequest = onDismiss"))
+        assertTrue(ventana.contains("onNav = onDismiss"))
+        assertFalse("La ✕ quedó con un bloqueo que hoy no existe.", ventana.contains("navEnabled"))
+        assertTrue("El envío a saldo a favor ya no se lanza con `enviarASaldo`.", ventana.contains("{ enviar(cuerpo, llave) }"))
+        assertTrue("La pantalla ya no sólo espera el envío.", ventana.contains("envio?.await()"))
+        val quienAbre = leerCodigoSinComentarios("app/src/main/java/com/avoqado/pos/transactions/presentation/TransactionDetailSheet.kt")
+        assertTrue("El envío dejó de vivir en el modelo del detalle.", quienAbre.contains("viewModel.enviarReembolsoASaldo("))
+    }
+
+    /** `maxHeight` es el alto real bajo el encabezado y sin el teclado: de él dependen `apretado` y las dos columnas. */
+    @Test
+    fun `el alto del cuerpo no cuenta el encabezado y baja con el teclado`() {
+        val ventana = ventanaDeLaPantalla()
+        val cuerpo = ventana.indexOf("BoxWithConstraints(")
+
+        assertTrue("El encabezado tiene que ir arriba del cuerpo.", ventana.indexOf("AvoqadoFullscreenHeader(") in 1 until cuerpo)
+        assertTrue("El cuerpo perdió `imePadding()`.", ventana.substring(cuerpo).substringBefore(") {").contains(".imePadding()"))
+        assertTrue("El corte de `apretado` se midió con los 56 dp del encabezado viejo: 640 - 56.", ventana.contains("maxHeight < 584.dp"))
+        assertTrue(ventana.contains("val avisoEnRenglon = maxWidth >= 480.dp"))
+    }
+
+    /**
+     * Un `Dialog` no trae lo que `ModalBottomSheet` le fija a su ventana. Sin esto, antes de Android 11 `imePadding` vale 0
+     * y el pie queda bajo el teclado; de ahí en adelante el sistema desplaza la ventana además de `imePadding`.
+     */
+    @Test
+    fun `la ventana deja el teclado al contenido, sin tocar DialogProperties`() {
+        val ventana = ventanaDeLaPantalla()
+
+        assertTrue("La ventana ya no recibe `TecladoAlContenido()`.", ventana.contains("TecladoAlContenido()"))
+        val teclado = leerCodigoSinComentarios(hoja).substringAfter("private fun TecladoAlContenido(").substringBefore("@Composable")
+        listOf("as? DialogWindowProvider", "setSoftInputMode(", "SOFT_INPUT_ADJUST_NOTHING", "SOFT_INPUT_ADJUST_RESIZE")
+            .forEach { assertTrue("`TecladoAlContenido` perdió `$it`.", teclado.contains(it)) }
+        assertFalse(
+            "`decorFitsSystemWindows` no existe en el Compose de WINDOWS: esa llamada no compilaría.",
+            ventana.contains("decorFitsSystemWindows"),
+        )
+    }
+
+    /**
+     * Sólo la tarjeta de regalo lleva tope y va centrada. `widthIn` tiene que ir ANTES de `fillMaxWidth`: al revés no
+     * topa nada (`fillMaxWidth` ya fijó el ancho), y así estaba en la hoja vieja.
+     */
+    @Test
+    fun `solo la tarjeta de regalo lleva tope de ancho y va centrada`() {
+        val ventana = ventanaDeLaPantalla()
+
+        assertTrue(
+            Regex("""\.align\(Alignment\.TopCenter\)\s*\.then\(if \(soloCompleto\) Modifier\.widthIn\(max = 640\.dp\) else Modifier\)\s*\.fillMaxWidth\(\)""")
+                .containsMatchIn(ventana),
+        )
+        assertEquals("Con una columna común va a todo el ancho.", 1, Regex("""widthIn\(""").findAll(ventana).count())
+    }
+
+    /** El cuerpo de `IssueRefundSheet` hasta la hoja de escoger cliente, o sea la pantalla. */
+    private fun ventanaDeLaPantalla(): String {
+        val ventana = leerCodigoSinComentarios(hoja).substringAfter("fun IssueRefundSheet(").substringBefore("if (escogiendoCliente)")
+        assertTrue("El recorte de la pantalla ya no llega al botón de reembolsar.", ventana.contains("text = \"Reembolsar\""))
+        return ventana
     }
 
     /** Quita comentarios para que un guard no se dé por satisfecho con una mención en prosa. */

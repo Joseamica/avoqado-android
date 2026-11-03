@@ -7,4 +7,6 @@ public class Window {
     private final View decorView;
     public Window(Context context) { this.decorView = new View(context); }
     public View getDecorView() { return decorView; }
+    /** No hay teclado en pantalla que acomodar. */
+    public void setSoftInputMode(int mode) {}
 }

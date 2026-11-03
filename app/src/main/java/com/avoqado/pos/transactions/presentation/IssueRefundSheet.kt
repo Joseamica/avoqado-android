@@ -1,6 +1,8 @@
 package com.avoqado.pos.transactions.presentation
 
+import android.os.Build
 import android.util.Log
+import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
@@ -37,6 +38,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
@@ -56,13 +58,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
-import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.BarreraDeAtajos
+import com.avoqado.pos.designsystem.components.FullscreenHeaderNav
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -167,7 +175,6 @@ fun IssueRefundSheet(
 ) {
     val spacing = AvoqadoTheme.spacing
     val corners = AvoqadoTheme.cornerRadius
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     val conectado by conexion.conectado.collectAsState()
     val servidor by conexion.servidor.collectAsState()
@@ -405,17 +412,30 @@ fun IssueRefundSheet(
         }
     }
 
-    AvoqadoModalBottomSheet(
+    BarreraDeAtajos()
+    Dialog(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+        ),
     ) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
+        TecladoAlContenido()
         val bandaScroll = rememberScrollState()
         val pieScroll = rememberScrollState()
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        Column(modifier = Modifier.fillMaxSize()) {
+        AvoqadoFullscreenHeader(
+            title = "Emitir reembolso",
+            onNav = onDismiss,
+            navStyle = FullscreenHeaderNav.CLOSE,
+            showDivider = true,
+        )
         // Three-band layout so footer (amount summary + Reembolsar) stays
-        // visible on small tablets (≈9"): fixed header + scrollable middle
-        // (weight=1f) + fixed footer. Also capped width for landscape.
+        // visible on small tablets (≈9"): tabs + scrollable middle
+        // (weight=1f) + fixed footer.
         //
         // 🔴 EL `BoxWithConstraints` NO ES DECORATIVO: es lo ÚNICO que sabe cuánto alto
         // queda DE VERDAD, porque lleva el `imePadding` encima y por tanto su `maxHeight`
@@ -428,8 +448,9 @@ fun IssueRefundSheet(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
-                // a su ventana, asi que el ajuste va en el contenido.
+                .weight(1f)
+                // El teclado no tapa esta pantalla: `TecladoAlContenido` deja
+                // el ajuste en el contenido.
                 .imePadding(),
         ) {
         // El umbral sale de MEDIR la hoja en el aparato (OrderPAD 3 forzado, 2026-09-12),
@@ -462,33 +483,22 @@ fun IssueRefundSheet(
         // así que con el alto de cualquier aparato real cabe sin comprimir nada. La banda sólo
         // cede su sitio donde es prescindible: en importe, donde su único contenido es un
         // aviso que el pie ya repite palabra por palabra.
-        val apretado = tab == RefundTab.AMOUNT && maxHeight < 640.dp
+        //
+        // 🔴 Esos números cuentan los 56 dp del encabezado de la hoja, y el de la pantalla completa ya vive arriba de este
+        // alto: el mismo corte de 640 dp aquí son 584 dp. Con 640, un celular chico perdería sin teclado el aviso con
+        // «Abrir en la terminal», que en «Por importe» sólo existe en la banda.
+        val apretado = tab == RefundTab.AMOUNT && maxHeight < 584.dp
         // En un celular, el aviso de la terminal en un renglón dejaría el texto en ~100 dp: ahí se apila.
         val avisoEnRenglon = maxWidth >= 480.dp
         Column(
             modifier = Modifier
+                // La tarjeta de regalo no trae pestañas, lista ni importe: va centrada y con tope, sin importar el ancho.
+                // `widthIn` ANTES de `fillMaxWidth`: al revés no topa nada, porque `fillMaxWidth` ya fijó el ancho.
+                .align(Alignment.TopCenter)
+                .then(if (soloCompleto) Modifier.widthIn(max = 640.dp) else Modifier)
                 .fillMaxWidth()
-                .widthIn(max = 640.dp)
-                .heightIn(max = 720.dp)
                 .padding(horizontal = spacing.xl),
         ) {
-            // === FIXED HEADER ===
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = spacing.sm, bottom = spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircleBackButton(onClick = onDismiss)
-                Text(
-                    text = "Emitir reembolso",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(modifier = Modifier.size(36.dp))
-            }
-
             if (!soloCompleto) Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1088,6 +1098,8 @@ fun IssueRefundSheet(
             }
         }
         }
+        }
+        }
     }
 
     if (escogiendoCliente) {
@@ -1109,6 +1121,28 @@ fun IssueRefundSheet(
                     canCreateCustomer = saldo.puedeCrearCliente)
             }
         }
+    }
+}
+
+/**
+ * Deja el teclado al contenido (`imePadding`), como `ModalBottomSheet` de Material3 hace con su ventana. Un `Dialog` no lo
+ * trae: su tema viene con `adjustPan`, que además de `imePadding` desplaza la ventana, y antes de Android 11 sólo
+ * `adjustResize` reporta de forma fiable el alto del teclado.
+ *
+ * Va por la ventana y no en `DialogProperties`: su `decorFitsSystemWindows` no existe en el Compose de WINDOWS, donde la
+ * vista nunca es un `DialogWindowProvider` y esto no hace nada.
+ */
+@Composable
+private fun TecladoAlContenido() {
+    val ventana = (LocalView.current.parent as? DialogWindowProvider)?.window
+    LaunchedEffect(ventana) {
+        ventana?.setSoftInputMode(
+            if (Build.VERSION.SDK_INT >= 30) {
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+            } else {
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            },
+        )
     }
 }
 
