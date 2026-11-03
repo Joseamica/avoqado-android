@@ -1,0 +1,61 @@
+name: Línea de iOS
+
+# iOS va después (founder, 3-nov-2026): cada PR a develop dice qué pasa con iOS, para que nada se quede sin anotar.
+# Regla: AGENTS.md del workspace, «Producto entre repos». Recetario: docs/proyectos/ios-por-hacer.md del workspace.
+# Se borra el día que le toque su turno a iOS.
+
+on:
+  pull_request:
+    branches: [develop]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  linea-ios:
+    name: El PR dice qué pasa con iOS
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Buscar la línea de iOS en la descripción
+        env:
+          CUERPO: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'FIN'
+          import os, re, sys
+
+          # Lo que el revisor no ve no cuenta. Límite a propósito: no comprueba que la ficha exista,
+          # porque vive en otro repo (el workspace). Esto cuida el olvido, no a quien quiera engañarlo.
+          cuerpo = re.sub(r'<!--.*?(-->|\Z)', '', os.environ.get('CUERPO') or '', flags=re.S)
+          RELLENO = {'todo', 'tbd', 'na', 'n/a', 'no', 'si', 'sí', 'nada', 'ficha'}
+          SIN_DECIDIR = re.compile(r'(pendiente|por (hacer|definir|ver|revisar|decidir))\b')
+          MARCADOR = ('título de la ficha', 'titulo de la ficha', '(razón)', '(razon)')
+
+
+          def limpio(valor):
+              valor = re.sub(r'[*_`~]|\[[ xX]?\]', '', valor)
+              return re.sub(r'^[\s\-–—:.,;()]+|[\s\-–—:.,;()]+$', '', valor).lower()
+
+
+          def es_relleno(valor):
+              return not re.search(r'\w', valor) or valor in RELLENO or bool(SIN_DECIDIR.match(valor))
+
+
+          def dice_algo(crudo):
+              valor = limpio(crudo)
+              if valor.startswith('<') or any(m in crudo.lower() for m in MARCADOR):
+                  return False
+              if valor.startswith('no aplica'):
+                  return not es_relleno(limpio(valor[len('no aplica'):]))
+              return not es_relleno(valor)
+
+
+          buenas = [v.strip() for v in re.findall(r'(?m)^[ \t>*_-]*iOS[*_]*:(.*)$', cuerpo) if dice_algo(v)]
+          if buenas:
+              print('✅ El PR dice qué pasa con iOS:', buenas[0])
+              sys.exit(0)
+          print('::error::Falta la línea de iOS en la descripción del PR, o sigue de relleno. Agrega el título real de la ficha '
+                '(«iOS: Tarjetas de regalo») o «iOS: no aplica» con su razón («iOS: no aplica (sólo WINDOWS)»). '
+                'Cómo se anota: docs/proyectos/ios-por-hacer.md del workspace.')
+          sys.exit(1)
+          FIN
