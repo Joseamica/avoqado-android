@@ -18,6 +18,7 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import java.io.IOException
 import java.time.Instant
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +35,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import com.avoqado.pos.onlineorders.presentation.sePuedeAceptar
+import com.avoqado.pos.onlineorders.presentation.textoDeDinero
+import com.avoqado.pos.onlineorders.presentation.pedidoDelDialogo
+import com.avoqado.pos.onlineorders.presentation.TipoDeDialogo
 import org.junit.Test
 
 /** Task A3: la pantalla «Pedidos en línea». Repositorio falso (mockk) y reloj virtual: nada de red ni de tiempo real. */
@@ -53,11 +58,13 @@ class OnlineOrdersViewModelTest {
         restante: Long = 20000,
         pago: String = "PENDING",
         needsPrint: Boolean = false,
+        modo: String = "PAY_AT_PICKUP",
+        tarjeta: String? = null,
     ) = OnlineOrder(
         orderId = id, onlineOrderId = "o-$id", orderNumber = id, status = estado,
-        paymentMode = "PAY_AT_PICKUP", paymentStatus = pago, customerName = "Ana", customerPhone = "5512345678", note = null,
+        paymentMode = modo, paymentStatus = pago, customerName = "Ana", customerPhone = "5512345678", note = null,
         createdAt = Instant.parse("2026-10-22T10:00:00Z"), acceptDeadlineAt = null, estimatedReadyAt = null,
-        totalCents = total, remainingCents = restante, needsPrint = needsPrint, items = emptyList(),
+        totalCents = total, remainingCents = restante, needsPrint = needsPrint, items = emptyList(), cardStatus = tarjeta,
     )
 
     private fun bandeja(
@@ -547,5 +554,133 @@ class OnlineOrdersViewModelTest {
         vm.reimprimir("a1")
         runCurrent()
         assertTrue(reimpresiones.isEmpty())
+    }
+
+    @Test
+    fun `after a 409 CONFIRMING the order stays unacceptable even if the reread fails, until a good read without CONFIRMING`() = runTest(dispatcher) {
+        fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+            Result.failure(java.io.IOException("500")),
+            Result.success(bandeja(tarjeta("CONFIRMING"))),
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+        )
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.ConfirmandoPago("El banco aún confirma")
+        val vm = armar()
+        vm.refrescar()
+        assertTrue(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        vm.aceptar("p1", 15)
+        runCurrent()
+        assertEquals("El banco aún confirma", vm.aviso.value)
+        assertFalse(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        assertNull(pedidoDelDialogo("p1", TipoDeDialogo.ACEPTAR, vm.secciones.value))
+        vm.refrescar() // sigue CONFIRMING en el servidor
+        assertFalse(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        vm.refrescar() // lectura buena sin CONFIRMING
+        assertTrue(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+    }
+
+    @Test
+    fun `a 409 CONFIRMING received when rejecting also blocks accepting if the reread fails`() = runTest(dispatcher) {
+        fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+            Result.failure(RuntimeException("500")),
+        )
+        coEvery { repo.reject("p1", "OTHER", null) } returns AccionResultado.ConfirmandoPago("El banco aún confirma")
+        val vm = armar()
+        vm.refrescar()
+        vm.rechazar("p1", "OTHER")
+        runCurrent()
+        assertEquals("El banco aún confirma", vm.aviso.value)
+        val visto = vm.secciones.value.porAceptar.single()
+        assertEquals("CONFIRMING", visto.cardStatus)
+        assertFalse(sePuedeAceptar(visto))
+        vm.aceptar("p1", 15)
+        runCurrent()
+        coVerify(exactly = 0) { repo.accept(any(), any()) }
+    }
+
+    @Test
+    fun `a read started before the 409 cannot lift the block, only one started after it can`() = runTest(dispatcher) {
+        fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
+        val enElAire = CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { repo.inbox("all", any(), any()) } coAnswers {
+            when (++lecturas) {
+                // El sondeo que ya iba en el aire: una foto de antes del 409.
+                2 -> { enElAire.await(); Result.success(bandeja(tarjeta("AUTHORIZED"))) }
+                // La relectura de la acción: un 500, no falta de red (no apaga los botones por «sin conexión»).
+                3 -> Result.failure(RuntimeException("500"))
+                else -> Result.success(bandeja(tarjeta("AUTHORIZED")))
+            }
+        }
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.ConfirmandoPago("El banco aún confirma")
+        val vm = armar()
+        vm.refrescar()
+        val sondeo = launch { vm.refrescar() }
+        runCurrent()
+        vm.aceptar("p1", 15)
+        runCurrent()
+        assertFalse(sePuedeAceptar(vm.secciones.value.porAceptar.single()))
+        assertEquals("la relectura de la acción espera su turno", setOf("p1"), vm.ocupados.value)
+
+        enElAire.complete(Unit)
+        sondeo.join()
+        runCurrent()
+        assertEquals(3, lecturas)
+        assertTrue("ya terminó la relectura de la acción", vm.ocupados.value.isEmpty())
+        val visible = vm.secciones.value.porAceptar.single()
+        assertFalse("la foto de antes del 409 no lo suelta", sePuedeAceptar(visible))
+        assertEquals("ni le devuelve el texto de antes", "Confirmando el pago…", textoDeDinero(visible))
+        vm.aceptar("p1", 15)
+        runCurrent()
+        coVerify(exactly = 1) { repo.accept(any(), any()) }
+
+        vm.refrescar() // Ésta sí salió después del 409.
+        val leido = vm.secciones.value.porAceptar.single()
+        assertTrue(sePuedeAceptar(leido))
+        assertEquals("Con tarjeta: se cobra al aceptar", textoDeDinero(leido))
+    }
+
+    @Test
+    fun `aceptar never reaches the server once the current order is confirming`() = runTest(dispatcher) {
+        // Los minutos de un diálogo ya abierto: el sondeo trajo CONFIRMING de otro aparato después de abrirlo.
+        fun tarjeta(t: String) = pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE, modo = "CARD_ONLINE", tarjeta = t)
+        coEvery { repo.inbox("all", any(), any()) } returnsMany listOf(
+            Result.success(bandeja(tarjeta("AUTHORIZED"))),
+            Result.success(bandeja(tarjeta("CONFIRMING"))),
+        )
+        coEvery { repo.accept(any(), any()) } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+        vm.refrescar()
+        vm.aceptar("p1", 15)
+        runCurrent()
+        coVerify(exactly = 0) { repo.accept(any(), any()) }
+        assertTrue(vm.ocupados.value.isEmpty())
+    }
+
+    @Test
+    fun `aceptar after the 409 never reaches the server again, even without a list`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.failure(RuntimeException("500"))
+        coEvery { repo.accept(any(), any()) } returns AccionResultado.ConfirmandoPago("El banco aún confirma")
+        val vm = armar()
+        vm.aceptar("p1", 15)
+        runCurrent()
+        vm.aceptar("p1", 20)
+        runCurrent()
+        coVerify(exactly = 1) { repo.accept(any(), any()) }
+    }
+
+    @Test
+    fun `pay at pickup accepts as always`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja(pedido("p1", OnlineOrderStatus.PENDING_ACCEPTANCE)))
+        coEvery { repo.accept("p1", 15) } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+        vm.aceptar("p1", 15)
+        runCurrent()
+        coVerify(exactly = 1) { repo.accept("p1", 15) }
     }
 }

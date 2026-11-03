@@ -19,6 +19,26 @@ object TextosPedidosEnLinea {
     const val PAGADO = "Pagado"
     fun cobrarAlRecoger(monto: String) = "Cobrar al recoger $monto"
 
+    // Pedidos en línea fase 2 (tarjeta): iOS debe copiarlos igual.
+    const val TARJETA_SE_COBRA_AL_ACEPTAR = "Con tarjeta: se cobra al aceptar"
+    const val CONFIRMANDO_PAGO = "Confirmando el pago…"
+    const val PAGADO_CON_TARJETA = "Pagado con tarjeta"
+    const val TARJETA_COBRADA_DEVUELVELA = "Tarjeta cobrada: devuélvela desde el panel"
+    const val NO_SE_COBRO_LA_TARJETA = "No se cobró la tarjeta"
+    const val LIBERANDO_LA_TARJETA = "Liberando la tarjeta…"
+    const val COMANDA_PAGADO_CON_TARJETA = "PAGADO CON TARJETA"
+    const val MOTIVO_PAGO_FALLIDO = "No se pudo cobrar la tarjeta"
+
+    /** Motivo recibido (`rejectReason` del servidor) en texto; null si no hay o es un código que no conocemos. */
+    fun textoDelMotivo(rejectReason: String?): String? = when (rejectReason) {
+        "PAYMENT_FAILED" -> MOTIVO_PAGO_FALLIDO
+        "OUT_OF_ITEMS" -> MOTIVO_SIN_INGREDIENTES
+        "CLOSED" -> MOTIVO_CERRADO
+        "TOO_BUSY" -> MOTIVO_MUY_OCUPADOS
+        "OTHER" -> MOTIVO_OTRO
+        else -> null
+    }
+
     const val MOTIVO_SIN_INGREDIENTES = "Sin ingredientes"
     const val MOTIVO_CERRADO = "Cerrado"
     const val MOTIVO_MUY_OCUPADOS = "Muy ocupados"

@@ -184,6 +184,31 @@ class OnlineOrdersRepositoryTest {
     }
 
     @Test
+    fun `card order fields are read and an old server without them parses as null`() = runTest {
+        val tarjeta = pedido().replace("\"paymentMode\":\"PAY_AT_PICKUP\"", "\"paymentMode\":\"CARD_ONLINE\",\"cardStatus\":\"CONFIRMING\"," +
+            "\"card\":{\"status\":\"CAPTURED\",\"amount\":185.5,\"capturedAmount\":185.5,\"authorizedAt\":null,\"capturedAt\":null},\"rejectReason\":\"PAYMENT_FAILED\"")
+        server.enqueue(MockResponse().setBody(bandeja(tarjeta + "," + pedido())))
+        val (a, b) = repo.inbox("all", true).getOrThrow().orders
+        assertEquals("CARD_ONLINE", a.paymentMode)
+        assertEquals("CONFIRMING", a.cardStatus)
+        assertEquals("CAPTURED", a.cardChargeStatus)
+        assertEquals("PAYMENT_FAILED", a.rejectReason)
+        assertNull(b.cardStatus); assertNull(b.cardChargeStatus); assertNull(b.rejectReason)
+    }
+
+    @Test
+    fun `409 ONLINE_ORDER_CONFIRMING_PAYMENT is ConfirmandoPago with the server text`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"success":false,"code":"ONLINE_ORDER_CONFIRMING_PAYMENT","error":"El banco aún confirma el pago."}"""))
+        assertEquals(AccionResultado.ConfirmandoPago("El banco aún confirma el pago."), repo.accept("o1", 15))
+    }
+
+    @Test
+    fun `409 ONLINE_ORDER_PAID_BY_CARD is an Error with the server text`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"success":false,"code":"ONLINE_ORDER_PAID_BY_CARD","message":"Ya se pagó con tarjeta."}"""))
+        assertEquals(AccionResultado.Error("Ya se pagó con tarjeta."), repo.delivered("o1"))
+    }
+
+    @Test
     fun `IOException is SinConexion`() = runTest {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
         assertEquals(AccionResultado.SinConexion, repo.ready("o1"))
