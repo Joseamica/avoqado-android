@@ -38,6 +38,11 @@ fun ManagerOverrideSheet(
     prompt: ManagerOverrideCoordinator.Prompt,
     onSubmit: suspend (String) -> OverrideResult,
     onDismiss: () -> Unit,
+    /**
+     * C4 (22-oct): el título. El de siempre por omisión; la declaración «no se cobró» del mesero pasa
+     * `CancelacionDeCobro.PIN_DE_GERENTE_TITULO`. El teclado, los textos de error y el cuerpo no cambian.
+     */
+    title: String = "Se necesita autorización",
 ) {
     // 🔴 Keyed por el teclado, no por el slot de composición.
     //
@@ -53,7 +58,7 @@ fun ManagerOverrideSheet(
     val scope = rememberCoroutineScope()
 
     AvoqadoDialog(
-        title = "Se necesita autorización",
+        title = title,
         description = "Para ${prompt.actionLabel}. Pide a un encargado su código.",
         onDismiss = onDismiss,
         // Tocar fuera NO cancela: hay una acción esperando del otro lado y el

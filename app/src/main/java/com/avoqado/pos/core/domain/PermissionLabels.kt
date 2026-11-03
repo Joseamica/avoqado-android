@@ -62,6 +62,9 @@ object PermissionLabels {
         "payments:routing-read" to "ver por dónde se procesa cada cobro",
         "payments:routing-manage" to "cambiar por dónde se procesa cada cobro",
         "payment:create-manual" to "registrar un cobro a mano",
+        // C4 (22-oct): «Ya revisé la terminal: no se cobró». El mesero no lo tiene y lo hace con el PIN de un gerente; el
+        // teclado dice «Para confirmar que un cobro no se realizó».
+        "payments:reconcile-uncharged" to "confirmar que un cobro no se realizó",
         "tpv-payments:send-receipt" to "enviar el recibo",
         "tpv-payments:pay-later" to "dejar la cuenta para pagar después",
         "tender-types:read" to "ver los tipos de pago",

@@ -82,6 +82,12 @@ object CancelacionDeCobro {
     const val TITULO_PENDIENTE = "Cancelación pendiente"
     const val CUERPO_PENDIENTE =
         "La terminal todavía no confirma que el cobro se detuvo. La venta se cancelará sola en cuanto conste que no se cobró."
+    /**
+     * D6 (QA en la N86, 3-nov): la terminal ya se soltó, así que ya no hay nada que confirme solo: esa venta sigue en duda hasta que
+     * una persona lo declare o llegue el aviso del banco. Igual en iOS, letra por letra.
+     */
+    const val CUERPO_TERMINAL_LIBRE =
+        "La terminal ya está libre, pero no consta si esta venta se cobró. Si no se cobró, decláralo aquí y la venta se cancela."
     const val CUERPO_SIN_RED =
         "Sin conexión en esta tablet: la cancelación se enviará en cuanto vuelva la red. La terminal podría seguir mostrando el cobro."
     const val BOTON_VOLVER_A_CONSULTAR = "Volver a consultar"
@@ -91,6 +97,14 @@ object CancelacionDeCobro {
     // ── La declaración del cajero: «ya revisé la terminal y no se cobró» (etapa 2, 19-sep).
     //    🔴 Los MISMOS textos, cadena por cadena, que iOS: la divergencia `Atendio/Atendió` del
     //    ticket nació de dos apps escribiendo por su cuenta lo que parecía lo mismo.
+    const val TERMINAL_LIBRE_VENTA_EN_DUDA = "La terminal ya está libre · ¿se cobró esta venta?"
+    const val NO_SE_COBRO_COBRAR_OTRA_VEZ = "No se cobró → cobrar otra vez"
+
+    /**
+     * Revisión de iOS (3-nov): esas dos frases hablan de ESTA venta. Con el cobro de otra venta («Revisar» desde el aviso) sería
+     * «¿se cobró esta venta?» sobre otra, y «cobrar otra vez» no abre el cobro. Igual en iOS.
+     */
+    fun hablaDeTerminalLibre(terminalLibre: Boolean, fromPreviousSale: Boolean): Boolean = terminalLibre && !fromPreviousSale
     const val BOTON_DECLARAR_NO_COBRADO = "Ya revisé la terminal: no se cobró"
     const val DECLARACION_TITULO = "Confirma que no se cobró"
     const val DECLARACION_CONFIRMAR = "Sí, no se cobró"
@@ -101,8 +115,28 @@ object CancelacionDeCobro {
      * 🔴 Online-only A PROPÓSITO, y por eso este texto NO dice «se guardó». El cajero afirma lo que
      * ve AHORA en la pantalla de la terminal, y esa afirmación caduca: reproducida diez minutos
      * después podría caer sobre una venta que entretanto sí se cobró.
+     *
+     * SIN USO desde C1 (22-oct): lo sustituyen [SIN_CONEXION_REVISION] y [SIN_CONEXION_REVISION_ESTA_VENTA]. Se conserva
+     * porque más de 20 ramas vivas de ANDROID parten de develop con ella: borrarla arriesga choques al unir.
      */
     const val DECLARACION_SIN_RED = "Necesitas conexión para confirmar esta declaración."
+
+    /**
+     * C1 (spec §Sin red, 22-oct): una revisión —«Revisar ese cobro», «Volver a consultar» o la declaración «Ya revisé la
+     * terminal: no se cobró»— que no se pudo hacer por falta de red, cuando la duda es de OTRA venta. Ésta sí se puede
+     * cobrar en efectivo: el efectivo no se frena. C2, C4 y C5 lo reusan; iOS, igual, letra por letra.
+     *
+     * 🔴 Online-only A PROPÓSITO: no dice «se guardó» y nunca se encola (ver [DECLARACION_SIN_RED]).
+     */
+    const val SIN_CONEXION_REVISION = "Sin conexión: la revisión necesita internet; puedes cobrar en efectivo"
+
+    /**
+     * C1, fix round 2 (controlador, 22-oct): la MISMA situación cuando la duda es de la venta EN CURSO —su «Cobro sin
+     * confirmar» propio, su declaración, o «Revisar ese cobro» con alcance `ORDER`—. No invita al efectivo: cobrar en
+     * efectivo la misma venta con la tarjeta en duda es un hueco que el founder todavía no decide (D10). Igual en iOS.
+     */
+    const val SIN_CONEXION_REVISION_ESTA_VENTA =
+        "Sin conexión: la revisión necesita internet. No cobres esta venta otra vez hasta confirmarla."
 
     /** La sesión venció y se renovó sola; la declaración NO se reenvió a propósito. */
     const val DECLARACION_SESION_RENOVADA =
@@ -110,7 +144,47 @@ object CancelacionDeCobro {
 
     /** Sólo para una respuesta del servidor sin mensaje legible: el suyo SIEMPRE tiene prioridad. */
     const val DECLARACION_RECHAZO_GENERICO =
-        "No se pudo declarar este cobro. Conserva el pendiente y consulta su resultado."
+        "Este cobro todavía no se puede declarar. Vuelve a consultar en un momento."
+
+    /**
+     * C4 (P5, textos honestos, 22-oct): la declaración se rechazó con `EXECUTION_STILL_ACTIVE` —la terminal todavía reporta
+     * ese cobro en curso—. El texto del servidor («Espera unos segundos y vuelve a consultar») invitaba a insistir sobre algo
+     * que no cede en segundos; éste dice lo que de verdad pasa y qué hacer si urge. Es la ÚNICA excepción a «el mensaje del
+     * rechazo viaja tal cual desde el servidor». Igual en iOS, letra por letra.
+     */
+    const val TERMINAL_REPORTA_SIN_TERMINAR =
+        "La terminal reporta este cobro sin terminar. Se libera sola en unos minutos; si urge, llama a soporte de Avoqado."
+
+    /**
+     * F1 (QA en la N86, 3-nov): un motivo en pantalla que una respuesta del servidor ya desmintió: «Sin conexión…» cuando ya
+     * contestó, o «Se libera sola…» y «todavía no se puede declarar» con la terminal ya libre (D6). Los demás rechazos se quedan: son
+     * de una persona que aún no los lee.
+     */
+    fun motivoCaducado(mensaje: String, terminalLibre: Boolean): Boolean =
+        mensaje.endsWith(SIN_CONEXION_REVISION) ||
+            mensaje.endsWith(SIN_CONEXION_REVISION_ESTA_VENTA) ||
+            (terminalLibre && (mensaje.endsWith(TERMINAL_REPORTA_SIN_TERMINAR) || mensaje.endsWith(DECLARACION_RECHAZO_GENERICO)))
+
+    /**
+     * C4 (P4): título del teclado donde un gerente teclea su PIN para que el mesero —sin `payments:reconcile-uncharged`—
+     * declare «no se cobró». Igual en iOS, letra por letra.
+     */
+    const val PIN_DE_GERENTE_TITULO = "Pide a un gerente que ingrese su PIN"
+
+    /**
+     * El permiso de la declaración, por nombre EXACTO de `avoqado-server/src/lib/permissions.ts`. Sólo nombra la acción en
+     * el teclado (`PermissionLabels`): quién puede declarar lo decide el SERVIDOR, nunca la tablet.
+     */
+    const val PERMISO_DECLARAR_NO_COBRADO = "payments:reconcile-uncharged"
+
+    /** 403 de la declaración: la sesión no tiene el permiso y falta el PIN de un gerente, o el PIN no sirve. */
+    const val CODIGO_PIDE_PIN_DE_GERENTE = "SUPERVISOR_AUTHORIZATION_REQUIRED"
+
+    /** 409 de la declaración: la terminal todavía reporta el cobro en curso. */
+    const val CODIGO_EJECUCION_AUN_ACTIVA = "EXECUTION_STILL_ACTIVE"
+
+    /** 429 del servidor: demasiados PIN probados (la cubeta del PIN de gerente, 15 min). */
+    const val CODIGO_DEMASIADOS_INTENTOS = "RATE_LIMIT_EXCEEDED"
 
     /**
      * El cuerpo del diálogo lleva el monto DEL COBRO PENDIENTE, para que nadie declare sobre el

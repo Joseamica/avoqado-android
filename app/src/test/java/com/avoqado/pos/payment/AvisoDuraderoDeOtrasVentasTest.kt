@@ -47,6 +47,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import okhttp3.Interceptor
@@ -98,18 +99,27 @@ class AvisoDuraderoDeOtrasVentasTest {
     private val consultados = mutableListOf<String>()
     private val postsEnviados = mutableListOf<String>()
     private var respuestaDelPost = """{"status":"unknown"}"""
+    private var codigoDelPost = 200
+
+    /** Fix round 1 de C1 (O1): la tablet se queda SIN RED — ninguna petición llega al servidor. */
+    private var sinRed = false
+
+    /** Las declaraciones «Ya revisé la terminal: no se cobró» que la app intentó mandar (con red o sin ella). */
+    private var declaraciones = 0
 
     private fun cobrado(paymentId: String) = """{"status":"COMPLETED","inProgress":false,"paymentId":"$paymentId"}"""
 
     private val servidor = Interceptor { chain ->
         val peticion = chain.request()
         val ruta = peticion.url.encodedPath
+        if (ruta.endsWith("/release")) declaraciones++
+        if (sinRed) throw java.net.UnknownHostException("sin red en la prueba")
         val (codigo, cuerpo) = when {
             ruta.endsWith("/terminals/online") -> 200 to """{"terminals":[{"terminalId":"t1","name":"Terminal 1"}]}"""
             peticion.method == "POST" && ruta.endsWith("/terminal-payment") -> {
                 val enviado = okio.Buffer().also { peticion.body!!.writeTo(it) }.readUtf8()
                 postsEnviados += JSONObject(enviado).getString("requestId")
-                200 to respuestaDelPost
+                codigoDelPost to respuestaDelPost
             }
             peticion.method == "GET" && ruta.contains("/terminal-payment/") -> {
                 val id = ruta.substringAfterLast('/')
@@ -138,6 +148,8 @@ class AvisoDuraderoDeOtrasVentasTest {
     private val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
     private val cashDrawerRepository = mockk<CashDrawerRepository>(relaxed = true)
+    /** La cola de sincronización sin red: la declaración NO puede terminar aquí (es online-only a propósito). */
+    private val syncOutbox = mockk<com.avoqado.pos.core.data.sync.SyncOutbox>(relaxed = true)
 
     private fun nuevaVenta(servicio: TerminalPaymentService = this.servicio): PaymentFlowViewModel {
         val store = ComandasPendientesStore(AlmacenEnMemoria())
@@ -162,7 +174,7 @@ class AvisoDuraderoDeOtrasVentasTest {
             replayDeComandas = ReplayDeComandasPendientes(store, despachador),
             comandaDispatcher = despachador,
             tableSession = TableSession(),
-            syncOutbox = mockk(relaxed = true),
+            syncOutbox = syncOutbox,
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = CancelacionDeCobroCoordinator(
@@ -388,5 +400,370 @@ class AvisoDuraderoDeOtrasVentasTest {
         assertNull("ningún «SÍ pasó» falso", siguiente.avisoDeOtroCobro.value)
         assertNull(siguiente.segundoAviso.value)
         assertTrue("y nada que consultar", consultados.isEmpty())
+    }
+
+    // MARK: - C1 (22-oct): «Terminal ocupada» con «Revisar ese cobro» — un cobro AJENO se muestra, no se hace propio
+
+    /** El 409 del SERVIDOR nuevo: la terminal (o la venta, con `ORDER`) la ocupa la solicitud [bloqueador]. */
+    private fun ocupadaPor(bloqueador: String, alcance: String = "TERMINAL"): String {
+        val quien = """{"requestId":"$bloqueador","amountCents":12550,"senderDevice":"Sunmi D3","ageSeconds":200}"""
+        return """{"success":false,"status":"failed","code":"TERMINAL_BUSY","message":"La terminal está ocupada procesando otro cobro","blockingRequest":$quien,"details":{"blockingRequest":$quien,"scope":"$alcance"}}"""
+    }
+
+    /** Una venta nueva cobrada con tarjeta en la terminal t1, hasta la respuesta del POST. */
+    private fun kotlinx.coroutines.test.TestScope.cobrarConTarjeta(vm: PaymentFlowViewModel) {
+        vm.startPaymentFlow(cuenta())
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        vm.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+    }
+
+    /** La venta siguiente en este aparato: si el cobro ajeno se hubiera guardado, saldría aquí, en el aviso. */
+    private fun kotlinx.coroutines.test.TestScope.sinAvisoEnLaVentaSiguiente(vm: PaymentFlowViewModel) {
+        codigoDelPost = 200
+        vm.startPaymentFlow(cuenta())
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertNull("no aparece en el aviso de otras ventas", vm.avisoDeOtroCobro.value)
+        assertNull(vm.segundoAviso.value)
+    }
+
+    @Test
+    fun `P1 con requestId unknown no se ofrece Revisar ese cobro`() = runTest {
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        assertEquals("montaje: con el id del cobro que ocupa, sí se ofrece", "r-ajeno", (vm.state.value as PaymentFlowState.Error).revisarCobroId)
+
+        // El servidor no sabe quién ocupa (una lápida que no lo guardó): manda `requestId: "unknown"`.
+        respuestaDelPost = ocupadaPor("unknown")
+        cobrarConTarjeta(vm)
+
+        val error = vm.state.value as PaymentFlowState.Error
+        assertTrue("sigue diciendo que ESTE cobro no se envió: ${error.message}", error.message.contains("NO se envió"))
+        assertNull("sin un id real no hay a quién consultar", error.revisarCobroId)
+        vm.revisarCobroQueOcupa() // aunque alguien lo llamara, no pregunta por «unknown»
+        advanceUntilIdle()
+        assertTrue(vm.state.value is PaymentFlowState.Error)
+        assertTrue("nada se consultó: $consultados", consultados.isEmpty())
+        assertTrue(ids().isEmpty())
+    }
+
+    @Test
+    fun `P1 revisar el cobro de otro aparato que sigue en duda no lo guarda en la lista durable ni en el aviso`() = runTest {
+        // Review Focus #5: la terminal la ocupa un cobro de OTRO aparato que sigue sin confirmarse (el servidor contesta
+        // TIMED_OUT). Este POS lo muestra, pero no lo hace suyo: no es su venta y su aparato ya lo cuida.
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        assertEquals("montaje", "r-ajeno", (vm.state.value as PaymentFlowState.Error).revisarCobroId)
+        assertTrue("montaje: el propio no se creó y salió de la lista", ids().isEmpty())
+
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+
+        val duda = vm.state.value as PaymentFlowState.Undetermined
+        assertTrue("se muestra como revisión, no como cobro de esta venta", duda.fromPreviousSale)
+        assertTrue(duda.message, duda.message.startsWith("Quedó un cobro sin confirmar de otra venta."))
+        assertEquals("se preguntó por ESE cobro", listOf("r-ajeno"), consultados)
+        assertTrue("no entra a la lista durable de este aparato: ${ids()}", ids().isEmpty())
+        sinAvisoEnLaVentaSiguiente(vm)
+    }
+
+    @Test
+    fun `P1 la segunda consulta y la automatica de un cobro ajeno tampoco lo guardan`() = runTest {
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        assertTrue("montaje: la primera consulta no lo guardó: ${ids()}", ids().isEmpty())
+
+        vm.recheckCardCharge() // «Volver a consultar»
+        advanceUntilIdle()
+        assertTrue((vm.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        assertTrue("la segunda consulta tampoco: ${ids()}", ids().isEmpty())
+
+        vm.recheckCardCharge(automatica = true) // la que la pantalla lanza sola cada 5 s
+        advanceUntilIdle()
+        assertEquals("las tres preguntaron por ESE cobro", listOf("r-ajeno", "r-ajeno", "r-ajeno"), consultados)
+        assertTrue("ni la automática: ${ids()}", ids().isEmpty())
+        sinAvisoEnLaVentaSiguiente(vm)
+    }
+
+    @Test
+    fun `P1 la respuesta de un cobro ajeno que llega tras cerrar el flujo no lo guarda`() = runTest {
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        servicio.io = StandardTestDispatcher(testScheduler) // la consulta queda EN VUELO hasta que corra el planificador
+
+        vm.revisarCobroQueOcupa()
+        vm.salirDejandoPendiente() // el cajero se va antes de que conteste
+        advanceUntilIdle() // llega «sigue en duda» a un flujo que ya se cerró
+
+        assertEquals("montaje: la consulta sí salió y contestó", listOf("r-ajeno"), consultados)
+        assertTrue("el resultado obsoleto no lo hace suyo: ${ids()}", ids().isEmpty())
+        sinAvisoEnLaVentaSiguiente(vm)
+    }
+
+    // MARK: - Fix round 1 de C1 (revisión de tarea): M1, M2 y O1
+
+    @Test
+    fun `P1 un cobro ajeno que SI paso no escribe SI paso en el disco de esta tablet ni en su aviso`() = runTest {
+        // M1: la consulta resulta COMPLETED. La aserción central (`ids()` vacío, ANTES de cualquier «Entendido») depende
+        // SÓLO de la guarda `if (ajeno)` de la rama `Charged` de `toResult`: sin ella, `marcarCobrado` escribe la marca
+        // «SÍ pasó» de un cobro que nunca fue de esta tablet. La pantalla, por `fromPreviousSale`, no escribe nada.
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        estados["r-ajeno"] = cobrado("pay-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+
+        assertEquals("montaje: se preguntó por ESE cobro", listOf("r-ajeno"), consultados)
+        assertEquals("El cobro anterior sí se había realizado", vm.previousChargeResolved.value)
+        assertFalse("confirmarlo NO paga esta venta: ${vm.state.value}", vm.state.value is PaymentFlowState.Success)
+        assertTrue("ni «SÍ pasó» en el disco de esta tablet: ${ids()}", ids().isEmpty())
+        sinAvisoEnLaVentaSiguiente(vm) // sin tocar «Entendido»: si estuviera en disco, saldría aquí
+    }
+
+    @Test
+    fun `P1 un cobro ajeno que SI paso y contesta tras cerrar el flujo tampoco escribe SI paso`() = runTest {
+        // M1, el COMPLETED tardío: aquí la aserción central depende de DOS guardas, y cada una basta para romperla — la del
+        // servicio (`marcarCobrado` en `toResult`) y la de la pantalla (`handleStaleCardResult` → `aplicarDesenlaceTardio`
+        // con `Charged`, que también marca).
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        estados["r-ajeno"] = cobrado("pay-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        servicio.io = StandardTestDispatcher(testScheduler) // la consulta queda EN VUELO
+
+        vm.revisarCobroQueOcupa()
+        vm.salirDejandoPendiente() // el cajero se va antes de que conteste
+        advanceUntilIdle() // llega el COMPLETED a un flujo que ya se cerró
+
+        assertEquals("montaje: la consulta sí salió y contestó", listOf("r-ajeno"), consultados)
+        assertTrue("el COMPLETED tardío no lo marca en esta tablet: ${ids()}", ids().isEmpty())
+        sinAvisoEnLaVentaSiguiente(vm)
+    }
+
+    @Test
+    fun `P1 con alcance ORDER la revision dice de esta venta y con TERMINAL de otra venta`() = runTest {
+        // M2: decisión del controlador (22-oct). Con ORDER el cobro que bloquea es de ESTA venta: «…de esta venta.» y el
+        // título neutro «Cobro sin confirmar» (`revisaCobroDeOtraVenta() == false`). iOS (D1) copia esto.
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-orden", alcance = "ORDER")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        val error = vm.state.value as PaymentFlowState.Error
+        assertEquals("Esta venta tiene un cobro pendiente de confirmar.", error.message)
+        assertEquals("r-orden", error.revisarCobroId)
+
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        val deLaOrden = vm.state.value as PaymentFlowState.Undetermined
+        assertTrue(deLaOrden.message, deLaOrden.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
+        assertFalse("título «Cobro sin confirmar», no «Cobro anterior sin confirmar»", vm.revisaCobroDeOtraVenta())
+        vm.recheckCardCharge() // «Volver a consultar» conserva el encabezado
+        advanceUntilIdle()
+        val trasConsultar = vm.state.value as PaymentFlowState.Undetermined
+        assertTrue(trasConsultar.message, trasConsultar.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
+
+        // Con TERMINAL el cobro que ocupa es de otra venta: el encabezado y el título de siempre.
+        respuestaDelPost = ocupadaPor("r-terminal", alcance = "TERMINAL")
+        cobrarConTarjeta(vm)
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        val deLaTerminal = vm.state.value as PaymentFlowState.Undetermined
+        assertTrue(deLaTerminal.message, deLaTerminal.message.startsWith("Quedó un cobro sin confirmar de otra venta."))
+        assertTrue("título «Cobro anterior sin confirmar»", vm.revisaCobroDeOtraVenta())
+        assertTrue("ninguno de los dos entra a la lista: ${ids()}", ids().isEmpty())
+    }
+
+    @Test
+    fun `P1 sin red Revisar ese cobro dice que la revision necesita internet`() = runTest {
+        // O1 (spec §Sin red): se cae el WiFi entre el 409 y el toque. Ninguna consulta recibe respuesta: no se sabe nada
+        // del cobro, y se dice por qué, con la salida que no se frena (el efectivo). Alcance TERMINAL = la duda es de OTRA
+        // venta, así que sí se invita al efectivo (fix round 2: con ORDER o la duda propia, el otro texto).
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        sinRed = true
+
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+
+        val duda = vm.state.value as PaymentFlowState.Undetermined
+        assertEquals(
+            "Quedó un cobro sin confirmar de otra venta. ${com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION}",
+            duda.message,
+        )
+        assertFalse(duda.checking)
+        assertTrue("sin red tampoco se guarda nada: ${ids()}", ids().isEmpty())
+
+        // Vuelve la red y el servidor contesta (sigue en duda): ya no dice «sin conexión».
+        sinRed = false
+        vm.recheckCardCharge()
+        advanceUntilIdle()
+        val conRed = vm.state.value as PaymentFlowState.Undetermined
+        assertFalse(conRed.message, conRed.message.contains("Sin conexión"))
+    }
+
+    @Test
+    fun `P1 sin red la declaracion no cobrado dice lo mismo y no se encola`() = runTest {
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        vm.revisarCobroQueOcupa() // con red: el servidor dice que sigue en duda
+        advanceUntilIdle()
+        sinRed = true
+
+        vm.declararNoCobrado() // «Ya revisé la terminal: no se cobró», sin red
+        advanceUntilIdle()
+
+        val estado = vm.state.value as PaymentFlowState.Undetermined
+        assertEquals(com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION, estado.message)
+        assertTrue("la duda sigue ahí: no se resolvió nada", estado.fromPreviousSale)
+        assertEquals("se intentó UNA vez", 1, declaraciones)
+
+        // 🔴 Online-only A PROPÓSITO: al volver la red NO se manda sola (una afirmación de hace diez minutos podría caer
+        // sobre un cobro que entretanto sí pasó), y no queda en la cola de sincronización.
+        sinRed = false
+        advanceTimeBy(10 * 60 * 1000L)
+        advanceUntilIdle()
+        assertEquals("nadie la reenvió", 1, declaraciones)
+        io.mockk.coVerify(exactly = 0) {
+            syncOutbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `P1 sin scope la duda ajena no invita a cobrar en efectivo`() = runTest {
+        for (scope in listOf(null, "FUTURE_SCOPE")) {
+            codigoDelPost = 409
+            respuestaDelPost = if (scope == null) ocupadaPor("r-ajeno").replace(",\"scope\":\"TERMINAL\"", "") else ocupadaPor("r-ajeno", scope)
+            val vm = nuevaVenta()
+            cobrarConTarjeta(vm)
+            assertTrue("montaje: bloqueador revisable", vm.state.value is PaymentFlowState.Error)
+            sinRed = true
+            vm.revisarCobroQueOcupa()
+            advanceUntilIdle()
+            val duda = vm.state.value as PaymentFlowState.Undetermined
+            assertTrue(duda.message, duda.message.endsWith(com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA))
+            vm.declararNoCobrado()
+            advanceUntilIdle()
+            assertEquals(com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, (vm.state.value as PaymentFlowState.Undetermined).message)
+            sinRed = false
+        }
+    }
+
+    // MARK: - Fix round 2 de C1: dos textos sin red, según de QUIÉN es la duda
+
+    @Test
+    fun `P1 sin red la duda de esta venta no invita a cobrar en efectivo`() = runTest {
+        // Controlador (22-oct): cobrar en efectivo la MISMA venta con la tarjeta en duda es un hueco sin decidir (D10).
+        // Fix round 3: «puedes cobrar en efectivo» sólo cuando la duda es AJENA a la venta que se quiere cobrar ahora
+        // («Revisar ese cobro» con TERMINAL). Todo lo demás —incluido «Revisar» desde el aviso— usa este texto.
+        val estaVenta = com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA
+        val vm = nuevaVenta()
+
+        // 1) «Revisar» desde el AVISO: lo que se revisa ES esa venta, que puede seguir abierta. Va primero para que el
+        //    aviso sólo muestre ese cobro sembrado.
+        sembrar("r-otra", "orden-otra", 2000, haceMin = 2)
+        vm.startPaymentFlow(cuenta())
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals("montaje: sale en el aviso", "r-otra", vm.avisoDeOtroCobro.value?.requestId)
+        sinRed = true
+        vm.revisarCobroDeOtraVenta("r-otra")
+        advanceUntilIdle()
+        assertEquals("Quedó un cobro sin confirmar de otra venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
+        vm.declararNoCobrado()
+        advanceUntilIdle()
+        assertEquals("su declaración sin red, lo mismo", estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
+        assertEquals("la duda de esa venta sigue guardada", listOf("r-otra"), ids())
+
+        // 2) «Revisar ese cobro» con alcance ORDER: el cobro que bloquea es de ESTA venta.
+        sinRed = false
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-orden", alcance = "ORDER")
+        cobrarConTarjeta(vm)
+        sinRed = true
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        assertEquals("Quedó un cobro sin confirmar de esta venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
+        vm.declararNoCobrado()
+        advanceUntilIdle()
+        assertEquals("su declaración sin red, lo mismo", estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
+
+        // 3) El «Cobro sin confirmar» PROPIO: el cobro que mandó esta pantalla no se sabe cómo quedó.
+        sinRed = false
+        codigoDelPost = 200
+        respuestaDelPost = """{"status":"unknown"}"""
+        cobrarConTarjeta(vm)
+        assertFalse("montaje: su propio cobro sin confirmar", (vm.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        sinRed = true
+        vm.recheckCardCharge() // «Volver a consultar» sin red
+        advanceUntilIdle()
+        assertEquals(estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
+        vm.declararNoCobrado() // «Ya revisé la terminal: no se cobró» sin red
+        advanceUntilIdle()
+        val propia = vm.state.value as PaymentFlowState.Undetermined
+        assertEquals(estaVenta, propia.message)
+        assertFalse("nunca invita al efectivo sobre su propia duda: ${propia.message}", propia.message.contains("efectivo"))
+        assertEquals("la duda propia y la de la otra venta siguen guardadas", setOf("r-otra", postsEnviados.last()), ids().toSet())
+    }
+
+    @Test
+    fun `P1 sin red la duda de otra venta si dice que puedes cobrar en efectivo`() = runTest {
+        // Fix round 3: el ÚNICO caso que invita al efectivo es «Revisar ese cobro» con alcance TERMINAL — el cobro que
+        // ocupa es ajeno a la venta que el cajero quiere cobrar ahora (y casi siempre de otro aparato).
+        val otraVenta = com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-ajeno")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        sinRed = true
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        assertEquals("Quedó un cobro sin confirmar de otra venta. $otraVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
+        vm.declararNoCobrado()
+        advanceUntilIdle()
+        assertEquals(otraVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
+        assertTrue("el cobro ajeno no entra a la lista: ${ids()}", ids().isEmpty())
+    }
+
+    @Test
+    fun `P1 sin red Revisar ese cobro de otra venta de esta tablet no invita a cobrar en efectivo`() = runTest {
+        // Fix round 4 (m1 de la re-revisión): el cobro que ocupa la terminal es de OTRA venta, pero de ESTA tablet (sigue en
+        // su lista). Esa venta puede seguir abierta —en un cobro rápido sin orden, pudo ser el mismo cliente vuelto a
+        // teclear—, así que da el MISMO texto que desde el aviso: no invita al efectivo.
+        val estaVenta = com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA
+        sembrar("r-de-esta-tablet", "orden-otra", 2000, haceMin = 2)
+        codigoDelPost = 409
+        respuestaDelPost = ocupadaPor("r-de-esta-tablet")
+        val vm = nuevaVenta()
+        cobrarConTarjeta(vm)
+        assertEquals("montaje: lo nombra el 409", "r-de-esta-tablet", (vm.state.value as PaymentFlowState.Error).revisarCobroId)
+        sinRed = true
+
+        vm.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        assertEquals("Quedó un cobro sin confirmar de otra venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
+        vm.declararNoCobrado()
+        advanceUntilIdle()
+        assertEquals("su declaración sin red, lo mismo", estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
+        assertEquals("su duda sigue guardada", listOf("r-de-esta-tablet"), ids())
     }
 }
