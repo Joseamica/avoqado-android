@@ -318,7 +318,7 @@ object CardChargeDecision {
             probe.status == "FAILED" && probe.outcomeEvidence == "NO_EVIDENCE_AFTER_WINDOW" ->
                 CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.")
             probe.status == "FAILED" && probe.outcomeEvidence == "OPERATOR_RECONCILED" ->
-                CardChargeOutcome.NotCharged("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.")
+                CardChargeOutcome.NotCharged("Un cajero confirmó que no se cobró. Puedes volver a cobrar.")
             // 🔴 El banco lo rechazó y el SERVIDOR lo supo por el webhook del procesador (AngelPay o Blumon),
             // sin que nadie declarara nada. Lo único accionable para el cajero es que PUEDE volver a cobrar:
             // el genérico de abajo lo deja sin saberlo y ahí es donde vuelve a pasar la tarjeta con miedo.
