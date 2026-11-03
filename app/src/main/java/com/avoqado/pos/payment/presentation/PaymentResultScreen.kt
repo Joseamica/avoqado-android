@@ -908,7 +908,7 @@ fun PaymentUndeterminedView(
 
         Text(
             text = when {
-                terminalLibreVentaEnDuda -> CancelacionDeCobro.TERMINAL_LIBRE_VENTA_EN_DUDA
+                CancelacionDeCobro.hablaDeTerminalLibre(terminalLibreVentaEnDuda, fromPreviousSale) -> CancelacionDeCobro.TERMINAL_LIBRE_VENTA_EN_DUDA
                 fromPreviousSale -> "Cobro anterior sin confirmar"
                 else -> "Cobro sin confirmar"
             },
@@ -944,7 +944,11 @@ fun PaymentUndeterminedView(
             BotonDeclararNoCobrado(
                 enabled = accionesDeRedHabilitadas && !isChecking,
                 onClick = { pedirConfirmacionDeclaracion = true },
-                texto = if (terminalLibreVentaEnDuda) CancelacionDeCobro.NO_SE_COBRO_COBRAR_OTRA_VEZ else CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
+                texto = if (CancelacionDeCobro.hablaDeTerminalLibre(terminalLibreVentaEnDuda, fromPreviousSale)) {
+                    CancelacionDeCobro.NO_SE_COBRO_COBRAR_OTRA_VEZ
+                } else {
+                    CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO
+                },
             )
         }
 

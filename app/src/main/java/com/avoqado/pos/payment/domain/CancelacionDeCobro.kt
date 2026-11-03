@@ -93,6 +93,12 @@ object CancelacionDeCobro {
     //    ticket nació de dos apps escribiendo por su cuenta lo que parecía lo mismo.
     const val TERMINAL_LIBRE_VENTA_EN_DUDA = "La terminal ya está libre · ¿se cobró esta venta?"
     const val NO_SE_COBRO_COBRAR_OTRA_VEZ = "No se cobró → cobrar otra vez"
+
+    /**
+     * Revisión de iOS (3-nov): esas dos frases hablan de ESTA venta. Con el cobro de otra venta («Revisar» desde el aviso) sería
+     * «¿se cobró esta venta?» sobre otra, y «cobrar otra vez» no abre el cobro. Igual en iOS.
+     */
+    fun hablaDeTerminalLibre(terminalLibre: Boolean, fromPreviousSale: Boolean): Boolean = terminalLibre && !fromPreviousSale
     const val BOTON_DECLARAR_NO_COBRADO = "Ya revisé la terminal: no se cobró"
     const val DECLARACION_TITULO = "Confirma que no se cobró"
     const val DECLARACION_CONFIRMAR = "Sí, no se cobró"
@@ -132,7 +138,7 @@ object CancelacionDeCobro {
 
     /** Sólo para una respuesta del servidor sin mensaje legible: el suyo SIEMPRE tiene prioridad. */
     const val DECLARACION_RECHAZO_GENERICO =
-        "No se pudo declarar este cobro. Conserva el pendiente y consulta su resultado."
+        "Este cobro todavía no se puede declarar. Vuelve a consultar en un momento."
 
     /**
      * C4 (P5, textos honestos, 22-oct): la declaración se rechazó con `EXECUTION_STILL_ACTIVE` —la terminal todavía reporta

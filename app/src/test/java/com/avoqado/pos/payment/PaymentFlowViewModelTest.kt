@@ -3704,6 +3704,13 @@ class PaymentFlowViewModelTest {
         assertEquals(antes.copy(terminalLibreVentaEnDuda = true), viewModel.state.value)
     }
 
+    @Test
+    fun `las palabras de terminal libre hablan solo de esta venta`() {
+        assertTrue(CancelacionDeCobro.hablaDeTerminalLibre(terminalLibre = true, fromPreviousSale = false))
+        assertFalse("sobre el cobro de otra venta", CancelacionDeCobro.hablaDeTerminalLibre(terminalLibre = true, fromPreviousSale = true))
+        assertFalse(CancelacionDeCobro.hablaDeTerminalLibre(terminalLibre = false, fromPreviousSale = false))
+    }
+
     // F1 (QA en la N86, 3-nov): dos textos que la consulta automática ya desmintió no se quedan en pantalla.
     @Test
     fun `F1 se libera sola no sigue en pantalla cuando la terminal ya esta libre`() = runTest {
