@@ -4111,7 +4111,7 @@ class PaymentFlowViewModel @Inject constructor(
             }
             // D2: la automática sólo gobierna el «Cobro sin confirmar» QUIETO que la lanzó — una declaración en vuelo
             // (`checking`) manda sobre ella. «No se sabe» conserva la pantalla; sólo una señal acreditada de terminal
-            // libre actualiza su presentación, sin reemplazar el motivo de rechazo o sin red.
+            // libre actualiza su presentación, sin reemplazar el motivo de rechazo, salvo el que esa respuesta desmiente.
             //
             // Ronda 2: y sólo si la pantalla sigue hablando de ESE cobro. Una declaración liberada y un cobro nuevo de la
             // venta (otra solicitud) no los gobierna el desenlace tardío de la anterior.
@@ -4121,8 +4121,17 @@ class PaymentFlowViewModel @Inject constructor(
                     return@launch
                 }
                 if (outcome is TerminalPaymentResult.Undetermined) {
-                    if (outcome.requestId == requestId && outcome.terminalLibreVentaEnDuda && !outcome.sinRed) {
-                        _state.value = actual.copy(terminalLibreVentaEnDuda = true)
+                    if (outcome.requestId == requestId && !outcome.sinRed) {
+                        val libre = actual.terminalLibreVentaEnDuda || outcome.terminalLibreVentaEnDuda
+                        _state.value = if (CancelacionDeCobro.motivoCaducado(actual.message, libre)) {
+                            actual.copy(
+                                message = conEncabezado(encabezado, outcome.message),
+                                declaracionRechazada = false,
+                                terminalLibreVentaEnDuda = libre,
+                            )
+                        } else {
+                            actual.copy(terminalLibreVentaEnDuda = libre)
+                        }
                     }
                     return@launch
                 }
@@ -4838,8 +4847,9 @@ class PaymentFlowViewModel @Inject constructor(
                     sinRed = estado.sinRed,
                     checking = repreguntar,
                     // C2: la respuesta a la última declaración del cajero se queda hasta que él consulte o declare otra
-                    // vez; una corrida de fondo del coordinador no la borra.
-                    avisoDeDeclaracion = (actual as? PaymentFlowState.CancelacionPendiente)?.avisoDeDeclaracion,
+                    // vez; una corrida de fondo del coordinador no la borra. F1: salvo «Sin conexión…» si ya tuvo red.
+                    avisoDeDeclaracion = (actual as? PaymentFlowState.CancelacionPendiente)?.avisoDeDeclaracion
+                        ?.takeUnless { !estado.sinRed && CancelacionDeCobro.motivoCaducado(it, terminalLibre = false) },
                     declarando = declaracionEnVuelo == id,
                 )
                 if (repreguntar) cancelacionDeCobro.procesarAhora(id)

@@ -3692,7 +3692,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `P1 automatica con señal valida solo actualiza presentacion y conserva rechazo`() = runTest {
         enCobroSinConfirmar()
-        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns ResultadoDeDeclaracion.Rechazada("Revisa el cobro", code = "EXECUTION_STILL_ACTIVE")
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns ResultadoDeDeclaracion.Rechazada("Revisa el cobro", code = "POSITIVE_EVIDENCE_EXISTS")
         viewModel.declararNoCobrado()
         advanceUntilIdle()
         val antes = viewModel.state.value as PaymentFlowState.Undetermined
@@ -3702,6 +3702,60 @@ class PaymentFlowViewModelTest {
         viewModel.recheckCardCharge(automatica = true)
         advanceUntilIdle()
         assertEquals(antes.copy(terminalLibreVentaEnDuda = true), viewModel.state.value)
+    }
+
+    // F1 (QA en la N86, 3-nov): dos textos que la consulta automática ya desmintió no se quedan en pantalla.
+    @Test
+    fun `F1 se libera sola no sigue en pantalla cuando la terminal ya esta libre`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns
+            ResultadoDeDeclaracion.Rechazada("Espera unos segundos", code = "EXECUTION_STILL_ACTIVE")
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        assertEquals(
+            "montaje: el texto de que se libera sola",
+            CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR,
+            (viewModel.state.value as PaymentFlowState.Undetermined).message,
+        )
+
+        // Aún no se suelta: el texto sigue, es verdad.
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1")
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals(CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR, (viewModel.state.value as PaymentFlowState.Undetermined).message)
+
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1", terminalLibreVentaEnDuda = true)
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        val fin = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals("pendiente", fin.message)
+        assertFalse("ya no es un rechazo vigente", fin.declaracionRechazada)
+        assertTrue(fin.terminalLibreVentaEnDuda)
+    }
+
+    @Test
+    fun `F1 sin conexion no sigue en pantalla cuando el servidor ya contesto`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns ResultadoDeDeclaracion.SinConexion
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        val sinRed = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals("montaje", CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, sinRed.message)
+
+        // Sigue sin red: el texto sigue, es verdad.
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("sin red", "req-1", sinRed = true)
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals(sinRed, viewModel.state.value)
+
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1")
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals("pendiente", (viewModel.state.value as PaymentFlowState.Undetermined).message)
     }
 
     @Test

@@ -144,6 +144,15 @@ object CancelacionDeCobro {
         "La terminal reporta este cobro sin terminar. Se libera sola en unos minutos; si urge, llama a soporte de Avoqado."
 
     /**
+     * F1 (QA en la N86, 3-nov): un motivo en pantalla que una respuesta del servidor ya desmintió: «Sin conexión…» cuando ya
+     * contestó, o «Se libera sola…» con la terminal ya libre. Los demás rechazos se quedan: son de una persona que aún no los lee.
+     */
+    fun motivoCaducado(mensaje: String, terminalLibre: Boolean): Boolean =
+        mensaje.endsWith(SIN_CONEXION_REVISION) ||
+            mensaje.endsWith(SIN_CONEXION_REVISION_ESTA_VENTA) ||
+            (terminalLibre && mensaje.endsWith(TERMINAL_REPORTA_SIN_TERMINAR))
+
+    /**
      * C4 (P4): título del teclado donde un gerente teclea su PIN para que el mesero —sin `payments:reconcile-uncharged`—
      * declare «no se cobró». Igual en iOS, letra por letra.
      */

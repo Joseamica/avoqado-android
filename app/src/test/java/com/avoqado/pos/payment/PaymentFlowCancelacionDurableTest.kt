@@ -876,6 +876,38 @@ class PaymentFlowCancelacionDurableTest {
         assertEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, fin.avisoDeDeclaracion)
     }
 
+    // F1 (QA en la N86, 3-nov): el aviso «Sin conexión…» no se queda cuando el coordinador ya habló con el servidor.
+    @Test
+    fun `F1 el aviso de sin conexion se va cuando el coordinador ya hablo con el servidor`() = runTest {
+        enCancelacionPendiente()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.SinConexion
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        assertEquals(
+            "montaje",
+            CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA,
+            (viewModel.state.value as PaymentFlowState.CancelacionPendiente).avisoDeDeclaracion,
+        )
+
+        // Sigue sin red: el aviso sigue, es verdad.
+        transporte.programarEstados(ChargeStatusProbe.Unreachable, ChargeStatusProbe.Known("UNKNOWN", false))
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        val sinRed = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertTrue("montaje: el coordinador tampoco tuvo red", sinRed.sinRed)
+        assertEquals(CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, sinRed.avisoDeDeclaracion)
+
+        // Volvió: el coordinador ya habló con el servidor.
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        val fin = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertFalse("montaje: el coordinador ya tuvo red", fin.sinRed)
+        assertNull(fin.avisoDeDeclaracion)
+    }
+
     @Test
     fun `P2 si una corrida vieja del coordinador contesta pendiente tras liberar se vuelve a preguntar y la orden se cancela`() = runTest {
         // m1: la declaración vuelve «liberada» mientras una corrida del coordinador tiene el candado (su `procesarAhora` se
