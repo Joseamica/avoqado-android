@@ -13,6 +13,7 @@ import com.avoqado.pos.printing.receiptlayout.LogicalLine
 import com.avoqado.pos.printing.receiptlayout.ReceiptBlock
 import com.avoqado.pos.printing.receiptlayout.ReceiptInputMapper
 import com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter
+import com.avoqado.pos.transactions.data.LecturaDeDetalle
 import com.avoqado.pos.transactions.data.*
 import com.avoqado.pos.transactions.data.model.*
 import com.avoqado.pos.transactions.presentation.TransactionsViewModel
@@ -49,6 +50,7 @@ class ReembolsoASaldoTest {
     private lateinit var server: MockWebServer
     private lateinit var repo: RefundRepository
     private lateinit var transaccionesDePrueba: TransactionRepository
+    private var detalleSinRespuesta = false
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var store: RefundPendingStore
     private val secure = mockk<SecureStorage>(relaxed = true)
@@ -394,8 +396,8 @@ class ReembolsoASaldoTest {
     @Test fun `sin red, tocar una venta dice por qué y aun así muestra lo pendiente, y Confirmar estado no manda nada`() = runBlocking {
         store.guardar(pendiente())
         val sinRed = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
+        detalleSinRespuesta = true
         val vm = vm(sinRed, null)
-        every { transaccionesDePrueba.elDetalleNoTuvoRespuesta("payment") } returns true
         vm.selectTransaction("payment")
         withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
         assertEquals(TextosCambio.VENTA_SIN_RED, vm.detalleNoDisponible.value)
@@ -410,7 +412,6 @@ class ReembolsoASaldoTest {
     @Test fun `si el servidor contestó no dice sin conexión aunque la bandera del aparato siga vieja`() = runBlocking {
         val banderaVieja = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
         val vm = vm(banderaVieja, null)
-        every { transaccionesDePrueba.elDetalleNoTuvoRespuesta("payment") } returns false
         vm.selectTransaction("payment")
         withTimeout(5_000) { while (vm.detalleNoDisponible.value == null) yield() }
         assertEquals(TextosCambio.VENTA_NO_ABRIO, vm.detalleNoDisponible.value)
@@ -577,6 +578,9 @@ class ReembolsoASaldoTest {
         every { transactions.isLoading } returns MutableStateFlow(false)
         every { transactions.isLoadingMore } returns MutableStateFlow(false)
         coEvery { transactions.fetchTransactionDetail("payment", "actor", "venue") } returns detail
+        coEvery { transactions.leerDetalle(any(), any(), any()) } coAnswers {
+            LecturaDeDetalle(transactions.fetchTransactionDetail(arg(0), arg(1), arg(2)), detalleSinRespuesta)
+        }
         coEvery { transactions.fetchTransactions(any(), any()) } returns Result.success(Unit)
         val factory = mockk<RefreshGateFactory> { every { create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO }) }
         return apagarAlFinal(TransactionsViewModel(transactions, repo, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),

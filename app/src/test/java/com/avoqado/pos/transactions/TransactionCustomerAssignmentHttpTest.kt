@@ -135,24 +135,33 @@ class TransactionCustomerAssignmentHttpTest {
             server.enqueue(MockResponse().setResponseCode(403).setBody("{}"))
             val repo = repository(server)
             repeat(2) {
-                assertNull(repo.fetchTransactionDetail("payment-a"))
-                assertFalse(repo.elDetalleNoTuvoRespuesta("payment-a"))
+                val lectura = repo.leerDetalle("payment-a", "actor-a", "venue-a")
+                assertNull(lectura.transaccion)
+                assertFalse(lectura.sinRespuesta)
             }
         }
     }
 
-    @Test fun `una lectura sin red cuenta como sin respuesta, y la siguiente que contesta lo borra`() = runBlocking {
+    @Test fun `una lectura sin red cuenta como sin respuesta, y la siguiente que contesta no`() = runBlocking {
         val apagado = MockWebServer()
         val repo = repository(apagado)
         apagado.shutdown()
-        assertNull(repo.fetchTransactionDetail("payment-a"))
-        assertTrue(repo.elDetalleNoTuvoRespuesta("payment-a"))
-        assertFalse(repo.elDetalleNoTuvoRespuesta("otra-venta"))
+        val sinRed = repo.leerDetalle("payment-a", "actor-a", "venue-a")
+        assertNull(sinRed.transaccion)
+        assertTrue(sinRed.sinRespuesta)
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(404).setBody("{}"))
             repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
-            assertNull(repo.fetchTransactionDetail("payment-a"))
-            assertFalse(repo.elDetalleNoTuvoRespuesta("payment-a"))
+            assertFalse(repo.leerDetalle("payment-a", "actor-a", "venue-a").sinRespuesta)
+        }
+    }
+
+    // Codex r2 #2: al renovar la sesión, un 503 sí es respuesta del servidor; sólo el fallo de red es «nadie contestó».
+    @Test fun `no poder renovar la sesión sólo cuenta como sin respuesta si fue por la red`() = runBlocking {
+        MockWebServer().use { server ->
+            fun lanzando(motivo: String) = OkHttpClient.Builder().addInterceptor { throw com.avoqado.pos.core.data.network.SesionSinRenovar(motivo) }.build()
+            assertFalse(repository(server, lanzando("servidor:503")).leerDetalle("payment-a", "actor-a", "venue-a").sinRespuesta)
+            assertTrue(repository(server, lanzando("red:UnknownHostException")).leerDetalle("payment-a", "actor-a", "venue-a").sinRespuesta)
         }
     }
 

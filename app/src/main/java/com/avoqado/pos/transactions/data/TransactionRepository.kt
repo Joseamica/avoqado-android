@@ -37,6 +37,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /** El SERVIDOR contestó y la venta nueva de un cambio no tiene pago cobrado: espera la diferencia o se canceló (F4, 28-oct). */
+/** Lo que dejó UNA lectura del detalle. `sinRespuesta`: nadie contestó. */
+data class LecturaDeDetalle(val transaccion: Transaction?, val sinRespuesta: Boolean = false)
+
 class ExchangeOrderNotCharged(val cancelled: Boolean) : Exception()
 
 @Singleton
@@ -155,35 +158,36 @@ class TransactionRepository @Inject constructor(
         catch (_: Exception) { null }
     }
 
-    // D3: «Sin conexión» sólo se dice de la lectura que nadie contestó. Un 403/404 sí es respuesta, y la bandera del aparato
-    // puede seguir vieja: sólo la borra una respuesta exitosa (Codex r1 #2).
-    @Volatile private var detalleSinRespuesta: String? = null
+    suspend fun fetchTransactionDetail(paymentId: String, actorId: String?, venueId: String?): Transaction? =
+        leerDetalle(paymentId, actorId, venueId).transaccion
 
-    fun elDetalleNoTuvoRespuesta(paymentId: String): Boolean = detalleSinRespuesta == paymentId
-
-    suspend fun fetchTransactionDetail(paymentId: String, actorId: String?, venueId: String?): Transaction? {
-        detalleSinRespuesta = null
-        if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
+    /**
+     * D3: el motivo viaja con ESTA lectura. «Sin conexión» sólo se dice si nadie contestó: un 403/404 sí es respuesta, y la
+     * bandera del aparato puede seguir vieja, porque sólo la borra una respuesta exitosa (Codex r1 #2, r2 #1).
+     */
+    suspend fun leerDetalle(paymentId: String, actorId: String?, venueId: String?): LecturaDeDetalle {
+        if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return LecturaDeDetalle(null)
         return try {
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/transactions/$paymentId")
                 .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
                 .header(TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
                 .build()
-            val (responseCode, body) = leerComo(actorId, venueId, request) ?: return null
-            if (!sameIdentity(actorId, venueId)) return null
+            val (responseCode, body) = leerComo(actorId, venueId, request) ?: return LecturaDeDetalle(null)
+            if (!sameIdentity(actorId, venueId)) return LecturaDeDetalle(null)
             if (responseCode in 200..299 && body.isNotEmpty()) {
-                json.decodeFromString<TransactionDetailResponse>(body).transaction?.takeIf { it.id == paymentId }
+                LecturaDeDetalle(json.decodeFromString<TransactionDetailResponse>(body).transaction?.takeIf { it.id == paymentId })
             } else {
                 Log.e("📦", "Transaction detail fetch failed: $responseCode")
-                null
+                LecturaDeDetalle(null)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (e is java.io.IOException) detalleSinRespuesta = paymentId
             Log.e("📦", "Transaction detail fetch error: ${e.message}")
-            null
+            // Un 5xx al renovar la sesión también llega como IOException, pero ahí el servidor sí contestó (Codex r2 #2).
+            val servidorContesto = e is com.avoqado.pos.core.data.network.SesionSinRenovar && e.motivo.startsWith("servidor:")
+            LecturaDeDetalle(null, sinRespuesta = e is java.io.IOException && !servidorContesto)
         }
     }
 

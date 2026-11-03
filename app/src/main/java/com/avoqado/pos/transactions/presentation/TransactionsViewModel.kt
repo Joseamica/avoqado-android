@@ -725,13 +725,14 @@ class TransactionsViewModel @Inject constructor(
         _avisoDeReembolso.value = null
         _detalleNoDisponible.value = null
         viewModelScope.launch {
-            val detail = repository.fetchTransactionDetail(transactionId, scope.actorId, scope.venueId)
+            val lectura = repository.leerDetalle(transactionId, scope.actorId, scope.venueId)
+            val detail = lectura.transaccion
             if (!current(scope)) return@launch
             val abierta = detail?.takeIf { it.id == scope.paymentId }
             _selectedTransaction.value = abierta
             // Una venta que no abre lo dice, y lo pendiente se lee igual (está en el aparato, no en la red) (D3).
             if (abierta == null) {
-                _detalleNoDisponible.value = if (repository.elDetalleNoTuvoRespuesta(transactionId)) TextosCambio.VENTA_SIN_RED else TextosCambio.VENTA_NO_ABRIO
+                _detalleNoDisponible.value = if (lectura.sinRespuesta) TextosCambio.VENTA_SIN_RED else TextosCambio.VENTA_NO_ABRIO
             }
             _isLoadingDetail.value = false
             // Opción A (founder, 2-nov): al abrir la venta sólo se LEE lo pendiente; nada se reenvía solo, para nadie.

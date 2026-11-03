@@ -69,6 +69,7 @@ class ExchangePendingNoticeTest {
         store.save(pending())
         val sale=Transaction("payment")
         coEvery { repository.fetchTransactionDetail("payment","actor","venue") } returns sale
+        coEvery { repository.leerDetalle(any(),any(),any()) } coAnswers { com.avoqado.pos.transactions.data.LecturaDeDetalle(repository.fetchTransactionDetail(arg(0),arg(1),arg(2))) }
         val vm=vm()
         vm.refreshPendingExchanges().join()
         vm.openPendingExchange(vm.pendingExchangeNotices.value.single().paymentId)
