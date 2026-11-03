@@ -77,8 +77,8 @@ android {
         applicationId = "com.avoqado.pos"
         minSdk = 26
         targetSdk = 36
-        versionCode = 66
-        versionName = "2.25.26"
+        versionCode = 67
+        versionName = "2.25.27"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
