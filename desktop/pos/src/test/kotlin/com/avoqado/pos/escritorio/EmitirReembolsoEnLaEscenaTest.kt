@@ -17,6 +17,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -92,6 +93,11 @@ class EmitirReembolsoEnLaEscenaTest {
     private val ventaConCuatroMedios = Transaction(
         id = "cuatro", method = "CREDIT_CARD", amount = 300.0, remainingRefundable = 300.0, remainingRefundableSale = 300.0,
         refundOnTerminal = false, canChooseRefundMethod = true, storeCreditOption = StoreCreditOption(available = true),
+    )
+
+    /** Lo más alto que le pasa al pie de un celular: propina y los cuatro medios, con la lista completa arriba. */
+    private val ventaConTodo = ventaConCuatroMedios.copy(
+        items = articulos(8), amount = 800.0, tipAmount = 50.0, remainingRefundable = 850.0, remainingRefundableSale = 800.0, remainingRefundableTip = 50.0,
     )
 
     private lateinit var saldo: SaldoAFavorDelReembolsoViewModel
@@ -177,6 +183,16 @@ class EmitirReembolsoEnLaEscenaTest {
         waitForIdle()
     }
 
+    /** Desliza de abajo hacia arriba hasta que [texto] se ve entero. Revienta si no llega. */
+    private fun ComposeUiTest.deslizarHastaVer(texto: String, x: Dp, alto: Dp) {
+        var intentos = 0
+        while (!seVeEntero(texto) && intentos++ < 8) deslizar(x, alto - 40.dp, 120.dp)
+        aLaVista(texto)
+    }
+
+    /** Dónde está la señal de «hay más», en dp: a estas pruebas les basta densidad 1. */
+    private fun ComposeUiTest.senales() = onAllNodesWithTag("reembolso-hay-mas").fetchSemanticsNodes().map { it.boundsInRoot }
+
     // MARK: - Dos columnas
 
     @Test fun `la tablet de 8 7 acostada va en dos columnas y con 8 articulos Reembolsar queda a la vista`() = pantalla(1007, 601) {
@@ -191,11 +207,15 @@ class EmitirReembolsoEnLaEscenaTest {
         assertTrue(aLaVistaDeLaLista >= 6, "con todo el alto caben al menos 6 artículos y se ven $aLaVistaDeLaLista")
         assertTrue(!seVeEntero("Artículo 8"), "montaje: el último no cabe sin deslizar: ${bordes("Artículo 8")}")
 
+        assertEquals(1, senales().count { it.right <= mitad.value }, "la lista no cabe y la izquierda no lo avisa")
+        assertEquals(0, senales().count { it.left >= mitad.value }, "lo de la derecha sí cabe: no debe avisar")
+
         // Lo que no cabe se alcanza deslizando la izquierda, y el botón no se mueve con ella.
         val elBoton = bordes("Reembolsar")
         deslizar(250.dp, 500.dp, 150.dp)
         aLaVista("Artículo 8")
         assertEquals(elBoton, bordes("Reembolsar"), "el botón se movió con la lista")
+        assertEquals(0, senales().size, "al llegar al final ya no hay más")
     }
 
     @Test fun `con un articulo el pie sigue fijo abajo de la derecha`() = pantalla(1007, 601, venta(1)) {
@@ -274,6 +294,42 @@ class EmitirReembolsoEnLaEscenaTest {
         assertEquals(bordes("Este cobro fue con tarjeta").left, bordes("Abrir en la terminal").left, "con 420 dp de columna el texto quedaría en un hilo")
     }
 
+    @Test fun `por importe con el teclado abierto en la 8 7 acostada se ve el campo y a la derecha se llega a todo`() = pantalla(1007, 335) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12.50")
+        waitForIdle()
+        aLaVista("12.50")
+        onNode(hasSetTextAction()).assertIsFocused()
+        assertTrue(!seVeEntero("Reembolsar"), "montaje: sin deslizar, el botón no cabe: ${bordes("Reembolsar")}")
+
+        repeat(3) { deslizar(750.dp, 250.dp, 80.dp) }
+        aLaVista("Selecciona un motivo", "Incluye la propina del mesero", "Reembolsar", "12.50")
+        onNode(hasSetTextAction()).assertIsFocused()
+    }
+
+    /** Con el teléfono obligatorio no cabe. La señal va arriba del pie fijo, porque ahí se corta lo que se desliza. */
+    @Test fun `a la derecha sale la senal de hay mas cuando no cabe, con el pie fijo`() =
+        pantalla(1007, 601, ventaConTodo, saldoDisponible = true, soloSaldo = true) {
+            saldo.escoger(Customer(id = "ana", firstName = "Ana"))
+            waitForIdle()
+            val mitad = 1007f / 2
+            val derecha = senales().filter { it.left >= mitad }
+            assertEquals(1, derecha.size, "lo de la derecha no cabe y no lo avisa: ${senales()}")
+            assertTrue(derecha.single().bottom <= bordes("Importe a reembolsar").top.value, "la señal va arriba del pie fijo: $derecha")
+
+            repeat(2) { deslizar(750.dp, 350.dp, 100.dp) }
+            aLaVista("Selecciona un motivo")
+            assertEquals(0, senales().count { it.left >= mitad }, "al llegar al final ya no hay más")
+        }
+
+    @Test fun `a la derecha sale la senal de hay mas cuando no cabe, sin pie fijo`() = pantalla(1007, 400) {
+        val mitad = 1007f / 2
+        assertEquals(1, senales().count { it.left >= mitad }, "el botón no se ve y no lo avisa: ${senales()}")
+        deslizar(750.dp, 380.dp, 80.dp)
+        assertEquals(0, senales().count { it.left >= mitad }, "al llegar al final ya no hay más")
+    }
+
     @Test fun `el corte es por ancho y nada mas`() {
         pantalla(839, 700) { assertTrue(bordes("Motivo del reembolso").left < 839.dp / 2, "a 839 va una columna") }
         pantalla(840, 700) { aLaDerecha(840.dp / 2, "Motivo del reembolso") }
@@ -288,6 +344,140 @@ class EmitirReembolsoEnLaEscenaTest {
         orden.forEach { assertTrue(bordes(it).left < 601.dp / 2, "«$it» se salió de la columna: ${bordes(it)}") }
         aLaVista("Reembolsar")
     }
+
+    // Con pie fijo, el pie toca el fondo y lo que sobra queda entre la lista y el pie (OrderPAD 3 parado, 3-nov).
+
+    @Test fun `a 800x1280 con 2 articulos Reembolsar queda abajo y lo que sobra entre la lista y el pie`() = pantalla(800, 1280, venta(2)) {
+        aLaVista("Reembolsar", "Artículo 1", "Artículo 2")
+        assertTrue(bordes("Reembolsar").bottom >= 1280.dp - 40.dp, "el pie no tocó el fondo: ${bordes("Reembolsar")}")
+        assertTrue(bordes("Artículo 1").top < 300.dp, "la lista se fue de arriba: ${bordes("Artículo 1")}")
+        assertTrue(bordes("Incluir propina en el reembolso").top - bordes("Artículo 2").bottom > 300.dp, "lo que sobra va entre la lista y el pie")
+    }
+
+    @Test fun `cambiar de pestana no mueve Reembolsar`() = pantalla(800, 1280, venta(2)) {
+        val elBoton = bordes("Reembolsar")
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        assertEquals(elBoton, bordes("Reembolsar"), "el botón brincó al cambiar de pestaña")
+    }
+
+    @Test fun `la tarjeta de regalo no cambia con pie fijo`() {
+        val regalo = Transaction(id = "regalo", method = "CASH", amount = 500.0, remainingRefundable = 500.0)
+        pantalla(800, 1280, regalo, soloCompleto = true) {
+            assertTrue(bordes("Motivo del reembolso").top < 150.dp, "se fue de arriba: ${bordes("Motivo del reembolso")}")
+            assertTrue(bordes("Reembolsar").bottom < 400.dp, "el pie se fue abajo: ${bordes("Reembolsar")}")
+        }
+    }
+
+    // Con poco alto, en una columna se desliza todo junto: lo mismo en Artículos que en «Por importe».
+
+    @Test fun `en un celular chico se ven articulos y Reembolsar se alcanza deslizando`() = pantalla(360, 640, ventaConTodo, saldoDisponible = true) {
+        aLaVista("Artículo 1")
+        assertTrue(!seVeEntero("Reembolsar"), "montaje: sin deslizar, el botón no cabe: ${bordes("Reembolsar")}")
+        assertEquals(1, senales().size, "el botón no se ve y nada lo avisa: ${senales()}")
+
+        deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
+        assertEquals(0, senales().size, "al llegar al final ya no hay más")
+    }
+
+    @Test fun `en un celular chico se puede completar el reembolso deslizando`() = pantalla(360, 640, ventaConTodo, saldoDisponible = true) {
+        onNodeWithText("Artículo 1").performClick()
+        // Con el dedo y con tope: `performScrollTo` se queda dando vueltas si lo que busca no se puede alcanzar.
+        deslizarHastaVer("Selecciona un motivo", 180.dp, 640.dp)
+        onNodeWithText("Selecciona un motivo").performClick()
+        waitForIdle()
+        onNodeWithText("Productos devueltos").performClick()
+        waitForIdle()
+        deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
+        onNodeWithText("Reembolsar").assertIsEnabled()
+    }
+
+    @Test fun `con el teclado abierto en un celular el telefono del saldo queda a la vista con su foco y lo escrito`() =
+        pantalla(360, 490, ventaConTodo, saldoDisponible = true, soloSaldo = true) {
+            saldo.escoger(Customer(id = "ana", firstName = "Ana"))
+            waitForIdle()
+            onNode(hasSetTextAction()).performTextInput("5512345678")
+            waitForIdle()
+            aLaVista("5512345678")
+            onNode(hasSetTextAction()).assertIsFocused()
+
+            deslizarHastaVer("Guardar teléfono", 180.dp, 490.dp)
+            onNode(hasSetTextAction()).assertIsFocused()
+            onNodeWithText("5512345678").assertExists()
+        }
+
+    /**
+     * 600×1000 px: a densidad 1 el pie es fijo; a 1.5 (400×667 dp) se desliza todo junto. Es el mismo cambio de alto que abrir y
+     * cerrar el teclado, de un solo salto. Si el campo cambiara de padre perdería el foco, y con un teclado de verdad, el teclado.
+     */
+    @Test fun `abrir y cerrar el teclado cruzando el corte no pierde foco ni texto del telefono`() =
+        pantalla(600, 1000, ventaConTodo, saldoDisponible = true, soloSaldo = true) {
+            saldo.escoger(Customer(id = "ana", firstName = "Ana"))
+            waitForIdle()
+            onNode(hasSetTextAction()).performTextInput("5512345678")
+            waitForIdle()
+            repeat(2) {
+                aLaVista("Reembolsar", "5512345678")
+
+                densidad.floatValue = 1.5f
+                waitForIdle()
+                assertTrue(bordes("Reembolsar").bottom > 667.dp, "montaje: ya se desliza todo junto: ${bordes("Reembolsar")}")
+                aLaVista("5512345678")
+                onNode(hasSetTextAction()).assertIsFocused()
+                assertTrue(senales().size <= 1, "la banda no se desliza y su señal se quedó prendida: ${senales()}")
+
+                densidad.floatValue = 1f
+                waitForIdle()
+                onNode(hasSetTextAction()).assertIsFocused()
+            }
+        }
+
+    /** También cruza 584 dp, donde «Por importe» esconde la banda. */
+    @Test fun `abrir y cerrar el teclado cruzando el corte no pierde foco ni texto del importe`() = pantalla(600, 1000) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12.50")
+        waitForIdle()
+        repeat(2) {
+            aLaVista("Reembolsar", "12.50")
+            listOf(1.5f, 2f).forEach {
+                densidad.floatValue = it
+                waitForIdle()
+                aLaVista("12.50")
+                onNode(hasSetTextAction()).assertIsFocused()
+            }
+            densidad.floatValue = 1f
+            waitForIdle()
+            onNode(hasSetTextAction()).assertIsFocused()
+        }
+    }
+
+    /** Deslizar sobre el pie no lo mueve: lo que no cabe se queda en la lista. */
+    private fun ComposeUiTest.elPieSigueFijo(x: Dp, alto: Dp) {
+        aLaVista("Reembolsar")
+        val elBoton = bordes("Reembolsar")
+        deslizar(x, alto - 100.dp, alto - 300.dp)
+        assertEquals(elBoton, bordes("Reembolsar"), "el pie se movió con el dedo")
+        assertEquals(0, senales().count { it.bottom >= (alto - 25.dp).value }, "con pie fijo, abajo de la ventana no hay nada que avisar")
+    }
+
+    @Test fun `a 360x780 con cuatro medios Reembolsar queda a la vista y el pie sigue fijo`() =
+        pantalla(360, 780, ventaConTodo, saldoDisponible = true) { elPieSigueFijo(180.dp, 780.dp) }
+
+    /** Con pie fijo, lo que no cabe tampoco se pierde: la banda queda en nada y lo demás se desliza. */
+    @Test fun `a 360x780 con el telefono obligatorio el campo se ve y Reembolsar tambien se alcanza`() =
+        pantalla(360, 780, ventaConTodo, saldoDisponible = true, soloSaldo = true) {
+            saldo.escoger(Customer(id = "ana", firstName = "Ana"))
+            waitForIdle()
+            onNode(hasSetTextAction()).performTextInput("5512345678")
+            waitForIdle()
+            aLaVista("5512345678")
+            onNode(hasSetTextAction()).assertIsFocused()
+            deslizarHastaVer("Reembolsar", 180.dp, 780.dp)
+            onNode(hasSetTextAction()).assertIsFocused()
+        }
+
+    @Test fun `a 601x1007 el pie sigue fijo`() = pantalla(601, 1007, ventaConTodo, saldoDisponible = true) { elPieSigueFijo(300.dp, 1007.dp) }
 
     @Test fun `en una columna apretada por importe el pie se desliza y Reembolsar se alcanza`() = pantalla(601, 400) {
         onNodeWithText("Reembolsos por importe").performClick()

@@ -2,6 +2,7 @@ package com.avoqado.pos.transactions
 
 import com.avoqado.pos.transactions.presentation.enDosColumnas
 import com.avoqado.pos.transactions.presentation.pieFijoEnDosColumnas
+import com.avoqado.pos.transactions.presentation.pieFijoEnUnaColumna
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,5 +33,13 @@ class AcomodoDeReembolsoTest {
     fun `con poco alto el pie deja de ser fijo`() {
         assertFalse(pieFijoEnDosColumnas(419f))
         assertTrue(pieFijoEnDosColumnas(420f))
+    }
+
+    @Test
+    fun `en una columna con poco alto se desliza todo junto`() {
+        assertFalse(pieFijoEnUnaColumna(699f))
+        assertTrue(pieFijoEnUnaColumna(700f))
+        assertTrue(pieFijoEnUnaColumna(719f)) // 360×780: 780 menos los 61 dp del encabezado
+        assertFalse(pieFijoEnUnaColumna(659f)) // 360×720
     }
 }

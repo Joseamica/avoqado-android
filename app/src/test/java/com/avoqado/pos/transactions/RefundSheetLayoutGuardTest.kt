@@ -14,7 +14,8 @@ import java.io.File
  *
  *   1. Un HUECO enorme entre la lista y el motivo, con los controles apretados abajo.
  *      Causa: la banda del medio usaba `weight(1f, fill = true)`, que la estira a TODO
- *      el alto sobrante aunque el contenido sea corto.
+ *      el alto sobrante aunque el contenido sea corto. (Era una hoja que medía según su
+ *      contenido. A pantalla completa, desde el 3-nov, lo que sobra sí va ahí: ver la guarda.)
  *   2. Con 3 artículos sólo se veían 2, y NADA decía que hubiera más. La banda sí se
  *      desliza; simplemente no lo parecía. Un cajero reembolsa lo que alcanza a ver.
  *   3. Al abrir el teclado, la casilla «Incluir propina» salía de la pantalla. Esa
@@ -50,21 +51,17 @@ class RefundSheetLayoutGuardTest {
 
     private val hoja = "app/src/main/java/com/avoqado/pos/transactions/presentation/IssueRefundSheet.kt"
 
+    /**
+     * Antes se prohibía `fill = true`, porque la hoja medía según su contenido y abría el hueco de arriba. A pantalla completa es al
+     * revés: sin él, con 2 artículos, Cancelar y Reembolsar quedan a media pantalla (OrderPAD 3, 800×1280, 3-nov).
+     */
     @Test
-    fun `la banda desplazable no se estira cuando el contenido es corto`() {
-        val codigo = leerCodigoSinComentarios(hoja)
+    fun `con pie fijo la banda toma el alto sobrante y el pie toca el fondo`() {
+        val banda = PiezasDeLaHoja(leerCodigoSinComentarios(hoja)).queSeDevuelve.replace(Regex("""\s"""), "")
 
-        // Sin espacios: reformatear `weight(1f,fill=false)` no puede tumbar el guard
-        // (lo señaló la auditoría de Codex, 2026-09-11).
-        val sinEspacios = codigo.replace(" ", "")
-        assertFalse(
-            "La banda del medio volvió a `weight(1f, fill = true)`: se estira a todo el alto " +
-                "sobrante y deja el hueco enorme que el founder vio en la tablet. Usa `fill = false`.",
-            sinEspacios.contains("fill=true"),
-        )
         assertTrue(
-            "La banda del medio dejó de declarar `weight(1f, fill = false)`.",
-            PiezasDeLaHoja(codigo).queSeDevuelve.replace(" ", "").contains("Box(modifier=Modifier.weight(1f,fill=false))"),
+            "La banda dejó de ocupar el alto sobrante con pie fijo, o la tarjeta de regalo dejó de ir como iba.",
+            banda.contains("Box(modifier=when{todoSeDesliza->ModifiersoloCompleto->Modifier.weight(1f,fill=false)else->Modifier.weight(1f)}"),
         )
     }
 
@@ -85,8 +82,8 @@ class RefundSheetLayoutGuardTest {
         val queSeDevuelve = PiezasDeLaHoja(codigo).queSeDevuelve
         assertEquals("La lista ya no se invoca en `queSeDevuelve`.", 1, invocaciones(queSeDevuelve, "ItemsBody"))
         assertTrue(
-            "Desapareció `canScrollForward` (el degradado del borde de la banda).",
-            queSeDevuelve.contains("bandaScroll.canScrollForward"),
+            "Desapareció `canScrollForward` (el degradado del borde de la banda). Con todo deslizándose junto no aplica: esa banda ya no se desliza y su estado se queda con lo último.",
+            queSeDevuelve.contains("if (!todoSeDesliza && bandaScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))"),
         )
     }
 
@@ -322,7 +319,7 @@ class RefundSheetLayoutGuardTest {
 
         assertTrue(
             "La banda tiene que ir arriba del pie.",
-            piezas.unaColumna.indexOf("queSeDevuelve()") in 0 until piezas.unaColumna.indexOf("Column(if (apretado)"),
+            piezas.unaColumna.indexOf("queSeDevuelve()") in 0 until piezas.unaColumna.indexOf("errorDelEnvio()"),
         )
         assertTrue(
             "El pie cambió de orden: error, importe y su casilla, cómo se devuelve y cierre.",
@@ -344,7 +341,7 @@ class RefundSheetLayoutGuardTest {
         assertTrue("«Elige el motivo» dejó el cierre.", piezas.cierre.contains("Elige el motivo del reembolso."))
         assertTrue(
             "La derecha ya no es: lo de cómo en su `verticalScroll`, y el cierre dentro sólo sin pie fijo.",
-            Regex("""Column\(Modifier\.weight\(1f\)\.verticalScroll\(pieScroll\)\)\s*\{\s*comoSeDevuelve\(\)\s*if \(!pieFijo\) cierre\(\)\s*\}\s*if \(pieFijo\) cierre\(\)""")
+            Regex("""Column\(Modifier\.fillMaxWidth\(\)\.verticalScroll\(pieScroll\)\)\s*\{\s*comoSeDevuelve\(\)\s*if \(!pieFijo\) cierre\(\)\s*\}[^}]*\}\s*if \(pieFijo\) cierre\(\)""")
                 .containsMatchIn(piezas.dosColumnas),
         )
     }
@@ -370,6 +367,48 @@ class RefundSheetLayoutGuardTest {
     }
 
     /**
+     * 🔴 Abrir el teclado en un celular cruza `pieFijoEnUnaColumna`. Si ese cruce cambiara la estructura, el campo cambiaría de padre:
+     * pierde el foco, el teclado se cierra, el alto sube y se repite en bucle. Por eso son los mismos nodos, y sólo cambian sus
+     * modificadores. Un `verticalScroll` dentro de otro con alto infinito truena: la banda suelta el suyo y su `weight`.
+     */
+    @Test
+    fun `con poco alto en una columna sólo cambian los modificadores de los mismos nodos`() {
+        val ventana = ventanaDeLaPantalla()
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+        val cuerpo = ventana.substring(ventana.indexOf("BoxWithConstraints("))
+
+        assertTrue(cuerpo.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)"))
+        assertFalse("`todoSeDesliza` decide estructura.", Regex("""if \(!?todoSeDesliza\)\s*\{""").containsMatchIn(cuerpo))
+        assertFalse("`apretado` volvió a darle deslizamiento propio al pie: adentro del de afuera truena.", cuerpo.contains("if (apretado) Modifier"))
+        assertTrue(
+            "La columna de afuera dejó de llevar el deslizamiento o su mínimo. Con un tope, lo que no cabe se recorta sin alcance.",
+            Regex("""\.verticalScroll\(pieScroll\)\s*\.then\(if \(todoSeDesliza\) Modifier else Modifier\.heightIn\(min = maxHeight\)\)""")
+                .containsMatchIn(piezas.unaColumna),
+        )
+        assertTrue(
+            "La banda dejó de soltar su `verticalScroll` con todo deslizándose.",
+            piezas.queSeDevuelve.contains(".then(if (todoSeDesliza) Modifier else Modifier.verticalScroll(bandaScroll))"),
+        )
+    }
+
+    /** La derecha también avisa, con el pie fijo o sin él; y una columna, cuando se desliza. */
+    @Test
+    fun `lo que se desliza avisa si hay mas`() {
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
+        assertTrue(
+            "La derecha perdió su señal de «hay más».",
+            piezas.dosColumnas.contains("if (pieScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))"),
+        )
+        assertTrue(
+            "Una columna perdió su señal de «hay más».",
+            piezas.unaColumna.contains("if (pieScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))"),
+        )
+        val senal = bloqueDe(leerCodigoSinComentarios(hoja), "private fun SenalDeHayMas(")
+        assertTrue("La señal dejó de ser el degradado de la banda.", senal.contains("Brush.verticalGradient"))
+    }
+
+    /**
      * Cruzar el corte de 840 en WINDOWS recrea lo que hay en cada rama. Por eso nada capturado vive en ellas: un `remember` en
      * una pieza se perdería ahí, y `rememberSaveable` también, porque su llave sale del lugar en el árbol.
      */
@@ -388,7 +427,9 @@ class RefundSheetLayoutGuardTest {
             "El teléfono a medio escribir ya no vive arriba de las ramas.",
             ventana.substring(0, cuerpo).contains("var telefonoDelSaldo by rememberSaveable(clienteDelSaldo?.id, pideTelefono)"),
         )
-        assertFalse("`FilaClienteDelSaldo` volvió a guardar su teléfono.", bloqueDe(codigo, "private fun FilaClienteDelSaldo(").contains("remember"))
+        val fila = bloqueDe(codigo, "private fun FilaClienteDelSaldo(")
+        assertFalse("`FilaClienteDelSaldo` volvió a guardar su teléfono.", fila.contains("remember"))
+        assertFalse("`FilaClienteDelSaldo` repite la condición de `pideTelefono`.", fila.contains("phoneChecked"))
     }
 
     /** El cuerpo de `IssueRefundSheet` hasta la hoja de escoger cliente, o sea la pantalla. */
@@ -462,5 +503,5 @@ internal class PiezasDeLaHoja(codigoSinComentarios: String) {
     private val ramas = "if (dosColumnas) {" + ventana.substringAfterLast("if (dosColumnas) {", "")
     val dosColumnas = bloqueDe(ramas, "if (dosColumnas)")
     val unaColumna = bloqueDe(ramas.substringAfter(dosColumnas), "else")
-    val pie = bloqueDe(unaColumna, "Column(if (apretado) Modifier.weight(1f).verticalScroll(pieScroll) else Modifier)")
+    val pie = unaColumna.substringAfter("queSeDevuelve()", "").also { assertTrue("El pie de una columna quedó vacío.", it.isNotBlank()) }
 }

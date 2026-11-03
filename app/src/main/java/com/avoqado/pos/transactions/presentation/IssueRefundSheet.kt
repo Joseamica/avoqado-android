@@ -1,6 +1,7 @@
 package com.avoqado.pos.transactions.presentation
 
 import android.util.Log
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,12 +17,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -55,13 +59,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -455,6 +462,7 @@ fun IssueRefundSheet(
         ) {
             val dosColumnas = enDosColumnas(maxWidth.value, soloCompleto)
             val pieFijo = pieFijoEnDosColumnas(maxHeight.value)
+            val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)
 
             // El umbral sale de MEDIR la hoja en el aparato (OrderPAD 3 forzado, 2026-09-12),
             // no de una corazonada:
@@ -471,8 +479,7 @@ fun IssueRefundSheet(
             // el caso común al filo.
             //
             // Se mide por ALTO DISPONIBLE y no por «¿hay teclado?» porque una pantalla corta
-            // en horizontal aprieta igual sin teclado ninguno. Y cuando NO aprieta el pie no
-            // lleva scroll: la hoja queda exactamente como estaba.
+            // en horizontal aprieta igual sin teclado ninguno.
             //
             // 🔴 SÓLO EN LA PESTAÑA DE IMPORTE, y esto no es un detalle: la primera versión
             // miraba únicamente el alto y una auditoría adversarial (Codex gpt-6-astra, xhigh)
@@ -481,17 +488,16 @@ fun IssueRefundSheet(
             // pestaña dejaba al cajero con «Selecciona al menos un artículo» y ni un artículo que
             // tocar, sin forma de recuperarlos. Bastaban 600 dp de alto, con el teclado CERRADO.
             //
-            // En la pestaña de artículos el pie es corto (motivo, resumen y botones: ~200 dp; ~265 dp
-            // cuando el cobro trae propina y suma la casilla «Incluir propina», sin teclado abierto),
-            // así que con el alto de cualquier aparato real cabe sin comprimir nada. La banda sólo
-            // cede su sitio donde es prescindible: en importe, donde su único contenido es un
-            // aviso que el pie ya repite palabra por palabra.
+            // En la pestaña de artículos el pie mide unos 400–560 dp (medido en 360 dp, de 2 a 4 medios y con saldo a favor, 3-nov), y
+            // ahí la banda no se esconde: con poco alto se desliza todo junto (`todoSeDesliza`). La banda sólo cede su sitio donde es
+            // prescindible: en importe, donde su único contenido es un aviso que el pie ya repite palabra por palabra.
             //
             // 🔴 Esos números cuentan los 56 dp del encabezado de la hoja, y el de la pantalla completa ya vive arriba de este
             // alto: el mismo corte de 640 dp aquí son 584 dp. Con 640, un celular chico perdería sin teclado el aviso con
             // «Abrir en la terminal», que en «Por importe» sólo existe en la banda.
             //
-            // Sólo en una columna: en dos, la izquierda tiene todo el alto y lo demás se desliza a la derecha.
+            // Sólo en una columna: en dos, la izquierda tiene todo el alto y lo demás se desliza a la derecha. Y ya sólo esconde la banda:
+            // lo que aprieta se desliza por `todoSeDesliza`, porque estos 584 caen dentro de sus 700.
             val apretado = !dosColumnas && tab == RefundTab.AMOUNT && maxHeight < 584.dp
             val anchoDeColumna = if (dosColumnas) maxWidth / 2 else maxWidth
             // En un celular, el aviso de la terminal en un renglón dejaría el texto en ~100 dp: ahí se apila.
@@ -575,20 +581,27 @@ fun IssueRefundSheet(
                 // dibujado fuera de la pantalla y, como `canSubmit` exige motivo, el
                 // botón "Reembolsar" jamás se encendía. La devolución era imposible y
                 // nada en pantalla lo explicaba.
-                // 🔴 `fill = false`, no `true`. Con `fill = true` la banda se estiraba a
-                // TODO el alto sobrante aunque el contenido fuera corto: de ahí el hueco
-                // enorme entre la lista y el motivo que se veía en la tablet de Testarudo.
+                // 🔴 Con pie fijo, la banda toma el alto sobrante y el pie toca el fondo: lo que sobra queda entre la lista y el pie. En una hoja
+                // que medía según su contenido eso abría un hueco (Testarudo, 11-sep); a pantalla completa, sin esto, con 2 artículos, Cancelar y
+                // Reembolsar quedan a media pantalla (OrderPAD 3, 800×1280, 3-nov). La tarjeta de regalo sigue como iba, con `fill = false`.
                 // 🔴 Cuando aprieta, la banda cede su sitio ENTERO en vez de quedarse en un
                 // hilo de píxeles: lo que hay dentro es un aviso informativo y la lista de
                 // artículos, y el aviso que de verdad importa —«esto no devuelve el dinero a
                 // la tarjeta»— se repite literal en el pie. Lo que NO puede desaparecer es el
                 // pie, que es donde se decide y se confirma el dinero.
                 if (!apretado || soloCompleto && enTerminal) {
-                    Box(modifier = Modifier.weight(1f, fill = false)) {
+                    Box(
+                        modifier = when {
+                            todoSeDesliza -> Modifier
+                            soloCompleto -> Modifier.weight(1f, fill = false)
+                            else -> Modifier.weight(1f)
+                        },
+                    ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .verticalScroll(bandaScroll),
+                                // Con todo deslizándose junto, esto sería un `verticalScroll` dentro de otro con alto infinito, y truena.
+                                .then(if (todoSeDesliza) Modifier else Modifier.verticalScroll(bandaScroll)),
                             verticalArrangement = Arrangement.spacedBy(spacing.md),
                         ) {
                             // 🔴 Un cobro con TARJETA de la terminal no se devuelve desde aquí.
@@ -707,19 +720,8 @@ fun IssueRefundSheet(
                         // 🔴 Sin esta señal la banda MIENTE: una venta de 3 artículos enseñaba 2 y
                         // nada decía que hubiera más, así que el cajero reembolsa lo que alcanza a
                         // ver. Medido en la Sunmi el 2026-09-11.
-                        if (bandaScroll.canScrollForward) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .fillMaxWidth()
-                                    .height(spacing.xl)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color.Transparent, MaterialTheme.colorScheme.surface),
-                                        ),
-                                    ),
-                            )
-                        }
+                        // Con todo deslizándose junto esta banda no se desliza, y su estado se queda con lo último que midió.
+                        if (!todoSeDesliza && bandaScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))
                     }
                 }
             }
@@ -769,10 +771,12 @@ fun IssueRefundSheet(
                 if (aSaldoAFavor) {
                     FilaClienteDelSaldo(
                         cliente = clienteDelSaldo,
+                        pideTelefono = pideTelefono,
                         guardando = guardandoTelefono,
                         mensaje = mensajeDelSaldo,
                         enabled = !submitting,
                         onCambiar = { escogiendoCliente = true },
+                        todoSeDesliza = todoSeDesliza,
                         telefono = telefonoDelSaldo,
                         onTelefono = { telefonoDelSaldo = it },
                         onGuardarTelefono = saldo::guardarTelefono,
@@ -1126,9 +1130,12 @@ fun IssueRefundSheet(
                     ) {
                         // `comoSeDevuelve()` no cambia de lugar cuando `pieFijo` cambia: abrir el teclado desde el teléfono del saldo no debe
                         // recrear el campo, o perdería el foco y el teclado se cerraría. `cierre` no guarda nada: moverlo no cuesta.
-                        Column(Modifier.weight(1f).verticalScroll(pieScroll)) {
-                            comoSeDevuelve()
-                            if (!pieFijo) cierre()
+                        Box(Modifier.weight(1f)) {
+                            Column(Modifier.fillMaxWidth().verticalScroll(pieScroll)) {
+                                comoSeDevuelve()
+                                if (!pieFijo) cierre()
+                            }
+                            if (pieScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))
                         }
                         if (pieFijo) cierre()
                     }
@@ -1142,27 +1149,29 @@ fun IssueRefundSheet(
                         .then(if (soloCompleto) Modifier.widthIn(max = 640.dp) else Modifier)
                         .fillMaxWidth()
                         .padding(horizontal = spacing.xl)
+                        // 🔴 Son los mismos nodos con pie fijo y sin él: abrir el teclado cruza `pieFijoEnUnaColumna`, y si el campo cambiara de
+                        // padre perdería el foco, el teclado se cerraría, el alto subiría y se repetiría en bucle.
+                        .verticalScroll(pieScroll)
+                        // Con pie fijo, este mínimo es el alto que la banda reparte y aquí no hay recorrido. Es un mínimo y no un tope: si el pie no
+                        // cabe (4 medios, saldo a favor y teléfono en un celular), la banda queda en nada y se desliza lo demás. Con un tope, lo
+                        // que no cabía se recortaba sin forma de alcanzarlo.
+                        .then(if (todoSeDesliza) Modifier else Modifier.heightIn(min = maxHeight))
                         .padding(top = spacing.md),
                 ) {
                     queSeDevuelve()
 
-                    // 🔴 «Siempre visible» dejó de ser cierto con el teclado abierto, así que aquí
-                    // el pie gana su propio deslizamiento — y SÓLO cuando aprieta. Con espacio
-                    // sobrado el modificador es `Modifier` vacío y la pantalla queda byte a byte
-                    // como estaba; no se usan dos `weight` a la vez a propósito, porque repartir el
-                    // sobrante entre banda y pie deja hueco muerto cuando uno de los dos es corto,
-                    // que es justo el defecto que el founder vio en la tablet el 2026-09-11.
+                    // El pie. Con alto de sobra queda fijo abajo y la banda es la que cede. Con poco se desliza todo junto: a 360×640, el pie
+                    // de artículos le dejaba 0 dp a la lista y 5 a Reembolsar.
                     //
                     // La casilla «Incluir propina» sigue AQUÍ y no en la banda de artículos: para
                     // llegar al botón hay que pasar por ella, porque el motivo —que `canSubmit`
                     // exige— vive debajo. Deslizable no es lo mismo que escondido.
-                    Column(if (apretado) Modifier.weight(1f).verticalScroll(pieScroll) else Modifier) {
-                        errorDelEnvio()
-                        importeYSuPropina()
-                        comoSeDevuelve()
-                        cierre()
-                    }
+                    errorDelEnvio()
+                    importeYSuPropina()
+                    comoSeDevuelve()
+                    cierre()
                 }
+                if (pieScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))
             }
         }
     }
@@ -1572,7 +1581,7 @@ private fun FilaDevolverCon(
     val spacing = AvoqadoTheme.spacing
     // 🔴 En dos columnas, repartir el ancho a ciegas partía «Transferencia» en dos: ahí van por renglón las pastillas que quepan con su
     // etiqueta entera, medidas como escogidas (negritas y palomita) para que escoger una no reacomode la fila. En una columna, como
-    // siempre: todas juntas, porque en un celular cada renglón de más le quita alto a un pie que no se desliza.
+    // siempre: todas juntas, porque en un celular cada renglón de más le quita alto a la lista.
     val medidor = rememberTextMeasurer()
     val estiloEscogida = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
     val densidad = LocalDensity.current
@@ -1713,7 +1722,9 @@ private fun FilaEsPorDefecto(marcada: Boolean, onCambiar: (Boolean) -> Unit, ena
 private fun FilaClienteDelSaldo(
     cliente: ExchangeStoreCreditCustomer?,
     guardando: Boolean,
+    pideTelefono: Boolean,
     mensaje: String?,
+    todoSeDesliza: Boolean,
     telefono: String,
     enabled: Boolean,
     onCambiar: () -> Unit,
@@ -1727,14 +1738,45 @@ private fun FilaClienteDelSaldo(
             Text(ExchangeSettlement.storeCreditCustomerLabel(cliente), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             TextButton(onClick = onCambiar, enabled = enabled && !guardando) { Text(TextosCambio.CAMBIAR) }
         }
-        cliente?.takeIf { it.phoneChecked && it.phone.isNullOrBlank() }?.let {
+        if (pideTelefono) {
             AvoqadoPillTextField(value = telefono, onValueChange = onTelefono, placeholder = TextosCambio.TELEFONO,
-                enabled = enabled && !guardando, keyboardType = KeyboardType.Phone)
+                modifier = campoQueNoSePierde(todoSeDesliza), enabled = enabled && !guardando, keyboardType = KeyboardType.Phone)
             PrimaryButton(TextosCambio.GUARDAR_TELEFONO, { onGuardarTelefono(telefono) },
                 enabled = enabled && !guardando && telefono.isNotBlank(), fullWidth = true)
         }
         mensaje?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
     }
+}
+
+/**
+ * El teléfono se queda a la vista al abrir el teclado. Al pasar a deslizarse todo junto, la lista toma todo su alto y empuja el campo
+ * hacia abajo. El deslizamiento sólo sigue al campo con foco si al encogerse ya lo ve recortado, y con un solo salto de alto todavía lo ve
+ * donde estaba.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun campoQueNoSePierde(todoSeDesliza: Boolean): Modifier {
+    val aLaVista = remember { BringIntoViewRequester() }
+    var conFoco by remember { mutableStateOf(false) }
+    LaunchedEffect(todoSeDesliza) {
+        if (conFoco) {
+            withFrameNanos { } // Hasta que la lista ya esté en su lugar nuevo: antes, el campo todavía se ve donde estaba.
+            aLaVista.bringIntoView()
+        }
+    }
+    return Modifier.bringIntoViewRequester(aLaVista).onFocusChanged { conFoco = it.isFocused }
+}
+
+/** «Hay más abajo»: el degradado al borde de lo que se desliza. No recibe toques: el dedo pasa a lo de atrás. */
+@Composable
+private fun SenalDeHayMas(modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(AvoqadoTheme.spacing.xl)
+            .background(Brush.verticalGradient(listOf(Color.Transparent, MaterialTheme.colorScheme.surface)))
+            .testTag("reembolso-hay-mas"),
+    )
 }
 
 internal fun controlDeTerminalDeDevolucion(necesitaRed: Boolean, conectado: Boolean, servidor: Boolean): Boolean = !necesitaRed || conectado && servidor
