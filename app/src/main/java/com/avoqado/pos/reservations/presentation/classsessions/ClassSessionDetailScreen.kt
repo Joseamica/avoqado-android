@@ -93,6 +93,7 @@ fun ClassSessionDetailScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var showAdd by remember { mutableStateOf(false) }
     var showCancelConfirm by remember { mutableStateOf(false) }
+    var attendeeToRemove by remember { mutableStateOf<ClassSessionAttendee?>(null) }
 
     LaunchedEffect(message) {
         message?.fold(
@@ -147,7 +148,7 @@ fun ClassSessionDetailScreen(
                     AttendeesTab(
                         s,
                         onAdd = { showAdd = true },
-                        onRemove = viewModel::removeAttendee,
+                        onRemove = { attendeeToRemove = it },
                         canUndo = viewModel::canUndo,
                         onUndo = viewModel::undoNoShow,
                         online = isOnline,
@@ -189,6 +190,24 @@ fun ClassSessionDetailScreen(
         ) {}
     }
 
+    attendeeToRemove?.let { attendee ->
+        AvoqadoDialog(
+            title = "¿Quitar a ${attendee.displayName} de la clase?",
+            description = "Se cancelará su reservación.",
+            onDismiss = { attendeeToRemove = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Quitar",
+                    onClick = {
+                        attendeeToRemove = null
+                        viewModel.removeAttendee(attendee.id)
+                    },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
     success?.let { label ->
         AvoqadoSuccessToast(message = label, onDismiss = { success = null })
     }
@@ -220,7 +239,7 @@ private fun DetailsTab(session: ClassSession, zone: ZoneId, onCancel: () -> Unit
 private fun AttendeesTab(
     session: ClassSession,
     onAdd: () -> Unit,
-    onRemove: (String) -> Unit,
+    onRemove: (ClassSessionAttendee) -> Unit,
     canUndo: (ClassSessionAttendee) -> Boolean,
     onUndo: (ClassSessionAttendee) -> Unit,
     online: Boolean,
@@ -262,7 +281,7 @@ private fun AttendeesTab(
                     Icons.Filled.DeleteOutline,
                     contentDescription = "Eliminar",
                     tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.clickable { onRemove(attendee.id) },
+                    modifier = Modifier.clickable { onRemove(attendee) },
                 )
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
