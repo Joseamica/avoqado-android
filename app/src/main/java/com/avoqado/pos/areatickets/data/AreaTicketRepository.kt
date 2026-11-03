@@ -1,11 +1,13 @@
 package com.avoqado.pos.areatickets.data
 
 import android.util.Log
+import com.avoqado.pos.areatickets.domain.PapelDelAparato
 import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,6 +86,14 @@ internal fun parseAreaTicketHttpError(body: String?, statusCode: Int): AreaTicke
         message = message,
         retryable = apiError?.retryable == true || statusCode >= 500,
     )
+}
+
+/** D3: cómo terminó guardar el papel del aparato. */
+sealed interface ResultadoPapel {
+    data class Guardado(val ajustes: AreaTicketSettingsData) : ResultadoPapel
+    data object SinPermiso : ResultadoPapel
+    data object SinRed : ResultadoPapel
+    data class Rechazado(val mensaje: String) : ResultadoPapel
 }
 
 @Singleton
@@ -329,6 +339,36 @@ class AreaTicketRepository @Inject constructor(
                     "🗂️ Configuración de vales hidratada del cache (hace ${cached.ageMinutes} min)",
                 )
             }.getOrElse { throw error }
+        }
+    }
+
+    /**
+     * D3: guarda en el servidor el papel de ESTE aparato en los vales. Online-only a propósito: sin red no se encola
+     * (lo único que cuenta es lo que guardó el servidor). Al guardar, la caché de ajustes queda con la respuesta.
+     */
+    suspend fun guardarPapel(venueId: String, terminalId: String, eleccion: PapelDelAparato): ResultadoPapel {
+        val cuerpo = when (eleccion) {
+            PapelDelAparato.Cobra -> JsonObject(mapOf("role" to JsonPrimitive("CHECKOUT")))
+            is PapelDelAparato.EmiteVales ->
+                JsonObject(mapOf("role" to JsonPrimitive("ISSUE"), "fulfillmentAreaId" to JsonPrimitive(eleccion.areaId)))
+            PapelDelAparato.Entrega, PapelDelAparato.SinElegir -> return ResultadoPapel.Rechazado("Elige una opción.")
+        }
+        return try {
+            val ajustes = api.setAreaTicketRole(venueId, terminalId, cuerpo).unwrap()
+            payloadCache.save(
+                PayloadCache.TYPE_AREA_TICKET_SETTINGS,
+                venueId,
+                areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), ajustes),
+            )
+            ResultadoPapel.Guardado(ajustes)
+        } catch (error: HttpException) {
+            val rechazo = parseAreaTicketHttpError(error.response()?.errorBody()?.string(), error.code())
+            if (error.code() == 403 && rechazo.code != "AREA_TICKETS_DISABLED") ResultadoPapel.SinPermiso
+            else ResultadoPapel.Rechazado(rechazo.message)
+        } catch (error: AreaTicketException) {
+            ResultadoPapel.Rechazado(error.message)
+        } catch (error: java.io.IOException) {
+            ResultadoPapel.SinRed
         }
     }
 

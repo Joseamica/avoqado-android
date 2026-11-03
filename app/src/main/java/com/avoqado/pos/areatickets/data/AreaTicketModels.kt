@@ -24,6 +24,20 @@ data class AreaTicketSettingsData(
     val terminal: AreaTicketTerminalCapabilities,
     val scaleIntegration: ScaleIntegrationSettings,
     val variableWeightBarcode: VariableWeightBarcodeSettings = VariableWeightBarcodeSettings(),
+    /**
+     * D3: las áreas activas para elegir el papel del aparato (máx. 200). `null` = el servidor es anterior a D3 (no hay
+     * pregunta ni recuadro); lista vacía = los vales están apagados.
+     */
+    val areas: List<AreaOpcion>? = null,
+    /** D3: cuántas áreas activas hay en total; si son más que [areas], la hoja avisa que las demás se eligen en el panel. */
+    val areasTotal: Int = 0,
+)
+
+/** D3: un área entre las que el aparato puede emitir vales. */
+@Serializable
+data class AreaOpcion(
+    val id: String,
+    val name: String,
 )
 
 @Serializable
@@ -59,6 +73,8 @@ data class AreaTicketTerminalCapabilities(
     val canCheckoutAreaTickets: Boolean = false,
     val canDeliverAreaTickets: Boolean = false,
     val defaultWorkspace: String = "STANDARD_POS",
+    /** D3: el aparato se dio de alta solo y nunca eligió su papel en los vales: la app pregunta «¿Qué hará este aparato?». */
+    val roleChoicePending: Boolean = false,
 )
 
 @Serializable
