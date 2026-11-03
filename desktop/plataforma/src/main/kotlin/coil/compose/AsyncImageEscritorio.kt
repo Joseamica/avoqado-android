@@ -23,14 +23,19 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalCoroutinesApi::class)
 private val descargas = Dispatchers.IO.limitedParallelism(4)
 
-/** Lo mínimo del painter de Coil que la app nombra (sólo el tipo del parámetro onError). */
+/** Lo mínimo del painter de Coil que la app nombra (sólo los tipos de los parámetros onSuccess y onError). */
 object AsyncImagePainter {
     sealed interface State {
+        object Success : State
         class Error(val mensaje: String?) : State
     }
 }
 
-/** Sustituto de Coil: la URL sale de `model`, con caché en memoria; vacío mientras carga o si falla (y avisa por onError). */
+/**
+ * Sustituto de Coil: la URL sale de `model`, con caché en memoria; vacío mientras carga o si falla. Avisa por onError si falla y
+ * por onSuccess cuando la foto está (también si ya venía en la caché, como Coil): la tarjeta de un producto quita sus iniciales
+ * sólo con la foto lista (D6, 2-nov).
+ */
 @Composable
 fun AsyncImage(
     model: Any?,
@@ -41,15 +46,18 @@ fun AsyncImage(
     alpha: Float = DefaultAlpha,
     colorFilter: ColorFilter? = null,
     onError: ((AsyncImagePainter.State.Error) -> Unit)? = null,
+    onSuccess: ((AsyncImagePainter.State.Success) -> Unit)? = null,
 ) {
     val url = model as? String
     var imagen by remember(url) { mutableStateOf(url?.let { CacheDeImagenes.enMemoria(it) }) }
     val alFallar = rememberUpdatedState(onError)
+    val alLlegar = rememberUpdatedState(onSuccess)
     LaunchedEffect(url) {
         if (url != null && imagen == null) {
             imagen = withContext(descargas) { CacheDeImagenes.cargar(url) }
             if (imagen == null) alFallar.value?.invoke(AsyncImagePainter.State.Error("No se pudo cargar la imagen"))
         }
+        if (imagen != null) alLlegar.value?.invoke(AsyncImagePainter.State.Success)
     }
     val bitmap = imagen
     if (bitmap != null) {

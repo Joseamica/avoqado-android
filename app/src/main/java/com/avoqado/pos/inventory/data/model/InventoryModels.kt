@@ -2,6 +2,7 @@ package com.avoqado.pos.inventory.data.model
 
 import com.avoqado.pos.inventory.data.ConteoNoAplicado
 import com.avoqado.pos.inventory.data.MotivoNoAplicado
+import com.avoqado.pos.pos.presentation.product.inicialesDeTile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import java.util.Locale
@@ -49,8 +50,12 @@ data class StockItem(
     // UI compatibility: existing code references category
     val category: String? get() = categoryName
 
+    /**
+     * Las iniciales de la fila y de los movimientos: las mismas que las tarjetas del POS («Agua Mineral 1L» → «AM»). D16
+     * (3-nov): una sola regla en ANDROID; antes eran las dos primeras letras («AG») y el detalle, a la vez en pantalla, «AM».
+     */
     val initials: String
-        get() = name.take(2).uppercase()
+        get() = inicialesDeTile(name)
 
     val isLowStock: Boolean
         get() = onHand > 0 && onHand <= 5

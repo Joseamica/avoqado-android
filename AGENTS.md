@@ -1,8 +1,9 @@
 # AGENTS.md - Avoqado Android
 
-🔴 **Android e iOS se cambian JUNTOS.** Todo cambio de producto aquí (feature, UX, fix de dinero, textos, contrato con el
-server) se porta a `../avoqado-ios` en el MISMO trabajo, con los mismos nombres y textos; si no se puede, dilo explícito en el
-reporte. Detalle: `CLAUDE.md` § «Android e iOS se cambian JUNTOS».
+🔴 **iOS va después: se anota, no se hace** (founder, 3-nov). Por un cambio de aquí no abras, compiles ni pruebes
+`../avoqado-ios`, salvo que el founder lo pida. Antes de unir: su ficha en `../docs/proyectos/ios-por-hacer.md`, su tarjeta en
+el pizarrón y, en el PR a `develop`, la línea `iOS: <título de la ficha>` o `iOS: no aplica (razón)`: sin ella, el CI sale rojo.
+Detalle: `CLAUDE.md` § «iOS va después».
 
 ## 🔴 Verificación pesada: por `avq-verify`, nunca a mano
 
@@ -111,7 +112,7 @@ Un "listo" que esconde lo que no se corrió es un reporte falso.
 
 1. **Read the Design System** — `designsystem/` package contains theme, colors, typography, and reusable components. Use these instead of hardcoded values.
 2. **Check `../square-ui-reference/`** — 174 screenshots + notes from Square POS (v6.99sw) on iPad. Use as design baseline when implementing features that Square already has.
-3. **Reference iOS** — `../avoqado-ios/ui-patterns-ios.md` has mandatory component patterns. Match parity with iOS app.
+3. **Reference iOS ONLY if iOS has the feature** — `../avoqado-ios/ui-patterns-ios.md` has component patterns. Android goes first: don't wait for iOS and don't change it (see «iOS va después»).
 
 **If you skip these steps and create inconsistent UI, it will need to be redone.**
 

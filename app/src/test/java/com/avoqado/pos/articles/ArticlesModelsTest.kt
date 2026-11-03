@@ -23,6 +23,13 @@ class ArticlesModelsTest {
     }
 
     @Test
+    fun `product initials of two words follow the POS tile rule`() {
+        // D16 (3-nov): una sola regla de iniciales en ANDROID, la de las tarjetas (`inicialesDeTile`): antes decía «AG».
+        assertEquals("AM", ArticleProduct(id = "1", name = "Agua mineral").initials)
+        assertEquals("CA", ArticleProduct(id = "2", name = "Café americano grande").initials)
+    }
+
+    @Test
     fun `product displayPrice shows Variable for VARIABLE priceType`() {
         val product = ArticleProduct(id = "1", name = "item", priceType = "VARIABLE", price = 10.0)
         assertEquals("Variable", product.displayPrice)

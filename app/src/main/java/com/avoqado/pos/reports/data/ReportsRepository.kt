@@ -70,8 +70,8 @@ class ReportsRepository @Inject constructor(
     suspend fun fetchSalesSummary(
         startDate: String,
         endDate: String,
-    ): Pair<SalesSummaryReport?, List<PaymentMethodBreakdown>>? {
-        // null = FALLO (red/parse); un Pair con summary null es "sin ventas", que es válido.
+    ): Triple<SalesSummaryReport?, List<PaymentMethodBreakdown>, List<HourlySales>>? {
+        // null = FALLO (red/parse); un Triple con summary null es "sin ventas", que es válido.
         val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
@@ -83,9 +83,10 @@ class ReportsRepository @Inject constructor(
             if (body.isEmpty()) return null
 
             val (summary, paymentMethods) = leerResumenDeVentas(body) ?: return null
+            val ventasPorHora = leerVentasPorHora(body)
 
-            Log.d(TAG, "✅ fetchSalesSummary: summary=$summary, methods=${paymentMethods.size}")
-            Pair(summary, paymentMethods)
+            Log.d(TAG, "✅ fetchSalesSummary: summary=$summary, methods=${paymentMethods.size}, horas=${ventasPorHora.size}")
+            Triple(summary, paymentMethods, ventasPorHora)
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchSalesSummary exception: ${e.message}", e)
             null
@@ -235,7 +236,7 @@ class ReportsRepository @Inject constructor(
             val productsDeferred = async { fetchTopProducts(startDate, endDate) }
             val categoriesDeferred = async { fetchCategories(startDate, endDate) }
 
-            val summaryPair = summaryDeferred.await()
+            val resumen = summaryDeferred.await()
             val periodSalesResult = periodDeferred.await()
             val topProductsResult = productsDeferred.await()
             val categoriesResult = categoriesDeferred.await()
@@ -243,7 +244,7 @@ class ReportsRepository @Inject constructor(
             // 🔴 Regla §4.1 (era el caso rojo de la auditoría): un fallo PARCIAL
             // o total jamás publica un reporte de CEROS encima del bueno. Un
             // reporte de dinero en cero que no es cero es peor que uno viejo.
-            if (summaryPair == null || periodSalesResult == null ||
+            if (resumen == null || periodSalesResult == null ||
                 topProductsResult == null || categoriesResult == null
             ) {
                 Log.e(TAG, "❌ loadReport: sub-reporte fallido; datos previos intactos")
@@ -251,24 +252,12 @@ class ReportsRepository @Inject constructor(
                 _isLoading.value = false
                 return@coroutineScope Result.failure(Exception("Reporte incompleto"))
             }
-            val (summary, paymentMethods) = summaryPair
+            // «Ventas por hora» son las 24 horas del día que trae el resumen, como en iOS (D6, 2-nov). Antes salían de la serie
+            // del periodo de HOY: sólo las horas con venta y como instantes ISO, así que la hora nunca se podía rotular.
+            val (summary, paymentMethods, hourlySales) = resumen
             val periodSales = periodSalesResult
             val topProducts = topProductsResult
             val categories = categoriesResult
-
-            // Extract hourly sales from summary when reportType is "hours"
-            val hourlySales = if (reportType == "hours") {
-                periodSales.map { ps ->
-                    HourlySales(
-                        id = ps.id,
-                        hour = ps.period,
-                        grossSales = ps.grossSales,
-                        transactionCount = ps.transactionCount,
-                    )
-                }
-            } else {
-                emptyList()
-            }
 
             val report = ReportData(
                 summary = summary ?: SalesSummaryReport(),
@@ -305,6 +294,34 @@ internal fun leerResumenDeVentas(body: String): Pair<SalesSummaryReport?, List<P
         Pair(summary, paymentMethods)
     } catch (_: Exception) {
         null
+    }
+}
+
+/**
+ * Las horas del día del resumen (`byPeriod` con `reportType=hourlySum`): «HH:00» en la hora del negocio, las 24 con ceros.
+ * Espejo de `HourlySales.from(json:)` de iOS. Sin `byPeriod` no hay ninguna, y el resumen sigue valiendo.
+ */
+internal fun leerVentasPorHora(body: String): List<HourlySales> {
+    val horas = try {
+        Json.parseToJsonElement(body).jsonObject["data"]?.jsonObject?.get("byPeriod")
+            ?.takeUnless { it == kotlinx.serialization.json.JsonNull }?.jsonArray
+    } catch (_: Exception) {
+        null
+    } ?: return emptyList()
+    return horas.mapNotNull { elemento ->
+        try {
+            val obj = elemento.jsonObject
+            val hora = obj["period"]?.jsonPrimitive?.contentOrNull ?: "00:00"
+            val metricas = obj["metrics"]?.takeUnless { it == kotlinx.serialization.json.JsonNull }?.jsonObject
+            HourlySales(
+                id = hora,
+                hour = hora,
+                grossSales = metricas?.get("grossSales")?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                transactionCount = metricas?.get("transactionCount")?.jsonPrimitive?.intOrNull ?: 0,
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 }
 

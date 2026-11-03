@@ -72,13 +72,13 @@ import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.theme.AvoqadoLoaderGreen
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.presentation.tipRows
+import com.avoqado.pos.pos.presentation.product.MiniaturaConIniciales
 import androidx.compose.foundation.border
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.layout.ContentScale
-import coil.compose.AsyncImage
 
 /**
  * Pantalla de cara al CLIENTE. Pensada para la pantalla CHICA del POS de
@@ -846,22 +846,14 @@ private fun UpsellCardView(
             modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
-            Box(
+            // D16 (3-nov): sin foto, o si no carga (sin red), las iniciales del producto, como Square; antes, un recuadro gris vacío.
+            MiniaturaConIniciales(
+                url = card.imageUrl,
+                nombre = card.name,
                 modifier = Modifier
                     .size(104.dp)
-                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (!card.imageUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = card.imageUrl,
-                        contentDescription = card.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-            }
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md)),
+            )
             Column(verticalArrangement = Arrangement.Center, modifier = Modifier.weight(1f)) {
                 Text(
                     card.name,

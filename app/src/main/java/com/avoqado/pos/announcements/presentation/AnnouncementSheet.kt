@@ -17,16 +17,38 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.avoqado.pos.announcements.data.model.AnnouncementDetail
 import com.avoqado.pos.announcements.data.model.ContentBlock
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.pos.presentation.product.EstadoDeFoto
+
+/*
+ * D16 (3-nov-2026): «si no tiene fotos, que salgan las iniciales, como Square» es para los artículos; un anuncio no tiene
+ * iniciales que poner en lugar de su imagen. Mientras carga, la imagen guarda su lugar (un gris tenue, como el `placeholder`
+ * de iOS); si falla (sin red falla la que no está guardada, o la liga ya no existe) se esconde: un recuadro vacío parece roto.
+ */
+
+/** Si una imagen de un anuncio se pinta: con URL, mientras carga (guarda su lugar) y ya lista; si su foto falla, no. */
+internal fun mostrarImagenDeAnuncio(url: String?, estado: EstadoDeFoto): Boolean =
+    !url.isNullOrBlank() && estado != EstadoDeFoto.FALLO
+
+/** Las fotos de una galería que se pintan (por posición): las que no han fallado. Sin ninguna, la galería entera se esconde. */
+internal fun fotosVisiblesDeGaleria(urls: List<String>, estados: Map<Int, EstadoDeFoto>): List<Int> =
+    urls.indices.filter { mostrarImagenDeAnuncio(urls[it], estados[it] ?: EstadoDeFoto.CARGANDO) }
 
 /**
  * El anuncio abierto, con su contenido ampliado.
@@ -73,15 +95,10 @@ fun AnnouncementSheet(
             )
 
             anuncio.imageUrl?.let { url ->
-                AsyncImage(
-                    model = url,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                        .clip(RoundedCornerShape(12.dp)),
-                )
+                var estado by remember(url) { mutableStateOf(EstadoDeFoto.CARGANDO) }
+                if (mostrarImagenDeAnuncio(url, estado)) {
+                    ImagenDeAnuncio(url = url, contentDescription = null, alto = 180.dp, estado = estado) { estado = it }
+                }
             }
 
             bloques.forEach { bloque -> BloqueDeContenido(bloque, onAccion) }
@@ -136,32 +153,39 @@ private fun BloqueDeContenido(bloque: ContentBlock, onAccion: (String) -> Unit) 
             }
         }
 
-        is ContentBlock.Image -> Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
-            AsyncImage(
-                model = bloque.url,
-                contentDescription = bloque.alt,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(180.dp)
-                    .clip(RoundedCornerShape(12.dp)),
-            )
-            bloque.caption?.let {
-                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // D16: si su foto no carga se esconde con todo y su pie (un pie sin su foto no explica nada).
+        is ContentBlock.Image -> {
+            var estado by remember(bloque.url) { mutableStateOf(EstadoDeFoto.CARGANDO) }
+            if (mostrarImagenDeAnuncio(bloque.url, estado)) {
+                Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
+                    ImagenDeAnuncio(url = bloque.url, contentDescription = bloque.alt, alto = 180.dp, estado = estado) {
+                        estado = it
+                    }
+                    bloque.caption?.let {
+                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
         }
 
-        is ContentBlock.Gallery -> Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
-            bloque.images.forEach { img ->
-                AsyncImage(
-                    model = img.url,
-                    contentDescription = img.alt,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(150.dp)
-                        .clip(RoundedCornerShape(12.dp)),
-                )
+        // D16: cada foto que no carga se esconde; si no carga ninguna, la galería entera, sin dejar un hueco.
+        is ContentBlock.Gallery -> {
+            val estados = remember(bloque) { mutableStateMapOf<Int, EstadoDeFoto>() }
+            val visibles = fotosVisiblesDeGaleria(bloque.images.map { it.url }, estados)
+            if (visibles.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                    visibles.forEach { i ->
+                        key(i) {
+                            val img = bloque.images[i]
+                            ImagenDeAnuncio(
+                                url = img.url,
+                                contentDescription = img.alt,
+                                alto = 150.dp,
+                                estado = estados[i] ?: EstadoDeFoto.CARGANDO,
+                            ) { estados[i] = it }
+                        }
+                    }
+                }
             }
         }
 
@@ -204,4 +228,29 @@ private fun BloqueDeContenido(bloque: ContentBlock, onAccion: (String) -> Unit) 
 
         ContentBlock.Divider -> HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
+}
+
+/** Una imagen del anuncio: mientras carga guarda su lugar con un gris tenue (el `placeholder` de iOS) y avisa si llegó o falló. */
+@Composable
+private fun ImagenDeAnuncio(
+    url: String,
+    contentDescription: String?,
+    alto: Dp,
+    estado: EstadoDeFoto,
+    alCambiar: (EstadoDeFoto) -> Unit,
+) {
+    AsyncImage(
+        model = url,
+        contentDescription = contentDescription,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(alto)
+            .clip(RoundedCornerShape(12.dp))
+            .then(
+                if (estado == EstadoDeFoto.CARGANDO) Modifier.background(MaterialTheme.colorScheme.surfaceVariant) else Modifier,
+            ),
+        onSuccess = { alCambiar(EstadoDeFoto.LISTA) },
+        onError = { alCambiar(EstadoDeFoto.FALLO) },
+    )
 }
