@@ -38,7 +38,7 @@ fun PapelDelAparatoGate(
             hayRed = hayRed,
             onElegir = viewModel::elegir,
             onGuardar = viewModel::guardar,
-            onAhoraNo = if (estado.primeraVez) viewModel::cerrar else null,
+            onAhoraNo = if (estado.primeraVez) viewModel::ahoraNo else null,
             onCerrar = viewModel::cerrar,
         )
     }
@@ -47,7 +47,7 @@ fun PapelDelAparatoGate(
         AvoqadoDialog(
             title = tituloDeLaHoja(esEscritorio),
             description = "Pídele a tu administrador que lo configure",
-            onDismiss = viewModel::entendido,
+            onDismiss = viewModel::cerrarAviso,
             actionButton = {
                 PrimaryButton(text = "Entendido", onClick = viewModel::entendido, fullWidth = true)
             },

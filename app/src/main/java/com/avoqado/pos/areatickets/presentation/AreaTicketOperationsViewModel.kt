@@ -127,6 +127,8 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private val comandaDispatcher: ComandaDispatcher,
     /** Pistola y lector integrado. Default para las pruebas que lo construyen a mano; Hilt inyecta el singleton real. */
     private val lectorHidBus: com.avoqado.pos.pos.data.LectorHidBus = com.avoqado.pos.pos.data.LectorHidBus(),
+    /** D3: el papel que se acaba de guardar en este aparato. Default para las pruebas; Hilt inyecta el singleton real. */
+    private val cambiosDelPapel: CambiosDelPapel = CambiosDelPapel(),
 ) : ViewModel() {
     /** Códigos de la pistola o del lector integrado: la entrega los escucha con su escáner abierto. */
     val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
@@ -200,6 +202,15 @@ class AreaTicketOperationsViewModel @Inject constructor(
         )
         cargarValeSinConfirmar(secureStorage.venueId, mostrar = true)
         refresh()
+        // D3 (Codex final #2): guardar el papel (aunque sea sólo otra área, que no rehace la navegación) llega aquí al
+        // instante; un refresco que salió antes ya no lo pisa.
+        viewModelScope.launch {
+            cambiosDelPapel.ajustes.collect { ajustes ->
+                if (ajustes.venueId != secureStorage.venueId) return@collect
+                refreshRequestId++
+                _state.value = _state.value.copy(loading = false, settings = ajustes, error = null)
+            }
+        }
     }
 
     fun refresh(loadPendingDelivery: Boolean = false): Job {

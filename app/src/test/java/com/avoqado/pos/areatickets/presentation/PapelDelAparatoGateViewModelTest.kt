@@ -17,6 +17,7 @@ import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.ActiveCartState
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -67,7 +68,16 @@ class PapelDelAparatoGateViewModelTest {
         every { isFullyConnected } answers { red.value }
     }
 
-    private fun vm() = PapelDelAparatoGateViewModel(repo, storage, carrito, roles, monitor)
+    /** Lo que lee la navegación (la llave del NavHost); `null` = todavía no se aplicó nada. */
+    private var hojaAbiertaAlAplicar: Boolean? = null
+    private val navegacion = mockk<TpvSettingsRepository>(relaxed = true)
+    private val cambios = CambiosDelPapel()
+
+    private fun vm() = PapelDelAparatoGateViewModel(repo, storage, carrito, roles, monitor, navegacion, cambios).also { vm ->
+        coEvery { navegacion.aplicarPapelDeVales(any(), any(), any(), any(), any(), any(), any()) } answers {
+            hojaAbiertaAlAplicar = vm.hoja.value != null
+        }
+    }
 
     private fun ajustes(
         pendiente: Boolean = true,
@@ -144,7 +154,7 @@ class PapelDelAparatoGateViewModelTest {
         respondeAjustes(ajustes())
         val vm = vm()
         vm.consultar(disparo(1, sesion = 1))
-        vm.cerrar()
+        vm.ahoraNo()
         assertNull(vm.hoja.value)
 
         vm.consultar(disparo(2, sesion = 1)) // ON_RESUME / red recuperada
@@ -152,6 +162,19 @@ class PapelDelAparatoGateViewModelTest {
 
         vm.consultar(disparo(3, sesion = 2)) // login
         assertNotNull(vm.hoja.value)
+    }
+
+    @Test
+    fun `cerrar con la X, atrás o tocando afuera no la calla (como iOS)`() = runTest {
+        respondeAjustes(ajustes())
+        val vm = vm()
+        vm.consultar(disparo(1))
+
+        vm.cerrar()
+        assertNull(vm.hoja.value)
+
+        vm.consultar(disparo(2)) // ON_RESUME: vuelve, porque nadie dijo «Ahora no»
+        assertTrue(vm.hoja.value!!.primeraVez)
     }
 
     @Test
@@ -167,6 +190,20 @@ class PapelDelAparatoGateViewModelTest {
         vm.entendido()
         vm.consultar(disparo(2))
         assertFalse("la misma regla de silencio que «Ahora no»", vm.avisoSinPermiso.value)
+    }
+
+    @Test
+    fun `cerrar el aviso sin permiso sin Entendido no lo calla (como iOS)`() = runTest {
+        respondeAjustes(ajustes())
+        permiso = false
+        val vm = vm()
+        vm.consultar(disparo(1))
+
+        vm.cerrarAviso()
+        assertFalse(vm.avisoSinPermiso.value)
+
+        vm.consultar(disparo(2))
+        assertTrue(vm.avisoSinPermiso.value)
     }
 
     @Test
@@ -214,10 +251,70 @@ class PapelDelAparatoGateViewModelTest {
 
         assertNull(vm.hoja.value)
         assertEquals(PapelDelAparato.EmiteVales("a1", "Cremería"), vm.guardado.value)
+        // Codex final #1: la navegación recibe el papel nuevo de la MISMA respuesta, con la hoja todavía abierta (carrito vacío
+        // comprobado), no de otra consulta que puede llegar con una venta ya empezada.
+        coVerify(exactly = 1) {
+            navegacion.aplicarPapelDeVales("v1", "t1", "STANDARD_POS", true, false, false, "a1")
+        }
+        assertEquals(true, hojaAbiertaAlAplicar)
         // El siguiente disparador no alcanza al servidor (503): la caché ya tiene lo que se guardó.
         coEvery { api.getAreaTicketSettings("v1") } throws httpError(503, "UNAVAILABLE", "Servidor ocupado")
         vm.consultar(disparo(2, sesion = 2))
         assertNull(vm.hoja.value)
+    }
+
+    @Test
+    fun `P1 guardar sólo otra área cambia la pantalla de Cobrar (Emitir vale)`() = runTest {
+        // Cobrar cargó un emisor cuya área está inactiva: muestra «Cobrar». Desde Más se elige otra área activa; las
+        // capacidades y el espacio de trabajo no cambian, así que la llave del NavHost tampoco (Codex final #2).
+        val inactiva = AreaTicketArea("a1", "Cremería", "HOLD_UNTIL_PAID", active = false)
+        val activa = AreaTicketArea("a2", "Panadería", "HOLD_UNTIL_PAID")
+        fun emisor(area: AreaTicketArea) = ajustes(
+            pendiente = false,
+            terminal = AreaTicketTerminalCapabilities(
+                id = "t1", name = "PC", fulfillmentArea = area, canIssueAreaTickets = true, defaultWorkspace = "AREA_OPERATIONS",
+            ),
+        )
+        respondeAjustes(emisor(inactiva))
+        every { storage.pendingAreaTicketPrintRecords } returns null
+        every { storage.pendingAreaTicketPrintVenueId } returns null
+        val cobrar = AreaTicketOperationsViewModel(
+            repository = repo,
+            printerService = mockk(relaxed = true),
+            pdfGenerator = mockk(relaxed = true),
+            secureStorage = storage,
+            comandaDispatcher = mockk(relaxed = true),
+            cambiosDelPapel = cambios,
+        )
+        cobrar.refresh().join()
+        assertFalse(cobrar.state.value.issueWorkspace)
+
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } returns AreaTicketEnvelope(true, emisor(activa))
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.abrirDesdeMas()
+        vm.elegir(PapelDelAparato.EmiteVales("a2", "Panadería"))
+        vm.guardar()
+
+        assertTrue(cobrar.state.value.issueWorkspace)
+        assertEquals("a2", cobrar.state.value.settings?.terminal?.fulfillmentArea?.id)
+    }
+
+    @Test
+    fun `guardar lleva a la pestaña de inicio, también con el mismo papel`() = runTest {
+        val caja = ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true))
+        respondeAjustes(caja)
+        coEvery { api.setAreaTicketRole(any(), any(), any()) } returns AreaTicketEnvelope(true, caja)
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.abrirDesdeMas()
+        assertFalse(vm.irAlInicio.value)
+
+        vm.guardar() // el mismo papel: «Cobra (caja)»
+
+        assertTrue(vm.irAlInicio.value)
+        vm.yaFueAlInicio()
+        assertFalse(vm.irAlInicio.value)
     }
 
     @Test
@@ -234,6 +331,8 @@ class PapelDelAparatoGateViewModelTest {
         assertEquals("El área no es válida.", hoja.error)
         assertFalse(hoja.guardando)
         assertNull(vm.guardado.value)
+        assertNull("un rechazo no toca la navegación", hojaAbiertaAlAplicar)
+        assertFalse(vm.irAlInicio.value)
     }
 
     @Test

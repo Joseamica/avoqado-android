@@ -325,6 +325,16 @@ private fun MainScaffold(
         }
     }
 
+    // D3 (Codex final #2): tras guardar el papel del aparato se va a SU pestaña de inicio, también si la llave no cambió
+    // (sólo otra área, o el mismo papel). Se consume una vez: girar la pantalla no vuelve a moverla.
+    val papelDelAparato = LocalPapelDelAparato.current
+    if (papelDelAparato?.irAlInicio?.collectAsState()?.value == true) {
+        LaunchedEffect(Unit) {
+            navigateToTab(startTab)
+            papelDelAparato?.yaFueAlInicio()
+        }
+    }
+
     // Cuarentena de sincronización: hoja de resolución de rechazos.
     var showQuarantineSheet by remember { mutableStateOf(false) }
     var pendingSalesRequest by remember { mutableStateOf(0) }

@@ -15,17 +15,22 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.ActiveCartState
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * D3: un momento en que la compuerta vuelve a preguntarle al servidor (lo sube `AppState`). [sesion] sube en cada arranque
@@ -52,6 +57,20 @@ data class HojaDelPapel(
     fun motivo(hayRed: Boolean): String? = motivoParaNoGuardar(puedeConfigurar, hayRed, ventaAMedias)
 }
 
+/**
+ * D3 (Codex final #2): los ajustes de vales que dejó un guardado del papel. Cobrar (`AreaTicketOperationsViewModel`) los
+ * toma al instante: cambiar sólo el área no cambia la llave del NavHost, y su copia vieja seguía mostrando «Cobrar».
+ */
+@Singleton
+class CambiosDelPapel @Inject constructor() {
+    private val _ajustes = MutableSharedFlow<AreaTicketSettingsData>(extraBufferCapacity = 1)
+    val ajustes: SharedFlow<AreaTicketSettingsData> = _ajustes.asSharedFlow()
+
+    fun publicar(ajustes: AreaTicketSettingsData) {
+        _ajustes.tryEmit(ajustes)
+    }
+}
+
 /** El valor del recuadro «Vales» de «Más»; null = no se muestra (vales apagados o servidor anterior a D3). */
 fun valorDelRecuadro(ajustes: AreaTicketSettingsData): String? =
     if (ajustes.areas == null || !ajustes.areaTickets.enabled) null else etiquetaDelRecuadro(papelActual(ajustes.terminal))
@@ -70,6 +89,8 @@ class PapelDelAparatoGateViewModel @Inject constructor(
     private val activeCartState: ActiveCartState,
     private val roleManager: RoleManager,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    private val cambiosDelPapel: CambiosDelPapel,
 ) : ViewModel() {
 
     private val _ajustes = MutableStateFlow<AreaTicketSettingsData?>(null)
@@ -85,6 +106,10 @@ class PapelDelAparatoGateViewModel @Inject constructor(
     private val _guardado = MutableStateFlow<PapelDelAparato?>(null)
     /** El papel recién guardado: la pantalla enseña el aviso de éxito y rehace la navegación. */
     val guardado: StateFlow<PapelDelAparato?> = _guardado.asStateFlow()
+
+    private val _irAlInicio = MutableStateFlow(false)
+    /** Tras guardar (también el mismo papel): la navegación va a la pestaña de inicio del papel y lo marca con [yaFueAlInicio]. */
+    val irAlInicio: StateFlow<Boolean> = _irAlInicio.asStateFlow()
 
     val hayRed: StateFlow<Boolean> = combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { a, b -> a && b }
         .stateIn(viewModelScope, SharingStarted.Eagerly, connectivityMonitor.isFullyConnected)
@@ -149,9 +174,22 @@ class PapelDelAparatoGateViewModel @Inject constructor(
         viewModelScope.launch {
             val error = when (val resultado = repository.guardarPapel(hoja.venueId, hoja.terminalId, hoja.seleccion)) {
                 is ResultadoPapel.Guardado -> {
+                    // 🔴 Codex final #1: el papel nuevo se aplica con ESTA respuesta, con la hoja abierta y el carrito vacío.
+                    val terminal = resultado.ajustes.terminal
+                    tpvSettingsRepository.aplicarPapelDeVales(
+                        venueId = hoja.venueId,
+                        terminalId = terminal.id,
+                        defaultWorkspace = terminal.defaultWorkspace,
+                        canIssueAreaTickets = terminal.canIssueAreaTickets,
+                        canCheckoutAreaTickets = terminal.canCheckoutAreaTickets,
+                        canDeliverAreaTickets = terminal.canDeliverAreaTickets,
+                        fulfillmentAreaId = terminal.fulfillmentArea?.id,
+                    )
+                    cambiosDelPapel.publicar(resultado.ajustes)
                     _ajustes.value = resultado.ajustes
                     _hoja.value = null
                     _guardado.value = hoja.seleccion
+                    _irAlInicio.value = true
                     return@launch
                 }
                 ResultadoPapel.SinPermiso -> motivoParaNoGuardar(puedeConfigurar = false, hayRed = true, ventaAMedias = false)
@@ -162,15 +200,26 @@ class PapelDelAparatoGateViewModel @Inject constructor(
         }
     }
 
-    /** «Ahora no», tocar fuera o la X. La primera vez la calla hasta el siguiente arranque o login. */
+    /** La X, atrás o tocar fuera: la cierra SIN callarla (vuelve en el siguiente momento), como iOS. */
     fun cerrar() {
-        val hoja = _hoja.value ?: return
-        if (hoja.guardando) return
-        if (hoja.primeraVez) calladas += hoja.venueId
+        if (_hoja.value?.guardando == true) return
         _hoja.value = null
     }
 
-    /** El aviso sin permiso: la misma regla de silencio que «Ahora no». */
+    /** «Ahora no» (sólo la primera vez): la calla en este negocio hasta el siguiente arranque o login. */
+    fun ahoraNo() {
+        val hoja = _hoja.value ?: return
+        if (hoja.guardando) return
+        calladas += hoja.venueId
+        _hoja.value = null
+    }
+
+    /** El aviso sin permiso cerrado con la X o tocando fuera: sin callarlo, como [cerrar]. */
+    fun cerrarAviso() {
+        _avisoSinPermiso.value = false
+    }
+
+    /** «Entendido» en el aviso sin permiso: la misma regla de silencio que «Ahora no». */
     fun entendido() {
         _avisoSinPermiso.value = false
         secureStorage.venueId?.let { calladas += it }
@@ -178,6 +227,10 @@ class PapelDelAparatoGateViewModel @Inject constructor(
 
     fun avisoVisto() {
         _guardado.value = null
+    }
+
+    fun yaFueAlInicio() {
+        _irAlInicio.value = false
     }
 
     private fun hojaPara(ajustes: AreaTicketSettingsData, primeraVez: Boolean): HojaDelPapel {

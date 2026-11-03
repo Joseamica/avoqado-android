@@ -242,7 +242,10 @@ class AppState @Inject constructor(
         _consultaDelPapel.update { ConsultaDelPapel(vez = it.vez + 1, sesion = if (sesionNueva) it.sesion + 1 else it.sesion) }
     }
 
-    /** D3: el aparato cambió su papel en los vales: con la terminal nueva cambia la llave del NavHost y abre en su pantalla. */
+    /**
+     * D3: el aparato cambió su papel en los vales. La navegación ya lo tiene (se aplicó con la respuesta del guardado, Codex
+     * final #1); esto sólo pone al día lo demás. Sin reconstruir pestañas: con los mismos valores la llave no cambia.
+     */
     fun alCambiarElPapel() {
         if (_isLoggedIn.value) refreshPlanAndSettings(rebuildNavigation = false, replaceInFlight = true)
     }
