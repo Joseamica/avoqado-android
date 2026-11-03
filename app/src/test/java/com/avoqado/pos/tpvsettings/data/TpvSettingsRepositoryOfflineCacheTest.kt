@@ -410,6 +410,58 @@ class TpvSettingsRepositoryOfflineCacheTest {
         assertNull(ticket.layout)
     }
 
+    // MARK: - D3 (Codex final #1): el papel del aparato se aplica con la respuesta del guardado
+
+    private fun aparatoNuevoResponse(): String =
+        """
+        { "success": true, "data": { "settings": { "showReviewScreen": false },
+          "deviceTerminal": { "id": "terminal-nueva", "defaultWorkspace": "STANDARD_POS",
+            "canIssueAreaTickets": false, "canCheckoutAreaTickets": false, "canDeliverAreaTickets": false } } }
+        """.trimIndent()
+
+    private suspend fun TpvSettingsRepository.emiteValesDeLaPanaderia() = aplicarPapelDeVales(
+        venueId = VENUE_ID,
+        terminalId = "terminal-nueva",
+        defaultWorkspace = TerminalNavigationSettings.AREA_OPERATIONS,
+        canIssueAreaTickets = true,
+        canCheckoutAreaTickets = false,
+        canDeliverAreaTickets = false,
+        fulfillmentAreaId = "area-panaderia",
+    )
+
+    @Test
+    fun `P1 el papel guardado llega a la navegación sin esperar otra consulta`() = runTest {
+        val stored = mutableMapOf<String, String>()
+        val repository = repositoryWith(preferencesBackedBy(stored), clientReturning(aparatoNuevoResponse()))
+        repository.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(TerminalNavigationSettings.STANDARD_POS, repository.terminalNavigation.value.defaultWorkspace)
+
+        repository.emiteValesDeLaPanaderia()
+
+        val navegacion = repository.terminalNavigation.value
+        assertEquals(TerminalNavigationSettings.AREA_OPERATIONS, navegacion.defaultWorkspace)
+        assertTrue(navegacion.canIssueAreaTickets)
+        assertEquals("area-panaderia", navegacion.fulfillmentAreaId)
+        assertEquals("terminal-nueva", navegacion.terminalId)
+        // Y queda en disco: un arranque sin red abre con el papel nuevo.
+        assertTrue(stored.values.any { it.contains("area-panaderia") })
+    }
+
+    @Test
+    fun `P1 un refresco que salió antes de guardar no regresa el papel viejo`() = runTest {
+        val dos = DosRespuestas(primera = aparatoNuevoResponse(), segunda = aparatoNuevoResponse())
+        val repository = repositoryWith(preferencesBackedBy(mutableMapOf()), dos.client)
+        val viejo = async(Dispatchers.Default) { repository.refreshSettingsForVenue(VENUE_ID) }
+        assertTrue("el refresco nunca salió a la red", withContext(Dispatchers.Default) { dos.primeraEnVuelo.await(30, TimeUnit.SECONDS) })
+
+        repository.emiteValesDeLaPanaderia()
+        dos.soltarPrimera.countDown()
+        withContext(Dispatchers.Default) { withTimeout(30_000) { viejo.await() } }
+
+        assertTrue("la respuesta vieja regresó el papel anterior", repository.terminalNavigation.value.canIssueAreaTickets)
+        assertEquals(TerminalNavigationSettings.AREA_OPERATIONS, repository.terminalNavigation.value.defaultWorkspace)
+    }
+
     private fun preferencesBackedBy(stored: MutableMap<String, String>): PreferencesDataStore =
         mockk<PreferencesDataStore>(relaxed = true).also { preferences ->
             every { preferences.getString(any()) } answers { flowOf(stored[firstArg()]) }

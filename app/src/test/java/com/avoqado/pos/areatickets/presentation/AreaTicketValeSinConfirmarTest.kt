@@ -73,7 +73,7 @@ class AreaTicketValeSinConfirmarTest {
         }
     }
 
-    private val repository = mockk<AreaTicketRepository>()
+    private val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
     private val printerService = mockk<PrinterService>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val comandaDispatcher = mockk<ComandaDispatcher>()

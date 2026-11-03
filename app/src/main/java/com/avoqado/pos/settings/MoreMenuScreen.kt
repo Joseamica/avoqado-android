@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.ConfirmationNumber
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Extension
@@ -128,6 +129,8 @@ import com.avoqado.pos.settings.presentation.SetupWizardScreen
 import com.avoqado.pos.settings.presentation.SupportScreen
 import com.avoqado.pos.designsystem.components.SwitchUserSheet
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
+import com.avoqado.pos.areatickets.presentation.LocalPapelDelAparato
+import com.avoqado.pos.areatickets.presentation.valorDelRecuadro
 
 @Composable
 fun MoreMenuScreen(
@@ -146,6 +149,12 @@ fun MoreMenuScreen(
     val isSwitching by viewModel.isSwitching.collectAsState()
     val sessionGuardMessage by viewModel.sessionGuardMessage.collectAsState()
     val currentMode by viewModel.posModeManager.currentMode.collectAsState()
+    // D3: el recuadro «Vales» sólo con los vales prendidos y un servidor que ya conoce el papel del aparato. Abre la MISMA
+    // hoja de la primera vez (vive arriba del NavHost); sin permiso se ve en gris con la razón.
+    val papelDelAparato = LocalPapelDelAparato.current
+    val valorVales = papelDelAparato?.ajustes?.collectAsState()?.value?.let(::valorDelRecuadro)
+    val puedeCambiarVales = papelDelAparato?.puedeConfigurar() == true
+    val avisoVales = if (puedeCambiarVales) null else "Pídele a tu administrador que lo configure"
     var showVenueSwitcher by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
     var showPrinter by remember { mutableStateOf(false) }
@@ -349,7 +358,7 @@ fun MoreMenuScreen(
             ) {
                 Card(
                     modifier = Modifier
-                        .weight(0.65f)
+                        .weight(if (valorVales != null) 0.45f else 0.65f)
                         .clickable(enabled = viewModel.hasMultipleVenues && !isSwitching) {
                             showVenueSwitcher = true
                         },
@@ -412,7 +421,7 @@ fun MoreMenuScreen(
 
                 Card(
                     modifier = Modifier
-                        .weight(0.35f)
+                        .weight(if (valorVales != null) 0.25f else 0.35f)
                         .clickable { showChangeMode = true },
                     shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
                     colors = CardDefaults.cardColors(
@@ -462,6 +471,17 @@ fun MoreMenuScreen(
                             tint = MaterialTheme.colorScheme.outlineVariant,
                         )
                     }
+                }
+                if (valorVales != null) {
+                    TarjetaValesCompacta(
+                        modifier = Modifier
+                            .weight(0.30f)
+                            .alpha(if (puedeCambiarVales) 1f else 0.5f),
+                        value = valorVales,
+                        hint = avisoVales,
+                        enabled = puedeCambiarVales,
+                        onClick = { papelDelAparato?.abrirDesdeMas() },
+                    )
                 }
             }
         } else {
@@ -514,6 +534,29 @@ fun MoreMenuScreen(
                     )
                 },
             )
+
+            if (valorVales != null) {
+                Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm))
+                Box(modifier = Modifier.alpha(if (puedeCambiarVales) 1f else 0.5f)) {
+                    HeaderCard(
+                        icon = Icons.Outlined.ConfirmationNumber,
+                        label = "Vales",
+                        value = valorVales,
+                        hint = avisoVales,
+                        dense = denseMenu,
+                        enabled = puedeCambiarVales,
+                        onClick = { papelDelAparato?.abrirDesdeMas() },
+                        trailing = {
+                            Icon(
+                                Icons.Outlined.ChevronRight,
+                                contentDescription = null,
+                                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                                tint = MaterialTheme.colorScheme.outlineVariant,
+                            )
+                        },
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(sectionGap))
@@ -1547,6 +1590,71 @@ internal fun initialsFor(name: String?, email: String?): String? {
 /// Tarjeta de encabezado (Sucursal / Modo): chip de ícono + rótulo + valor +
 /// acción a la derecha. Las dos comparten forma a propósito — antes el modo era
 /// texto suelto y no se leía como algo tocable.
+/** D3: el recuadro «Vales» en el renglón de la tablet chica, con la misma piel que «Modo». */
+@Composable
+private fun TarjetaValesCompacta(
+    modifier: Modifier,
+    value: String,
+    hint: String?,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = modifier.clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.ConfirmationNumber,
+                    contentDescription = null,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = AvoqadoTheme.spacing.sm),
+            ) {
+                Text(
+                    text = "Vales",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                if (hint != null) {
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun HeaderCard(
     icon: ImageVector,

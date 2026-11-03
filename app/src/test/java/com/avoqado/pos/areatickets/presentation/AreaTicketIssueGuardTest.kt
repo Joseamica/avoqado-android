@@ -48,7 +48,7 @@ class AreaTicketIssueGuardTest {
     @get:Rule
     val main = MainDispatcherRule()
 
-    private val repository = mockk<AreaTicketRepository>()
+    private val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
     private val printerService = mockk<PrinterService>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true; every { guardarIntentoDeVale(any(), any(), any()) } returns LlaveDeEmisionDeVales.Guardado.SI } // D2: el disco guarda la llave
 

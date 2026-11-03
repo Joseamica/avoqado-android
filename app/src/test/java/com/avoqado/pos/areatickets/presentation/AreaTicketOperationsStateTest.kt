@@ -193,7 +193,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `issued ticket consumes cart even when no printer is configured`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         val printerService = mockk<PrinterService>()
         val secureStorage = mockk<SecureStorage>(relaxed = true) { every { guardarLlaveDeEmisionDeVales(any(), any()) } returns true; every { guardarIntentoDeVale(any(), any(), any()) } returns LlaveDeEmisionDeVales.Guardado.SI } // D2: el disco guarda la llave
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
@@ -238,7 +238,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `printer failure does not reuse issued ticket key for the next cart`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         val printerService = mockk<PrinterService>()
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         // D2 (vales-ciclo): la llave se lee del aparato en cada emisión, así que el disco tiene que recordarla.
@@ -287,7 +287,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `checkout bootstrap does not request delivery queue`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -309,7 +309,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `latest delivery refresh wins when bootstrap finishes last`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         val bootstrapSettings = CompletableDeferred<AreaTicketSettingsData>()
         val deliverySettings = CompletableDeferred<AreaTicketSettingsData>()
         var settingsRequest = 0
@@ -343,7 +343,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `dismissing pending reprint releases screen but keeps persisted recovery code`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         every { secureStorage.pendingAreaTicketPrintCode } returns "9340048086"
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
@@ -367,7 +367,7 @@ class AreaTicketOperationsStateTest {
     @Test
     fun `saving pending PDF records a successful digital output and clears recovery`() = runTest {
         val code = "9340048086"
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         val pdfGenerator = mockk<AreaTicketPdfGenerator>()
         every { secureStorage.pendingAreaTicketPrintCode } returns code
@@ -428,7 +428,7 @@ class AreaTicketOperationsStateTest {
     @Test
     fun `successful recovery reprint clears the original cart through callback`() = runTest {
         val code = "9340048086"
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         val printerService = mockk<PrinterService>()
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         every { secureStorage.pendingAreaTicketPrintCode } returns code
@@ -467,7 +467,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `paper delivery is rejected when receipt scanning is required`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -493,7 +493,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `paper delivery warns and refreshes when another terminal delivered first`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -519,7 +519,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `receipt scan is rejected when paper confirmation is required`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -543,7 +543,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `receipt scan delivers and reports only paid tickets`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -573,7 +573,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `receipt scan counts only new deliveries and warns about stale tickets`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -606,7 +606,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `receipt scan refreshes pending and reports partial progress after failure`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -639,7 +639,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `partial delivery does not claim reconciliation when pending refresh fails`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
@@ -674,7 +674,7 @@ class AreaTicketOperationsStateTest {
 
     @Test
     fun `receipt scan without paid tickets reports an error`() = runTest {
-        val repository = mockk<AreaTicketRepository>()
+        val repository = mockk<AreaTicketRepository> { every { ajustesGuardados(any()) } returns null }
         coEvery { repository.settings() } returns settings(
             defaultWorkspace = "AREA_OPERATIONS",
             canDeliver = true,
