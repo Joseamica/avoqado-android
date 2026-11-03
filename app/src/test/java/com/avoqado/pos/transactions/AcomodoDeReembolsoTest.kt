@@ -37,9 +37,17 @@ class AcomodoDeReembolsoTest {
 
     @Test
     fun `en una columna con poco alto se desliza todo junto`() {
-        assertFalse(pieFijoEnUnaColumna(699f))
-        assertTrue(pieFijoEnUnaColumna(700f))
-        assertTrue(pieFijoEnUnaColumna(719f)) // 360×780: 780 menos los 61 dp del encabezado
-        assertFalse(pieFijoEnUnaColumna(659f)) // 360×720
+        assertFalse(pieFijoEnUnaColumna(699f, null))
+        assertTrue(pieFijoEnUnaColumna(700f, null))
+        assertTrue(pieFijoEnUnaColumna(719f, null)) // 360×780: 780 menos los 61 dp del encabezado
+        assertFalse(pieFijoEnUnaColumna(659f, null)) // 360×720
+    }
+
+    @Test
+    fun `en Artículos, si a la lista no le quedan 160 dp se desliza todo aunque sobre alto`() {
+        assertTrue(pieFijoEnUnaColumna(719f, 559f)) // le quedan 160
+        assertFalse(pieFijoEnUnaColumna(719f, 560f)) // le quedan 159
+        assertTrue(pieFijoEnUnaColumna(700f, 540f)) // justo en el corte, con 160
+        assertFalse(pieFijoEnUnaColumna(699f, 100f)) // el corte de 700 sigue mandando, aunque sobre lista
     }
 }

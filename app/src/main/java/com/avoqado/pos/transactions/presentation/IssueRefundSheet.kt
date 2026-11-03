@@ -54,6 +54,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -67,6 +68,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
@@ -462,7 +464,26 @@ fun IssueRefundSheet(
         ) {
             val dosColumnas = enDosColumnas(maxWidth.value, soloCompleto)
             val pieFijo = pieFijoEnDosColumnas(maxHeight.value)
-            val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)
+            // 🔴 Lo que le quedaría a la lista sale de medir las pestañas y el pie, nunca la banda: al soltar su peso, la banda crecería y regresaría
+            // al modo anterior, en bucle. Ninguna de estas medidas depende del modo. El pie de «Por importe» trae otros renglones, y lo medido allá no
+            // decide aquí. Pero `onSizeChanged` calla si el alto no cambió (sin propina, escoger el saldo allá y volver): pasado el primer cuadro de
+            // regreso, lo último medido ya es de Artículos.
+            var altoDePestanas by remember { mutableIntStateOf(0) }
+            var altoDelError by remember { mutableIntStateOf(0) }
+            var altoDelPie by remember { mutableIntStateOf(0) }
+            var altoDelPieEnArticulos by remember { mutableIntStateOf(0) }
+            LaunchedEffect(tab) {
+                if (tab == RefundTab.ITEMS) {
+                    withFrameNanos { }
+                    altoDelPieEnArticulos = altoDelPie
+                }
+            }
+            val loDemasEnArticulos = if (tab == RefundTab.ITEMS) {
+                with(LocalDensity.current) { (altoDePestanas + altoDelError + altoDelPieEnArticulos).toDp() + spacing.md }.value
+            } else {
+                null
+            }
+            val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value, loDemasEnArticulos)
             // Con pie fijo, en «Por importe» de una columna la banda sólo trae el aviso de la terminal: va de su tamaño y no se desliza sola.
             val bandaSeDesliza = !todoSeDesliza && (dosColumnas || soloCompleto || tab == RefundTab.ITEMS)
             val anchoDeColumna = if (dosColumnas) maxWidth / 2 else maxWidth
@@ -524,6 +545,7 @@ fun IssueRefundSheet(
                 if (!soloCompleto) Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .onSizeChanged { altoDePestanas = it.height }
                         .padding(bottom = spacing.md),
                     horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                 ) {
@@ -1110,9 +1132,9 @@ fun IssueRefundSheet(
                         // 🔴 Son los mismos nodos con pie fijo y sin él: abrir el teclado cruza `pieFijoEnUnaColumna`, y si el campo cambiara de
                         // padre perdería el foco, el teclado se cerraría, el alto subiría y se repetiría en bucle.
                         .verticalScroll(pieScroll)
-                        // Con pie fijo, este mínimo es el alto que la banda reparte y aquí no hay recorrido. Es un mínimo y no un tope: si el pie no
-                        // cabe (4 medios, saldo a favor y teléfono en un celular), la banda queda en nada y se desliza lo demás. Con un tope, lo
-                        // que no cabía se recortaba sin forma de alcanzarlo.
+                        // Con pie fijo, este mínimo es el alto que se reparte y aquí no hay recorrido. Es un mínimo y no un tope: si «Por importe» no
+                        // cabe (4 medios, saldo a favor y teléfono en un celular), se desliza. Con un tope, lo que no cabía se recortaba sin forma de
+                        // alcanzarlo. En Artículos, antes de que eso le quite su sitio a la lista, ya se desliza todo: ver `todoSeDesliza`.
                         .then(if (todoSeDesliza) Modifier else Modifier.heightIn(min = maxHeight))
                         .padding(top = spacing.md),
                 ) {
@@ -1124,13 +1146,22 @@ fun IssueRefundSheet(
                     // La casilla «Incluir propina» sigue AQUÍ y no en la banda de artículos: para
                     // llegar al botón hay que pasar por ella, porque el motivo —que `canSubmit`
                     // exige— vive debajo. Deslizable no es lo mismo que escondido.
-                    errorDelEnvio()
+                    // Estos dos contenedores existen siempre: sólo miden, para `loDemasEnArticulos`. El `Spacer` no entra en ellos, porque necesita que el
+                    // alto se reparta entre él y lo demás; un contenedor con peso recortaría lo que no cabe.
+                    Column(Modifier.fillMaxWidth().onSizeChanged { altoDelError = it.height }) { errorDelEnvio() }
                     importeYSuPropina()
                     // En «Por importe» lo que sobra va aquí: lo que se escribe arriba y lo demás abajo, como en Artículos. Existe siempre, para que
                     // nada de abajo cambie de lugar al cruzar el corte. La tarjeta de regalo sigue arriba, con el blanco abajo.
                     Spacer(if (tab == RefundTab.AMOUNT && !todoSeDesliza && !soloCompleto) Modifier.weight(1f) else Modifier)
-                    comoSeDevuelve()
-                    cierre()
+                    Column(
+                        Modifier.fillMaxWidth().onSizeChanged {
+                            altoDelPie = it.height
+                            if (tab == RefundTab.ITEMS) altoDelPieEnArticulos = it.height
+                        },
+                    ) {
+                        comoSeDevuelve()
+                        cierre()
+                    }
                 }
                 if (pieScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))
             }

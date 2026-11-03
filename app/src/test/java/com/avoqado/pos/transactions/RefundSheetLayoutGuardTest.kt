@@ -81,7 +81,7 @@ class RefundSheetLayoutGuardTest {
         )
         assertTrue(
             "El `Spacer` dejó de ir, siempre y con su peso sólo en «Por importe», entre el campo y lo demás.",
-            Regex("""importeYSuPropina\(\)\s*Spacer\(if \(tab == RefundTab\.AMOUNT && !todoSeDesliza && !soloCompleto\) Modifier\.weight\(1f\) else Modifier\)\s*comoSeDevuelve\(\)""")
+            Regex("""importeYSuPropina\(\)\s*Spacer\(if \(tab == RefundTab\.AMOUNT && !todoSeDesliza && !soloCompleto\) Modifier\.weight\(1f\) else Modifier\)\s*Column\(""")
                 .containsMatchIn(piezas.pie),
         )
         assertEquals("Sólo una columna lleva ese `Spacer`.", 0, invocaciones(piezas.dosColumnas, "Spacer"))
@@ -276,6 +276,27 @@ class RefundSheetLayoutGuardTest {
         assertTrue("El envío dejó de vivir en el modelo del detalle.", quienAbre.contains("viewModel.enviarReembolsoASaldo("))
     }
 
+    /**
+     * Lo que le queda a la lista sale de medir las pestañas y el pie, nunca la banda: al soltar su peso crecería y la pantalla regresaría al
+     * modo anterior, en bucle. Y el pie de «Por importe» trae otros renglones: lo medido allá no decide en Artículos.
+     */
+    @Test
+    fun `lo que le queda a la lista se mide sin la banda y sólo en Artículos`() {
+        val ventana = ventanaDeLaPantalla()
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
+        fun medidas(trozo: String) = Regex("""\bonSizeChanged\b""").findAll(trozo).count()
+        assertEquals("Las pestañas se miden, y arriba de la banda.", 1, medidas(piezas.queSeDevuelve.substringBefore("Box(")))
+        assertEquals("Se midió la banda: al soltar su peso crece, y esto oscilaría.", 0, medidas(piezas.queSeDevuelve.substringAfter("Box(")))
+        assertEquals("El error y el pie se miden.", 2, medidas(piezas.pie))
+        assertTrue("Lo medido dejó de decidir sólo en Artículos.", ventana.contains("val loDemasEnArticulos = if (tab == RefundTab.ITEMS)"))
+        assertTrue("Lo medido en «Por importe» ya decide en Artículos.", ventana.contains("if (tab == RefundTab.ITEMS) altoDelPieEnArticulos = it.height"))
+        assertTrue(
+            "`onSizeChanged` calla si el alto no cambió: al volver a Artículos hay que tomar lo último medido.",
+            Regex("""LaunchedEffect\(tab\)\s*\{\s*if \(tab == RefundTab\.ITEMS\)\s*\{\s*withFrameNanos \{ \}\s*altoDelPieEnArticulos = altoDelPie""").containsMatchIn(ventana),
+        )
+    }
+
     /** `maxHeight` es el alto real bajo el encabezado y sin el teclado: de él dependen los dos cortes del pie. */
     @Test
     fun `el alto del cuerpo no cuenta el encabezado y baja con el teclado`() {
@@ -286,7 +307,7 @@ class RefundSheetLayoutGuardTest {
         assertTrue("El cuerpo perdió `imePadding()`.", ventana.substring(cuerpo).substringBefore(") {").contains(".imePadding()"))
         assertTrue(
             "El corte de una columna dejó de salir del alto real.",
-            ventana.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)"),
+            ventana.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value, loDemasEnArticulos)"),
         )
         assertTrue(
             "El aviso de la terminal vive en una columna: en dos, lo que cuenta es su mitad.",
@@ -345,7 +366,7 @@ class RefundSheetLayoutGuardTest {
         )
         assertTrue(
             "El pie cambió de orden: error, importe y su casilla, cómo se devuelve y cierre.",
-            Regex("""errorDelEnvio\(\)\s*importeYSuPropina\(\)\s*Spacer\([^\n]*\)\s*comoSeDevuelve\(\)\s*cierre\(\)""").containsMatchIn(piezas.pie),
+            Regex("""errorDelEnvio\(\)[\s}]*importeYSuPropina\(\)\s*Spacer\([^\n]*\)\s*Column\([^{]*\{[^}]*\}[^{]*\{\s*comoSeDevuelve\(\)\s*cierre\(\)\s*\}""").containsMatchIn(piezas.pie),
         )
         assertEquals("El error sólo se repite en el cierre de dos columnas.", 1, Regex("""if \(dosColumnas\) errorDelEnvio\(\)""").findAll(piezas.cierre).count())
     }
@@ -399,7 +420,7 @@ class RefundSheetLayoutGuardTest {
         val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
         val cuerpo = ventana.substring(ventana.indexOf("BoxWithConstraints("))
 
-        assertTrue(cuerpo.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)"))
+        assertTrue(cuerpo.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value, loDemasEnArticulos)"))
         assertFalse("`todoSeDesliza` decide estructura.", Regex("""if \(!?todoSeDesliza\)\s*\{""").containsMatchIn(cuerpo))
         // Se quitó el 3-nov: con todo deslizable ya no hacía falta, y sólo escondía el aviso de la terminal, con su botón.
         listOf("apretado", "584").forEach { assertFalse("Volvió `$it`: esconder la banda dejaba «Abrir en la terminal» sin alcance.", ventana.contains(it)) }
