@@ -112,9 +112,10 @@ private fun DialogoDePrender(prender: AccionDeHoja, prendiendo: Boolean, error: 
                 TextButton(onClick = { enlaces.openUri(URL_TERMINOS) }) { Text(TextosDeTarjetas.TERMINOS) }
                 TextButton(onClick = { enlaces.openUri(URL_PRIVACIDAD) }) { Text(TextosDeTarjetas.AVISO_DE_PRIVACIDAD) }
             }
-            // Sin red o con un rechazo se dice aquí, en el mismo diálogo, para que se pueda reintentar.
-            (error ?: prender.motivo)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            // Un intento fallido se dice aquí mismo, para reintentar. Sin red es un estado normal: nunca en rojo.
+            when {
+                error != null -> Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                prender.motivo != null -> Text(prender.motivo, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

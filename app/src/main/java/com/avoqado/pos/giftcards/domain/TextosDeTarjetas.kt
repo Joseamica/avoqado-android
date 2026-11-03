@@ -8,7 +8,7 @@ object TextosDeTarjetas {
     const val VENDER = "Vender tarjeta"
     const val CONSULTAR = "Consultar saldo"
     const val PRENDER = "Prender tarjetas de regalo"
-    const val APAGADAS_PRENDELAS_AQUI = "Las tarjetas de regalo están apagadas. Préndelas aquí abajo."
+    const val APAGADAS_PRENDELAS_AQUI = "Las tarjetas de regalo están apagadas. Préndelas aquí arriba."
     const val APAGADAS_PIDELE_A_UN_ADMIN = "Las tarjetas de regalo están apagadas. Pídele a un administrador o al dueño que las prenda."
     const val SIN_PERMISO_PRENDER = "No tienes permiso para prender las tarjetas de regalo. Pídeselo a un administrador o al dueño."
     const val PRENDER_RECHAZADO = "No se prendieron las tarjetas de regalo. Inténtalo de nuevo."
