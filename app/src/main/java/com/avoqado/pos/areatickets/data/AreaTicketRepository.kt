@@ -315,12 +315,20 @@ class AreaTicketRepository @Inject constructor(
             )
         }
 
+    /**
+     * D3 (Codex final r2 #2): sube al empezar y al terminar cada guardado del papel. Una consulta de ajustes que salió antes
+     * (con el papel viejo) y llega después ya no escribe la caché: sin red, Cobrar la recuperaría.
+     * ponytail: dos `save` que se cruzan en el disco no se ordenan entre sí; el del guardado sale después y gana en la práctica.
+     */
+    @Volatile private var versionDelPapel = 0
+
     suspend fun settings(): AreaTicketSettingsData {
         val venueId = venueId()
         session.ensureVenue(venueId)
+        val version = versionDelPapel
         return try {
             request { api.getAreaTicketSettings(venueId) }.also { settings ->
-                payloadCache.save(
+                if (versionDelPapel == version) payloadCache.save(
                     PayloadCache.TYPE_AREA_TICKET_SETTINGS,
                     venueId,
                     areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), settings),
@@ -353,8 +361,10 @@ class AreaTicketRepository @Inject constructor(
                 JsonObject(mapOf("role" to JsonPrimitive("ISSUE"), "fulfillmentAreaId" to JsonPrimitive(eleccion.areaId)))
             PapelDelAparato.Entrega, PapelDelAparato.SinElegir -> return ResultadoPapel.Rechazado("Elige una opción.")
         }
+        versionDelPapel++
         return try {
             val ajustes = api.setAreaTicketRole(venueId, terminalId, cuerpo).unwrap()
+            versionDelPapel++
             payloadCache.save(
                 PayloadCache.TYPE_AREA_TICKET_SETTINGS,
                 venueId,

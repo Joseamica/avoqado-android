@@ -9,6 +9,9 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -72,6 +75,27 @@ class GuardarPapelDelAparatoTest {
 
         assertEquals(ResultadoPapel.Guardado(ajustes), resultado)
         coVerify { cache.save(PayloadCache.TYPE_AREA_TICKET_SETTINGS, "v1", any()) }
+    }
+
+    @Test
+    fun `P1 una consulta que salió antes de guardar no pisa la caché con el papel viejo`() = runTest {
+        // Codex final r2 #2: el GET en vuelo trae el área vieja; si escribe la caché después del guardado, un arranque sin
+        // red vuelve a abrir Cobrar con ella.
+        var enDisco: String? = null
+        coEvery { cache.save(PayloadCache.TYPE_AREA_TICKET_SETTINGS, "v1", any()) } answers { enDisco = thirdArg() }
+        val viejo = ajustes.copy(terminal = ajustes.terminal.copy(fulfillmentArea = AreaTicketArea("area-vieja", "Cremería", "HOLD_UNTIL_PAID")))
+        val nuevo = ajustes.copy(terminal = ajustes.terminal.copy(fulfillmentArea = AreaTicketArea("area-nueva", "Panadería", "HOLD_UNTIL_PAID")))
+        val responde = CompletableDeferred<Unit>()
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers { responde.await(); AreaTicketEnvelope(true, viejo) }
+        coEvery { api.setAreaTicketRole(any(), any(), any()) } returns AreaTicketEnvelope(true, nuevo)
+
+        val consulta = launch { repo.settings() }
+        advanceUntilIdle() // el GET ya salió
+        repo.guardarPapel("v1", "t1", PapelDelAparato.EmiteVales("area-nueva", "Panadería"))
+        responde.complete(Unit)
+        consulta.join()
+
+        assertTrue("la caché quedó con el área vieja: $enDisco", enDisco!!.contains("area-nueva"))
     }
 
     @Test
