@@ -1,5 +1,6 @@
 package com.avoqado.pos.escritorio
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -23,7 +24,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -33,6 +36,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
@@ -45,6 +49,7 @@ import java.nio.file.Files
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * En Windows cada hoja modal trae una X que la cierra: con mouse no hay gesto de bajarla ni botón de atrás, y
@@ -152,6 +157,37 @@ class HojaConXEnLaEscenaTest {
     }
     @Test fun `a pantalla completa una lista que ya llego arriba no tira la pantalla en Windows`() = listaArriba(enWindows = true)
     @Test fun `a pantalla completa una lista que ya llego arriba no tira la pantalla en Android`() = listaArriba(enWindows = false)
+
+    /** Quitarle el arrastre a la hoja no debe quitárselo a lo de adentro. */
+    private fun listaAvanza(enWindows: Boolean) = hoja(enWindows, aPantallaCompleta = true, contenido = {
+        Column(Modifier.fillMaxSize().testTag("lista").verticalScroll(rememberScrollState())) {
+            repeat(80) { Text("Renglón $it") }
+        }
+    }) {
+        // Sin recortar: `getBoundsInRoot` lo recorta contra la lista, y fuera de la vista seguiría diciendo 0.
+        assertEquals(0.dp, onNodeWithText("Renglón 0").getUnclippedBoundsInRoot().top, "montaje: la lista empieza arriba")
+        onNodeWithTag("lista").performTouchInput { swipeUp() }
+        waitForIdle()
+        assertTrue(onNodeWithText("Renglón 0").getUnclippedBoundsInRoot().top < 0.dp, "la lista no avanzó con el dedo")
+        assertEquals(0.dp, bordes("lista").top, "la pantalla se movió con la lista")
+        assertEquals(0, cierres)
+    }
+    @Test fun `a pantalla completa una lista larga avanza con el dedo en Windows`() = listaAvanza(enWindows = true)
+    @Test fun `a pantalla completa una lista larga avanza con el dedo en Android`() = listaAvanza(enWindows = false)
+
+    private fun tocar(enWindows: Boolean) {
+        var toques = 0
+        hoja(enWindows, aPantallaCompleta = true, contenido = {
+            Box(Modifier.fillMaxWidth().height(100.dp).testTag("boton").clickable { toques++ })
+        }) {
+            onNodeWithTag("boton").performTouchInput { click() }
+            waitForIdle()
+            assertEquals(1, toques, "el botón no recibió el toque")
+            assertEquals(0, cierres)
+        }
+    }
+    @Test fun `a pantalla completa un boton recibe el toque en Windows`() = tocar(enWindows = true)
+    @Test fun `a pantalla completa un boton recibe el toque en Android`() = tocar(enWindows = false)
 
     @Test fun `a pantalla completa con su encabezado no sale una segunda X`() = hoja(enWindows = true, aPantallaCompleta = true, contenido = {
         AvoqadoFullscreenHeader(title = "Emitir reembolso", onNav = {})

@@ -20,6 +20,6 @@ internal fun enDosColumnas(anchoDp: Float, soloCompleto: Boolean): Boolean =
 
 /**
  * ¿El pie (importe, Cancelar y Reembolsar) queda fijo abajo de la columna derecha?
- * `altoDp` es el alto libre bajo el encabezado, ya sin el teclado.
+ * `altoDp` es el alto de adentro del `imePadding` y bajo el encabezado, no el de la pantalla: con el teclado abierto baja.
  */
 internal fun pieFijoEnDosColumnas(altoDp: Float): Boolean = altoDp >= ALTO_MINIMO_PIE_FIJO_DP

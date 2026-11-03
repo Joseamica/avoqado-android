@@ -21,14 +21,15 @@ import java.io.File
  *      casilla decide si la propina del mesero se devuelve: es DINERO confirmándose a
  *      ciegas.
  *
- * Este guard mira el CÓDIGO FUENTE porque no hay otra forma — el módulo no tiene
- * Robolectric ni `compose.ui.test`, así que ninguna prueba puede renderizar la hoja y
- * mirar el pixel. Misma técnica que [RefundSheetDesignSystemGuardTest] y
- * [RefundCashDrawerOwnershipTest].
+ * Este guard mira el CÓDIGO FUENTE porque este módulo no tiene Robolectric ni
+ * `compose.ui.test`: aquí ninguna prueba puede renderizar la hoja y mirar el pixel. Misma
+ * técnica que [RefundSheetDesignSystemGuardTest] y [RefundCashDrawerOwnershipTest]. La hoja de
+ * verdad, con sus tamaños, se monta en WINDOWS: `desktop/pos/.../EmitirReembolsoEnLaEscenaTest`.
  *
  * ⚠️ **LO QUE ESTE GUARD NO PRUEBA, declarado para no prometer de más.** Una auditoría
  * (Codex gpt-6-astra, 2026-09-12) aplicó ocho mutaciones: **cae con la que motivó el
- * guard** —borrar la llamada de la casilla— y **pasa con estas siete**:
+ * guard** —borrar la llamada de la casilla— y **pasó con estas siete**. No se ha vuelto a medir desde que las
+ * guardas miden por pieza y por rama (spec 2026-11-02): algunas ya deberían caer.
  *
  * | Mutación | Qué se perdería sin que el guard lo note |
  * |---|---|
@@ -42,9 +43,8 @@ import java.io.File
  *
  * 🔑 La lección es la de la casa: **un guard que promete más de lo que comprueba es peor
  * que uno que declara su alcance.** Esto caza la reversión perezosa —que es la que de
- * verdad ocurre— y nada más. La protección real de «la casilla se ve y se puede tocar»
- * exige una prueba instrumentada (`compose.ui.test`), que el módulo no tiene: queda
- * anotado como pendiente, no disimulado.
+ * verdad ocurre— y nada más. Lo de «se ve y se alcanza» lo mide la escena de WINDOWS; la
+ * casilla tocada en un aparato, la QA.
  */
 class RefundSheetLayoutGuardTest {
 
@@ -64,7 +64,7 @@ class RefundSheetLayoutGuardTest {
         )
         assertTrue(
             "La banda del medio dejó de declarar `weight(1f, fill = false)`.",
-            sinEspacios.contains("weight(1f,fill=false)"),
+            PiezasDeLaHoja(codigo).queSeDevuelve.replace(" ", "").contains("Box(modifier=Modifier.weight(1f,fill=false))"),
         )
     }
 
@@ -82,18 +82,20 @@ class RefundSheetLayoutGuardTest {
                 "enseña 2 y él reembolsa lo que alcanza a ver.",
             codigo.contains("transaction.items.size") && codigo.contains("artículo"),
         )
+        val queSeDevuelve = PiezasDeLaHoja(codigo).queSeDevuelve
+        assertEquals("La lista ya no se invoca en `queSeDevuelve`.", 1, invocaciones(queSeDevuelve, "ItemsBody"))
         assertTrue(
             "Desapareció `canScrollForward` (el degradado del borde de la banda).",
-            codigo.contains("canScrollForward"),
+            queSeDevuelve.contains("bandaScroll.canScrollForward"),
         )
     }
 
     /**
-     * 🔴 El que más importa: la casilla de la propina cambia CUÁNTO dinero se devuelve,
-     * así que no puede vivir en la banda que se desliza.
+     * 🔴 El que más importa: la casilla de la propina cambia CUÁNTO dinero se devuelve, así que en una columna no puede
+     * vivir en la banda que se desliza (con el teclado abierto salía de la pantalla).
      */
     @Test
-    fun `la casilla de propina vive en el pie fijo, no en la banda desplazable`() {
+    fun `en una columna la casilla de propina vive en el pie, no en la banda desplazable`() {
         val codigo = leerCodigoSinComentarios(hoja)
 
         // `substringAfter` a secas se lleva TODO el resto del archivo —incluido el propio
@@ -103,42 +105,47 @@ class RefundSheetLayoutGuardTest {
             .substringAfter("private fun AmountBody(")
             .substringBefore("@Composable")
         assertFalse(
-            "La casilla «Incluir propina» volvió dentro de `AmountBody`, que vive en la banda " +
-                "desplazable: con el teclado abierto sale de la pantalla y el cajero confirma " +
-                "incluir la propina sin verla. Va en el pie fijo, con `FilaIncluirPropina`.",
+            "La casilla «Incluir propina» volvió dentro de `AmountBody`: con el teclado abierto sale de la pantalla y el " +
+                "cajero confirma incluir la propina sin verla. Va en `FilaIncluirPropina`, en el pie.",
             cuerpoDelImporte.contains("Incluir propina en el reembolso"),
         )
 
-        // 🔴 Antes esto era `codigo.contains("FilaIncluirPropina(")`, y una auditoría
-        // (Codex, 2026-09-11) demostró que pasaba aunque se BORRARA la llamada: el patrón
-        // encontraba la propia DEFINICIÓN de la función. Con la llamada borrada `includeTip`
-        // se queda en su default `true` y el cajero pierde la forma de conservarle la propina
-        // al mesero — con el guard en verde. Ahora se comprueba la UBICACIÓN: la llamada
-        // tiene que estar DESPUÉS del fin de la banda desplazable, o sea en el pie fijo.
-        val fuente = leerFuente(hoja)
-        val marca = "=== FIN DE LA BANDA DESPLAZABLE ==="
+        // 🔴 Se miden las INVOCACIONES: un `contains("FilaIncluirPropina(")` sobre el archivo pasaba aunque se BORRARA la
+        // llamada, porque encontraba la propia definición (Codex, 2026-09-11). Sin llamada, `includeTip` se queda en `true`
+        // y el cajero pierde la forma de conservarle la propina al mesero.
+        val piezas = PiezasDeLaHoja(codigo)
+        assertEquals("La casilla del importe ya no se invoca.", 1, invocaciones(piezas.importeYSuPropina, "FilaIncluirPropina"))
+        assertEquals("La casilla por artículos ya no se invoca.", 1, invocaciones(piezas.comoSeDevuelve, "FilaIncluirPropina"))
+        assertEquals("En una columna, el campo y su casilla dejaron el pie.", 1, invocaciones(piezas.pie, "importeYSuPropina"))
+        assertEquals("En una columna, la propina por artículos dejó el pie.", 1, invocaciones(piezas.pie, "comoSeDevuelve"))
+        assertEquals("El campo del importe no se invoca una sola vez.", 1, invocaciones(piezas.importeYSuPropina, "AmountBody"))
+    }
+
+    /** A propósito: la izquierda tiene todo el alto, y lo que decide el dinero del mesero se sigue leyendo junto al botón. */
+    @Test
+    fun `en dos columnas el importe y su casilla van a la izquierda y el reparto junto al boton`() {
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
         assertTrue(
-            "Desapareció la marca `$marca`, que es lo que separa la banda del pie fijo y lo " +
-                "único con lo que este guard puede saber dónde vive un control.",
-            fuente.contains(marca),
+            "`AmountBody(` sólo entra a `queSeDevuelve` con dos columnas.",
+            piezas.queSeDevuelve.contains("RefundTab.AMOUNT -> if (dosColumnas) importeYSuPropina()"),
         )
-        val pieFijo = fuente.substringAfter(marca).substringBefore("private fun ItemsBody(")
-        assertTrue(
-            "`FilaIncluirPropina(` ya no se INVOCA en el pie fijo. Si sólo quedó su definición, " +
-                "la casilla no se pinta: `includeTip` se queda en `true` y el cajero ya no puede " +
-                "conservar la propina del mesero.",
-            pieFijo.contains("FilaIncluirPropina("),
-        )
+        assertEquals(1, invocaciones(piezas.queSeDevuelve, "importeYSuPropina"))
+        assertEquals("Los dos lados no pueden pintar el campo.", 0, invocaciones(piezas.dosColumnas, "importeYSuPropina"))
+        listOf("Incluye la propina del mesero", "Sin tocar la propina del mesero", "Importe a reembolsar").forEach {
+            assertTrue("«$it» dejó el cierre: tiene que leerse junto al botón.", piezas.cierre.contains(it))
+        }
     }
 
     @Test
-    fun `devolver con vive en el pie fijo y el envio manda refundMethod`() {
-        val fuente = leerFuente(hoja)
-        val pieFijo = fuente.substringAfter("=== FIN DE LA BANDA DESPLAZABLE ===").substringBefore("private fun ItemsBody(")
-        assertTrue("`FilaDevolverCon(` ya no se INVOCA en el pie fijo.", pieFijo.contains("FilaDevolverCon("))
+    fun `devolver con vive en el pie y el envio manda refundMethod`() {
+        val codigo = leerCodigoSinComentarios(hoja)
+        val piezas = PiezasDeLaHoja(codigo)
+        assertEquals("`FilaDevolverCon(` ya no se INVOCA en `comoSeDevuelve`.", 1, invocaciones(piezas.comoSeDevuelve, "FilaDevolverCon"))
+        assertEquals("En una columna, `comoSeDevuelve` dejó el pie.", 1, invocaciones(piezas.pie, "comoSeDevuelve"))
         assertTrue(
             "El envío no pasa `refundMethod = devolverCon` (sólo si hay opciones; un crédito de cambio lo omite, RE-9).",
-            leerCodigoSinComentarios(hoja).contains(
+            piezas.cierre.contains(
                 "refundMethod = refundMethodForSubmit(transaction.tenderSystemKind, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() })",
             ),
         )
@@ -216,6 +223,13 @@ class RefundSheetLayoutGuardTest {
         }
         listOf("BarreraDeAtajos()", "ImmersiveWindow()", "aPantallaCompleta: Boolean = false", "Dp.Unspecified", "RectangleShape", "detectVerticalDragGestures", "onPostFling")
             .forEach { assertTrue("La hoja de la casa perdió `$it`.", casa.contains(it)) }
+        // Con la barra de estado oculta, en un celular con cámara dentro de la pantalla el título o la ✕ quedarían debajo. Va después
+        // del `pointerInput`: esa franja tampoco debe arrastrar la hoja.
+        val sinArrastre = bloqueDe(casa, "private fun ContenidoSinArrastre(")
+        assertTrue(
+            "`ContenidoSinArrastre` perdió `.displayCutoutPadding()` o quedó antes del `pointerInput`.",
+            sinArrastre.indexOf("detectVerticalDragGestures") in 0 until sinArrastre.indexOf(".displayCutoutPadding()"),
+        )
     }
 
     /** Se abre en su propia ventana, arriba de la pantalla. */
@@ -251,8 +265,15 @@ class RefundSheetLayoutGuardTest {
 
         assertTrue("El encabezado tiene que ir arriba del cuerpo.", ventana.indexOf("AvoqadoFullscreenHeader(") in 1 until cuerpo)
         assertTrue("El cuerpo perdió `imePadding()`.", ventana.substring(cuerpo).substringBefore(") {").contains(".imePadding()"))
-        assertTrue("El corte de `apretado` se midió con los 56 dp del encabezado viejo: 640 - 56.", ventana.contains("maxHeight < 584.dp"))
-        assertTrue(ventana.contains("val avisoEnRenglon = maxWidth >= 480.dp"))
+        assertTrue(
+            "El corte de `apretado` se midió con los 56 dp del encabezado viejo (640 - 56) y sólo aplica en una columna.",
+            ventana.contains("val apretado = !dosColumnas && tab == RefundTab.AMOUNT && maxHeight < 584.dp"),
+        )
+        assertTrue(
+            "El aviso de la terminal vive en una columna: en dos, lo que cuenta es su mitad.",
+            ventana.contains("val anchoDeColumna = if (dosColumnas) maxWidth / 2 else maxWidth") &&
+                ventana.contains("val avisoEnRenglon = anchoDeColumna >= 480.dp"),
+        )
     }
 
     /**
@@ -268,6 +289,106 @@ class RefundSheetLayoutGuardTest {
                 .containsMatchIn(ventana),
         )
         assertEquals("Con una columna común va a todo el ancho.", 1, Regex("""widthIn\(""").findAll(ventana).count())
+        assertTrue("El tope es de la rama de una columna.", PiezasDeLaHoja(leerCodigoSinComentarios(hoja)).unaColumna.contains("widthIn("))
+    }
+
+    // MARK: - Las dos columnas (spec 2026-11-02, tarea 3)
+
+    @Test
+    fun `el acomodo sale de la regla pura, con el alto real del cuerpo`() {
+        val ventana = ventanaDeLaPantalla()
+        val cuerpo = ventana.substring(ventana.indexOf("BoxWithConstraints("))
+
+        assertTrue("El corte dejó de salir de `enDosColumnas`.", cuerpo.contains("enDosColumnas(maxWidth.value, soloCompleto)"))
+        assertTrue("El pie dejó de salir de `pieFijoEnDosColumnas`.", cuerpo.contains("pieFijoEnDosColumnas(maxHeight.value)"))
+    }
+
+    @Test
+    fun `las tres piezas se invocan en las dos ramas`() {
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
+        assertEquals(1, invocaciones(piezas.dosColumnas, "queSeDevuelve"))
+        assertEquals(1, invocaciones(piezas.unaColumna, "queSeDevuelve"))
+        assertEquals(1, invocaciones(piezas.dosColumnas, "comoSeDevuelve"))
+        assertEquals(1, invocaciones(piezas.unaColumna, "comoSeDevuelve"))
+        assertEquals("En dos columnas, una con el pie fijo y otra con el pie deslizable.", 2, invocaciones(piezas.dosColumnas, "cierre"))
+        assertEquals(1, invocaciones(piezas.unaColumna, "cierre"))
+    }
+
+    /** Pestañas fijas, banda desplazable y pie: el mismo orden de la hoja de antes. */
+    @Test
+    fun `una columna conserva el orden de hoy`() {
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
+        assertTrue(
+            "La banda tiene que ir arriba del pie.",
+            piezas.unaColumna.indexOf("queSeDevuelve()") in 0 until piezas.unaColumna.indexOf("Column(if (apretado)"),
+        )
+        assertTrue(
+            "El pie cambió de orden: error, importe y su casilla, cómo se devuelve y cierre.",
+            Regex("""errorDelEnvio\(\)\s*importeYSuPropina\(\)\s*comoSeDevuelve\(\)\s*cierre\(\)""").containsMatchIn(piezas.pie),
+        )
+        assertEquals("El error sólo se repite en el cierre de dos columnas.", 1, Regex("""if \(dosColumnas\) errorDelEnvio\(\)""").findAll(piezas.cierre).count())
+    }
+
+    /**
+     * El motivo va en la parte desplazable de la derecha A PROPÓSITO: a esa altura lo que no se puede perder es el botón, y
+     * lo que falta se dice en lo fijo. `comoSeDevuelve()` no cambia de lugar cuando `pieFijo` cambia: abrir el teclado desde el
+     * teléfono del saldo no debe recrear el campo, o perdería el foco y se cerraría el teclado.
+     */
+    @Test
+    fun `en dos columnas el motivo se desliza a proposito y el pie solo se fija con alto`() {
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
+        assertTrue("El motivo dejó `comoSeDevuelve`.", piezas.comoSeDevuelve.contains("Selecciona un motivo"))
+        assertTrue("«Elige el motivo» dejó el cierre.", piezas.cierre.contains("Elige el motivo del reembolso."))
+        assertTrue(
+            "La derecha ya no es: lo de cómo en su `verticalScroll`, y el cierre dentro sólo sin pie fijo.",
+            Regex("""Column\(Modifier\.weight\(1f\)\.verticalScroll\(pieScroll\)\)\s*\{\s*comoSeDevuelve\(\)\s*if \(!pieFijo\) cierre\(\)\s*\}\s*if \(pieFijo\) cierre\(\)""")
+                .containsMatchIn(piezas.dosColumnas),
+        )
+    }
+
+    @Test
+    fun `dos columnas parejas con su raya en medio`() {
+        val dos = PiezasDeLaHoja(leerCodigoSinComentarios(hoja)).dosColumnas
+
+        assertTrue(dos.contains("Row(Modifier.fillMaxSize())"))
+        assertEquals("Cada columna con `weight(1f)` y todo el alto.", 2, Regex("""\.weight\(1f\)\s*\.fillMaxHeight\(\)""").findAll(dos).count())
+        assertEquals(1, invocaciones(dos, "VerticalDivider"))
+    }
+
+    /** El envío se muda de lugar, no de reglas: sigue delimitado por lo mismo y pasa por las mismas guardas. */
+    @Test
+    fun `el envio sigue en el cierre, con sus comprobaciones de dinero`() {
+        val cierre = PiezasDeLaHoja(leerCodigoSinComentarios(hoja)).cierre
+        val envio = cierre.substringAfter("text = \"Reembolsar\"", "").substringBefore("enabled = canSubmit", "")
+
+        assertTrue("No se encontró el envío entre `text = \"Reembolsar\"` y `enabled = canSubmit`.", envio.isNotBlank())
+        listOf("antesDeReembolsar()", "puedeEnviar()", "conexion.iniciar(", "refundRepository.issueAssociatedRefund(", "centavosDelImporte(", "tipRefundCentsParaEnvio(")
+            .forEach { assertTrue("El envío perdió `$it`.", envio.contains(it)) }
+    }
+
+    /**
+     * Cruzar el corte de 840 en WINDOWS recrea lo que hay en cada rama. Por eso nada capturado vive en ellas: un `remember` en
+     * una pieza se perdería ahí, y `rememberSaveable` también, porque su llave sale del lugar en el árbol.
+     */
+    @Test
+    fun `cruzar el corte no pierde lo capturado porque vive arriba de las ramas`() {
+        val codigo = leerCodigoSinComentarios(hoja)
+        val ventana = ventanaDeLaPantalla()
+        val piezas = PiezasDeLaHoja(codigo)
+        val cuerpo = ventana.indexOf("BoxWithConstraints(")
+
+        listOf(piezas.errorDelEnvio, piezas.importeYSuPropina, piezas.queSeDevuelve, piezas.comoSeDevuelve, piezas.cierre, piezas.dosColumnas, piezas.unaColumna)
+            .forEach { assertFalse("Una pieza o una rama trae su propio `remember`.", it.contains("remember")) }
+        listOf("val bandaScroll = rememberScrollState()", "val pieScroll = rememberScrollState()")
+            .forEach { assertTrue("`$it` tiene que ir arriba del cuerpo.", ventana.indexOf(it) in 1 until cuerpo) }
+        assertTrue(
+            "El teléfono a medio escribir ya no vive arriba de las ramas.",
+            ventana.substring(0, cuerpo).contains("var telefonoDelSaldo by rememberSaveable(clienteDelSaldo?.id, pideTelefono)"),
+        )
+        assertFalse("`FilaClienteDelSaldo` volvió a guardar su teléfono.", bloqueDe(codigo, "private fun FilaClienteDelSaldo(").contains("remember"))
     }
 
     /** El cuerpo de `IssueRefundSheet` hasta la hoja de escoger cliente, o sea la pantalla. */
@@ -301,4 +422,45 @@ class RefundSheetLayoutGuardTest {
         }
         throw AssertionError("No se encontró $rutaRelativa desde ${System.getProperty("user.dir")}")
     }
+}
+
+/** Cuántas veces se INVOCA `nombre` en el trozo. */
+internal fun invocaciones(trozo: String, nombre: String): Int = Regex("""\b$nombre\(""").findAll(trozo).count()
+
+/**
+ * Lo de adentro de las llaves que abren después de [inicio]. Revienta si no aparece o está vacío: una guarda sin bloque pasa en
+ * verde sin medir nada. Recibe código ya sin comentarios.
+ */
+internal fun bloqueDe(codigo: String, inicio: String): String {
+    val desde = codigo.indexOf(inicio)
+    assertTrue("No se encontró `$inicio`.", desde >= 0)
+    val abre = codigo.indexOf('{', desde + inicio.length)
+    assertTrue("`$inicio` no abre ningún bloque.", abre >= 0)
+    var nivel = 0
+    for (i in abre until codigo.length) {
+        if (codigo[i] == '{') nivel++
+        if (codigo[i] == '}' && --nivel == 0) {
+            val bloque = codigo.substring(abre + 1, i)
+            assertTrue("El bloque de `$inicio` está vacío.", bloque.isNotBlank())
+            return bloque
+        }
+    }
+    throw AssertionError("El bloque de `$inicio` no cierra.")
+}
+
+/**
+ * Las piezas de «Emitir reembolso» y sus dos ramas, recortadas por sus llaves. Antes se recortaba por marcas de texto (`=== PIE
+ * FIJO`), y con piezas eso daba verde aunque una rama nunca las invocara.
+ */
+internal class PiezasDeLaHoja(codigoSinComentarios: String) {
+    private val ventana = codigoSinComentarios.substringAfter("fun IssueRefundSheet(").substringBefore("if (escogiendoCliente)")
+    val errorDelEnvio = bloqueDe(ventana, "val errorDelEnvio:")
+    val importeYSuPropina = bloqueDe(ventana, "val importeYSuPropina:")
+    val queSeDevuelve = bloqueDe(ventana, "val queSeDevuelve:")
+    val comoSeDevuelve = bloqueDe(ventana, "val comoSeDevuelve:")
+    val cierre = bloqueDe(ventana, "val cierre:")
+    private val ramas = "if (dosColumnas) {" + ventana.substringAfterLast("if (dosColumnas) {", "")
+    val dosColumnas = bloqueDe(ramas, "if (dosColumnas)")
+    val unaColumna = bloqueDe(ramas.substringAfter(dosColumnas), "else")
+    val pie = bloqueDe(unaColumna, "Column(if (apretado) Modifier.weight(1f).verticalScroll(pieScroll) else Modifier)")
 }

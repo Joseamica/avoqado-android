@@ -4,6 +4,7 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -127,7 +128,10 @@ private fun ContenidoSinArrastre(content: @Composable ColumnScope.() -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .nestedScroll(SobranteQueNoLlegaALaHoja)
-            .pointerInput(Unit) { detectVerticalDragGestures { cambio, _ -> cambio.consume() } },
+            .pointerInput(Unit) { detectVerticalDragGestures { cambio, _ -> cambio.consume() } }
+            // La barra de estado va oculta: en un celular con cámara dentro de la pantalla, el título o la ✕ quedarían debajo. Después
+            // del `pointerInput`, para que esa franja tampoco arrastre la hoja.
+            .displayCutoutPadding(),
         content = content,
     )
 }

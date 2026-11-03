@@ -149,7 +149,7 @@ class IssueRefundNetworkGateControlsTest {
             assertTrue(trozo.contains("TextosDeTarjetas.SIN_RED; return@launch"))
         }
         assertEquals(2, Regex("refundRepository\\.issueAssociatedRefund\\(").findAll(trozos.last().first).count())
-        assertTrue(fuente.contains("submitting = true\n                        errorMsg = null\n\n                        scope.launch"))
+        assertTrue(Regex("""submitting = true\s+errorMsg = null\s+scope\.launch""").containsMatchIn(fuente))
         assertTrue(fuente.contains("submitting || enviandoATerminal"))
     }
 
