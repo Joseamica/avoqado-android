@@ -3,6 +3,7 @@ package com.avoqado.pos.reports
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.reports.data.ReportsRepository
+import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -69,9 +70,9 @@ class ReportsRepositoryPorHoraTest {
 
     @Test
     fun `ventas por hora son las 24 horas del dia que trae el resumen`() = runBlocking {
-        assertTrue(repository.loadReport("2026-11-02", "2026-11-02", "hours").isSuccess)
+        assertTrue(repository.loadReport(ConsultaDeInforme("venue-prueba", "2026-11-02", "2026-11-02", "hours"), "2026-11-02").isSuccess)
 
-        val horas = repository.reportData.value!!.hourlySales
+        val horas = repository.informe.value!!.datos.hourlySales
         assertEquals(24, horas.size)
         assertEquals((0 until 24).map { it.toString().padStart(2, '0') + ":00" }, horas.map { it.hour })
         assertEquals(100.5, horas[9].grossSales, 0.001)
@@ -82,9 +83,9 @@ class ReportsRepositoryPorHoraTest {
 
     @Test
     fun `la serie del periodo de hoy se queda en periodSales`() = runBlocking {
-        assertTrue(repository.loadReport("2026-11-02", "2026-11-02", "hours").isSuccess)
+        assertTrue(repository.loadReport(ConsultaDeInforme("venue-prueba", "2026-11-02", "2026-11-02", "hours"), "2026-11-02").isSuccess)
 
-        val periodo = repository.reportData.value!!.periodSales
+        val periodo = repository.informe.value!!.datos.periodSales
         assertEquals(listOf("2026-11-02T15:00:00.000Z", "2026-11-02T21:00:00.000Z"), periodo.map { it.period })
     }
 
@@ -92,9 +93,9 @@ class ReportsRepositoryPorHoraTest {
     fun `un resumen sin byPeriod deja ventas por hora vacio sin tumbar el reporte`() = runBlocking {
         resumen = """{"success":true,"data":{"summary":{"grossSales":150.75},"byPaymentMethod":[]}}"""
 
-        assertTrue(repository.loadReport("2026-11-02", "2026-11-02", "hours").isSuccess)
+        assertTrue(repository.loadReport(ConsultaDeInforme("venue-prueba", "2026-11-02", "2026-11-02", "hours"), "2026-11-02").isSuccess)
 
-        val reporte = repository.reportData.value!!
+        val reporte = repository.informe.value!!.datos
         assertTrue(reporte.hourlySales.isEmpty())
         assertEquals(150.75, reporte.summary.grossSales, 0.001)
     }
@@ -103,9 +104,9 @@ class ReportsRepositoryPorHoraTest {
     fun `una hora filtrada sin grossSales vale cero`() = runBlocking {
         resumen = """{"success":true,"data":{"summary":{"grossSales":0},"byPeriod":[{"period":"08:00","metrics":{"grossSales":null}}]}}"""
 
-        assertTrue(repository.loadReport("2026-11-02", "2026-11-02", "hours").isSuccess)
+        assertTrue(repository.loadReport(ConsultaDeInforme("venue-prueba", "2026-11-02", "2026-11-02", "hours"), "2026-11-02").isSuccess)
 
-        val hora = repository.reportData.value!!.hourlySales.single()
+        val hora = repository.informe.value!!.datos.hourlySales.single()
         assertEquals("08:00", hora.hour)
         assertEquals(0.0, hora.grossSales, 0.001)
     }

@@ -2,14 +2,19 @@ package com.avoqado.pos.reports.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.domain.refresh.RefreshOutcome
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reports.data.ReportsRepository
+import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.ReportPeriod
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -23,6 +28,8 @@ class ReportsViewModel @Inject constructor(
     private val repository: ReportsRepository,
     private val planManager: PlanManager,
     refreshGateFactory: RefreshGateFactory,
+    /** D18: para recargar sola al volver la red. `null` sólo en pruebas que no la usan. */
+    private val connectivityMonitor: ConnectivityMonitor? = null,
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
@@ -34,9 +41,12 @@ class ReportsViewModel @Inject constructor(
 
     // MARK: - Repository State (forwarded)
 
-    val reportData = repository.reportData
+    /** El último informe bueno y la consulta que lo trajo (D18): sólo se enseña bajo [consultaElegida]. */
+    val informe = repository.informe
     val isLoading = repository.isLoading
-    val errorMessage = repository.errorMessage
+
+    /** D18: por qué falló la última carga (`null` si salió bien). */
+    val ultimoFallo = repository.ultimoFallo
 
     // MARK: - Plan gating (ADVANCED_REPORTS, Pro)
 
@@ -72,6 +82,19 @@ class ReportsViewModel @Inject constructor(
     private val _showDetailedSummary = MutableStateFlow(false)
     val showDetailedSummary: StateFlow<Boolean> = _showDetailedSummary.asStateFlow()
 
+    // MARK: - Consulta elegida (D18)
+
+    private val _consultaElegida = MutableStateFlow(consultaYFin().first)
+
+    /**
+     * La consulta del periodo elegido: la pantalla sólo enseña un informe de ESTA consulta. Cambia al elegir el periodo
+     * (aunque el gate no vuelva a pedir, p. ej. enfriándose tras un fallo sin red) y en cada consulta.
+     */
+    val consultaElegida: StateFlow<ConsultaDeInforme> = _consultaElegida.asStateFlow()
+
+    /** La consulta de la última petición que salió (para saber si la que se unió en vuelo era de otro periodo). */
+    private var ultimaPedida: ConsultaDeInforme? = null
+
     // MARK: - Init
     // La carga inicial la dispara la UI vía el gate (autoRefresh).
 
@@ -89,6 +112,9 @@ class ReportsViewModel @Inject constructor(
             _showCustomDatePicker.value = true
         } else {
             _showCustomDatePicker.value = false
+            // D18: el periodo nuevo se elige YA, aunque el gate no vuelva a pedir: el informe de otro periodo no se
+            // queda a la vista bajo esta pestaña.
+            _consultaElegida.value = consultaYFin().first
             // Otro periodo = otra identidad (spec §4.4): invalida el TTL y re-pide.
             invalidateAndRefresh()
         }
@@ -104,6 +130,7 @@ class ReportsViewModel @Inject constructor(
 
     fun applyCustomDates() {
         _showCustomDatePicker.value = false
+        _consultaElegida.value = consultaYFin().first
         // Otras fechas = otra identidad (spec §4.4).
         invalidateAndRefresh()
     }
@@ -114,8 +141,29 @@ class ReportsViewModel @Inject constructor(
 
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
     suspend fun refreshNow(): Result<Unit> {
-        val (startDate, endDate) = getDateRange()
-        return repository.loadReport(startDate, endDate, _selectedPeriod.value.chartReportType)
+        val (consulta, hasta) = consultaYFin()
+        _consultaElegida.value = consulta
+        ultimaPedida = consulta
+        return repository.loadReport(consulta, hasta)
+    }
+
+    /**
+     * D18: mientras Informes está a la vista (la llama la pantalla). Al volver la red —de «sin red o sin servidor» a
+     * «con los dos», y tras dejar que la ruta suba, como la cola de cobros—, si la pantalla se quedó en «Sin conexión»,
+     * se recarga sola por el mismo camino del gesto.
+     */
+    suspend fun vigilarLaRed() {
+        val monitor = connectivityMonitor ?: return
+        com.avoqado.pos.payment.data.PaymentSyncService.alReconectar(
+            combine(monitor.isConnected, monitor.isServerReachable) { red, servidor -> red && servidor },
+        ) { recargarSiSeQuedoSinRed() }
+    }
+
+    private suspend fun recargarSiSeQuedoSinRed() {
+        val estado = estadoDelInforme(_consultaElegida.value, informe.value, isLoading.value, ultimoFallo.value)
+        if (estado != EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED)) return
+        // manual = true: lo pide la vuelta de la red, no el reloj; el enfriamiento por fallos no la detiene.
+        gate.run(workInProgress = { false }, manual = true, block = ::refreshNow)
     }
 
     // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
@@ -140,11 +188,31 @@ class ReportsViewModel @Inject constructor(
     fun invalidateAndRefresh() {
         gate.invalidate()
         viewModelScope.launch {
-            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+            do {
+                val salida = gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+                // D18: si iba en camino la consulta de OTRO periodo, el gate se unió a ella; al terminar, se pide la del
+                // periodo elegido (antes se quedaba sin pedir, con el informe del otro periodo a la vista).
+            } while (salida == RefreshOutcome.Joined && ultimaPedida != _consultaElegida.value)
         }
     }
 
     // MARK: - Private Helpers
+
+    /**
+     * La consulta del periodo elegido y la fecha que viaja como fin. Los periodos fijos van «hasta ahora» (fin `null`
+     * en la consulta: la hora de cada recarga no hace otro informe); el personalizado lleva sus dos fechas.
+     */
+    private fun consultaYFin(): Pair<ConsultaDeInforme, String> {
+        val periodo = _selectedPeriod.value
+        val (inicio, fin) = getDateRange()
+        val consulta = ConsultaDeInforme(
+            sucursal = repository.sucursalActiva().orEmpty(),
+            inicio = inicio,
+            fin = fin.takeIf { periodo == ReportPeriod.CUSTOM },
+            tipo = periodo.chartReportType,
+        )
+        return consulta to fin
+    }
 
     private fun getDateRange(): Pair<String, String> {
         val period = _selectedPeriod.value

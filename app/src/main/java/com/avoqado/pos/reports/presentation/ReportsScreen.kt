@@ -53,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
+import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -118,10 +119,13 @@ fun ReportsScreen(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
+    // D18: mientras Informes está a la vista, al volver la red se recarga solo si se quedó en «Sin conexión».
+    LaunchedEffect(viewModel) { viewModel.vigilarLaRed() }
 
-    val spacing = AvoqadoTheme.spacing
-    val reportData by viewModel.reportData.collectAsState()
+    val informe by viewModel.informe.collectAsState()
+    val consultaElegida by viewModel.consultaElegida.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val ultimoFallo by viewModel.ultimoFallo.collectAsState()
     val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
     val selectedPeriod by viewModel.selectedPeriod.collectAsState()
     val showCustomDatePicker by viewModel.showCustomDatePicker.collectAsState()
@@ -139,123 +143,169 @@ fun ReportsScreen(
             onRefresh = viewModel::manualRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-        when {
-            isLoading && reportData == null -> {
-                AvoqadoLoadingState(message = "Cargando informes...")
+            CuerpoDeInformes(
+                estado = estadoDelInforme(consultaElegida, informe, isLoading, ultimoFallo),
+                selectedPeriod = selectedPeriod,
+                onPeriodSelected = viewModel::selectPeriod,
+                historyLocked = !viewModel.hasAdvancedReports,
+                lockedTierLabel = viewModel.reportsTierLabel,
+                showCustomDatePicker = showCustomDatePicker,
+                customStartDate = customStartDate,
+                customEndDate = customEndDate,
+                onStartDateChanged = viewModel::setCustomStartDate,
+                onEndDateChanged = viewModel::setCustomEndDate,
+                onApplyCustomDates = viewModel::applyCustomDates,
+                showDetailedSummary = showDetailedSummary,
+                onToggleDetailedSummary = viewModel::toggleDetailedSummary,
+                onReintentar = viewModel::manualRefresh,
+            )
+        }
+    }
+}
+
+/**
+ * Lo que va debajo de la barra de Informes: los periodos y, debajo, lo que diga [estado] (D18). Los periodos se quedan
+ * a la vista aunque no haya informe: sin red se puede volver a uno que ya estaba cargado.
+ */
+@Composable
+internal fun CuerpoDeInformes(
+    estado: EstadoDelInforme,
+    selectedPeriod: ReportPeriod,
+    onPeriodSelected: (ReportPeriod) -> Unit,
+    historyLocked: Boolean,
+    lockedTierLabel: String,
+    showCustomDatePicker: Boolean,
+    customStartDate: Long,
+    customEndDate: Long,
+    onStartDateChanged: (Long) -> Unit,
+    onEndDateChanged: (Long) -> Unit,
+    onApplyCustomDates: () -> Unit,
+    showDetailedSummary: Boolean,
+    onToggleDetailedSummary: () -> Unit,
+    onReintentar: () -> Unit,
+) {
+    val spacing = AvoqadoTheme.spacing
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        verticalArrangement = Arrangement.spacedBy(spacing.md),
+    ) {
+        // Period Selector (history locked to TODAY on the Free plan)
+        item {
+            PeriodSelectorSection(
+                selectedPeriod = selectedPeriod,
+                onPeriodSelected = onPeriodSelected,
+                historyLocked = historyLocked,
+                lockedTierLabel = lockedTierLabel,
+            )
+        }
+
+        // Custom Date Picker (conditional)
+        if (showCustomDatePicker) {
+            item {
+                CustomDatePickerSection(
+                    startDateMillis = customStartDate,
+                    endDateMillis = customEndDate,
+                    onStartDateChanged = onStartDateChanged,
+                    onEndDateChanged = onEndDateChanged,
+                    onApply = onApplyCustomDates,
+                )
             }
-            else -> {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    verticalArrangement = Arrangement.spacedBy(spacing.md),
-                ) {
-                    // Period Selector (history locked to TODAY on the Free plan)
+        }
+
+        when (estado) {
+            EstadoDelInforme.Cargando -> item {
+                AvoqadoLoadingState(
+                    message = "Cargando informes...",
+                    modifier = Modifier.fillParentMaxHeight(0.6f),
+                )
+            }
+
+            is EstadoDelInforme.NoSeCargo -> item {
+                AvisoDeLecturaFallida(
+                    fallo = estado.fallo,
+                    textos = textosDeInformeSinCargar(estado.fallo),
+                    onReintentar = onReintentar,
+                    modifier = Modifier.fillParentMaxWidth(),
+                )
+            }
+
+            is EstadoDelInforme.Listo -> {
+                val data = estado.datos
+
+                // Sales Summary
+                item {
+                    SalesSummarySection(
+                        summary = data.summary,
+                        showDetailed = showDetailedSummary,
+                        onToggleDetailed = onToggleDetailedSummary,
+                    )
+                }
+
+                // Sales Line Chart
+                item {
+                    SalesChartSection(
+                        periodSales = data.periodSales,
+                        hourlySales = data.hourlySales,
+                        selectedPeriod = selectedPeriod,
+                        totalGrossSales = data.summary.grossSales,
+                    )
+                }
+
+                // Payment Methods
+                if (data.paymentMethods.isNotEmpty()) {
                     item {
-                        PeriodSelectorSection(
-                            selectedPeriod = selectedPeriod,
-                            onPeriodSelected = viewModel::selectPeriod,
-                            historyLocked = !viewModel.hasAdvancedReports,
-                            lockedTierLabel = viewModel.reportsTierLabel,
-                        )
+                        PaymentMethodsSection(paymentMethods = data.paymentMethods)
                     }
+                }
 
-                    // Custom Date Picker (conditional)
-                    if (showCustomDatePicker) {
-                        item {
-                            CustomDatePickerSection(
-                                startDateMillis = customStartDate,
-                                endDateMillis = customEndDate,
-                                onStartDateChanged = viewModel::setCustomStartDate,
-                                onEndDateChanged = viewModel::setCustomEndDate,
-                                onApply = viewModel::applyCustomDates,
+                if ((data.summary.giftCardLoadsCount ?: 0) > 0) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Tarjetas de regalo vendidas",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
                             )
-                        }
-                    }
-
-                    // Content depends on data availability
-                    if (reportData == null) {
-                        item {
-                            EmptyStateView()
-                        }
-                    } else {
-                        val data = reportData!!
-
-                        // Sales Summary
-                        item {
-                            SalesSummarySection(
-                                summary = data.summary,
-                                showDetailed = showDetailedSummary,
-                                onToggleDetailed = viewModel::toggleDetailedSummary,
+                            Text(
+                                text = "${data.summary.giftCardLoads?.let { formatMoney(it) } ?: "—"} · ${data.summary.giftCardLoadsCount}",
+                                style = MaterialTheme.typography.bodyMedium,
                             )
-                        }
-
-                        // Sales Line Chart
-                        item {
-                            SalesChartSection(
-                                periodSales = data.periodSales,
-                                hourlySales = data.hourlySales,
-                                selectedPeriod = selectedPeriod,
-                                totalGrossSales = data.summary.grossSales,
-                            )
-                        }
-
-                        // Payment Methods
-                        if (data.paymentMethods.isNotEmpty()) {
-                            item {
-                                PaymentMethodsSection(paymentMethods = data.paymentMethods)
-                            }
-                        }
-
-                        if ((data.summary.giftCardLoadsCount ?: 0) > 0) {
-                            item {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        text = "Tarjetas de regalo vendidas",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Text(
-                                        text = "${data.summary.giftCardLoads?.let { formatMoney(it) } ?: "—"} · ${data.summary.giftCardLoadsCount}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                }
-                            }
-                        }
-
-                        // Top Products
-                        if (data.topProducts.isNotEmpty()) {
-                            item {
-                                TopProductsSection(topProducts = data.topProducts)
-                            }
-                        }
-
-                        // Categories
-                        if (data.categories.isNotEmpty()) {
-                            item {
-                                CategoriesSection(categories = data.categories)
-                            }
-                        }
-
-                        // Hourly Sales Chart (only for today). Trae las 24 horas aunque no haya ventas: sólo se enseña con
-                        // alguna venta, como iOS.
-                        if (selectedPeriod == ReportPeriod.TODAY && data.hourlySales.any { it.grossSales > 0 }) {
-                            item {
-                                HourlySalesChartSection(hourlySales = data.hourlySales)
-                            }
-                        }
-
-                        // Bottom padding
-                        item {
-                            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
                         }
                     }
                 }
+
+                // Top Products
+                if (data.topProducts.isNotEmpty()) {
+                    item {
+                        TopProductsSection(topProducts = data.topProducts)
+                    }
+                }
+
+                // Categories
+                if (data.categories.isNotEmpty()) {
+                    item {
+                        CategoriesSection(categories = data.categories)
+                    }
+                }
+
+                // Hourly Sales Chart (only for today). Trae las 24 horas aunque no haya ventas: sólo se enseña con
+                // alguna venta, como iOS.
+                if (selectedPeriod == ReportPeriod.TODAY && data.hourlySales.any { it.grossSales > 0 }) {
+                    item {
+                        HourlySalesChartSection(hourlySales = data.hourlySales)
+                    }
+                }
+
+                // Bottom padding
+                item {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+                }
             }
-        }
         }
     }
 }
@@ -534,26 +584,6 @@ private fun CustomDatePickerSection(
                 Text(text = "Aplicar")
             }
         }
-    }
-}
-
-// MARK: - Empty State
-
-@Composable
-private fun EmptyStateView() {
-    val spacing = AvoqadoTheme.spacing
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(spacing.xxxl),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = "No hay datos para este periodo",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
     }
 }
 

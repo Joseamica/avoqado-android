@@ -29,9 +29,9 @@ class ReportsViewModelTest {
 
     @Before
     fun setup() {
-        every { repository.reportData } returns MutableStateFlow(null)
+        every { repository.informe } returns MutableStateFlow(null)
         every { repository.isLoading } returns MutableStateFlow(false)
-        every { repository.errorMessage } returns MutableStateFlow(null)
+        every { repository.ultimoFallo } returns MutableStateFlow(null)
     }
 
     /** Default: plan unknown → fail-open (full history, today's behavior). */
@@ -69,9 +69,9 @@ class ReportsViewModelTest {
     @Test
     fun `init NO fetchea - la carga inicial la dispara la UI via el gate`() = runTest {
         val viewModel = createViewModel()
-        coVerify(exactly = 0) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 0) { repository.loadReport(any(), any()) }
         viewModel.autoRefresh()
-        coVerify(exactly = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 1) { repository.loadReport(any(), any()) }
     }
 
     // MARK: - Period Selection
@@ -118,7 +118,7 @@ class ReportsViewModelTest {
         io.mockk.clearMocks(repository, answers = false, recordedCalls = true, childMocks = false)
         viewModel.selectPeriod(ReportPeriod.CUSTOM)
         // After clearing, CUSTOM should not trigger loadReport
-        coVerify(exactly = 0) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 0) { repository.loadReport(any(), any()) }
     }
 
     @Test
@@ -130,7 +130,7 @@ class ReportsViewModelTest {
         // Then switch to a non-custom period
         viewModel.selectPeriod(ReportPeriod.THIS_WEEK)
         assertFalse(viewModel.showCustomDatePicker.value)
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(atLeast = 1) { repository.loadReport(any(), any()) }
     }
 
     // MARK: - Custom Date Range
@@ -159,7 +159,7 @@ class ReportsViewModelTest {
 
         viewModel.applyCustomDates()
         assertFalse(viewModel.showCustomDatePicker.value)
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(atLeast = 1) { repository.loadReport(any(), any()) }
     }
 
     // MARK: - Detailed Summary Toggle
@@ -187,7 +187,7 @@ class ReportsViewModelTest {
         val viewModel = createViewModel()
         // El init ya NO fetchea (la carga inicial la dispara la UI vía el gate).
         viewModel.autoRefresh()
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(atLeast = 1) { repository.loadReport(any(), any()) }
     }
 
     @Test
@@ -195,7 +195,7 @@ class ReportsViewModelTest {
         val viewModel = createViewModel()
         viewModel.autoRefresh()
         // TODAY has chartReportType = "hours"
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), "hours") }
+        coVerify(atLeast = 1) { repository.loadReport(match { it.tipo == "hours" }, any()) }
     }
 
     @Test
@@ -203,7 +203,7 @@ class ReportsViewModelTest {
         val viewModel = createViewModel()
         viewModel.selectPeriod(ReportPeriod.THIS_WEEK)
         // THIS_WEEK has chartReportType = "days"
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), "days") }
+        coVerify(atLeast = 1) { repository.loadReport(match { it.tipo == "days" }, any()) }
     }
 
     // MARK: - Plan gating (ADVANCED_REPORTS, Pro): Free is clamped to TODAY
@@ -233,7 +233,7 @@ class ReportsViewModelTest {
         val viewModel = createViewModel(planTier = "FREE")
         viewModel.selectPeriod(ReportPeriod.TODAY)
         assertEquals(ReportPeriod.TODAY, viewModel.selectedPeriod.value)
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(atLeast = 1) { repository.loadReport(any(), any()) }
     }
 
     @Test

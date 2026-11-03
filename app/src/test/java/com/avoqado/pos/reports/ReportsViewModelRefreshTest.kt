@@ -33,7 +33,7 @@ class ReportsViewModelRefreshTest {
 
     private fun buildViewModel(): ReportsViewModel {
         every { factory.create(any(), any()) } returns RefreshGate(clock = { now }, random = { 0.5 })
-        coEvery { repository.loadReport(any(), any(), any()) } returns Result.success(Unit)
+        coEvery { repository.loadReport(any(), any()) } returns Result.success(Unit)
         return ReportsViewModel(
             repository = repository,
             planManager = mockk<PlanManager>(relaxed = true),
@@ -44,9 +44,9 @@ class ReportsViewModelRefreshTest {
     @Test
     fun `init NO fetchea y el primer autoRefresh si`() = runTest(scheduler) {
         val vm = buildViewModel()
-        coVerify(exactly = 0) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 0) { repository.loadReport(any(), any()) }
         vm.autoRefresh()
-        coVerify(exactly = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 1) { repository.loadReport(any(), any()) }
     }
 
     @Test
@@ -55,7 +55,7 @@ class ReportsViewModelRefreshTest {
         vm.autoRefresh()
         now += 10.seconds
         vm.autoRefresh()
-        coVerify(exactly = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 1) { repository.loadReport(any(), any()) }
     }
 
     @Test
@@ -63,6 +63,6 @@ class ReportsViewModelRefreshTest {
         val vm = buildViewModel()
         vm.autoRefresh()
         vm.applyCustomDates() // dentro del TTL, pero es identidad nueva (§4.4)
-        coVerify(exactly = 2) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 2) { repository.loadReport(any(), any()) }
     }
 }
