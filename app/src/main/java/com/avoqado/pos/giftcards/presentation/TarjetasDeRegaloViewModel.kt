@@ -9,7 +9,10 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.giftcards.data.EstadoDeAjustes
 import com.avoqado.pos.giftcards.data.GiftCardsApi
 import com.avoqado.pos.giftcards.data.GiftCardsRepository
+import com.avoqado.pos.giftcards.data.Respuesta
+import com.avoqado.pos.giftcards.domain.TextosDeTarjetas
 import com.avoqado.pos.giftcards.domain.estadoDeLaHoja
+import com.avoqado.pos.giftcards.domain.motivoAlPrender
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +53,39 @@ class TarjetasDeRegaloViewModel @Inject constructor(
     private val estado = MutableStateFlow(calcular())
     val hoja = estado.asStateFlow()
     val venueActual: String? get() = almacen.venueId
+
+    private val _prendiendo = MutableStateFlow(false)
+    val prendiendo = _prendiendo.asStateFlow()
+    private val _errorAlPrender = MutableStateFlow<String?>(null)
+    val errorAlPrender = _errorAlPrender.asStateFlow()
+    private val _prendidas = MutableStateFlow(false)
+    val prendidas = _prendidas.asStateFlow()
+
+    fun limpiarErrorAlPrender() { _errorAlPrender.value = null }
+    fun avisoDePrendidasVisto() { _prendidas.value = false }
+
+    /** Prender desde el POS (founder, 3-nov-2026). Lo decide el servidor; aquí sólo se evita mandar dos y se pinta lo que respondió. */
+    fun prender() {
+        if (_prendiendo.value || !calcular().prender.habilitada) return
+        val venue = almacen.venueId ?: return
+        generacion++ // Una apertura que venía en camino no reemplaza lo que responda esto.
+        _prendiendo.value = true
+        _errorAlPrender.value = null
+        viewModelScope.launch {
+            val resultado = repo.prender(venue)
+            _prendiendo.value = false
+            if (venue != almacen.venueId || venue != venueObservado) return@launch
+            when (resultado) {
+                is Respuesta.Ok -> {
+                    ajustesDeLaSucursal.value = EstadoDeAjustes.Disponible(resultado.valor)
+                    estado.value = calcular()
+                    _prendidas.value = true
+                }
+                is Respuesta.Rechazo -> _errorAlPrender.value = motivoAlPrender(resultado.fallo)
+                Respuesta.SinRespuesta -> _errorAlPrender.value = TextosDeTarjetas.PRENDER_SIN_RESPUESTA
+            }
+        }
+    }
 
     fun ajustesParaConsultar(venueId: String): com.avoqado.pos.giftcards.data.AjustesDeTarjetas? {
         if (venueId != almacen.venueId || venueId != venueObservado || !calcular().consultar.habilitada) return null

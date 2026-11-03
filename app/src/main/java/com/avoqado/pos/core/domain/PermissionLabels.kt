@@ -27,6 +27,7 @@ object PermissionLabels {
         "giftCards:sell" to "vender tarjetas de regalo",
         "giftCards:redeem" to "cobrar con tarjeta de regalo",
         "giftCards:manage" to "administrar tarjetas de regalo",
+        "giftCards:enable" to "prender las tarjetas de regalo",
         // MARK: - Terminales de cobro (PAX)
         //
         // 🔴 `tpv:read` NO es "cobrar". Desde 2026-08-16 (server c74f6593) la
@@ -71,6 +72,7 @@ object PermissionLabels {
         "giftCards:sell" to "vender tarjetas de regalo",
         "giftCards:redeem" to "cobrar con tarjeta de regalo",
         "giftCards:manage" to "administrar tarjetas de regalo",
+        "giftCards:enable" to "prender las tarjetas de regalo",
 
         // MARK: - Cuentas
         "orders:read" to "ver las cuentas",

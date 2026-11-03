@@ -7,6 +7,27 @@ object TextosDeTarjetas {
     const val MOSAICO = "Tarjeta de regalo"
     const val VENDER = "Vender tarjeta"
     const val CONSULTAR = "Consultar saldo"
+    const val PRENDER = "Prender tarjetas de regalo"
+    const val APAGADAS_PRENDELAS_AQUI = "Las tarjetas de regalo están apagadas. Préndelas aquí abajo."
+    const val APAGADAS_PIDELE_A_UN_ADMIN = "Las tarjetas de regalo están apagadas. Pídele a un administrador o al dueño que las prenda."
+    const val SIN_PERMISO_PRENDER = "No tienes permiso para prender las tarjetas de regalo. Pídeselo a un administrador o al dueño."
+    const val PRENDER_RECHAZADO = "No se prendieron las tarjetas de regalo. Inténtalo de nuevo."
+    const val PRENDER_SIN_RESPUESTA = "No pudimos confirmar si se prendieron. Revisa tu conexión e inténtalo de nuevo."
+    const val PRENDER_LISTO = "¡Tarjetas de regalo prendidas!"
+    // Las mismas reglas y la misma casilla que el panel (locales/es/giftCards.json, `activate`).
+    const val PRENDER_TITULO = "Antes de prender las tarjetas de regalo"
+    const val PRENDER_INTRO = "Estas reglas protegen a tu negocio y a tus clientes:"
+    val PRENDER_REGLAS = listOf(
+        "El saldo de cada tarjeta es una deuda de tu negocio con el cliente.",
+        "Nunca se cambia por efectivo ni se transfiere.",
+        "Hasta $10,000 por tarjeta y menos de $70,000 por compra.",
+        "Se factura cuando el cliente la usa.",
+        "Sólo se cancela el mismo día y si nunca se usó.",
+    )
+    const val PRENDER_ACEPTO = "Acepto los Términos y Condiciones y el Aviso de Privacidad"
+    const val TERMINOS = "Términos y Condiciones"
+    const val AVISO_DE_PRIVACIDAD = "Aviso de Privacidad"
+    const val PRENDER_BOTON = "Prender"
     const val SIN_RED = "Sin conexión: las tarjetas de regalo necesitan internet"
     const val SIN_PERMISO_VENDER = "No tienes permiso para vender tarjetas de regalo. Pídeselo a tu gerente."
     const val SIN_PERMISO_COBRAR = "No tienes permiso para cobrar con tarjeta de regalo. Pídeselo a tu gerente."

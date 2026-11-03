@@ -142,6 +142,9 @@ fun CheckoutScreen(
     val cartState by cartViewModel.cartState.collectAsState()
     val tarjetasViewModel: com.avoqado.pos.giftcards.presentation.TarjetasDeRegaloViewModel = hiltViewModel()
     val hojaDeTarjetas by tarjetasViewModel.hoja.collectAsState()
+    val prendiendoTarjetas by tarjetasViewModel.prendiendo.collectAsState()
+    val errorAlPrenderTarjetas by tarjetasViewModel.errorAlPrender.collectAsState()
+    val tarjetasPrendidas by tarjetasViewModel.prendidas.collectAsState()
     var mostrarHojaDeTarjetas by remember { mutableStateOf(false) }
     var consultaDeTarjeta by remember { mutableStateOf<Pair<String, com.avoqado.pos.giftcards.data.PruebaDeTarjeta?>?>(null) }
     var aperturaDeTarjetas by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1185,6 +1188,17 @@ fun CheckoutScreen(
                 consultaDeTarjeta = venue to null
             },
             onDismiss = { mostrarHojaDeTarjetas = false },
+            prendiendo = prendiendoTarjetas,
+            errorAlPrender = errorAlPrenderTarjetas,
+            onPrender = tarjetasViewModel::prender,
+            onLimpiarError = tarjetasViewModel::limpiarErrorAlPrender,
+        )
+    }
+
+    if (tarjetasPrendidas) {
+        AvoqadoSuccessToast(
+            message = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.PRENDER_LISTO,
+            onDismiss = tarjetasViewModel::avisoDePrendidasVisto,
         )
     }
 
