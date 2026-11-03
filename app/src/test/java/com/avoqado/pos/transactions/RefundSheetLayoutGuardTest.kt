@@ -187,29 +187,38 @@ class RefundSheetLayoutGuardTest {
     // MARK: - La pantalla completa (spec 2026-11-02). Son de fuente: lo que se ve lo comprueba el aparato.
 
     @Test
-    fun `emitir reembolso abre a pantalla completa y no en la hoja de antes`() {
+    fun `emitir reembolso abre en la hoja modal a pantalla completa`() {
         val ventana = ventanaDeLaPantalla()
 
-        listOf("AvoqadoModalBottomSheet(", "rememberModalBottomSheetState", "heightIn(max = 720.dp)", "CircleBackButton")
-            .forEach { assertFalse("Volvió `$it`: era de la hoja vieja.", ventana.contains(it)) }
-        listOf(
-            "usePlatformDefaultWidth = false",
-            "dismissOnClickOutside = false",
-            "AvoqadoFullscreenHeader(",
-            "title = \"Emitir reembolso\"",
-            "navStyle = FullscreenHeaderNav.CLOSE",
-            "showDivider = true",
-            "ImmersiveWindow()",
-        ).forEach { assertTrue("La pantalla perdió `$it`.", ventana.contains(it)) }
-        assertTrue(
-            "`BarreraDeAtajos()` va ANTES del `Dialog`, como en `AvoqadoFullScreenModal`: en Windows ninguna tecla de " +
-                "atajo debe responder detrás de esta pantalla.",
-            // `\b`: el elegir terminal, más arriba, es un `AvoqadoDialog(`.
-            ventana.indexOf("BarreraDeAtajos()") in 1 until Regex("""\bDialog\(""").find(ventana)!!.range.first,
+        assertEquals("La pantalla abre en una sola hoja.", 1, Regex("""\bAvoqadoModalBottomSheet\(""").findAll(ventana).count())
+        val llamada = ventana.substringAfter("AvoqadoModalBottomSheet(").substringBefore(") {")
+        listOf("onDismissRequest = onDismiss", "aPantallaCompleta = true", "dragHandle = null", "conXPropia = true")
+            .forEach { assertTrue("La hoja perdió `$it`.", llamada.contains(it)) }
+        // `\\b`: la lista de terminales, más arriba, es un `AvoqadoDialog(`, con su propia ventana.
+        assertFalse(
+            "Volvió un `Dialog`: su ventana nace del alto de la configuración (1920×972 en la Sunmi) y por la franja se toca el tab bar.",
+            Regex("""\bDialog\(""").containsMatchIn(ventana),
         )
+        listOf("heightIn(max = 720.dp)", "CircleBackButton")
+            .forEach { assertFalse("Volvió `$it`: era de la hoja de antes.", ventana.contains(it)) }
+        listOf("AvoqadoFullscreenHeader(", "title = \"Emitir reembolso\"", "navStyle = FullscreenHeaderNav.CLOSE", "showDivider = true")
+            .forEach { assertTrue("La pantalla perdió `$it`.", ventana.contains(it)) }
     }
 
-    /** Se abre en su propia ventana, arriba de la pantalla; no depende de la hoja vieja. */
+    /** Lo de pantalla completa tiene que valer en las dos ramas de la hoja: Android y Windows. Con `false`, ni se nota. */
+    @Test
+    fun `la hoja a pantalla completa vale en sus dos ramas`() {
+        val casa = leerCodigoSinComentarios("app/src/main/java/com/avoqado/pos/designsystem/components/AvoqadoModalBottomSheet.kt")
+
+        assertEquals(2, Regex("""\bModalBottomSheet\(""").findAll(casa).count())
+        listOf("sheetMaxWidth = anchoMaximo", "shape = forma").forEach {
+            assertEquals("`$it` no está en las dos ramas.", 2, Regex(Regex.escape(it)).findAll(casa).count())
+        }
+        listOf("BarreraDeAtajos()", "ImmersiveWindow()", "aPantallaCompleta: Boolean = false", "Dp.Unspecified", "RectangleShape", "detectVerticalDragGestures", "onPostFling")
+            .forEach { assertTrue("La hoja de la casa perdió `$it`.", casa.contains(it)) }
+    }
+
+    /** Se abre en su propia ventana, arriba de la pantalla. */
     @Test
     fun `la hoja de escoger cliente sigue siendo hoja`() {
         val cliente = leerCodigoSinComentarios(hoja).substringAfter("if (escogiendoCliente)").substringBefore("private fun ItemsBody(")
@@ -244,24 +253,6 @@ class RefundSheetLayoutGuardTest {
         assertTrue("El cuerpo perdió `imePadding()`.", ventana.substring(cuerpo).substringBefore(") {").contains(".imePadding()"))
         assertTrue("El corte de `apretado` se midió con los 56 dp del encabezado viejo: 640 - 56.", ventana.contains("maxHeight < 584.dp"))
         assertTrue(ventana.contains("val avisoEnRenglon = maxWidth >= 480.dp"))
-    }
-
-    /**
-     * Un `Dialog` no trae lo que `ModalBottomSheet` le fija a su ventana. Sin esto, antes de Android 11 `imePadding` vale 0
-     * y el pie queda bajo el teclado; de ahí en adelante el sistema desplaza la ventana además de `imePadding`.
-     */
-    @Test
-    fun `la ventana deja el teclado al contenido, sin tocar DialogProperties`() {
-        val ventana = ventanaDeLaPantalla()
-
-        assertTrue("La ventana ya no recibe `TecladoAlContenido()`.", ventana.contains("TecladoAlContenido()"))
-        val teclado = leerCodigoSinComentarios(hoja).substringAfter("private fun TecladoAlContenido(").substringBefore("@Composable")
-        listOf("as? DialogWindowProvider", "setSoftInputMode(", "SOFT_INPUT_ADJUST_NOTHING", "SOFT_INPUT_ADJUST_RESIZE")
-            .forEach { assertTrue("`TecladoAlContenido` perdió `$it`.", teclado.contains(it)) }
-        assertFalse(
-            "`decorFitsSystemWindows` no existe en el Compose de WINDOWS: esa llamada no compilaría.",
-            ventana.contains("decorFitsSystemWindows"),
-        )
     }
 
     /**

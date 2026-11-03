@@ -1,8 +1,6 @@
 package com.avoqado.pos.transactions.presentation
 
-import android.os.Build
 import android.util.Log
-import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,7 +36,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
@@ -58,18 +55,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
-import com.avoqado.pos.designsystem.components.BarreraDeAtajos
 import com.avoqado.pos.designsystem.components.FullscreenHeaderNav
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.core.util.formatMoney
@@ -412,21 +404,16 @@ fun IssueRefundSheet(
         }
     }
 
-    BarreraDeAtajos()
-    Dialog(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false,
-            usePlatformDefaultWidth = false,
-        ),
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
+        conXPropia = true,
+        aPantallaCompleta = true,
     ) {
-        com.avoqado.pos.designsystem.components.ImmersiveWindow()
-        TecladoAlContenido()
         val bandaScroll = rememberScrollState()
         val pieScroll = rememberScrollState()
-        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-        Column(modifier = Modifier.fillMaxSize()) {
         AvoqadoFullscreenHeader(
             title = "Emitir reembolso",
             onNav = onDismiss,
@@ -449,8 +436,8 @@ fun IssueRefundSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                // El teclado no tapa esta pantalla: `TecladoAlContenido` deja
-                // el ajuste en el contenido.
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
                 .imePadding(),
         ) {
         // El umbral sale de MEDIR la hoja en el aparato (OrderPAD 3 forzado, 2026-09-12),
@@ -497,7 +484,8 @@ fun IssueRefundSheet(
                 .align(Alignment.TopCenter)
                 .then(if (soloCompleto) Modifier.widthIn(max = 640.dp) else Modifier)
                 .fillMaxWidth()
-                .padding(horizontal = spacing.xl),
+                .padding(horizontal = spacing.xl)
+                .padding(top = spacing.md),
         ) {
             if (!soloCompleto) Row(
                 modifier = Modifier
@@ -1098,8 +1086,6 @@ fun IssueRefundSheet(
             }
         }
         }
-        }
-        }
     }
 
     if (escogiendoCliente) {
@@ -1121,28 +1107,6 @@ fun IssueRefundSheet(
                     canCreateCustomer = saldo.puedeCrearCliente)
             }
         }
-    }
-}
-
-/**
- * Deja el teclado al contenido (`imePadding`), como `ModalBottomSheet` de Material3 hace con su ventana. Un `Dialog` no lo
- * trae: su tema viene con `adjustPan`, que además de `imePadding` desplaza la ventana, y antes de Android 11 sólo
- * `adjustResize` reporta de forma fiable el alto del teclado.
- *
- * Va por la ventana y no en `DialogProperties`: su `decorFitsSystemWindows` no existe en el Compose de WINDOWS, donde la
- * vista nunca es un `DialogWindowProvider` y esto no hace nada.
- */
-@Composable
-private fun TecladoAlContenido() {
-    val ventana = (LocalView.current.parent as? DialogWindowProvider)?.window
-    LaunchedEffect(ventana) {
-        ventana?.setSoftInputMode(
-            if (Build.VERSION.SDK_INT >= 30) {
-                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
-            } else {
-                @Suppress("DEPRECATION") WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-            },
-        )
     }
 }
 

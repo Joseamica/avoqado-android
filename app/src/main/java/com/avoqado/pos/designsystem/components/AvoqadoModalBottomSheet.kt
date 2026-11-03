@@ -1,7 +1,10 @@
 package com.avoqado.pos.designsystem.components
 
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,7 +23,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
@@ -52,19 +63,31 @@ fun AvoqadoModalBottomSheet(
      * cambia nada.
      */
     conXPropia: Boolean = false,
+    /**
+     * Una pantalla, no una hoja: todo el ancho y todo el alto, sin esquinas, y arrastrar no la cierra (seguir bajando una
+     * lista que ya llegó arriba tiraría lo capturado). Se cierra con su X y con atrás. Va en esta ventana y no en un `Dialog`
+     * porque la de un `Dialog` nace del alto de la configuración y por la franja se toca el tab bar (1920×972 en la Sunmi, ver
+     * `TableOrderScreen`).
+     */
+    aPantallaCompleta: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     BarreraDeAtajos()
+    val anchoMaximo = if (aPantallaCompleta) Dp.Unspecified else BottomSheetDefaults.SheetMaxWidth
+    val forma = if (aPantallaCompleta) RectangleShape else BottomSheetDefaults.ExpandedShape
+    val contenido: @Composable ColumnScope.() -> Unit = if (aPantallaCompleta) ({ ContenidoSinArrastre(content) }) else content
     if (!LocalEsEscritorio.current) {
         ModalBottomSheet(
             onDismissRequest = onDismissRequest,
             modifier = modifier,
             sheetState = sheetState,
+            sheetMaxWidth = anchoMaximo,
+            shape = forma,
             containerColor = containerColor,
             dragHandle = dragHandle,
         ) {
             ImmersiveWindow()
-            content()
+            contenido()
         }
         return
     }
@@ -73,6 +96,8 @@ fun AvoqadoModalBottomSheet(
         onDismissRequest = onDismissRequest,
         modifier = modifier,
         sheetState = sheetState,
+        sheetMaxWidth = anchoMaximo,
+        shape = forma,
         containerColor = containerColor,
         dragHandle = if (conXPropia) null else ({
             Box(Modifier.fillMaxWidth().padding(top = 8.dp, end = 8.dp), contentAlignment = Alignment.CenterEnd) {
@@ -88,6 +113,26 @@ fun AvoqadoModalBottomSheet(
                 }
             }
         }),
+        content = contenido,
+    )
+}
+
+/**
+ * Material3 1.3.1 no trae cómo apagar el arrastre de la hoja. Lo que queda es que no le llegue: el `pointerInput` se queda el
+ * gesto sobre lo que no se desliza, y la conexión se queda lo que una lista ya no pudo moverse.
+ */
+@Composable
+private fun ContenidoSinArrastre(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .nestedScroll(SobranteQueNoLlegaALaHoja)
+            .pointerInput(Unit) { detectVerticalDragGestures { cambio, _ -> cambio.consume() } },
         content = content,
     )
+}
+
+private val SobranteQueNoLlegaALaHoja = object : NestedScrollConnection {
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource) = available
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity) = available
 }
