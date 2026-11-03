@@ -325,7 +325,8 @@ class AreaTicketRepository @Inject constructor(
     /** Lo que contestó el último guardado del papel (null mientras uno vuela o si falló): lo recibe la consulta vencida. */
     @Volatile private var papelGuardado: AreaTicketSettingsData? = null
 
-    suspend fun settings(): AreaTicketSettingsData {
+    /** [soloServidor]: sin la copia de sin red (lo pide «Guardar» del papel para no pisar un cambio del panel, Codex r6). */
+    suspend fun settings(soloServidor: Boolean = false): AreaTicketSettingsData {
         val venueId = venueId()
         session.ensureVenue(venueId)
         val version = versionDelPapel
@@ -341,7 +342,7 @@ class AreaTicketRepository @Inject constructor(
                 )
             }
         } catch (error: Exception) {
-            if (error is AreaTicketException && !error.retryable) throw error
+            if (soloServidor || (error is AreaTicketException && !error.retryable)) throw error
 
             val cached = payloadCache.load(PayloadCache.TYPE_AREA_TICKET_SETTINGS, venueId)
                 ?: throw error

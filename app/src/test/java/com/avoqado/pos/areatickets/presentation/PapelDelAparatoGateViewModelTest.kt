@@ -332,7 +332,12 @@ class PapelDelAparatoGateViewModelTest {
         val vm = vm()
         vm.consultar(disparo(1))
         val tarda = CompletableDeferred<Unit>()
-        coEvery { api.getAreaTicketSettings("v1") } coAnswers { tarda.await(); AreaTicketEnvelope(true, ajustes()) }
+        var lecturas = 0
+        // Sólo el GET de ON_RESUME queda en vuelo; el que hace «Guardar» para revisar el papel (Codex r6) contesta al momento.
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers {
+            if (++lecturas == 1) tarda.await()
+            AreaTicketEnvelope(true, ajustes())
+        }
         vm.consultar(disparo(2)) // ON_RESUME con la hoja abierta: el GET queda en vuelo
 
         vm.elegir(PapelDelAparato.EmiteVales("a1", "Cremería"))
@@ -401,6 +406,38 @@ class PapelDelAparatoGateViewModelTest {
         val hoja = vm.hoja.value!!
         assertFalse(hoja.primeraVez)
         assertEquals(PapelDelAparato.Cobra, hoja.seleccion)
+    }
+
+    @Test
+    fun `si el panel cambió el papel mientras no había red, Guardar no lo pisa`() = runTest {
+        // Codex r6: la hoja se abrió sin red con la copia («Cobra»); mientras, el panel lo puso a emitir en Cremería. Al volver
+        // la red, «Guardar» sin tocar nada no regresa al papel viejo: la hoja toma el de ahora y pide revisar.
+        val caja = ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true))
+        respondeAjustes(caja)
+        val vm = vm()
+        vm.consultar(disparo(1))
+        red.value = false
+        vm.abrirDesdeMas()
+        assertEquals(PapelDelAparato.Cobra, vm.hoja.value!!.seleccion)
+        val cremeria = AreaTicketArea("a1", "Cremería", "HOLD_UNTIL_PAID")
+        val emisor = ajustes(
+            pendiente = false,
+            terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", fulfillmentArea = cremeria, canIssueAreaTickets = true),
+        )
+        respondeAjustes(emisor)
+        coEvery { api.setAreaTicketRole(any(), any(), any()) } returns AreaTicketEnvelope(true, emisor)
+        red.value = true
+
+        vm.guardar()
+
+        coVerify(exactly = 0) { api.setAreaTicketRole(any(), any(), any()) }
+        val hoja = vm.hoja.value!!
+        assertEquals(PapelDelAparato.EmiteVales("a1", "Cremería"), hoja.seleccion)
+        assertEquals("En el panel lo cambiaron a «Emite · Cremería». Revisa y vuelve a guardar.", hoja.error)
+        assertFalse(hoja.guardando)
+
+        vm.guardar() // ya con el papel de ahora: sí guarda
+        coVerify(exactly = 1) { api.setAreaTicketRole(any(), any(), any()) }
     }
 
     @Test

@@ -10,6 +10,7 @@ import com.avoqado.pos.areatickets.domain.PapelDelAparato
 import com.avoqado.pos.areatickets.domain.etiquetaDelRecuadro
 import com.avoqado.pos.areatickets.domain.motivoParaNoGuardar
 import com.avoqado.pos.areatickets.domain.papelActual
+import com.avoqado.pos.areatickets.domain.textoCambioEnElPanel
 import com.avoqado.pos.areatickets.domain.ventaAMedias
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
@@ -53,6 +54,8 @@ data class HojaDelPapel(
     val guardando: Boolean = false,
     /** El rechazo del servidor, dentro de la hoja. */
     val error: String? = null,
+    /** El papel que la hoja enseñó como el de hoy al abrirse; «Guardar» lo compara con el servidor (Codex r6). */
+    val partida: PapelDelAparato = seleccion,
 ) {
     fun motivo(hayRed: Boolean): String? = motivoParaNoGuardar(puedeConfigurar, hayRed, ventaAMedias)
 }
@@ -172,6 +175,21 @@ class PapelDelAparatoGateViewModel @Inject constructor(
         }
         _hoja.value = hoja.copy(guardando = true, error = null, ventaAMedias = false)
         viewModelScope.launch {
+            // Codex r6: la hoja pudo abrirse con la copia de sin red. Si el panel cambió el papel mientras tanto, no se pisa
+            // a ciegas: la hoja toma el papel de ahora y pide revisar.
+            val frescos = runCatching { repository.settings(soloServidor = true) }.getOrNull()
+            if (frescos == null || frescos.venueId != hoja.venueId) {
+                _hoja.update {
+                    it?.copy(guardando = false, error = motivoParaNoGuardar(puedeConfigurar = true, hayRed = false, ventaAMedias = false))
+                }
+                return@launch
+            }
+            val ahora = hojaPara(frescos, hoja.primeraVez)
+            if (ahora.partida != hoja.partida) {
+                _ajustes.value = frescos
+                _hoja.value = ahora.copy(error = textoCambioEnElPanel(ahora.partida))
+                return@launch
+            }
             val error = when (val resultado = repository.guardarPapel(hoja.venueId, hoja.terminalId, hoja.seleccion)) {
                 is ResultadoPapel.Guardado -> {
                     // 🔴 Codex final #1: el papel nuevo se aplica con ESTA respuesta, con la hoja abierta y el carrito vacío.

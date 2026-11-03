@@ -35,6 +35,10 @@ fun etiquetaDelRecuadro(papel: PapelDelAparato): String = when (papel) {
     PapelDelAparato.SinElegir -> "Sin elegir"
 }
 
+/** «Guardar» encontró que el papel cambió en el panel desde que se abrió la hoja (Codex r6). Igual en iOS. */
+fun textoCambioEnElPanel(papel: PapelDelAparato): String =
+    "En el panel lo cambiaron a «${etiquetaDelRecuadro(papel)}». Revisa y vuelve a guardar."
+
 /** Por qué no se puede guardar ahora (null = sí se puede). Gana el permiso, luego la red, luego la venta a medias. */
 fun motivoParaNoGuardar(puedeConfigurar: Boolean, hayRed: Boolean, ventaAMedias: Boolean): String? = when {
     !puedeConfigurar -> "Pídele a tu administrador que lo configure"
