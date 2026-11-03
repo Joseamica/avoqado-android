@@ -7,6 +7,7 @@ import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.transactions.data.LecturaDeDetalle
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import com.avoqado.pos.transactions.data.model.Transaction
@@ -54,6 +55,7 @@ class TransactionCustomerAssignmentFlowTest {
         every { repository.isLoading } returns MutableStateFlow(false)
         every { repository.isLoadingMore } returns MutableStateFlow(false)
         coEvery { repository.fetchTransactionDetail(any(), any(), any()) } returns sale
+        coEvery { repository.leerDetalle(any(), any(), any()) } coAnswers { LecturaDeDetalle(repository.fetchTransactionDetail(arg(0), arg(1), arg(2))) }
         coEvery { repository.assignCustomer(any()) } coAnswers {
             val value = firstArg<PendingCustomerAssignment>()
             assertEquals("persist before network", value, stored)

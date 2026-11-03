@@ -11,6 +11,7 @@ import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import com.avoqado.pos.transactions.data.LecturaDeDetalle
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.transactions.data.model.*
 import com.avoqado.pos.transactions.presentation.TransactionsViewModel
@@ -44,6 +45,7 @@ class ExchangePinGateTest {
         every { repository.isLoadingMore } returns MutableStateFlow(false)
         coEvery { repository.fetchTransactions(any(), any()) } returns Result.success(Unit)
         coEvery { repository.fetchTransactionDetail(any(), any(), any()) } returns sale
+        coEvery { repository.leerDetalle(any(), any(), any()) } coAnswers { LecturaDeDetalle(repository.fetchTransactionDetail(arg(0), arg(1), arg(2))) }
         every { settings.exchangesEnabled } returns MutableStateFlow(true)
         every { settings.managerPinOverrideEnabled } returns MutableStateFlow(true)
         every { roles.canIssueRefund } returns canRefund

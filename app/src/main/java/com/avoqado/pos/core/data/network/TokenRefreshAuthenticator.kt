@@ -174,8 +174,13 @@ class TokenRefreshAuthenticator @Inject constructor(
         // 401` y fuera. Alguien que se equivoca de PIN perdía su sesión — justo en el mostrador.
         // El reloj checador ya había chocado con esto y por eso su ruta estaba exenta; faltaba
         // la de cambiar de usuario.
-        if (requestPath.contains("/mobile/venues/") &&
-            (requestPath.contains("/time-clock/") || requestPath.contains("/auth/switch-user"))
+        if (requestPath.contains("/mobile/venues/") && requestPath.contains("/time-clock/")) {
+            return null
+        }
+        // Cambiar usuario: lo de arriba, salvo que el 401 sea del TOKEN y no del PIN (el SERVIDOR lo dice con `error: Unauthorized`).
+        // Con la sesión vencida, un PIN correcto se leía como «PIN incorrecto». Se renueva y se reintenta una sola vez.
+        if (requestPath.contains("/mobile/venues/") && requestPath.contains("/auth/switch-user") &&
+            (response.request.header("X-Retry-After-Refresh") != null || !esRechazoDelToken(response))
         ) {
             return null
         }
@@ -363,6 +368,14 @@ class TokenRefreshAuthenticator @Inject constructor(
         throw error
     }
 
+    /** ¿El 401 lo dio el middleware del token? Un cuerpo ilegible no lo prueba: `false`, como un PIN equivocado. */
+    private fun esRechazoDelToken(response: Response): Boolean = try {
+        (json.parseToJsonElement(response.peekBody(4096).string()) as? kotlinx.serialization.json.JsonObject)
+            ?.get("error")?.let { it as? kotlinx.serialization.json.JsonPrimitive }?.content == "Unauthorized"
+    } catch (_: Exception) {
+        false
+    }
+
     /** ¿Esta petición prohíbe el reenvío automático? Ver [NO_AUTO_RETRY_HEADER]. */
     private fun noReenviar(response: Response): Boolean =
         response.request.header(NO_AUTO_RETRY_HEADER) != null
@@ -429,7 +442,7 @@ class TokenRefreshAuthenticator @Inject constructor(
             // kotlinx.serialization trae el cuerpo tras «JSON input:», y ahí
             // viajan los tokens de la sesión — no van a logcat.
             Log.e("🔐", "Token refresh unexpected error: ${e.javaClass.simpleName}")
-            RefreshOutcome.NetworkFailure("red:${e.javaClass.simpleName}")
+            RefreshOutcome.NetworkFailure("servidor:ilegible:${e.javaClass.simpleName}")
         }
     }
 }

@@ -32,6 +32,7 @@ import com.avoqado.pos.pos.data.model.DescuentoCongelado
 import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.aplicarCambiosDePrecio
 import com.avoqado.pos.pos.data.model.avisoDeCambioDePrecio
+import com.avoqado.pos.pos.data.model.parecidoACodigo
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -2113,6 +2114,7 @@ class CartViewModel @Inject constructor(
                 walletScanRepository.escanear(code)?.let { return ScannedBarcodeResult.CustomerCardFound(it) }
             }
 
+            products.value.parecidoACodigo(code)?.let { return ScannedBarcodeResult.ProductFound(it) }
             return ScannedBarcodeResult.Unknown(code)
         }
 

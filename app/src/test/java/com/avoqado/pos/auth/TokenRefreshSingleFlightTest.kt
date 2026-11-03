@@ -1,5 +1,8 @@
 package com.avoqado.pos.auth
 
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.RefrescoExclusivo
 import com.avoqado.pos.core.data.network.SelloDePeticion
@@ -110,6 +113,61 @@ class TokenRefreshSingleFlightTest {
 
         assertNull("un 401 de PIN no se reintenta con token nuevo", resultado)
         assertEquals("y NO debe dispararse ningún refresco", 0, server.requestCount)
+    }
+
+    // MARK: - Cambiar usuario con la sesión vencida (hz:459741ee:D4)
+
+    /** El 401 de cambiar usuario, con su cuerpo: el SERVIDOR distingue al token vencido (`error: Unauthorized`) del PIN equivocado. */
+    private fun cambioDeUsuario401(cuerpo: String, yaReintentado: Boolean = false): Response {
+        val request = Request.Builder()
+            .url(server.url("/mobile/venues/v1/auth/switch-user"))
+            .header("Authorization", "Bearer access-vencido")
+            .apply { if (yaReintentado) header("X-Retry-After-Refresh", "true") }
+            .post("""{"pin":"1234"}""".toRequestBody("application/json".toMediaType()))
+            .build()
+        return Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized")
+            .body(cuerpo.toResponseBody("application/json".toMediaType())).build()
+    }
+
+    @Test
+    fun `D4 con la sesion vencida cambiar usuario renueva y reintenta con el mismo PIN`() {
+        every { secureStorage.accessToken } returnsMany listOf("access-vencido", "access-nuevo")
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"accessToken":"access-nuevo","refreshToken":"refresh-nuevo"}"""))
+
+        val reintento = authenticator.authenticate(null, cambioDeUsuario401("""{"error":"Unauthorized","message":"Token has expired"}"""))
+
+        assertEquals(1, server.requestCount)
+        assertEquals("Bearer access-nuevo", reintento?.header("Authorization"))
+        val cuerpo = okio.Buffer().also { reintento!!.body!!.writeTo(it) }.readUtf8()
+        assertEquals("""{"pin":"1234"}""", cuerpo)
+    }
+
+    @Test
+    fun `D4 un PIN equivocado sigue sin renovar ni cerrar la sesion`() {
+        val resultado = authenticator.authenticate(null, cambioDeUsuario401("""{"message":"PIN incorrecto"}"""))
+
+        assertNull(resultado)
+        assertEquals(0, server.requestCount)
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
+    }
+
+    @Test
+    fun `D4 ya reintentado con token nuevo, otro 401 no renueva ni cierra la sesion`() {
+        val resultado = authenticator.authenticate(null, cambioDeUsuario401("""{"error":"Unauthorized","message":"Token has expired"}""", yaReintentado = true))
+
+        assertNull(resultado)
+        assertEquals(0, server.requestCount)
+        verify(exactly = 0) { secureStorage.clearSessionSiSigue(any()) }
+        verify(exactly = 0) { secureStorage.clearSessionSiSigueElAccess(any()) }
+    }
+
+    @Test
+    fun `D4 un cuerpo que no se puede leer se trata como PIN, como hoy`() {
+        val resultado = authenticator.authenticate(null, cambioDeUsuario401("<html>portal</html>"))
+
+        assertNull(resultado)
+        assertEquals(0, server.requestCount)
     }
 
     @Test

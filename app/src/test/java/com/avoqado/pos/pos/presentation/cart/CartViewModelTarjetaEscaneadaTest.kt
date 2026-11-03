@@ -24,6 +24,7 @@ import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
+import com.avoqado.pos.pos.data.model.parecidoACodigo
 import io.mockk.coEvery
 import org.junit.Assert.assertFalse
 import kotlinx.coroutines.test.runCurrent
@@ -149,6 +150,22 @@ class CartViewModelTarjetaEscaneadaTest {
         val vm=createViewModel(); val pase="a1".repeat(24)
         vm.resolveScannedBarcode(pase); coVerify(exactly=1) { wallet.escanear(pase) }
         assertEquals(ScannedBarcodeResult.Unknown("sin-alta"),vm.resolveScannedBarcode("sin-alta"))
+    }
+    @Test fun `sin red un pase de 48 hex no se vuelve el producto que se le parece`() = runTest {
+        // Codex r2: la misma lectura identifica al cliente con red; sin red no puede volverse mercancía.
+        val pase="a1".repeat(24)
+        every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=pase.uppercase())))
+        coEvery { wallet.escanear(pase) } returns null
+        assertEquals(ScannedBarcodeResult.Unknown(pase),createViewModel().resolveScannedBarcode(pase))
+    }
+    @Test fun `con forma de tarjeta nunca hay parecido, tampoco en Mesas ni donde no se consulta la tarjeta`() {
+        // Codex r3: Mesas llama directo a parecidoACodigo. La guardia vive ahí para que ningún camino se la salte.
+        val pase="a1".repeat(24)
+        val regalo="abcd2345efgh6789j"
+        val productos=listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=pase.uppercase()),Product(id="q",name="Gorra",priceValue=90.0,sku=regalo.uppercase()),Product(id="r",name="Taza",priceValue=50.0,sku="TAZA-1"))
+        assertNull(productos.parecidoACodigo(pase))
+        assertNull(productos.parecidoACodigo(regalo))
+        assertEquals("r",productos.parecidoACodigo("taza-1")?.id)
     }
     @Test fun `peso conserva precedencia y vale se resuelve primero`() = runTest {
         every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Jamón",priceValue=420.0,sku="00123",soldByWeight=true,unit="KILOGRAM")))

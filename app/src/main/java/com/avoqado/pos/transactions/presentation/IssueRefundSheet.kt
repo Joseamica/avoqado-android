@@ -615,7 +615,6 @@ fun IssueRefundSheet(
                     selectedIds = selectedItemIds,
                     refundQty = refundQtyByItem,
                     restockIds = restockItemIds,
-                    selectedAmount = itemsAmount,
                     maxRefundable = topeActual,
                     onToggle = { id ->
                         selectedItemIds = if (selectedItemIds.contains(id)) {
@@ -1119,7 +1118,6 @@ private fun ItemsBody(
     selectedIds: Set<String>,
     refundQty: Map<String, Int>,
     restockIds: Set<String>,
-    selectedAmount: Double,
     maxRefundable: Double,
     onToggle: (String) -> Unit,
     onQtyChange: (String, Int) -> Unit,
@@ -1327,12 +1325,6 @@ private fun ItemsBody(
                 }
             }
         }
-
-        Text(
-            text = "Selección actual: ${formatMoney(selectedAmount)}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
