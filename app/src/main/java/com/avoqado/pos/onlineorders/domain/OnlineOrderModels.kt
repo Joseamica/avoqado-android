@@ -41,6 +41,12 @@ data class OnlineOrder(
     val remainingCents: Long,
     val needsPrint: Boolean,
     val items: List<OnlineOrderItem>,
+    /** Pedido pagado con tarjeta (`CARD_ONLINE`): `AUTHORIZED` (apartada) | `CONFIRMING` (el banco confirma) | null. Un servidor viejo no lo manda. */
+    val cardStatus: String? = null,
+    /** `card.status` del servidor (p. ej. `CAPTURED`); null si no hay tarjeta o el servidor es viejo. */
+    val cardChargeStatus: String? = null,
+    /** Motivo recibido del cierre: `OUT_OF_ITEMS` | `CLOSED` | `TOO_BUSY` | `OTHER` | `PAYMENT_FAILED`; null si no hay. */
+    val rejectReason: String? = null,
 )
 
 /**
@@ -104,5 +110,7 @@ sealed interface AccionResultado {
     data object Hecho : AccionResultado
     data class YaNoDisponible(val status: OnlineOrderStatus) : AccionResultado
     data object SinConexion : AccionResultado
+    /** `409 ONLINE_ORDER_CONFIRMING_PAYMENT`: el banco aún confirma el pago; no es error rojo. */
+    data class ConfirmandoPago(val mensaje: String) : AccionResultado
     data class Error(val mensaje: String) : AccionResultado
 }

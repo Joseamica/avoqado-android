@@ -375,7 +375,8 @@ internal fun debeQuedarseArriba(estabaArriba: Boolean, primeraClaveAntes: String
  * siga en «En preparación» o «Listos» y sin dinero. PURA.
  */
 internal fun pedidoDelDialogo(orderId: String, tipo: TipoDeDialogo, secciones: SeccionesBandeja): OnlineOrder? = when (tipo) {
-    TipoDeDialogo.ACEPTAR, TipoDeDialogo.RECHAZAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId }
+    TipoDeDialogo.ACEPTAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId && sePuedeAceptar(it) }
+    TipoDeDialogo.RECHAZAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId }
     TipoDeDialogo.CANCELAR ->
         (secciones.enPreparacion + secciones.listos).firstOrNull { it.orderId == orderId && sinDinero(it) }
 }

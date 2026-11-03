@@ -172,6 +172,9 @@ class OnlineOrdersRepository @Inject constructor(
             remainingCents = pesosACentavos(o, "remaining"),
             needsPrint = o.optBoolean("needsPrint", false),
             items = (0 until (items?.length() ?: 0)).map { parseItem(items!!.getJSONObject(it)) },
+            cardStatus = o.textoONulo("cardStatus"),
+            cardChargeStatus = o.optJSONObject("card")?.textoONulo("status"),
+            rejectReason = o.textoONulo("rejectReason"),
         )
     }
 
@@ -233,6 +236,7 @@ class OnlineOrdersRepository @Inject constructor(
         if (e is RechazoException) {
             val estado = e.rechazo.estadoActual
             return when {
+                e.rechazo.status == 409 && e.rechazo.codigo == "ONLINE_ORDER_CONFIRMING_PAYMENT" -> AccionResultado.ConfirmandoPago(e.rechazo.mensaje)
                 estado == null -> AccionResultado.Error(e.rechazo.mensaje)
                 estado == quiso -> AccionResultado.Hecho
                 else -> AccionResultado.YaNoDisponible(estado)

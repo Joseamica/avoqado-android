@@ -267,6 +267,7 @@ class OnlineOrdersViewModel internal constructor(
             _cargando.value = false
             return@withLock
         }
+        val estaLectura = ++lecturasIniciadas
         val primera = try {
             repositorio.inbox("all", comoBandeja, null)
         } catch (e: CancellationException) {
@@ -290,8 +291,15 @@ class OnlineOrdersViewModel internal constructor(
                 cursor = siguiente.nextCursor
                 pagina++
             }
+            val leidos = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
+            // Una lectura EXITOSA que salió DESPUÉS del 409 y ya no lo trae confirmando (o ya no por aceptar) libera «Aceptar».
+            confirmando.entries.removeAll { (id, ultimaDeAntes) ->
+                estaLectura > ultimaDeAntes && leidos.none { it.orderId == id && it.cardStatus == "CONFIRMING" }
+            }
+            // La que ya iba en el aire trae una foto de antes del 409: no le devuelve «Aceptar» ni el texto de antes.
+            val pendientes = leidos.map { if (it.orderId in confirmando) it.copy(cardStatus = "CONFIRMING") else it }
             _secciones.value = SeccionesBandeja(
-                porAceptar = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE },
+                porAceptar = pendientes,
                 enPreparacion = ordenes.filter { it.status == OnlineOrderStatus.ACCEPTED },
                 listos = ordenes.filter { it.status == OnlineOrderStatus.READY },
                 hoy = ordenes.filter { it.status !in ABIERTOS },
@@ -381,13 +389,32 @@ class OnlineOrdersViewModel internal constructor(
     // MARK: - Acciones (sólo en línea, nunca encoladas)
 
     fun aceptar(orderId: String, minutos: Int) {
+        // Aquí y no sólo en el botón: ningún camino de la vista (el botón, los minutos de un diálogo ya abierto) se la salta.
+        if (orderId in confirmando || buscar(orderId)?.let(::sePuedeAceptar) == false) return
         ejecutar(
             orderId, permisoActualizar(), sonidoCambia = true,
             // Después de releer: se imprime el pedido ACEPTADO que dijo el servidor (con su hora estimada), nunca la foto de
             // antes de aceptar. Si la relectura falló o el pedido no está, no se imprime de una foto vieja: el siguiente latido
             // lo hace por `needsPrint`.
             alHechoYReleido = { buscar(orderId)?.takeIf { it.status in IMPRIMIBLES }?.let { imprimir(it) } },
-        ) { repositorio.accept(orderId, minutos) }
+        ) {
+            repositorio.accept(orderId, minutos)
+        }
+    }
+
+    /** Cuántas lecturas de la bandeja han salido: cada una toma su número ANTES de preguntar. */
+    private var lecturasIniciadas = 0L
+
+    /**
+     * Pedidos a los que el servidor dijo «confirmando el pago» (409) -> la última lectura que ya había salido entonces. Siguen sin
+     * poder aceptarse aunque la relectura falle; sólo una lectura posterior a ese número los suelta.
+     */
+    private val confirmando = mutableMapOf<String, Long>()
+
+    private fun marcarConfirmando(orderId: String) {
+        confirmando[orderId] = lecturasIniciadas
+        val s = _secciones.value
+        _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
     }
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
@@ -615,10 +642,13 @@ class OnlineOrdersViewModel internal constructor(
                 } catch (e: Exception) {
                     AccionResultado.Error(e.message ?: "No se pudo completar la acción")
                 }
+                // Cualquier acción puede recibirlo: rechazar también, si otro aparato ya está cobrando (Codex ANDROID r2).
+                if (resultado is AccionResultado.ConfirmandoPago) marcarConfirmando(clave)
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
                     is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
                     AccionResultado.SinConexion -> TextosPedidosEnLinea.REINTENTA
+                    is AccionResultado.ConfirmandoPago -> resultado.mensaje
                     is AccionResultado.Error -> resultado.mensaje
                 }
                 // Siempre se relee: el servidor es el que dice dónde quedó el pedido.
