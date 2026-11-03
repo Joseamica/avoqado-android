@@ -39,25 +39,20 @@ This file provides guidance to Claude Code when working with this repository.
 > máquina — están en el `CLAUDE.md` del workspace (`../CLAUDE.md`), que auto-carga junto con este
 > archivo. Léelas antes de correr builds/tests o de tocar git.
 
-## 🔴 CRITICAL — Android e iOS se cambian JUNTOS (paridad obligatoria)
+## 🔴 CRITICAL — iOS va después: se anota, no se hace (founder, 3-nov-2026)
 
-**Todo cambio de producto que hagas aquí debe portarse a `avoqado-ios` en el MISMO
-trabajo — nunca "después".** Android e iOS son la misma app en dos plataformas: si una
-queda atrás, el founder ve comportamientos distintos según el dispositivo y hay que
-re-descubrir el diseño meses después.
+Reemplaza a «Android e iOS se cambian JUNTOS». Nadie vende en iOS como POS y portar en el mismo trabajo retrasaba lo urgente.
+Regla completa en `../AGENTS.md` («Producto entre repos»); el cómo, en `../docs/proyectos/ios-por-hacer.md`.
 
-- Aplica a: features nuevas, cambios de UX/flujo, fixes de bugs (sobre todo de dinero),
-  estados de carga/guards, textos visibles, y contratos con el server.
-- El port no es opcional ni un TODO: si el cambio no está en ambos, el trabajo está
-  incompleto. Deja el iOS compilando (`xcodebuild ... build`) antes de darlo por hecho.
-- Si por algo NO se puede portar en el momento (worktree bloqueado, falta hardware,
-  decisión pendiente), **dilo explícitamente en el reporte y anótalo en memoria** con
-  qué falta exactamente — no lo dejes silencioso.
-- Excepción: cosas genuinamente específicas de plataforma (permisos de Android, MFi/
-  ExternalAccessory de iOS, layouts propios de cada SO). Aun así, el COMPORTAMIENTO
-  que ve el usuario debe ser equivalente.
-- Espejo exacto: usa los mismos nombres de campos, textos en español y semántica que
-  el otro repo. Los códigos de feature/permiso se replican por nombre EXACTO.
+- **Por un cambio de aquí no abras, compiles ni pruebes `avoqado-ios`,** salvo que el founder lo pida. «Listo» y unir no lo
+  esperan.
+- **Antes de unir, si a iOS también le toca:** su ficha en el recetario (qué falta, cómo quedó aquí, cómo habla al server, lo
+  que se quemó y lo que se decidió, cómo se prueba) y su tarjeta `iOS · <función>` en el pizarrón.
+- **Todo PR a `develop` lleva la línea `iOS: <título de la ficha>` o `iOS: no aplica (razón)`.** Sin ella, el CI sale rojo
+  (`.github/workflows/linea-ios.yml`).
+- **Un error de iOS que veas** se anota igual; no lo arregles.
+- **Lo de aquí es lo oficial que iOS copiará:** nombres de campos, textos en español, permisos y códigos de plan, por nombre
+  EXACTO. No inventes un contrato con el server que sólo entienda Android.
 
 ## 🔴 CRITICAL — Ask which payment tier (and how it gets turned on) BEFORE building or changing anything
 
@@ -77,8 +72,8 @@ behind a paywall.
   extend them, never build a second system, mirroring the backend feature codes by exact name. Treat tier codes like permissions:
   mirrored across backend + every client by exact name — a mismatch fails silently.
 - **Activación (regla completa en `../CLAUDE.md`):** esta app **lee** el estado del switch; solo se
-  construye aquí si se toca durante el turno desde el piso, y entonces va en Android **e** iOS en el mismo
-  trabajo. Apagado se ve y se explica, nunca desaparece en silencio.
+  construye aquí si se toca durante el turno desde el piso; lo de iOS va a su ficha («iOS va después»).
+  Apagado se ve y se explica, nunca desaparece en silencio.
 
 ## 🔴 Comparar contra Square ANTES de juzgar una feature o un bug
 
@@ -206,8 +201,9 @@ Guía de instalación en un local: **`docs/INSTALACION-HUB-LAN.md`**
 
 Lo mínimo que tienes que saber:
 
-- Los 15 tipos de intent se espejan por nombre EXACTO entre server, Android e
-  iOS. Agregar uno = tocar los tres + el MCP `pos_sync_status`, en el MISMO cambio.
+- Los 15 tipos de intent se espejan por nombre EXACTO entre server, Android e iOS. Agregar uno = tocar server + Android
+  + el MCP `pos_sync_status`, en el MISMO cambio, y anotarlo en la ficha de iOS (iOS va después). Nunca se renombra ni se
+  quita uno que iOS ya use.
 - Hay TRES estados de ack: `ACKED`, `REJECTED` (permanente → cuarentena) y
   `RETRY` (transitorio → el cliente reintenta). Convertir un transitorio en
   REJECTED pierde el intent para siempre.
