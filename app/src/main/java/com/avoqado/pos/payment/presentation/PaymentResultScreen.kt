@@ -846,6 +846,7 @@ fun PaymentErrorView(
  *  - "Cobrar de nuevo" existe —el negocio no se puede quedar parado— pero SÓLO tras una
  *    advertencia explícita del riesgo, confirmada por el cajero.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun PaymentUndeterminedView(
     message: String,
@@ -978,7 +979,7 @@ fun PaymentUndeterminedView(
 
         // 🔴 Dos salidas DISTINTAS, y confundirlas es lo que dejaba órdenes huérfanas: salir no
         // toca nada; cancelar la venta pide detener el cobro y sólo después cancela la cuenta.
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
             TextButton(onClick = onSalir, enabled = !isChecking) {
                 Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE, textAlign = TextAlign.Center)
             }
@@ -1190,6 +1191,7 @@ fun CancelandoCobroView(onSalir: () -> Unit) {
  * La venta se cancela sola en cuanto el desenlace llegue (la intención vive en disco y se
  * reproduce sola), así que salir de aquí no pierde nada.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun CancelacionPendienteView(
     sinRed: Boolean,
@@ -1285,7 +1287,7 @@ fun CancelacionPendienteView(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
             if (onDeclararNoCobrado != null) {
                 TextButton(onClick = onVolverAConsultar, enabled = accionesDeRedHabilitadas && !isChecking) {
                     Text(CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, textAlign = TextAlign.Center)

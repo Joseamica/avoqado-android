@@ -109,10 +109,11 @@ object CancelacionDeCobro {
 
     // ── «Cobro sin confirmar» (D11, founder 3-nov: «tiene 4 botones confusos y se ve mal»): una sola pregunta y una sola decisión.
     const val SI_DICE_APROBADO = "Si la terminal dice aprobado:"
-    const val SI_DICE_APROBADO_QUE_HACER = "espera aquí, se registra solo."
+    // 🔴 «suele»: un aprobado sin referencias queda para revisión y preguntar no lo crea (Codex, D11). Nunca «se registra solo» a secas.
+    const val SI_DICE_APROBADO_QUE_HACER = "espera aquí, suele registrarse solo. Si tarda varios minutos, llama a soporte de Avoqado."
     const val SI_NO_SE_COBRO = "Si no se cobró:"
     const val SI_NO_SE_COBRO_QUE_HACER = "dilo con el botón."
-    const val CONSULTA_AUTOMATICA = "Preguntando sola cada 5 segundos"
+    const val CONSULTA_AUTOMATICA = "Seguimos preguntando cada pocos segundos"
 
     /** El importe es el del cobro que se pregunta, nunca el del carrito; si no consta, la pregunta va sin él. */
     fun tituloSinConfirmar(montoDelCobro: String?, fromPreviousSale: Boolean): String {
