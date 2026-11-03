@@ -21,17 +21,32 @@ jobs:
         env:
           CUERPO: ${{ github.event.pull_request.body }}
         run: |
-          LINEA=$(printf '%s\n' "$CUERPO" | tr -d '\r' | sed -nE 's/^[[:space:]*_-]*iOS[*_]*:[*_]*[[:space:]]*//p' | sed -E 's/[[:space:]]+$//' | grep -m1 . || true)
-          BIEN=1
-          case "$LINEA" in
-            ''|'<'*|*'título de la ficha'*|*'titulo de la ficha'*|*'(razón)'*|*'(razon)'*) BIEN=0 ;;
-          esac
-          printf '%s' "$LINEA" | grep -q '[[:alnum:]]' || BIEN=0
-          if printf '%s' "$LINEA" | grep -Eixq 'pendiente|por hacer|todo|tbd|n/?a|no|si|sí'; then BIEN=0; fi
-          if printf '%s' "$LINEA" | grep -Eiq '^no aplica' && ! printf '%s' "$LINEA" | grep -Eiq '^no aplica[^[:alnum:]]+[[:alnum:]]'; then BIEN=0; fi
-          if [ "$BIEN" = 1 ]; then
-            echo "✅ El PR dice qué pasa con iOS: $LINEA"
-          else
-            echo "::error::Falta la línea de iOS en la descripción del PR, o sigue de relleno. Agrega el título real de la ficha («iOS: Tarjetas de regalo») o «iOS: no aplica» con su razón («iOS: no aplica (sólo WINDOWS)»). Cómo se anota: docs/proyectos/ios-por-hacer.md del workspace."
-            exit 1
-          fi
+          python3 - <<'FIN'
+          import os, re, sys
+
+          # Lo que el revisor no ve no cuenta. Límite a propósito: no comprueba que la ficha exista,
+          # porque vive en otro repo (el workspace). Esto cuida el olvido, no a quien quiera engañarlo.
+          cuerpo = re.sub(r'<!--.*?(-->|\Z)', '', os.environ.get('CUERPO') or '', flags=re.S)
+          RELLENO = {'pendiente', 'por hacer', 'todo', 'tbd', 'na', 'n/a', 'no', 'si', 'sí', 'nada', 'ficha'}
+          MARCADOR = ('título de la ficha', 'titulo de la ficha', '(razón)', '(razon)')
+
+
+          def dice_algo(valor):
+              valor = re.sub(r'[*_`~]', '', valor).strip()
+              bajo = valor.lower()
+              if not re.search(r'\w', bajo) or valor.startswith('<') or bajo in RELLENO:
+                  return False
+              if any(m in bajo for m in MARCADOR):
+                  return False
+              return not bajo.startswith('no aplica') or bool(re.search(r'\w', bajo[len('no aplica'):]))
+
+
+          buenas = [v.strip() for v in re.findall(r'(?m)^[ \t>*_-]*iOS[*_]*:(.*)$', cuerpo) if dice_algo(v)]
+          if buenas:
+              print('✅ El PR dice qué pasa con iOS:', buenas[0])
+              sys.exit(0)
+          print('::error::Falta la línea de iOS en la descripción del PR, o sigue de relleno. Agrega el título real de la ficha '
+                '(«iOS: Tarjetas de regalo») o «iOS: no aplica» con su razón («iOS: no aplica (sólo WINDOWS)»). '
+                'Cómo se anota: docs/proyectos/ios-por-hacer.md del workspace.')
+          sys.exit(1)
+          FIN
