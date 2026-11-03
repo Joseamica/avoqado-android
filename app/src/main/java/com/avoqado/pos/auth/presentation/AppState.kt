@@ -2,6 +2,7 @@ package com.avoqado.pos.auth.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.areatickets.presentation.ConsultaDelPapel
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -207,7 +209,12 @@ class AppState @Inject constructor(
      * ([replaceInFlight]): descartar el suyo dejaba a la sesión nueva con los ajustes de la anterior, y la respuesta
      * vieja ya no puede escribir nada (boleto por petición en [TpvSettingsRepository]).
      */
-    private fun refreshPlanAndSettings(rebuildNavigation: Boolean = true, replaceInFlight: Boolean = false) {
+    private fun refreshPlanAndSettings(
+        rebuildNavigation: Boolean = true,
+        replaceInFlight: Boolean = false,
+        /** Arranque con sesión o login: la compuerta del papel del aparato olvida el «Ahora no» (D3). */
+        sesionNueva: Boolean = false,
+    ) {
         if (replaceInFlight) settingsRefreshJob?.cancel() else if (settingsRefreshJob?.isActive == true) return
         settingsRefreshJob = viewModelScope.launch {
             tpvSettingsRepository.refreshSettings()
@@ -216,8 +223,28 @@ class AppState @Inject constructor(
                     _reservationsEnabled.value = secureStorage.reservationsEnabled
                     _accessVersion.value += 1
                 }
+                pedirConsultaDelPapel(sesionNueva)
             }
         }
+    }
+
+    /**
+     * D3: los momentos en que la compuerta del papel del aparato vuelve a preguntar, y sólo ésos: arranque con sesión,
+     * login, red recuperada y volver a primer plano (los tres pasan por [refreshPlanAndSettings]) y cambio de sucursal
+     * ([refreshTabs]). Nunca detiene una venta: si alguien vende antes de contestar, la pregunta sale en el siguiente.
+     */
+    private val _consultaDelPapel = MutableStateFlow(ConsultaDelPapel())
+    val consultaDelPapel: StateFlow<ConsultaDelPapel> = _consultaDelPapel.asStateFlow()
+    private var sucursalDelPapel: String? = null
+
+    private fun pedirConsultaDelPapel(sesionNueva: Boolean = false) {
+        sucursalDelPapel = secureStorage.venueId
+        _consultaDelPapel.update { ConsultaDelPapel(vez = it.vez + 1, sesion = if (sesionNueva) it.sesion + 1 else it.sesion) }
+    }
+
+    /** D3: el aparato cambió su papel en los vales: con la terminal nueva cambia la llave del NavHost y abre en su pantalla. */
+    fun alCambiarElPapel() {
+        if (_isLoggedIn.value) refreshPlanAndSettings(rebuildNavigation = false, replaceInFlight = true)
     }
 
     /** A refreshed entitlement must not change the NavHost key or discard the current sale. */
@@ -460,7 +487,7 @@ class AppState @Inject constructor(
                 paymentSyncService.start()
                 payLaterQueue?.start()
                 startOfflineOutbox()
-                refreshPlanAndSettings()
+                refreshPlanAndSettings(sesionNueva = true)
             }
         }
     }
@@ -487,6 +514,8 @@ class AppState @Inject constructor(
         startInventorySyncIfNeeded()
         _roleVersion.value += 1
         notifyDeviceSessionChanged()
+        // D3: cambio de sucursal (el login y los refrescos piden la suya en refreshPlanAndSettings).
+        if (sucursalDelPapel != null && secureStorage.venueId != sucursalDelPapel) pedirConsultaDelPapel()
     }
 
     fun onLoginSuccess() {
@@ -499,7 +528,7 @@ class AppState @Inject constructor(
         refreshTabs()
         // Pull venue settings (incl. the plan block) right after login so
         // plan gates apply without waiting for a venue switch.
-        refreshPlanAndSettings(replaceInFlight = true)
+        refreshPlanAndSettings(replaceInFlight = true, sesionNueva = true)
     }
 
     fun onLogout() {

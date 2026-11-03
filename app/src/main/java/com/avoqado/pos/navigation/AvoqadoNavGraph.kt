@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -86,6 +87,9 @@ import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.designsystem.components.ConnectivityBanner
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.announcements.presentation.AnnouncementGate
+import com.avoqado.pos.areatickets.presentation.LocalPapelDelAparato
+import com.avoqado.pos.areatickets.presentation.PapelDelAparatoGate
+import com.avoqado.pos.areatickets.presentation.PapelDelAparatoGateViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
@@ -151,35 +155,40 @@ fun AvoqadoNavGraph(
     val isSwitchingContext by appState.venueSwitchState.isSwitching.collectAsState()
     val switchMessage by appState.venueSwitchState.message.collectAsState()
     val isTablet = windowSizeClass.widthSizeClass >= WindowWidthSizeClass.Medium
+    // D3: el papel del aparato en los vales. Vive aquí, arriba del NavHost: «Más» abre su hoja y guardar rehace la navegación.
+    val papelDelAparato: PapelDelAparatoGateViewModel = hiltViewModel()
+    val consultaDelPapel by appState.consultaDelPapel.collectAsState()
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (isLoggedIn) {
 
-            // 🔴 Cambiar de sucursal o de modo RECREA todo (como Square): la
-            // llave incluye venueId + modo, así que el NavHost y cada pantalla
-            // montan de cero y recargan datos del contexto NUEVO. Antes las
-            // pantallas ya montadas seguían con los datos del venue anterior.
-            key(mainNavigation.contentKey) {
-                val payLaterReviewCount by appState.payLaterReviewCount.collectAsState(initial = 0)
-                MainScaffold(
-                    isTablet = isTablet,
-                    onLogout = { appState.onLogout() },
-                    timeEntryRepository = appState.timeEntryRepository,
-                    visibleTabs = visibleTabs,
-                    initialTab = mainNavigation.startTab,
-                    roleManager = appState.roleManager,
-                    pendingPaymentCount = pendingPaymentCount,
-                    showOfflineBanner = showOfflineBanner,
-                    offlinePendingCount = offlinePendingCount,
-                    avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
-                    avisoDeCocinaSinRed = avisoDeCocinaSinRed,
-                    avisoDeRacha = avisoDeRacha,
-                    syncIssueCount = reconciliationCount,
-                    payLaterReviewCount = payLaterReviewCount,
-                    reservationIssueCount = reservationIssueCount,
-                    q15HistoryUnavailable = q15HistoryUnavailable,
-                    onTabsShouldRefresh = { appState.refreshTabs() },
-                )
+            CompositionLocalProvider(LocalPapelDelAparato provides papelDelAparato) {
+                // 🔴 Cambiar de sucursal o de modo RECREA todo (como Square): la
+                // llave incluye venueId + modo, así que el NavHost y cada pantalla
+                // montan de cero y recargan datos del contexto NUEVO. Antes las
+                // pantallas ya montadas seguían con los datos del venue anterior.
+                key(mainNavigation.contentKey) {
+                    val payLaterReviewCount by appState.payLaterReviewCount.collectAsState(initial = 0)
+                    MainScaffold(
+                        isTablet = isTablet,
+                        onLogout = { appState.onLogout() },
+                        timeEntryRepository = appState.timeEntryRepository,
+                        visibleTabs = visibleTabs,
+                        initialTab = mainNavigation.startTab,
+                        roleManager = appState.roleManager,
+                        pendingPaymentCount = pendingPaymentCount,
+                        showOfflineBanner = showOfflineBanner,
+                        offlinePendingCount = offlinePendingCount,
+                        avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
+                        avisoDeCocinaSinRed = avisoDeCocinaSinRed,
+                        avisoDeRacha = avisoDeRacha,
+                        syncIssueCount = reconciliationCount,
+                        payLaterReviewCount = payLaterReviewCount,
+                        reservationIssueCount = reservationIssueCount,
+                        q15HistoryUnavailable = q15HistoryUnavailable,
+                        onTabsShouldRefresh = { appState.refreshTabs() },
+                    )
+                }
             }
         } else {
             LandingScreen(
@@ -192,6 +201,16 @@ fun AvoqadoNavGraph(
         // nada que mostrar, o si la consulta falla, no pinta nada: un anuncio jamás puede
         // estorbar para cobrar.
         AnnouncementGate()
+
+        // D3: «¿Qué hará este aparato?» la primera vez que un aparato que se dio de alta solo entra con red a un negocio
+        // con vales. Nunca detiene una venta.
+        if (isLoggedIn) {
+            PapelDelAparatoGate(
+                viewModel = papelDelAparato,
+                consulta = consultaDelPapel,
+                onGuardado = appState::alCambiarElPapel,
+            )
+        }
 
         // Loader global del cambio de contexto — vive ARRIBA del NavHost para
         // sobrevivir al rebuild que el propio cambio detona.
