@@ -128,6 +128,34 @@ class TransactionCustomerAssignmentHttpTest {
         }
     }
 
+    // D3 (Codex r1 #2): «Sin conexión» sólo si nadie contestó. Un 403/404 sí es respuesta, aunque la bandera del aparato siga vieja.
+    @Test fun `una venta que el servidor rechaza no cuenta como sin respuesta`() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(404).setBody("{}"))
+            server.enqueue(MockResponse().setResponseCode(403).setBody("{}"))
+            val repo = repository(server)
+            repeat(2) {
+                assertNull(repo.fetchTransactionDetail("payment-a"))
+                assertFalse(repo.elDetalleNoTuvoRespuesta("payment-a"))
+            }
+        }
+    }
+
+    @Test fun `una lectura sin red cuenta como sin respuesta, y la siguiente que contesta lo borra`() = runBlocking {
+        val apagado = MockWebServer()
+        val repo = repository(apagado)
+        apagado.shutdown()
+        assertNull(repo.fetchTransactionDetail("payment-a"))
+        assertTrue(repo.elDetalleNoTuvoRespuesta("payment-a"))
+        assertFalse(repo.elDetalleNoTuvoRespuesta("otra-venta"))
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(404).setBody("{}"))
+            repo.baseUrl = server.url("/api/v1").toString().trimEnd('/')
+            assertNull(repo.fetchTransactionDetail("payment-a"))
+            assertFalse(repo.elDetalleNoTuvoRespuesta("payment-a"))
+        }
+    }
+
     @Test fun `historical detail forbidden cannot open manager PIN during confirmation`() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","required":"payments:read","overridable":true}"""))

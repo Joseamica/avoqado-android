@@ -155,7 +155,14 @@ class TransactionRepository @Inject constructor(
         catch (_: Exception) { null }
     }
 
+    // D3: «Sin conexión» sólo se dice de la lectura que nadie contestó. Un 403/404 sí es respuesta, y la bandera del aparato
+    // puede seguir vieja: sólo la borra una respuesta exitosa (Codex r1 #2).
+    @Volatile private var detalleSinRespuesta: String? = null
+
+    fun elDetalleNoTuvoRespuesta(paymentId: String): Boolean = detalleSinRespuesta == paymentId
+
     suspend fun fetchTransactionDetail(paymentId: String, actorId: String?, venueId: String?): Transaction? {
+        detalleSinRespuesta = null
         if (actorId == null || venueId == null || !sameIdentity(actorId, venueId)) return null
         return try {
             val request = Request.Builder()
@@ -174,6 +181,7 @@ class TransactionRepository @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            if (e is java.io.IOException) detalleSinRespuesta = paymentId
             Log.e("📦", "Transaction detail fetch error: ${e.message}")
             null
         }

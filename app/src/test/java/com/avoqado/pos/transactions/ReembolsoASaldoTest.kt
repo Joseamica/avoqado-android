@@ -395,6 +395,7 @@ class ReembolsoASaldoTest {
         store.guardar(pendiente())
         val sinRed = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
         val vm = vm(sinRed, null)
+        every { transaccionesDePrueba.elDetalleNoTuvoRespuesta("payment") } returns true
         vm.selectTransaction("payment")
         withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
         assertEquals(TextosCambio.VENTA_SIN_RED, vm.detalleNoDisponible.value)
@@ -404,6 +405,16 @@ class ReembolsoASaldoTest {
         assertEquals(TextosCambio.SALDO_SIN_RED, withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } })
         assertEquals(0, server.requestCount)
         assertNotNull(store.pendiente("venue", "payment"))
+    }
+
+    @Test fun `si el servidor contestó no dice sin conexión aunque la bandera del aparato siga vieja`() = runBlocking {
+        val banderaVieja = mockk<ConnectivityMonitor>(relaxed = true) { every { isOnline() } returns false }
+        val vm = vm(banderaVieja, null)
+        every { transaccionesDePrueba.elDetalleNoTuvoRespuesta("payment") } returns false
+        vm.selectTransaction("payment")
+        withTimeout(5_000) { while (vm.detalleNoDisponible.value == null) yield() }
+        assertEquals(TextosCambio.VENTA_NO_ABRIO, vm.detalleNoDisponible.value)
+        repeat(20) { yield(); kotlinx.coroutines.delay(10) } // Que termine la lectura de lo pendiente antes de restaurar el hilo.
     }
 
     @Test fun `con red, si el detalle falla dice que no se pudo abrir y se puede volver a tocar`() = runBlocking {

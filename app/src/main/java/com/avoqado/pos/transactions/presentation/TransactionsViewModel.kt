@@ -731,7 +731,7 @@ class TransactionsViewModel @Inject constructor(
             _selectedTransaction.value = abierta
             // Una venta que no abre lo dice, y lo pendiente se lee igual (está en el aparato, no en la red) (D3).
             if (abierta == null) {
-                _detalleNoDisponible.value = if (connectivityMonitor.isOnline()) TextosCambio.VENTA_NO_ABRIO else TextosCambio.VENTA_SIN_RED
+                _detalleNoDisponible.value = if (repository.elDetalleNoTuvoRespuesta(transactionId)) TextosCambio.VENTA_SIN_RED else TextosCambio.VENTA_NO_ABRIO
             }
             _isLoadingDetail.value = false
             // Opción A (founder, 2-nov): al abrir la venta sólo se LEE lo pendiente; nada se reenvía solo, para nadie.
