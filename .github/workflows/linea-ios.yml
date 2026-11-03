@@ -21,9 +21,17 @@ jobs:
         env:
           CUERPO: ${{ github.event.pull_request.body }}
         run: |
-          if printf '%s\n' "$CUERPO" | grep -Eq '^[[:space:]*_-]*iOS[*_]*:[*_]*[[:space:]]*[^[:space:]*_]'; then
-            echo "✅ El PR dice qué pasa con iOS."
+          LINEA=$(printf '%s\n' "$CUERPO" | tr -d '\r' | sed -nE 's/^[[:space:]*_-]*iOS[*_]*:[*_]*[[:space:]]*//p' | sed -E 's/[[:space:]]+$//' | grep -m1 . || true)
+          BIEN=1
+          case "$LINEA" in
+            ''|'<'*|*'título de la ficha'*|*'titulo de la ficha'*|*'(razón)'*|*'(razon)'*) BIEN=0 ;;
+          esac
+          printf '%s' "$LINEA" | grep -q '[[:alnum:]]' || BIEN=0
+          if printf '%s' "$LINEA" | grep -Eixq 'pendiente|por hacer|todo|tbd|n/?a|no|si|sí'; then BIEN=0; fi
+          if printf '%s' "$LINEA" | grep -Eiq '^no aplica' && ! printf '%s' "$LINEA" | grep -Eiq '^no aplica[^[:alnum:]]+[[:alnum:]]'; then BIEN=0; fi
+          if [ "$BIEN" = 1 ]; then
+            echo "✅ El PR dice qué pasa con iOS: $LINEA"
           else
-            echo "::error::Falta la línea de iOS en la descripción del PR. Agrega «iOS: <título de la ficha>» o «iOS: no aplica (razón)». Cómo se anota: docs/proyectos/ios-por-hacer.md del workspace."
+            echo "::error::Falta la línea de iOS en la descripción del PR, o sigue de relleno. Agrega el título real de la ficha («iOS: Tarjetas de regalo») o «iOS: no aplica» con su razón («iOS: no aplica (sólo WINDOWS)»). Cómo se anota: docs/proyectos/ios-por-hacer.md del workspace."
             exit 1
           fi
