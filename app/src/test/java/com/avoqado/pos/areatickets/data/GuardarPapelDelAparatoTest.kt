@@ -89,13 +89,16 @@ class GuardarPapelDelAparatoTest {
         coEvery { api.getAreaTicketSettings("v1") } coAnswers { responde.await(); AreaTicketEnvelope(true, viejo) }
         coEvery { api.setAreaTicketRole(any(), any(), any()) } returns AreaTicketEnvelope(true, nuevo)
 
-        val consulta = launch { repo.settings() }
+        var devuelto: AreaTicketSettingsData? = null
+        val consulta = launch { devuelto = repo.settings() }
         advanceUntilIdle() // el GET ya salió
         repo.guardarPapel("v1", "t1", PapelDelAparato.EmiteVales("area-nueva", "Panadería"))
         responde.complete(Unit)
         consulta.join()
 
         assertTrue("la caché quedó con el área vieja: $enDisco", enDisco!!.contains("area-nueva"))
+        // Codex final r3: y quien preguntó recibe lo guardado, no la respuesta vieja (como iOS).
+        assertEquals("area-nueva", devuelto?.terminal?.fulfillmentArea?.id)
     }
 
     @Test

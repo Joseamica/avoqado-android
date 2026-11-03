@@ -22,6 +22,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
@@ -315,6 +316,32 @@ class PapelDelAparatoGateViewModelTest {
         assertTrue(vm.irAlInicio.value)
         vm.yaFueAlInicio()
         assertFalse(vm.irAlInicio.value)
+    }
+
+    @Test
+    fun `P1 una consulta en vuelo al guardar no vuelve a abrir la pregunta`() = runTest {
+        // Codex final r3: la hoja está abierta, volver a primer plano lanza otro GET (con roleChoicePending) que tarda; se
+        // guarda y se cierra; luego llega aquel GET.
+        respondeAjustes(ajustes())
+        val cremeria = AreaTicketArea("a1", "Cremería", "HOLD_UNTIL_PAID")
+        val yaElegido = ajustes(
+            pendiente = false,
+            terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", fulfillmentArea = cremeria, canIssueAreaTickets = true),
+        )
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } returns AreaTicketEnvelope(true, yaElegido)
+        val vm = vm()
+        vm.consultar(disparo(1))
+        val tarda = CompletableDeferred<Unit>()
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers { tarda.await(); AreaTicketEnvelope(true, ajustes()) }
+        vm.consultar(disparo(2)) // ON_RESUME con la hoja abierta: el GET queda en vuelo
+
+        vm.elegir(PapelDelAparato.EmiteVales("a1", "Cremería"))
+        vm.guardar()
+        assertNull(vm.hoja.value)
+        tarda.complete(Unit)
+
+        assertNull("la pregunta volvió a abrirse con la respuesta vieja", vm.hoja.value)
+        assertEquals("Emite · Cremería", valorDelRecuadro(vm.ajustes.value!!))
     }
 
     @Test

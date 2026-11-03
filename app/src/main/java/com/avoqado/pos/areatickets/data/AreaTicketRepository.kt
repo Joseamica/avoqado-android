@@ -322,16 +322,22 @@ class AreaTicketRepository @Inject constructor(
      */
     @Volatile private var versionDelPapel = 0
 
+    /** Lo que contestó el último guardado del papel (null mientras uno vuela o si falló): lo recibe la consulta vencida. */
+    @Volatile private var papelGuardado: AreaTicketSettingsData? = null
+
     suspend fun settings(): AreaTicketSettingsData {
         val venueId = venueId()
         session.ensureVenue(venueId)
         val version = versionDelPapel
         return try {
-            request { api.getAreaTicketSettings(venueId) }.also { settings ->
-                if (versionDelPapel == version) payloadCache.save(
+            val settings = request { api.getAreaTicketSettings(venueId) }
+            // Codex final r3: vencida, devuelve lo guardado (como iOS); con su roleChoicePending viejo la compuerta volvía a preguntar.
+            if (versionDelPapel != version) return papelGuardado?.takeIf { it.venueId == venueId } ?: settings
+            settings.also {
+                payloadCache.save(
                     PayloadCache.TYPE_AREA_TICKET_SETTINGS,
                     venueId,
-                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), settings),
+                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), it),
                 )
             }
         } catch (error: Exception) {
@@ -362,8 +368,10 @@ class AreaTicketRepository @Inject constructor(
             PapelDelAparato.Entrega, PapelDelAparato.SinElegir -> return ResultadoPapel.Rechazado("Elige una opción.")
         }
         versionDelPapel++
+        papelGuardado = null
         return try {
             val ajustes = api.setAreaTicketRole(venueId, terminalId, cuerpo).unwrap()
+            papelGuardado = ajustes
             versionDelPapel++
             payloadCache.save(
                 PayloadCache.TYPE_AREA_TICKET_SETTINGS,
