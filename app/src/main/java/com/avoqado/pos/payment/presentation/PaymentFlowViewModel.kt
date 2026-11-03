@@ -4845,11 +4845,12 @@ class PaymentFlowViewModel @Inject constructor(
                 _state.value = PaymentFlowState.CancelacionPendiente(
                     totalAmount = total,
                     sinRed = estado.sinRed,
+                    terminalLibre = estado.terminalLibre,
                     checking = repreguntar,
                     // C2: la respuesta a la última declaración del cajero se queda hasta que él consulte o declare otra
                     // vez; una corrida de fondo del coordinador no la borra. F1: salvo «Sin conexión…» si ya tuvo red.
                     avisoDeDeclaracion = (actual as? PaymentFlowState.CancelacionPendiente)?.avisoDeDeclaracion
-                        ?.takeUnless { !estado.sinRed && CancelacionDeCobro.motivoCaducado(it, terminalLibre = false) },
+                        ?.takeUnless { !estado.sinRed && CancelacionDeCobro.motivoCaducado(it, estado.terminalLibre) },
                     declarando = declaracionEnVuelo == id,
                 )
                 if (repreguntar) cancelacionDeCobro.procesarAhora(id)

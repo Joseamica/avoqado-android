@@ -1171,6 +1171,8 @@ fun CancelacionPendienteView(
      */
     declarando: Boolean = false,
     accionesDeRedHabilitadas: Boolean = true,
+    /** D6: la terminal ya se soltó y la venta sigue en duda. Sólo cambia las palabras, y sólo si hay a qué declarar. */
+    terminalLibre: Boolean = false,
 ) {
     var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
 
@@ -1200,7 +1202,11 @@ fun CancelacionPendienteView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         Text(
-            text = if (sinRed) CancelacionDeCobro.CUERPO_SIN_RED else CancelacionDeCobro.CUERPO_PENDIENTE,
+            text = when {
+                sinRed -> CancelacionDeCobro.CUERPO_SIN_RED
+                terminalLibre && onDeclararNoCobrado != null -> CancelacionDeCobro.CUERPO_TERMINAL_LIBRE
+                else -> CancelacionDeCobro.CUERPO_PENDIENTE
+            },
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,

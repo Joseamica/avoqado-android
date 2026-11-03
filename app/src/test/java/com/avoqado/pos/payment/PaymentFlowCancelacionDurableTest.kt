@@ -908,6 +908,62 @@ class PaymentFlowCancelacionDurableTest {
         assertNull(fin.avisoDeDeclaracion)
     }
 
+    // D6 (QA en la N86, 3-nov): la terminal ya se soltó y la pantalla seguía diciendo que no confirma y que «se libera sola».
+    @Test
+    fun `D6 con la terminal ya libre la pantalla lo dice, se va el aviso de que se libera sola y la orden no se toca`() = runTest {
+        enCancelacionPendiente()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", "venue-1") } returns
+            com.avoqado.pos.payment.data.ResultadoDeDeclaracion.Rechazada(mensaje = "Todavía no.", code = "EXECUTION_STILL_ACTIVE")
+        viewModel.declararDesdeCancelacion()
+        runCurrent()
+        assertEquals(
+            "montaje",
+            CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR,
+            (viewModel.state.value as PaymentFlowState.CancelacionPendiente).avisoDeDeclaracion,
+        )
+
+        // Aún no se suelta: el aviso sigue, es verdad.
+        transporte.programarEstados(ChargeStatusProbe.Known("UNKNOWN", false))
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        val antes = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertFalse(antes.terminalLibre)
+        assertEquals(CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR, antes.avisoDeDeclaracion)
+
+        transporte.programarEstados(
+            ChargeStatusProbe.Known("TIMED_OUT", false, failureCode = "AUTO_RELEASED", outcome = "UNRESOLVED"),
+        )
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        val fin = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertTrue(fin.terminalLibre)
+        assertNull(fin.avisoDeDeclaracion)
+        assertTrue("libera el aparato, no la venta", transporte.llamadasBorrar.isEmpty())
+        assertFalse(viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `D6 sin red manda el texto de sin red, aunque la ultima consulta dijera terminal libre`() = runTest {
+        enCancelacionPendiente()
+        transporte.programarEstados(
+            ChargeStatusProbe.Known("TIMED_OUT", false, failureCode = "AUTO_RELEASED", outcome = "UNRESOLVED"),
+        )
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertTrue("montaje", (viewModel.state.value as PaymentFlowState.CancelacionPendiente).terminalLibre)
+
+        transporte.programarEstados(ChargeStatusProbe.Unreachable)
+        coordinador.procesarAhora("req-1")
+        advanceTimeBy(5_000)
+        runCurrent()
+        val fin = viewModel.state.value as PaymentFlowState.CancelacionPendiente
+        assertTrue(fin.sinRed)
+        assertFalse(fin.terminalLibre)
+    }
+
     @Test
     fun `P2 si una corrida vieja del coordinador contesta pendiente tras liberar se vuelve a preguntar y la orden se cancela`() = runTest {
         // m1: la declaración vuelve «liberada» mientras una corrida del coordinador tiene el candado (su `procesarAhora` se

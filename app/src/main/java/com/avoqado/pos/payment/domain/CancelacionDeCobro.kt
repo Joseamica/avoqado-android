@@ -82,6 +82,12 @@ object CancelacionDeCobro {
     const val TITULO_PENDIENTE = "Cancelación pendiente"
     const val CUERPO_PENDIENTE =
         "La terminal todavía no confirma que el cobro se detuvo. La venta se cancelará sola en cuanto conste que no se cobró."
+    /**
+     * D6 (QA en la N86, 3-nov): la terminal ya se soltó, así que ya no hay nada que confirme solo: esa venta sigue en duda hasta que
+     * una persona lo declare o llegue el aviso del banco. Igual en iOS, letra por letra.
+     */
+    const val CUERPO_TERMINAL_LIBRE =
+        "La terminal ya está libre, pero no consta si esta venta se cobró. Si no se cobró, decláralo aquí y la venta se cancela."
     const val CUERPO_SIN_RED =
         "Sin conexión en esta tablet: la cancelación se enviará en cuanto vuelva la red. La terminal podría seguir mostrando el cobro."
     const val BOTON_VOLVER_A_CONSULTAR = "Volver a consultar"
@@ -151,12 +157,13 @@ object CancelacionDeCobro {
 
     /**
      * F1 (QA en la N86, 3-nov): un motivo en pantalla que una respuesta del servidor ya desmintió: «Sin conexión…» cuando ya
-     * contestó, o «Se libera sola…» con la terminal ya libre. Los demás rechazos se quedan: son de una persona que aún no los lee.
+     * contestó, o «Se libera sola…» y «todavía no se puede declarar» con la terminal ya libre (D6). Los demás rechazos se quedan: son
+     * de una persona que aún no los lee.
      */
     fun motivoCaducado(mensaje: String, terminalLibre: Boolean): Boolean =
         mensaje.endsWith(SIN_CONEXION_REVISION) ||
             mensaje.endsWith(SIN_CONEXION_REVISION_ESTA_VENTA) ||
-            (terminalLibre && mensaje.endsWith(TERMINAL_REPORTA_SIN_TERMINAR))
+            (terminalLibre && (mensaje.endsWith(TERMINAL_REPORTA_SIN_TERMINAR) || mensaje.endsWith(DECLARACION_RECHAZO_GENERICO)))
 
     /**
      * C4 (P4): título del teclado donde un gerente teclea su PIN para que el mesero —sin `payments:reconcile-uncharged`—

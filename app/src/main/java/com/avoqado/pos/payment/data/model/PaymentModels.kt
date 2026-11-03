@@ -173,6 +173,7 @@ sealed class PaymentFlowState {
      *   el cajero consulte o declare otra vez; una corrida de fondo del coordinador no lo borra.
      * @param declarando C2 (fix 1): la declaración va en vuelo. Es PROPIO de la declaración y distinto de [checking], que
      *   también mueve el coordinador cuando consulta solo: sólo esto apaga el botón de declarar.
+     * @param terminalLibre D6: el servidor ya soltó la terminal y la venta sigue en duda. Sólo cambia las palabras.
      */
     data class CancelacionPendiente(
         val totalAmount: Int,
@@ -180,6 +181,7 @@ sealed class PaymentFlowState {
         val checking: Boolean = false,
         val avisoDeDeclaracion: String? = null,
         val declarando: Boolean = false,
+        val terminalLibre: Boolean = false,
     ) : PaymentFlowState()
 }
 

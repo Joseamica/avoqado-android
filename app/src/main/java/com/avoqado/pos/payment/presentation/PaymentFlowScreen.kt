@@ -396,6 +396,7 @@ fun PaymentFlowScreen(
                 CancelacionPendienteView(
                     accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                     sinRed = currentState.sinRed,
+                    terminalLibre = currentState.terminalLibre,
                     // «Volver a consultar» y «Salir» esperan a lo que esté en vuelo: la consulta del coordinador o la
                     // declaración. El botón de declarar sólo espera a la declaración (fix 1, I1).
                     isChecking = currentState.checking || currentState.declarando,

@@ -4,6 +4,7 @@ import android.util.Log
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
+import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.DesenlaceDeCancelacion
 import com.avoqado.pos.payment.domain.PasoTrasBorrar
 import com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden
@@ -48,7 +49,7 @@ sealed class EstadoDeCancelacion {
     data object EnCurso : EstadoDeCancelacion()
 
     /** No consta el desenlace del cobro: la intención sigue viva y se vuelve a preguntar sola. */
-    data class Pendiente(val sinRed: Boolean) : EstadoDeCancelacion()
+    data class Pendiente(val sinRed: Boolean, val terminalLibre: Boolean = false) : EstadoDeCancelacion()
 
     /** Consta que no se cobró; falta cancelar la orden, que sigue en cola. */
     data class NoSeCobroOrdenPendiente(val sinRed: Boolean) : EstadoDeCancelacion()
@@ -278,7 +279,9 @@ class CancelacionDeCobroCoordinator internal constructor(
                                 intencion.terminalId?.let { transporte.pedirCancelacion(intencion.venueId, it, requestId) }
                             }
                             val puedeInsistir = (desenlace.enVuelo || desenlace.sinFila) && consultas <= esperasDeSondeo.size
-                            if (!puedeInsistir) return quedarPendiente(intencion, sinRed = false)
+                            if (!puedeInsistir) {
+                                return quedarPendiente(intencion, sinRed = false, terminalLibre = CardChargeDecision.terminalLibreVentaEnDuda(probe))
+                            }
                             delay(esperasDeSondeo[consultas - 1])
                         }
                     }
@@ -348,6 +351,7 @@ class CancelacionDeCobroCoordinator internal constructor(
         intencion: IntencionDeCancelarCobro,
         sinRed: Boolean,
         motivo: String? = null,
+        terminalLibre: Boolean = false,
     ): EstadoDeCancelacion {
         val intentos = intencion.intentos + 1
         guardar(
@@ -361,7 +365,7 @@ class CancelacionDeCobroCoordinator internal constructor(
         return if (intencion.faseActual == FaseDeCancelacion.BORRAR_ORDEN) {
             EstadoDeCancelacion.NoSeCobroOrdenPendiente(sinRed)
         } else {
-            EstadoDeCancelacion.Pendiente(sinRed)
+            EstadoDeCancelacion.Pendiente(sinRed, terminalLibre)
         }
     }
 

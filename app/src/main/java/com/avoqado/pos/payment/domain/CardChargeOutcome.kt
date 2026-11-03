@@ -125,6 +125,11 @@ data class CreationRejection(
  * Sólo el estado durable del server resuelve, y ante la duda se dice que hay duda.
  */
 object CardChargeDecision {
+    /** La terminal ya quedó libre y la venta sigue en duda. 🔴 Libera el aparato, no la venta: sólo cambia las palabras. Igual en iOS. */
+    fun terminalLibreVentaEnDuda(probe: ChargeStatusProbe): Boolean =
+        probe is ChargeStatusProbe.Known && probe.status == "TIMED_OUT" &&
+            (probe.failureCode == "AUTO_RELEASED" || probe.failureCode == "MANUAL_RELEASE") && probe.outcome == "UNRESOLVED"
+
 
     /** El texto que ve el cajero cuando nadie sabe si se cobró. Ni éxito ni fracaso. */
     const val UNDETERMINED_MESSAGE =

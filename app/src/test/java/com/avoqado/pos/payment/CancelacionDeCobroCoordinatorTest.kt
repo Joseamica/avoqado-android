@@ -152,6 +152,20 @@ class CancelacionDeCobroCoordinatorTest {
     }
 
     @Test
+    fun `D6 con la terminal ya libre queda pendiente, lo dice y no borra la orden`() = runTest {
+        val transporte = CancelacionTransportFalso().apply {
+            programarEstados(ChargeStatusProbe.Known("TIMED_OUT", false, failureCode = "AUTO_RELEASED", outcome = "UNRESOLVED"))
+        }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+
+        c.procesar("req-1")
+
+        assertTrue(transporte.llamadasBorrar.isEmpty())
+        assertEquals(EstadoDeCancelacion.Pendiente(sinRed = false, terminalLibre = true), c.estadoActual("req-1"))
+    }
+
+    @Test
     fun `P1 un 404 sostenido queda pendiente y no borra`() = runTest {
         val transporte = CancelacionTransportFalso().apply { programarEstados(ChargeStatusProbe.NotFound) }
         val c = coordinador(transporte)

@@ -992,9 +992,7 @@ class TerminalPaymentService @Inject constructor(
                 val consulta = consultarEstado(requestId, venueId = null, enSegundoPlano)
                 if (!consulta.sinRespuesta) huboRespuesta = true
                 val probe = consulta.probe
-                // Libera el aparato, no la venta: sólo cambia las palabras de la duda.
-                terminalLibreVentaEnDuda = probe is ChargeStatusProbe.Known && probe.status == "TIMED_OUT" &&
-                    (probe.failureCode == "AUTO_RELEASED" || probe.failureCode == "MANUAL_RELEASE") && probe.outcome == "UNRESOLVED"
+                terminalLibreVentaEnDuda = CardChargeDecision.terminalLibreVentaEnDuda(probe)
                 when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1, mensajeDeLaTerminal)) {
                     is ProbeDecision.Resolved -> return@withTimeoutOrNull decision.outcome
                     ProbeDecision.KeepPolling -> Unit // seguir preguntando

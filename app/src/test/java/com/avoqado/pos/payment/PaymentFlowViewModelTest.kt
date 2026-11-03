@@ -3916,6 +3916,30 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
+    fun `D6 el rechazo generico tampoco se queda con la terminal ya libre`() = runTest {
+        // 409 ATTEMPT_NOT_ELIGIBLE: el título ya decía «terminal libre» y el cuerpo seguía en «todavía no se puede declarar».
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any(), any()) } returns
+            ResultadoDeDeclaracion.Rechazada(CancelacionDeCobro.DECLARACION_RECHAZO_GENERICO, code = "ATTEMPT_NOT_ELIGIBLE")
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+        assertEquals("montaje", CancelacionDeCobro.DECLARACION_RECHAZO_GENERICO, (viewModel.state.value as PaymentFlowState.Undetermined).message)
+
+        // Sin terminal libre, el rechazo sigue: es de una persona que aún no lo lee.
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1")
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals(CancelacionDeCobro.DECLARACION_RECHAZO_GENERICO, (viewModel.state.value as PaymentFlowState.Undetermined).message)
+
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns
+            TerminalPaymentResult.Undetermined("pendiente", "req-1", terminalLibreVentaEnDuda = true)
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertEquals("pendiente", (viewModel.state.value as PaymentFlowState.Undetermined).message)
+    }
+
+    @Test
     fun `P1 EXECUTION_STILL_ACTIVE muestra el texto de que se libera sola`() = runTest {
         // P5: el texto del servidor («Espera unos segundos y vuelve a consultar») invitaba a insistir sobre algo que no cede en
         // segundos. La tablet dice lo que pasa y qué hacer si urge. Literal de la tabla de textos, igual en iOS.
