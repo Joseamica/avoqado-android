@@ -22,6 +22,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import okhttp3.Authenticator
@@ -71,6 +72,15 @@ class TransactionRepository @Inject constructor(
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
 
+    private val _falloDeCarga = MutableStateFlow<FalloDeLectura?>(null)
+
+    /**
+     * D18 (3-nov): por qué falló la ÚLTIMA carga de la primera página —sin red, o el servidor contestó mal— y `null` si
+     * salió bien. La lista NO se borra al fallar. Con la lista vacía, esto es lo que la pantalla dice en vez de «Sin
+     * transacciones», que sería mentira: no se sabe si hay ventas.
+     */
+    val falloDeCarga: StateFlow<FalloDeLectura?> = _falloDeCarga.asStateFlow()
+
     private var currentPage = 1
     private var hasMore = true
     private val pageSize = 20
@@ -107,8 +117,9 @@ class TransactionRepository @Inject constructor(
                 .build()
 
             val (responseCode, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+                client.newCall(request).execute().use { response ->
+                    response.code to (response.body?.string() ?: "")
+                }
             }
 
             if (responseCode in 200..299 && body.isNotEmpty()) {
@@ -116,14 +127,22 @@ class TransactionRepository @Inject constructor(
                 _transactions.value = if (page == 1) result.data else _transactions.value + result.data
                 currentPage = page
                 hasMore = result.meta?.let { page < it.pageCount } ?: false
+                if (page == 1) _falloDeCarga.value = null
                 Log.d("📦", "✅ Loaded ${result.data.size} transactions (page $page)")
                 Result.success(Unit)
             } else {
                 Log.e("📦", "❌ Transactions fetch failed: $responseCode")
+                // El servidor sí contestó, pero mal (D18).
+                if (page == 1) _falloDeCarga.value = FalloDeLectura.SERVIDOR
                 Result.failure(Exception("Transactions HTTP $responseCode"))
             }
+        } catch (e: CancellationException) {
+            // Salir de la pantalla no es un fallo de lectura: no se anota (sería «el servidor falló» sin serlo).
+            throw e
         } catch (e: Exception) {
             Log.e("📦", "❌ Transactions fetch error: ${e.message}")
+            // Nadie contestó (sin red, DNS, tiempo agotado) o el cuerpo no se pudo leer (D18).
+            if (page == 1) _falloDeCarga.value = FalloDeLectura.de(e)
             Result.failure(e)
         } finally {
             _isLoading.value = false
@@ -345,6 +364,7 @@ class TransactionRepository @Inject constructor(
 
     fun clearCache() {
         _transactions.value = emptyList()
+        _falloDeCarga.value = null
         currentPage = 1
         hasMore = true
     }

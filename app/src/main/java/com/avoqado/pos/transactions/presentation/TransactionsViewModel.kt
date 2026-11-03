@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
@@ -108,6 +109,9 @@ class TransactionsViewModel @Inject constructor(
     val transactions = repository.transactions
     val isLoading = repository.isLoading
     val isLoadingMore = repository.isLoadingMore
+
+    /** D18: por qué falló la última carga (`null` si salió bien). Con la lista vacía, la pantalla lo dice. */
+    val falloDeCarga = repository.falloDeCarga
 
     private val _pendingExchangeNotices = MutableStateFlow<List<PendingExchangeNotice>>(emptyList())
     val pendingExchangeNotices = _pendingExchangeNotices.asStateFlow()
@@ -601,6 +605,23 @@ class TransactionsViewModel @Inject constructor(
                 _isManualRefreshing.value = false
             }
         }
+    }
+
+    /**
+     * D18: mientras la lista está a la vista (la llama la pantalla). Al volver la red —de «sin red o sin servidor» a
+     * «con los dos», y tras dejar que la ruta suba, como la cola de cobros—, si la lista se quedó vacía porque no hubo
+     * red, se recarga sola por el mismo camino del gesto. Con ventas en la mano no hace nada: la lista se queda.
+     */
+    suspend fun vigilarLaRed() {
+        com.avoqado.pos.payment.data.PaymentSyncService.alReconectar(
+            combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { red, servidor -> red && servidor },
+        ) { recargarSiSeQuedoSinRed() }
+    }
+
+    private suspend fun recargarSiSeQuedoSinRed() {
+        if (repository.transactions.value.isNotEmpty() || repository.falloDeCarga.value != FalloDeLectura.SIN_RED) return
+        // manual = true: lo pide la vuelta de la red, no el reloj; el enfriamiento por fallos no la detiene.
+        gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
     }
 
     /** Mutación local (devolución, etc.) = identidad nueva: invalida el TTL y re-pide (spec §4.4).
