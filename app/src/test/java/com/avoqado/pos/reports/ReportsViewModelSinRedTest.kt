@@ -6,10 +6,10 @@ import androidx.lifecycle.LifecycleRegistry
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.data.network.LecturaFallida
-import com.avoqado.pos.core.data.sync.VueltaDeLaRed
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
+import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.InformeConsultado
@@ -59,6 +59,7 @@ class ReportsViewModelSinRedTest {
     private val porSubir = MutableStateFlow(0)
     private val pedidas = mutableListOf<ConsultaDeInforme>()
     private var sinRed = false
+    private var cobroSinRedYaSubio = false
     private var enCamino: CompletableDeferred<Unit>? = null
 
     /** El informe de una consulta: las ventas brutas dicen de qué periodo es. */
@@ -68,7 +69,7 @@ class ReportsViewModelSinRedTest {
                 "hours" -> 100.0
                 "days" -> if (consulta.fin == null) 3000.0 else 777.0 // 1M, o el rango personalizado
                 else -> 50000.0
-            },
+            } + if (cobroSinRedYaSubio) 10.0 else 0.0,
         ),
         paymentMethods = emptyList(),
         hourlySales = emptyList(),
@@ -100,8 +101,7 @@ class ReportsViewModelSinRedTest {
         every { factory.create(any(), any()) } returns RefreshGate(clock = { ahora }, random = { 0.5 })
         val planManager = mockk<PlanManager>(relaxed = true)
         every { planManager.hasFeature("ADVANCED_REPORTS") } returns true
-        val vuelta = VueltaDeLaRed(red, servidor, porSubir, esperaDeLaRutaMs = 2_000, esperaDeLaColaMs = 30_000)
-        return ReportsViewModel(repository, planManager, factory, vuelta)
+        return ReportsViewModel(repository, planManager, factory, ReglaDeRecarga(red, servidor, porSubir))
     }
 
     private fun estado(vm: ReportsViewModel) = estadoDelInforme(
@@ -112,16 +112,33 @@ class ReportsViewModelSinRedTest {
     private fun brutasALaVista(vm: ReportsViewModel): Double? =
         (estado(vm) as? EstadoDelInforme.Listo)?.datos?.summary?.grossSales
 
-    private fun TestScope.vigilar(vm: ReportsViewModel) {
-        backgroundScope.launch { vm.vigilarLaRed() }
+    /** Informes a la vista (RESUMED), con la regla corriendo. */
+    private fun TestScope.aLaVista(vm: ReportsViewModel): Pantalla {
+        val pantalla = Pantalla()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
+        runCurrent()
+        return pantalla
+    }
+
+    /** Lo que tarda la ruta en subir: la regla nueva no espera, pero así la de antes tampoco pierde por el reloj. */
+    private fun TestScope.dejarPasar() {
+        advanceTimeBy(2_001)
         runCurrent()
     }
 
-    private fun TestScope.cortarYVolverLaRed() {
+    private fun TestScope.wifiSeVaYVuelve() {
         red.value = false
         runCurrent()
         red.value = true
+        dejarPasar()
+    }
+
+    private fun TestScope.servidorSeVaYVuelve() {
+        servidor.value = false
         runCurrent()
+        servidor.value = true
+        dejarPasar()
     }
 
     private class Pantalla : LifecycleOwner {
@@ -185,124 +202,196 @@ class ReportsViewModelSinRedTest {
         assertEquals(3000.0, brutasALaVista(vm))
     }
 
-    // MARK: - Al volver la red (Codex r1 #2 y #4)
+    // MARK: - La regla única de recarga (Codex r2: H1, H2, H3)
 
     @Test
-    fun `en Sin conexion, al volver la red se recarga solo`() = runTest(scheduler) {
+    fun `T2 - el WiFi que vuelve recarga el informe que se quedo sin red`() = runTest(scheduler) {
         sinRed = true
+        red.value = false
         val vm = crear()
-        vm.autoRefresh()
-        assertEquals(EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED), estado(vm))
-        ahora += 10.seconds // el gate ya no se enfría (en el aparato lo reabre la fábrica al volver la red)
-        vigilar(vm)
+        vm.autoRefresh() // sin red: «Sin conexión»
+        ahora += 10.seconds // el enfriamiento de ese fallo ya pasó: aquí sólo cuenta el flanco del WiFi
+        aLaVista(vm)
 
         sinRed = false
-        cortarYVolverLaRed()
-        assertEquals("espera a que la ruta suba", 1, pedidas.size)
-
-        advanceTimeBy(2_001)
-        runCurrent()
+        red.value = true
+        dejarPasar()
 
         assertEquals(2, pedidas.size)
         assertEquals(100.0, brutasALaVista(vm))
     }
 
     @Test
-    fun `con un cobro sin subir, la recarga espera a que la cola se vacie`() = runTest(scheduler) {
+    fun `T2 - internet que vuelve sin que el WiFi se apague tambien recarga`() = runTest(scheduler) {
         sinRed = true
+        servidor.value = false // el módem perdió internet; la red del aparato nunca bajó (WINDOWS igual)
         val vm = crear()
         vm.autoRefresh()
-        ahora += 10.seconds
-        porSubir.value = 1
-        vigilar(vm)
+        aLaVista(vm)
 
         sinRed = false
-        cortarYVolverLaRed()
-        advanceTimeBy(10_000)
-        assertEquals("el informe no se pide con el cobro todavía en la cola", 1, pedidas.size)
+        servidor.value = true
+        dejarPasar()
 
-        porSubir.value = 0
-        runCurrent()
         assertEquals(2, pedidas.size)
         assertEquals(100.0, brutasALaVista(vm))
     }
 
     @Test
-    fun `un fallo parcial con el servidor alcanzable no provoca una segunda recarga automatica`() = runTest(scheduler) {
-        sinRed = true
+    fun `un fallo parcial con el servidor alcanzable hace UNA sola recarga, no mas`() = runTest(scheduler) {
+        sinRed = true // una parte del informe sigue sin respuesta aunque la salud del servidor conteste
+        red.value = false
         val vm = crear()
         vm.autoRefresh()
-        ahora += 10.seconds
-        vigilar(vm)
+        ahora += 10.seconds // el enfriamiento de ese fallo ya pasó
+        aLaVista(vm)
 
-        cortarYVolverLaRed() // la red vuelve, pero una parte del informe sigue sin respuesta
-        advanceTimeBy(2_001)
-        runCurrent()
+        red.value = true // T2
+        dejarPasar()
         assertEquals(2, pedidas.size)
 
-        // La salud sigue contestando: la bandera del servidor parpadea con el WiFi arriba.
+        // Su propio fallo apaga la bandera del servidor y el ping la vuelve a prender, una y otra vez.
         repeat(5) {
-            servidor.value = false
-            runCurrent()
-            ahora += 70.seconds
-            servidor.value = true
-            runCurrent()
-            advanceTimeBy(10_000)
+            ahora += 70.seconds // pasado cualquier enfriamiento: lo que frena es la regla, no el reloj
+            servidorSeVaYVuelve()
         }
 
         assertEquals(2, pedidas.size)
     }
 
     @Test
-    fun `la recarga al volver la red pasa por el gate - no fuerza su enfriamiento`() = runTest(scheduler) {
+    fun `T3 - una cola que tarda 60 s en subir recarga al vaciarse, aunque el informe ya se vea`() = runTest(scheduler) {
+        porSubir.value = 1 // el cobro de 10 pesos en efectivo, hecho sin red
+        val vm = crear()
+        vm.autoRefresh()
+        aLaVista(vm)
+        assertEquals(100.0, brutasALaVista(vm))
+
+        advanceTimeBy(60_000)
+        cobroSinRedYaSubio = true
+        porSubir.value = 0 // la cola terminó de subir
+        runCurrent()
+
+        assertEquals("T3 recarga aunque el informe sea fresco", 2, pedidas.size)
+        assertEquals(110.0, brutasALaVista(vm))
+    }
+
+    @Test
+    fun `una cola atorada no frena la recarga - T2 recarga y T3 vuelve a recargar cuando por fin se vacia`() = runTest(scheduler) {
+        sinRed = true
+        red.value = false
+        porSubir.value = 1 // un pendiente que no sube
+        val vm = crear()
+        vm.autoRefresh()
+        aLaVista(vm)
+
+        sinRed = false
+        red.value = true
+        dejarPasar()
+        assertEquals("T2 no espera a la cola", 2, pedidas.size)
+
+        advanceTimeBy(10 * 60_000L)
+        porSubir.value = 0
+        runCurrent()
+        assertEquals(3, pedidas.size)
+    }
+
+    @Test
+    fun `T1 - pausar a media reconexion y volver con red recarga al volver`() = runTest(scheduler) {
+        sinRed = true
+        red.value = false
+        servidor.value = false
+        val vm = crear()
+        vm.autoRefresh()
+        ahora += 10.seconds // el enfriamiento de ese fallo ya pasó
+        val pantalla = aLaVista(vm)
+
+        sinRed = false
+        red.value = true // vuelve el WiFi, el servidor todavía no contesta
+        dejarPasar()
+        pantalla.registro.currentState = Lifecycle.State.CREATED // la app al fondo
+        runCurrent()
+        servidor.value = true // el servidor vuelve con Informes pausado
+        dejarPasar()
+        assertEquals(1, pedidas.size)
+
+        pantalla.registro.currentState = Lifecycle.State.RESUMED // vuelve a Informes, con red
+        runCurrent()
+
+        assertEquals(2, pedidas.size)
+        assertEquals(100.0, brutasALaVista(vm))
+    }
+
+    @Test
+    fun `H3 - volver a Informes antes que el servidor y que falle la carga - al volver el servidor recarga`() = runTest(scheduler) {
+        sinRed = true
+        red.value = false
+        servidor.value = false
+        val vm = crear()
+        vm.autoRefresh() // sin red: «Sin conexión»
+        val pantalla = aLaVista(vm)
+
+        red.value = true // vuelve el WiFi, el servidor todavía no contesta
+        dejarPasar()
+        pantalla.registro.currentState = Lifecycle.State.CREATED // la app al fondo
+        runCurrent()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED // regresa antes de que vuelva el servidor
+        runCurrent()
+        ahora += 10.seconds
+        vm.autoRefresh() // la carga al regresar falla y vuelve a enfriar el gate
+        assertEquals(2, pedidas.size)
+
+        sinRed = false
+        servidor.value = true // ahora sí vuelve el servidor
+        dejarPasar()
+
+        assertEquals(3, pedidas.size)
+        assertEquals(100.0, brutasALaVista(vm))
+    }
+
+    @Test
+    fun `T1 respeta el enfriamiento del gate - no lo fuerza`() = runTest(scheduler) {
         sinRed = true
         val vm = crear()
         vm.autoRefresh() // falla: el gate se enfría y el reloj no avanza
-        vigilar(vm)
 
         sinRed = false
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
+        aLaVista(vm) // vuelve a Informes con red
 
         assertEquals(1, pedidas.size)
     }
 
     @Test
-    fun `con Informes en segundo plano no vigila, y al verse otra vez si`() = runTest(scheduler) {
+    fun `con Informes en segundo plano no hay ninguna recarga`() = runTest(scheduler) {
         sinRed = true
+        red.value = false
+        porSubir.value = 1
         val vm = crear()
         vm.autoRefresh()
-        ahora += 10.seconds
         sinRed = false
         val pantalla = Pantalla()
         pantalla.registro.currentState = Lifecycle.State.CREATED
         backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
         runCurrent()
 
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
+        red.value = true
+        dejarPasar()
+        servidorSeVaYVuelve()
+        porSubir.value = 0
         runCurrent()
-        assertEquals(1, pedidas.size)
+        advanceTimeBy(60_000)
 
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        runCurrent()
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
-        assertEquals(2, pedidas.size)
+        assertEquals(1, pedidas.size)
     }
 
     @Test
     fun `con el informe del periodo a la vista, volver la red no recarga por esto`() = runTest(scheduler) {
         val vm = crear()
         vm.autoRefresh()
-        ahora += 10.seconds
-        vigilar(vm)
+        aLaVista(vm)
 
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
+        wifiSeVaYVuelve()
+        servidorSeVaYVuelve()
 
         assertEquals(1, pedidas.size)
     }

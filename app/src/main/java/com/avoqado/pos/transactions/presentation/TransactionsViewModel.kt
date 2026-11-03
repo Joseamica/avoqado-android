@@ -7,8 +7,9 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import com.avoqado.pos.core.data.network.FalloDeLectura
-import com.avoqado.pos.core.data.sync.VueltaDeLaRed
+import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
+import com.avoqado.pos.core.domain.refresh.PantallaQueSeRecarga
+import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
 import com.avoqado.pos.core.domain.refresh.RefreshOutcome
 import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
 import com.avoqado.pos.core.util.ConnectivityMonitor
@@ -45,6 +46,7 @@ import com.avoqado.pos.transactions.data.model.TransactionActiveFilter
 import com.avoqado.pos.transactions.data.model.TransactionFilters
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
@@ -110,8 +112,8 @@ class TransactionsViewModel @Inject constructor(
     private val exchangePendingStore: ExchangePendingStore,
     /** Reembolso a saldo a favor sin confirmar (A3). `null` sólo en pruebas que no lo usan: no se reenvía nada. */
     private val refundPendingStore: RefundPendingStore? = null,
-    /** D18: la vuelta REAL de la red, con la cola sin red ya arriba. `null` sólo en pruebas que no la usan. */
-    private val vueltaDeLaRed: VueltaDeLaRed? = null,
+    /** D18 r3: la regla única de recarga automática (T1, T2, T3). `null` sólo en pruebas que no la usan. */
+    private val reglaDeRecarga: ReglaDeRecarga? = null,
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -638,32 +640,32 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * D18: al volver la red DE VERDAD —sin red → con red, con el servidor contestando y la cola sin red ya arriba ([VueltaDeLaRed])—,
-     * si la lista se quedó en «Sin conexión», se recarga sola por el gate, con su enfriamiento (Codex r1 #2 y #4). Con
-     * ventas de la consulta en la mano no hace nada: la lista se queda.
-     */
-    suspend fun vigilarLaRed() {
-        val vuelta = vueltaDeLaRed ?: return
-        vuelta.alVolver { recargarSiSeQuedoSinRed() }
+    /** D18 r3: la lista, vista desde la regla de recarga ([ReglaDeRecarga]). Recarga siempre por el gate, sin forzarlo. */
+    private val pantallaParaLaRegla = object : PantallaQueSeRecarga {
+        override val estadoParaRecargar: Flow<EstadoParaRecargar> = combine(
+            repository.transactions, repository.consultaDeLaLista, _consultaVigente, repository.isLoading, repository.falloDeCarga,
+        ) { lista, deLaLista, vigente, cargando, fallo ->
+            estadoDeLaListaDeVentas(deLaLista == vigente, lista.size, lista.size, cargando, fallo).paraLaRegla()
+        }
+
+        override suspend fun recargar(): RefreshOutcome =
+            gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+
+        override suspend fun recargarAlVolverLaRed(): RefreshOutcome {
+            gate.resetCooldown()
+            return gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+        }
+
+        override suspend fun recargarConDatosNuevos(): RefreshOutcome {
+            gate.invalidate()
+            return gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+        }
     }
 
-    /** Sólo mientras la lista se ve (RESUMED): en segundo plano o con otra pantalla encima no vigila (Codex r1 #4). */
+    /** D18 r3: sólo mientras la lista se ve (RESUMED), la regla única de recarga: al volver a verse, al volver red y servidor, y al subir la cola. */
     internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
-        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { vigilarLaRed() }
-    }
-
-    private suspend fun recargarSiSeQuedoSinRed() {
-        val lista = listaVigente()
-        val estado = estadoDeLaListaDeVentas(
-            deLaConsulta = repository.consultaDeLaLista.value == _consultaVigente.value,
-            cargadas = lista.size,
-            visibles = lista.size,
-            cargando = repository.isLoading.value,
-            fallo = repository.falloDeCarga.value,
-        )
-        if (estado != EstadoDeLaListaDeVentas.NoSeCargo(FalloDeLectura.SIN_RED)) return
-        gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+        val regla = reglaDeRecarga ?: return
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { regla.mientrasSeVe(pantallaParaLaRegla) }
     }
 
     /** Mutación local (devolución, etc.) = identidad nueva: invalida el TTL y re-pide (spec §4.4).

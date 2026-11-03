@@ -5,9 +5,9 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.network.FalloDeLectura
-import com.avoqado.pos.core.data.sync.VueltaDeLaRed
 import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
+import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
@@ -33,11 +33,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
- * D18 (3-nov): con la lista de Ventas vacía porque no hubo red, nada la recargaba al volver la red. Y Codex r1: la lista de
- * otra sucursal, persona o búsqueda se enseñaba (#1, #3); la recarga salía a la vez que subían los cobros sin red (#2) y en
- * cada parpadeo de la bandera del servidor, forzando el gate y con la app en segundo plano (#4).
+ * D18 (3-nov): con la lista de Ventas vacía porque no hubo red, nada la recargaba al volver la red. Codex r1: la lista de otra
+ * sucursal, persona o búsqueda se enseñaba (#1, #3). Codex r2, la familia de la recarga automática (H1 la espera de 30 s,
+ * H2 internet que vuelve sin apagar el WiFi, H3 la reconexión olvidada al pausar): la regla única T1/T2/T3, por flancos y
+ * sólo con la pantalla a la vista.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class TransactionsViewModelSinRedTest {
@@ -50,16 +52,18 @@ class TransactionsViewModelSinRedTest {
     private var sucursal = "venue"
     private var usuario = "ana"
 
-    // El repositorio falso: lo que guarda y lo que falla.
+    // El repositorio falso: lo que guarda, lo que hay en el servidor y lo que falla.
     private val ventas = MutableStateFlow<List<Transaction>>(emptyList())
     private val consultaDeLaLista = MutableStateFlow<ConsultaDeVentas?>(null)
     private val fallo = MutableStateFlow<FalloDeLectura?>(null)
     private val cargando = MutableStateFlow(false)
     private var sinRed = false
+    private var cobroSinRedYaSubio = false
     private var enCamino: CompletableDeferred<Unit>? = null
     private val pedidas = mutableListOf<ConsultaDeVentas>()
 
-    // La red y la cola sin red.
+    // La red, el servidor y lo que falta por subir.
+    private var ahora: Duration = Duration.ZERO
     private val red = MutableStateFlow(true)
     private val servidor = MutableStateFlow(true)
     private val porSubir = MutableStateFlow(0)
@@ -83,14 +87,17 @@ class TransactionsViewModelSinRedTest {
                 fallo.value = FalloDeLectura.SIN_RED
                 Result.failure(java.io.IOException("sin red de prueba"))
             } else {
-                ventas.value = listOf(Transaction(id = "pago-${pedida.busqueda}"))
+                ventas.value = listOfNotNull(
+                    Transaction(id = "pago-${pedida.busqueda}"),
+                    Transaction(id = "cobro-sin-red").takeIf { cobroSinRedYaSubio },
+                )
                 consultaDeLaLista.value = pedida
                 fallo.value = null
                 Result.success(Unit)
             }
         }
         val gateFactory = factory ?: mockk<RefreshGateFactory>().also {
-            every { it.create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO }, random = { 0.5 })
+            every { it.create(any(), any()) } returns RefreshGate(clock = { ahora }, random = { 0.5 })
         }
         return TransactionsViewModel(
             repository = repository,
@@ -106,7 +113,7 @@ class TransactionsViewModelSinRedTest {
             refreshGateFactory = gateFactory,
             connectivityMonitor = mockk(relaxed = true),
             exchangePendingStore = mockk(relaxed = true),
-            vueltaDeLaRed = VueltaDeLaRed(red, servidor, porSubir, esperaDeLaRutaMs = 2_000, esperaDeLaColaMs = 30_000),
+            reglaDeRecarga = ReglaDeRecarga(red, servidor, porSubir),
         )
     }
 
@@ -117,126 +124,139 @@ class TransactionsViewModelSinRedTest {
         return estadoDeLaListaDeVentas(deLaConsulta, lista.size, lista.size, vm.isLoading.value, vm.falloDeCarga.value)
     }
 
-    private fun TestScope.vigilar(vm: TransactionsViewModel) {
-        backgroundScope.launch { vm.vigilarLaRed() }
-        runCurrent()
-    }
-
-    private fun TestScope.cortarYVolverLaRed() {
-        red.value = false
-        runCurrent()
-        red.value = true
-        runCurrent()
-    }
-
     private class Pantalla : LifecycleOwner {
         val registro = LifecycleRegistry.createUnsafe(this)
         override val lifecycle: Lifecycle get() = registro
     }
 
-    @Test
-    fun `vacia porque no hubo red - al volver la red se recarga sola`() = runTest(scheduler) {
-        fallo.value = FalloDeLectura.SIN_RED
-        val vm = crear()
-        vigilar(vm)
+    /** La lista a la vista (RESUMED), con la regla corriendo. */
+    private fun TestScope.aLaVista(vm: TransactionsViewModel): Pantalla {
+        val pantalla = Pantalla()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
+        runCurrent()
+        return pantalla
+    }
 
-        cortarYVolverLaRed()
-        coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) } // espera a que la ruta suba
+    private fun TestScope.servidorSeVaYVuelve() {
+        servidor.value = false
+        runCurrent()
+        servidor.value = true
+        dejarPasar()
+    }
+
+    /** Lo que tarda la ruta en subir: la regla nueva no espera, pero así la de antes tampoco pierde por el reloj. */
+    private fun TestScope.dejarPasar() {
         advanceTimeBy(2_001)
         runCurrent()
+    }
+
+    private fun TestScope.wifiSeVaYVuelve() {
+        red.value = false
+        runCurrent()
+        red.value = true
+        dejarPasar()
+    }
+
+    // MARK: - T2: red y servidor de no a sí
+
+    @Test
+    fun `T2 - el WiFi que vuelve recarga la lista que se quedo sin red`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        red.value = false // la pantalla se ve sin red: T1 no recarga
+        val vm = crear()
+        aLaVista(vm)
+        coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
+
+        red.value = true
+        dejarPasar()
 
         coVerify(exactly = 1) { repository.fetchTransactions(page = 1, search = null) }
         assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
     }
 
     @Test
-    fun `con un cobro sin subir, la recarga espera a que la cola se vacie`() = runTest(scheduler) {
-        fallo.value = FalloDeLectura.SIN_RED
-        porSubir.value = 1
-        val vm = crear()
-        vigilar(vm)
-
-        cortarYVolverLaRed()
-        advanceTimeBy(10_000)
-        coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
-
-        porSubir.value = 0
-        runCurrent()
-        coVerify(exactly = 1) { repository.fetchTransactions(page = 1, search = null) }
-    }
-
-    @Test
-    fun `un parpadeo de la bandera del servidor con el WiFi arriba no recarga`() = runTest(scheduler) {
-        fallo.value = FalloDeLectura.SIN_RED
-        val vm = crear()
-        vigilar(vm)
-
-        repeat(3) {
-            servidor.value = false
-            runCurrent()
-            servidor.value = true
-            runCurrent()
-            advanceTimeBy(10_000)
-        }
-
-        coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
-    }
-
-    @Test
-    fun `la recarga al volver la red pasa por el gate - no fuerza su enfriamiento`() = runTest(scheduler) {
+    fun `T2 - internet que vuelve sin que el WiFi se apague tambien recarga`() = runTest(scheduler) {
         sinRed = true
+        servidor.value = false // el módem perdió internet; la red del aparato nunca bajó (WINDOWS igual)
         val vm = crear()
-        vm.autoRefresh() // falla: el gate se enfría
-        coVerify(exactly = 1) { repository.fetchTransactions(any(), any()) }
-        vigilar(vm)
+        vm.autoRefresh() // falla y enfría el gate; la fábrica del gate no se entera de la vuelta: el WiFi nunca bajó
+        aLaVista(vm)
+        assertEquals(1, pedidas.size)
 
         sinRed = false
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
+        servidor.value = true
+        dejarPasar()
 
-        // Sin el aviso de la red al gate (lo da la fábrica de verdad, prueba de abajo), el enfriamiento manda.
-        coVerify(exactly = 1) { repository.fetchTransactions(any(), any()) }
+        assertEquals(2, pedidas.size)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
     }
 
     @Test
-    fun `al volver la red de verdad, la fabrica reabre el gate y la recarga sale sin forzarlo`() = runTest(scheduler) {
+    fun `un fallo parcial con el servidor alcanzable hace UNA sola recarga, no mas`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        sinRed = true // la consulta sigue sin respuesta aunque la salud del servidor conteste
+        red.value = false
+        val vm = crear()
+        aLaVista(vm)
+
+        red.value = true // T2
+        dejarPasar()
+        assertEquals(1, pedidas.size)
+
+        // Su propio fallo apaga la bandera del servidor y el ping la vuelve a prender, una y otra vez.
+        repeat(5) {
+            ahora += 70.seconds // pasado cualquier enfriamiento: lo que frena es la regla, no el reloj
+            servidorSeVaYVuelve()
+        }
+
+        assertEquals(1, pedidas.size)
+    }
+
+    @Test
+    fun `T1 respeta el enfriamiento del gate - no lo fuerza`() = runTest(scheduler) {
+        sinRed = true
+        val vm = crear()
+        vm.autoRefresh() // falla: el gate se enfría y el reloj no avanza
+
+        sinRed = false
+        aLaVista(vm) // vuelve a la pantalla con red
+
+        assertEquals(1, pedidas.size)
+    }
+
+    @Test
+    fun `T2 no depende de que la fabrica del gate llegue antes - recarga dentro del enfriamiento`() = runTest(scheduler) {
+        sinRed = true
+        red.value = false
+        val vm = crear()
+        vm.autoRefresh() // falla sin red: el gate se enfría y el reloj no avanza
+        aLaVista(vm)
+
+        sinRed = false
+        red.value = true // como la fábrica del gate al recuperar la red, T2 reinicia el enfriamiento
+        dejarPasar()
+
+        assertEquals(2, pedidas.size)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+    }
+
+    @Test
+    fun `T2 con la fabrica de verdad - al volver el WiFi la recarga sale`() = runTest(scheduler) {
         val monitor = mockk<ConnectivityMonitor>(relaxed = true)
         every { monitor.isConnected } returns red
         sinRed = true
+        red.value = false
         val vm = crear(factory = RefreshGateFactory(monitor))
         vm.autoRefresh() // falla: el gate se enfría
-        vigilar(vm)
+        aLaVista(vm)
 
         sinRed = false
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
+        red.value = true
+        dejarPasar()
 
-        coVerify(exactly = 2) { repository.fetchTransactions(any(), any()) }
+        assertEquals(2, pedidas.size)
         assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
-    }
-
-    @Test
-    fun `con la pantalla en segundo plano no vigila, y al verse otra vez si`() = runTest(scheduler) {
-        fallo.value = FalloDeLectura.SIN_RED
-        val vm = crear()
-        val pantalla = Pantalla()
-        pantalla.registro.currentState = Lifecycle.State.CREATED // otra app encima o el aparato bloqueado
-        backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
-        runCurrent()
-
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
-        coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
-
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        runCurrent()
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
-        coVerify(exactly = 1) { repository.fetchTransactions(page = 1, search = null) }
     }
 
     @Test
@@ -245,27 +265,129 @@ class TransactionsViewModelSinRedTest {
         consultaDeLaLista.value = consulta(null)
         fallo.value = FalloDeLectura.SIN_RED
         val vm = crear()
-        vigilar(vm)
+        aLaVista(vm)
 
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
-        runCurrent()
+        wifiSeVaYVuelve()
+        servidorSeVaYVuelve()
 
         coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
+    }
+
+    // MARK: - T3: la cola sin red termina de subir
+
+    @Test
+    fun `T3 - una cola que tarda 60 s en subir recarga al vaciarse, ya con el cobro`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        porSubir.value = 1 // el cobro de 10 pesos en efectivo, hecho sin red
+        red.value = false
+        val vm = crear()
+        aLaVista(vm)
+
+        red.value = true // T2: recarga con lo que tenga el servidor
+        dejarPasar()
+        assertEquals(1, pedidas.size)
+        assertEquals(listOf("pago-"), vm.transactions.value.map { it.id })
+
+        advanceTimeBy(60_000)
+        cobroSinRedYaSubio = true
+        porSubir.value = 0 // la cola terminó de subir
+        runCurrent()
+
+        assertEquals("T3 recarga aunque la lista ya enseñe datos", 2, pedidas.size)
+        assertEquals(listOf("pago-", "cobro-sin-red"), vm.transactions.value.map { it.id })
     }
 
     @Test
-    fun `si el servidor contesto mal, volver la red no recarga sola - para eso esta Reintentar`() = runTest(scheduler) {
-        fallo.value = FalloDeLectura.SERVIDOR
+    fun `una cola atorada no frena la recarga - T2 recarga y T3 vuelve a recargar cuando por fin se vacia`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        porSubir.value = 1 // un pendiente que no sube
+        red.value = false
         val vm = crear()
-        vigilar(vm)
+        aLaVista(vm)
 
-        cortarYVolverLaRed()
-        advanceTimeBy(2_001)
+        red.value = true
+        dejarPasar()
+        assertEquals("T2 no espera a la cola", 1, pedidas.size)
+
+        advanceTimeBy(10 * 60_000L)
+        assertEquals(1, pedidas.size)
+
+        porSubir.value = 0
         runCurrent()
+        assertEquals(2, pedidas.size)
+    }
+
+    // MARK: - T1 y la pantalla a la vista
+
+    @Test
+    fun `T1 - pausar a media reconexion y volver con red recarga al volver`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        red.value = false
+        servidor.value = false
+        val vm = crear()
+        val pantalla = aLaVista(vm) // se ve sin red: T1 no recarga
+
+        red.value = true // vuelve el WiFi, el servidor todavía no contesta
+        dejarPasar()
+        pantalla.registro.currentState = Lifecycle.State.CREATED // la app al fondo
+        runCurrent()
+        servidor.value = true // el servidor vuelve con la pantalla pausada
+        dejarPasar()
+        coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
+
+        pantalla.registro.currentState = Lifecycle.State.RESUMED // vuelve a la pantalla, con red
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.fetchTransactions(page = 1, search = null) }
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+    }
+
+    @Test
+    fun `H3 - volver antes que el servidor y que falle la carga - al volver el servidor recarga`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        red.value = false
+        servidor.value = false
+        val vm = crear()
+        val pantalla = aLaVista(vm)
+
+        red.value = true // vuelve el WiFi, el servidor todavía no contesta
+        dejarPasar()
+        pantalla.registro.currentState = Lifecycle.State.CREATED // la app al fondo
+        runCurrent()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED // regresa antes de que vuelva el servidor
+        runCurrent()
+        sinRed = true
+        vm.autoRefresh() // la carga al regresar falla y enfría el gate
+        assertEquals(1, pedidas.size)
+
+        sinRed = false
+        servidor.value = true // ahora sí vuelve el servidor
+        dejarPasar()
+
+        assertEquals(2, pedidas.size)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+    }
+
+    @Test
+    fun `con la pantalla en segundo plano no hay ninguna recarga`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        porSubir.value = 1
+        val vm = crear()
+        val pantalla = Pantalla()
+        pantalla.registro.currentState = Lifecycle.State.CREATED // otra app encima o el aparato bloqueado
+        backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
+        runCurrent()
+
+        wifiSeVaYVuelve()
+        servidorSeVaYVuelve()
+        porSubir.value = 0
+        runCurrent()
+        advanceTimeBy(60_000)
 
         coVerify(exactly = 0) { repository.fetchTransactions(any(), any()) }
     }
+
+    // MARK: - La lista va ligada a su consulta (Codex r1 #1 y #3)
 
     @Test
     fun `la lista de otra sucursal o de otra persona no se ve`() = runTest(scheduler) {

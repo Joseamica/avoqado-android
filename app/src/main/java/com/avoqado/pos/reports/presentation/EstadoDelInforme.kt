@@ -1,6 +1,7 @@
 package com.avoqado.pos.reports.presentation
 
 import com.avoqado.pos.core.data.network.FalloDeLectura
+import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
 import com.avoqado.pos.designsystem.components.TextosDeLecturaFallida
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.InformeConsultado
@@ -49,6 +50,13 @@ internal fun estadoDelInforme(
     cargando -> EstadoDelInforme.Cargando
     fallo != null -> EstadoDelInforme.NoSeCargo(fallo)
     else -> EstadoDelInforme.Cargando
+}
+
+/** Lo que la regla de recarga necesita saber de Informes (D18 r3). Eligiendo fechas no se recarga nada por la red. */
+internal fun EstadoDelInforme.paraLaRegla(): EstadoParaRecargar = when (this) {
+    is EstadoDelInforme.NoSeCargo -> EstadoParaRecargar.NO_SE_CARGO
+    is EstadoDelInforme.Listo -> EstadoParaRecargar.CON_DATOS
+    EstadoDelInforme.Cargando, EstadoDelInforme.EligiendoFechas -> EstadoParaRecargar.OTRO
 }
 
 /** Título y texto de Informes cuando [EstadoDelInforme.NoSeCargo]. */

@@ -2,19 +2,22 @@ package com.avoqado.pos.reports.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshOutcome
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import com.avoqado.pos.core.data.sync.VueltaDeLaRed
+import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
+import com.avoqado.pos.core.domain.refresh.PantallaQueSeRecarga
+import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.ReportPeriod
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -30,8 +33,8 @@ class ReportsViewModel @Inject constructor(
     private val repository: ReportsRepository,
     private val planManager: PlanManager,
     refreshGateFactory: RefreshGateFactory,
-    /** D18: la vuelta REAL de la red, con la cola sin red ya arriba. `null` sólo en pruebas que no la usan. */
-    private val vueltaDeLaRed: VueltaDeLaRed? = null,
+    /** D18 r3: la regla única de recarga automática (T1, T2, T3). `null` sólo en pruebas que no la usan. */
+    private val reglaDeRecarga: ReglaDeRecarga? = null,
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
@@ -105,6 +108,28 @@ class ReportsViewModel @Inject constructor(
     /** La consulta de la última petición que salió (para saber si la que se unió en vuelo era de otro periodo). */
     private var ultimaPedida: ConsultaDeInforme? = null
 
+    /** D18 r3: Informes, visto desde la regla de recarga ([ReglaDeRecarga]). Recarga siempre por el gate, sin forzarlo. */
+    private val pantallaParaLaRegla = object : PantallaQueSeRecarga {
+        override val estadoParaRecargar: Flow<EstadoParaRecargar> = combine(
+            _consultaElegida, repository.informe, repository.isLoading, repository.ultimoFallo, _showCustomDatePicker,
+        ) { elegida, informe, cargando, fallo, eligiendo ->
+            estadoDelInforme(elegida, informe, cargando, fallo, eligiendoFechas = eligiendo).paraLaRegla()
+        }
+
+        override suspend fun recargar(): RefreshOutcome =
+            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+
+        override suspend fun recargarAlVolverLaRed(): RefreshOutcome {
+            gate.resetCooldown()
+            return gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        }
+
+        override suspend fun recargarConDatosNuevos(): RefreshOutcome {
+            gate.invalidate()
+            return gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        }
+    }
+
     // MARK: - Init
     // La carga inicial la dispara la UI vía el gate (autoRefresh).
 
@@ -173,28 +198,10 @@ class ReportsViewModel @Inject constructor(
         return repository.loadReport(consulta, hasta)
     }
 
-    /**
-     * D18: al volver la red DE VERDAD —sin red → con red, con el servidor contestando y la cola sin red ya arriba
-     * ([VueltaDeLaRed])—, si Informes se quedó en «Sin conexión», se recarga solo por el gate, con su enfriamiento
-     * (Codex r1 #2 y #4).
-     */
-    suspend fun vigilarLaRed() {
-        val vuelta = vueltaDeLaRed ?: return
-        vuelta.alVolver { recargarSiSeQuedoSinRed() }
-    }
-
-    /** Sólo mientras Informes se ve (RESUMED): en segundo plano no vigila (Codex r1 #4). */
+    /** D18 r3: sólo mientras Informes se ve (RESUMED), la regla única de recarga: al volver a verse, al volver red y servidor, y al subir la cola. */
     internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
-        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { vigilarLaRed() }
-    }
-
-    private suspend fun recargarSiSeQuedoSinRed() {
-        val estado = estadoDelInforme(
-            _consultaElegida.value, informe.value, isLoading.value, ultimoFallo.value,
-            eligiendoFechas = _showCustomDatePicker.value,
-        )
-        if (estado != EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED)) return
-        gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        val regla = reglaDeRecarga ?: return
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { regla.mientrasSeVe(pantallaParaLaRegla) }
     }
 
     // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
