@@ -463,42 +463,8 @@ fun IssueRefundSheet(
             val dosColumnas = enDosColumnas(maxWidth.value, soloCompleto)
             val pieFijo = pieFijoEnDosColumnas(maxHeight.value)
             val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)
-
-            // El umbral sale de MEDIR la hoja en el aparato (OrderPAD 3 forzado, 2026-09-12),
-            // no de una corazonada:
-            //
-            //   encabezado + pestañas .................... 160 dp
-            //   pie (importe, motivo, resumen, botones) ... 365 dp   → 525 dp
-            //   + la casilla «Incluir propina» ............  64 dp   → 589 dp con propina
-            //
-            // Alto disponible con el teclado abierto: ~330 dp en una pantalla de 640 dp (el
-            // perfil del PAX A910S y el de un celular chico) y ~600 dp en un celular moderno
-            // de 891 dp. O sea: en el chico NO cabe por mucho, y en el moderno cabe por 11 dp
-            // cuando el cobro trae propina — cualquier ajuste de fuente por accesibilidad lo
-            // tira. Por eso el corte va en 640 y no en 560: cubrir sólo el caso extremo dejaba
-            // el caso común al filo.
-            //
-            // Se mide por ALTO DISPONIBLE y no por «¿hay teclado?» porque una pantalla corta
-            // en horizontal aprieta igual sin teclado ninguno.
-            //
-            // 🔴 SÓLO EN LA PESTAÑA DE IMPORTE, y esto no es un detalle: la primera versión
-            // miraba únicamente el alto y una auditoría adversarial (Codex gpt-6-astra, xhigh)
-            // demostró que rompía el reembolso por ARTÍCULOS. En la banda no vive sólo el aviso
-            // —viven `ItemsBody` y el botón «Abrir en la terminal»—, así que ocultarla en esa
-            // pestaña dejaba al cajero con «Selecciona al menos un artículo» y ni un artículo que
-            // tocar, sin forma de recuperarlos. Bastaban 600 dp de alto, con el teclado CERRADO.
-            //
-            // En la pestaña de artículos el pie mide unos 400–560 dp (medido en 360 dp, de 2 a 4 medios y con saldo a favor, 3-nov), y
-            // ahí la banda no se esconde: con poco alto se desliza todo junto (`todoSeDesliza`). La banda sólo cede su sitio donde es
-            // prescindible: en importe, donde su único contenido es un aviso que el pie ya repite palabra por palabra.
-            //
-            // 🔴 Esos números cuentan los 56 dp del encabezado de la hoja, y el de la pantalla completa ya vive arriba de este
-            // alto: el mismo corte de 640 dp aquí son 584 dp. Con 640, un celular chico perdería sin teclado el aviso con
-            // «Abrir en la terminal», que en «Por importe» sólo existe en la banda.
-            //
-            // Sólo en una columna: en dos, la izquierda tiene todo el alto y lo demás se desliza a la derecha. Y ya sólo esconde la banda:
-            // lo que aprieta se desliza por `todoSeDesliza`, porque estos 584 caen dentro de sus 700.
-            val apretado = !dosColumnas && tab == RefundTab.AMOUNT && maxHeight < 584.dp
+            // Con pie fijo, en «Por importe» de una columna la banda sólo trae el aviso de la terminal: va de su tamaño y no se desliza sola.
+            val bandaSeDesliza = !todoSeDesliza && (dosColumnas || soloCompleto || tab == RefundTab.ITEMS)
             val anchoDeColumna = if (dosColumnas) maxWidth / 2 else maxWidth
             // En un celular, el aviso de la terminal en un renglón dejaría el texto en ~100 dp: ahí se apila.
             val avisoEnRenglon = anchoDeColumna >= 480.dp
@@ -516,10 +482,10 @@ fun IssueRefundSheet(
                 }
             }
 
-            // 🔴 En una columna, el campo y la casilla viven en el PIE, no en la banda que se desliza: la casilla decide si la propina
-            // del mesero se devuelve, o sea que es DINERO. Con el teclado abierto la banda se encoge tanto que la casilla salía de la
-            // pantalla y el cajero confirmaba «incluir propina» sin poder verla (Sunmi, 2026-09-11). En dos columnas van a la izquierda,
-            // con todo el alto de esa columna, y el reparto se sigue leyendo junto al botón, en `cierre`.
+            // 🔴 En una columna, el campo y la casilla NO van en la banda que se desliza: la casilla decide si la propina del mesero se
+            // devuelve, o sea que es DINERO. Con el teclado abierto la banda se encogía tanto que la casilla salía de la pantalla y el
+            // cajero confirmaba «incluir propina» sin poder verla (Sunmi, 2026-09-11). En dos columnas van a la izquierda, con todo el
+            // alto de esa columna, y el reparto se sigue leyendo junto al botón, en `cierre`.
             val importeYSuPropina: @Composable () -> Unit = {
                 // En la banda de dos columnas ya los separa su `spacedBy`.
                 val separacion = if (dosColumnas) Modifier else Modifier.padding(top = spacing.md)
@@ -581,148 +547,140 @@ fun IssueRefundSheet(
                 // dibujado fuera de la pantalla y, como `canSubmit` exige motivo, el
                 // botón "Reembolsar" jamás se encendía. La devolución era imposible y
                 // nada en pantalla lo explicaba.
-                // 🔴 Con pie fijo, la banda toma el alto sobrante y el pie toca el fondo: lo que sobra queda entre la lista y el pie. En una hoja
-                // que medía según su contenido eso abría un hueco (Testarudo, 11-sep); a pantalla completa, sin esto, con 2 artículos, Cancelar y
-                // Reembolsar quedan a media pantalla (OrderPAD 3, 800×1280, 3-nov). La tarjeta de regalo sigue como iba, con `fill = false`.
-                // 🔴 Cuando aprieta, la banda cede su sitio ENTERO en vez de quedarse en un
-                // hilo de píxeles: lo que hay dentro es un aviso informativo y la lista de
-                // artículos, y el aviso que de verdad importa —«esto no devuelve el dinero a
-                // la tarjeta»— se repite literal en el pie. Lo que NO puede desaparecer es el
-                // pie, que es donde se decide y se confirma el dinero.
-                if (!apretado || soloCompleto && enTerminal) {
-                    Box(
-                        modifier = when {
-                            todoSeDesliza -> Modifier
-                            soloCompleto -> Modifier.weight(1f, fill = false)
-                            else -> Modifier.weight(1f)
-                        },
+                // 🔴 En Artículos con pie fijo, la banda toma el alto sobrante y el pie toca el fondo: lo que sobra queda entre la lista y el pie. En
+                // una hoja que medía según su contenido eso abría un hueco (Testarudo, 11-sep); a pantalla completa, sin esto, con 2 artículos,
+                // Cancelar y Reembolsar quedan a media pantalla (OrderPAD 3, 800×1280, 3-nov). La tarjeta de regalo sigue como iba, con `fill = false`.
+                Box(
+                    modifier = when {
+                        !bandaSeDesliza -> Modifier
+                        soloCompleto -> Modifier.weight(1f, fill = false)
+                        else -> Modifier.weight(1f)
+                    },
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // Sin un alto que repartir, esto sería un `verticalScroll` con alto infinito, y truena.
+                            .then(if (bandaSeDesliza) Modifier.verticalScroll(bandaScroll) else Modifier),
+                        verticalArrangement = Arrangement.spacedBy(spacing.md),
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                // Con todo deslizándose junto, esto sería un `verticalScroll` dentro de otro con alto infinito, y truena.
-                                .then(if (todoSeDesliza) Modifier else Modifier.verticalScroll(bandaScroll)),
-                            verticalArrangement = Arrangement.spacedBy(spacing.md),
-                        ) {
-                            // 🔴 Un cobro con TARJETA de la terminal no se devuelve desde aquí.
-                            //
-                            // La devolución a la tarjeta la hace la TERMINAL, con su propia función; no hay API para ello.
-                            // Aquí sólo se registra, con el método del cobro original. Sin este aviso, un gerente devuelve
-                            // un cobro con tarjeta desde el POS, el sistema lo da por hecho, y el cliente no recibe nada.
-                            //
-                            // Todo lo demás —transferencia, tipos de pago del negocio, tarjeta de otra terminal— se reembolsa
-                            // como el efectivo, sin aviso (regla del founder, 30-sep-2026; antes bastaba «no es CASH» y una
-                            // transferencia pedía la terminal).
-                            //
-                            // Compacto a propósito: título y botón en un renglón cuando cabe. Apilado medía ~180 dp y en la
-                            // D3 horizontal la banda sólo tenía ~90: se veía medio botón (Testarudo, 30-sep).
-                            if (enTerminal) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = spacing.md)
-                                        .clip(RoundedCornerShape(spacing.md))
-                                        .background(Warning.copy(alpha = 0.12f))
-                                        .padding(spacing.md),
-                                    verticalArrangement = Arrangement.spacedBy(spacing.xs),
-                                ) {
-                                    val textoDelAviso: @Composable (Modifier) -> Unit = { mod ->
-                                        Column(modifier = mod, verticalArrangement = Arrangement.spacedBy(spacing.xxs)) {
-                                            Text(
-                                                text = "Este cobro fue con tarjeta",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                            )
-                                            // Lo que el cajero necesita saber: qué pasó, qué falta, y que
-                                            // todavía NO se ha devuelto el dinero.
-                                            Text(
-                                                text = if (terminalAbierta) {
-                                                    "Abierta en la terminal. Falta que la confirmen ahí con la tarjeta — hasta " +
-                                                        "entonces no se ha devuelto nada. Cuando se haga, la venta se actualiza sola."
-                                                } else {
-                                                    "La devolución a la tarjeta se hace en la terminal. Ábrela desde aquí y que la " +
-                                                        "confirmen con la tarjeta."
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
-                                    val botonDeTerminal: @Composable (Modifier) -> Unit = { mod ->
-                                        PrimaryButton(
-                                            text = if (enviandoATerminal) "Abriendo…" else "Abrir en la terminal",
-                                            onClick = { abrirEnTerminal() },
-                                            enabled = puedeEnviar() && !terminalAbierta,
-                                            modifier = mod,
-                                        )
-                                    }
-                                    when {
-                                        terminalAbierta -> textoDelAviso(Modifier.fillMaxWidth())
-                                        avisoEnRenglon -> Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(spacing.md),
-                                        ) {
-                                            textoDelAviso(Modifier.weight(1f))
-                                            botonDeTerminal(Modifier)
-                                        }
-                                        else -> {
-                                            textoDelAviso(Modifier.fillMaxWidth())
-                                            botonDeTerminal(Modifier.fillMaxWidth())
-                                        }
-                                    }
-                                    terminalMsg?.let { msg ->
+                        // 🔴 Un cobro con TARJETA de la terminal no se devuelve desde aquí.
+                        //
+                        // La devolución a la tarjeta la hace la TERMINAL, con su propia función; no hay API para ello.
+                        // Aquí sólo se registra, con el método del cobro original. Sin este aviso, un gerente devuelve
+                        // un cobro con tarjeta desde el POS, el sistema lo da por hecho, y el cliente no recibe nada.
+                        //
+                        // Todo lo demás —transferencia, tipos de pago del negocio, tarjeta de otra terminal— se reembolsa
+                        // como el efectivo, sin aviso (regla del founder, 30-sep-2026; antes bastaba «no es CASH» y una
+                        // transferencia pedía la terminal).
+                        //
+                        // Compacto a propósito: título y botón en un renglón cuando cabe. Apilado medía ~180 dp y en la
+                        // D3 horizontal la banda sólo tenía ~90: se veía medio botón (Testarudo, 30-sep).
+                        if (enTerminal) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = spacing.md)
+                                    .clip(RoundedCornerShape(spacing.md))
+                                    .background(Warning.copy(alpha = 0.12f))
+                                    .padding(spacing.md),
+                                verticalArrangement = Arrangement.spacedBy(spacing.xs),
+                            ) {
+                                val textoDelAviso: @Composable (Modifier) -> Unit = { mod ->
+                                    Column(modifier = mod, verticalArrangement = Arrangement.spacedBy(spacing.xxs)) {
                                         Text(
-                                            text = msg,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.error,
+                                            text = "Este cobro fue con tarjeta",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        // Lo que el cajero necesita saber: qué pasó, qué falta, y que
+                                        // todavía NO se ha devuelto el dinero.
+                                        Text(
+                                            text = if (terminalAbierta) {
+                                                "Abierta en la terminal. Falta que la confirmen ahí con la tarjeta — hasta " +
+                                                    "entonces no se ha devuelto nada. Cuando se haga, la venta se actualiza sola."
+                                            } else {
+                                                "La devolución a la tarjeta se hace en la terminal. Ábrela desde aquí y que la " +
+                                                    "confirmen con la tarjeta."
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
                                 }
-                            }
-
-                            when (tab) {
-                                RefundTab.ITEMS -> ItemsBody(
-                                    transaction = transaction,
-                                    selectedIds = selectedItemIds,
-                                    refundQty = refundQtyByItem,
-                                    restockIds = restockItemIds,
-                                    maxRefundable = topeActual,
-                                    onToggle = { id ->
-                                        selectedItemIds = if (selectedItemIds.contains(id)) {
-                                            restockItemIds = restockItemIds - id
-                                            selectedItemIds - id
-                                        } else {
-                                            selectedItemIds + id
-                                        }
-                                    },
-                                    onQtyChange = { id, delta ->
-                                        val item = transaction.items.firstOrNull { it.id == id } ?: return@ItemsBody
-                                        val remaining = if (item.remainingQty > 0) item.remainingQty else (item.quantity - item.refundedQty).coerceAtLeast(1)
-                                        val current = refundQtyByItem[id] ?: remaining
-                                        val next = (current + delta).coerceIn(1, remaining)
-                                        refundQtyByItem = refundQtyByItem + (id to next)
-                                    },
-                                    onToggleRestock = { id ->
-                                        restockItemIds = if (restockItemIds.contains(id)) {
-                                            restockItemIds - id
-                                        } else {
-                                            restockItemIds + id
-                                        }
-                                    },
-                                )
-
-                                // 🔴 En una columna, la pestaña de IMPORTE no vive aquí: su campo y su casilla de propina son DINERO, y con el
-                                // teclado abierto esta banda se encoge a nada. Se pintan en el pie, junto al motivo y al total, y aquí sólo queda
-                                // el aviso del cobro con tarjeta. En dos columnas esta banda tiene todo el alto de la izquierda.
-                                RefundTab.AMOUNT -> if (dosColumnas) importeYSuPropina()
+                                val botonDeTerminal: @Composable (Modifier) -> Unit = { mod ->
+                                    PrimaryButton(
+                                        text = if (enviandoATerminal) "Abriendo…" else "Abrir en la terminal",
+                                        onClick = { abrirEnTerminal() },
+                                        enabled = puedeEnviar() && !terminalAbierta,
+                                        modifier = mod,
+                                    )
+                                }
+                                when {
+                                    terminalAbierta -> textoDelAviso(Modifier.fillMaxWidth())
+                                    avisoEnRenglon -> Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(spacing.md),
+                                    ) {
+                                        textoDelAviso(Modifier.weight(1f))
+                                        botonDeTerminal(Modifier)
+                                    }
+                                    else -> {
+                                        textoDelAviso(Modifier.fillMaxWidth())
+                                        botonDeTerminal(Modifier.fillMaxWidth())
+                                    }
+                                }
+                                terminalMsg?.let { msg ->
+                                    Text(
+                                        text = msg,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
                             }
                         }
-                        // 🔴 Sin esta señal la banda MIENTE: una venta de 3 artículos enseñaba 2 y
-                        // nada decía que hubiera más, así que el cajero reembolsa lo que alcanza a
-                        // ver. Medido en la Sunmi el 2026-09-11.
-                        // Con todo deslizándose junto esta banda no se desliza, y su estado se queda con lo último que midió.
-                        if (!todoSeDesliza && bandaScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))
+
+                        when (tab) {
+                            RefundTab.ITEMS -> ItemsBody(
+                                transaction = transaction,
+                                selectedIds = selectedItemIds,
+                                refundQty = refundQtyByItem,
+                                restockIds = restockItemIds,
+                                maxRefundable = topeActual,
+                                onToggle = { id ->
+                                    selectedItemIds = if (selectedItemIds.contains(id)) {
+                                        restockItemIds = restockItemIds - id
+                                        selectedItemIds - id
+                                    } else {
+                                        selectedItemIds + id
+                                    }
+                                },
+                                onQtyChange = { id, delta ->
+                                    val item = transaction.items.firstOrNull { it.id == id } ?: return@ItemsBody
+                                    val remaining = if (item.remainingQty > 0) item.remainingQty else (item.quantity - item.refundedQty).coerceAtLeast(1)
+                                    val current = refundQtyByItem[id] ?: remaining
+                                    val next = (current + delta).coerceIn(1, remaining)
+                                    refundQtyByItem = refundQtyByItem + (id to next)
+                                },
+                                onToggleRestock = { id ->
+                                    restockItemIds = if (restockItemIds.contains(id)) {
+                                        restockItemIds - id
+                                    } else {
+                                        restockItemIds + id
+                                    }
+                                },
+                            )
+
+                            // 🔴 En una columna, la pestaña de IMPORTE no vive aquí: abrir el teclado cruza `pieFijoEnUnaColumna`, y el campo no
+                            // debe cambiar de padre. Aquí sólo queda el aviso del cobro con tarjeta. En dos columnas esta banda tiene todo el alto.
+                            RefundTab.AMOUNT -> if (dosColumnas) importeYSuPropina()
+                        }
                     }
+                    // 🔴 Sin esta señal la banda MIENTE: una venta de 3 artículos enseñaba 2 y
+                    // nada decía que hubiera más, así que el cajero reembolsa lo que alcanza a
+                    // ver. Medido en la Sunmi el 2026-09-11.
+                    // Si la banda no se desliza, su estado se queda con lo último que midió.
+                    if (bandaSeDesliza && bandaScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))
                 }
             }
 
@@ -1168,6 +1126,9 @@ fun IssueRefundSheet(
                     // exige— vive debajo. Deslizable no es lo mismo que escondido.
                     errorDelEnvio()
                     importeYSuPropina()
+                    // En «Por importe» lo que sobra va aquí: lo que se escribe arriba y lo demás abajo, como en Artículos. Existe siempre, para que
+                    // nada de abajo cambie de lugar al cruzar el corte. La tarjeta de regalo sigue arriba, con el blanco abajo.
+                    Spacer(if (tab == RefundTab.AMOUNT && !todoSeDesliza && !soloCompleto) Modifier.weight(1f) else Modifier)
                     comoSeDevuelve()
                     cierre()
                 }

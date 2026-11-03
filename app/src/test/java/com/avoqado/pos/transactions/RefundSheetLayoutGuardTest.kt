@@ -61,8 +61,30 @@ class RefundSheetLayoutGuardTest {
 
         assertTrue(
             "La banda dejó de ocupar el alto sobrante con pie fijo, o la tarjeta de regalo dejó de ir como iba.",
-            banda.contains("Box(modifier=when{todoSeDesliza->ModifiersoloCompleto->Modifier.weight(1f,fill=false)else->Modifier.weight(1f)}"),
+            banda.contains("Box(modifier=when{!bandaSeDesliza->ModifiersoloCompleto->Modifier.weight(1f,fill=false)else->Modifier.weight(1f)}"),
         )
+    }
+
+    /**
+     * En «Por importe» no hay lista que estirar: lo que se escribe va arriba, lo que sobra en medio y lo demás abajo, igual que en
+     * Artículos. Por eso ahí la banda queda de su tamaño, sin deslizarse (su deslizamiento con alto infinito truena), y lo que sobra lo
+     * toma un `Spacer` que siempre existe: si apareciera sólo a veces, cambiaría de lugar lo de abajo y el teclado cruza este corte.
+     */
+    @Test
+    fun `con pie fijo por importe lo que sobra va abajo del campo y la tarjeta de regalo no cambia`() {
+        val ventana = ventanaDeLaPantalla()
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
+
+        assertTrue(
+            "La banda ya no se desliza sólo donde tiene un alto que repartir.",
+            ventana.contains("val bandaSeDesliza = !todoSeDesliza && (dosColumnas || soloCompleto || tab == RefundTab.ITEMS)"),
+        )
+        assertTrue(
+            "El `Spacer` dejó de ir, siempre y con su peso sólo en «Por importe», entre el campo y lo demás.",
+            Regex("""importeYSuPropina\(\)\s*Spacer\(if \(tab == RefundTab\.AMOUNT && !todoSeDesliza && !soloCompleto\) Modifier\.weight\(1f\) else Modifier\)\s*comoSeDevuelve\(\)""")
+                .containsMatchIn(piezas.pie),
+        )
+        assertEquals("Sólo una columna lleva ese `Spacer`.", 0, invocaciones(piezas.dosColumnas, "Spacer"))
     }
 
     @Test
@@ -82,8 +104,8 @@ class RefundSheetLayoutGuardTest {
         val queSeDevuelve = PiezasDeLaHoja(codigo).queSeDevuelve
         assertEquals("La lista ya no se invoca en `queSeDevuelve`.", 1, invocaciones(queSeDevuelve, "ItemsBody"))
         assertTrue(
-            "Desapareció `canScrollForward` (el degradado del borde de la banda). Con todo deslizándose junto no aplica: esa banda ya no se desliza y su estado se queda con lo último.",
-            queSeDevuelve.contains("if (!todoSeDesliza && bandaScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))"),
+            "Desapareció `canScrollForward` (el degradado del borde de la banda). Si la banda no se desliza no aplica: su estado se queda con lo último.",
+            queSeDevuelve.contains("if (bandaSeDesliza && bandaScroll.canScrollForward) SenalDeHayMas(Modifier.align(Alignment.BottomCenter))"),
         )
     }
 
@@ -254,7 +276,7 @@ class RefundSheetLayoutGuardTest {
         assertTrue("El envío dejó de vivir en el modelo del detalle.", quienAbre.contains("viewModel.enviarReembolsoASaldo("))
     }
 
-    /** `maxHeight` es el alto real bajo el encabezado y sin el teclado: de él dependen `apretado` y las dos columnas. */
+    /** `maxHeight` es el alto real bajo el encabezado y sin el teclado: de él dependen los dos cortes del pie. */
     @Test
     fun `el alto del cuerpo no cuenta el encabezado y baja con el teclado`() {
         val ventana = ventanaDeLaPantalla()
@@ -263,8 +285,8 @@ class RefundSheetLayoutGuardTest {
         assertTrue("El encabezado tiene que ir arriba del cuerpo.", ventana.indexOf("AvoqadoFullscreenHeader(") in 1 until cuerpo)
         assertTrue("El cuerpo perdió `imePadding()`.", ventana.substring(cuerpo).substringBefore(") {").contains(".imePadding()"))
         assertTrue(
-            "El corte de `apretado` se midió con los 56 dp del encabezado viejo (640 - 56) y sólo aplica en una columna.",
-            ventana.contains("val apretado = !dosColumnas && tab == RefundTab.AMOUNT && maxHeight < 584.dp"),
+            "El corte de una columna dejó de salir del alto real.",
+            ventana.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)"),
         )
         assertTrue(
             "El aviso de la terminal vive en una columna: en dos, lo que cuenta es su mitad.",
@@ -323,7 +345,7 @@ class RefundSheetLayoutGuardTest {
         )
         assertTrue(
             "El pie cambió de orden: error, importe y su casilla, cómo se devuelve y cierre.",
-            Regex("""errorDelEnvio\(\)\s*importeYSuPropina\(\)\s*comoSeDevuelve\(\)\s*cierre\(\)""").containsMatchIn(piezas.pie),
+            Regex("""errorDelEnvio\(\)\s*importeYSuPropina\(\)\s*Spacer\([^\n]*\)\s*comoSeDevuelve\(\)\s*cierre\(\)""").containsMatchIn(piezas.pie),
         )
         assertEquals("El error sólo se repite en el cierre de dos columnas.", 1, Regex("""if \(dosColumnas\) errorDelEnvio\(\)""").findAll(piezas.cierre).count())
     }
@@ -379,15 +401,17 @@ class RefundSheetLayoutGuardTest {
 
         assertTrue(cuerpo.contains("val todoSeDesliza = !dosColumnas && !pieFijoEnUnaColumna(maxHeight.value)"))
         assertFalse("`todoSeDesliza` decide estructura.", Regex("""if \(!?todoSeDesliza\)\s*\{""").containsMatchIn(cuerpo))
-        assertFalse("`apretado` volvió a darle deslizamiento propio al pie: adentro del de afuera truena.", cuerpo.contains("if (apretado) Modifier"))
+        // Se quitó el 3-nov: con todo deslizable ya no hacía falta, y sólo escondía el aviso de la terminal, con su botón.
+        listOf("apretado", "584").forEach { assertFalse("Volvió `$it`: esconder la banda dejaba «Abrir en la terminal» sin alcance.", ventana.contains(it)) }
+        assertFalse("Algo volvió a esconder la banda.", Regex("""\bif \([^)]*\)\s*\{\s*Box\(""").containsMatchIn(piezas.queSeDevuelve))
         assertTrue(
             "La columna de afuera dejó de llevar el deslizamiento o su mínimo. Con un tope, lo que no cabe se recorta sin alcance.",
             Regex("""\.verticalScroll\(pieScroll\)\s*\.then\(if \(todoSeDesliza\) Modifier else Modifier\.heightIn\(min = maxHeight\)\)""")
                 .containsMatchIn(piezas.unaColumna),
         )
         assertTrue(
-            "La banda dejó de soltar su `verticalScroll` con todo deslizándose.",
-            piezas.queSeDevuelve.contains(".then(if (todoSeDesliza) Modifier else Modifier.verticalScroll(bandaScroll))"),
+            "La banda dejó de soltar su `verticalScroll` donde no tiene un alto que repartir.",
+            piezas.queSeDevuelve.contains(".then(if (bandaSeDesliza) Modifier.verticalScroll(bandaScroll) else Modifier)"),
         )
     }
 

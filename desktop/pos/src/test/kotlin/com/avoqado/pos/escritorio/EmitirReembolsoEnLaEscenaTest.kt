@@ -361,6 +361,41 @@ class EmitirReembolsoEnLaEscenaTest {
         assertEquals(elBoton, bordes("Reembolsar"), "el botón brincó al cambiar de pestaña")
     }
 
+    // «Por importe», igual: lo que se escribe arriba, lo que sobra en medio y lo demás abajo.
+
+    @Test fun `a 800x1280 por importe el campo queda arriba, lo que sobra en medio y Reembolsar abajo`() = pantalla(800, 1280, venta(2)) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        aLaVista("Selecciona el importe a reembolsar", "Incluir propina en el reembolso", "Reembolsar")
+        assertTrue(bordes("Incluir propina en el reembolso").bottom < 640.dp, "el campo y su casilla se fueron de la mitad de arriba: ${bordes("Incluir propina en el reembolso")}")
+        assertTrue(bordes("Reembolsar").bottom >= 1280.dp - 40.dp, "el pie no tocó el fondo: ${bordes("Reembolsar")}")
+        assertTrue(bordes("Devolver con").top - bordes("Incluir propina en el reembolso").bottom > 300.dp, "lo que sobra va abajo del campo")
+    }
+
+    /** 800×1280 px: a densidad 1 el pie es fijo; a 2.5 (320×512 dp) se desliza todo junto, y no cabe. Es el mismo cambio de alto que abrir y cerrar el teclado. */
+    @Test fun `por importe abrir y cerrar el teclado cruzando el corte no pierde foco ni texto y el campo sigue arriba`() = pantalla(800, 1280, venta(2)) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12.50")
+        waitForIdle()
+        repeat(2) {
+            assertTrue(bordes("12.50").bottom < 640.dp, "el campo se fue de la mitad de arriba: ${bordes("12.50")}")
+            aLaVista("12.50", "Reembolsar")
+            onNode(hasSetTextAction()).assertIsFocused()
+
+            densidad.floatValue = 2.5f
+            waitForIdle()
+            assertTrue(bordes("Reembolsar").bottom > 512.dp, "montaje: ya se desliza todo junto: ${bordes("Reembolsar")}")
+            aLaVista("12.50")
+            onNode(hasSetTextAction()).assertIsFocused()
+
+            densidad.floatValue = 1f
+            waitForIdle()
+            onNode(hasSetTextAction()).assertIsFocused()
+            onNodeWithText("12.50").assertExists()
+        }
+    }
+
     @Test fun `la tarjeta de regalo no cambia con pie fijo`() {
         val regalo = Transaction(id = "regalo", method = "CASH", amount = 500.0, remainingRefundable = 500.0)
         pantalla(800, 1280, regalo, soloCompleto = true) {
@@ -432,7 +467,6 @@ class EmitirReembolsoEnLaEscenaTest {
             }
         }
 
-    /** También cruza 584 dp, donde «Por importe» esconde la banda. */
     @Test fun `abrir y cerrar el teclado cruzando el corte no pierde foco ni texto del importe`() = pantalla(600, 1000) {
         onNodeWithText("Reembolsos por importe").performClick()
         waitForIdle()
@@ -479,7 +513,22 @@ class EmitirReembolsoEnLaEscenaTest {
 
     @Test fun `a 601x1007 el pie sigue fijo`() = pantalla(601, 1007, ventaConTodo, saldoDisponible = true) { elPieSigueFijo(300.dp, 1007.dp) }
 
-    @Test fun `en una columna apretada por importe el pie se desliza y Reembolsar se alcanza`() = pantalla(601, 400) {
+    /** El aviso de la terminal ya no se esconde con poco alto: su botón se queda, y se alcanza deslizando también después de escribir el importe. */
+    @Test fun `a poco alto por importe Abrir en la terminal se alcanza`() = pantalla(360, 500, ventaEnTerminal) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        aLaVista("Abrir en la terminal")
+        onNode(hasSetTextAction()).performTextInput("12.50")
+        waitForIdle()
+        aLaVista("12.50")
+        onNode(hasSetTextAction()).assertIsFocused()
+
+        repeat(3) { deslizar(180.dp, 150.dp, 450.dp) }
+        aLaVista("Abrir en la terminal")
+        onNode(hasSetTextAction()).assertIsFocused()
+    }
+
+    @Test fun `en una columna con poco alto por importe se desliza todo y Reembolsar se alcanza`() = pantalla(601, 400) {
         onNodeWithText("Reembolsos por importe").performClick()
         waitForIdle()
         aLaVista("Selecciona el importe a reembolsar")
