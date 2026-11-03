@@ -485,6 +485,206 @@ class PapelDelAparatoGateViewModelTest {
     }
 
     @Test
+    fun `r8 un Cobrar creado después de guardar Emite arranca emitiendo sin esperar su GET`() = runTest {
+        // Codex r8 #1: guardar «Emite» rehace la navegación y el Cobrar nuevo nace DESPUÉS del aviso.
+        val cremeria = AreaTicketArea("a1", "Cremería", "HOLD_UNTIL_PAID")
+        val emisor = ajustes(
+            pendiente = false,
+            terminal = AreaTicketTerminalCapabilities(
+                id = "t1", name = "PC", fulfillmentArea = cremeria, canIssueAreaTickets = true, defaultWorkspace = "AREA_OPERATIONS",
+            ),
+        )
+        respondeAjustes(ajustes())
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } returns AreaTicketEnvelope(true, emisor)
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.EmiteVales("a1", "Cremería"))
+        vm.guardar()
+        val tarda = CompletableDeferred<Unit>()
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers { tarda.await(); AreaTicketEnvelope(true, emisor) }
+        every { storage.pendingAreaTicketPrintRecords } returns null
+        every { storage.pendingAreaTicketPrintVenueId } returns null
+
+        val cobrar = AreaTicketOperationsViewModel(
+            repository = repo,
+            printerService = mockk(relaxed = true),
+            pdfGenerator = mockk(relaxed = true),
+            secureStorage = storage,
+            comandaDispatcher = mockk(relaxed = true),
+            cambiosDelPapel = cambios,
+        )
+
+        assertTrue("con su GET en vuelo ya emite", cobrar.state.value.issueWorkspace)
+        tarda.complete(Unit)
+    }
+
+    @Test
+    fun `r8 la lectura vieja de la sesión anterior no cierra la hoja de la nueva`() = runTest {
+        // Codex r8 #4: A guarda y su GET tarda; entra B y abre su hoja; llega el GET de A.
+        respondeAjustes(ajustes())
+        val vm = vm()
+        vm.consultar(disparo(1, sesion = 1))
+        vm.elegir(PapelDelAparato.Cobra)
+        val tarda = CompletableDeferred<Unit>()
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers { tarda.await(); AreaTicketEnvelope(true, ajustes()) }
+        every { storage.generacion } returns 0L
+        vm.guardar() // el GET de A queda en vuelo
+
+        every { storage.generacion } returns 1L
+        respondeAjustes(ajustes())
+        vm.consultar(disparo(2, sesion = 2)) // entra B: su propia pregunta
+        assertTrue(vm.hoja.value!!.primeraVez)
+        assertFalse(vm.hoja.value!!.guardando)
+        tarda.complete(Unit)
+
+        assertNotNull("la hoja de B sigue", vm.hoja.value)
+        coVerify(exactly = 0) { api.setAreaTicketRole(any(), any(), any()) }
+    }
+
+    @Test
+    fun `r8 si la respuesta del PUT llega con otra persona adentro no navega ni dice listo`() = runTest {
+        respondeAjustes(ajustes())
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } coAnswers {
+            every { storage.generacion } returns 1L // otro login mientras viajaba el PUT
+            AreaTicketEnvelope(true, ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true)))
+        }
+        every { storage.generacion } returns 0L
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.Cobra)
+
+        vm.guardar()
+
+        assertNull(vm.guardado.value)
+        assertFalse(vm.irAlInicio.value)
+        assertNull("no se aplicó a la navegación", hojaAbiertaAlAplicar)
+    }
+
+    @Test
+    fun `r8 si la lectura previa da 403 dice que pida permiso, no que falta internet`() = runTest {
+        respondeAjustes(ajustes())
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.Cobra)
+        coEvery { api.getAreaTicketSettings("v1") } throws httpError(403, "FORBIDDEN", "Acceso prohibido")
+
+        vm.guardar()
+
+        assertEquals("Pídele a tu administrador que lo configure", vm.hoja.value!!.error)
+        assertFalse(vm.hoja.value!!.guardando)
+        coVerify(exactly = 0) { api.setAreaTicketRole(any(), any(), any()) }
+    }
+
+    @Test
+    fun `r9 un Cobrar nuevo arranca con lo último que dijo el servidor, no con un guardado más viejo`() = runTest {
+        // Codex r9 R1: se guardó «Emite»; luego el panel lo pasó a «Cobra» y una consulta ya lo trajo. El Cobrar que nace
+        // después no revive «Emite».
+        val cremeria = AreaTicketArea("a1", "Cremería", "HOLD_UNTIL_PAID")
+        val emisor = ajustes(
+            pendiente = false,
+            terminal = AreaTicketTerminalCapabilities(
+                id = "t1", name = "PC", fulfillmentArea = cremeria, canIssueAreaTickets = true, defaultWorkspace = "AREA_OPERATIONS",
+            ),
+        )
+        val caja = ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true))
+        respondeAjustes(ajustes())
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } returns AreaTicketEnvelope(true, emisor)
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.EmiteVales("a1", "Cremería"))
+        vm.guardar()
+        respondeAjustes(caja)
+        vm.consultar(disparo(2)) // la consulta ya trae «Cobra»
+        val tarda = CompletableDeferred<Unit>()
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers { tarda.await(); AreaTicketEnvelope(true, caja) }
+        every { storage.pendingAreaTicketPrintRecords } returns null
+        every { storage.pendingAreaTicketPrintVenueId } returns null
+
+        val cobrar = AreaTicketOperationsViewModel(
+            repository = repo,
+            printerService = mockk(relaxed = true),
+            pdfGenerator = mockk(relaxed = true),
+            secureStorage = storage,
+            comandaDispatcher = mockk(relaxed = true),
+            cambiosDelPapel = cambios,
+        )
+
+        assertFalse("no revive el «Emite» viejo", cobrar.state.value.issueWorkspace)
+        tarda.complete(Unit)
+    }
+
+    @Test
+    fun `r9 la respuesta vieja de A no cierra la hoja de B aunque las dos guarden lo mismo`() = runTest {
+        // Codex r9 #4: dos hojas con el mismo contenido (Cobra, guardando) de sesiones distintas.
+        respondeAjustes(ajustes())
+        val vm = vm()
+        vm.consultar(disparo(1, sesion = 1))
+        vm.elegir(PapelDelAparato.Cobra)
+        val deA = CompletableDeferred<Unit>()
+        val deB = CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers {
+            when (++lecturas) {
+                1 -> deA.await() // el GET previo de A
+                3 -> deB.await() // el GET previo de B
+            }
+            AreaTicketEnvelope(true, ajustes())
+        }
+        every { storage.generacion } returns 0L
+        vm.guardar()
+
+        every { storage.generacion } returns 1L
+        vm.consultar(disparo(2, sesion = 2)) // entra B (lectura 2): su pregunta
+        vm.elegir(PapelDelAparato.Cobra)
+        vm.guardar() // B también guarda «Cobra» (lectura 3, en vuelo)
+        deA.complete(Unit)
+
+        assertTrue("la hoja de B sigue guardando", vm.hoja.value?.guardando == true)
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } returns AreaTicketEnvelope(
+            true, ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true)),
+        )
+        deB.complete(Unit)
+        assertEquals("el guardado de B termina", PapelDelAparato.Cobra, vm.guardado.value)
+    }
+
+    @Test
+    fun `r9 la respuesta del PUT que llega con otra sesión no queda como copia`() = runTest {
+        respondeAjustes(ajustes())
+        val caja = ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true))
+        coEvery { api.setAreaTicketRole("v1", "t1", any()) } coAnswers {
+            every { storage.generacion } returns 1L // otro login mientras viajaba el PUT
+            AreaTicketEnvelope(true, caja)
+        }
+        every { storage.generacion } returns 0L
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.Cobra)
+
+        vm.guardar()
+
+        assertNull("la copia no es la respuesta de la sesión anterior", repo.ajustesGuardados("v1")?.takeIf { it == caja })
+    }
+
+    @Test
+    fun `r8 mientras guarda no cambia la selección`() = runTest {
+        respondeAjustes(ajustes())
+        coEvery { api.setAreaTicketRole(any(), any(), any()) } returns AreaTicketEnvelope(
+            true, ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true)),
+        )
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.Cobra)
+        val tarda = CompletableDeferred<Unit>()
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers { tarda.await(); AreaTicketEnvelope(true, ajustes()) }
+        vm.guardar()
+
+        vm.elegir(PapelDelAparato.EmiteVales("a1", "Cremería"))
+
+        assertEquals(PapelDelAparato.Cobra, vm.hoja.value!!.seleccion)
+        tarda.complete(Unit)
+    }
+
+    @Test
     fun `cerrar la hoja de Más no calla la pregunta de primera vez`() = runTest {
         // Arrancó sin red (no preguntó), abrió Más con los ajustes guardados y cerró la hoja; al volver la red pregunta.
         respondeAjustes(ajustes())

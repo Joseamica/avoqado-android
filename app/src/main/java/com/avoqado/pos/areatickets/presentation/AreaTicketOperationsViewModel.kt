@@ -201,6 +201,9 @@ class AreaTicketOperationsViewModel @Inject constructor(
             },
         )
         cargarValeSinConfirmar(secureStorage.venueId, mostrar = true)
+        // Codex r8 #1: tras guardar «Emite» la navegación crea este Cobrar DESPUÉS del aviso; sin esto ofrecía cobrar
+        // hasta que llegara su GET.
+        repository.ajustesGuardados(secureStorage.venueId)?.let { _state.value = _state.value.copy(settings = it) }
         refresh()
         // D3 (Codex final #2): guardar el papel (aunque sea sólo otra área, que no rehace la navegación) llega aquí al
         // instante; un refresco que salió antes ya no lo pisa.

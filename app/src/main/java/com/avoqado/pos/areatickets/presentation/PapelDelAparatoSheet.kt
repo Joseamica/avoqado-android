@@ -14,10 +14,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -57,9 +60,14 @@ fun PapelDelAparatoSheet(
 ) {
     val esEscritorio = LocalEsEscritorio.current
     val motivo = estado.motivo(hayRed)
+    val guardando by rememberUpdatedState(estado.guardando)
     AvoqadoModalBottomSheet(
         onDismissRequest = onCerrar,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // Codex r8 #2: mientras guarda no se esconde (arrastrar o tocar fuera); si no, un rechazo quedaría en una hoja oculta.
+        sheetState = rememberModalBottomSheetState(
+            skipPartiallyExpanded = true,
+            confirmValueChange = { it != SheetValue.Hidden || !guardando },
+        ),
     ) {
         Column(
             modifier = Modifier

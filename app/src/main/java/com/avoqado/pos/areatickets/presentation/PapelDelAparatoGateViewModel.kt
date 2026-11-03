@@ -6,6 +6,7 @@ import com.avoqado.pos.areatickets.data.AreaOpcion
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
 import com.avoqado.pos.areatickets.data.ResultadoPapel
+import com.avoqado.pos.areatickets.data.resultadoDelFallo
 import com.avoqado.pos.areatickets.domain.PapelDelAparato
 import com.avoqado.pos.areatickets.domain.etiquetaDelRecuadro
 import com.avoqado.pos.areatickets.domain.mismoPapel
@@ -19,6 +20,7 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,6 +59,8 @@ data class HojaDelPapel(
     val error: String? = null,
     /** El papel que la hoja enseñó como el de hoy al abrirse; «Guardar» lo compara con el servidor (Codex r6). */
     val partida: PapelDelAparato = seleccion,
+    /** Qué guardado la marcó: dos hojas iguales de sesiones distintas no se confunden (Codex r9 #4). */
+    val operacion: Long = 0L,
 ) {
     fun motivo(hayRed: Boolean): String? = motivoParaNoGuardar(puedeConfigurar, hayRed, ventaAMedias)
 }
@@ -122,6 +126,7 @@ class PapelDelAparatoGateViewModel @Inject constructor(
     private val calladas = mutableSetOf<String>()
     private var sesionVista = 0
     private var consulta: Job? = null
+    private var operaciones = 0L
 
     fun consultar(disparo: ConsultaDelPapel) {
         if (disparo.vez == 0) return
@@ -163,7 +168,8 @@ class PapelDelAparatoGateViewModel @Inject constructor(
     }
 
     fun elegir(papel: PapelDelAparato) {
-        _hoja.update { it?.copy(seleccion = papel, error = null) }
+        // Codex r8 #9: mientras guarda, la selección no cambia (si no, la elección visible no sería la que se manda).
+        _hoja.update { if (it == null || it.guardando) it else it.copy(seleccion = papel, error = null) }
     }
 
     fun guardar() {
@@ -174,30 +180,42 @@ class PapelDelAparatoGateViewModel @Inject constructor(
             _hoja.value = hoja.copy(ventaAMedias = venta)
             return
         }
-        _hoja.value = hoja.copy(guardando = true, error = null, ventaAMedias = false)
+        val enCurso = hoja.copy(guardando = true, error = null, ventaAMedias = false, operacion = ++operaciones)
+        _hoja.value = enCurso
         val sesion = secureStorage.generacion
+        // Codex r8 #4: todo lo que viene después sólo toca ESTA hoja; si otra sesión ya puso la suya, no se le mueve.
+        fun sigueSiendoLaMisma() = secureStorage.generacion == sesion && secureStorage.venueId == hoja.venueId
         viewModelScope.launch {
             // Codex r6: la hoja pudo abrirse con la copia de sin red. Si el panel cambió el papel mientras tanto, no se pisa
             // a ciegas: la hoja toma el papel de ahora y pide revisar.
-            val frescos = runCatching { repository.settings(soloServidor = true) }.getOrNull()
-            if (frescos == null || frescos.venueId != hoja.venueId) {
-                _hoja.update {
-                    it?.copy(guardando = false, error = motivoParaNoGuardar(puedeConfigurar = true, hayRed = false, ventaAMedias = false))
-                }
+            val frescos = try {
+                repository.settings(soloServidor = true)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                // Codex r8 #8: el motivo real (permiso, aparato no registrado), no siempre «Necesita internet».
+                _hoja.compareAndSet(enCurso, enCurso.copy(guardando = false, error = textoDe(resultadoDelFallo(error))))
                 return@launch
             }
             // Codex r7: si entró otra persona mientras viajaba la lectura, su sesión no manda la elección de la anterior.
-            if (secureStorage.generacion != sesion || secureStorage.venueId != hoja.venueId) {
-                _hoja.value = null
+            if (!sigueSiendoLaMisma() || frescos.venueId != hoja.venueId) {
+                _hoja.compareAndSet(enCurso, null)
                 return@launch
             }
             val ahora = hojaPara(frescos, hoja.primeraVez)
             if (!mismoPapel(ahora.partida, hoja.partida)) {
                 _ajustes.value = frescos
-                _hoja.value = ahora.copy(error = textoCambioEnElPanel(ahora.partida))
+                _hoja.compareAndSet(enCurso, ahora.copy(error = textoCambioEnElPanel(ahora.partida)))
                 return@launch
             }
-            val error = when (val resultado = repository.guardarPapel(hoja.venueId, hoja.terminalId, hoja.seleccion)) {
+            val resultado = repository.guardarPapel(hoja.venueId, hoja.terminalId, hoja.seleccion, sello = sesion)
+            // Codex r8 #5: la respuesta que llega con otra persona adentro no navega ni le enseña «¡Listo!»; su siguiente
+            // consulta trae lo que quedó en el servidor.
+            if (!sigueSiendoLaMisma()) {
+                _hoja.compareAndSet(enCurso, null)
+                return@launch
+            }
+            val error = when (resultado) {
                 is ResultadoPapel.Guardado -> {
                     // 🔴 Codex final #1: el papel nuevo se aplica con ESTA respuesta, con la hoja abierta y el carrito vacío.
                     val terminal = resultado.ajustes.terminal
@@ -212,17 +230,22 @@ class PapelDelAparatoGateViewModel @Inject constructor(
                     )
                     cambiosDelPapel.publicar(resultado.ajustes)
                     _ajustes.value = resultado.ajustes
-                    _hoja.value = null
+                    _hoja.compareAndSet(enCurso, null)
                     _guardado.value = hoja.seleccion
                     _irAlInicio.value = true
                     return@launch
                 }
-                ResultadoPapel.SinPermiso -> motivoParaNoGuardar(puedeConfigurar = false, hayRed = true, ventaAMedias = false)
-                ResultadoPapel.SinRed -> motivoParaNoGuardar(puedeConfigurar = true, hayRed = false, ventaAMedias = false)
-                is ResultadoPapel.Rechazado -> resultado.mensaje
+                else -> textoDe(resultado)
             }
-            _hoja.update { it?.copy(guardando = false, error = error) }
+            _hoja.compareAndSet(enCurso, enCurso.copy(guardando = false, error = error))
         }
+    }
+
+    private fun textoDe(resultado: ResultadoPapel): String? = when (resultado) {
+        is ResultadoPapel.Guardado -> null
+        ResultadoPapel.SinPermiso -> motivoParaNoGuardar(puedeConfigurar = false, hayRed = true, ventaAMedias = false)
+        ResultadoPapel.SinRed -> motivoParaNoGuardar(puedeConfigurar = true, hayRed = false, ventaAMedias = false)
+        is ResultadoPapel.Rechazado -> resultado.mensaje
     }
 
     /** La X, atrás o tocar fuera: la cierra SIN callarla (vuelve en el siguiente momento), como iOS. */
