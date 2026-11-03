@@ -1,11 +1,13 @@
 package com.avoqado.pos.areatickets.data
 
 import android.util.Log
+import com.avoqado.pos.areatickets.domain.PapelDelAparato
 import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +20,8 @@ class AreaTicketException(
     val code: String,
     override val message: String,
     val retryable: Boolean,
+    /** El status HTTP, si vino del servidor (Codex r8: la lectura de «Guardar» distingue el 403). */
+    val status: Int? = null,
 ) : Exception(message)
 
 private val areaTicketErrorJson = Json { ignoreUnknownKeys = true }
@@ -83,7 +87,24 @@ internal fun parseAreaTicketHttpError(body: String?, statusCode: Int): AreaTicke
         code = code,
         message = message,
         retryable = apiError?.retryable == true || statusCode >= 500,
+        status = statusCode,
     )
+}
+
+/** D3: cómo terminó guardar el papel del aparato. */
+sealed interface ResultadoPapel {
+    data class Guardado(val ajustes: AreaTicketSettingsData) : ResultadoPapel
+    data object SinPermiso : ResultadoPapel
+    data object SinRed : ResultadoPapel
+    data class Rechazado(val mensaje: String) : ResultadoPapel
+}
+
+/** Por qué falló la lectura que hace «Guardar» antes del PUT, con el mismo sentido que el PUT (Codex r8). */
+fun resultadoDelFallo(error: Throwable): ResultadoPapel = when {
+    error !is AreaTicketException || error.code == "AREA_TICKETS_REQUIRE_CONNECTION" -> ResultadoPapel.SinRed
+    error.status == 403 && error.code != "AREA_TICKETS_DISABLED" -> ResultadoPapel.SinPermiso
+    error.retryable -> ResultadoPapel.SinRed
+    else -> ResultadoPapel.Rechazado(error.message)
 }
 
 @Singleton
@@ -305,19 +326,41 @@ class AreaTicketRepository @Inject constructor(
             )
         }
 
-    suspend fun settings(): AreaTicketSettingsData {
+    /**
+     * D3 (Codex final r2 #2): sube al empezar y al terminar cada guardado del papel. Una consulta de ajustes que salió antes
+     * (con el papel viejo) y llega después ya no escribe la caché: sin red, Cobrar la recuperaría.
+     * ponytail: dos `save` que se cruzan en el disco no se ordenan entre sí; el del guardado sale después y gana en la práctica.
+     */
+    @Volatile private var versionDelPapel = 0
+
+    /**
+     * Lo último que dijo el servidor del papel: un guardado o una consulta que no quedó vencida (Codex r9 R1: un GET posterior
+     * al PUT también cuenta). Null mientras un guardado vuela o si falló. Lo recibe la consulta vencida.
+     */
+    @Volatile private var papelGuardado: AreaTicketSettingsData? = null
+
+    /** La última copia del servidor en ESTE negocio (Codex r8 #1: un Cobrar recién creado arranca con ella). */
+    fun ajustesGuardados(venueId: String?): AreaTicketSettingsData? = papelGuardado?.takeIf { it.venueId == venueId }
+
+    /** [soloServidor]: sin la copia de sin red (lo pide «Guardar» del papel para no pisar un cambio del panel, Codex r6). */
+    suspend fun settings(soloServidor: Boolean = false): AreaTicketSettingsData {
         val venueId = venueId()
         session.ensureVenue(venueId)
+        val version = versionDelPapel
         return try {
-            request { api.getAreaTicketSettings(venueId) }.also { settings ->
+            val settings = request { api.getAreaTicketSettings(venueId) }
+            // Codex final r3: vencida, devuelve lo guardado (como iOS); con su roleChoicePending viejo la compuerta volvía a preguntar.
+            if (versionDelPapel != version) return papelGuardado?.takeIf { it.venueId == venueId } ?: settings
+            papelGuardado = settings
+            settings.also {
                 payloadCache.save(
                     PayloadCache.TYPE_AREA_TICKET_SETTINGS,
                     venueId,
-                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), settings),
+                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), it),
                 )
             }
         } catch (error: Exception) {
-            if (error is AreaTicketException && !error.retryable) throw error
+            if (soloServidor || (error is AreaTicketException && !error.retryable)) throw error
 
             val cached = payloadCache.load(PayloadCache.TYPE_AREA_TICKET_SETTINGS, venueId)
                 ?: throw error
@@ -328,7 +371,47 @@ class AreaTicketRepository @Inject constructor(
                     TAG,
                     "🗂️ Configuración de vales hidratada del cache (hace ${cached.ageMinutes} min)",
                 )
+            }.map {
+                // Codex r8: un guardado del papel que terminó mientras se leía el disco gana sobre esa copia.
+                if (versionDelPapel != version) papelGuardado?.takeIf { g -> g.venueId == venueId } ?: it else it
             }.getOrElse { throw error }
+        }
+    }
+
+    /**
+     * D3: guarda en el servidor el papel de ESTE aparato en los vales. Online-only a propósito: sin red no se encola
+     * (lo único que cuenta es lo que guardó el servidor). Al guardar, la caché de ajustes queda con la respuesta.
+     */
+    /** [sello]: la generación de la sesión que tocó «Guardar»; si al volver ya es otra, la respuesta no queda como copia (Codex r9 #5). */
+    suspend fun guardarPapel(venueId: String, terminalId: String, eleccion: PapelDelAparato, sello: Long? = null): ResultadoPapel {
+        val cuerpo = when (eleccion) {
+            PapelDelAparato.Cobra -> JsonObject(mapOf("role" to JsonPrimitive("CHECKOUT")))
+            is PapelDelAparato.EmiteVales ->
+                JsonObject(mapOf("role" to JsonPrimitive("ISSUE"), "fulfillmentAreaId" to JsonPrimitive(eleccion.areaId)))
+            PapelDelAparato.Entrega, PapelDelAparato.SinElegir -> return ResultadoPapel.Rechazado("Elige una opción.")
+        }
+        versionDelPapel++
+        papelGuardado = null
+        return try {
+            val ajustes = api.setAreaTicketRole(venueId, terminalId, cuerpo).unwrap()
+            versionDelPapel++
+            if (sello == null || secureStorage.generacion == sello) {
+                papelGuardado = ajustes
+                payloadCache.save(
+                    PayloadCache.TYPE_AREA_TICKET_SETTINGS,
+                    venueId,
+                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), ajustes),
+                )
+            }
+            ResultadoPapel.Guardado(ajustes)
+        } catch (error: HttpException) {
+            val rechazo = parseAreaTicketHttpError(error.response()?.errorBody()?.string(), error.code())
+            if (error.code() == 403 && rechazo.code != "AREA_TICKETS_DISABLED") ResultadoPapel.SinPermiso
+            else ResultadoPapel.Rechazado(rechazo.message)
+        } catch (error: AreaTicketException) {
+            ResultadoPapel.Rechazado(error.message)
+        } catch (error: java.io.IOException) {
+            ResultadoPapel.SinRed
         }
     }
 
