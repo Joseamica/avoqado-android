@@ -1,0 +1,29 @@
+name: Línea de iOS
+
+# iOS va después (founder, 3-nov-2026): cada PR a develop dice qué pasa con iOS, para que nada se quede sin anotar.
+# Regla: AGENTS.md del workspace, «Producto entre repos». Recetario: docs/proyectos/ios-por-hacer.md del workspace.
+# Se borra el día que le toque su turno a iOS.
+
+on:
+  pull_request:
+    branches: [develop]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  linea-ios:
+    name: El PR dice qué pasa con iOS
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Buscar la línea de iOS en la descripción
+        env:
+          CUERPO: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s\n' "$CUERPO" | grep -Eq '^[[:space:]*_-]*iOS[*_]*:[*_]*[[:space:]]*[^[:space:]*_]'; then
+            echo "✅ El PR dice qué pasa con iOS."
+          else
+            echo "::error::Falta la línea de iOS en la descripción del PR. Agrega «iOS: <título de la ficha>» o «iOS: no aplica (razón)». Cómo se anota: docs/proyectos/ios-por-hacer.md del workspace."
+            exit 1
+          fi
