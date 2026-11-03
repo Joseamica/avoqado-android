@@ -8,6 +8,7 @@ import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
 import com.avoqado.pos.areatickets.data.ResultadoPapel
 import com.avoqado.pos.areatickets.domain.PapelDelAparato
 import com.avoqado.pos.areatickets.domain.etiquetaDelRecuadro
+import com.avoqado.pos.areatickets.domain.mismoPapel
 import com.avoqado.pos.areatickets.domain.motivoParaNoGuardar
 import com.avoqado.pos.areatickets.domain.papelActual
 import com.avoqado.pos.areatickets.domain.textoCambioEnElPanel
@@ -174,6 +175,7 @@ class PapelDelAparatoGateViewModel @Inject constructor(
             return
         }
         _hoja.value = hoja.copy(guardando = true, error = null, ventaAMedias = false)
+        val sesion = secureStorage.generacion
         viewModelScope.launch {
             // Codex r6: la hoja pudo abrirse con la copia de sin red. Si el panel cambió el papel mientras tanto, no se pisa
             // a ciegas: la hoja toma el papel de ahora y pide revisar.
@@ -184,8 +186,13 @@ class PapelDelAparatoGateViewModel @Inject constructor(
                 }
                 return@launch
             }
+            // Codex r7: si entró otra persona mientras viajaba la lectura, su sesión no manda la elección de la anterior.
+            if (secureStorage.generacion != sesion || secureStorage.venueId != hoja.venueId) {
+                _hoja.value = null
+                return@launch
+            }
             val ahora = hojaPara(frescos, hoja.primeraVez)
-            if (ahora.partida != hoja.partida) {
+            if (!mismoPapel(ahora.partida, hoja.partida)) {
                 _ajustes.value = frescos
                 _hoja.value = ahora.copy(error = textoCambioEnElPanel(ahora.partida))
                 return@launch

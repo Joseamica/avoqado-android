@@ -35,6 +35,12 @@ fun etiquetaDelRecuadro(papel: PapelDelAparato): String = when (papel) {
     PapelDelAparato.SinElegir -> "Sin elegir"
 }
 
+/** El mismo papel aunque el panel haya renombrado el área: se compara por su id, no por su nombre (Codex r7). Igual en iOS. */
+fun mismoPapel(a: PapelDelAparato, b: PapelDelAparato): Boolean = when {
+    a is PapelDelAparato.EmiteVales && b is PapelDelAparato.EmiteVales -> a.areaId == b.areaId && a.tambienCobra == b.tambienCobra
+    else -> a == b
+}
+
 /** «Guardar» encontró que el papel cambió en el panel desde que se abrió la hoja (Codex r6). Igual en iOS. */
 fun textoCambioEnElPanel(papel: PapelDelAparato): String =
     "En el panel lo cambiaron a «${etiquetaDelRecuadro(papel)}». Revisa y vuelve a guardar."

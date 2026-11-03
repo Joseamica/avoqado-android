@@ -441,6 +441,50 @@ class PapelDelAparatoGateViewModelTest {
     }
 
     @Test
+    fun `renombrar el área en el panel no cuenta como otro papel`() = runTest {
+        // Codex r7: mismo id de área con otro nombre no es otro papel; «Guardar» manda lo elegido sin avisar.
+        fun emisor(nombre: String) = ajustes(
+            pendiente = false,
+            terminal = AreaTicketTerminalCapabilities(
+                id = "t1", name = "PC", fulfillmentArea = AreaTicketArea("a1", nombre, "HOLD_UNTIL_PAID"), canIssueAreaTickets = true,
+            ),
+        )
+        respondeAjustes(emisor("Cremería"))
+        val caja = ajustes(pendiente = false, terminal = AreaTicketTerminalCapabilities(id = "t1", name = "PC", canCheckoutAreaTickets = true))
+        coEvery { api.setAreaTicketRole(any(), any(), any()) } returns AreaTicketEnvelope(true, caja)
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.abrirDesdeMas()
+        vm.elegir(PapelDelAparato.Cobra)
+        respondeAjustes(emisor("Lácteos"))
+
+        vm.guardar()
+
+        coVerify(exactly = 1) { api.setAreaTicketRole(any(), any(), any()) }
+        assertEquals(PapelDelAparato.Cobra, vm.guardado.value)
+    }
+
+    @Test
+    fun `si entra otra persona mientras Guardar revisa el papel, no se manda con su sesión`() = runTest {
+        // Codex r7: la lectura previa tarda; entra otro administrador (sube la generación de la sesión). La elección de la
+        // sesión anterior no sale con las credenciales de la nueva.
+        respondeAjustes(ajustes())
+        val vm = vm()
+        vm.consultar(disparo(1))
+        vm.elegir(PapelDelAparato.Cobra)
+        every { storage.generacion } returns 0L
+        coEvery { api.getAreaTicketSettings("v1") } coAnswers {
+            every { storage.generacion } returns 1L // otro login mientras viaja el GET
+            AreaTicketEnvelope(true, ajustes())
+        }
+
+        vm.guardar()
+
+        coVerify(exactly = 0) { api.setAreaTicketRole(any(), any(), any()) }
+        assertNull(vm.hoja.value)
+    }
+
+    @Test
     fun `cerrar la hoja de Más no calla la pregunta de primera vez`() = runTest {
         // Arrancó sin red (no preguntó), abrió Más con los ajustes guardados y cerró la hoja; al volver la red pregunta.
         respondeAjustes(ajustes())
