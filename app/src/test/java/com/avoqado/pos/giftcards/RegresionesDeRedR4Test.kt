@@ -63,7 +63,7 @@ class RegresionesDeRedR4Test {
     }
     @Test fun `declaracion despachada cierra y deja visible el rechazo ambar`() {
         val codigo = fuente("PaymentResultScreen").replace(Regex("\\s+"), "")
-        assertTrue("La declaración cierra antes de entregar el envío al modelo", codigo.contains("if(cerrarDialogoDeRecibo(true))pedirConfirmacionDeclaracion=falseonDeclararNoCobrado()"))
+        assertTrue("La declaración cierra antes de entregar el envío al modelo", codigo.contains("if(cerrarDialogoDeRecibo(true))onCerrar()onConfirmar()"))
         assertTrue(codigo.contains("text=message"))
         assertTrue(codigo.contains("color=if(declaracionRechazada)WarningelseMaterialTheme.colorScheme.onSurfaceVariant"))
         val flujo = fuente("PaymentFlowScreen").replace(Regex("\\s+"), "")

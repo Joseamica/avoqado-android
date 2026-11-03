@@ -57,6 +57,12 @@ class ExchangeViewModelTest {
         assertEquals(listOf("scan"), vm.searchProducts("750123456").map { it.id })
     }
 
+    @Test fun `barcode search does not distinguish upper and lower case`() {
+        catalog.value = listOf(Product("scan", "Shampoo", barcode = "ABC-750"))
+        val vm = vm(item())
+        assertEquals(listOf("scan"), vm.searchProducts("abc-750").map { it.id })
+    }
+
     @Test fun `same product without a family can replace a defective item at its paid price`() {
         val product = Product("line", "Shampoo", priceValue = 5.0)
         catalog.value = listOf(product)

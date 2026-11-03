@@ -67,7 +67,9 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -238,8 +240,9 @@ fun ReportsScreen(
                             }
                         }
 
-                        // Hourly Sales Chart (only for today)
-                        if (selectedPeriod == ReportPeriod.TODAY && data.hourlySales.isNotEmpty()) {
+                        // Hourly Sales Chart (only for today). Trae las 24 horas aunque no haya ventas: sólo se enseña con
+                        // alguna venta, como iOS.
+                        if (selectedPeriod == ReportPeriod.TODAY && data.hourlySales.any { it.grossSales > 0 }) {
                             item {
                                 HourlySalesChartSection(hourlySales = data.hourlySales)
                             }
@@ -787,12 +790,8 @@ private fun SalesChartSection(
     val spacing = AvoqadoTheme.spacing
     val grossSalesFormatted = String.format(Locale.US, "$%,.2f", totalGrossSales)
 
-    // Use hourly data for TODAY, period data otherwise
-    val chartValues: List<Pair<String, Double>> = if (selectedPeriod == ReportPeriod.TODAY) {
-        hourlySales.map { Pair(it.hourLabel, it.grossSales) }
-    } else {
-        periodSales.map { Pair(it.periodLabel, it.grossSales) }
-    }
+    // HOY va por hora del día; los demás periodos, por la serie del periodo. Cada punto trae ya la etiqueta de su eje.
+    val chartValues: List<Pair<String, Double>> = puntosDeVentasBrutas(selectedPeriod, periodSales, hourlySales)
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -847,28 +846,40 @@ private fun SalesLineChart(
     val primaryColor = MaterialTheme.colorScheme.primary
     val outlineVariantColor = MaterialTheme.colorScheme.outlineVariant
     val onSurfaceVariantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    // Hasta 7 fechas y los 2 textos del eje de dinero: que quepan en la caché del medidor y no se midan en cada cuadro.
+    val medidor = rememberTextMeasurer(cacheSize = 16)
+    val estiloDelEje = MaterialTheme.typography.labelSmall.copy(color = onSurfaceVariantColor)
 
     val maxValue = data.maxOfOrNull { it.second } ?: 1.0
     val minValue = 0.0
+    val conFecha = remember(data.size) { indicesConEtiqueta(data.size).toSet() }
 
     Canvas(modifier = modifier) {
-        val paddingLeft = 60.dp.toPx()
-        val paddingRight = 16.dp.toPx()
-        val paddingTop = 16.dp.toPx()
-        val paddingBottom = 40.dp.toPx()
+        if (data.isEmpty()) return@Canvas
+
+        // D6 (2-nov): la escala y las fechas se calculaban pero nunca se dibujaban, así que la gráfica salía sin escala. Como
+        // iOS (30-oct), el eje de dinero va a la DERECHA y a la altura de la gráfica: el máximo arriba y el cero abajo; las
+        // fechas van debajo de su punto, sin meterse bajo el eje de dinero.
+        val maximo = medidor.measure(etiquetaCortaDeDinero(maxValue), estiloDelEje)
+        val cero = medidor.measure(etiquetaCortaDeDinero(minValue), estiloDelEje)
+        val fechas = conFecha.filter { it < data.size }.associateWith { medidor.measure(data[it].first, estiloDelEje) }
+        val separacion = 6.dp.toPx()
+        val altoDeFecha = fechas.values.maxOfOrNull { it.size.height } ?: 0
+
+        val paddingLeft = 8.dp.toPx()
+        val paddingRight = maxOf(maximo.size.width, cero.size.width) + separacion
+        val paddingTop = maxOf(maximo.size.height, cero.size.height) / 2f
+        val paddingBottom = altoDeFecha + separacion
 
         val chartWidth = size.width - paddingLeft - paddingRight
         val chartHeight = size.height - paddingTop - paddingBottom
+        if (chartWidth <= 0f || chartHeight <= 0f) return@Canvas
 
-        if (data.isEmpty()) return@Canvas
-
-        // Grid lines & Y-axis labels (4 lines)
+        // Grid lines (5 lines)
         val gridLineCount = 4
         for (i in 0..gridLineCount) {
             val ratio = i.toFloat() / gridLineCount
             val y = paddingTop + chartHeight * (1f - ratio)
-            val value = minValue + (maxValue - minValue) * ratio
-            val valueLabel = String.format(Locale.US, "$%,.0f", value)
 
             drawLine(
                 color = outlineVariantColor,
@@ -926,12 +937,16 @@ private fun SalesLineChart(
             )
         }
 
-        // X-axis labels (every Nth point to avoid crowding)
-        val labelStep = (data.size / 5).coerceAtLeast(1)
-        data.forEachIndexed { index, (label, _) ->
-            if (index % labelStep == 0 || index == data.size - 1) {
-                val x = paddingLeft + index.toFloat() / (data.size - 1).coerceAtLeast(1) * chartWidth
-            }
+        // Eje de dinero, pegado a la derecha y centrado en su línea: el máximo arriba, el cero abajo.
+        drawText(maximo, topLeft = Offset(size.width - maximo.size.width, paddingTop - maximo.size.height / 2f))
+        drawText(cero, topLeft = Offset(size.width - cero.size.width, paddingTop + chartHeight - cero.size.height / 2f))
+
+        // Fechas: una de cada `n / 6` y siempre la última, centradas en su punto sin salirse de la gráfica.
+        val bordeDerecho = paddingLeft + chartWidth
+        fechas.forEach { (index, fecha) ->
+            val x = paddingLeft + index.toFloat() / (data.size - 1).coerceAtLeast(1) * chartWidth
+            val izquierda = (x - fecha.size.width / 2f).coerceIn(0f, (bordeDerecho - fecha.size.width).coerceAtLeast(0f))
+            drawText(fecha, topLeft = Offset(izquierda, paddingTop + chartHeight + separacion))
         }
     }
 }
@@ -1247,20 +1262,30 @@ private fun HourlyBarChart(
     val primaryColor = MaterialTheme.colorScheme.primary
     val outlineVariantColor = MaterialTheme.colorScheme.outlineVariant
     val onSurfaceVariantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    // 8 horas rotuladas (12a, 3a … 9p): que quepan en la caché del medidor.
+    val medidor = rememberTextMeasurer(cacheSize = 16)
+    val estiloDelEje = MaterialTheme.typography.labelSmall.copy(color = onSurfaceVariantColor)
+    val conHora = remember(data.size) { indicesDeHoraConEtiqueta(data.size).toSet() }
 
     val maxValue = data.maxOfOrNull { it.grossSales } ?: 1.0
 
     Canvas(modifier = modifier) {
+        if (data.isEmpty()) return@Canvas
+
+        // D6 (2-nov): las horas se reservaban abajo pero nunca se dibujaban. Como iOS, una de cada tres barras lleva su hora.
+        val horas = conHora.filter { it < data.size }
+            .associateWith { medidor.measure(etiquetaCortaDeHora(data[it].hour), estiloDelEje) }
+        val separacion = 4.dp.toPx()
+        val altoDeHora = horas.values.maxOfOrNull { it.size.height } ?: 0
+
         val paddingLeft = 8.dp.toPx()
         val paddingRight = 8.dp.toPx()
         val paddingTop = 8.dp.toPx()
-        val paddingBottom = 28.dp.toPx()
-        val labelStep = 3
+        val paddingBottom = maxOf(28.dp.toPx(), altoDeHora + separacion)
 
         val chartWidth = size.width - paddingLeft - paddingRight
         val chartHeight = size.height - paddingTop - paddingBottom
-
-        if (data.isEmpty()) return@Canvas
+        if (chartWidth <= 0f || chartHeight <= 0f) return@Canvas
 
         val barCount = data.size
         val totalGapWidth = (barCount - 1) * 2.dp.toPx()
@@ -1279,6 +1304,13 @@ private fun HourlyBarChart(
                 size = Size(barWidth, barHeight.coerceAtLeast(2.dp.toPx())),
                 cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
             )
+        }
+
+        // La hora va centrada debajo de su barra, sin salirse de la gráfica.
+        horas.forEach { (index, hora) ->
+            val centro = paddingLeft + index * (barWidth + 2.dp.toPx()) + barWidth / 2f
+            val izquierda = (centro - hora.size.width / 2f).coerceIn(0f, (size.width - hora.size.width).coerceAtLeast(0f))
+            drawText(hora, topLeft = Offset(izquierda, paddingTop + chartHeight + separacion))
         }
     }
 }

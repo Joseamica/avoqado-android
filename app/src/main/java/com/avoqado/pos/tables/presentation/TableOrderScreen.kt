@@ -90,6 +90,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.parecidoACodigo
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
@@ -848,7 +849,7 @@ fun TableOrderScreen(
                 showBarcodeScanner = false
                 val matched = catalogViewModel.products.value.find { product ->
                     product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                }
+                } ?: catalogViewModel.products.value.parecidoACodigo(barcode)
                 if (matched != null) {
                     handleProductTap(matched)
                     panelTab = PanelTab.CUENTA

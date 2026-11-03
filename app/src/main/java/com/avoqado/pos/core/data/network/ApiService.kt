@@ -14,6 +14,7 @@ import retrofit2.http.GET
 import retrofit2.http.HTTP
 import retrofit2.http.Headers
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -100,6 +101,18 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/area-ticket-settings")
     suspend fun getAreaTicketSettings(
         @Path("venueId") venueId: String,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketSettingsData>
+
+    /**
+     * D3: el aparato guarda SU papel en los vales (el servidor lo busca por el `x-device-id`). El cuerpo va como objeto a
+     * mano: el servidor rechaza cualquier llave de más y el `Json` compartido manda los nulos (`explicitNulls`).
+     */
+    @Headers("X-Avoqado-Local-Error: 1")
+    @PUT("mobile/venues/{venueId}/terminals/{terminalId}/area-role")
+    suspend fun setAreaTicketRole(
+        @Path("venueId") venueId: String,
+        @Path("terminalId") terminalId: String,
+        @Body body: kotlinx.serialization.json.JsonObject,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketSettingsData>
 
     @Headers("X-Avoqado-Local-Error: 1")

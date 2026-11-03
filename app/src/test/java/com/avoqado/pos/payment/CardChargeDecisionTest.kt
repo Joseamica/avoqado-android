@@ -143,10 +143,10 @@ class CardChargeDecisionTest {
     }
 
     @Test
-    fun `FAILED con OPERATOR_RECONCILED dice que la terminal confirmó que no hubo tarjeta`() {
+    fun `FAILED con OPERATOR_RECONCILED dice que lo confirmó un cajero, no la terminal`() {
         val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "OPERATOR_RECONCILED"), isFinalAttempt = true)
         val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
-        assertEquals("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.", out.message)
+        assertEquals("Un cajero confirmó que no se cobró. Puedes volver a cobrar.", out.message)
     }
 
     // 🔴 21-sep-2026: el webhook del procesador (AngelPay y Blumon) ya trae los RECHAZOS del banco — 187 en
@@ -506,6 +506,26 @@ class CardChargeDecisionTest {
         )
         assertTrue(message, message.contains("La terminal X está ocupada procesando otro cobro"))
         assertTrue(message, message.contains("NO se envió"))
+    }
+
+    @Test
+    fun `P1 el 409 de la orden dice Esta venta tiene un cobro pendiente de confirmar`() {
+        // C1 (22-oct): con `scope = ORDER` lo que está ocupado es la VENTA, en cualquier terminal. La frase de terminal
+        // ocupada («elige otra terminal») ahí no aplica: otra terminal recibiría el mismo rechazo.
+        val deLaOrden = CardChargeDecision.busyMessage(
+            CreationRejection("TERMINAL_BUSY", "otra", amountCents = 12550, ageSeconds = 200, senderDevice = "Sunmi D3", scope = "ORDER"),
+            serverMessage = "Esta venta tiene un cobro pendiente de confirmar. Consulta su resultado antes de volver a pasar la tarjeta.",
+        )
+        assertEquals("Esta venta tiene un cobro pendiente de confirmar.", deLaOrden)
+        // La terminal ocupada (y un servidor viejo, sin alcance) se quedan con el texto de siempre.
+        for (alcance in listOf("TERMINAL", null)) {
+            val deLaTerminal = CardChargeDecision.busyMessage(
+                CreationRejection("TERMINAL_BUSY", "otra", amountCents = 12550, ageSeconds = 200, senderDevice = "Sunmi D3", scope = alcance),
+                serverMessage = null,
+            )
+            assertTrue(deLaTerminal, deLaTerminal.startsWith("Terminal ocupada: otro cobro de \$125.50"))
+            assertTrue(deLaTerminal, deLaTerminal.contains("NO se envió"))
+        }
     }
 
     // --- Resultado TARDÍO cruzado con el veredicto que ya se supo (P1 de Codex, 20-sep) ---

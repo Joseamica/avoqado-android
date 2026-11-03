@@ -23,8 +23,12 @@ import javax.inject.Singleton
 @Singleton
 class TimeEntryRepository @Inject constructor(
     private val secureStorage: SecureStorage,
-    private val client: OkHttpClient,
+    client: OkHttpClient,
 ) {
+    // Los cuerpos del checador contienen PIN y no deben registrarse.
+    private val client = client.newBuilder()
+        .apply { interceptors().removeAll { it is okhttp3.logging.HttpLoggingInterceptor } }
+        .build()
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val pinRegex = Regex("^\\d{4,10}$")
 

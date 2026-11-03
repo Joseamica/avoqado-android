@@ -670,6 +670,39 @@ class TpvSettingsRepository internal constructor(
     }
 
     /**
+     * D3 (Codex final #1): el servidor ya guardó el papel de ESTE aparato en los vales (la respuesta del PUT). Se aplica EN
+     * EL MOMENTO, con la hoja todavía abierta y el carrito comprobado vacío: esperar otra consulta dejaba que la llave del
+     * NavHost cambiara después, con una venta ya empezada, y la borrara. Un refresco completo que salió antes ya no puede
+     * escribir encima el papel viejo: se le vence el boleto.
+     */
+    suspend fun aplicarPapelDeVales(
+        venueId: String,
+        terminalId: String,
+        defaultWorkspace: String,
+        canIssueAreaTickets: Boolean,
+        canCheckoutAreaTickets: Boolean,
+        canDeliverAreaTickets: Boolean,
+        fulfillmentAreaId: String?,
+    ) {
+        val aplicado = synchronized(ticketLock) {
+            val actual = _terminalNavigation.value
+            if (secureStorage.venueId != venueId || loadedVenueId != venueId) return
+            if (actual.terminalId != null && actual.terminalId != terminalId) return
+            refreshTicket.incrementAndGet()
+            _isLoading.value = false // el `finally` del refresco vencido ya no la baja
+            actual.copy(
+                terminalId = terminalId,
+                defaultWorkspace = defaultWorkspace,
+                canIssueAreaTickets = canIssueAreaTickets,
+                canCheckoutAreaTickets = canCheckoutAreaTickets,
+                canDeliverAreaTickets = canDeliverAreaTickets,
+                fulfillmentAreaId = fulfillmentAreaId,
+            ).also { _terminalNavigation.value = it }
+        }
+        persistTerminalNavigation(venueId, aplicado)
+    }
+
+    /**
      * Refresco SUAVE (cada 5 min, lo llama `RefrescoDelCatalogo`): pide `/settings` y cambia SÓLO `visibleCategoryIds` y
      * `visibleMenuIds`. Cualquier otra cosa (sin token, red, 4xx/5xx, cuerpo ilegible, `success:false`, sin `deviceTerminal`)
      * no toca nada: un `null`+`null` sólo limpia el filtro si viene DENTRO de un `deviceTerminal` legítimo. No corre junto a

@@ -1,8 +1,6 @@
 package com.avoqado.pos.inventory.presentation
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,16 +17,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.components.ImmersiveWindow
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.pos.presentation.product.MiniaturaConIniciales
 
 /**
  * Detalle de un artículo tocado en Inventario → Descripción general.
@@ -52,29 +49,14 @@ fun StockItemDetailSheet(
         ) {
             // Encabezado: imagen (o iniciales) + nombre + categoría
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
+                // D16 (3-nov): si la foto no carga (sin red) quedan las iniciales, como Square; antes, un recuadro gris vacío.
+                MiniaturaConIniciales(
+                    url = item.imageUrl,
+                    nombre = item.name,
                     modifier = Modifier
                         .size(56.dp)
-                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (item.imageUrl != null) {
-                        AsyncImage(
-                            model = item.imageUrl,
-                            contentDescription = item.name,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(56.dp),
-                        )
-                    } else {
-                        Text(
-                            text = item.initials,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md)),
+                )
                 Spacer(modifier = Modifier.size(AvoqadoTheme.spacing.lg))
                 Column {
                     Text(

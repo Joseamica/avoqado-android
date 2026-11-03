@@ -90,13 +90,19 @@ fun SignInFlowScreen(
         }
 
         // Content
+        //
+        // D6 (2-nov): en la tableta Samsung SM-X133 en horizontal, el teclado dejaba «Iniciar sesión» debajo de lo visible:
+        // sólo se entraba con «Realiz.» del teclado. Con `reverseScrolling`, cuando el contenido no cabe (teclado abierto)
+        // queda anclado ABAJO: se ven el botón y, arriba de él, el campo; lo que se recorta es el título. Sin teclado todo
+        // cabe y se ve igual que antes. El margen de arriba va DENTRO del scroll, para que no se coma 40 dp de lo poco que
+        // deja el teclado.
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 40.dp)
-                .padding(top = 40.dp)
                 .imePadding()
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState(), reverseScrolling = true)
+                .padding(top = 40.dp),
         ) {
             AnimatedContent(
                 targetState = uiState.step,

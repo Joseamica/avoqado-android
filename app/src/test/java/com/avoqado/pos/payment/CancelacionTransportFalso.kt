@@ -30,6 +30,12 @@ class CancelacionTransportFalso : CancelacionDeCobroTransport {
     /** Se ejecuta ANTES de contestar el cancel: permite retenerlo (orden de llegada invertido). */
     var antesDeContestarCancel: suspend () -> Unit = {}
 
+    /** C2: se ejecuta ANTES de contestar el borrado de la orden; permite ver la pantalla con el DELETE en vuelo. */
+    var antesDeContestarBorrar: suspend () -> Unit = {}
+
+    /** C2 (fix 1): se ejecuta ANTES de contestar la consulta de estado; permite retener una corrida del coordinador. */
+    var antesDeContestarEstado: suspend () -> Unit = {}
+
     /** La llave durable del cobro, en memoria. */
     var llave: String? = null
 
@@ -61,12 +67,14 @@ class CancelacionTransportFalso : CancelacionDeCobroTransport {
     override suspend fun consultarEstado(venueId: String, requestId: String): ConsultaDeEstado {
         llamadas += "GET:$requestId"
         venues += venueId
+        antesDeContestarEstado()
         return respuestasEstado.siguiente()
     }
 
     override suspend fun cancelarOrden(venueId: String, orderId: String): ResultadoDeCancelarOrden {
         llamadas += "DELETE:$orderId"
         venues += venueId
+        antesDeContestarBorrar()
         return respuestasBorrar.siguiente()
     }
 

@@ -33,7 +33,7 @@ Invariantes de este lado, ya construidos y con prueba — no los debilites:
   mismo `requestId`; `ConnectException`, `UnknownHostException` o un error TLS NO bastan por su clase.
   Aplicar el criterio del «Escenario del founder» de la regla principal. Mantener la llave durable
   antes del POST y conservarla si alguna copia pudo enviarse o todavía puede hacerlo. Timeout y
-  GET 404 no resuelven esa incertidumbre. Implementar con TDD y a la vez en iOS.
+  GET 404 no resuelven esa incertidumbre. Implementar con TDD; lo de iOS va a su ficha (iOS va después).
 
 Al probar: tablet real contra terminal real, y en el reporte se declaran las celdas de la matriz
 ejecutadas, no ejecutadas y no aplicables. Las acciones que necesita el founder se piden EN MAYÚSCULAS y

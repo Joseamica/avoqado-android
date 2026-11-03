@@ -25,7 +25,7 @@ sealed class ChargeStatusProbe {
         val outcome: String? = null,
         val outcomeEvidence: String? = null,
         val evidenceClass: String? = null,
-        /** Crudo, sólo diagnóstico. La única decisión que lo mira es la lápida de admisión `REJECTED_*`. */
+        /** Lápida de admisión `REJECTED_*` y presentación de terminal libre; por sí solo nunca acredita ausencia de cobro. */
         val failureCode: String? = null,
         val reconciliationRequired: Boolean? = null,
         /**
@@ -100,6 +100,9 @@ sealed class ProbeDecision {
  * `blockingRequestId` es la solicitud que, según el server, ocupa la terminal. Es la llave de la
  * correlación: si nombra a OTRA, este intento nunca existió; si nombra a ÉSTA, es mi propio
  * intento —de un POST anterior que sí llegó— y hay que preguntar cómo quedó.
+ *
+ * `scope` (C1, opcional): `TERMINAL` = el aparato está ocupado; `ORDER` = la VENTA tiene un cobro pendiente de confirmar,
+ * en cualquier terminal. Un servidor viejo no lo manda.
  */
 data class CreationRejection(
     val code: String?,
@@ -107,6 +110,7 @@ data class CreationRejection(
     val amountCents: Int? = null,
     val ageSeconds: Int? = null,
     val senderDevice: String? = null,
+    val scope: String? = null,
 )
 
 /**
@@ -121,6 +125,11 @@ data class CreationRejection(
  * Sólo el estado durable del server resuelve, y ante la duda se dice que hay duda.
  */
 object CardChargeDecision {
+    /** La terminal ya quedó libre y la venta sigue en duda. 🔴 Libera el aparato, no la venta: sólo cambia las palabras. Igual en iOS. */
+    fun terminalLibreVentaEnDuda(probe: ChargeStatusProbe): Boolean =
+        probe is ChargeStatusProbe.Known && probe.status == "TIMED_OUT" &&
+            (probe.failureCode == "AUTO_RELEASED" || probe.failureCode == "MANUAL_RELEASE") && probe.outcome == "UNRESOLVED"
+
 
     /** El texto que ve el cajero cuando nadie sabe si se cobró. Ni éxito ni fracaso. */
     const val UNDETERMINED_MESSAGE =
@@ -180,6 +189,18 @@ object CardChargeDecision {
     const val NOT_SENT_NOTICE =
         "Este cobro NO se envió a la terminal, no se cobró nada. Espera a que termine o elige otra terminal."
 
+    /** C1: el alcance del 409 cuando lo que está ocupado es la VENTA, no el aparato (`details.scope`). */
+    const val SCOPE_ORDER = "ORDER"
+
+    /**
+     * C1 (22-oct): el 409 por ORDEN. La frase de terminal ocupada («elige otra terminal») ahí no aplica: otra terminal
+     * recibe el mismo rechazo. Texto IGUAL en iOS (`ORDEN_CON_COBRO_PENDIENTE`).
+     */
+    const val ORDEN_CON_COBRO_PENDIENTE = "Esta venta tiene un cobro pendiente de confirmar."
+
+    /** C1: el botón de «Terminal ocupada» que abre la revisión del cobro que la ocupa. Texto IGUAL en iOS. */
+    const val REVISAR_ESE_COBRO = "Revisar ese cobro"
+
     /**
      * ¿El server se NEGÓ a crear ESTE intento porque OTRA solicitud ocupa la terminal?
      *
@@ -206,8 +227,12 @@ object CardChargeDecision {
      * Lo que ve el cajero cuando la terminal está tomada: qué la ocupa, cuánto, desde cuándo y
      * desde qué aparato — y, con todas sus letras, que ESTE cobro no se envió. Sin esa frase el
      * cajero no sabe si puede volver a cobrar; con ella, elegir otra terminal es seguro.
+     *
+     * C1: con `scope = ORDER` lo que está ocupado es la VENTA y se dice eso ([ORDEN_CON_COBRO_PENDIENTE]); la salida es
+     * «Revisar ese cobro», no otra terminal.
      */
     fun busyMessage(rejection: CreationRejection, serverMessage: String?): String {
+        if (rejection.scope == SCOPE_ORDER) return ORDEN_CON_COBRO_PENDIENTE
         val amountCents = rejection.amountCents
         val head = if (amountCents != null) {
             val minutes = (rejection.ageSeconds ?: 0) / 60
@@ -293,7 +318,7 @@ object CardChargeDecision {
             probe.status == "FAILED" && probe.outcomeEvidence == "NO_EVIDENCE_AFTER_WINDOW" ->
                 CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.")
             probe.status == "FAILED" && probe.outcomeEvidence == "OPERATOR_RECONCILED" ->
-                CardChargeOutcome.NotCharged("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.")
+                CardChargeOutcome.NotCharged("Un cajero confirmó que no se cobró. Puedes volver a cobrar.")
             // 🔴 El banco lo rechazó y el SERVIDOR lo supo por el webhook del procesador (AngelPay o Blumon),
             // sin que nadie declarara nada. Lo único accionable para el cajero es que PUEDE volver a cobrar:
             // el genérico de abajo lo deja sin saberlo y ahí es donde vuelve a pasar la tarjeta con miedo.

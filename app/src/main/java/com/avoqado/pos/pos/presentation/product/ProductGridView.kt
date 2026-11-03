@@ -45,13 +45,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.pos.data.model.Product
@@ -558,17 +556,17 @@ private fun ProductTile(
                         topEnd = AvoqadoTheme.cornerRadius.md,
                     )),
             ) {
-                if (!product.imageUrl.isNullOrEmpty()) {
-                    AsyncImage(
-                        model = product.imageUrl,
-                        contentDescription = product.name,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
-                } else {
+                // D6 (2-nov): sin foto, mientras carga o si falla, el color y las iniciales (iOS igual). Antes una foto que no
+                // cargaba dejaba la tarjeta gris y sin iniciales.
+                FotoConRespaldo(
+                    url = product.imageUrl,
+                    contentDescription = product.name,
+                    colorDelIndicador = colorDeIniciales,
+                    modifier = Modifier.matchParentSize(),
+                ) {
                     // Initials (2 letters, bottom-left, bold)
                     Text(
-                        text = product.name.take(2).uppercase(),
+                        text = inicialesDeTile(product.name),
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Bold,
                         ),

@@ -299,4 +299,100 @@ class TarjetasDeRegaloViewModelTest {
         assertNotNull(vm.ajustesParaConsultar("sucursal-a"));assertNull(vm.ajustesParaConsultar("sucursal-b"))
     }
 
+
+    // Prender desde el POS (founder, 3-nov-2026)
+    private fun base(enabled: Boolean, prender: EstadoParaPrender?) = AjustesDeTarjetas(
+        enabled = enabled, suggestedAmounts = listOf(500.0), minAmount = 100.0, maxAmount = 10000.0,
+        sale = if (enabled) VentaPermitida(true) else VentaPermitida(false, code = "GIFT_CARDS_DISABLED", message = "Apagadas"),
+        capacidades = setOf("ENTREGA"), prender = prender,
+    )
+    private val puede = EstadoParaPrender(allowed = true)
+    private fun vmApagadas(): TarjetasDeRegaloViewModel {
+        every { almacen.userRole } returns "ADMIN"
+        ajustes.value = EstadoDeAjustes.Disponible(base(false, puede))
+        cache["sucursal-a"] = GiftCardsApi.json.encodeToString(AjustesDeTarjetas.serializer(), base(false, puede))
+        return vm()
+    }
+
+    @Test fun `P1 al prender vender queda activo sin cerrar la hoja y avisa`() = runTest {
+        coEvery { repo.prender("sucursal-a") } returns Respuesta.Ok(base(true, null))
+        val vm = vmApagadas()
+        assertTrue(vm.hoja.value.prender.habilitada)
+        assertFalse(vm.hoja.value.vender.habilitada)
+        vm.prender(); runCurrent()
+        assertFalse(vm.hoja.value.prender.visible)
+        assertTrue(vm.hoja.value.vender.habilitada)
+        assertTrue(vm.prendidas.value)
+        assertFalse(vm.prendiendo.value)
+        assertNull(vm.errorAlPrender.value)
+    }
+
+    @Test fun `doble toque manda un solo prender`() = runTest {
+        val puerta = CompletableDeferred<Respuesta<AjustesDeTarjetas>>()
+        coEvery { repo.prender("sucursal-a") } coAnswers { puerta.await() }
+        val vm = vmApagadas()
+        vm.prender(); vm.prender(); runCurrent()
+        assertTrue(vm.prendiendo.value)
+        puerta.complete(Respuesta.Ok(base(true, null))); runCurrent()
+        coVerify(exactly = 1) { repo.prender("sucursal-a") }
+        assertFalse(vm.prendiendo.value)
+    }
+
+    @Test fun `sin permiso en el servidor lo dice en español y sigue apagada`() = runTest {
+        coEvery { repo.prender("sucursal-a") } returns Respuesta.Rechazo(FalloDeTarjeta(403, null, "Permission 'giftCards:enable' required", null, null))
+        val vm = vmApagadas()
+        vm.prender(); runCurrent()
+        assertEquals(TextosDeTarjetas.SIN_PERMISO_PRENDER, vm.errorAlPrender.value)
+        assertFalse(vm.hoja.value.vender.habilitada)
+        assertFalse(vm.prendidas.value)
+        vm.limpiarErrorAlPrender()
+        assertNull(vm.errorAlPrender.value)
+    }
+
+    @Test fun `sin respuesta no asegura nada y deja reintentar`() = runTest {
+        coEvery { repo.prender("sucursal-a") } returns Respuesta.SinRespuesta
+        val vm = vmApagadas()
+        vm.prender(); runCurrent()
+        assertEquals(TextosDeTarjetas.PRENDER_SIN_RESPUESTA, vm.errorAlPrender.value)
+        assertFalse(vm.prendiendo.value)
+        assertTrue(vm.hoja.value.prender.habilitada)
+    }
+
+    @Test fun `P1 prender sigue a la sesion del aparato y no a lo guardado`() = runTest {
+        // Un administrador abrió la hoja; luego entra un cajero en el mismo aparato y negocio: lo guardado es lo mismo.
+        val vm = vmApagadas()
+        assertTrue(vm.hoja.value.prender.visible)
+        every { almacen.userRole } returns "CASHIER"
+        vm.alAbrir(true); runCurrent()
+        assertFalse(vm.hoja.value.prender.visible)
+        assertEquals(TextosDeTarjetas.APAGADAS_PIDELE_A_UN_ADMIN, vm.hoja.value.vender.motivo)
+        vm.prender(); runCurrent()
+        coVerify(exactly = 0) { repo.prender(any()) }
+    }
+
+    @Test fun `el permiso dado a otro rol tambien ofrece prender`() = runTest {
+        permisos = listOf("giftCards:read", "giftCards:sell", "giftCards:enable")
+        val vm = vmApagadas()
+        every { almacen.userRole } returns "MANAGER"
+        vm.alAbrir(true); runCurrent()
+        assertTrue(vm.hoja.value.prender.visible)
+    }
+
+    @Test fun `sin red no manda nada`() = runTest {
+        val vm = vmApagadas()
+        conexion.value = false; runCurrent()
+        vm.prender(); runCurrent()
+        coVerify(exactly = 0) { repo.prender(any()) }
+    }
+
+    @Test fun `si cambiaron de sucursal a media peticion no pinta ni avisa en la otra`() = runTest {
+        val puerta = CompletableDeferred<Respuesta<AjustesDeTarjetas>>()
+        coEvery { repo.prender("sucursal-a") } coAnswers { puerta.await() }
+        val vm = vmApagadas()
+        vm.prender(); runCurrent()
+        venue = "sucursal-b"
+        puerta.complete(Respuesta.Ok(base(true, null))); runCurrent()
+        assertFalse(vm.prendidas.value)
+        assertFalse(vm.prendiendo.value)
+    }
 }

@@ -1,5 +1,6 @@
 package com.avoqado.pos.articles.data.model
 
+import com.avoqado.pos.pos.presentation.product.inicialesDeTile
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -128,8 +129,9 @@ data class ArticleProduct(
     val modifierGroups: List<ProductModifierGroupJoin>? = null,
     val durationMinutes: Int? = null,
 ) {
+    /** Las mismas iniciales que las tarjetas del POS («Agua mineral» → «AM»; antes «AG»): una sola regla en ANDROID (D16, 3-nov). */
     val initials: String
-        get() = name.take(2).uppercase(Locale.US)
+        get() = inicialesDeTile(name)
 
     val displayPrice: String
         get() = when {

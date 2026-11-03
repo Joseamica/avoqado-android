@@ -27,6 +27,7 @@ object PermissionLabels {
         "giftCards:sell" to "vender tarjetas de regalo",
         "giftCards:redeem" to "cobrar con tarjeta de regalo",
         "giftCards:manage" to "administrar tarjetas de regalo",
+        "giftCards:enable" to "prender las tarjetas de regalo",
         // MARK: - Terminales de cobro (PAX)
         //
         // 🔴 `tpv:read` NO es "cobrar". Desde 2026-08-16 (server c74f6593) la
@@ -62,6 +63,9 @@ object PermissionLabels {
         "payments:routing-read" to "ver por dónde se procesa cada cobro",
         "payments:routing-manage" to "cambiar por dónde se procesa cada cobro",
         "payment:create-manual" to "registrar un cobro a mano",
+        // C4 (22-oct): «Ya revisé la terminal: no se cobró». El mesero no lo tiene y lo hace con el PIN de un gerente; el
+        // teclado dice «Para confirmar que un cobro no se realizó».
+        "payments:reconcile-uncharged" to "confirmar que un cobro no se realizó",
         "tpv-payments:send-receipt" to "enviar el recibo",
         "tpv-payments:pay-later" to "dejar la cuenta para pagar después",
         "tender-types:read" to "ver los tipos de pago",
@@ -71,6 +75,7 @@ object PermissionLabels {
         "giftCards:sell" to "vender tarjetas de regalo",
         "giftCards:redeem" to "cobrar con tarjeta de regalo",
         "giftCards:manage" to "administrar tarjetas de regalo",
+        "giftCards:enable" to "prender las tarjetas de regalo",
 
         // MARK: - Cuentas
         "orders:read" to "ver las cuentas",

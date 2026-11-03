@@ -275,6 +275,13 @@ class RoleManager @Inject constructor(
     val canManageGiftCards: Boolean get() = hasVenuePermission("giftCards:manage", MANAGER_UP)
 
     /**
+     * Prender las tarjetas de regalo: administrador para arriba (founder, 3-nov-2026), o quien tenga el permiso dado en el editor.
+     * El rol cuenta además de la lista porque ésta se toma al entrar: la sesión de un administrador de antes de este permiso no lo
+     * trae. El servidor decide de todos modos; si le quitaron el permiso, le contesta 403 y el POS se lo dice.
+     */
+    val canEnableGiftCards: Boolean get() = hasVenuePermission("giftCards:enable") || role in ADMIN_UP
+
+    /**
      * Resolver la CUARENTENA de sincronización: MANAGER, ADMIN, OWNER, SUPERADMIN
      *
      * ⚠️ DIVERGE, y **NO hay permiso que espejar — ni lo habrá mientras estas
@@ -422,6 +429,7 @@ class RoleManager @Inject constructor(
         val GIFT_CARDS_PISO = setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
         /** El respaldo histórico de todo lo administrativo. */
         val MANAGER_UP = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        val ADMIN_UP = setOf("ADMIN", "OWNER", "SUPERADMIN")
 
         /** El respaldo histórico de lo que se usa desde el piso. */
         val FLOOR = setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
