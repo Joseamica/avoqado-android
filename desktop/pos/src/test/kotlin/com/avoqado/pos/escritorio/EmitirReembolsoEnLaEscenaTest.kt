@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -333,6 +334,40 @@ class EmitirReembolsoEnLaEscenaTest {
             waitForIdle()
             cuatroMedios.forEach { enUnRenglon(it) }
             assertEquals(antes, cuatroMedios.map { bordes(it) }, "escoger un medio reacomodó la fila")
+        }
+
+    // MARK: - Abrir el teclado
+
+    /**
+     * Abrir el teclado baja el alto y el pie deja de ser fijo. Eso no debe recrear el campo donde se está escribiendo: perdería el
+     * foco y el teclado se cerraría, y con él volvería el pie fijo. 1900×640 px son dos columnas con pie fijo a densidad 1 y dos
+     * columnas sin pie fijo a 1.5 (1266×426 dp): es el mismo cambio de alto, sin teclado de verdad.
+     */
+    private fun ComposeUiTest.elCampoSigueConElFoco(texto: String) {
+        onNode(hasSetTextAction()).performTextInput(texto)
+        waitForIdle()
+        onNode(hasSetTextAction()).assertIsFocused()
+        assertTrue(seVeEntero("Reembolsar"), "montaje: con pie fijo, el botón se ve sin deslizar")
+
+        densidad.floatValue = 1.5f
+        waitForIdle()
+        aLaDerecha(1266.dp / 2, "Motivo del reembolso")
+        assertTrue(bordes("Reembolsar").top > bordes("Motivo del reembolso").top, "montaje: el cierre sigue abajo del motivo")
+        onNode(hasSetTextAction()).assertIsFocused()
+        onNodeWithText(texto).assertExists()
+    }
+
+    @Test fun `abrir el teclado no le quita el foco al importe`() = pantalla(1900, 640) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        elCampoSigueConElFoco("12.50")
+    }
+
+    @Test fun `abrir el teclado no le quita el foco al telefono del saldo`() =
+        pantalla(1900, 640, ventaConCuatroMedios.copy(items = articulos(2)), saldoDisponible = true, soloSaldo = true) {
+            saldo.escoger(Customer(id = "ana", firstName = "Ana"))
+            waitForIdle()
+            elCampoSigueConElFoco("5512345678")
         }
 
     // MARK: - Cruzar el corte de 840 en WINDOWS
