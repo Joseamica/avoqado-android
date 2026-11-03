@@ -14,22 +14,40 @@ class EjesDeLaGraficaTest {
 
     // MARK: - Eje de dinero
 
+    // D16 (3-nov, visto en la Sunmi): en 1S y 1M el punto más alto valía $1,356 y la escala decía «$1K». Debajo de $10K los
+    // miles llevan un decimal; nunca un «.0» al final; la mitad sube; y la unidad se elige ya redondeado ($999.5 es «$1K»).
+
     @Test
-    fun `el eje de dinero abrevia miles y millones como iOS`() {
+    fun `el eje de dinero abrevia miles y millones`() {
         assertEquals("$0", etiquetaCortaDeDinero(0.0))
         assertEquals("$950", etiquetaCortaDeDinero(950.0))
         assertEquals("$1K", etiquetaCortaDeDinero(1_000.0))
+        assertEquals("$15K", etiquetaCortaDeDinero(15_400.0))
         assertEquals("$12K", etiquetaCortaDeDinero(12_345.0))
-        assertEquals("$1.0M", etiquetaCortaDeDinero(1_000_000.0))
         assertEquals("$2.3M", etiquetaCortaDeDinero(2_340_000.0))
     }
 
     @Test
-    fun `el eje de dinero redondea la mitad al par como el String format de iOS`() {
-        assertEquals("$2K", etiquetaCortaDeDinero(1_500.0))
-        assertEquals("$2K", etiquetaCortaDeDinero(2_500.0))
-        assertEquals("$1.2M", etiquetaCortaDeDinero(1_250_000.0))
+    fun `debajo de diez mil los miles llevan un decimal sin punto cero`() {
+        assertEquals("$1.4K", etiquetaCortaDeDinero(1_356.0))
+        assertEquals("$2K", etiquetaCortaDeDinero(2_000.0))
+        assertEquals("$9.9K", etiquetaCortaDeDinero(9_940.0))
+        assertEquals("$1M", etiquetaCortaDeDinero(1_000_000.0))
+    }
+
+    @Test
+    fun `el eje de dinero redondea la mitad hacia arriba`() {
+        assertEquals("$1.5K", etiquetaCortaDeDinero(1_450.0))
+        assertEquals("$2.5K", etiquetaCortaDeDinero(2_500.0))
+        assertEquals("$1.3M", etiquetaCortaDeDinero(1_250_000.0))
         assertEquals("$999", etiquetaCortaDeDinero(999.4))
+    }
+
+    @Test
+    fun `al redondear hasta la unidad siguiente el eje cambia de unidad`() {
+        assertEquals("$1K", etiquetaCortaDeDinero(999.5))
+        assertEquals("$10K", etiquetaCortaDeDinero(9_960.0))
+        assertEquals("$1M", etiquetaCortaDeDinero(999_500.0))
     }
 
     // MARK: - Fechas del eje

@@ -8,22 +8,35 @@ import java.math.RoundingMode
 
 /*
  * Los textos de los ejes del Informe de ventas. D6 (2-nov-2026): la gráfica calculaba la escala y las fechas pero nunca las
- * dibujaba, así que salía sin escala. Mismos textos y reglas que iOS (`SalesLineChart` y `HourlySalesChart`). Puro: sin Android.
+ * dibujaba, así que salía sin escala. Mismos textos y reglas que iOS (`SalesLineChart` y `HourlySalesChart`), salvo la escala de
+ * dinero, que D16 afinó primero aquí (ver `etiquetaCortaDeDinero`). Puro: sin Android.
  */
 
 /**
- * El máximo del eje de dinero: «$0», «$950», «$12K», «$1.2M» (`formatShortCurrency` de iOS). La mitad se redondea al par, como el
- * `String(format: "%.0f")` de iOS: $2,500 dice «$2K» en las dos apps.
+ * El máximo (y el cero) del eje de dinero: «$0», «$950», «$1.4K», «$12K», «$1.3M».
+ *
+ * D16 (3-nov, visto en la Sunmi): en 1S y 1M el punto más alto valía $1,356 y la escala decía «$1K»; con $1,500 diría «$2K».
+ * Ahora, debajo de $10K los miles llevan un decimal («$1.4K»), nunca con «.0» al final («$2K», «$1M»); la mitad sube; y la
+ * unidad se elige ya redondeado: $999.5 es «$1K» (nunca «$1000» ni «$1.0K») y $999,500 es «$1M». Antes era el
+ * `formatShortCurrency` de iOS (miles sin decimales, «$1.0M», la mitad al par); iOS va después.
  */
-internal fun etiquetaCortaDeDinero(valor: Double): String = when {
-    !valor.isFinite() -> "$0"
-    valor >= 1_000_000 -> "$" + redondeado(valor / 1_000_000, 1) + "M"
-    valor >= 1_000 -> "$" + redondeado(valor / 1_000, 0) + "K"
-    else -> "$" + redondeado(valor, 0)
+internal fun etiquetaCortaDeDinero(valor: Double): String {
+    if (!valor.isFinite()) return "$0"
+    // El decimal escrito y no el binario: $1,450 son 1.45K exactos y suben a «$1.5K» (con el Double serían 1.4499…).
+    val exacto = BigDecimal.valueOf(valor)
+    val pesos = exacto.setScale(0, RoundingMode.HALF_UP)
+    if (pesos < MIL) return "$" + pesos.toPlainString()
+    val miles = exacto.movePointLeft(3)
+    val milesRedondeados = miles.setScale(if (miles < DIEZ) 1 else 0, RoundingMode.HALF_UP)
+    if (milesRedondeados < MIL) return "$" + sinPuntoCero(milesRedondeados) + "K"
+    return "$" + sinPuntoCero(exacto.movePointLeft(6).setScale(1, RoundingMode.HALF_UP)) + "M"
 }
 
-private fun redondeado(valor: Double, decimales: Int): String =
-    BigDecimal(valor).setScale(decimales, RoundingMode.HALF_EVEN).toPlainString()
+private val MIL = BigDecimal(1_000)
+private val DIEZ = BigDecimal.TEN
+
+/** «2.0» → «2», «10.0» → «10», «1.4» se queda. */
+private fun sinPuntoCero(numero: BigDecimal): String = numero.stripTrailingZeros().toPlainString()
 
 /** La fecha de un punto: el nombre que manda el servidor, en 6 letras como mucho («lun 2», «27 oct»; `shortLabel` de iOS). */
 internal fun etiquetaCortaDelEje(etiqueta: String): String = etiqueta.take(6).trimEnd()
