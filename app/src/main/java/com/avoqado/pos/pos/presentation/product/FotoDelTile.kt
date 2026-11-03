@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -117,7 +118,8 @@ internal fun FotoConRespaldo(
  * detalle de inventario): sin foto, mientras carga y si falla, sus iniciales sobre un fondo neutro; sólo la foto lista las tapa.
  * Sin red es justo lo que se ve: la foto que no está guardada falla y quedan las iniciales. Sin indicador de carga, como la
  * miniatura del carrito. El tamaño y el recorte los pone quien la usa en [modifier]; la letra se ajusta a ese tamaño. Es
- * decorativa: el nombre ya está escrito junto a ella. iOS tiene la misma pieza con el mismo nombre.
+ * decorativa: el nombre ya está escrito junto a ella, así que TalkBack no lee ni la foto ni las iniciales (si las leyera, «AM»
+ * sería una parada antes del nombre que además desaparece cuando carga la foto). iOS tiene la misma pieza con el mismo nombre.
  */
 @Composable
 internal fun MiniaturaConIniciales(url: String?, nombre: String, modifier: Modifier = Modifier) {
@@ -130,7 +132,8 @@ internal fun MiniaturaConIniciales(url: String?, nombre: String, modifier: Modif
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .clearAndSetSemantics {},
             contentAlignment = Alignment.Center,
         ) {
             val letraEnDp = letraDeIniciales(maxWidth.value, maxHeight.value)

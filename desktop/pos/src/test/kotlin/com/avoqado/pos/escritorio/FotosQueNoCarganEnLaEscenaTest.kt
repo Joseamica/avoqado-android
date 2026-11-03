@@ -3,6 +3,7 @@ package com.avoqado.pos.escritorio
 import android.view.View
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
@@ -10,6 +11,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -54,9 +56,26 @@ class FotosQueNoCarganEnLaEscenaTest {
 
     private fun fotoRota(): String = carpeta.resolve("no-existe.png").toUri().toString()
 
+    // Las iniciales son decorativas (el nombre ya está escrito junto a la miniatura): TalkBack no las lee. Por eso se buscan
+    // en el árbol SIN fusionar, que en las pruebas sí trae lo que la accesibilidad ignora: ahí se ve que se dibujan.
+
     @Test fun `sin foto la miniatura muestra las iniciales`() = runComposeUiTest {
         setContent { superficie { MiniaturaConIniciales(url = null, nombre = "Agua mineral", modifier = Modifier.size(44.dp)) } }
-        onNodeWithText("AM").assertExists()
+        onNodeWithText("AM", useUnmergedTree = true).assertExists()
+    }
+
+    @Test fun `las iniciales se dibujan pero TalkBack no las lee`() = runComposeUiTest {
+        setContent {
+            superficie {
+                Column {
+                    MiniaturaConIniciales(url = null, nombre = "Agua mineral", modifier = Modifier.size(44.dp))
+                    Text("Agua mineral")
+                }
+            }
+        }
+        onAllNodesWithText("AM").assertCountEquals(0)   // el árbol que ve TalkBack: sin una parada «AM» antes del nombre
+        onNodeWithText("Agua mineral").assertExists()
+        onNodeWithText("AM", useUnmergedTree = true).assertExists()   // y en la pantalla sí están
     }
 
     @Test fun `la foto lista tapa las iniciales y la que falla las deja`() = runComposeUiTest {
@@ -70,8 +89,8 @@ class FotosQueNoCarganEnLaEscenaTest {
                 }
             }
         }
-        waitUntil(timeoutMillis = 10_000) { onAllNodesWithText("AM").fetchSemanticsNodes().isEmpty() }
-        onNodeWithText("LA").assertExists()
+        waitUntil(timeoutMillis = 10_000) { onAllNodesWithText("AM", useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+        onNodeWithText("LA", useUnmergedTree = true).assertExists()
     }
 
     @Test fun `la imagen de un anuncio que no carga se esconde con su pie`() = runComposeUiTest {
