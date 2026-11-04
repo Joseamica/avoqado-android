@@ -40,6 +40,7 @@ object TextosDeTarjetas {
     const val CORREO = "Correo"
     const val IMPRIMIR = "Imprimir"
     const val ENTREGAR_AL_COMPRADOR = "Entregar al comprador"
+    const val ENTREGAR_TARJETA = "Entregar tarjeta de regalo"
     const val PARA = "Para (opcional)"
     const val TELEFONO_DE_QUIEN_LA_RECIBE = "Teléfono de quien la recibe"
     const val CORREO_DE_QUIEN_LA_RECIBE = "Correo de quien la recibe"

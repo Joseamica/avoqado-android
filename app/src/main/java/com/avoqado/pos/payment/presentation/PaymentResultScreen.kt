@@ -139,6 +139,11 @@ fun PaymentResultScreen(
     onDone: () -> Unit,
     saldoPagado: com.avoqado.pos.giftcards.data.CobroConSaldo? = null,
     accionesDeRedHabilitadas: Boolean = true,
+    /**
+     * Venta de tarjetas de regalo ya cobrada: este recibo es sólo la constancia del pago y la tarjeta sale en el siguiente
+     * paso (`onDone`). En vez de «Venta nueva», que no lo sugiere, va un botón que lo dice.
+     */
+    entregarTarjeta: Boolean = false,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
     var whatsAppPhoneDigits by remember { mutableStateOf("") }
@@ -182,6 +187,7 @@ fun PaymentResultScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!entregarTarjeta) {
                     Text(
                         text = "Venta nueva",
                         style = MaterialTheme.typography.bodyLarge,
@@ -192,6 +198,7 @@ fun PaymentResultScreen(
                             .padding(vertical = AvoqadoTheme.spacing.xs),
                     )
                     TeclaDeAtajo("Esc", Modifier.padding(start = AvoqadoTheme.spacing.sm))
+                    }
                 }
                 if (onAddCustomer != null) {
                     // Con cliente ya puesto esto es una ETIQUETA, no un botón:
@@ -295,6 +302,17 @@ fun PaymentResultScreen(
                     text = "Cambio: ${formatMoney(changeCents / 100.0)}",
                     style = MaterialTheme.typography.titleLarge,
                     color = Success,
+                )
+            }
+
+            if (entregarTarjeta) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                com.avoqado.pos.designsystem.components.PrimaryButton(
+                    text = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.ENTREGAR_TARJETA,
+                    onClick = onDone,
+                    modifier = Modifier.widthIn(max = 400.dp),
+                    fullWidth = true,
+                    tecla = "Esc",
                 )
             }
 
