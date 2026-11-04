@@ -17,10 +17,12 @@ DEX2OAT=$("${ADB[@]}" shell 'ls /apex/com.android.art/bin/dex2oat64 2>/dev/null 
 [ -n "$DEX2OAT" ] || { echo "::error::No encontré dex2oat en el aparato."; exit 2; }
 "${ADB[@]}" push "$APK" "$T" >/dev/null
 "${ADB[@]}" logcat -c
-"${ADB[@]}" shell "$DEX2OAT --dex-file=$T --dex-location=$T --oat-file=${T%.apk}.odex --compiler-filter=verify -j4 >/dev/null 2>&1; echo dex2oat=\$?; rm -f $T ${T%.apk}.odex ${T%.apk}.vdex"
+# dex2oat escribe a logcat en un aparato y a stderr en el emulador: se leen los dos.
+SALIDA=$("${ADB[@]}" shell "$DEX2OAT --dex-file=$T --dex-location=$T --oat-file=${T%.apk}.odex --compiler-filter=verify -j4 2>&1; echo dex2oat=\$?; rm -f $T ${T%.apk}.odex ${T%.apk}.vdex" | sed 's/^/dex2oat: /')
 sleep 2
-LOG=$("${ADB[@]}" logcat -d)
-echo "$LOG" | grep -q "dex2oat.*took" || { echo "::error::dex2oat no terminó: no puedo decir si el APK está sano."; exit 2; }
+LOG=$(printf '%s\n%s\n' "$SALIDA" "$("${ADB[@]}" logcat -d)")
+echo "$SALIDA" | grep -q "dex2oat=0" || { echo "::error::dex2oat falló:"; echo "$SALIDA" | tail -5; exit 2; }
+echo "$LOG" | grep -q "took" || { echo "::error::dex2oat no dijo cuánto tardó: no puedo asegurar que revisó el APK."; echo "$SALIDA" | tail -5; exit 2; }
 ERR=$(echo "$LOG" | grep -E "dex2oat.*(Verification error|failed to verify)" || true)
 if [ -n "$ERR" ]; then
   echo "::error::ART rechaza clases del APK de release (se cerraría al usarlas). Revisa R8 / proguard-rules.pro."
