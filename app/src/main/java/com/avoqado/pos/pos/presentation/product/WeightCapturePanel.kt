@@ -45,7 +45,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.key.Key
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
+import com.avoqado.pos.designsystem.components.HojaConAtajo
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.MAX_WEIGHT_KG
@@ -148,11 +150,19 @@ private fun WeightCaptureContent(
     val totalCents = weightKg?.let { weightTotalCents(it, product.priceInCents) }
     val showError = weightText.isNotBlank() && weightKg == null
 
+    // Un solo «Agregar» por hoja: dos F12 (o dos clics) antes de que la hoja se cierre no agregan dos líneas.
+    var agregado by remember(product.id) { mutableStateOf(false) }
     fun submit() {
+        if (agregado) return
         val kg = parseWeightKg(weightText) ?: return
+        agregado = true
         onAdd(kg)
         onDismiss()
     }
+
+    // POS de Windows (founder, 4-nov): F12 = «Agregar», sólo con un peso válido. La hoja es barrera: mientras está
+    // abierta F12 no cobra el carrito de abajo, y con el botón apagado no hace nada.
+    HojaConAtajo(Key.F12, activo = weightKg != null) { submit() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header: precio por kg + nombre + cerrar (espejo del header de ProductDetailPanel).
@@ -306,6 +316,7 @@ private fun WeightCaptureContent(
             onClick = { submit() },
             enabled = weightKg != null,
             fullWidth = true,
+            tecla = "F12",
             modifier = Modifier.padding(AvoqadoTheme.spacing.xl),
         )
     }

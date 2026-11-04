@@ -27,27 +27,30 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
  * atajo registrado más recientemente (la pantalla de encima). Mientras haya CUALQUIER [BarreraDeAtajos] (una hoja,
  * un diálogo, un aviso o un panel encima) ninguna tecla responde: el orden en que se registran no es el orden en que
  * se ven (un aviso que ya estaba puede quedar encima de una pantalla que se registra después; Codex r1 #4).
+ * La única excepción es [HojaConAtajo]: una hoja que es la ÚNICA barrera puede atender su propia tecla.
  */
 object AtajosDeTeclado {
-    /** `tecla == null` = barrera. */
-    private class Registro(val tecla: Key?, val intentar: () -> Boolean)
+    /** `bloquea` = barrera (hoja, diálogo, aviso); una barrera con `tecla` atiende ésa cuando es la única. */
+    private class Registro(val tecla: Key?, val bloquea: Boolean, val intentar: () -> Boolean)
 
     private val pila = mutableListOf<Registro>()
 
     /** true = la tecla era de un atajo activo y ya se hizo lo de su botón. */
     fun atender(tecla: Key): Boolean {
         val vigentes = pila.toList()
-        if (vigentes.any { it.tecla == null }) return false
+        val barreras = vigentes.filter { it.bloquea }
+        // Con dos barreras (la hoja y un aviso encima) no se sabe cuál se ve arriba: nada responde.
+        if (barreras.isNotEmpty()) return barreras.singleOrNull()?.takeIf { it.tecla == tecla }?.intentar() ?: false
         return vigentes.asReversed().any { it.tecla == tecla && it.intentar() }
     }
 
     @Composable
-    internal fun Registrar(tecla: Key?, activo: Boolean, accion: () -> Unit) {
+    internal fun Registrar(tecla: Key?, activo: Boolean, bloquea: Boolean = tecla == null, accion: () -> Unit) {
         if (!LocalEsEscritorio.current) return
         val activoAhora by rememberUpdatedState(activo)
         val accionAhora by rememberUpdatedState(accion)
         DisposableEffect(tecla) {
-            val registro = Registro(tecla) { activoAhora.also { if (it) accionAhora() } }
+            val registro = Registro(tecla, bloquea) { activoAhora.also { if (it) accionAhora() } }
             pila += registro
             onDispose { pila -= registro }
         }
@@ -57,11 +60,19 @@ object AtajosDeTeclado {
 /** La [tecla] hace lo mismo que el clic en su botón mientras esta pantalla esté a la vista. Apagado = como si no existiera. */
 @Composable
 fun AtajoDeTeclado(tecla: Key, activo: Boolean = true, accion: () -> Unit) =
-    AtajosDeTeclado.Registrar(tecla, activo, accion)
+    AtajosDeTeclado.Registrar(tecla, activo, accion = accion)
 
 /** Una hoja, diálogo o panel encima: ninguna tecla de atajo responde hasta que se cierra. */
 @Composable
 fun BarreraDeAtajos() = AtajosDeTeclado.Registrar(tecla = null, activo = true) {}
+
+/**
+ * Una hoja encima que es barrera (apaga las teclas de abajo: F12 ya no cobra) pero atiende SU [tecla], como el clic en su
+ * botón. Apagada = la tecla no hace nada (no pasa a lo de abajo). Si hay otra barrera a la vez (un aviso), espera.
+ */
+@Composable
+fun HojaConAtajo(tecla: Key, activo: Boolean, accion: () -> Unit) =
+    AtajosDeTeclado.Registrar(tecla, activo, bloquea = true, accion = accion)
 
 /**
  * En el cobro de Windows sólo las teclas F y el mouse cobran: Enter y Espacio no «pican» el botón que quedó con el foco.
