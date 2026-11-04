@@ -117,7 +117,7 @@ jobs:
         run: |
           NAME=$(grep -m1 'versionName *=' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
 
-          CODE=$(python3 scripts/play_check_version.py --next)
+          CODE=$(( $(python3 scripts/play_check_version.py --next) + 1 ))  # SÓLO esta rama: el regreso a 2.25.29 corre a la vez y toma el siguiente
           case "$CODE" in ''|*[!0-9]*) echo "::error::No pude calcular el versionCode."; exit 1;; esac
           sed -i "s/^\( *versionCode *= *\)[0-9]\+/\1$CODE/" app/build.gradle.kts
 
