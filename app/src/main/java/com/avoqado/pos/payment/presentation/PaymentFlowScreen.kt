@@ -454,6 +454,8 @@ fun PaymentFlowScreen(
 
                     PaymentResultScreen(
                         accionesDeRedHabilitadas = accionesDeRedHabilitadas,
+                        // Sin red el cobro va en cola y la tarjeta todavía no se activa: ahí no hay nada que entregar aún.
+                        entregarTarjeta = cuentaDeTarjetas && !currentState.isQueued,
                         totalCents = currentState.totalAmount,
                         methodLabel = viewModel.manualMethodLabel,
                         saldoPagado = (resultadoDeSaldo as? DesenlaceDeCobro.Cobrado)?.cobro,
