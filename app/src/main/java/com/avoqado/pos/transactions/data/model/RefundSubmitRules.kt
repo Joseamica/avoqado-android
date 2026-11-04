@@ -1,6 +1,7 @@
 package com.avoqado.pos.transactions.data.model
 
 import com.avoqado.pos.core.util.aCentavos
+import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 
 data class RefundChainRules(val isCredit: Boolean, val options: List<OpcionDeDevolucion>, val blockedReason: String?)
@@ -281,3 +282,10 @@ fun leyendaDeDevolucion(method: String?, refundMethod: String?): String = when {
     refundMethod == "BANK_TRANSFER" || (refundMethod == null && esTransferencia(method)) -> "Tú le haces la transferencia; aquí sólo queda registrado."
     else -> "Se devuelve por el mismo medio con que se pagó."
 }
+
+/**
+ * Lo que dice el botón de «Emitir reembolso»: el mismo importe que sale (D9). Un toque devuelve dinero y no hay
+ * confirmación aparte, así que el botón lo dice. Sin importe todavía, sólo el verbo.
+ */
+fun textoDelBotonDeReembolso(importe: Double): String =
+    if (importe > 0.0) "Reembolsar ${formatMoney(importe)}" else "Reembolsar"

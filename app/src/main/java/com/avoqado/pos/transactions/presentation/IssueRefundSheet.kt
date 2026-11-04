@@ -119,6 +119,7 @@ import com.avoqado.pos.transactions.data.model.restringe
 import com.avoqado.pos.transactions.data.model.opcionesConSaldo
 import com.avoqado.pos.transactions.data.model.pastillaDeSaldo
 import com.avoqado.pos.transactions.data.model.soloSaldoEfectivo
+import com.avoqado.pos.transactions.data.model.textoDelBotonDeReembolso
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeSettlement
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeStoreCreditCustomer
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
@@ -972,7 +973,7 @@ fun IssueRefundSheet(
                     }
 
                     PrimaryButton(
-                        text = "Reembolsar",
+                        text = textoDelBotonDeReembolso(amountToRefund + propinaArticulos),
                         onClick = {
                             if (!puedeEnviar() || soloCompleto && enTerminal) return@PrimaryButton
                             val chosenReason = reason ?: return@PrimaryButton
