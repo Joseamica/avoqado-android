@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -74,6 +75,9 @@ open class ManagerOverrideCoordinator @Inject constructor(
         private const val RAFAGAS_RECORDADAS = 32
 
         private const val YA_NO_ESPERA = "La acción ya no está esperando autorización."
+
+        /** Cada cuánto mira una petición en espera si su llamada sigue en pie. */
+        private const val VIGILANCIA_MS = 250L
     }
 
     /**
@@ -177,8 +181,11 @@ open class ManagerOverrideCoordinator @Inject constructor(
         // DOS veces por la misma acción.
         takePreauthorized(permission)?.let { return@runBlocking it }
 
+        // Una llamada que ya se cortó no pide teclado (D26, Codex código r5: otra fecha antes de que llegue el 403).
+        if (!vivo()) return@runBlocking null
         val espera = Espera(vivo)
         val clave = rafaga?.let { it to permission }
+        var suGrupo: Grupo? = null
         val nuevo: Grupo? = synchronized(candado) {
             // Codex r1 #1: la misma carga ya se canceló o venció. No se vuelve a preguntar.
             if (clave != null && clave in rafagasSoltadas) {
@@ -189,13 +196,43 @@ open class ManagerOverrideCoordinator @Inject constructor(
             if (abierto != null && !abierto.cerrado) {
                 abierto.pendientes.addLast(espera)
                 abierto.unidas++
+                suGrupo = abierto
                 null
             } else {
-                Grupo(rafaga, permission, espera).also { if (clave != null) gruposAbiertos[clave] = it }
+                Grupo(rafaga, permission, espera).also {
+                    if (clave != null) gruposAbiertos[clave] = it
+                    suGrupo = it
+                }
             }
         }
         if (nuevo != null) presentar(nuevo)
-        espera.token.await()
+        val grupo = suGrupo ?: return@runBlocking espera.token.await()
+        // Se espera vigilando la llamada: si se corta (la pantalla dejó de verse, otra fecha, venció su plazo), se va sin
+        // token, y si ya no queda nadie esperando el teclado, el teclado se retira (D26, Codex código r4–r5: la familia
+        // «una carga cancelada sostiene su PIN», arreglada de raíz y no por cada camino que cancela).
+        while (true) {
+            withTimeoutOrNull(VIGILANCIA_MS) { espera.token.await() }
+            if (espera.token.isCompleted) return@runBlocking espera.token.await()
+            if (!espera.vivo()) {
+                abandonar(grupo, espera)
+                return@runBlocking espera.token.await()
+            }
+        }
+        null
+    }
+
+    /**
+     * La llamada de [espera] se cortó: sale de su grupo sin token. Si era la última que esperaba ese teclado (y nadie lo
+     * está repartiendo), el grupo se suelta: el teclado se retira, o sale de la fila sin asomarse.
+     */
+    private fun abandonar(grupo: Grupo, espera: Espera) {
+        val soltarGrupo = synchronized(candado) {
+            // Si ya no estaba en la fila, alguien más decidió por ella (le entregaron su token o se soltó el grupo).
+            if (!grupo.pendientes.remove(espera)) return@synchronized false
+            grupo.pendientes.isEmpty() && !grupo.cerrado
+        }
+        espera.token.complete(null)
+        if (soltarGrupo) soltar(grupo)
     }
 
     /**
@@ -388,8 +425,10 @@ open class ManagerOverrideCoordinator @Inject constructor(
                     // Entregar y soltar se deciden bajo el MISMO candado (Codex código r1 #1): si mientras viajaba este
                     // token se canceló o venció el teclado, ya se soltó a todas y el token se tira sin usarse.
                     val entrega = synchronized(candado) {
-                        if (grupo.cerrado || !grupo.pendientes.remove(turno)) return@synchronized Entrega.DESCARTADA
+                        if (grupo.cerrado) return@synchronized Entrega.DESCARTADA
                         grupo.autorizado = true
+                        // Su llamada se cortó mientras salía el token: éste se tira y se sigue con las demás.
+                        if (!grupo.pendientes.remove(turno)) return@synchronized Entrega.OMITIDA
                         // Ya no queda nadie: se cierra a nuevas uniones (una tardía abre su propio teclado).
                         val ultima = grupo.pendientes.isEmpty()
                         if (ultima) {
@@ -403,7 +442,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
                     }
                     // Se entrega en cuanto sale (ya es sólo suya: salió de la fila bajo el candado): nadie retiene un
                     // token mientras se reparten los demás.
-                    if (entrega != Entrega.DESCARTADA) turno.token.complete(result.token)
+                    if (entrega == Entrega.SIGUE || entrega == Entrega.ULTIMA) turno.token.complete(result.token)
                     if (entrega == Entrega.DESCARTADA) {
                         Log.w("🔐 Override", "El teclado se cerró mientras salía un token de ${grupo.permission}; se tira")
                         break
@@ -413,6 +452,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
                     }
                     autorizacion = autorizacion ?: result
                     if (entrega == Entrega.ULTIMA) break
+                    // OMITIDA: el turno siguiente lo decide `siguienteTurno` (si ya no queda nadie, cierra el grupo).
                 } else if (autorizacion == null) {
                     // El PIN no sirvió (o no se pudo validar): el teclado sigue y nadie se suelta, como siempre.
                     return result
@@ -437,7 +477,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
         return autorizacion
     }
 
-    private enum class Entrega { SIGUE, ULTIMA, DESCARTADA }
+    private enum class Entrega { SIGUE, ULTIMA, OMITIDA, DESCARTADA }
 
     /** Bajo [candado]: desde aquí nadie más se une a [grupo]. */
     private fun cerrarAUniones(grupo: Grupo) {

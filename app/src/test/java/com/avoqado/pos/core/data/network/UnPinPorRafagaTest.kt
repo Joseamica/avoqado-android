@@ -501,6 +501,87 @@ class UnPinPorRafagaTest {
         assertEquals("sin teclado nuevo", publicados, coordinator.tecladosPublicados)
     }
 
+    // MARK: - D26 (Codex código r4–r5): una consulta cortada no sostiene ni abre el teclado
+
+    @Test
+    fun `una llamada ya cortada no pide teclado`() {
+        val red = RepoQueCuenta()
+        val coordinator = TestCoordinator(red.repo)
+        val antes = coordinator.tecladosPublicados
+
+        assertNull(coordinator.awaitToken("reservations:read", rafaga = "carga-1", vivo = { false }))
+
+        assertEquals(antes, coordinator.tecladosPublicados)
+        assertNull(coordinator.prompt.value)
+    }
+
+    @Test
+    fun `una consulta que se corta mientras espera se va sin token y la otra sigue`() {
+        val red = RepoQueCuenta()
+        val coordinator = TestCoordinator(red.repo)
+        val viva = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        val primera = informe(coordinator)
+        val id = coordinator.esperarTeclado().id
+        val cortada = informe(coordinator, vivo = { viva.get() })
+        coordinator.esperarUnidas("carga-1", "reports:read", 1)
+
+        viva.set(false)
+        assertTrue("se va sola al cortarse", cortada.listo.await(3, TimeUnit.SECONDS))
+        assertNull(cortada.token)
+        assertEquals("el teclado sigue para la otra", id, coordinator.prompt.value?.id)
+
+        runBlocking { coordinator.submitPin("venue_1", "1234", id) }
+        assertTrue(primera.listo.await(3, TimeUnit.SECONDS))
+        assertEquals("tok1", primera.token)
+        assertEquals("sólo un token: la cortada no gastó", 1, red.pedidos.size)
+    }
+
+    @Test
+    fun `si todas se cortan el teclado se retira sin pedir tokens`() {
+        val red = RepoQueCuenta()
+        val coordinator = TestCoordinator(red.repo)
+        val viva = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        val primera = informe(coordinator, vivo = { viva.get() })
+        coordinator.esperarTeclado()
+        val otra = informe(coordinator, vivo = { viva.get() })
+        coordinator.esperarUnidas("carga-1", "reports:read", 1)
+
+        viva.set(false) // otra fecha, o la pantalla dejó de verse
+        assertTrue(primera.listo.await(3, TimeUnit.SECONDS))
+        assertTrue(otra.listo.await(3, TimeUnit.SECONDS))
+        assertNull(primera.token)
+        assertNull(otra.token)
+        val limite = System.currentTimeMillis() + 3_000
+        while (coordinator.prompt.value != null && System.currentTimeMillis() < limite) Thread.sleep(5)
+        assertNull("el teclado se retiró solo", coordinator.prompt.value)
+        assertEquals(0, red.pedidos.size)
+    }
+
+    @Test
+    fun `si una consulta se corta mientras sale su token se sigue con las demas`() {
+        val red = RepoConFreno(frenado = 1)
+        val coordinator = TestCoordinator(red.repo)
+        val viva = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        val primera = informe(coordinator, vivo = { viva.get() })
+        val id = coordinator.esperarTeclado().id
+        val otra = coordinator.unirEnOrden(1).single()
+        runBlocking {
+            val envio = launch(Dispatchers.Default) { coordinator.submitPin("venue_1", "1234", id) }
+            assertTrue(red.enCamino.await(3, TimeUnit.SECONDS)) // el token de la primera va en camino
+            viva.set(false)
+            assertTrue("la primera se va sin token", primera.listo.await(3, TimeUnit.SECONDS))
+            red.suelta.countDown()
+            envio.join()
+        }
+        assertNull(primera.token)
+        assertTrue(otra.listo.await(3, TimeUnit.SECONDS))
+        assertEquals("la otra recibe el suyo", "tok2", otra.token)
+        assertNull(coordinator.prompt.value)
+    }
+
     /** Una consulta que llega cuando su grupo ya repartió abre el suyo: nunca se queda sin respuesta. */
     @Test
     fun `una respuesta tardia de una carga ya autorizada abre su propio teclado`() {
