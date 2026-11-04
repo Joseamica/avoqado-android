@@ -319,4 +319,17 @@ class CancelacionDeCobroDecisionTest {
             CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA,
         )
     }
+    // D11 (founder, 3-nov): la pantalla pregunta por el cobro que se revisa, con SU importe, y si no consta no inventa uno.
+    @Test
+    fun `la pregunta de un cobro sin confirmar dice de cual venta y su importe`() {
+        assertEquals("¿Se cobró esta venta de \$83.08?", CancelacionDeCobro.tituloSinConfirmar("\$83.08", fromPreviousSale = false))
+        assertEquals("¿Se cobró la venta anterior de \$83.08?", CancelacionDeCobro.tituloSinConfirmar("\$83.08", fromPreviousSale = true))
+        assertEquals("¿Se cobró esta venta?", CancelacionDeCobro.tituloSinConfirmar(null, fromPreviousSale = false))
+        assertEquals("¿Se cobró la venta anterior?", CancelacionDeCobro.tituloSinConfirmar(null, fromPreviousSale = true))
+    }
+
+    @Test
+    fun `el boton de la declaracion dice lo mismo que el de la terminal`() {
+        assertEquals("No se cobró", CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO)
+    }
 }

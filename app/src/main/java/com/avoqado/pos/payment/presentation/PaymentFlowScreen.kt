@@ -585,6 +585,7 @@ fun PaymentFlowScreen(
                     }
                 }
                 PaymentUndeterminedView(
+                    consultaSola = true,
                     accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                     message = currentState.message,
                     isChecking = currentState.checking,

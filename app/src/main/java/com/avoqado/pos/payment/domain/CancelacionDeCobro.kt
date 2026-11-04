@@ -105,7 +105,21 @@ object CancelacionDeCobro {
      * «¿se cobró esta venta?» sobre otra, y «cobrar otra vez» no abre el cobro. Igual en iOS.
      */
     fun hablaDeTerminalLibre(terminalLibre: Boolean, fromPreviousSale: Boolean): Boolean = terminalLibre && !fromPreviousSale
-    const val BOTON_DECLARAR_NO_COBRADO = "Ya revisé la terminal: no se cobró"
+    const val BOTON_DECLARAR_NO_COBRADO = "No se cobró"
+
+    // ── «Cobro sin confirmar» (D11, founder 3-nov: «tiene 4 botones confusos y se ve mal»): una sola pregunta y una sola decisión.
+    const val SI_DICE_APROBADO = "Si la terminal dice aprobado:"
+    // 🔴 «suele»: un aprobado sin referencias queda para revisión y preguntar no lo crea (Codex, D11). Nunca «se registra solo» a secas.
+    const val SI_DICE_APROBADO_QUE_HACER = "espera aquí, suele registrarse solo. Si tarda varios minutos, llama a soporte de Avoqado."
+    const val SI_NO_SE_COBRO = "Si no se cobró:"
+    const val SI_NO_SE_COBRO_QUE_HACER = "dilo con el botón."
+    const val CONSULTA_AUTOMATICA = "Seguimos preguntando cada pocos segundos"
+
+    /** El importe es el del cobro que se pregunta, nunca el del carrito; si no consta, la pregunta va sin él. */
+    fun tituloSinConfirmar(montoDelCobro: String?, fromPreviousSale: Boolean): String {
+        val venta = if (fromPreviousSale) "la venta anterior" else "esta venta"
+        return if (montoDelCobro == null) "¿Se cobró $venta?" else "¿Se cobró $venta de $montoDelCobro?"
+    }
     const val DECLARACION_TITULO = "Confirma que no se cobró"
     const val DECLARACION_CONFIRMAR = "Sí, no se cobró"
     const val DECLARACION_CANCELAR = "Mejor no"
