@@ -80,6 +80,8 @@ class SyncOutbox @Inject constructor(
     @ApplicationContext context: Context,
     private val cachedPayloads: com.avoqado.pos.core.data.local.database.CachedPayloadDao,
     private val tableSession: com.avoqado.pos.tables.data.TableSession = com.avoqado.pos.tables.data.TableSession(),
+    /** D22: «el servidor ya confirmó una operación de esta sucursal»; Ventas e Informes se recargan solos con esto. */
+    private val avisosDeVentas: AvisosDeVentasSubidas = AvisosDeVentasSubidas(),
 ) {
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** Se fija antes de start; producción conserva IO. Permite probar el drenaje real sin timers concurrentes. */
@@ -687,6 +689,9 @@ class SyncOutbox @Inject constructor(
                 ack.errorCode,ack.message,resultJson,evaluation?.motivo ?: if(!ack.isAcked) com.avoqado.pos.payment.data.ConciliacionDelCobro.RESULTADO_NO_COMPROBADO else null,
                 evaluation?.resultadoJson,System.currentTimeMillis())
         } else dao.resolve(ack.id,if(ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,ack.errorCode,ack.message,resultJson)
+        // D22: cualquier operación de la cola que el servidor confirmó (no sólo el cobro: artículos y descuentos cambian el
+        // informe). Avisar de más cuesta una recarga agrupada; de menos, cifras viejas.
+        if (ack.isAcked) avisosDeVentas.subio(row.venueId)
     }
 
     private suspend fun refreshCounts(venueId: String) {

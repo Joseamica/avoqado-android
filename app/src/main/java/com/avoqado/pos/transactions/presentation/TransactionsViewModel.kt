@@ -1,7 +1,17 @@
 package com.avoqado.pos.transactions.presentation
 
 import android.util.Log
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.core.data.network.ClaseDeFallo
+import com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas
+import com.avoqado.pos.core.domain.refresh.Necesidad
+import com.avoqado.pos.core.domain.refresh.RecargaSola
+import com.avoqado.pos.core.domain.refresh.RelojDeRecarga
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
+import kotlinx.coroutines.flow.collectLatest
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.domain.refresh.RefreshOutcome
@@ -105,6 +115,9 @@ class TransactionsViewModel @Inject constructor(
     private val exchangePendingStore: ExchangePendingStore,
     /** Reembolso a saldo a favor sin confirmar (A3). `null` sólo en pruebas que no lo usan: no se reenvía nada. */
     private val refundPendingStore: RefundPendingStore? = null,
+    /** D22: los cobros de la cola que el servidor ya confirmó, por sucursal (la recarga automática). */
+    private val avisosDeVentas: AvisosDeVentasSubidas = AvisosDeVentasSubidas(),
+    private val reloj: RelojDeRecarga = RelojDeRecarga(),
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -606,12 +619,76 @@ class TransactionsViewModel @Inject constructor(
             _customerPickerVisible.value || _customerCandidate.value != null || _isAssigningCustomer.value
 
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
-    suspend fun refreshNow(): Result<Unit> {
+    suspend fun refreshNow(): Result<Unit> = cargarPrimeraPagina(enFondo = false)
+
+    // MARK: - D22: la recarga automática al volver la red
+
+    /** D22: si a la lista le hace falta recargar (un fallo reintentable o un cobro de la sucursal que ya subió). */
+    private val necesidad = MutableStateFlow(Necesidad())
+
+    /**
+     * D22 (diseño r2 §E): con más de una página a la vista la lista no se mueve sola; hace falta por un cobro que subió y se
+     * ofrece «Hay ventas nuevas · Actualizar» (al tocarla, lo mismo que jalar).
+     */
+    val hayVentasNuevas: StateFlow<Boolean> = combine(
+        necesidad, avisosDeVentas.porSucursal, repository.paginasCargadas, _consultaVigente,
+    ) { n, avisos, paginas, vigente ->
+        val cuenta = avisos[vigente.sucursal] ?: 0L
+        paginas > 1 && n.haceFalta(vigente.sucursal, cuenta) && n.porAvisos(vigente.sucursal, cuenta)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false) // sólo mientras la pantalla la mira
+
+    /**
+     * Toda carga de la página 1 (la del gate y la automática). D22: la instantánea se toma ANTES de consultar y el retorno
+     * sólo atiende esa instantánea (diseño r2 §B): un cobro que sube durante la carga sigue pendiente.
+     */
+    private suspend fun cargarPrimeraPagina(enFondo: Boolean): Result<Unit> {
         val busqueda = _searchText.value.ifBlank { null }
         val consulta = repository.consultaPara(busqueda)
         _consultaVigente.value = consulta
         ultimaPedida = consulta
-        return repository.fetchTransactions(page = 1, search = busqueda)
+        val inst = necesidad.value.instantanea(consulta.sucursal, avisosDeVentas.de(consulta.sucursal))
+        val resultado = repository.fetchTransactions(page = 1, search = busqueda, enFondo = enFondo)
+        necesidad.update {
+            val error = resultado.exceptionOrNull()
+            if (error == null) it.alTerminarBien(inst) else it.alFallar(inst, ClaseDeFallo.de(error), reloj.ahora())
+        }
+        return resultado
+    }
+
+    /**
+     * D22: mientras la lista se ve (RESUMED y, en WINDOWS, la ventana sin minimizar), la vuelve a pedir sola cuando hace
+     * falta (`RecargaSola`). Esa carga corre por su cuenta, de fondo y fuera del gate: nadie se une a ella, y quien llega
+     * espera su turno en el repositorio y hace su propia consulta (diseño r4 §1). Dejar de verse la corta con su HTTP. Sólo
+     * con la página 1 a la vista y sin una búsqueda por asentarse.
+     */
+    internal suspend fun recargarSolaMientrasSeVe(owner: LifecycleOwner) {
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            VentanaALaVista.aLaVista.collectLatest { seVe ->
+                if (seVe) {
+                    RecargaSola.atender(
+                        necesidad = necesidad,
+                        avisos = avisosDeVentas,
+                        conRed = connectivityMonitor.isConnected,
+                        otras = combine(
+                            repository.isLoading, repository.isLoadingMore, repository.paginasCargadas, _searchText, _consultaVigente,
+                        ) { cargando, cargandoMas, paginas, texto, vigente -> listOf(cargando, cargandoMas, paginas, texto, vigente) },
+                        sucursal = { _consultaVigente.value.sucursal.takeIf { it.isNotEmpty() } },
+                        ocupada = {
+                            repository.isLoading.value || repository.isLoadingMore.value || workInProgress() ||
+                                // Una búsqueda escrita que todavía no sale (debounce): la carga sería de la consulta vieja.
+                                _searchText.value.ifBlank { null }.orEmpty() != _consultaVigente.value.busqueda
+                        },
+                        puedeSola = { repository.paginasCargadas.value <= 1 },
+                        reloj = reloj,
+                        recargar = {
+                            // r2 §D: con red de vuelta, un enfriamiento viejo del gate no frena después una búsqueda nueva.
+                            gate.resetCooldown()
+                            cargarPrimeraPagina(enFondo = true)
+                        },
+                    )
+                }
+            }
+        }
     }
 
     fun autoRefresh() {

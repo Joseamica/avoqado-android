@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import com.avoqado.pos.designsystem.components.SearchPillField
@@ -282,6 +283,10 @@ private fun TransactionListPanel(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
+    // D22: mientras la lista se ve, se vuelve a pedir sola cuando hace falta (al volver la red o al subir un cobro).
+    val duenoDelCicloDeVida = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, duenoDelCicloDeVida) { viewModel.recargarSolaMientrasSeVe(duenoDelCicloDeVida) }
+    val hayVentasNuevas by viewModel.hayVentasNuevas.collectAsState()
 
     // D18 (Codex r1 #1 y #3): la lista guardada sólo cuenta si es de la consulta vigente (sucursal, quién y búsqueda).
     val deLaConsulta = consultaDeLaLista == consultaVigente
@@ -418,6 +423,11 @@ private fun TransactionListPanel(
             },
             onClearAll = { viewModel.clearAllFilters() },
         )
+
+        // D22: con más de una página a la vista la lista no se mueve sola; se ofrece actualizar (lo mismo que jalar).
+        if (hayVentasNuevas) {
+            PildoraDeVentasNuevas(onActualizar = viewModel::manualRefresh)
+        }
 
         // Content
         AvoqadoRefreshable(
@@ -1260,5 +1270,24 @@ private fun paymentIcon(method: String?): ImageVector {
         "BANK_TRANSFER", "TRANSFER" -> Icons.AutoMirrored.Filled.CompareArrows
         // DIGITAL_WALLET, CRYPTOCURRENCY, OTHER, and unknown future codes.
         else -> Icons.Filled.Description
+    }
+}
+
+/** D22: «Hay ventas nuevas · Actualizar», arriba de la lista cuando ya se bajaron más páginas. */
+@Composable
+private fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.xs), contentAlignment = Alignment.Center) {
+        androidx.compose.material3.Surface(
+            onClick = onActualizar,
+            shape = androidx.compose.foundation.shape.CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ) {
+            Text(
+                text = TextosDeVentas.HAY_VENTAS_NUEVAS,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            )
+        }
     }
 }

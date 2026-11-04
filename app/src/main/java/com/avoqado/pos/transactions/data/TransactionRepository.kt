@@ -23,7 +23,12 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import com.avoqado.pos.core.data.network.ClaseDeFallo
 import com.avoqado.pos.core.data.network.FalloDeLectura
+import com.avoqado.pos.core.data.network.LecturaFallida
+import com.avoqado.pos.core.data.network.leerCancelable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import okhttp3.Authenticator
@@ -100,9 +105,34 @@ class TransactionRepository @Inject constructor(
     private var hasMore = true
     private val pageSize = 20
 
+    private val _paginasCargadas = MutableStateFlow(1)
+
+    /**
+     * D22 (diseño r3 §A): cuántas páginas de la lista están de verdad a la vista. Sólo cambia con un reemplazo bueno de la
+     * página 1 o con una página siguiente que se pegó: un «Actualizar» que falla no la toca. De aquí leen la píldora «Hay
+     * ventas nuevas» y la regla «la automática sólo con la página 1».
+     */
+    val paginasCargadas: StateFlow<Int> = _paginasCargadas.asStateFlow()
+
+    /**
+     * D22 (diseño r3 §B y r4): una sola carga de la lista a la vez, sea la página 1 (de fondo, al entrar, jalar,
+     * «Reintentar», buscar) o la siguiente. Quien llega espera su turno y hace SU consulta: nadie se une a la de otro.
+     */
+    private val cargaDeLaLista = Mutex()
+
+    /**
+     * La página 1 de [search] (la reemplaza al llegar), o la SIGUIENTE de lo que esté cargado al tomar el turno.
+     *
+     * D22 (diseño r4 §2): con [page] > 1 el número que se pidió no manda: dentro del turno se pide `currentPage + 1` de la
+     * lista que hay en ese momento, si es de la misma consulta y hay más. Así una página 2 que esperaba mientras la página 1
+     * se reemplazaba pide la 2 de la lista nueva, y la paginación nunca se traba.
+     *
+     * [enFondo]: la pidió la recarga automática (D22): un 403 no abre el PIN de gerente ni el aviso de permisos.
+     */
     suspend fun fetchTransactions(
         page: Int = 1,
         search: String? = null,
+        enFondo: Boolean = false,
     ): Result<Unit> {
         val venueId = secureStorage.venueId
             ?: return Result.failure(IllegalStateException("Sin venue activo"))
@@ -110,13 +140,26 @@ class TransactionRepository @Inject constructor(
             ?: return Result.failure(IllegalStateException("Sin sesión"))
 
         val consulta = consultaPara(search)
-        if (page == 1) {
+        return cargaDeLaLista.withLock { cargar(page, search, enFondo, venueId, token, consulta) }
+    }
+
+    private suspend fun cargar(
+        pedida: Int,
+        search: String?,
+        enFondo: Boolean,
+        venueId: String,
+        token: String,
+        consulta: ConsultaDeVentas,
+    ): Result<Unit> {
+        val page: Int
+        if (pedida == 1) {
+            page = 1
+            // D22 (diseño r3 §A): `currentPage` y `hasMore` no cambian al EMPEZAR: sólo al reemplazar la lista con éxito.
             _isLoading.value = true
-            currentPage = 1
-            hasMore = true
         } else {
-            // La página siguiente de OTRA consulta no se pega a esta lista (D18).
-            if (_consultaDeLaLista.value != consulta) return Result.success(Unit)
+            // La página siguiente de OTRA consulta no se pega a esta lista (D18); sin más, no hay nada que pedir.
+            if (_consultaDeLaLista.value != consulta || !hasMore) return Result.success(Unit)
+            page = currentPage + 1
             _isLoadingMore.value = true
         }
 
@@ -131,13 +174,11 @@ class TransactionRepository @Inject constructor(
             val request = Request.Builder()
                 .url(urlBuilder.toString())
                 .header("Authorization", "Bearer $token")
+                .apply { if (enFondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1") }
                 .build()
 
-            val (responseCode, body) = withContext(Dispatchers.IO) {
-                client.newCall(request).execute().use { response ->
-                    response.code to (response.body?.string() ?: "")
-                }
-            }
+            // D22: si se cancela (la automática al dejar de verse la pantalla), la petición se corta de verdad.
+            val (responseCode, body) = client.leerCancelable(request)
 
             if (responseCode in 200..299 && body.isNotEmpty()) {
                 val result = json.decodeFromString<TransactionsResponse>(body)
@@ -151,13 +192,15 @@ class TransactionRepository @Inject constructor(
                 }
                 currentPage = page
                 hasMore = result.meta?.let { page < it.pageCount } ?: false
+                _paginasCargadas.value = currentPage
                 Log.d("📦", "✅ Loaded ${result.data.size} transactions (page $page)")
                 Result.success(Unit)
             } else {
                 Log.e("📦", "❌ Transactions fetch failed: $responseCode")
                 // El servidor sí contestó, pero mal (D18).
                 if (page == 1) _falloDeCarga.value = FalloDeLectura.SERVIDOR
-                Result.failure(Exception("Transactions HTTP $responseCode"))
+                // D22: con su código, para que la recarga automática sepa si insistir (un 401/403 propio la detiene).
+                Result.failure(LecturaFallida(FalloDeLectura.SERVIDOR, clases = listOf(ClaseDeFallo.deRespuesta(responseCode, body))))
             }
         } catch (e: CancellationException) {
             // Salir de la pantalla no es un fallo de lectura: no se anota (sería «el servidor falló» sin serlo).
@@ -391,5 +434,6 @@ class TransactionRepository @Inject constructor(
         _falloDeCarga.value = null
         currentPage = 1
         hasMore = true
+        _paginasCargadas.value = 1
     }
 }

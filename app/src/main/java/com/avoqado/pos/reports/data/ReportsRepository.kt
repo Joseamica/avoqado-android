@@ -4,6 +4,12 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.FalloDeLectura
+import com.avoqado.pos.core.data.network.CargaDeFondo
+import com.avoqado.pos.core.data.network.ClaseDeFallo
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.core.data.network.leerCancelable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.avoqado.pos.core.data.network.LecturaFallida
 import com.avoqado.pos.reports.data.model.CategorySales
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
@@ -15,13 +21,11 @@ import com.avoqado.pos.reports.data.model.ReportData
 import com.avoqado.pos.reports.data.model.SalesSummaryReport
 import com.avoqado.pos.reports.data.model.TopProduct
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.double
@@ -83,22 +87,23 @@ class ReportsRepository @Inject constructor(
      * servidor; que nadie conteste, sin red. Nunca lanza, salvo la cancelación.
      */
     private suspend fun leer(url: String): Result<String> = try {
-        val (code, body) = withContext(Dispatchers.IO) {
-            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
-                response.code to (response.body?.string() ?: "")
-            }
-        }
+        val peticion = Request.Builder().url(url).get()
+            // D22: la recarga automática no abre el PIN de gerente ni el aviso de permisos.
+            .apply { if (CargaDeFondo.activa()) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1") }
+            .build()
+        // D22: si se cancela (la automática al dejar de verse la pantalla), la petición se corta de verdad.
+        val (code, body) = client.leerCancelable(peticion)
         if (code in 200..299 && body.isNotEmpty()) {
             Result.success(body)
         } else {
             Log.e(TAG, "❌ HTTP $code (cuerpo de ${body.length} caracteres)")
-            Result.failure(LecturaFallida(FalloDeLectura.SERVIDOR))
+            Result.failure(LecturaFallida(FalloDeLectura.SERVIDOR, clases = listOf(ClaseDeFallo.deRespuesta(code, body))))
         }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.e(TAG, "❌ sin respuesta: ${e.message}")
-        Result.failure(LecturaFallida(FalloDeLectura.de(e), e))
+        Result.failure(LecturaFallida(FalloDeLectura.de(e), e, clases = ClaseDeFallo.de(e)))
     }
 
     /** Lee un cuerpo ya recibido; si no tiene la forma esperada, el fallo es del servidor. */
@@ -253,6 +258,14 @@ class ReportsRepository @Inject constructor(
      */
     suspend fun loadReport(consulta: ConsultaDeInforme, hasta: String): Result<Unit> {
         if (consulta.sucursal.isEmpty()) return Result.failure(IllegalStateException("Sin sucursal activa"))
+        // D22 (diseño r4 §1): una carga del informe a la vez. La automática no es un vuelo al que otra se una: quien llega
+        // espera su turno y hace su propia consulta.
+        return cargaDelInforme.withLock { cargarInforme(consulta, hasta) }
+    }
+
+    private val cargaDelInforme = Mutex()
+
+    private suspend fun cargarInforme(consulta: ConsultaDeInforme, hasta: String): Result<Unit> {
         val url = rutaDeLaSucursal(consulta.sucursal)
         val inicio = consulta.inicio
         _isLoading.value = true
@@ -282,7 +295,8 @@ class ReportsRepository @Inject constructor(
                     }
                     Log.e(TAG, "❌ loadReport: sub-reporte fallido ($fallo); datos previos intactos")
                     _ultimoFallo.value = fallo
-                    return@coroutineScope Result.failure(LecturaFallida(fallo, fallos.first()))
+                    // D22: cada error con su clase, para la precedencia de la recarga automática (diseño r2 §C).
+                    return@coroutineScope Result.failure(LecturaFallida(fallo, fallos.first(), clases = fallos.flatMap { ClaseDeFallo.de(it) }))
                 }
                 // «Ventas por hora» son las 24 horas del día que trae el resumen, como en iOS (D6, 2-nov). Antes salían de la serie
                 // del periodo de HOY: sólo las horas con venta y como instantes ISO, así que la hora nunca se podía rotular.

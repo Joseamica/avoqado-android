@@ -144,7 +144,8 @@ class ForbiddenInterceptor(
         } catch (_: Exception) {
             null
         }
-        if (parsed == null || (parsed.error == null && parsed.message == null)) {
+        // D22: la misma regla que usa la recarga automática para decidir si un 403 la detiene (`RespuestaProhibida`).
+        if (parsed == null || !RespuestaProhibida.esDenegacionPropia(body)) {
             Log.w(
                 "🔒 RBAC",
                 "403 sin cuerpo nuestro en ${request.url.encodedPath} " +

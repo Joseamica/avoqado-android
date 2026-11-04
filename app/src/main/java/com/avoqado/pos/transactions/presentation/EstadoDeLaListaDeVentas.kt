@@ -53,4 +53,7 @@ internal object TextosDeVentas {
         "aparato. Cuando vuelva la conexión, toca «Reintentar»."
     const val SERVIDOR_TITULO = "No se pudieron cargar las ventas"
     const val SERVIDOR_TEXTO = "Vuelve a intentarlo en un momento."
+
+    /** D22: la píldora arriba de la lista cuando hay más de una página y subió un cobro. */
+    const val HAY_VENTAS_NUEVAS = "Hay ventas nuevas · Actualizar"
 }
