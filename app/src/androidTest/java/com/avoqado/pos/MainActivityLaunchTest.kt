@@ -37,3 +37,5 @@ class MainActivityLaunchTest {
         }
     }
 }
+
+// Prueba de humo de la nube beta (no unir).
