@@ -434,88 +434,74 @@ private fun TransactionListPanel(
             onRefresh = viewModel::manualRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            when (val estado = estadoDeLaListaDeVentas(deLaConsulta, listaDeLaConsulta.size, filteredTransactions.size, isLoading, falloDeCarga)) {
-                EstadoDeLaListaDeVentas.Cargando -> {
-                    AvoqadoLoadingState(message = "Cargando transacciones...")
-                }
-                is EstadoDeLaListaDeVentas.NoSeCargo -> {
-                    ListaDeVentasVacia(
-                        fallo = estado.fallo,
-                        hasFilters = filters.hasActiveFilters,
-                        searchText = searchText,
-                        onReintentar = viewModel::manualRefresh,
-                    )
-                }
-                EstadoDeLaListaDeVentas.Vacia -> {
-                    ListaDeVentasVacia(
-                        fallo = null,
-                        hasFilters = filters.hasActiveFilters,
-                        searchText = searchText,
-                        onReintentar = viewModel::manualRefresh,
-                    )
-                }
-                EstadoDeLaListaDeVentas.Lista -> {
-                    val listState = rememberLazyListState()
-                    // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
-                    // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
-                    SubirAlInicioDeLaLista(
-                        listState = listState,
-                        primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" },
-                    )
-                    val alcanceDeLaLista = rememberCoroutineScope()
+            ContenidoDeVentas(
+                estado = estadoDeLaListaDeVentas(deLaConsulta, listaDeLaConsulta.size, filteredTransactions.size, isLoading, falloDeCarga),
+                hayVentasNuevas = hayVentasNuevas,
+                hasFilters = filters.hasActiveFilters,
+                searchText = searchText,
+                onReintentar = viewModel::manualRefresh,
+                onActualizar = viewModel::manualRefresh,
+            ) {
+                val listState = rememberLazyListState()
+                // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
+                // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
+                SubirAlInicioDeLaLista(
+                    listState = listState,
+                    primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" },
+                )
+                val alcanceDeLaLista = rememberCoroutineScope()
 
-                    Column(Modifier.fillMaxSize()) {
-                        // D22: con más de una página a la vista la lista no se mueve sola; se ofrece actualizar. El toque sube la
-                        // lista en ese instante y luego pide la página 1 (rediseño r6): no queda ningún salto pendiente.
-                        if (hayVentasNuevas) {
-                            PildoraDeVentasNuevas(onActualizar = { alTocarLaPildora(alcanceDeLaLista, listState, viewModel::manualRefresh) })
-                        }
-                        LazyColumn(
-                            state = listState,
-                            contentPadding = PaddingValues(horizontal = horizontalPadding),
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                        ) {
-                            grouped.forEach { (dateGroup, groupTransactions) ->
-                                item(key = "header_$dateGroup") {
-                                    Text(
-                                        text = dateGroup,
-                                        style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(
-                                            top = dateHeaderTopPadding,
-                                            bottom = dateHeaderBottomPadding,
-                                        ),
-                                    )
-                                }
-
-                                items(groupTransactions, key = { it.id }) { transaction ->
-                                    val isSelected = isTablet && selectedTransactionId == transaction.id
-
-                                    TransactionRow(
-                                        transaction = transaction,
-                                        dense = denseList,
-                                        isSelected = isSelected,
-                                        onClick = { viewModel.selectTransaction(transaction.id) },
-                                    )
-
-                                    // Trigger load-more
-                                    LaunchedEffect(transaction.id) {
-                                        viewModel.loadMoreIfNeeded(transaction)
-                                    }
-                                }
+                Column(Modifier.fillMaxSize()) {
+                    // D22: con más de una página a la vista la lista no se mueve sola; se ofrece actualizar. El toque sube la
+                    // lista en ese instante y luego pide la página 1 (rediseño r6): no queda ningún salto pendiente.
+                    if (hayVentasNuevas) {
+                        PildoraDeVentasNuevas(onActualizar = { alTocarLaPildora(alcanceDeLaLista, listState, viewModel::manualRefresh) })
+                    }
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(horizontal = horizontalPadding),
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    ) {
+                        grouped.forEach { (dateGroup, groupTransactions) ->
+                            item(key = "header_$dateGroup") {
+                                Text(
+                                    text = dateGroup,
+                                    style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(
+                                        top = dateHeaderTopPadding,
+                                        bottom = dateHeaderBottomPadding,
+                                    ),
+                                )
                             }
 
-                            // Loading more indicator
-                            if (isLoadingMore) {
-                                item {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                                    }
+                            items(groupTransactions, key = { it.id }) { transaction ->
+                                val isSelected = isTablet && selectedTransactionId == transaction.id
+
+                                TransactionRow(
+                                    transaction = transaction,
+                                    dense = denseList,
+                                    isSelected = isSelected,
+                                    onClick = { viewModel.selectTransaction(transaction.id) },
+                                )
+
+                                // Trigger load-more
+                                LaunchedEffect(transaction.id) {
+                                    viewModel.loadMoreIfNeeded(transaction)
+                                }
+                            }
+                        }
+
+                        // Loading more indicator
+                        if (isLoadingMore) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
                                 }
                             }
                         }
@@ -624,6 +610,46 @@ private fun TransactionRow(
  * La lista de Ventas sin filas (D18). [fallo] = por qué no se pudo leer (`null`: el servidor contestó y no hay ventas, o
  * los filtros las esconden). [onReintentar] = la misma recarga del gesto de jalar.
  */
+/**
+ * D22 r7: qué enseña el cuerpo de Ventas según [estado]. La píldora «Hay ventas nuevas · Actualizar» va en las dos ramas con
+ * ventas de la consulta en la mano: en [lista], dueña de su estado, que la sube al tocar; y en la vacía por filtros o búsqueda,
+ * donde sólo pide la página 1 ([onActualizar]): no hay lista que subir, y al aparecer filas la lista empieza arriba.
+ * «Cargando» y «no se cargó» no la llevan: sin ventas de esta consulta en la mano no cuentan páginas (no hay píldora), y o ya
+ * va una carga de esta consulta en camino, o «Reintentar» y la recarga sola hacen lo mismo.
+ */
+@Composable
+internal fun ContenidoDeVentas(
+    estado: EstadoDeLaListaDeVentas,
+    hayVentasNuevas: Boolean,
+    hasFilters: Boolean,
+    searchText: String,
+    onReintentar: () -> Unit,
+    onActualizar: () -> Unit,
+    lista: @Composable () -> Unit,
+) {
+    when (estado) {
+        EstadoDeLaListaDeVentas.Cargando -> AvoqadoLoadingState(message = "Cargando transacciones...")
+        is EstadoDeLaListaDeVentas.NoSeCargo -> ListaDeVentasVacia(
+            fallo = estado.fallo,
+            hasFilters = hasFilters,
+            searchText = searchText,
+            onReintentar = onReintentar,
+        )
+        EstadoDeLaListaDeVentas.Vacia -> Column(Modifier.fillMaxSize()) {
+            if (hayVentasNuevas) PildoraDeVentasNuevas(onActualizar = onActualizar)
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                ListaDeVentasVacia(
+                    fallo = null,
+                    hasFilters = hasFilters,
+                    searchText = searchText,
+                    onReintentar = onReintentar,
+                )
+            }
+        }
+        EstadoDeLaListaDeVentas.Lista -> lista()
+    }
+}
+
 @Composable
 internal fun ListaDeVentasVacia(
     fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,

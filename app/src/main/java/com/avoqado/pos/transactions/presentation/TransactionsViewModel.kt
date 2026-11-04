@@ -631,13 +631,21 @@ class TransactionsViewModel @Inject constructor(
      * ofrece «Hay ventas nuevas · Actualizar» (al tocarla, lo mismo que jalar).
      */
     val hayVentasNuevas: StateFlow<Boolean> = combine(
-        necesidad, avisosDeVentas.porSucursal, repository.paginasCargadas, _consultaVigente,
-    ) { n, avisos, paginas, vigente ->
+        necesidad, avisosDeVentas.porSucursal, repository.paginasCargadas, repository.consultaDeLaLista, _consultaVigente,
+    ) { n, avisos, paginas, deLaLista, vigente ->
         val cuenta = avisos[vigente.sucursal] ?: 0L
         // Codex código r1: «hay avisos sin atender», no «la automática puede insistir». Un «Actualizar» que acaba en un 403
         // propio (PIN cancelado) u otro 4xx detiene la automática, pero las ventas nuevas siguen sin verse.
-        paginas > 1 && n.porAvisos(vigente.sucursal, cuenta)
+        paginasDeLaConsulta(paginas, deLaLista, vigente) > 1 && n.porAvisos(vigente.sucursal, cuenta)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false) // sólo mientras la pantalla la mira
+
+    /**
+     * D22 r7: cuántas páginas de la consulta VIGENTE hay en la mano. Una lista de OTRA consulta (la búsqueda anterior, otra
+     * persona) no se enseña (D18), así que sus páginas no cuentan: ni sacan la píldora ni frenan la automática. Si contaran,
+     * tras una búsqueda que falla sin red con tres páginas de la anterior en la mano, nada la volvería a pedir sola.
+     */
+    private fun paginasDeLaConsulta(paginas: Int, deLaLista: ConsultaDeVentas?, vigente: ConsultaDeVentas): Int =
+        if (deLaLista == vigente) paginas else 0
 
     /**
      * Toda carga de la página 1 (la del gate y la automática). D22: la instantánea se toma ANTES de consultar y el retorno
@@ -682,7 +690,9 @@ class TransactionsViewModel @Inject constructor(
                                 // Una búsqueda escrita que todavía no sale (debounce): la carga sería de la consulta vieja.
                                 _searchText.value.ifBlank { null }.orEmpty() != _consultaVigente.value.busqueda
                         },
-                        puedeSola = { repository.paginasCargadas.value <= 1 },
+                        puedeSola = {
+                            paginasDeLaConsulta(repository.paginasCargadas.value, repository.consultaDeLaLista.value, _consultaVigente.value) <= 1
+                        },
                         reloj = reloj,
                         recargar = {
                             // r2 §D: con red de vuelta, un enfriamiento viejo del gate no frena después una búsqueda nueva.

@@ -14,8 +14,10 @@ import com.avoqado.pos.core.domain.refresh.RelojDeRecarga
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.transactions.data.TransactionRepository
+import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
 import com.avoqado.pos.transactions.data.model.Transaction
+import com.avoqado.pos.transactions.data.model.TransactionFilters
 import com.avoqado.pos.transactions.presentation.EstadoDeLaListaDeVentas
 import com.avoqado.pos.transactions.presentation.TransactionsViewModel
 import com.avoqado.pos.transactions.presentation.estadoDeLaListaDeVentas
@@ -702,5 +704,54 @@ class TransactionsViewModelRecargaSolaTest {
         irA(20_000)
         assertEquals(0, automaticas)
         assertTrue(vm.hayVentasNuevas.value)
+    }
+
+    // MARK: - Ronda 7 (Codex código r6): la lista de otra consulta y la lista vacía por filtros
+
+    /** Tres páginas sin búsqueda; luego la búsqueda «café» falla sin red: en la mano siguen las de la consulta anterior. */
+    private fun TestScope.conLasPaginasDeOtraConsulta(): TransactionsViewModel {
+        val vm = conLaLista()
+        paginasCargadas.value = 3
+        aLaVista(vm)
+        contesta = sinRed
+        vm.setSearchText("café")
+        irA(500)
+        assertEquals(EstadoDeLaListaDeVentas.NoSeCargo(FalloDeLectura.SIN_RED), estado(vm))
+        return vm
+    }
+
+    @Test fun `r7-1a - las paginas de otra consulta no frenan la automatica - al volver la red la busqueda vuelve sola`() = runTest(scheduler) {
+        val vm = conLasPaginasDeOtraConsulta()
+        contesta = null // vuelve la red: «aparecen aquí solas al volver la conexión»
+        irA(40_000)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+        assertEquals(Pedida("café", true), pedidas.last())
+    }
+
+    @Test fun `r7-1b - con las paginas de otra consulta un aviso no saca la pildora`() = runTest(scheduler) {
+        val vm = conLasPaginasDeOtraConsulta()
+        avisos.subio("venue")
+        runCurrent()
+        assertFalse("sin ventas de esta consulta en la mano no cuentan sus páginas", vm.hayVentasNuevas.value)
+    }
+
+    @Test fun `r7-2 - varias paginas y un filtro que las esconde todas - queda Vacia, sale la pildora y tocarla pide la pagina 1`() = runTest(scheduler) {
+        val vm = conLaLista()
+        paginasCargadas.value = 3
+        vm.updateFilters(TransactionFilters(totalOperator = AmountOperator.GREATER_THAN, totalValue1 = 1_000.0))
+        aLaVista(vm)
+        avisos.subio("venue") // sube un cobro que sí cumple el filtro
+        irA(10_000)
+
+        val deLaConsulta = vm.consultaDeLaLista.value == vm.consultaVigente.value
+        val estado = estadoDeLaListaDeVentas(deLaConsulta, vm.transactions.value.size, vm.filteredTransactions.size, vm.isLoading.value, vm.falloDeCarga.value)
+        assertEquals(EstadoDeLaListaDeVentas.Vacia, estado)
+        assertEquals("con varias páginas no recarga sola", 0, automaticas)
+        assertTrue(vm.hayVentasNuevas.value)
+
+        vm.manualRefresh() // tocar la píldora de la lista vacía
+        runCurrent()
+        assertEquals(Pedida("", false), pedidas.last())
+        assertFalse(vm.hayVentasNuevas.value)
     }
 }
