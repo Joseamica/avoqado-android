@@ -52,6 +52,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import androidx.compose.ui.Alignment
@@ -119,6 +120,9 @@ fun ReportsScreen(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
+    // D22: mientras Informes se ve, se vuelve a pedir solo cuando hace falta (al volver la red o al subir un cobro).
+    val duenoDelCicloDeVida = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, duenoDelCicloDeVida) { viewModel.recargarSolaMientrasSeVe(duenoDelCicloDeVida) }
 
     val informe by viewModel.informe.collectAsState()
     val consultaElegida by viewModel.consultaElegida.collectAsState()

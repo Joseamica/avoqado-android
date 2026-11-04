@@ -54,6 +54,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import com.avoqado.pos.designsystem.components.SearchPillField
@@ -86,6 +88,9 @@ import com.avoqado.pos.transactions.data.model.TransactionFilters
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 
 @Composable
 fun TransactionsScreen(
@@ -282,6 +287,10 @@ private fun TransactionListPanel(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
+    // D22: mientras la lista se ve, se vuelve a pedir sola cuando hace falta (al volver la red o al subir un cobro).
+    val duenoDelCicloDeVida = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, duenoDelCicloDeVida) { viewModel.recargarSolaMientrasSeVe(duenoDelCicloDeVida) }
+    val hayVentasNuevas by viewModel.hayVentasNuevas.collectAsState()
 
     // D18 (Codex r1 #1 y #3): la lista guardada sólo cuenta si es de la consulta vigente (sucursal, quién y búsqueda).
     val deLaConsulta = consultaDeLaLista == consultaVigente
@@ -425,33 +434,33 @@ private fun TransactionListPanel(
             onRefresh = viewModel::manualRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            when (val estado = estadoDeLaListaDeVentas(deLaConsulta, listaDeLaConsulta.size, filteredTransactions.size, isLoading, falloDeCarga)) {
-                EstadoDeLaListaDeVentas.Cargando -> {
-                    AvoqadoLoadingState(message = "Cargando transacciones...")
-                }
-                is EstadoDeLaListaDeVentas.NoSeCargo -> {
-                    ListaDeVentasVacia(
-                        fallo = estado.fallo,
-                        hasFilters = filters.hasActiveFilters,
-                        searchText = searchText,
-                        onReintentar = viewModel::manualRefresh,
-                    )
-                }
-                EstadoDeLaListaDeVentas.Vacia -> {
-                    ListaDeVentasVacia(
-                        fallo = null,
-                        hasFilters = filters.hasActiveFilters,
-                        searchText = searchText,
-                        onReintentar = viewModel::manualRefresh,
-                    )
-                }
-                EstadoDeLaListaDeVentas.Lista -> {
-                    val listState = rememberLazyListState()
+            ContenidoDeVentas(
+                estado = estadoDeLaListaDeVentas(deLaConsulta, listaDeLaConsulta.size, filteredTransactions.size, isLoading, falloDeCarga),
+                hayVentasNuevas = hayVentasNuevas,
+                hasFilters = filters.hasActiveFilters,
+                searchText = searchText,
+                onReintentar = viewModel::manualRefresh,
+                onActualizar = viewModel::manualRefresh,
+            ) {
+                val listState = rememberLazyListState()
+                // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
+                // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
+                SubirAlInicioDeLaLista(
+                    listState = listState,
+                    primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" },
+                )
+                val alcanceDeLaLista = rememberCoroutineScope()
 
+                Column(Modifier.fillMaxSize()) {
+                    // D22: con más de una página a la vista la lista no se mueve sola; se ofrece actualizar. El toque sube la
+                    // lista en ese instante y luego pide la página 1 (rediseño r6): no queda ningún salto pendiente.
+                    if (hayVentasNuevas) {
+                        PildoraDeVentasNuevas(onActualizar = { alTocarLaPildora(alcanceDeLaLista, listState, viewModel::manualRefresh) })
+                    }
                     LazyColumn(
                         state = listState,
                         contentPadding = PaddingValues(horizontal = horizontalPadding),
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxWidth().weight(1f),
                     ) {
                         grouped.forEach { (dateGroup, groupTransactions) ->
                             item(key = "header_$dateGroup") {
@@ -601,6 +610,46 @@ private fun TransactionRow(
  * La lista de Ventas sin filas (D18). [fallo] = por qué no se pudo leer (`null`: el servidor contestó y no hay ventas, o
  * los filtros las esconden). [onReintentar] = la misma recarga del gesto de jalar.
  */
+/**
+ * D22 r7: qué enseña el cuerpo de Ventas según [estado]. La píldora «Hay ventas nuevas · Actualizar» va en las dos ramas con
+ * ventas de la consulta en la mano: en [lista], dueña de su estado, que la sube al tocar; y en la vacía por filtros o búsqueda,
+ * donde sólo pide la página 1 ([onActualizar]): no hay lista que subir, y al aparecer filas la lista empieza arriba.
+ * «Cargando» y «no se cargó» no la llevan: sin ventas de esta consulta en la mano no cuentan páginas (no hay píldora), y o ya
+ * va una carga de esta consulta en camino, o «Reintentar» y la recarga sola hacen lo mismo.
+ */
+@Composable
+internal fun ContenidoDeVentas(
+    estado: EstadoDeLaListaDeVentas,
+    hayVentasNuevas: Boolean,
+    hasFilters: Boolean,
+    searchText: String,
+    onReintentar: () -> Unit,
+    onActualizar: () -> Unit,
+    lista: @Composable () -> Unit,
+) {
+    when (estado) {
+        EstadoDeLaListaDeVentas.Cargando -> AvoqadoLoadingState(message = "Cargando transacciones...")
+        is EstadoDeLaListaDeVentas.NoSeCargo -> ListaDeVentasVacia(
+            fallo = estado.fallo,
+            hasFilters = hasFilters,
+            searchText = searchText,
+            onReintentar = onReintentar,
+        )
+        EstadoDeLaListaDeVentas.Vacia -> Column(Modifier.fillMaxSize()) {
+            if (hayVentasNuevas) PildoraDeVentasNuevas(onActualizar = onActualizar)
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                ListaDeVentasVacia(
+                    fallo = null,
+                    hasFilters = hasFilters,
+                    searchText = searchText,
+                    onReintentar = onReintentar,
+                )
+            }
+        }
+        EstadoDeLaListaDeVentas.Lista -> lista()
+    }
+}
+
 @Composable
 internal fun ListaDeVentasVacia(
     fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
@@ -1260,5 +1309,67 @@ private fun paymentIcon(method: String?): ImageVector {
         "BANK_TRANSFER", "TRANSFER" -> Icons.AutoMirrored.Filled.CompareArrows
         // DIGITAL_WALLET, CRYPTOCURRENCY, OTHER, and unknown future codes.
         else -> Icons.Filled.Description
+    }
+}
+
+/** D22: «Hay ventas nuevas · Actualizar», arriba de la lista cuando ya se bajaron más páginas. */
+@Composable
+internal fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.xs), contentAlignment = Alignment.Center) {
+        androidx.compose.material3.Surface(
+            onClick = onActualizar,
+            shape = androidx.compose.foundation.shape.CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ) {
+            Text(
+                text = TextosDeVentas.HAY_VENTAS_NUEVAS,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            )
+        }
+    }
+}
+
+/**
+ * D22 (rediseño r6): al llegar la página 1 —automática o a mano—, si cambió la primera llave y la lista estaba exactamente
+ * arriba (la primera visible es la primera de antes, sin desplazamiento), sube para enseñar lo nuevo: con llaves estables se
+ * quedaba anclada a la fila de antes. Si la cajera está más abajo o moviéndose, no se cumple y no se hace nada. Ya no hay
+ * saltos pendientes: el toque de la píldora sube en ese instante ([alTocarLaPildora]).
+ */
+@Composable
+internal fun SubirAlInicioDeLaLista(listState: androidx.compose.foundation.lazy.LazyListState, primeraLlave: Any?) {
+    var primeraLlaveAnterior by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(primeraLlave) {
+        val anterior = primeraLlaveAnterior
+        primeraLlaveAnterior = primeraLlave
+        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key
+        // «Quieta»: con un dedo o una inercia en curso no se toca (el scrollToItem cortaría la inercia).
+        if (!listState.isScrollInProgress &&
+            subirAlInicioTrasRecarga(anterior, primeraLlave, visible, listState.firstVisibleItemScrollOffset)
+        ) {
+            listState.scrollToItem(0)
+        }
+    }
+}
+
+/**
+ * D22 (rediseño r6): tocar «Hay ventas nuevas · Actualizar». Primero sube la lista —es la acción de la cajera en ese
+ * instante, no algo diferido— y luego pide la página 1 ([actualizar]), que pide aunque el salto se corte. Al llegar la
+ * página, la lista ya está arriba y [SubirAlInicioDeLaLista] enseña lo nuevo. Si después la cajera la mueve, nada la regresa.
+ */
+internal fun alTocarLaPildora(
+    alcance: CoroutineScope,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    actualizar: () -> Unit,
+) {
+    // Sin despachar: el salto corre dentro del mismo toque (sin competencia no suspende). Si una inercia lo hace esperar y la
+    // pantalla sale antes, el finally igual pide la página: el pedido nunca se pierde.
+    alcance.launch(start = CoroutineStart.UNDISPATCHED) {
+        try {
+            listState.scrollToItem(0)
+        } finally {
+            actualizar()
+        }
     }
 }

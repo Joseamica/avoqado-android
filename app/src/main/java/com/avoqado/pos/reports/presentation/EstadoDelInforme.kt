@@ -59,7 +59,7 @@ internal fun textosDeInformeSinCargar(fallo: FalloDeLectura): TextosDeLecturaFal
 
 internal object TextosDeInformes {
     const val SIN_RED_TITULO = "Sin conexión"
-    const val SIN_RED_TEXTO = "Los informes se calculan en el servidor. Cuando vuelva la conexión, toca «Reintentar»."
+    const val SIN_RED_TEXTO = "Los informes se calculan en el servidor. Se vuelven a pedir solos al volver la conexión."
     const val SERVIDOR_TITULO = "No se pudo cargar el informe"
     const val SERVIDOR_TEXTO = "Vuelve a intentarlo en un momento."
 }

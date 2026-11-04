@@ -42,6 +42,8 @@ class OrderRepository @Inject constructor(
      * ([SalidaDelApartado]). null sólo en pruebas que no miran el cajón; Hilt y Guice lo inyectan siempre.
      */
     private val salida: SalidaDelApartado? = null,
+    /** D22: «el servidor ya confirmó un cobro de esta sucursal»; Ventas e Informes se recargan solos con esto. */
+    private val avisosDeVentas: com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas = com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas(),
 ) {
     /**
      * Cliente SOLO para la ruta del dinero (crear orden, cobrar efectivo, fast).
@@ -1037,6 +1039,8 @@ class OrderRepository @Inject constructor(
         // con el importe definitivo. Si la cola o «Sí se cobró» ya la habían sacado, ya está anotada: no se anota otra vez.
         val escribir: suspend () -> Boolean = { dao.registrarResultadoQ15(venueId, key, true, result.motivo, result.resultadoJson, ahora) == 1 }
         check(salida?.salir(key, conDosXx = true, delFlujo = true, importe = { importeCobradoCents }, transicion = escribir) ?: escribir())
+        // D22: el cobro quedó SYNCED: Ventas e Informes de esta sucursal se recargan solos si se están viendo.
+        avisosDeVentas.subio(venueId)
     }
 
     /**

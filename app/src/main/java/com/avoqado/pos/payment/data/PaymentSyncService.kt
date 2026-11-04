@@ -71,6 +71,8 @@ class PaymentSyncService @Inject constructor(
      * eso no se puede apagar en silencio.
      */
     private val cashPaymentRepository: CashPaymentRepository,
+    /** D22: «el servidor ya confirmó un cobro de esta sucursal»; Ventas e Informes se recargan solos con esto. */
+    private val avisosDeVentas: com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas = com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas(),
 ) {
     // MARK: - Constants
 
@@ -525,7 +527,11 @@ class PaymentSyncService @Inject constructor(
         if (!evaluation.aplicado || evaluation.resultadoJson == null) return retenida
         return try {
             if (dao.recuperarResultadoPorLlaveQ15(payment, evaluation.motivo, evaluation.resultadoJson,
-                    System.currentTimeMillis(), ::vigente) == 1) Recuperacion.Aplicada else retenida
+                    System.currentTimeMillis(), ::vigente) == 1) {
+                // D22: el cobro retenido quedó confirmado al preguntar por su llave.
+                avisosDeVentas.subio(payment.venueId)
+                Recuperacion.Aplicada
+            } else retenida
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
             Log.e(TAG, "No se pudo guardar el resultado consultado; la próxima vuelta sólo lo consulta", error)
@@ -1431,6 +1437,8 @@ class PaymentSyncService @Inject constructor(
                 try {
                     check(dao.registrarResultadoQ15(payment.venueId, payment.id, evaluation.aplicado,
                         evaluation.motivo, evaluation.resultadoJson, System.currentTimeMillis()) == 1) { "No se pudo conservar el resultado del cobro" }
+                    // D22: confirmado y guardado: Ventas e Informes de esta sucursal se recargan solos.
+                    if (evaluation.aplicado) avisosDeVentas.subio(payment.venueId)
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) {
                     // Codex N3: el respaldo deja la fila PENDIENTE con su marca en una sola escritura (no SYNCING).

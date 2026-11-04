@@ -1,6 +1,17 @@
 package com.avoqado.pos.reports.presentation
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.core.data.network.CargaDeFondo
+import com.avoqado.pos.core.data.network.ClaseDeFallo
+import com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas
+import com.avoqado.pos.core.domain.refresh.Necesidad
+import com.avoqado.pos.core.domain.refresh.RecargaSola
+import com.avoqado.pos.core.domain.refresh.RelojDeRecarga
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshOutcome
@@ -12,6 +23,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -25,11 +40,18 @@ class ReportsViewModel @Inject constructor(
     private val repository: ReportsRepository,
     private val planManager: PlanManager,
     refreshGateFactory: RefreshGateFactory,
+    /** D22: la red del aparato para la recarga automática. `null` sólo en pruebas que no la usan: no se recarga sola. */
+    private val connectivityMonitor: ConnectivityMonitor? = null,
+    private val avisosDeVentas: AvisosDeVentasSubidas = AvisosDeVentasSubidas(),
+    private val reloj: RelojDeRecarga = RelojDeRecarga(),
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
 
     private val gate = refreshGateFactory.create(viewModelScope)
+
+    /** D22: si al informe le hace falta recargar (un fallo reintentable o un cobro de la sucursal que ya subió). */
+    private val necesidad = MutableStateFlow(Necesidad())
 
     private val _isManualRefreshing = MutableStateFlow(false)
     val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
@@ -159,11 +181,57 @@ class ReportsViewModel @Inject constructor(
     }
 
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
-    suspend fun refreshNow(): Result<Unit> {
+    suspend fun refreshNow(): Result<Unit> = cargarInforme(enFondo = false)
+
+    /**
+     * Toda carga del informe (la del gate y la automática). D22: la instantánea se toma ANTES de consultar, y el retorno sólo
+     * atiende esa instantánea (diseño r2 §B): un cobro que sube durante la carga sigue pendiente.
+     */
+    private suspend fun cargarInforme(enFondo: Boolean): Result<Unit> {
         val (consulta, hasta) = consultaYFin()
         _consultaElegida.value = consulta
         ultimaPedida = consulta
-        return repository.loadReport(consulta, hasta)
+        val inst = necesidad.value.instantanea(consulta.sucursal, avisosDeVentas.de(consulta.sucursal))
+        val resultado = if (enFondo) withContext(CargaDeFondo.enElContexto) { repository.loadReport(consulta, hasta) }
+        else repository.loadReport(consulta, hasta)
+        necesidad.update {
+            val error = resultado.exceptionOrNull()
+            if (error == null) it.alTerminarBien(inst)
+            else it.alFallar(inst, ClaseDeFallo.de(error), reloj.ahora(), avisosAhora = avisosDeVentas.de(inst.sucursal))
+        }
+        return resultado
+    }
+
+    /**
+     * D22: mientras Informes se ve (RESUMED y, en WINDOWS, la ventana sin minimizar), lo vuelve a pedir solo cuando hace
+     * falta (`RecargaSola`). Esa carga corre por su cuenta, de fondo y fuera del gate (nadie se une a ella); dejar de verse
+     * la corta con su HTTP. Lo que pide el cajero no pasa por aquí.
+     */
+    internal suspend fun recargarSolaMientrasSeVe(owner: LifecycleOwner) {
+        val monitor = connectivityMonitor ?: return
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            VentanaALaVista.aLaVista.collectLatest { seVe ->
+                if (seVe) {
+                    necesidad.update { it.alVolverAVerse() } // la escalera de reintentos vuelve a 5 s al volver a verse
+                    RecargaSola.atender(
+                        necesidad = necesidad,
+                        avisos = avisosDeVentas,
+                        conRed = monitor.isConnected,
+                        otras = combine(repository.isLoading, _showCustomDatePicker) { cargando, eligiendo -> cargando to eligiendo },
+                        sucursal = { repository.sucursalActiva()?.takeIf { it.isNotEmpty() } },
+                        // Eligiendo fechas no se pide nada: lo de debajo no es de ellas (D18 #5).
+                        ocupada = { repository.isLoading.value || _showCustomDatePicker.value },
+                        puedeSola = { true },
+                        reloj = reloj,
+                        recargar = {
+                            // r2 §D: con red de vuelta, un enfriamiento viejo del gate no frena después un periodo nuevo.
+                            gate.resetCooldown()
+                            cargarInforme(enFondo = true)
+                        },
+                    )
+                }
+            }
+        }
     }
 
     // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).

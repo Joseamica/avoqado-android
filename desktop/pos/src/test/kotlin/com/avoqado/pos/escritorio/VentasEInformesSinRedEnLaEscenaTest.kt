@@ -1,6 +1,7 @@
 package com.avoqado.pos.escritorio
 
 import android.view.View
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalConfiguration
@@ -24,8 +25,11 @@ import com.avoqado.pos.reports.data.model.SalesSummaryReport
 import com.avoqado.pos.reports.presentation.CuerpoDeInformes
 import com.avoqado.pos.reports.presentation.TextosDeInformes
 import com.avoqado.pos.reports.presentation.estadoDelInforme
+import com.avoqado.pos.transactions.presentation.ContenidoDeVentas
+import com.avoqado.pos.transactions.presentation.EstadoDeLaListaDeVentas
 import com.avoqado.pos.transactions.presentation.ListaDeVentasVacia
 import com.avoqado.pos.transactions.presentation.TextosDeVentas
+import com.avoqado.pos.transactions.presentation.estadoDeLaListaDeVentas
 import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -115,6 +119,40 @@ class VentasEInformesSinRedEnLaEscenaTest {
         setContent { superficie { ListaDeVentasVacia(fallo = null, hasFilters = false, searchText = "", onReintentar = {}) } }
         onNodeWithText("Sin transacciones").assertExists()
         onNodeWithText("Reintentar").assertDoesNotExist()
+    }
+
+    // MARK: - D22 ronda 7 (Codex código r6): la píldora también en la lista vacía por filtros o búsqueda
+
+    /** Varias páginas cargadas y un filtro que las esconde todas: el cuerpo que enseña la pantalla. */
+    private val vaciaPorElFiltro = estadoDeLaListaDeVentas(deLaConsulta = true, cargadas = 60, visibles = 0, cargando = false, fallo = null)
+
+    @Test fun `D22 r7 - varias paginas, un filtro que las esconde todas y un aviso - la pildora se ve y tocarla pide la actualizacion`() = runComposeUiTest {
+        assertEquals(EstadoDeLaListaDeVentas.Vacia, vaciaPorElFiltro)
+        var pedidas = 0
+        setContent {
+            superficie {
+                ContenidoDeVentas(
+                    estado = vaciaPorElFiltro, hayVentasNuevas = true, hasFilters = true, searchText = "",
+                    onReintentar = {}, onActualizar = { pedidas++ },
+                ) { BasicText("la lista") }
+            }
+        }
+        onNodeWithText("No se encontraron resultados con los filtros seleccionados").assertExists()
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).performClick()
+        runOnIdle { assertEquals(1, pedidas) }
+    }
+
+    @Test fun `D22 r7 - la lista vacia sin avisos no ensena la pildora`() = runComposeUiTest {
+        setContent {
+            superficie {
+                ContenidoDeVentas(
+                    estado = vaciaPorElFiltro, hayVentasNuevas = false, hasFilters = true, searchText = "",
+                    onReintentar = {}, onActualizar = {},
+                ) { BasicText("la lista") }
+            }
+        }
+        onNodeWithText("No se encontraron resultados con los filtros seleccionados").assertExists()
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).assertDoesNotExist()
     }
 
     @Test fun `Informes sin red bajo 1M dice Sin conexion y no ensena el informe de Hoy`() = runComposeUiTest {
