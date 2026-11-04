@@ -1,8 +1,10 @@
 package com.avoqado.pos.core.data.network
 
 import io.mockk.mockk
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -28,9 +30,11 @@ class ForbiddenInterceptorTest {
         private val tokenToReturn: String?,
     ) : ManagerOverrideCoordinator(mockk(relaxed = true)) {
         var askedFor: String? = null
+        var rafagaRecibida: String? = "sin-llamar"
 
-        override fun awaitToken(permission: String): String? {
+        override fun awaitToken(permission: String, rafaga: String?, vivo: () -> Boolean): String? {
             askedFor = permission
+            rafagaRecibida = rafaga
             return tokenToReturn
         }
     }
@@ -301,6 +305,30 @@ class ForbiddenInterceptorTest {
      * Marcada como fail-fast, el 403 tiene que volver como RESPUESTA —jamás
      * como excepción— para que el repositorio lo trate como rechazo de negocio.
      */
+    /** D24: la marca de ráfaga llega al coordinador; sin marca, `null` (cada petición su PIN, como siempre). */
+    @Test
+    fun `la marca de rafaga llega al coordinador y sin marca va null`() {
+        val coordinator = FakeCoordinator(null)
+        val client = clientWith(coordinator)
+        repeat(2) {
+            server.enqueue(
+                MockResponse().setResponseCode(403)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody(overridable403),
+            )
+        }
+
+        client.newCall(
+            Request.Builder().url(server.url("/reports")).header(ForbiddenInterceptor.RAFAGA_HEADER, "carga-7").build(),
+        ).execute().close()
+        assertEquals("carga-7", coordinator.rafagaRecibida)
+
+        client.newCall(
+            Request.Builder().url(server.url("/merge")).post("{}".toRequestBody("application/json".toMediaType())).build(),
+        ).execute().close()
+        assertNull(coordinator.rafagaRecibida)
+    }
+
     @Test
     fun `una peticion fail-fast NO abre el teclado y devuelve el 403 tal cual`() {
         val coordinator = FakeCoordinator("tok_abc")

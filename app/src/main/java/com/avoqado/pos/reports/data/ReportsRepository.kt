@@ -40,6 +40,7 @@ import okhttp3.Request
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.json.contentOrNull
+import java.util.UUID
 
 private const val TAG = "📊 ReportsRepo"
 
@@ -86,10 +87,12 @@ class ReportsRepository @Inject constructor(
      * Un GET: el cuerpo de un 2xx, o por qué no se pudo ([LecturaFallida]). Un HTTP que no es 2xx o un cuerpo vacío es del
      * servidor; que nadie conteste, sin red. Nunca lanza, salvo la cancelación.
      */
-    private suspend fun leer(url: String): Result<String> = try {
+    private suspend fun leer(url: String, rafaga: String? = null): Result<String> = try {
         val peticion = Request.Builder().url(url).get()
             // D22: la recarga automática no abre el PIN de gerente ni el aviso de permisos.
             .apply { if (CargaDeFondo.activa()) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1") }
+            // D24: las 4 consultas de una carga comparten UN PIN de gerente si el servidor las rechaza por permiso.
+            .apply { if (rafaga != null) header(ForbiddenInterceptor.RAFAGA_HEADER, rafaga) }
             .build()
         // D22: si se cancela (la automática al dejar de verse la pantalla), la petición se corta de verdad.
         val (code, body) = client.leerCancelable(peticion)
@@ -136,8 +139,9 @@ class ReportsRepository @Inject constructor(
         url: String,
         startDate: String,
         endDate: String,
+        rafaga: String? = null,
     ): Result<Triple<SalesSummaryReport?, List<PaymentMethodBreakdown>, List<HourlySales>>> = interpretar(
-        leer("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&groupBy=paymentMethod&reportType=hourlySum"),
+        leer("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&groupBy=paymentMethod&reportType=hourlySum", rafaga),
         "resumen",
     ) { body ->
         leerResumenDeVentas(body)?.let { (summary, paymentMethods) ->
@@ -164,8 +168,9 @@ class ReportsRepository @Inject constructor(
         startDate: String,
         endDate: String,
         reportType: String,
+        rafaga: String? = null,
     ): Result<List<PeriodSales>> = interpretar(
-        leer("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&reportType=$reportType"),
+        leer("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&reportType=$reportType", rafaga),
         "ventas por periodo",
     ) { body ->
         val data = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return@interpretar null
@@ -203,8 +208,13 @@ class ReportsRepository @Inject constructor(
         return productosMasVendidos(url, startDate, endDate).getOrNull()
     }
 
-    private suspend fun productosMasVendidos(url: String, startDate: String, endDate: String): Result<List<TopProduct>> =
-        interpretar(leer("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate"), "productos") { body ->
+    private suspend fun productosMasVendidos(
+        url: String,
+        startDate: String,
+        endDate: String,
+        rafaga: String? = null,
+    ): Result<List<TopProduct>> =
+        interpretar(leer("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate", rafaga), "productos") { body ->
             val data = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return@interpretar null
             val result = data["items"]?.jsonArray?.mapNotNull { element ->
                 try {
@@ -231,9 +241,14 @@ class ReportsRepository @Inject constructor(
         return categorias(url, startDate, endDate).getOrNull()
     }
 
-    private suspend fun categorias(url: String, startDate: String, endDate: String): Result<List<CategorySales>> =
+    private suspend fun categorias(
+        url: String,
+        startDate: String,
+        endDate: String,
+        rafaga: String? = null,
+    ): Result<List<CategorySales>> =
         interpretar(
-            leer("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate&groupBy=category"),
+            leer("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate&groupBy=category", rafaga),
             "categorías",
         ) { body ->
             val data = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return@interpretar null
@@ -269,12 +284,14 @@ class ReportsRepository @Inject constructor(
         val url = rutaDeLaSucursal(consulta.sucursal)
         val inicio = consulta.inicio
         _isLoading.value = true
+        // D24: una marca por carga (también «Reintentar»): si el servidor rechaza las 4 por permiso, sale UN PIN de gerente.
+        val rafaga = UUID.randomUUID().toString()
         return try {
             coroutineScope {
-                val resumenD = async { resumen(url, inicio, hasta) }
-                val periodoD = async { ventasPorPeriodo(url, inicio, hasta, consulta.tipo) }
-                val productosD = async { productosMasVendidos(url, inicio, hasta) }
-                val categoriasD = async { categorias(url, inicio, hasta) }
+                val resumenD = async { resumen(url, inicio, hasta, rafaga) }
+                val periodoD = async { ventasPorPeriodo(url, inicio, hasta, consulta.tipo, rafaga) }
+                val productosD = async { productosMasVendidos(url, inicio, hasta, rafaga) }
+                val categoriasD = async { categorias(url, inicio, hasta, rafaga) }
 
                 val resumenResult = resumenD.await()
                 val periodSalesResult = periodoD.await()

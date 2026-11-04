@@ -793,7 +793,7 @@ class TerminalPaymentServiceHttpTest {
         // 10 s en llegar: con un tope de llamada entera (`callTimeout`) o con la marca de no esperar PIN, esto moría.
         val gerente = object : com.avoqado.pos.core.data.network.ManagerOverrideCoordinator(mockk(relaxed = true)) {
             var pidio: String? = null
-            override fun awaitToken(permission: String): String? {
+            override fun awaitToken(permission: String, rafaga: String?, vivo: () -> Boolean): String? {
                 pidio = permission
                 Thread.sleep(11_000) // el gerente viene del otro lado del local
                 return "tok-gerente"

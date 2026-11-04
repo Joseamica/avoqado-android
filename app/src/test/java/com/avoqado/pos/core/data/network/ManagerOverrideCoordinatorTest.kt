@@ -278,6 +278,46 @@ class ManagerOverrideCoordinatorTest {
         assertTrue(otro.await(3, TimeUnit.SECONDS))
     }
 
+    /**
+     * Codex D24 r1 #2: el teclado A vence y la acción B de la fila instala el suyo; antes de que la pantalla se redibuje,
+     * el encargado toca «Autorizar» en A. Sin el id, ese PIN sacaba un token para B (quizá un reembolso) que nadie vio.
+     */
+    @Test
+    fun `un envio con el id de un teclado ya cerrado no autoriza al siguiente`() {
+        val repo = mockk<PermissionOverrideRepository>()
+        val pedidos = mutableListOf<String>()
+        coEvery { repo.requestToken(any(), any(), any()) } answers {
+            pedidos.add(thirdArg())
+            OverrideResult.Granted("tok", "Laura")
+        }
+        val coordinator = TestCoordinator(repo, promptTimeoutMs = 150L)
+
+        val listoA = CountDownLatch(1)
+        thread { coordinator.awaitToken("orders:merge"); listoA.countDown() }
+        val idA = coordinator.esperarTeclado().id
+        assertTrue("A vence solo", listoA.await(3, TimeUnit.SECONDS))
+
+        var tokenB: String? = "sin-resolver"
+        val listoB = CountDownLatch(1)
+        thread { tokenB = coordinator.awaitToken("payments:refund"); listoB.countDown() }
+        val limite = System.currentTimeMillis() + 3_000
+        while (coordinator.prompt.value?.permission != "payments:refund" && System.currentTimeMillis() < limite) Thread.sleep(5)
+        val idB = coordinator.prompt.value?.id
+        assertNotEquals(idA, idB)
+
+        val tardio = runBlocking { coordinator.submitPin("venue_1", "1234", idA) }
+
+        assertEquals(OverrideResult.Failed("La acción ya no está esperando autorización."), tardio)
+        assertEquals("no se pidió ningún token", emptyList<String>(), pedidos)
+        assertEquals(1, listoB.count)
+        assertEquals(idB, coordinator.prompt.value?.id)
+
+        runBlocking { coordinator.submitPin("venue_1", "1234", idB) }
+        assertTrue(listoB.await(3, TimeUnit.SECONDS))
+        assertEquals("tok", tokenB)
+        assertEquals(listOf("payments:refund"), pedidos)
+    }
+
     /** Sin teclado vivo, teclear no puede resolverle a nadie. */
     @Test
     fun `enviar sin teclado vivo falla con mensaje, sin tocar la red`() {

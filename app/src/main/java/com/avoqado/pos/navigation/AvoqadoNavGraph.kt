@@ -440,7 +440,9 @@ private fun MainScaffold(
             prompt = prompt,
             // El venue se lee AL ENVIAR, no al componer: si alguien cambió de
             // sucursal, el código tiene que validarse contra la sucursal activa.
-            onSubmit = { pin -> overrideCoordinator.submitPin(overrideSecureStorage.venueId.orEmpty(), pin) },
+            // Con el id del teclado (D24, Codex r1 #2): si éste ya se cerró y otra acción de la fila instaló el suyo, el
+            // PIN tecleado aquí no la autoriza.
+            onSubmit = { pin -> overrideCoordinator.submitPin(overrideSecureStorage.venueId.orEmpty(), pin, prompt.id) },
             // Con el id: una cancelación que llega tarde (el teclado ya se cerró
             // solo al autorizar o al vencer) no tumba la espera de la siguiente
             // acción de la fila.
