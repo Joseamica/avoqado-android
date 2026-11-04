@@ -74,8 +74,8 @@ class EstadoDeLaListaDeVentasTest {
         assertEquals(
             TextosDeLecturaFallida(
                 "Sin conexión",
-                "Las ventas se consultan en el servidor. Las que cobres sin red se guardan en este aparato. " +
-                    "Cuando vuelva la conexión, toca «Reintentar».",
+                "Las ventas se consultan en el servidor. Las que cobres sin red se guardan en este aparato y aparecen " +
+                    "aquí solas al volver la conexión.",
             ),
             textosDeVentasSinCargar(FalloDeLectura.SIN_RED),
         )

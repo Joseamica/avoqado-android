@@ -53,6 +53,17 @@ data class Necesidad(
             copy(detenidaEn = Instantanea(inst.sucursal, pedida, inst.avisos))
         }
 
+    /**
+     * D22 (D3, 4-nov): al volver a verse la pantalla, la escalera de reintentos vuelve al primer escalón (5 s), medido desde
+     * el último fallo. Sin esto, tras varios fallos el primer intento al regresar era hasta 30 s después. La necesidad no
+     * cambia: sigue haciendo falta lo mismo.
+     */
+    fun alVolverAVerse(): Necesidad {
+        if (fallosSeguidos <= 1) return this
+        val ultimoFallo = proximoIntentoEn - esperaTras(fallosSeguidos)
+        return copy(fallosSeguidos = 1, proximoIntentoEn = ultimoFallo + esperaTras(1))
+    }
+
     companion object {
         /** 5 s, 10 s, 20 s y después cada 30 s. */
         fun esperaTras(fallosSeguidos: Int): Long = when {

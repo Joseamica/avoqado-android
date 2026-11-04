@@ -457,6 +457,18 @@ private fun TransactionListPanel(
                 }
                 EstadoDeLaListaDeVentas.Lista -> {
                     val listState = rememberLazyListState()
+                    // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
+                    // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
+                    val primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" }
+                    var primeraLlaveAnterior by remember { mutableStateOf<String?>(null) }
+                    LaunchedEffect(primeraLlave) {
+                        val anterior = primeraLlaveAnterior
+                        primeraLlaveAnterior = primeraLlave
+                        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key
+                        if (subirAlInicioTrasRecarga(anterior, primeraLlave, visible, listState.firstVisibleItemScrollOffset)) {
+                            listState.scrollToItem(0)
+                        }
+                    }
 
                     LazyColumn(
                         state = listState,

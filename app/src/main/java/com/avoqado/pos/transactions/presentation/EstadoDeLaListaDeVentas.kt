@@ -50,10 +50,19 @@ internal fun textosDeVentasSinCargar(fallo: FalloDeLectura): TextosDeLecturaFall
 internal object TextosDeVentas {
     const val SIN_RED_TITULO = "Sin conexión"
     const val SIN_RED_TEXTO = "Las ventas se consultan en el servidor. Las que cobres sin red se guardan en este " +
-        "aparato. Cuando vuelva la conexión, toca «Reintentar»."
+        "aparato y aparecen aquí solas al volver la conexión."
     const val SERVIDOR_TITULO = "No se pudieron cargar las ventas"
     const val SERVIDOR_TEXTO = "Vuelve a intentarlo en un momento."
 
     /** D22: la píldora arriba de la lista cuando hay más de una página y subió un cobro. */
     const val HAY_VENTAS_NUEVAS = "Hay ventas nuevas · Actualizar"
 }
+
+/**
+ * D22 (prueba 2 en la D3, 4-nov): tras reemplazarse la lista, ¿se sube hasta arriba? La lista tiene llaves estables y se queda
+ * anclada a la fila que ya se veía: si entra algo nuevo ARRIBA (cambió la primera llave), queda fuera de la vista. Como Square
+ * y Gmail: si se veía desde arriba —la primera fila visible es la primera de antes y sin desplazamiento—, sube y enseña lo
+ * nuevo; si la cajera había bajado, no se mueve. «Cargar más» pega al final: la primera llave no cambia y no sube.
+ */
+internal fun subirAlInicioTrasRecarga(primeraAntes: Any?, primeraAhora: Any?, primeraVisible: Any?, desplazamiento: Int): Boolean =
+    primeraAntes != null && primeraAhora != primeraAntes && primeraVisible == primeraAntes && desplazamiento == 0

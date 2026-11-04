@@ -211,6 +211,7 @@ class ReportsViewModel @Inject constructor(
         owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             VentanaALaVista.aLaVista.collectLatest { seVe ->
                 if (seVe) {
+                    necesidad.update { it.alVolverAVerse() } // la escalera de reintentos vuelve a 5 s al volver a verse
                     RecargaSola.atender(
                         necesidad = necesidad,
                         avisos = avisosDeVentas,

@@ -70,4 +70,26 @@ class NecesidadTest {
         avisos.subio("s") // un cobro nuevo
         assertTrue("otra instantánea", n.haceFalta("s", avisos.de("s")))
     }
+
+    @Test fun `al volver a verse la escalera vuelve al primer escalon, medido desde el ultimo fallo`() {
+        var n = Necesidad()
+        repeat(5) { vez -> n = n.alFallar(n.instantanea("s", 0), listOf(REINTENTABLE), ahora = 10_000L * vez) }
+        assertEquals(40_000L + 30_000L, n.proximoIntentoEn) // el último fallo fue a los 40 s
+        n = n.alVolverAVerse()
+        assertEquals(1, n.fallosSeguidos)
+        assertEquals(40_000L + 5_000L, n.proximoIntentoEn)
+        assertTrue("la necesidad no cambia", n.porFallo())
+    }
+
+    @Test fun `al volver a verse sin fallos no cambia nada`() {
+        assertEquals(Necesidad(), Necesidad().alVolverAVerse())
+    }
+
+    @Test fun `los avisos sin atender se ven aunque la automatica este detenida`() {
+        var n = cargadaEn("s")
+        avisos.subio("s")
+        n = n.alFallar(n.instantanea("s", avisos.de("s")), listOf(DENEGACION_PROPIA), ahora = 0)
+        assertFalse(n.haceFalta("s", avisos.de("s")))
+        assertTrue(n.porAvisos("s", avisos.de("s")))
+    }
 }

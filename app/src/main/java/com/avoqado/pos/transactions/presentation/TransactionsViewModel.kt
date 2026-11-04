@@ -634,7 +634,9 @@ class TransactionsViewModel @Inject constructor(
         necesidad, avisosDeVentas.porSucursal, repository.paginasCargadas, _consultaVigente,
     ) { n, avisos, paginas, vigente ->
         val cuenta = avisos[vigente.sucursal] ?: 0L
-        paginas > 1 && n.haceFalta(vigente.sucursal, cuenta) && n.porAvisos(vigente.sucursal, cuenta)
+        // Codex código r1: «hay avisos sin atender», no «la automática puede insistir». Un «Actualizar» que acaba en un 403
+        // propio (PIN cancelado) u otro 4xx detiene la automática, pero las ventas nuevas siguen sin verse.
+        paginas > 1 && n.porAvisos(vigente.sucursal, cuenta)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), false) // sólo mientras la pantalla la mira
 
     /**
@@ -665,6 +667,7 @@ class TransactionsViewModel @Inject constructor(
         owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             VentanaALaVista.aLaVista.collectLatest { seVe ->
                 if (seVe) {
+                    necesidad.update { it.alVolverAVerse() } // la escalera de reintentos vuelve a 5 s al volver a verse
                     RecargaSola.atender(
                         necesidad = necesidad,
                         avisos = avisosDeVentas,

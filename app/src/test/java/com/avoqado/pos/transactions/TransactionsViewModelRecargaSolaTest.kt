@@ -547,6 +547,55 @@ class TransactionsViewModelRecargaSolaTest {
         assertEquals("nada reemplaza solo las 3 páginas", 0, automaticas)
     }
 
+    @Test fun `pildora - un 403 propio con el PIN cancelado deja las paginas y la pildora`() = runTest(scheduler) {
+        val vm = conLaLista()
+        paginasCargadas.value = 3
+        aLaVista(vm)
+        avisos.subio("venue")
+        irA(5_000)
+        assertTrue(vm.hayVentasNuevas.value)
+        contesta = deNuestraApi(403) // «Actualizar» → 403 overridable → PIN → el cajero cancela
+        vm.manualRefresh()
+        runCurrent()
+        assertEquals(3, paginasCargadas.value)
+        assertTrue("la automática se detiene, la píldora no", vm.hayVentasNuevas.value)
+        irA(10 * 60_000L)
+        assertEquals(0, automaticas)
+        assertTrue(vm.hayVentasNuevas.value)
+    }
+
+    @Test fun `pildora - otro 4xx definitivo tampoco la apaga y una carga buena si`() = runTest(scheduler) {
+        val vm = conLaLista()
+        paginasCargadas.value = 3
+        aLaVista(vm)
+        avisos.subio("venue")
+        irA(5_000)
+        contesta = deNuestraApi(404)
+        vm.manualRefresh()
+        runCurrent()
+        assertTrue(vm.hayVentasNuevas.value)
+
+        contesta = null
+        vm.manualRefresh()
+        runCurrent()
+        assertFalse(vm.hayVentasNuevas.value)
+    }
+
+    @Test fun `al volver a verse la escalera de reintentos vuelve a 5 s`() = runTest(scheduler) {
+        contesta = sinRed
+        val vm = crear()
+        vm.autoRefresh() // a los 0 s
+        val pantalla = aLaVista(vm)
+        irA(65_001) // reintentos a los 5, 15, 35 y 65 s: el siguiente sería a los 95
+        assertEquals(5, pedidas.size)
+        pantalla.registro.currentState = Lifecycle.State.CREATED
+        runCurrent()
+        irA(80_000)
+        pantalla.registro.currentState = Lifecycle.State.RESUMED // vuelve a la pantalla
+        runCurrent()
+        assertEquals("ya pasaron 5 s del último fallo: reintenta al volver, no a los 95", 6, pedidas.size)
+    }
+
     @Test fun `pildora - un aviso durante la actualizacion queda pendiente y ya con una pagina se pide solo`() = runTest(scheduler) {
         val vm = conLaLista()
         paginasCargadas.value = 3
