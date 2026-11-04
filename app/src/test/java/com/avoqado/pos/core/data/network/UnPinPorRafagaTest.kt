@@ -443,6 +443,36 @@ class UnPinPorRafagaTest {
         assertNull(sola.token)
     }
 
+    /**
+     * Codex código r2: la autorización del teclado A se queda atorada en la red y A se cancela. El teclado B (un reembolso)
+     * tiene que poder enviar su PIN y recibir su token SIN esperar a que A suelte la red.
+     */
+    @Test
+    fun `una autorizacion vieja atorada no detiene el PIN del teclado siguiente`() {
+        val red = RepoConFreno(frenado = 1)
+        val coordinator = TestCoordinator(red.repo)
+
+        val a = Consulta(coordinator, "orders:merge", rafaga = null)
+        val idA = coordinator.esperarTeclado().id
+        runBlocking {
+            val envioA = launch(Dispatchers.Default) { coordinator.submitPin("venue_1", "1234", idA) }
+            assertTrue(red.enCamino.await(3, TimeUnit.SECONDS))
+            coordinator.cancel(idA)
+            assertTrue(a.listo.await(3, TimeUnit.SECONDS))
+
+            val b = Consulta(coordinator, "payments:refund", rafaga = null)
+            val idB = coordinator.esperarOtroTeclado(idA).id
+            val resultadoB = kotlinx.coroutines.withTimeout(3_000) { coordinator.submitPin("venue_1", "1234", idB) }
+            assertTrue("B se autoriza con A todavía atorada", resultadoB is OverrideResult.Granted)
+            assertTrue(b.listo.await(3, TimeUnit.SECONDS))
+            assertEquals("tok2", b.token)
+
+            red.suelta.countDown()
+            envioA.join()
+        }
+        assertNull("el token tardío de A se tira", a.token)
+    }
+
     /** Codex código r1 #2: cancelar a MEDIA repartición también anota la carga; su respuesta tardía no pregunta. */
     @Test
     fun `cancelar a media reparticion anota la carga y su respuesta tardia no pregunta`() {

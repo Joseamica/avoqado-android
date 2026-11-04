@@ -118,6 +118,12 @@ open class ManagerOverrideCoordinator @Inject constructor(
         var exito = false
         /** Se completa al terminar de repartir o al soltarse el grupo: entonces se cierra el teclado. */
         val terminado = CompletableDeferred<Unit>()
+        /**
+         * Un envío a la vez POR TECLADO: dos toques casi juntos en «Autorizar» no reparten dos veces al mismo grupo. Es de
+         * cada grupo y no de toda la app (Codex código r2): una autorización vieja atorada en la red no detiene el PIN del
+         * teclado siguiente.
+         */
+        val envio = Mutex()
     }
 
     /**
@@ -334,13 +340,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
      *   fila instaló el suyo antes de que la pantalla se redibujara), no se pide NINGÚN token: el PIN que el encargado
      *   tecleó para A no autoriza a B. `null` = el vivo (pruebas y llamadas viejas).
      */
-    open suspend fun submitPin(venueId: String, pin: String, promptId: Long? = null): OverrideResult =
-        // Un envío a la vez: dos toques casi juntos en «Autorizar» no reparten dos veces al mismo grupo.
-        envio.withLock { enviar(venueId, pin, promptId) }
-
-    private val envio = Mutex()
-
-    private suspend fun enviar(venueId: String, pin: String, promptId: Long?): OverrideResult {
+    open suspend fun submitPin(venueId: String, pin: String, promptId: Long? = null): OverrideResult {
         // 🔴 UNA sola lectura: grupo, permiso e identidad salen del MISMO
         // objeto, así que no pueden pertenecer a esperas distintas.
         val awaiting = pending
@@ -349,6 +349,13 @@ open class ManagerOverrideCoordinator @Inject constructor(
         if (venueId.isBlank()) {
             return OverrideResult.Failed("No hay una sucursal activa. Vuelve a entrar.")
         }
+        return awaiting.grupo.envio.withLock {
+            // Mientras esperaba su turno, el envío anterior pudo terminar de repartir o el teclado cerrarse.
+            if (pending !== awaiting) OverrideResult.Failed(YA_NO_ESPERA) else enviar(awaiting, venueId, pin)
+        }
+    }
+
+    private suspend fun enviar(awaiting: Waiting, venueId: String, pin: String): OverrideResult {
         val grupo = awaiting.grupo
         var autorizacion: OverrideResult.Granted? = null
         try {
