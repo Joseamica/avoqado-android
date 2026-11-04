@@ -27,6 +27,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
+import com.avoqado.pos.core.data.network.leerCancelable
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -99,12 +100,16 @@ class ReservationApi @Inject constructor(
         dateTo: String,
         groupBy: String? = null,
         background: Boolean = false,
-    ): Result<List<Reservation>> = call(background) {
+        /** D26: la marca de la carga del Calendario (reservas + clases comparten UN PIN de gerente). */
+        rafaga: String? = null,
+    ): Result<List<Reservation>> = call(background, cancelable = true) {
         val params = buildList {
             add("dateFrom=$dateFrom"); add("dateTo=$dateTo")
             groupBy?.let { add("groupBy=$it") }
         }.joinToString("&")
-        Request.Builder().url("${base() ?: error("No venue")}/calendar?$params").get().build()
+        Request.Builder().url("${base() ?: error("No venue")}/calendar?$params").get()
+            .apply { if (rafaga != null) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.RAFAGA_HEADER, rafaga) }
+            .build()
     }.mapCatching { body ->
         val element = json.parseToJsonElement(body)
         when (element) {
@@ -187,6 +192,12 @@ class ReservationApi @Inject constructor(
      */
     private suspend inline fun call(
         background: Boolean = false,
+        /**
+         * D26: la petición se corta DE VERDAD si se cancela la corrutina (`leerCancelable`, como Informes desde D22). Sólo
+         * en las lecturas del Calendario: una carga reemplazada (otra fecha, salir de la pantalla) ya no abre ni sostiene
+         * el PIN de gerente. Las escrituras siguen como antes (no se corta un POST a medias).
+         */
+        cancelable: Boolean = false,
         crossinline buildRequest: () -> Request,
     ): Result<String> = runCatching {
         val built = buildRequest()
@@ -197,8 +208,12 @@ class ReservationApi @Inject constructor(
         } else {
             built
         }
-        val (code, body) = withContext(Dispatchers.IO) {
-            client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
+        val (code, body) = if (cancelable) {
+            client.leerCancelable(req)
+        } else {
+            withContext(Dispatchers.IO) {
+                client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
+            }
         }
         if (code in 200..299) {
             body

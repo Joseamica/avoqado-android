@@ -30,8 +30,9 @@ class ClassSessionRepository @Inject constructor(
         dateFrom: String,
         dateTo: String,
         background: Boolean = false,
+        rafaga: String? = null,
     ): Result<List<ClassSession>> =
-        api.list(dateFrom = dateFrom, dateTo = dateTo, background = background)
+        api.list(dateFrom = dateFrom, dateTo = dateTo, background = background, rafaga = rafaga)
 
     suspend fun fetchOne(sessionId: String, background: Boolean = false): Result<ClassSession> =
         api.get(sessionId, background = background)

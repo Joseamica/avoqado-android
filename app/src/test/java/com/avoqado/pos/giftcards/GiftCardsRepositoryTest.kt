@@ -124,7 +124,7 @@ class GiftCardsRepositoryTest {
     @Test fun `P1 PIN solo en gerente y cuerpo crudo sobrevive reintento`() = runBlocking {
         val coordinator = object : ManagerOverrideCoordinator(mockk(relaxed = true)) {
             var calls = 0
-            override fun awaitToken(permission: String): String { calls++; return "tok" }
+            override fun awaitToken(permission: String, rafaga: String?, vivo: () -> Boolean): String { calls++; return "tok" }
         }
         val repo = GiftCardsRepository(OkHttpClient.Builder().addInterceptor(ForbiddenInterceptor(ErrorNotifier(), coordinator)).build(), storage)
         val forbidden = """{"error":"Forbidden","required":"giftCards:manage","overridable":true}"""

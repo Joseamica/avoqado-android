@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
+import com.avoqado.pos.core.data.network.leerCancelable
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -42,14 +43,18 @@ class ClassSessionApi @Inject constructor(
         productId: String? = null,
         status: String? = null,
         background: Boolean = false,
-    ): Result<List<ClassSession>> = call(background) {
+        /** D26: la marca de la carga del Calendario (reservas + clases comparten UN PIN de gerente). */
+        rafaga: String? = null,
+    ): Result<List<ClassSession>> = call(background, cancelable = true) {
         val params = buildList {
             add("dateFrom=$dateFrom")
             add("dateTo=$dateTo")
             productId?.let { add("productId=$it") }
             status?.let { add("status=$it") }
         }.joinToString("&")
-        Request.Builder().url("${base() ?: error("No venue")}?$params").get().build()
+        Request.Builder().url("${base() ?: error("No venue")}?$params").get()
+            .apply { if (rafaga != null) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.RAFAGA_HEADER, rafaga) }
+            .build()
     }.mapCatching { json.decodeFromString(ListSerializer(ClassSession.serializer()), it) }
 
     suspend fun get(sessionId: String, background: Boolean = false): Result<ClassSession> = call(background) {
@@ -94,6 +99,12 @@ class ClassSessionApi @Inject constructor(
      */
     private suspend inline fun call(
         background: Boolean = false,
+        /**
+         * D26: la petición se corta DE VERDAD si se cancela la corrutina (`leerCancelable`, como Informes desde D22). Sólo
+         * en las lecturas del Calendario: una carga reemplazada (otra fecha, salir de la pantalla) ya no abre ni sostiene
+         * el PIN de gerente. Las escrituras siguen como antes (no se corta un POST a medias).
+         */
+        cancelable: Boolean = false,
         crossinline buildRequest: () -> Request,
     ): Result<String> = runCatching {
         val built = buildRequest()
@@ -104,8 +115,12 @@ class ClassSessionApi @Inject constructor(
         } else {
             built
         }
-        val (code, body) = withContext(Dispatchers.IO) {
-            client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
+        val (code, body) = if (cancelable) {
+            client.leerCancelable(req)
+        } else {
+            withContext(Dispatchers.IO) {
+                client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
+            }
         }
         if (code in 200..299) {
             body

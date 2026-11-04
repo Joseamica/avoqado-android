@@ -75,6 +75,9 @@ class CalendarViewModel @Inject constructor(
 
     private var fetchJob: Job? = null
 
+    /** La carga en camino la pidió la persona (no es una recarga automática). Vale mientras [fetchJob] siga activa. */
+    private var cargaPedida = false
+
     init {
         // Nadie pidió esta carga: la pantalla se abrió sola. Su 403 se cuenta en
         // línea (`state.error`), nunca como modal encima de otra pantalla.
@@ -201,6 +204,10 @@ class CalendarViewModel @Inject constructor(
     }
 
     private fun fetch(showLoading: Boolean = true, background: Boolean = false) {
+        // D26 (Codex código r4): una recarga AUTOMÁTICA (el tic de 30 s, volver a la pestaña, un cambio ajeno) no reemplaza
+        // una carga que pidió la persona y sigue en camino: puede estar esperando el PIN del gerente, y cancelarla dejaba el
+        // teclado para una carga que ya nadie iba a mostrar. Al terminar esa carga, el siguiente tic vuelve a recargar.
+        if (background && cargaPedida && fetchJob?.isActive == true) return
         val s = _state.value
         val (from, to) = when (s.view) {
             CalendarView.DAY -> s.selectedDate to s.selectedDate
@@ -213,14 +220,17 @@ class CalendarViewModel @Inject constructor(
             if (showLoading) it.copy(isLoading = true, error = null) else it.copy(error = null)
         }
         fetchJob?.cancel()
+        cargaPedida = !background
         fetchJob = viewModelScope.launch {
             val fromString = from.format(DateTimeFormatter.ISO_LOCAL_DATE)
             val toString = to.format(DateTimeFormatter.ISO_LOCAL_DATE)
+            // D26: reservas y clases piden «ver reservas»; con la misma marca, sin el permiso sale UN PIN de gerente.
+            val rafaga = java.util.UUID.randomUUID().toString()
             val reservationsDeferred = async {
-                repository.fetchCalendar(fromString, toString, background = background)
+                repository.fetchCalendar(fromString, toString, background = background, rafaga = rafaga)
             }
             val classSessionsDeferred = async {
-                classSessionRepository.fetchList(fromString, toString, background = background)
+                classSessionRepository.fetchList(fromString, toString, background = background, rafaga = rafaga)
             }
             val r = reservationsDeferred.await()
             val classResult = classSessionsDeferred.await()

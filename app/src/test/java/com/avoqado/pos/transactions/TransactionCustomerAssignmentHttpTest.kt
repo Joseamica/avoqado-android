@@ -94,7 +94,7 @@ class TransactionCustomerAssignmentHttpTest {
             val client = OkHttpClient.Builder().addInterceptor(ForbiddenInterceptor(ErrorNotifier(), coordinator)).build()
             val result = repository(server, client).assignCustomer(pending)
             assertTrue(result.isFailure); assertEquals(1, server.requestCount)
-            verify(exactly = 0) { coordinator.awaitToken(any()) }
+            verify(exactly = 0) { coordinator.awaitToken(any(), any(), any()) }
         }
     }
 
@@ -170,7 +170,7 @@ class TransactionCustomerAssignmentHttpTest {
             server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","required":"payments:read","overridable":true}"""))
             val coordinator = mockk<ManagerOverrideCoordinator>()
             val pinRequests = AtomicInteger()
-            every { coordinator.awaitToken(any()) } answers { pinRequests.incrementAndGet(); null }
+            every { coordinator.awaitToken(any(), any(), any()) } answers { pinRequests.incrementAndGet(); null }
             val client = OkHttpClient.Builder().addInterceptor(ForbiddenInterceptor(ErrorNotifier(), coordinator)).build()
             assertNull(repository(server, client).fetchTransactionDetail("payment-a"))
             assertEquals("a historical read must not request manager authority", 0, pinRequests.get())

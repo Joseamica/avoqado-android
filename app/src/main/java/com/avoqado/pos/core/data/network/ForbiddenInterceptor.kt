@@ -77,6 +77,12 @@ class ForbiddenInterceptor(
 
         /** Token de un solo uso del PIN de autorización de gerente. */
         const val PERMISSION_OVERRIDE_HEADER = "X-Permission-Override"
+
+        /**
+         * D24: las consultas que salieron JUNTAS (Informes pone la misma en sus 4). Si el servidor las rechaza por el mismo
+         * permiso, comparten UN PIN de gerente en vez de abrir un teclado cada una. Sin ella, un PIN por petición.
+         */
+        const val RAFAGA_HEADER = "X-Avoqado-Rafaga"
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -189,7 +195,12 @@ class ForbiddenInterceptor(
             // puede tardar lo que tarde el gerente).
             val sello = request.sello
             if (sello != null && !sigueLaSesion(sello)) return response
-            val token = overrideCoordinator.awaitToken(parsed.required)
+            val token = overrideCoordinator.awaitToken(
+                parsed.required,
+                rafaga = request.header(RAFAGA_HEADER),
+                // D24: si la llamada ya se cortó (la pantalla dejó de verse, o venció su plazo), no se le gasta un token.
+                vivo = { !chain.call().isCanceled() },
+            )
             if (token != null && sello != null && !sigueLaSesion(sello)) return response
             if (token != null) {
                 response.close()
