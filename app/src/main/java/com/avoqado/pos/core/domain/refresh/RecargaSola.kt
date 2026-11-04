@@ -23,12 +23,10 @@ object RecargaSola {
     const val AGRUPAR_MS = 1_000L
     const val AGRUPAR_COMO_MUCHO_MS = 2_000L
 
-    private data class Entradas(val necesidad: Necesidad, val avisos: Map<String, Long>, val conRed: Boolean, val otras: Any?)
-
     suspend fun atender(
         necesidad: StateFlow<Necesidad>,
         avisos: AvisosDeVentasSubidas,
-        conRed: Flow<Boolean>,
+        conRed: StateFlow<Boolean>,
         /** Lo que hace cambiar [ocupada] o [puedeSola] (cargas en curso, búsqueda, selector, páginas): despierta la vuelta. */
         otras: Flow<Any?>,
         sucursal: () -> String?,
@@ -37,46 +35,49 @@ object RecargaSola {
         reloj: RelojDeRecarga,
         recargar: suspend () -> Unit,
     ): Unit = coroutineScope {
-        val entradas = combine(necesidad, avisos.porSucursal, conRed, otras) { n, a, r, o -> Entradas(n, a, r, o) }.stateIn(this)
+        // Lo que cambia sólo DESPIERTA la vuelta; lo que se decide se lee en vivo. Una foto de `combine` puede venir atrasada:
+        // tras una carga, el «cargando» que vio a medio camino la despertaba antes de que llegara lo que dejó la carga, y con
+        // esa foto vieja volvía a pedir (pruebas N3 y r4-2).
+        val despertador = combine(necesidad, avisos.porSucursal, conRed, otras) { n, a, r, o -> listOf(n, a, r, o) }.stateIn(this)
         var primerAvisoPendienteEn: Long? = null
         var avisosVistos = Long.MIN_VALUE
         var avisosCambiaronEn = 0L
         while (true) {
-            val e = entradas.value
+            val visto = despertador.value
             val ahora = reloj.ahora()
             val suc = sucursal()
-            val cuenta = suc?.let { e.avisos[it] } ?: 0L
+            val cuenta = suc?.let { avisos.de(it) } ?: 0L
             if (cuenta != avisosVistos) {
                 avisosVistos = cuenta
                 avisosCambiaronEn = ahora
             }
-            val n = e.necesidad
+            val n = necesidad.value
             if (suc == null || !n.haceFalta(suc, cuenta)) {
                 primerAvisoPendienteEn = null
-                esperarCambio(entradas, e, null)
+                esperarCambio(despertador, visto, null)
                 continue
             }
-            if (!e.conRed || ocupada() || !puedeSola()) {
-                esperarCambio(entradas, e, ESPERA_MAXIMA_MS)
+            if (!conRed.value || ocupada() || !puedeSola()) {
+                esperarCambio(despertador, visto, ESPERA_MAXIMA_MS)
                 continue
             }
             val faltaDeLaEspera = n.proximoIntentoEn - ahora
             if (n.fallosSeguidos > 0 && faltaDeLaEspera > 0) {
-                esperarCambio(entradas, e, faltaDeLaEspera)
+                esperarCambio(despertador, visto, faltaDeLaEspera)
                 continue
             }
             if (!n.porFallo()) {
                 val primero = primerAvisoPendienteEn ?: ahora.also { primerAvisoPendienteEn = it }
                 val falta = minOf(avisosCambiaronEn + AGRUPAR_MS, primero + AGRUPAR_COMO_MUCHO_MS) - ahora
                 if (falta > 0) {
-                    esperarCambio(entradas, e, falta)
+                    esperarCambio(despertador, visto, falta)
                     continue
                 }
             }
             primerAvisoPendienteEn = null
             recargar()
             // Lo que dejó la carga llega por las entradas; si nada cambió (otra carga la precedió), no se insiste antes de 30 s.
-            esperarCambio(entradas, e, ESPERA_MAXIMA_MS)
+            esperarCambio(despertador, visto, ESPERA_MAXIMA_MS)
         }
     }
 

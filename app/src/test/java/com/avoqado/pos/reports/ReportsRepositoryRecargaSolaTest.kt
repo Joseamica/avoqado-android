@@ -62,19 +62,19 @@ class ReportsRepositoryRecargaSolaTest {
 
     private fun clasesDe(resultado: Result<Unit>) = (resultado.exceptionOrNull() as LecturaFallida).clases
 
-    @Test fun `r1-6 - cuatro 429 reintentan`() = runBlocking {
+    @Test fun `r1-6 - cuatro 429 reintentan`() = runBlocking<Unit> {
         responder = { _, _ -> 429 to "" }
         val clases = clasesDe(repository.loadReport(hoy, "2026-11-03T18:00:00.000Z"))
         assertEquals(4, clases.size)
         assertTrue(clases.laAutomaticaReintenta())
     }
 
-    @Test fun `r1-6 - un 403 propio con un 5xx se detiene`() = runBlocking {
+    @Test fun `r1-6 - un 403 propio con un 5xx se detiene`() = runBlocking<Unit> {
         responder = { ruta, query -> if (ruta.endsWith("/reports/sales-by-item") && "groupBy=category" in query) 403 to nuestro403 else 503 to "" }
         assertFalse(clasesDe(repository.loadReport(hoy, "2026-11-03T18:00:00.000Z")).laAutomaticaReintenta())
     }
 
-    @Test fun `r1-6 - un 404 con un 5xx reintenta y cuatro 404 se detienen`() = runBlocking {
+    @Test fun `r1-6 - un 404 con un 5xx reintenta y cuatro 404 se detienen`() = runBlocking<Unit> {
         responder = { ruta, _ -> if (ruta.endsWith("/reports/sales-by-item")) 404 to "" else 502 to "" }
         assertTrue(clasesDe(repository.loadReport(hoy, "2026-11-03T18:00:00.000Z")).laAutomaticaReintenta())
         responder = { _, _ -> 404 to "" }
@@ -82,7 +82,7 @@ class ReportsRepositoryRecargaSolaTest {
         assertEquals(List(4) { ClaseDeFallo.DEFINITIVO }, clases)
     }
 
-    @Test fun `la carga de fondo marca sus cuatro consultas y la del cajero ninguna`() = runBlocking {
+    @Test fun `la carga de fondo marca sus cuatro consultas y la del cajero ninguna`() = runBlocking<Unit> {
         withContext(CargaDeFondo.enElContexto) { repository.loadReport(hoy, "2026-11-03T18:00:00.000Z") }
         assertEquals(List(4) { "1" }, marcas.toList())
         marcas.clear()

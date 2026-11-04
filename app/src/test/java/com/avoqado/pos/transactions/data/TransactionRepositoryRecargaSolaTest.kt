@@ -91,7 +91,7 @@ class TransactionRepositoryRecargaSolaTest {
         assertEquals(3, repo.paginasCargadas.value)
     }
 
-    @Test fun `r2-A - un Actualizar que falla no toca la paginacion`() = runBlocking {
+    @Test fun `r2-A - un Actualizar que falla no toca la paginacion`() = runBlocking<Unit> {
         paginas = paginas + (4 to listOf("p61"))
         tresPaginas()
 
@@ -104,14 +104,14 @@ class TransactionRepositoryRecargaSolaTest {
         assertEquals(4, repo.getNextPage())
     }
 
-    @Test fun `un reemplazo bueno de la pagina 1 regresa a una pagina`() = runBlocking {
+    @Test fun `un reemplazo bueno de la pagina 1 regresa a una pagina`() = runBlocking<Unit> {
         tresPaginas()
         assertTrue(repo.fetchTransactions(page = 1).isSuccess)
         assertEquals(1, repo.paginasCargadas.value)
         assertEquals(20, repo.transactions.value.size)
     }
 
-    @Test fun `r3-2 - cargar mas tras un reemplazo con los mismos ids si llega`() = runBlocking {
+    @Test fun `r3-2 - cargar mas tras un reemplazo con los mismos ids si llega`() = runBlocking<Unit> {
         assertTrue(repo.fetchTransactions(page = 1).isSuccess)
         val retenida = CompletableDeferred<Unit>()
         retenerPagina1 = retenida
@@ -129,7 +129,7 @@ class TransactionRepositoryRecargaSolaTest {
         assertEquals(2, repo.paginasCargadas.value)
     }
 
-    @Test fun `una sola carga de la lista a la vez - cargar mas espera a la pagina 1`() = runBlocking {
+    @Test fun `una sola carga de la lista a la vez - cargar mas espera a la pagina 1`() = runBlocking<Unit> {
         assertTrue(repo.fetchTransactions(page = 1).isSuccess)
         val retenida = CompletableDeferred<Unit>()
         retenerPagina1 = retenida
@@ -145,26 +145,29 @@ class TransactionRepositoryRecargaSolaTest {
         assertEquals(1, maximoAlMismoTiempo.get())
     }
 
-    @Test fun `la recarga automatica va marcada de fondo y la del cajero no`() = runBlocking {
+    @Test fun `la recarga automatica va marcada de fondo y la del cajero no`() = runBlocking<Unit> {
         repo.fetchTransactions(page = 1, enFondo = true)
         repo.fetchTransactions(page = 1)
         assertEquals("1", pedidas[0].getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
         assertNull(pedidas[1].getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
     }
 
-    @Test fun `r1-8 - cancelar la carga corta la peticion de verdad`() = runBlocking {
+    @Test fun `r1-8 - cancelar la carga corta la peticion de verdad`() = runBlocking<Unit> {
         val retenida = CompletableDeferred<Unit>()
         retenerPagina1 = retenida
-        val carga = launch(Dispatchers.IO) { repo.fetchTransactions(page = 1, enFondo = true) }
-        while (pedidas.isEmpty()) delay(10)
-        carga.cancel()
-        withTimeout(3_000) { carga.join() } // sin call.cancel() esperaría la respuesta, que nunca llega sola
-        assertEquals(false, repo.isLoading.value)
-        assertNull("cancelar no es un fallo de lectura", repo.falloDeCarga.value)
-        retenida.complete(Unit)
+        try {
+            val carga = launch(Dispatchers.IO) { repo.fetchTransactions(page = 1, enFondo = true) }
+            while (pedidas.isEmpty()) delay(10)
+            carga.cancel()
+            withTimeout(3_000) { carga.join() } // sin call.cancel() esperaría la respuesta, que nunca llega sola
+            assertEquals(false, repo.isLoading.value)
+            assertNull("cancelar no es un fallo de lectura", repo.falloDeCarga.value)
+        } finally {
+            retenida.complete(Unit) // suelta al servidor de prueba para que pueda apagarse
+        }
     }
 
-    @Test fun `un 403 de nuestra API detiene y el de un portal reintenta`() = runBlocking {
+    @Test fun `un 403 de nuestra API detiene y el de un portal reintenta`() = runBlocking<Unit> {
         codigoPagina1 = 403
         cuerpoDelError = """{"error":"Forbidden","message":"Permission 'tpv-payments:read' required"}"""
         val propia = repo.fetchTransactions(page = 1).exceptionOrNull() as LecturaFallida

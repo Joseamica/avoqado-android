@@ -16,13 +16,15 @@ import okhttp3.Request
  */
 suspend fun OkHttpClient.leerCancelable(request: Request): Pair<Int, String> = coroutineScope {
     val call = newCall(request)
+    // El hijo DEVUELVE su error en vez de lanzarlo: si se cancela, el IOException de `call.cancel()` no sustituye a la
+    // cancelación (si no, la pantalla anotaba «sin red» por salir de ella).
     val respuesta = async(Dispatchers.IO) {
-        call.execute().use { response -> response.code to (response.body?.string() ?: "") }
+        runCatching { call.execute().use { response -> response.code to (response.body?.string() ?: "") } }
     }
     try {
         respuesta.await()
     } catch (cancelada: CancellationException) {
         call.cancel()
         throw cancelada
-    }
+    }.getOrThrow()
 }
