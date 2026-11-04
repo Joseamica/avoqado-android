@@ -1,5 +1,6 @@
 package com.avoqado.pos.transactions
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -108,45 +109,30 @@ class RefundSheetDesignSystemGuardTest {
      */
     @Test
     fun `la banda de en medio del reembolso se puede desplazar`() {
-        val codigo = leerCodigoSinComentarios(hoja)
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
 
         assertTrue(
-            "La banda con `weight(1f)` de IssueRefundSheet perdió `verticalScroll`: " +
-                "lo que no quepa se recorta en silencio y deja controles inalcanzables.",
-            codigo.contains("verticalScroll("),
+            "La banda de IssueRefundSheet perdió `verticalScroll`: lo que no quepa se recorta en silencio y deja " +
+                "controles inalcanzables.",
+            piezas.queSeDevuelve.contains(".verticalScroll(bandaScroll)"),
         )
+        assertTrue("La derecha de dos columnas perdió su `verticalScroll`.", piezas.dosColumnas.contains(".verticalScroll(pieScroll)"))
     }
 
     /**
-     * 🔴 EL MOTIVO VIVE FUERA DEL ÁREA DESPLAZABLE.
+     * 🔴 EL MOTIVO NO VIVE EN LA BANDA DE LOS ARTÍCULOS.
      *
-     * Es REQUISITO para habilitar "Reembolsar". Un requisito escondido detrás de
-     * un scroll produce el peor de los estados: un botón apagado que el cajero lee
-     * como "la app está rota". El guard comprueba el orden en el archivo: el
-     * selector de motivo aparece DESPUÉS del cierre de la banda desplazable.
-     *
-     * Este es el único guard que lee la fuente CON comentarios: el separador
-     * `// === PIE FIJO` es el mojón que marca la frontera entre las dos bandas, y
-     * por eso forma parte del contrato — si alguien lo borra, la prueba lo dice.
+     * Es REQUISITO para habilitar "Reembolsar". Escondido en esa banda produce el peor de los estados: un botón apagado que el
+     * cajero lee como "la app está rota". En una columna va en el pie; en dos, en la parte desplazable de la derecha, a propósito,
+     * y lo que falta se dice en lo fijo («Elige el motivo del reembolso.», ver `RefundSheetLayoutGuardTest`).
      */
     @Test
-    fun `el motivo del reembolso vive en el pie fijo, no dentro del scroll`() {
-        val codigo = leerFuente(hoja)
+    fun `el motivo del reembolso no vive en la banda de los articulos`() {
+        val piezas = PiezasDeLaHoja(leerCodigoSinComentarios(hoja))
 
-        val finDeLaBanda = codigo.indexOf("=== PIE FIJO")
-        val selectorDeMotivo = codigo.indexOf("Selecciona un motivo")
-
-        assertTrue(
-            "Desapareció el separador `// === PIE FIJO` de IssueRefundSheet: es el " +
-                "mojón que separa la banda desplazable del pie siempre visible.",
-            finDeLaBanda > 0,
-        )
-        assertTrue("No se encontró el selector de motivo en la hoja.", selectorDeMotivo > 0)
-        assertTrue(
-            "El selector de motivo volvió a quedar dentro del área desplazable. Es " +
-                "obligatorio para poder reembolsar: tiene que estar siempre a la vista.",
-            selectorDeMotivo > finDeLaBanda,
-        )
+        assertTrue("No se encontró el selector de motivo en `comoSeDevuelve`.", piezas.comoSeDevuelve.contains("Selecciona un motivo"))
+        assertFalse("El selector de motivo volvió a la banda de los artículos.", piezas.queSeDevuelve.contains("Selecciona un motivo"))
+        assertEquals("En una columna, `comoSeDevuelve` dejó de ir en el pie.", 1, invocaciones(piezas.pie, "comoSeDevuelve"))
     }
 
     /**

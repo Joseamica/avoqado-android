@@ -1,0 +1,53 @@
+package com.avoqado.pos.transactions
+
+import com.avoqado.pos.transactions.presentation.enDosColumnas
+import com.avoqado.pos.transactions.presentation.pieFijoEnDosColumnas
+import com.avoqado.pos.transactions.presentation.pieFijoEnUnaColumna
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Cuándo «Emitir reembolso» va en dos columnas y cuándo su pie queda fijo.
+ *
+ * El corte es por ANCHO con los tamaños reales de la flota (Terminal en producción, 2-nov), nunca por
+ * nombre de aparato: la Samsung de 8.7" acostada (1007 dp) va en dos y parada (601 dp) en una.
+ */
+class AcomodoDeReembolsoTest {
+
+    @Test
+    fun `el corte es por ancho, con los tamaños reales`() {
+        assertFalse(enDosColumnas(839f, false))
+        assertTrue(enDosColumnas(840f, false))
+        assertTrue(enDosColumnas(1007f, false)) // Samsung 8.7" acostada
+        assertFalse(enDosColumnas(601f, false)) // Samsung 8.7" parada
+        assertTrue(enDosColumnas(1280f, false)) // Sunmi D3
+    }
+
+    @Test
+    fun `la tarjeta de regalo siempre va en una columna`() {
+        assertFalse(enDosColumnas(1280f, true))
+    }
+
+    @Test
+    fun `con poco alto el pie deja de ser fijo`() {
+        assertFalse(pieFijoEnDosColumnas(419f))
+        assertTrue(pieFijoEnDosColumnas(420f))
+    }
+
+    @Test
+    fun `en una columna con poco alto se desliza todo junto`() {
+        assertFalse(pieFijoEnUnaColumna(699f, null))
+        assertTrue(pieFijoEnUnaColumna(700f, null))
+        assertTrue(pieFijoEnUnaColumna(719f, null)) // 360×780: 780 menos los 61 dp del encabezado
+        assertFalse(pieFijoEnUnaColumna(659f, null)) // 360×720
+    }
+
+    @Test
+    fun `en Artículos, si a la lista no le quedan 160 dp se desliza todo aunque sobre alto`() {
+        assertTrue(pieFijoEnUnaColumna(719f, 559f)) // le quedan 160
+        assertFalse(pieFijoEnUnaColumna(719f, 560f)) // le quedan 159
+        assertTrue(pieFijoEnUnaColumna(700f, 540f)) // justo en el corte, con 160
+        assertFalse(pieFijoEnUnaColumna(699f, 100f)) // el corte de 700 sigue mandando, aunque sobre lista
+    }
+}
