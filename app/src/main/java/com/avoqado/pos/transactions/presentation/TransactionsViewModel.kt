@@ -639,9 +639,21 @@ class TransactionsViewModel @Inject constructor(
      */
     val subidasHechas: StateFlow<Long> = _subidasHechas.asStateFlow()
 
-    /** La pantalla ya subió la lista al inicio por la [n]-ésima carga a mano buena. */
+    /** La pantalla ya subió la lista al inicio por la [n]-ésima carga a mano buena (o la cajera mandó y se descartó). */
     fun subidaAlInicioHecha(n: Long) {
         _subidasHechas.update { maxOf(it, n) }
+    }
+
+    /** De qué consulta es la subida pendiente (ronda 5, caso 9). */
+    private var consultaDeLaSubida: ConsultaDeVentas? = null
+
+    /**
+     * Ronda 5 (caso 9): la subida pendiente es de SU consulta. Si la consulta cambia —otra sucursal, otra persona u otra
+     * búsqueda—, se descarta: no salta sobre la lista de otra consulta.
+     */
+    private fun descartarSubidaSiEsDeOtraConsulta(consulta: ConsultaDeVentas) {
+        val deLaSubida = consultaDeLaSubida ?: return
+        if (consulta != deLaSubida && _subidasAlInicio.value > _subidasHechas.value) _subidasHechas.value = _subidasAlInicio.value
     }
 
     /**
@@ -664,6 +676,7 @@ class TransactionsViewModel @Inject constructor(
     private suspend fun cargarPrimeraPagina(enFondo: Boolean): Result<Unit> {
         val busqueda = _searchText.value.ifBlank { null }
         val consulta = repository.consultaPara(busqueda)
+        descartarSubidaSiEsDeOtraConsulta(consulta)
         _consultaVigente.value = consulta
         ultimaPedida = consulta
         val inst = necesidad.value.instantanea(consulta.sucursal, avisosDeVentas.de(consulta.sucursal))
@@ -728,7 +741,10 @@ class TransactionsViewModel @Inject constructor(
                 // una carga en camino, cuenta si ésa salió bien.
                 val salioBien = salida == RefreshOutcome.Completed ||
                     (salida == RefreshOutcome.Joined && repository.falloDeCarga.value == null)
-                if (salioBien) _subidasAlInicio.update { it + 1 }
+                if (salioBien) {
+                    consultaDeLaSubida = ultimaPedida
+                    _subidasAlInicio.update { it + 1 }
+                }
             } finally {
                 _isManualRefreshing.value = false
             }
@@ -758,7 +774,9 @@ class TransactionsViewModel @Inject constructor(
                 .collect {
                     // D18 (Codex r1 #3): la búsqueda nueva es la consulta YA. Si no se puede pedir (sin red), no se queda
                     // a la vista lo de la búsqueda anterior bajo el texto nuevo.
-                    _consultaVigente.value = repository.consultaPara(it.ifBlank { null })
+                    val nueva = repository.consultaPara(it.ifBlank { null })
+                    descartarSubidaSiEsDeOtraConsulta(nueva)
+                    _consultaVigente.value = nueva
                     gate.invalidate()
                     do {
                         val salida = gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)

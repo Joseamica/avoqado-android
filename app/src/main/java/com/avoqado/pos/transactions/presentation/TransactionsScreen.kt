@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlinx.coroutines.isActive
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
@@ -1332,8 +1333,22 @@ internal fun SubirAlInicioDeLaLista(
     // a la vista, al volver queda pendiente y se ejecuta aquí, encima de la posición que restauró la navegación.
     LaunchedEffect(subidasPedidas, subidasHechas) {
         if (subidasPedidas > subidasHechas) {
-            listState.scrollToItem(0)
-            alSubir(subidasPedidas)
+            subirOAbandonar(subir = { listState.scrollToItem(0) }, anotar = { alSubir(subidasPedidas) })
         }
     }
+}
+
+/**
+ * D22 ronda 5 (Codex código r4): sube la lista y anota la subida. Si la cajera toca o arrastra la lista, manda ella: un gesto
+ * (`MutatePriority.UserInput`) interrumpe el salto, o lo rechaza si ya estaba en curso, y la subida se DESCARTA, anotada
+ * como hecha, para que no salte nunca después. Se distingue de salir de la pantalla porque la corrutina sigue activa: si
+ * salió de la composición, no se anota y queda pendiente para cuando vuelva.
+ */
+internal suspend fun subirOAbandonar(subir: suspend () -> Unit, anotar: () -> Unit) {
+    try {
+        subir()
+    } catch (cancelada: kotlinx.coroutines.CancellationException) {
+        if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw cancelada
+    }
+    anotar()
 }

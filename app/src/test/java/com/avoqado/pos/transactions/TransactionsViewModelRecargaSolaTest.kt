@@ -67,6 +67,7 @@ class TransactionsViewModelRecargaSolaTest {
     private var retenerFondo: CompletableDeferred<Unit>? = null
     private var retenerCajero: CompletableDeferred<Unit>? = null
     private var paginasAlTerminar = 1
+    private var usuarioDePrueba = "ana" // quien tiene la sesión
 
     private data class Pedida(val busqueda: String, val enFondo: Boolean)
     private val pedidas = mutableListOf<Pedida>()
@@ -98,7 +99,7 @@ class TransactionsViewModelRecargaSolaTest {
         every { repository.paginasCargadas } returns paginasCargadas
         every { repository.falloDeCarga } returns fallo
         every { repository.consultaDeLaLista } returns consultaDeLaLista
-        every { repository.consultaPara(any()) } answers { ConsultaDeVentas.de("venue", "ana", firstArg()) }
+        every { repository.consultaPara(any()) } answers { ConsultaDeVentas.de("venue", usuarioDePrueba, firstArg()) }
         coEvery { repository.fetchTransactions(any(), any(), any()) } coAnswers {
             val busqueda = secondArg<String?>()
             val enFondo = thirdArg<Boolean>()
@@ -113,7 +114,7 @@ class TransactionsViewModelRecargaSolaTest {
                     Result.failure(error)
                 } else {
                     ventas.value = listOfNotNull(Transaction(id = "pago-${busqueda.orEmpty()}"), Transaction(id = "cobro").takeIf { conElCobro })
-                    consultaDeLaLista.value = ConsultaDeVentas.de("venue", "ana", busqueda)
+                    consultaDeLaLista.value = ConsultaDeVentas.de("venue", usuarioDePrueba, busqueda)
                     fallo.value = null
                     paginasCargadas.value = paginasAlTerminar
                     Result.success(Unit)
@@ -451,6 +452,39 @@ class TransactionsViewModelRecargaSolaTest {
         vm.manualRefresh() // otra vez: sale bien
         runCurrent()
         assertEquals(1L, vm.subidasAlInicio.value)
+    }
+
+    @Test fun `9 - entrar otra persona descarta la subida pendiente`() = runTest(scheduler) {
+        val vm = conLaLista()
+        vm.manualRefresh() // carga a mano buena con la pantalla en otra pestaña: queda pendiente
+        runCurrent()
+        assertEquals(1L, vm.subidasAlInicio.value)
+        assertEquals(0L, vm.subidasHechas.value)
+
+        usuarioDePrueba = "beto" // entra otra persona por PIN
+        vm.invalidateAndRefresh() // la carga de la otra consulta
+        runCurrent()
+
+        assertEquals("no salta sobre la lista de otra persona", vm.subidasAlInicio.value, vm.subidasHechas.value)
+    }
+
+    @Test fun `9b - una busqueda nueva tambien descarta la subida pendiente`() = runTest(scheduler) {
+        val vm = conLaLista()
+        vm.manualRefresh()
+        runCurrent()
+        vm.setSearchText("café")
+        irA(500)
+        assertEquals(vm.subidasAlInicio.value, vm.subidasHechas.value)
+    }
+
+    @Test fun `9c - recargar la misma consulta no descarta la subida pendiente`() = runTest(scheduler) {
+        val vm = conLaLista()
+        vm.manualRefresh()
+        runCurrent()
+        vm.invalidateAndRefresh()
+        runCurrent()
+        assertEquals(1L, vm.subidasAlInicio.value)
+        assertEquals(0L, vm.subidasHechas.value)
     }
 
     @Test fun `la recarga automatica no pide subir al inicio`() = runTest(scheduler) {
