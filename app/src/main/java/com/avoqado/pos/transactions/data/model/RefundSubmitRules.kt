@@ -108,6 +108,12 @@ fun faltaParaSaldo(online: Boolean, cliente: com.avoqado.pos.transactions.presen
 fun centavosDelImporte(pesos: Double): Int = pesos.aCentavos()
 
 /**
+ * El importe en pesos, ya en los centavos que se mandan. El campo acepta más de dos decimales: con «1.005» la pantalla decía
+ * $1.01 y se mandaban 100 centavos (Codex, 3-nov). Resumen, botón y envío salen de esta misma cantidad.
+ */
+fun importeEnCentavosExactos(pesos: Double): Double = centavosDelImporte(pesos) / 100.0
+
+/**
  * Qué mandar en `tipRefundCents` al reembolsar por importe.
  *
  * - `null`  ⇒ el campo NO viaja con valor: el servidor aplica su reparto proporcional

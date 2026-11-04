@@ -345,6 +345,20 @@ class EmitirReembolsoEnLaEscenaTest {
         onNodeWithText("Reembolsar $12,345.50").assertExists()
     }
 
+    /** Con alto fijo, el monto que debía aclarar cuánto se devuelve se cortaba al pasar a dos renglones. */
+    @Test fun `en un celular con letra grande el monto no se corta`() = pantalla(360, 640) {
+        letra.floatValue = 1.3f
+        waitForIdle()
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12345.50")
+        waitForIdle()
+        deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
+        val medidas = mutableListOf<TextLayoutResult>()
+        nodo("Reembolsar").fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action!!.invoke(medidas)
+        assertTrue(medidas.isNotEmpty() && medidas.none { it.didOverflowHeight }, "el monto se corta: ${medidas.map { it.size }}")
+    }
+
     @Test fun `el aviso de la terminal va a la izquierda y lo que no devuelve junto al boton`() = pantalla(1007, 601, ventaEnTerminal) {
         val mitad = 1007.dp / 2
         aLaIzquierda(mitad, "Este cobro fue con tarjeta", "Abrir en la terminal")
