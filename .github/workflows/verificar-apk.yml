@@ -11,7 +11,7 @@ on:
         required: true
   push:
     branches: ['ci/verificar-apk-**']
-    paths: ['scripts/verificar-apk-release.sh', 'scripts/diag-art.sh', '.github/workflows/verificar-apk.yml']
+    paths: ['scripts/verificar-apk-release.sh', '.github/workflows/verificar-apk.yml']
 
 jobs:
   verificar:
@@ -41,7 +41,12 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          script: bash scripts/diag-art.sh apk/app-release.apk && bash scripts/verificar-apk-release.sh apk/app-release.apk
+          # El emulador corre cada línea con sh; tee deja la salida para el paso de abajo.
+          script: bash -c 'set -o pipefail; bash scripts/verificar-apk-release.sh apk/app-release.apk 2>&1 | tee art.log'
       - name: La rota debe fallar
         if: github.event_name == 'push' && matrix.tag == 'v2.25.30-99'
-        run: '[ "${{ steps.art.outcome }}" = "failure" ] || { echo "::error::El guion NO detectó la 2.25.30 rota."; exit 1; }'
+        # Debe fallar POR la clase que R8 rompió, no por otra cosa (p. ej. la guarda de «dex2oat took»).
+        run: |
+          [ "${{ steps.art.outcome }}" = "failure" ] || { echo "::error::El guion NO detectó la 2.25.30 rota."; exit 1; }
+          grep -q "Verification error in void oc.b2.E(" art.log || { echo "::error::Falló, pero no por oc.b2.E:"; tail -20 art.log; exit 1; }
+          echo "✅ La 2.25.30 sale rechazada por oc.b2.E."
