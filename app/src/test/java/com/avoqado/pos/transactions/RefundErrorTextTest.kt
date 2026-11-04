@@ -4,6 +4,7 @@ import com.avoqado.pos.core.data.network.SesionSinRenovar
 import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import com.avoqado.pos.transactions.presentation.formatRefundError
+import com.avoqado.pos.transactions.presentation.textoDeFalloAlAbrirEnTerminal
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.IOException
@@ -52,6 +53,22 @@ class RefundErrorTextTest {
             org.junit.Assert.assertFalse(it, it.contains("no se hizo") || it.contains("inténtalo de nuevo") || it.contains("Intenta de nuevo"))
             org.junit.Assert.assertTrue(it, it.contains("revisa en Ventas"))
         }
+    }
+
+    @Test
+    fun `abrir la devolucion en la terminal sin red no enseña el texto tecnico`() {
+        listOf(
+            ConnectException("Failed to connect to localhost/127.0.0.1:3041"),
+            UnknownHostException("Unable to resolve host"),
+            SocketTimeoutException("timeout"),
+            SesionSinRenovar("red:UnknownHostException"),
+        ).forEach { assertEquals(it.toString(), TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA, textoDeFalloAlAbrirEnTerminal(it)) }
+    }
+
+    @Test
+    fun `abrir la devolucion en la terminal enseña tal cual lo que rechaza el servidor`() {
+        assertEquals("La terminal está ocupada", textoDeFalloAlAbrirEnTerminal(Exception("La terminal está ocupada")))
+        assertEquals("No se pudo abrir la devolución en la terminal.", textoDeFalloAlAbrirEnTerminal(Exception()))
     }
 
     @Test

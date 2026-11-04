@@ -290,7 +290,7 @@ fun IssueRefundSheet(
                     terminalAbierta = true
                 },
                 onFailure = { e ->
-                    terminalMsg = e.message ?: "No se pudo abrir la devolución en la terminal."
+                    terminalMsg = textoDeFalloAlAbrirEnTerminal(e)
                 },
             )
         }
@@ -1569,6 +1569,17 @@ private fun textoDeFalloDeRed(error: Throwable): String? = when {
     error is java.io.IOException -> TextosCambio.REEMBOLSO_SIN_RESPUESTA
     else -> null
 }
+
+/**
+ * D7, el mismo síntoma al abrir la devolución en la terminal (Codex r4): el rechazo del servidor se enseña tal cual, y un
+ * fallo de red nunca se enseña crudo. La solicitud pudo haber llegado, así que tampoco se invita a reenviarla a ciegas.
+ */
+internal fun textoDeFalloAlAbrirEnTerminal(error: Throwable): String =
+    if (error is java.io.IOException) {
+        TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA
+    } else {
+        error.message ?: "No se pudo abrir la devolución en la terminal."
+    }
 
 /** «Devolver con»: una pastilla por medio posible y la leyenda de lo que pasa con el dinero. */
 @OptIn(ExperimentalLayoutApi::class)

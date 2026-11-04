@@ -138,6 +138,7 @@ object TextosCambio {
     const val VENTA_NO_ABRIO = "No se pudo abrir esta venta. Vuelve a tocarla para reintentar."
     const val REEMBOLSO_SIN_RED = "Sin conexión: no se pudo confirmar el reembolso. Antes de repetirlo, revisa en Ventas si ya aparece."
     const val REEMBOLSO_SIN_RESPUESTA = "No se pudo confirmar el reembolso. Antes de repetirlo, revisa en Ventas si ya aparece."
+    const val DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA = "No se pudo confirmar que la devolución se abrió. Revisa la terminal antes de volver a enviarla."
     const val REEMBOLSO_SIN_CONFIRMAR = "Hay un reembolso a saldo a favor sin confirmar"
     const val REEMBOLSO_SIN_CONFIRMAR_DE = "Reembolso a saldo a favor sin confirmar (lo pidió {nombre})"
     const val REEMBOLSO_PIDE_GERENTE = "No tienes permiso: pide a un gerente que lo confirme"
