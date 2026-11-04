@@ -36,6 +36,14 @@ class RefundButtonTextTest {
         assertEquals("Reembolsar", textoDelBotonDeReembolso(importeEnCentavosExactos(0.001)))
     }
 
+    /** «NaN» e «Infinity» son números para `toDoubleOrNull()`, y `roundToInt()` revienta con NaN: la pantalla se caía (Codex r2). */
+    @Test
+    fun `lo que no es un importe vale cero y no tumba la pantalla`() {
+        listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY).forEach {
+            assertEquals("con $it", 0.0, importeEnCentavosExactos(it), 0.0)
+        }
+    }
+
     @Test
     fun `sin importe sólo dice el verbo`() {
         assertEquals("Reembolsar", textoDelBotonDeReembolso(0.0))

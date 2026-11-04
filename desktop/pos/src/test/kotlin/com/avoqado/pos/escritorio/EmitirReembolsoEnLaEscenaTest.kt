@@ -23,6 +23,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.runDesktopComposeUiTest
@@ -343,6 +344,17 @@ class EmitirReembolsoEnLaEscenaTest {
         waitForIdle()
         deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
         onNodeWithText("Reembolsar $12,345.50").assertExists()
+    }
+
+    @Test fun `pegar algo que no es un importe no tumba la pantalla ni enciende el boton`() = pantalla(1007, 601) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        listOf("NaN", "Infinity").forEach { pegado ->
+            onNode(hasSetTextAction()).performTextClearance()
+            onNode(hasSetTextAction()).performTextInput(pegado)
+            waitForIdle()
+            onNodeWithText("Reembolsar", substring = false).assertIsNotEnabled()
+        }
     }
 
     /** Con alto fijo, el monto que debía aclarar cuánto se devuelve se cortaba al pasar a dos renglones. */
