@@ -66,6 +66,11 @@ class SyncOutboxRetenidoTest {
         finally { directoriosPropios.forEach { it.deleteRecursively() } }
     }
 
+    /**
+     * Arranca y espera a que el soltado del primer arranque TERMINE. `coVerify(timeout) { dao.soltarRetenidos() }` no
+     * sirve: MockK anota la llamada y despierta al verificador ANTES de ejecutar la respuesta, así que una ronda escrita
+     * justo después todavía puede soltarse, mandarse y salir de la cola (3-nov, 1 de cada ~1,000 corridas).
+     */
     private suspend fun startReady(subject: SyncOutbox) {
         val before = startupReleases.get()
         subject.start(VENUE)
@@ -293,8 +298,7 @@ class SyncOutboxRetenidoTest {
     @Test
     fun `P1 una ronda retenida no deja salir nada de lo que va detras`() = runTest {
         val outbox = outbox()
-        outbox.start(VENUE)
-        coVerify(timeout = 2_000) { dao.soltarRetenidos() }
+        startReady(outbox)
         outbox.enqueue(VENUE, "OPEN_TABLE", ordenImpaga, id = "a")
         outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
         outbox.enqueue(VENUE, "CLEAR_TABLE", vacio, id = "b")
@@ -310,8 +314,7 @@ class SyncOutboxRetenidoTest {
     @Test
     fun `P1 al soltar la ronda sale ella y despues lo de detras, en orden`() = runTest {
         val outbox = outbox()
-        outbox.start(VENUE)
-        coVerify(timeout = 2_000) { dao.soltarRetenidos() }
+        startReady(outbox)
         outbox.enqueue(VENUE, "OPEN_TABLE", ordenImpaga, id = "a")
         outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
         outbox.enqueue(VENUE, "CLEAR_TABLE", vacio, id = "b")
@@ -327,8 +330,7 @@ class SyncOutboxRetenidoTest {
     @Test
     fun `con exito en linea la ronda se descarta y lo de detras sale`() = runTest {
         val outbox = outbox()
-        outbox.start(VENUE)
-        coVerify(timeout = 2_000) { dao.soltarRetenidos() }
+        startReady(outbox)
         outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
         outbox.enqueue(VENUE, "CLEAR_TABLE", vacio, id = "b")
 
@@ -354,8 +356,7 @@ class SyncOutboxRetenidoTest {
     @Test
     fun `soltar lo retenido es sólo al PRIMER arranque - un cambio de sucursal no suelta una ronda en vuelo`() = runTest {
         val outbox = outbox()
-        outbox.start(VENUE)
-        coVerify(timeout = 2_000, exactly = 1) { dao.soltarRetenidos() }
+        startReady(outbox)
         outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
 
         outbox.stop()

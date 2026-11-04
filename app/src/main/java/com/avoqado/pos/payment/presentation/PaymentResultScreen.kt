@@ -846,6 +846,7 @@ fun PaymentErrorView(
  *  - "Cobrar de nuevo" existe —el negocio no se puede quedar parado— pero SÓLO tras una
  *    advertencia explícita del riesgo, confirmada por el cajero.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun PaymentUndeterminedView(
     message: String,
@@ -878,6 +879,11 @@ fun PaymentUndeterminedView(
     terminalLibreVentaEnDuda: Boolean = false,
     recheckLabel: String? = null,
     accionesDeRedHabilitadas: Boolean = true,
+    /**
+     * D11: quien la usa ya vuelve a preguntar solo cada 5 s (el cobro de la venta). Entonces «Volver a consultar» sobra: la
+     * pantalla hace una sola pregunta y su botón es «No se cobró». El Cambio no consulta solo y conserva su botón.
+     */
+    consultaSola: Boolean = false,
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
     var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
@@ -901,7 +907,7 @@ fun PaymentUndeterminedView(
             Icons.Filled.HelpOutline,
             contentDescription = null,
             tint = Warning,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(if (consultaSola) 56.dp else 80.dp),
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -909,6 +915,7 @@ fun PaymentUndeterminedView(
         Text(
             text = when {
                 CancelacionDeCobro.hablaDeTerminalLibre(terminalLibreVentaEnDuda, fromPreviousSale) -> CancelacionDeCobro.TERMINAL_LIBRE_VENTA_EN_DUDA
+                consultaSola -> CancelacionDeCobro.tituloSinConfirmar(montoDelCobro, fromPreviousSale)
                 fromPreviousSale -> "Cobro anterior sin confirmar"
                 else -> "Cobro sin confirmar"
             },
@@ -928,19 +935,35 @@ fun PaymentUndeterminedView(
             modifier = Modifier.widthIn(max = 400.dp),
         )
 
+        val preguntaSola = consultaSola && onDeclararNoCobrado != null
+        if (preguntaSola) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            QueHacerSegunLaTerminal()
+            if (accionesDeRedHabilitadas) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    text = CancelacionDeCobro.CONSULTA_AUTOMATICA,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
-        // Acción segura y destacada: sólo pregunta, nunca cobra.
-        PrimaryButton(
-            text = if (isChecking) "Consultando..." else recheckLabel ?: "Volver a consultar",
-            onClick = onRecheck,
-            enabled = accionesDeRedHabilitadas && !isChecking,
-            isLoading = isChecking,
-        )
+        // Acción segura: sólo pregunta, nunca cobra. Si ya se pregunta sola, no compite con la decisión del cajero.
+        if (!preguntaSola) {
+            PrimaryButton(
+                text = if (isChecking) "Consultando..." else recheckLabel ?: "Volver a consultar",
+                onClick = onRecheck,
+                enabled = accionesDeRedHabilitadas && !isChecking,
+                isLoading = isChecking,
+            )
+        }
 
         // 🔴 La salida que faltaba: el cajero MIRA la terminal y lo declara. No cobra — libera.
         if (onDeclararNoCobrado != null) {
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            if (!preguntaSola) Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
             BotonDeclararNoCobrado(
                 enabled = accionesDeRedHabilitadas && !isChecking,
                 onClick = { pedirConfirmacionDeclaracion = true },
@@ -956,13 +979,15 @@ fun PaymentUndeterminedView(
 
         // 🔴 Dos salidas DISTINTAS, y confundirlas es lo que dejaba órdenes huérfanas: salir no
         // toca nada; cancelar la venta pide detener el cobro y sólo después cancela la cuenta.
-        TextButton(onClick = onSalir, enabled = !isChecking) {
-            Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE)
-        }
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
+            TextButton(onClick = onSalir, enabled = !isChecking) {
+                Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE, textAlign = TextAlign.Center)
+            }
 
-        if (onCancelarVenta != null) {
-            TextButton(onClick = onCancelarVenta, enabled = !isChecking) {
-                Text(CancelacionDeCobro.BOTON_CANCELAR_VENTA)
+            if (onCancelarVenta != null) {
+                TextButton(onClick = onCancelarVenta, enabled = !isChecking) {
+                    Text(CancelacionDeCobro.BOTON_CANCELAR_VENTA, textAlign = TextAlign.Center)
+                }
             }
         }
     }
@@ -1019,16 +1044,32 @@ private fun BotonDeclararNoCobrado(
     onClick: () -> Unit,
     texto: String = CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
 ) {
-    OutlinedButton(
-        onClick = onClick,
-        enabled = enabled,
-        border = BorderStroke(1.5.dp, Warning),
-        // 🔴 Nada de `fillMaxWidth()`: en una tablet de 1920 px dejaba una píldora de lado a
-        // lado con el texto diminuto en el centro (founder, 21-sep, viéndolo en la D3). Se acota
-        // igual que el mensaje de arriba para que la columna quede alineada.
-        modifier = Modifier.widthIn(max = 400.dp),
-    ) {
-        Text(texto, color = Warning)
+    // 🔴 Nada de pantalla completa: en una tablet de 1920 px dejaba una píldora de lado a lado con el
+    // texto diminuto en el centro (founder, 21-sep, viéndolo en la D3). Se acota para alinear la columna.
+    Box(modifier = Modifier.widthIn(max = 320.dp)) {
+        PrimaryButton(text = texto, onClick = onClick, enabled = enabled, fullWidth = true)
+    }
+}
+
+/** D11: qué hacer según lo que el cajero ve en la terminal. Lo que se pregunta, se contesta aquí mismo. */
+@Composable
+private fun QueHacerSegunLaTerminal() {
+    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs), modifier = Modifier.widthIn(max = 400.dp)) {
+        listOf(
+            CancelacionDeCobro.SI_DICE_APROBADO to CancelacionDeCobro.SI_DICE_APROBADO_QUE_HACER,
+            CancelacionDeCobro.SI_NO_SE_COBRO to CancelacionDeCobro.SI_NO_SE_COBRO_QUE_HACER,
+        ).forEach { (caso, queHacer) ->
+            Text(
+                text = androidx.compose.ui.text.buildAnnotatedString {
+                    pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
+                    append(caso)
+                    pop()
+                    append(" ")
+                    append(queHacer)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
     }
 }
 
@@ -1150,6 +1191,7 @@ fun CancelandoCobroView(onSalir: () -> Unit) {
  * La venta se cancela sola en cuanto el desenlace llegue (la intención vive en disco y se
  * reproduce sola), así que salir de aquí no pierde nada.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun CancelacionPendienteView(
     sinRed: Boolean,
@@ -1228,24 +1270,32 @@ fun CancelacionPendienteView(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
-        PrimaryButton(
-            text = CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR,
-            onClick = onVolverAConsultar,
-            enabled = accionesDeRedHabilitadas && !isChecking,
-            isLoading = isChecking,
-        )
-
         // C2: la salida de Amaena (20-oct). El cajero mira la terminal y lo declara; si el servidor libera, la venta se
         // cancela sola por el camino de siempre (el coordinador), nunca desde aquí.
+        // D11: igual que «Cobro sin confirmar», una sola decisión en grande. Aquí la consulta de fondo espera más entre
+        // intentos, así que «Volver a consultar» se queda, pero en chico. Sin nada que declarar, es lo único que hay.
         if (onDeclararNoCobrado != null) {
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
             BotonDeclararNoCobrado(enabled = accionesDeRedHabilitadas && !declarando, onClick = { pedirConfirmacionDeclaracion = true })
+        } else {
+            PrimaryButton(
+                text = CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR,
+                onClick = onVolverAConsultar,
+                enabled = accionesDeRedHabilitadas && !isChecking,
+                isLoading = isChecking,
+            )
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-        TextButton(onClick = onSalir, enabled = !isChecking) {
-            Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
+            if (onDeclararNoCobrado != null) {
+                TextButton(onClick = onVolverAConsultar, enabled = accionesDeRedHabilitadas && !isChecking) {
+                    Text(CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, textAlign = TextAlign.Center)
+                }
+            }
+            TextButton(onClick = onSalir, enabled = !isChecking) {
+                Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE, textAlign = TextAlign.Center)
+            }
         }
     }
 
