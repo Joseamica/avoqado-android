@@ -82,6 +82,7 @@ class TransactionsViewModelSinRedTest {
         coEvery { repository.fetchTransactions(any(), any()) } coAnswers {
             val pedida = consulta(secondArg())
             pedidas += pedida
+            val conElCobro = cobroSinRedYaSubio // lo que el servidor ya tenía cuando salió la consulta
             enCamino?.await()
             if (sinRed) {
                 fallo.value = FalloDeLectura.SIN_RED
@@ -89,7 +90,7 @@ class TransactionsViewModelSinRedTest {
             } else {
                 ventas.value = listOfNotNull(
                     Transaction(id = "pago-${pedida.busqueda}"),
-                    Transaction(id = "cobro-sin-red").takeIf { cobroSinRedYaSubio },
+                    Transaction(id = "cobro-sin-red").takeIf { conElCobro },
                 )
                 consultaDeLaLista.value = pedida
                 fallo.value = null
@@ -214,6 +215,26 @@ class TransactionsViewModelSinRedTest {
     }
 
     @Test
+    fun `tras un fallo parcial, una caida real del WiFi vuelve a armar T2`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        sinRed = true
+        red.value = false
+        val vm = crear()
+        aLaVista(vm)
+        red.value = true // T2: su recarga falla y se gasta
+        dejarPasar()
+        ahora += 70.seconds
+        servidorSeVaYVuelve() // el parpadeo de su propio fallo no recarga
+        assertEquals(1, pedidas.size)
+
+        sinRed = false
+        wifiSeVaYVuelve() // la red del aparato sí se cayó: es otra vuelta
+
+        assertEquals(2, pedidas.size)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+    }
+
+    @Test
     fun `T1 respeta el enfriamiento del gate - no lo fuerza`() = runTest(scheduler) {
         sinRed = true
         val vm = crear()
@@ -294,6 +315,29 @@ class TransactionsViewModelSinRedTest {
         runCurrent()
 
         assertEquals("T3 recarga aunque la lista ya enseñe datos", 2, pedidas.size)
+        assertEquals(listOf("pago-", "cobro-sin-red"), vm.transactions.value.map { it.id })
+    }
+
+    @Test
+    fun `T3 - si la consulta de T2 iba en camino cuando subio la cola, al terminar se pide otra con el cobro`() = runTest(scheduler) {
+        fallo.value = FalloDeLectura.SIN_RED
+        porSubir.value = 1 // el cobro de 10 pesos en efectivo, hecho sin red
+        red.value = false
+        val vm = crear()
+        aLaVista(vm)
+
+        val lenta = CompletableDeferred<Unit>()
+        enCamino = lenta
+        red.value = true // T2: la consulta sale antes de que suba la cola, y tarda
+        dejarPasar()
+        cobroSinRedYaSubio = true
+        porSubir.value = 0 // la cola sube con esa consulta en camino
+        runCurrent()
+        enCamino = null
+        lenta.complete(Unit)
+        runCurrent()
+
+        assertEquals(2, pedidas.size)
         assertEquals(listOf("pago-", "cobro-sin-red"), vm.transactions.value.map { it.id })
     }
 

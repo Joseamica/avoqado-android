@@ -63,13 +63,13 @@ class ReportsViewModelSinRedTest {
     private var enCamino: CompletableDeferred<Unit>? = null
 
     /** El informe de una consulta: las ventas brutas dicen de qué periodo es. */
-    private fun datosDe(consulta: ConsultaDeInforme) = ReportData(
+    private fun datosDe(consulta: ConsultaDeInforme, conElCobro: Boolean) = ReportData(
         summary = SalesSummaryReport(
             grossSales = when (consulta.tipo) {
                 "hours" -> 100.0
                 "days" -> if (consulta.fin == null) 3000.0 else 777.0 // 1M, o el rango personalizado
                 else -> 50000.0
-            } + if (cobroSinRedYaSubio) 10.0 else 0.0,
+            } + if (conElCobro) 10.0 else 0.0,
         ),
         paymentMethods = emptyList(),
         hourlySales = emptyList(),
@@ -87,12 +87,13 @@ class ReportsViewModelSinRedTest {
         coEvery { repository.loadReport(any(), any()) } coAnswers {
             val consulta = firstArg<ConsultaDeInforme>()
             pedidas += consulta
+            val conElCobro = cobroSinRedYaSubio // lo que el servidor ya tenía cuando salió la consulta
             enCamino?.await()
             if (sinRed) {
                 falloGuardado.value = FalloDeLectura.SIN_RED
                 Result.failure(LecturaFallida(FalloDeLectura.SIN_RED))
             } else {
-                informeGuardado.value = InformeConsultado(consulta, datosDe(consulta))
+                informeGuardado.value = InformeConsultado(consulta, datosDe(consulta, conElCobro))
                 falloGuardado.value = null
                 Result.success(Unit)
             }
@@ -273,6 +274,32 @@ class ReportsViewModelSinRedTest {
         runCurrent()
 
         assertEquals("T3 recarga aunque el informe sea fresco", 2, pedidas.size)
+        assertEquals(110.0, brutasALaVista(vm))
+    }
+
+    @Test
+    fun `T3 - si la consulta de T2 iba en camino cuando subio la cola, al terminar se pide otra con el cobro`() = runTest(scheduler) {
+        sinRed = true
+        red.value = false
+        porSubir.value = 1 // el cobro de 10 pesos en efectivo, hecho sin red
+        val vm = crear()
+        vm.autoRefresh() // sin red: «Sin conexión»
+        ahora += 10.seconds
+        aLaVista(vm)
+
+        sinRed = false
+        val lenta = CompletableDeferred<Unit>()
+        enCamino = lenta
+        red.value = true // T2: la consulta sale antes de que suba la cola, y tarda
+        dejarPasar()
+        cobroSinRedYaSubio = true
+        porSubir.value = 0 // la cola sube con esa consulta en camino
+        runCurrent()
+        enCamino = null
+        lenta.complete(Unit)
+        runCurrent()
+
+        assertEquals(3, pedidas.size)
         assertEquals(110.0, brutasALaVista(vm))
     }
 

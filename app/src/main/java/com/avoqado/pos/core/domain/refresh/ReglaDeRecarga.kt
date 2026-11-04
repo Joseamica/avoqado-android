@@ -50,14 +50,15 @@ interface PantallaQueSeRecarga {
  *   donde la red del aparato no baja): si está en «no se cargó», recarga una vez.
  * - **T3** cuando lo que falta por subir de la sucursal (cobros en cola o subiendo, más la cola de operaciones) pasa de
  *   algo a nada, con red: recarga una vez AUNQUE ya enseñe datos —para que entren los cobros recién subidos—, invalidando
- *   el TTL. Una cola atorada no frena a T2: se recarga con lo que tenga el servidor y la banda sigue diciendo «N por
+ *   el TTL. Si se unió a una consulta que ya iba en camino (la de T2, que salió antes de que subiera la cola), al terminar
+ *   pide otra. Una cola atorada no frena a T2: se recarga con lo que tenga el servidor y la banda sigue diciendo «N por
  *   sincronizar»; cuando por fin se vacía, T3.
  *
  * Ninguna fuerza el gate (`manual = false`); T2 sólo reinicia el enfriamiento, como la fábrica al recuperar la red.
  * 🔴 Y T2 se GASTA si su propia recarga falla: la bandera del servidor sí cambia con ese fallo (el `ConnectivityInterceptor`
  * la apaga en un IOException o un 5xx y el ping la vuelve a prender a los 10 s), así que sin esto un fallo parcial con el
- * servidor alcanzable recargaba en cada parpadeo. Se vuelve a armar cuando la pantalla enseña datos o al volver a verse;
- * T1 y T3 no se gastan.
+ * servidor alcanzable recargaba en cada parpadeo. Se vuelve a armar cuando la pantalla enseña datos, cuando la red del
+ * aparato de verdad se cae (otra vuelta) o al volver a verse; T1 y T3 no se gastan.
  */
 @Singleton
 class ReglaDeRecarga internal constructor(
@@ -87,6 +88,8 @@ class ReglaDeRecarga internal constructor(
         val estado = pantalla.estadoParaRecargar.stateIn(this)
         var t2Armado = true
         launch { estado.collect { if (it == EstadoParaRecargar.CON_DATOS) t2Armado = true } }
+        // Una caída real de la red del aparato es otra vuelta; el parpadeo de la bandera del servidor no (Codex r1 #4).
+        launch { red.collect { if (!it) t2Armado = true } }
 
         // T2: red y servidor de no a sí.
         launch {
@@ -102,7 +105,10 @@ class ReglaDeRecarga internal constructor(
             porSubir.distinctUntilChanged().collect { pendientes ->
                 val antes = habiaPorSubir
                 habiaPorSubir = pendientes > 0
-                if (antes == true && pendientes == 0 && enLinea.first()) pantalla.recargarConDatosNuevos()
+                if (antes == true && pendientes == 0 && enLinea.first()) {
+                    // Si se unió a una consulta en camino, ésa salió antes de que subiera la cola: al terminar, se pide otra.
+                    if (pantalla.recargarConDatosNuevos() == RefreshOutcome.Joined) pantalla.recargarConDatosNuevos()
+                }
             }
         }
 
