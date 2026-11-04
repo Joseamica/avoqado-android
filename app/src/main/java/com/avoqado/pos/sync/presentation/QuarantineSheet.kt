@@ -107,6 +107,10 @@ fun QuarantineSheet(
     val cancelacionesViewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
     val cancelaciones by cancelacionesViewModel.pendientes.collectAsState()
     val cancelacionesEnCurso by cancelacionesViewModel.enCurso.collectAsState()
+    val cancelacionesDeclarando by cancelacionesViewModel.declarando.collectAsState()
+    val avisosDeCancelacion by cancelacionesViewModel.avisos.collectAsState()
+    val cancelacionesPidiendoPin by cancelacionesViewModel.pidiendoPin.collectAsState()
+    var cancelacionPorDeclarar by androidx.compose.runtime.remember { mutableStateOf<com.avoqado.pos.payment.data.IntencionDeCancelarCobro?>(null) }
 
     LaunchedEffect(Unit) { viewModel.load();historial.cargar() }
     LaunchedEffect(successMessage) { if (successMessage != null) historial.cargar() }
@@ -260,9 +264,16 @@ fun QuarantineSheet(
                                 Text(if (esAvisoDeCobro) com.avoqado.pos.payment.domain.CancelacionDeCobro.SE_COBRO_AL_FINAL else com.avoqado.pos.payment.domain.CancelacionDeCobro.TITULO_PENDIENTE, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 cancelacion.montoCents?.let { Text(formatMoney(it), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold) }
                                 ReferenciaDeRevision("Folio ${cancelacion.id.take(8)}", formatTime(cancelacion.creadaEn), abierto, { abierto = !abierto })
-                                if (!esAvisoDeCobro) Text(if (cancelacion.sinRed) com.avoqado.pos.payment.domain.CancelacionDeCobro.CUERPO_SIN_RED else com.avoqado.pos.payment.domain.CancelacionDeCobro.CUERPO_PENDIENTE, style = MaterialTheme.typography.bodyMedium)
+                                // D19 (4-nov): con la terminal ya suelta ya no «se cancela sola»; se dice y se deja declarar.
+                                if (!esAvisoDeCobro) Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.cuerpoDeLaFila(cancelacion.sinRed, cancelacion.terminalLibre), style = MaterialTheme.typography.bodyMedium)
                                 cancelacion.motivo?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                                 val consultando = cancelacion.id in cancelacionesEnCurso
+                                avisosDeCancelacion[cancelacion.id]?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+                                val declarandoEsta = cancelacion.id in cancelacionesDeclarando
+                                if (com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(cancelacion.terminalLibre, cancelacion.sinRed, cancelacion.requestId, esAvisoDeCobro)) {
+                                    AccionDeRevision(text = if (declarandoEsta) "Confirmando…" else com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
+                                        onClick = { cancelacionPorDeclarar = cancelacion }, enabled = !consultando && !declarandoEsta, isLoading = declarandoEsta, principal = true)
+                                }
                                 AccionDeRevision(text = if (consultando) "Consultando…" else com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, onClick = { cancelacionesViewModel.volverAConsultar(cancelacion.id) }, enabled = !consultando)
                                 if (abierto) Text("Folio ${cancelacion.id}", style = MaterialTheme.typography.bodySmall)
                             }
@@ -393,6 +404,26 @@ fun QuarantineSheet(
                 })
             },
         ) {}
+    }
+
+    // D19: la MISMA confirmación del cobro («Confirma que no se cobró», firmado con su nombre). Nunca un solo toque.
+    cancelacionPorDeclarar?.let { cancelacion ->
+        com.avoqado.pos.payment.presentation.DialogoDeclararNoCobrado(
+            montoDelCobro = cancelacion.montoCents?.let { formatMoney(it) },
+            onConfirmar = {
+                cancelacionesViewModel.declarar(cancelacion)
+                cancelacionPorDeclarar = null
+            },
+            onCerrar = { cancelacionPorDeclarar = null },
+        )
+    }
+
+    cancelacionesPidiendoPin?.let { peticion ->
+        com.avoqado.pos.payment.presentation.TecladoDelPinDeGerente(
+            peticion = peticion,
+            onEnviar = cancelacionesViewModel::enviarPin,
+            onCerrar = cancelacionesViewModel::cerrarPin,
+        )
     }
 
     successMessage?.let {

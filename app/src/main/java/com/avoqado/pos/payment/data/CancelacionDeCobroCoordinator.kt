@@ -140,6 +140,18 @@ class CancelacionDeCobroCoordinator internal constructor(
         scope.launch { procesar(id, ignorarEspera = true) }
     }
 
+    /** D19 (Codex r2 #1): intenciones que DEBEN volver a consultarse aunque una corrida en vuelo se coma el `procesarAhora`. */
+    private val repreguntar: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * D19: tras una declaración aceptada por el servidor. Si ya había una corrida en vuelo (con la respuesta de ANTES de declarar), su
+     * `procesarAhora` se perdía en el `tryLock` y la venta esperaba al siguiente reloj. Ahora queda anotado y corre al soltar el candado.
+     */
+    fun procesarTrasDeclarar(id: String) {
+        repreguntar.add(id)
+        procesarAhora(id)
+    }
+
     /** El cobro que la terminal sí hizo ya se aplicó en pantalla: el aviso deja de hacer falta. */
     fun cobroAplicado(id: String) {
         if (store.leer(id) != null) {
@@ -198,6 +210,8 @@ class CancelacionDeCobroCoordinator internal constructor(
     internal suspend fun procesar(id: String, ignorarEspera: Boolean = true) {
         val candado = candadoDe(id)
         if (!candado.tryLock()) return
+        // Esta corrida empieza DESPUÉS de la declaración: ella misma cumple lo anotado. Lo que se anote mientras corre, sigue.
+        repreguntar.remove(id)
         try {
             var intencion = store.leer(id) ?: return
             if (!ignorarEspera && intencion.proximoIntentoEn > reloj()) return
@@ -207,6 +221,7 @@ class CancelacionDeCobroCoordinator internal constructor(
         } finally {
             marcarEnCurso(id, false)
             candado.unlock()
+            if (id in repreguntar) procesarAhora(id)
         }
     }
 
@@ -359,6 +374,7 @@ class CancelacionDeCobroCoordinator internal constructor(
                 intentos = intentos,
                 sinRed = sinRed,
                 motivo = motivo ?: intencion.motivo,
+                terminalLibre = terminalLibre,
                 proximoIntentoEn = reloj() + espera(intentos),
             ),
         )

@@ -332,4 +332,21 @@ class CancelacionDeCobroDecisionTest {
     fun `el boton de la declaracion dice lo mismo que el de la terminal`() {
         assertEquals("No se cobró", CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO)
     }
+    // D19 (4-nov): con la terminal ya suelta, la fila de «Por revisar» ya no promete que la venta «se cancelará sola».
+    @Test
+    fun `D19 la fila de Por revisar dice que la terminal esta libre y ya no promete cancelarse sola`() {
+        assertEquals(CancelacionDeCobro.CUERPO_TERMINAL_LIBRE, CancelacionDeCobro.cuerpoDeLaFila(sinRed = false, terminalLibre = true))
+        assertEquals(CancelacionDeCobro.CUERPO_PENDIENTE, CancelacionDeCobro.cuerpoDeLaFila(sinRed = false, terminalLibre = false))
+        // Sin red en la tablet no se sabe nada nuevo: manda lo de la red.
+        assertEquals(CancelacionDeCobro.CUERPO_SIN_RED, CancelacionDeCobro.cuerpoDeLaFila(sinRed = true, terminalLibre = true))
+    }
+
+    @Test
+    fun `D19 sólo se ofrece declarar en la fila con la terminal libre y un cobro con solicitud`() {
+        assertTrue(CancelacionDeCobro.filaPuedeDeclarar(terminalLibre = true, sinRed = false, requestId = "req-1", esAvisoDeCobro = false))
+        assertEquals(false, CancelacionDeCobro.filaPuedeDeclarar(terminalLibre = false, sinRed = false, requestId = "req-1", esAvisoDeCobro = false))
+        assertEquals(false, CancelacionDeCobro.filaPuedeDeclarar(terminalLibre = true, sinRed = false, requestId = null, esAvisoDeCobro = false))
+        assertEquals(false, CancelacionDeCobro.filaPuedeDeclarar(terminalLibre = true, sinRed = false, requestId = "req-1", esAvisoDeCobro = true))
+        assertEquals(false, CancelacionDeCobro.filaPuedeDeclarar(terminalLibre = true, sinRed = true, requestId = "req-1", esAvisoDeCobro = false))
+    }
 }

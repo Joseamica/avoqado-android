@@ -1101,7 +1101,7 @@ private fun QueHacerSegunLaTerminal() {
  * @param montoDelCobro el importe DEL COBRO que se declara; `null` ⇒ el texto dice «ese cobro».
  */
 @Composable
-private fun DialogoDeclararNoCobrado(
+internal fun DialogoDeclararNoCobrado(
     montoDelCobro: String?,
     onConfirmar: () -> Unit,
     onCerrar: () -> Unit,

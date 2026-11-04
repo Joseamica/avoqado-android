@@ -165,6 +165,58 @@ class CancelacionDeCobroCoordinatorTest {
         assertEquals(EstadoDeCancelacion.Pendiente(sinRed = false, terminalLibre = true), c.estadoActual("req-1"))
     }
 
+    // D19 (iPad 4-nov, leído en ANDROID): «Por revisar» lee la intención GUARDADA, no el estado de la pantalla. Sin la marca en disco,
+    // la fila seguía diciendo «se cancelará sola» con la terminal ya suelta, y no dejaba declarar.
+    @Test
+    fun `D19 la intencion guardada recuerda que la terminal quedo libre`() = runTest {
+        val transporte = CancelacionTransportFalso().apply {
+            programarEstados(ChargeStatusProbe.Known("TIMED_OUT", false, failureCode = "AUTO_RELEASED", outcome = "UNRESOLVED"))
+        }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+
+        c.procesar("req-1")
+
+        assertTrue(store.leer("req-1")!!.terminalLibre)
+    }
+
+    @Test
+    fun `D19 mientras la terminal sigue con el cobro la intencion no dice que esta libre`() = runTest {
+        val transporte = CancelacionTransportFalso().apply { programarEstados(cancelando) }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+
+        c.procesar("req-1")
+
+        assertEquals(false, store.leer("req-1")!!.terminalLibre)
+    }
+
+    // D19 (Codex r2 #1): la declaración se aceptó mientras otra consulta (con la respuesta de antes) tenía el candado.
+    @Test
+    fun `D19 tras declarar se vuelve a consultar aunque haya una corrida en vuelo`() = runTest {
+        val puerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var primera = true
+        val transporte = CancelacionTransportFalso().apply {
+            programarEstados(ChargeStatusProbe.Known("TIMED_OUT", false, failureCode = "AUTO_RELEASED", outcome = "UNRESOLVED"), cancelado)
+            antesDeContestarEstado = { if (primera) { primera = false; puerta.await() } }
+        }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+        val corrida = launch { c.procesar("req-1") }
+        testScheduler.runCurrent()            // la primera corrida queda esperando su GET, con el candado
+
+        c.procesarTrasDeclarar("req-1")       // su procesarAhora se come en el tryLock…
+        testScheduler.runCurrent()
+        puerta.complete(Unit)
+        corrida.join()
+        // La segunda vuelta corre en el scope del coordinador (de fondo): `advanceUntilIdle` no la espera, `runCurrent` sí.
+        repeat(5) { testScheduler.runCurrent() }
+
+        // …y aun así se vuelve a preguntar: el segundo GET ve el cancelado y la orden se cancela con su barrera.
+        assertEquals(transporte.llamadas.toString(), 1, transporte.llamadasBorrar.size)
+        assertEquals(null, store.leer("req-1"))
+    }
+
     @Test
     fun `P1 un 404 sostenido queda pendiente y no borra`() = runTest {
         val transporte = CancelacionTransportFalso().apply { programarEstados(ChargeStatusProbe.NotFound) }
