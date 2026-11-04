@@ -288,7 +288,7 @@ class RefundSheetLayoutGuardTest {
         fun medidas(trozo: String) = Regex("""\bonSizeChanged\b""").findAll(trozo).count()
         assertEquals("Las pestañas se miden, y arriba de la banda.", 1, medidas(piezas.queSeDevuelve.substringBefore("Box(")))
         assertEquals("Se midió la banda: al soltar su peso crece, y esto oscilaría.", 0, medidas(piezas.queSeDevuelve.substringAfter("Box(")))
-        assertEquals("El error y el pie se miden.", 2, medidas(piezas.pie))
+        assertEquals("El pie se mide, con el error del envío adentro.", 1, medidas(piezas.pie))
         assertTrue("Lo medido dejó de decidir sólo en Artículos.", ventana.contains("val loDemasEnArticulos = if (tab == RefundTab.ITEMS)"))
         assertTrue("Lo medido en «Por importe» ya decide en Artículos.", ventana.contains("if (tab == RefundTab.ITEMS) altoDelPieEnArticulos = it.height"))
         assertTrue(
@@ -362,13 +362,15 @@ class RefundSheetLayoutGuardTest {
 
         assertTrue(
             "La banda tiene que ir arriba del pie.",
-            piezas.unaColumna.indexOf("queSeDevuelve()") in 0 until piezas.unaColumna.indexOf("errorDelEnvio()"),
+            piezas.unaColumna.indexOf("queSeDevuelve()") in 0 until piezas.unaColumna.indexOf("importeYSuPropina()"),
         )
         assertTrue(
-            "El pie cambió de orden: error, importe y su casilla, cómo se devuelve y cierre.",
-            Regex("""errorDelEnvio\(\)[\s}]*importeYSuPropina\(\)\s*Spacer\([^\n]*\)\s*Column\([^{]*\{[^}]*\}[^{]*\{\s*comoSeDevuelve\(\)\s*cierre\(\)\s*\}""").containsMatchIn(piezas.pie),
+            "El pie cambió de orden: importe y su casilla, cómo se devuelve y cierre.",
+            Regex("""importeYSuPropina\(\)\s*Spacer\([^\n]*\)\s*Column\([^{]*\{[^}]*\}[^{]*\{\s*comoSeDevuelve\(\)\s*cierre\(\)\s*\}""").containsMatchIn(piezas.unaColumna),
         )
-        assertEquals("El error sólo se repite en el cierre de dos columnas.", 1, Regex("""if \(dosColumnas\) errorDelEnvio\(\)""").findAll(piezas.cierre).count())
+        // Arriba, con todo deslizado o con el teclado abierto, nadie lo veía y la cajera volvía a tocar (SAMSUNG, 3-nov).
+        assertEquals("El error del envío va en el cierre, pegado al botón, en las dos ramas.", 1, invocaciones(piezas.cierre, "errorDelEnvio"))
+        assertEquals("El error del envío ya no va arriba del pie.", 0, invocaciones(piezas.unaColumna, "errorDelEnvio"))
     }
 
     /**

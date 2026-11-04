@@ -469,7 +469,6 @@ fun IssueRefundSheet(
             // decide aquí. Pero `onSizeChanged` calla si el alto no cambió (sin propina, escoger el saldo allá y volver): pasado el primer cuadro de
             // regreso, lo último medido ya es de Artículos.
             var altoDePestanas by remember { mutableIntStateOf(0) }
-            var altoDelError by remember { mutableIntStateOf(0) }
             var altoDelPie by remember { mutableIntStateOf(0) }
             var altoDelPieEnArticulos by remember { mutableIntStateOf(0) }
             LaunchedEffect(tab) {
@@ -479,7 +478,7 @@ fun IssueRefundSheet(
                 }
             }
             val loDemasEnArticulos = if (tab == RefundTab.ITEMS) {
-                with(LocalDensity.current) { (altoDePestanas + altoDelError + altoDelPieEnArticulos).toDp() + spacing.md }.value
+                with(LocalDensity.current) { (altoDePestanas + altoDelPieEnArticulos).toDp() + spacing.md }.value
             } else {
                 null
             }
@@ -954,8 +953,9 @@ fun IssueRefundSheet(
                     )
                 }
 
-                // En una columna va arriba del pie, como siempre; en dos, lo de arriba se desliza y aquí no se pierde.
-                if (dosColumnas) errorDelEnvio()
+                // Pegado al botón, en las dos ramas. Arriba del pie, con todo deslizado o con el teclado abierto, nadie lo veía: el
+                // botón sólo brincaba y la cajera volvía a tocar, justo cuando el aviso le pide no repetirlo a ciegas (SAMSUNG, 3-nov).
+                errorDelEnvio()
 
                 Row(
                     modifier = Modifier
@@ -1146,9 +1146,8 @@ fun IssueRefundSheet(
                     // La casilla «Incluir propina» sigue AQUÍ y no en la banda de artículos: para
                     // llegar al botón hay que pasar por ella, porque el motivo —que `canSubmit`
                     // exige— vive debajo. Deslizable no es lo mismo que escondido.
-                    // Estos dos contenedores existen siempre: sólo miden, para `loDemasEnArticulos`. El `Spacer` no entra en ellos, porque necesita que el
+                    // Este contenedor existe siempre: sólo mide, para `loDemasEnArticulos`. El `Spacer` no entra en él, porque necesita que el
                     // alto se reparta entre él y lo demás; un contenedor con peso recortaría lo que no cabe.
-                    Column(Modifier.fillMaxWidth().onSizeChanged { altoDelError = it.height }) { errorDelEnvio() }
                     importeYSuPropina()
                     // En «Por importe» lo que sobra va aquí: lo que se escribe arriba y lo demás abajo, como en Artículos. Existe siempre, para que
                     // nada de abajo cambie de lugar al cruzar el corte. La tarjeta de regalo sigue arriba, con el blanco abajo.

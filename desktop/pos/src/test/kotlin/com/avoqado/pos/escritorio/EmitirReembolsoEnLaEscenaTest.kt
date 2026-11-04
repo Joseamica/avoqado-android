@@ -277,12 +277,32 @@ class EmitirReembolsoEnLaEscenaTest {
             assertTrue(bordes("Un saldo a favor sigue sin confirmar.").bottom <= bordes("Reembolsar").top, "el error va arriba de los botones")
         }
 
-    @Test fun `en una columna el error del envio sigue arriba del pie, como hoy`() =
+    /** Arriba, con todo deslizado o con el teclado abierto, nadie lo veía: el botón sólo brincaba y la cajera volvía a tocar (SAMSUNG, 3-nov). */
+    @Test fun `en una columna el error del envio sale pegado a los botones`() =
         pantalla(601, 1007, antesDeReembolsar = { "Un saldo a favor sigue sin confirmar." }) {
             escogerArticuloYMotivo()
             onNodeWithText("Reembolsar").performClick()
             waitForIdle()
-            assertTrue(bordes("Un saldo a favor sigue sin confirmar.").bottom <= bordes("Incluir propina en el reembolso").top, "el error va arriba del pie")
+            aLaVista("Un saldo a favor sigue sin confirmar.")
+            assertTrue(bordes("Incluir propina en el reembolso").bottom <= bordes("Un saldo a favor sigue sin confirmar.").top, "el error va abajo del importe")
+            assertTrue(bordes("Un saldo a favor sigue sin confirmar.").bottom <= bordes("Reembolsar").top, "el error va arriba de los botones")
+        }
+
+    @Test fun `con el teclado abierto en un celular, deslizado hasta Reembolsar, el error del envio queda a la vista`() =
+        pantalla(360, 490, ventaConTodo, antesDeReembolsar = { "Un saldo a favor sigue sin confirmar." }) {
+            onNodeWithText("Reembolsos por importe").performClick()
+            waitForIdle()
+            onNode(hasSetTextAction()).performTextInput("2")
+            waitForIdle()
+            deslizarHastaVer("Selecciona un motivo", 180.dp, 490.dp)
+            onNodeWithText("Selecciona un motivo").performClick()
+            waitForIdle()
+            onNodeWithText("Productos devueltos").performClick()
+            waitForIdle()
+            deslizarHastaVer("Reembolsar", 180.dp, 490.dp)
+            onNodeWithText("Reembolsar").performClick()
+            waitForIdle()
+            aLaVista("Un saldo a favor sigue sin confirmar.")
         }
 
     @Test fun `el aviso de la terminal va a la izquierda y lo que no devuelve junto al boton`() = pantalla(1007, 601, ventaEnTerminal) {
