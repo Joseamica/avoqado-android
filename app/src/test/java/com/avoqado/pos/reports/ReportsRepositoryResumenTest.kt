@@ -3,6 +3,7 @@ package com.avoqado.pos.reports
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.reports.data.ReportsRepository
+import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.SalesSummaryReport
 import io.mockk.every
 import io.mockk.mockk
@@ -127,11 +128,11 @@ class ReportsRepositoryResumenTest {
     @Test
     fun `perder red conserva el reporte bueno sin inventar ceros`() = runBlocking {
         body = """{"success":true,"data":{"summary":{"grossSales":75.25},"byPaymentMethod":[{"method":"CASH","amount":75.25}],"byPeriod":[],"items":[]}}"""
-        assertTrue(repository.loadReport("2026-10-01", "2026-10-27", "days").isSuccess)
-        val bueno = repository.reportData.value
+        assertTrue(repository.loadReport(ConsultaDeInforme("venue-prueba", "2026-10-01", "2026-10-27", "days"), "2026-10-27").isSuccess)
+        val bueno = repository.informe.value?.datos
         assertEquals(75.25, bueno!!.summary.grossSales, 0.001)
         sinRed = true
-        assertTrue(repository.loadReport("2026-10-01", "2026-10-27", "days").isFailure)
-        assertSame(bueno, repository.reportData.value)
+        assertTrue(repository.loadReport(ConsultaDeInforme("venue-prueba", "2026-10-01", "2026-10-27", "days"), "2026-10-27").isFailure)
+        assertSame(bueno, repository.informe.value?.datos)
     }
 }

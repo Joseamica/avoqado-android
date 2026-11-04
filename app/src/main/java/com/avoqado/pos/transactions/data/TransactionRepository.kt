@@ -5,6 +5,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
 import com.avoqado.pos.transactions.data.model.PaginationMeta
 import com.avoqado.pos.transactions.data.model.ReceiptLinkResponse
 import com.avoqado.pos.transactions.data.model.ResultadoLigaRecibo
@@ -22,6 +23,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.transactions.data.model.PendingCustomerAssignment
 import okhttp3.Authenticator
@@ -66,10 +68,33 @@ class TransactionRepository @Inject constructor(
     val transactions: StateFlow<List<Transaction>> = _transactions.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
+
+    /**
+     * Va en camino la primera página. Con la lista de la consulta vigente a la vista la recarga es silenciosa (spec
+     * refresco §6): lo decide la pantalla, que sólo enseña el esqueleto si no tiene lista de esa consulta (D18).
+     */
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private val _falloDeCarga = MutableStateFlow<FalloDeLectura?>(null)
+
+    /**
+     * D18 (3-nov): por qué falló la ÚLTIMA carga de la primera página —sin red, o el servidor contestó mal— y `null` si
+     * salió bien. La lista NO se borra al fallar. Con la lista vacía, esto es lo que la pantalla dice en vez de «Sin
+     * transacciones», que sería mentira: no se sabe si hay ventas.
+     */
+    val falloDeCarga: StateFlow<FalloDeLectura?> = _falloDeCarga.asStateFlow()
+
+    private val _consultaDeLaLista = MutableStateFlow<ConsultaDeVentas?>(null)
+
+    /** D18 (Codex r1 #1 y #3): de qué consulta es la lista. La pantalla sólo la enseña bajo la consulta vigente. */
+    val consultaDeLaLista: StateFlow<ConsultaDeVentas?> = _consultaDeLaLista.asStateFlow()
+
+    /** La consulta que pediría [fetchTransactions] con [search] en la sesión de este momento. */
+    fun consultaPara(search: String?): ConsultaDeVentas =
+        ConsultaDeVentas.de(secureStorage.venueId, secureStorage.userId, search)
 
     private var currentPage = 1
     private var hasMore = true
@@ -84,12 +109,14 @@ class TransactionRepository @Inject constructor(
         val token = secureStorage.accessToken
             ?: return Result.failure(IllegalStateException("Sin sesión"))
 
+        val consulta = consultaPara(search)
         if (page == 1) {
-            // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec §6).
-            _isLoading.value = _transactions.value.isEmpty()
+            _isLoading.value = true
             currentPage = 1
             hasMore = true
         } else {
+            // La página siguiente de OTRA consulta no se pega a esta lista (D18).
+            if (_consultaDeLaLista.value != consulta) return Result.success(Unit)
             _isLoadingMore.value = true
         }
 
@@ -107,23 +134,38 @@ class TransactionRepository @Inject constructor(
                 .build()
 
             val (responseCode, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+                client.newCall(request).execute().use { response ->
+                    response.code to (response.body?.string() ?: "")
+                }
             }
 
             if (responseCode in 200..299 && body.isNotEmpty()) {
                 val result = json.decodeFromString<TransactionsResponse>(body)
-                _transactions.value = if (page == 1) result.data else _transactions.value + result.data
+                if (page == 1) {
+                    _transactions.value = result.data
+                    _consultaDeLaLista.value = consulta
+                    _falloDeCarga.value = null
+                } else {
+                    if (_consultaDeLaLista.value != consulta) return Result.success(Unit)
+                    _transactions.value = _transactions.value + result.data
+                }
                 currentPage = page
                 hasMore = result.meta?.let { page < it.pageCount } ?: false
                 Log.d("📦", "✅ Loaded ${result.data.size} transactions (page $page)")
                 Result.success(Unit)
             } else {
                 Log.e("📦", "❌ Transactions fetch failed: $responseCode")
+                // El servidor sí contestó, pero mal (D18).
+                if (page == 1) _falloDeCarga.value = FalloDeLectura.SERVIDOR
                 Result.failure(Exception("Transactions HTTP $responseCode"))
             }
+        } catch (e: CancellationException) {
+            // Salir de la pantalla no es un fallo de lectura: no se anota (sería «el servidor falló» sin serlo).
+            throw e
         } catch (e: Exception) {
             Log.e("📦", "❌ Transactions fetch error: ${e.message}")
+            // Nadie contestó (sin red, DNS, tiempo agotado) o el cuerpo no se pudo leer (D18).
+            if (page == 1) _falloDeCarga.value = FalloDeLectura.de(e)
             Result.failure(e)
         } finally {
             _isLoading.value = false
@@ -345,6 +387,8 @@ class TransactionRepository @Inject constructor(
 
     fun clearCache() {
         _transactions.value = emptyList()
+        _consultaDeLaLista.value = null
+        _falloDeCarga.value = null
         currentPage = 1
         hasMore = true
     }

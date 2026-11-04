@@ -3,13 +3,18 @@ package com.avoqado.pos.reports.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.FalloDeLectura
+import com.avoqado.pos.core.data.network.LecturaFallida
 import com.avoqado.pos.reports.data.model.CategorySales
+import com.avoqado.pos.reports.data.model.ConsultaDeInforme
+import com.avoqado.pos.reports.data.model.InformeConsultado
 import com.avoqado.pos.reports.data.model.HourlySales
 import com.avoqado.pos.reports.data.model.PaymentMethodBreakdown
 import com.avoqado.pos.reports.data.model.PeriodSales
 import com.avoqado.pos.reports.data.model.ReportData
 import com.avoqado.pos.reports.data.model.SalesSummaryReport
 import com.avoqado.pos.reports.data.model.TopProduct
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -43,27 +48,73 @@ class ReportsRepository @Inject constructor(
 
     // MARK: - State Flows
 
-    private val _reportData = MutableStateFlow<ReportData?>(null)
-    val reportData: StateFlow<ReportData?> = _reportData.asStateFlow()
+    private val _informe = MutableStateFlow<InformeConsultado?>(null)
+
+    /**
+     * El último informe bueno y la consulta que lo trajo (D18). Un fallo NO lo borra: la pantalla sólo lo enseña bajo la
+     * misma consulta (el de «Hoy» nunca bajo «1M»).
+     */
+    val informe: StateFlow<InformeConsultado?> = _informe.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
+
+    /**
+     * Hay una consulta en camino. Con el informe del periodo a la vista la recarga es silenciosa (spec refresco §6): lo
+     * decide la pantalla, que sólo enseña el esqueleto si no tiene el informe del periodo elegido (D18).
+     */
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+    private val _ultimoFallo = MutableStateFlow<FalloDeLectura?>(null)
+
+    /** D18: por qué falló la última carga —sin red, o el servidor contestó mal— y `null` si salió bien. */
+    val ultimoFallo: StateFlow<FalloDeLectura?> = _ultimoFallo.asStateFlow()
 
     // MARK: - Helpers
 
-    private fun baseUrl(): String? {
-        val venueId = secureStorage.venueId ?: return null
-        return "${ApiConstants.BASE_URL}/mobile/venues/$venueId"
+    /** La sucursal activa: la parte de la consulta que va en la ruta. */
+    fun sucursalActiva(): String? = secureStorage.venueId
+
+    private fun baseUrl(): String? = secureStorage.venueId?.let(::rutaDeLaSucursal)
+
+    private fun rutaDeLaSucursal(sucursal: String): String = "${ApiConstants.BASE_URL}/mobile/venues/$sucursal"
+
+    /**
+     * Un GET: el cuerpo de un 2xx, o por qué no se pudo ([LecturaFallida]). Un HTTP que no es 2xx o un cuerpo vacío es del
+     * servidor; que nadie conteste, sin red. Nunca lanza, salvo la cancelación.
+     */
+    private suspend fun leer(url: String): Result<String> = try {
+        val (code, body) = withContext(Dispatchers.IO) {
+            client.newCall(Request.Builder().url(url).get().build()).execute().use { response ->
+                response.code to (response.body?.string() ?: "")
+            }
+        }
+        if (code in 200..299 && body.isNotEmpty()) {
+            Result.success(body)
+        } else {
+            Log.e(TAG, "❌ HTTP $code (cuerpo de ${body.length} caracteres)")
+            Result.failure(LecturaFallida(FalloDeLectura.SERVIDOR))
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ sin respuesta: ${e.message}")
+        Result.failure(LecturaFallida(FalloDeLectura.de(e), e))
     }
 
-    private suspend fun executeRequest(request: Request): String =
-        withContext(Dispatchers.IO) {
-            val response = client.newCall(request).execute()
-            response.body?.string() ?: ""
-        }
+    /** Lee un cuerpo ya recibido; si no tiene la forma esperada, el fallo es del servidor. */
+    private inline fun <T> interpretar(cuerpo: Result<String>, que: String, leerCuerpo: (String) -> T?): Result<T> =
+        cuerpo.fold(
+            onSuccess = { body ->
+                val valor = try {
+                    leerCuerpo(body)
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ $que ilegible: ${e.message}")
+                    null
+                }
+                if (valor != null) Result.success(valor) else Result.failure(LecturaFallida(FalloDeLectura.SERVIDOR))
+            },
+            onFailure = { Result.failure(it) },
+        )
 
     // MARK: - Sales Summary
 
@@ -73,23 +124,21 @@ class ReportsRepository @Inject constructor(
     ): Triple<SalesSummaryReport?, List<PaymentMethodBreakdown>, List<HourlySales>>? {
         // null = FALLO (red/parse); un Triple con summary null es "sin ventas", que es válido.
         val url = baseUrl() ?: return null
-        return try {
-            val request = Request.Builder()
-                .url("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&groupBy=paymentMethod&reportType=hourlySum")
-                .get()
-                .build()
+        return resumen(url, startDate, endDate).getOrNull()
+    }
 
-            val body = executeRequest(request)
-            if (body.isEmpty()) return null
-
-            val (summary, paymentMethods) = leerResumenDeVentas(body) ?: return null
+    private suspend fun resumen(
+        url: String,
+        startDate: String,
+        endDate: String,
+    ): Result<Triple<SalesSummaryReport?, List<PaymentMethodBreakdown>, List<HourlySales>>> = interpretar(
+        leer("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&groupBy=paymentMethod&reportType=hourlySum"),
+        "resumen",
+    ) { body ->
+        leerResumenDeVentas(body)?.let { (summary, paymentMethods) ->
             val ventasPorHora = leerVentasPorHora(body)
-
             Log.d(TAG, "✅ fetchSalesSummary: summary=$summary, methods=${paymentMethods.size}, horas=${ventasPorHora.size}")
             Triple(summary, paymentMethods, ventasPorHora)
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ fetchSalesSummary exception: ${e.message}", e)
-            null
         }
     }
 
@@ -102,44 +151,40 @@ class ReportsRepository @Inject constructor(
     ): List<PeriodSales>? {
         // null = FALLO; emptyList() = respuesta válida sin filas.
         val url = baseUrl() ?: return null
-        return try {
-            val request = Request.Builder()
-                .url("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&reportType=$reportType")
-                .get()
-                .build()
+        return ventasPorPeriodo(url, startDate, endDate, reportType).getOrNull()
+    }
 
-            val body = executeRequest(request)
-            if (body.isEmpty()) return null
-
-            val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return null
-
-            val result = data["byPeriod"]?.jsonArray?.mapNotNull { element ->
-                try {
-                    val obj = element.jsonObject
-                    val period = obj["period"]?.jsonPrimitive?.contentOrNull ?: ""
-                    val periodLabel = obj["periodLabel"]?.jsonPrimitive?.contentOrNull ?: ""
-                    val metrics = obj["metrics"]?.jsonObject
-                    val grossSales = metrics?.get("grossSales")?.jsonPrimitive?.doubleOrNull ?: 0.0
-                    val transactionCount = metrics?.get("transactionCount")?.jsonPrimitive?.intOrNull ?: 0
-                    PeriodSales(
-                        id = period,
-                        period = period,
-                        periodLabel = periodLabel,
-                        grossSales = grossSales,
-                        transactionCount = transactionCount,
-                    )
-                } catch (_: Exception) {
-                    null
-                }
-            } ?: emptyList()
-
-            Log.d(TAG, "✅ fetchPeriodSales: ${result.size} periods")
-            result
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ fetchPeriodSales exception: ${e.message}", e)
-            null
-        }
+    private suspend fun ventasPorPeriodo(
+        url: String,
+        startDate: String,
+        endDate: String,
+        reportType: String,
+    ): Result<List<PeriodSales>> = interpretar(
+        leer("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&reportType=$reportType"),
+        "ventas por periodo",
+    ) { body ->
+        val data = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return@interpretar null
+        val result = data["byPeriod"]?.jsonArray?.mapNotNull { element ->
+            try {
+                val obj = element.jsonObject
+                val period = obj["period"]?.jsonPrimitive?.contentOrNull ?: ""
+                val periodLabel = obj["periodLabel"]?.jsonPrimitive?.contentOrNull ?: ""
+                val metrics = obj["metrics"]?.jsonObject
+                val grossSales = metrics?.get("grossSales")?.jsonPrimitive?.doubleOrNull ?: 0.0
+                val transactionCount = metrics?.get("transactionCount")?.jsonPrimitive?.intOrNull ?: 0
+                PeriodSales(
+                    id = period,
+                    period = period,
+                    periodLabel = periodLabel,
+                    grossSales = grossSales,
+                    transactionCount = transactionCount,
+                )
+            } catch (_: Exception) {
+                null
+            }
+        } ?: emptyList()
+        Log.d(TAG, "✅ fetchPeriodSales: ${result.size} periods")
+        result
     }
 
     // MARK: - Top Products
@@ -150,18 +195,12 @@ class ReportsRepository @Inject constructor(
     ): List<TopProduct>? {
         // null = FALLO; emptyList() = respuesta válida sin filas.
         val url = baseUrl() ?: return null
-        return try {
-            val request = Request.Builder()
-                .url("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate")
-                .get()
-                .build()
+        return productosMasVendidos(url, startDate, endDate).getOrNull()
+    }
 
-            val body = executeRequest(request)
-            if (body.isEmpty()) return null
-
-            val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return null
-
+    private suspend fun productosMasVendidos(url: String, startDate: String, endDate: String): Result<List<TopProduct>> =
+        interpretar(leer("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate"), "productos") { body ->
+            val data = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return@interpretar null
             val result = data["items"]?.jsonArray?.mapNotNull { element ->
                 try {
                     json.decodeFromString<TopProduct>(element.toString())
@@ -172,14 +211,9 @@ class ReportsRepository @Inject constructor(
                 ?.sortedByDescending { it.unitsSold }
                 ?.take(10)
                 ?: emptyList()
-
             Log.d(TAG, "✅ fetchTopProducts: ${result.size} products")
             result
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ fetchTopProducts exception: ${e.message}", e)
-            null
         }
-    }
 
     // MARK: - Categories
 
@@ -189,18 +223,15 @@ class ReportsRepository @Inject constructor(
     ): List<CategorySales>? {
         // null = FALLO; emptyList() = respuesta válida sin filas.
         val url = baseUrl() ?: return null
-        return try {
-            val request = Request.Builder()
-                .url("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate&groupBy=category")
-                .get()
-                .build()
+        return categorias(url, startDate, endDate).getOrNull()
+    }
 
-            val body = executeRequest(request)
-            if (body.isEmpty()) return null
-
-            val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return null
-
+    private suspend fun categorias(url: String, startDate: String, endDate: String): Result<List<CategorySales>> =
+        interpretar(
+            leer("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate&groupBy=category"),
+            "categorías",
+        ) { body ->
+            val data = json.parseToJsonElement(body).jsonObject["data"]?.jsonObject ?: return@interpretar null
             val result = data["items"]?.jsonArray?.mapNotNull { element ->
                 try {
                     json.decodeFromString<CategorySales>(element.toString())
@@ -210,71 +241,73 @@ class ReportsRepository @Inject constructor(
             }
                 ?.sortedByDescending { it.grossSales }
                 ?: emptyList()
-
             Log.d(TAG, "✅ fetchCategories: ${result.size} categories")
             result
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ fetchCategories exception: ${e.message}", e)
-            null
         }
-    }
 
     // MARK: - Load Full Report (concurrent)
 
-    suspend fun loadReport(
-        startDate: String,
-        endDate: String,
-        reportType: String,
-    ): Result<Unit> = coroutineScope {
-        // Refresh de fondo silencioso: skeleton sólo sin datos (spec refresco §6).
-        _isLoading.value = _reportData.value == null
-        _errorMessage.value = null
+    /**
+     * Carga el informe de [consulta]. [hasta] es la fecha que viaja como fin: la de la consulta o, en un periodo fijo,
+     * «ahora».
+     */
+    suspend fun loadReport(consulta: ConsultaDeInforme, hasta: String): Result<Unit> {
+        if (consulta.sucursal.isEmpty()) return Result.failure(IllegalStateException("Sin sucursal activa"))
+        val url = rutaDeLaSucursal(consulta.sucursal)
+        val inicio = consulta.inicio
+        _isLoading.value = true
+        return try {
+            coroutineScope {
+                val resumenD = async { resumen(url, inicio, hasta) }
+                val periodoD = async { ventasPorPeriodo(url, inicio, hasta, consulta.tipo) }
+                val productosD = async { productosMasVendidos(url, inicio, hasta) }
+                val categoriasD = async { categorias(url, inicio, hasta) }
 
-        try {
-            val summaryDeferred = async { fetchSalesSummary(startDate, endDate) }
-            val periodDeferred = async { fetchPeriodSales(startDate, endDate, reportType) }
-            val productsDeferred = async { fetchTopProducts(startDate, endDate) }
-            val categoriesDeferred = async { fetchCategories(startDate, endDate) }
+                val resumenResult = resumenD.await()
+                val periodSalesResult = periodoD.await()
+                val topProductsResult = productosD.await()
+                val categoriesResult = categoriasD.await()
 
-            val resumen = summaryDeferred.await()
-            val periodSalesResult = periodDeferred.await()
-            val topProductsResult = productsDeferred.await()
-            val categoriesResult = categoriesDeferred.await()
+                // 🔴 Regla §4.1 (era el caso rojo de la auditoría): un fallo PARCIAL
+                // o total jamás publica un reporte de CEROS encima del bueno. Un
+                // reporte de dinero en cero que no es cero es peor que uno viejo.
+                val fallos = listOf(resumenResult, periodSalesResult, topProductsResult, categoriesResult)
+                    .mapNotNull { it.exceptionOrNull() }
+                if (fallos.isNotEmpty()) {
+                    // D18: si alguna parte no tuvo respuesta, es falta de red; si todas contestaron, el servidor contestó mal.
+                    val fallo = if (fallos.any { FalloDeLectura.de(it) == FalloDeLectura.SIN_RED }) {
+                        FalloDeLectura.SIN_RED
+                    } else {
+                        FalloDeLectura.SERVIDOR
+                    }
+                    Log.e(TAG, "❌ loadReport: sub-reporte fallido ($fallo); datos previos intactos")
+                    _ultimoFallo.value = fallo
+                    return@coroutineScope Result.failure(LecturaFallida(fallo, fallos.first()))
+                }
+                // «Ventas por hora» son las 24 horas del día que trae el resumen, como en iOS (D6, 2-nov). Antes salían de la serie
+                // del periodo de HOY: sólo las horas con venta y como instantes ISO, así que la hora nunca se podía rotular.
+                val (summary, paymentMethods, hourlySales) = resumenResult.getOrThrow()
 
-            // 🔴 Regla §4.1 (era el caso rojo de la auditoría): un fallo PARCIAL
-            // o total jamás publica un reporte de CEROS encima del bueno. Un
-            // reporte de dinero en cero que no es cero es peor que uno viejo.
-            if (resumen == null || periodSalesResult == null ||
-                topProductsResult == null || categoriesResult == null
-            ) {
-                Log.e(TAG, "❌ loadReport: sub-reporte fallido; datos previos intactos")
-                if (_reportData.value == null) _errorMessage.value = "Error al cargar el reporte"
-                _isLoading.value = false
-                return@coroutineScope Result.failure(Exception("Reporte incompleto"))
+                val report = ReportData(
+                    summary = summary ?: SalesSummaryReport(),
+                    paymentMethods = paymentMethods,
+                    hourlySales = hourlySales,
+                    periodSales = periodSalesResult.getOrThrow(),
+                    topProducts = topProductsResult.getOrThrow(),
+                    categories = categoriesResult.getOrThrow(),
+                )
+
+                _informe.value = InformeConsultado(consulta, report)
+                _ultimoFallo.value = null
+                Log.d(TAG, "✅ loadReport complete")
+                Result.success(Unit)
             }
-            // «Ventas por hora» son las 24 horas del día que trae el resumen, como en iOS (D6, 2-nov). Antes salían de la serie
-            // del periodo de HOY: sólo las horas con venta y como instantes ISO, así que la hora nunca se podía rotular.
-            val (summary, paymentMethods, hourlySales) = resumen
-            val periodSales = periodSalesResult
-            val topProducts = topProductsResult
-            val categories = categoriesResult
-
-            val report = ReportData(
-                summary = summary ?: SalesSummaryReport(),
-                paymentMethods = paymentMethods,
-                hourlySales = hourlySales,
-                periodSales = periodSales,
-                topProducts = topProducts,
-                categories = categories,
-            )
-
-            _reportData.value = report
-            Log.d(TAG, "✅ loadReport complete")
-            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "❌ loadReport exception: ${e.message}", e)
-            // Datos previos INTACTOS; error visible sólo cuando no hay nada (spec §6).
-            if (_reportData.value == null) _errorMessage.value = "Error al cargar el reporte"
+            // Datos previos INTACTOS (spec §6).
+            _ultimoFallo.value = FalloDeLectura.de(e)
             Result.failure(e)
         } finally {
             _isLoading.value = false

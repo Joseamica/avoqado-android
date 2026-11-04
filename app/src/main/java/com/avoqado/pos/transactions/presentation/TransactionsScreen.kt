@@ -74,6 +74,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
+import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
@@ -270,6 +271,9 @@ private fun TransactionListPanel(
     val filters by viewModel.filters.collectAsState()
     val selectedTransactionId by viewModel.selectedTransactionId.collectAsState()
     val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
+    val falloDeCarga by viewModel.falloDeCarga.collectAsState()
+    val consultaDeLaLista by viewModel.consultaDeLaLista.collectAsState()
+    val consultaVigente by viewModel.consultaVigente.collectAsState()
 
     // Disparadores del spec §4.8: entrada + regreso de background/re-selección de tab.
     // La doble llamada la absorbe el single-flight del gate, no el TTL.
@@ -279,8 +283,11 @@ private fun TransactionListPanel(
         onPauseOrDispose { }
     }
 
-    val filteredTransactions = remember(transactions, filters) {
-        if (filters.hasActiveFilters) filters.apply(transactions) else transactions
+    // D18 (Codex r1 #1 y #3): la lista guardada sólo cuenta si es de la consulta vigente (sucursal, quién y búsqueda).
+    val deLaConsulta = consultaDeLaLista == consultaVigente
+    val listaDeLaConsulta = if (deLaConsulta) transactions else emptyList()
+    val filteredTransactions = remember(listaDeLaConsulta, filters) {
+        if (filters.hasActiveFilters) filters.apply(listaDeLaConsulta) else listaDeLaConsulta
     }
     val grouped = remember(filteredTransactions) {
         filteredTransactions.groupBy { it.dateGroup }.toList()
@@ -418,17 +425,27 @@ private fun TransactionListPanel(
             onRefresh = viewModel::manualRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            when {
-                isLoading && transactions.isEmpty() -> {
+            when (val estado = estadoDeLaListaDeVentas(deLaConsulta, listaDeLaConsulta.size, filteredTransactions.size, isLoading, falloDeCarga)) {
+                EstadoDeLaListaDeVentas.Cargando -> {
                     AvoqadoLoadingState(message = "Cargando transacciones...")
                 }
-                filteredTransactions.isEmpty() -> {
-                    EmptyState(
+                is EstadoDeLaListaDeVentas.NoSeCargo -> {
+                    ListaDeVentasVacia(
+                        fallo = estado.fallo,
                         hasFilters = filters.hasActiveFilters,
                         searchText = searchText,
+                        onReintentar = viewModel::manualRefresh,
                     )
                 }
-                else -> {
+                EstadoDeLaListaDeVentas.Vacia -> {
+                    ListaDeVentasVacia(
+                        fallo = null,
+                        hasFilters = filters.hasActiveFilters,
+                        searchText = searchText,
+                        onReintentar = viewModel::manualRefresh,
+                    )
+                }
+                EstadoDeLaListaDeVentas.Lista -> {
                     val listState = rememberLazyListState()
 
                     LazyColumn(
@@ -580,10 +597,16 @@ private fun TransactionRow(
 
 // MARK: - Empty State
 
+/**
+ * La lista de Ventas sin filas (D18). [fallo] = por qué no se pudo leer (`null`: el servidor contestó y no hay ventas, o
+ * los filtros las esconden). [onReintentar] = la misma recarga del gesto de jalar.
+ */
 @Composable
-private fun EmptyState(
+internal fun ListaDeVentasVacia(
+    fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
     hasFilters: Boolean,
     searchText: String,
+    onReintentar: () -> Unit,
 ) {
     // Desplazable a propósito (spec §4.7 / caso nº1): PullToRefreshBox sólo dispara
     // el gesto sobre un hijo con scroll, y este es el estado que se ve al no ver la
@@ -595,7 +618,15 @@ private fun EmptyState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Column(
+        if (fallo != null) {
+            // No se pudo leer: no se sabe si hay ventas. Sin red es un estado normal (nunca rojo); si el servidor
+            // contestó mal, se dice distinto. Va antes que los filtros y la búsqueda: no se pudo buscar.
+            AvisoDeLecturaFallida(
+                fallo = fallo,
+                textos = textosDeVentasSinCargar(fallo),
+                onReintentar = onReintentar,
+            )
+        } else Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(AvoqadoTheme.spacing.xl),
         ) {
