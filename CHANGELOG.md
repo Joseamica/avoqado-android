@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **POS de Windows: F12 = «Agregar» en la hoja de venta por peso (founder, 4-nov, cremería).** Con la hoja abierta, F12 hace lo mismo que el botón «Agregar • $X» y la tecla se ve en chiquito junto a él; sin un peso válido no hace nada. Mientras la hoja está abierta F12 nunca cobra el carrito; cerrada, F12 sigue siendo Cobrar. Dos F12 seguidos agregan una sola línea (también dos clics). Con un aviso encima de la hoja, F12 espera. Sólo Windows; Android sin cambios. iOS: no aplica (atajo de teclado de Windows).
 - **Nota por artículo en Mesas («sin aceite»).** En la ronda que todavía no se manda, tocar el nombre de un artículo abre «Nota del artículo»; la nota se ve en naranja bajo el artículo, viaja a cocina con la ronda (`ADD_ITEMS.items[].notes`) y se guarda en el aparato antes de tocar la red, así que sobrevive a cerrar la app y a no tener internet. Un mismo producto con nota y sin nota quedan en líneas separadas. No aplica a líneas de combo/promoción ni mientras la ronda se está enviando. iOS: pendiente (fase iOS de Mesas).
 
 ### Fixed
