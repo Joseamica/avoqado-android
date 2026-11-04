@@ -1,8 +1,6 @@
 package com.avoqado.pos.transactions.presentation
 
 import com.avoqado.pos.core.data.network.FalloDeLectura
-import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
-import com.avoqado.pos.core.domain.refresh.RegistroDeCargas
 import com.avoqado.pos.designsystem.components.TextosDeLecturaFallida
 
 /** Qué enseña la lista de Ventas (D18, 3-nov-2026). */
@@ -43,14 +41,6 @@ internal fun estadoDeLaListaDeVentas(
     else -> EstadoDeLaListaDeVentas.Cargando
 }
 
-/** Lo que la regla de recarga necesita saber de la lista (D18 r4). La lista vacía de un servidor que sí contestó es «con datos». */
-internal fun EstadoDeLaListaDeVentas.paraLaRegla(cargando: Boolean, cargas: RegistroDeCargas): EstadoParaRecargar = EstadoParaRecargar(
-    noSeCargo = this is EstadoDeLaListaDeVentas.NoSeCargo,
-    conDatos = this == EstadoDeLaListaDeVentas.Lista || this == EstadoDeLaListaDeVentas.Vacia,
-    cargando = cargando,
-    cargas = cargas,
-)
-
 /** Título y texto de la lista cuando [EstadoDeLaListaDeVentas.NoSeCargo]. */
 internal fun textosDeVentasSinCargar(fallo: FalloDeLectura): TextosDeLecturaFallida = when (fallo) {
     FalloDeLectura.SIN_RED -> TextosDeLecturaFallida(TextosDeVentas.SIN_RED_TITULO, TextosDeVentas.SIN_RED_TEXTO)
@@ -60,7 +50,7 @@ internal fun textosDeVentasSinCargar(fallo: FalloDeLectura): TextosDeLecturaFall
 internal object TextosDeVentas {
     const val SIN_RED_TITULO = "Sin conexión"
     const val SIN_RED_TEXTO = "Las ventas se consultan en el servidor. Las que cobres sin red se guardan en este " +
-        "aparato y aparecen aquí al volver la conexión."
+        "aparato. Cuando vuelva la conexión, toca «Reintentar»."
     const val SERVIDOR_TITULO = "No se pudieron cargar las ventas"
     const val SERVIDOR_TEXTO = "Vuelve a intentarlo en un momento."
 }

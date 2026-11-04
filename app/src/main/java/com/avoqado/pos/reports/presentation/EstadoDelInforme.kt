@@ -1,8 +1,6 @@
 package com.avoqado.pos.reports.presentation
 
 import com.avoqado.pos.core.data.network.FalloDeLectura
-import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
-import com.avoqado.pos.core.domain.refresh.RegistroDeCargas
 import com.avoqado.pos.designsystem.components.TextosDeLecturaFallida
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
 import com.avoqado.pos.reports.data.model.InformeConsultado
@@ -53,14 +51,6 @@ internal fun estadoDelInforme(
     else -> EstadoDelInforme.Cargando
 }
 
-/** Lo que la regla de recarga necesita saber de Informes (D18 r4). Eligiendo fechas no hay nada que recargar. */
-internal fun EstadoDelInforme.paraLaRegla(cargando: Boolean, cargas: RegistroDeCargas): EstadoParaRecargar = EstadoParaRecargar(
-    noSeCargo = this is EstadoDelInforme.NoSeCargo,
-    conDatos = this is EstadoDelInforme.Listo,
-    cargando = cargando,
-    cargas = cargas,
-)
-
 /** Título y texto de Informes cuando [EstadoDelInforme.NoSeCargo]. */
 internal fun textosDeInformeSinCargar(fallo: FalloDeLectura): TextosDeLecturaFallida = when (fallo) {
     FalloDeLectura.SIN_RED -> TextosDeLecturaFallida(TextosDeInformes.SIN_RED_TITULO, TextosDeInformes.SIN_RED_TEXTO)
@@ -69,7 +59,7 @@ internal fun textosDeInformeSinCargar(fallo: FalloDeLectura): TextosDeLecturaFal
 
 internal object TextosDeInformes {
     const val SIN_RED_TITULO = "Sin conexión"
-    const val SIN_RED_TEXTO = "Los informes se calculan en el servidor. Vuelve a intentarlo al recuperar la conexión."
+    const val SIN_RED_TEXTO = "Los informes se calculan en el servidor. Cuando vuelva la conexión, toca «Reintentar»."
     const val SERVIDOR_TITULO = "No se pudo cargar el informe"
     const val SERVIDOR_TEXTO = "Vuelve a intentarlo en un momento."
 }

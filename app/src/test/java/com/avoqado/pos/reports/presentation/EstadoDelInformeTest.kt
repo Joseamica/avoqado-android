@@ -108,7 +108,7 @@ class EstadoDelInformeTest {
         assertEquals(
             TextosDeLecturaFallida(
                 "Sin conexión",
-                "Los informes se calculan en el servidor. Vuelve a intentarlo al recuperar la conexión.",
+                "Los informes se calculan en el servidor. Cuando vuelva la conexión, toca «Reintentar».",
             ),
             textosDeInformeSinCargar(FalloDeLectura.SIN_RED),
         )

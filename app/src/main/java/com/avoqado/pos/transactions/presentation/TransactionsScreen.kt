@@ -73,7 +73,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import com.avoqado.pos.designsystem.components.SearchPillField
@@ -283,9 +282,6 @@ private fun TransactionListPanel(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
-    // D18: sólo mientras la lista se ve (RESUMED), al volver la red se recarga sola si se quedó en «Sin conexión».
-    val owner = LocalLifecycleOwner.current
-    LaunchedEffect(viewModel, owner) { viewModel.vigilarLaRedMientrasSeVe(owner) }
 
     // D18 (Codex r1 #1 y #3): la lista guardada sólo cuenta si es de la consulta vigente (sucursal, quién y búsqueda).
     val deLaConsulta = consultaDeLaLista == consultaVigente

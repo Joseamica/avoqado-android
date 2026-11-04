@@ -52,7 +52,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
 import androidx.compose.ui.Alignment
@@ -120,9 +119,6 @@ fun ReportsScreen(
         viewModel.autoRefresh()
         onPauseOrDispose { }
     }
-    // D18: sólo mientras Informes se ve (RESUMED), al volver la red se recarga solo si se quedó en «Sin conexión».
-    val owner = LocalLifecycleOwner.current
-    LaunchedEffect(viewModel, owner) { viewModel.vigilarLaRedMientrasSeVe(owner) }
 
     val informe by viewModel.informe.collectAsState()
     val consultaElegida by viewModel.consultaElegida.collectAsState()

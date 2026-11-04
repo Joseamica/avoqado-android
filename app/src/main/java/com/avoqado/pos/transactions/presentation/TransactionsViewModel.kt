@@ -4,13 +4,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import com.avoqado.pos.core.domain.refresh.CargasDeLaPantalla
-import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
-import com.avoqado.pos.core.domain.refresh.PantallaQueSeRecarga
-import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
 import com.avoqado.pos.core.domain.refresh.RefreshOutcome
 import com.avoqado.pos.transactions.data.model.ConsultaDeVentas
 import com.avoqado.pos.core.util.ConnectivityMonitor
@@ -47,7 +40,6 @@ import com.avoqado.pos.transactions.data.model.TransactionActiveFilter
 import com.avoqado.pos.transactions.data.model.TransactionFilters
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
@@ -113,8 +105,6 @@ class TransactionsViewModel @Inject constructor(
     private val exchangePendingStore: ExchangePendingStore,
     /** Reembolso a saldo a favor sin confirmar (A3). `null` sólo en pruebas que no lo usan: no se reenvía nada. */
     private val refundPendingStore: RefundPendingStore? = null,
-    /** D18 r3: la regla única de recarga automática (T1, T2, T3). `null` sólo en pruebas que no la usan. */
-    private val reglaDeRecarga: ReglaDeRecarga? = null,
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -559,9 +549,6 @@ class TransactionsViewModel @Inject constructor(
 
     private val gate = refreshGateFactory.create(viewModelScope)
 
-    /** D18 r4: lo que la regla de recarga necesita de cada carga (con qué cola se pidió, cuántas fallaron), junto a los datos. */
-    private val cargas = CargasDeLaPantalla(reglaDeRecarga)
-
     private val _isManualRefreshing = MutableStateFlow(false)
     val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
 
@@ -624,7 +611,7 @@ class TransactionsViewModel @Inject constructor(
         val consulta = repository.consultaPara(busqueda)
         _consultaVigente.value = consulta
         ultimaPedida = consulta
-        return cargas.cargar { repository.fetchTransactions(page = 1, search = busqueda) }
+        return repository.fetchTransactions(page = 1, search = busqueda)
     }
 
     fun autoRefresh() {
@@ -642,32 +629,6 @@ class TransactionsViewModel @Inject constructor(
                 _isManualRefreshing.value = false
             }
         }
-    }
-
-    /** D18 r4: la lista, vista desde la regla de recarga ([ReglaDeRecarga]). */
-    private val pantallaParaLaRegla = object : PantallaQueSeRecarga {
-        override val estadoParaRecargar: Flow<EstadoParaRecargar> = combine(
-            combine(
-                repository.transactions, repository.consultaDeLaLista, _consultaVigente, repository.isLoading, repository.falloDeCarga,
-            ) { lista, deLaLista, vigente, cargando, fallo ->
-                estadoDeLaListaDeVentas(deLaLista == vigente, lista.size, lista.size, cargando, fallo) to cargando
-            },
-            cargas.registro,
-        ) { (estado, cargando), registro -> estado.paraLaRegla(cargando, registro) }
-
-        override suspend fun recargar(): RefreshOutcome {
-            gate.invalidate()
-            gate.resetCooldown()
-            return gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
-        }
-
-        override fun marcarConPendientes() = cargas.marcarConPendientes()
-    }
-
-    /** D18 r4: sólo mientras la lista se ve (RESUMED), la regla de recarga por nivel. */
-    internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
-        val regla = reglaDeRecarga ?: return
-        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { regla.mientrasSeVe(pantallaParaLaRegla) }
     }
 
     /** Mutación local (devolución, etc.) = identidad nueva: invalida el TTL y re-pide (spec §4.4).

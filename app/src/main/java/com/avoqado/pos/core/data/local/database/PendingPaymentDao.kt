@@ -318,13 +318,6 @@ interface PendingPaymentDao {
     @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'PENDING'")
     fun getPendingCount(): Flow<Int>
 
-    /**
-     * D18: los cobros de la sucursal que todavía no terminan de subir — en la cola o SUBIENDO (`getPendingCount` deja de
-     * contar uno en cuanto empieza a subir). Ventas e Informes esperan a que llegue a cero para recargar al volver la red.
-     */
-    @Query("SELECT COUNT(*) FROM pending_payments WHERE venueId = :venueId AND syncStatus IN ('PENDING', 'SYNCING')")
-    fun observarPorSubir(venueId: String): Flow<Int>
-
     @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus='FAILED'")
     fun observarRecuentoFallidosQ15(): Flow<Int>
     @Query(Q15_FAILED_ORDINARY_COUNT_SQL)

@@ -1,15 +1,11 @@
 package com.avoqado.pos.reports
 
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.LifecycleRegistry
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.data.network.LecturaFallida
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
-import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ConsultaDeInforme
@@ -26,24 +22,20 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestCoroutineScheduler
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import kotlin.time.Duration
 
 /**
- * D18 (3-nov): al pasar de «Hoy» a «1M» sin red se quedaban a la vista los números de «Hoy» bajo la pestaña «1M», y nada
- * recargaba al volver la red. Codex r1: «Personalizado» dejaba el informe anterior bajo las fechas nuevas (#5). Codex r2 y
- * r3 tumbaron la recarga por flancos (H1–H3, N1–N3, y N2 es de Informes): la regla de la ronda 4 es por NIVEL, con
- * reintentos de 5, 10, 20 y 30 s, sólo con la pantalla a la vista y sin la bandera del servidor.
+ * D18 (3-nov): al pasar de «Hoy» a «1M» sin red se quedaban a la vista los números de «Hoy» bajo la pestaña «1M». Codex r1:
+ * «Personalizado» dejaba el informe anterior bajo las fechas nuevas (#5). La recarga automática al volver la red se quitó
+ * en la ronda 5 (cuatro rondas de Codex con bloqueantes de la misma familia): al volver la conexión no recarga nada solo.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ReportsViewModelSinRedTest {
@@ -58,29 +50,24 @@ class ReportsViewModelSinRedTest {
     private val cargando = MutableStateFlow(false)
     private val pedidas = mutableListOf<ConsultaDeInforme>()
     private var sinRed = false
-    private var cobroSinRedYaSubio = false
     private var enCamino: CompletableDeferred<Unit>? = null
 
-    /** Lo que pasa a mitad de una carga (N2: una de sus consultas falla y otra contesta). */
-    private var alCargar: (() -> Unit)? = null
-
-    // La red del aparato, la bandera del servidor (la regla no la usa: aquí parpadea como en la vida real) y la cola.
+    // La red del aparato y la bandera del servidor.
     private val red = MutableStateFlow(true)
     private val servidor = MutableStateFlow(true)
-    private val porSubir = MutableStateFlow(0)
     private val monitor = mockk<ConnectivityMonitor>(relaxed = true).also {
         every { it.isConnected } returns red
         every { it.isServerReachable } returns servidor
     }
 
-    /** El informe de una consulta: las ventas brutas dicen de qué periodo es, y si ya trae el cobro hecho sin red. */
-    private fun datosDe(consulta: ConsultaDeInforme, conElCobro: Boolean) = ReportData(
+    /** El informe de una consulta: las ventas brutas dicen de qué periodo es. */
+    private fun datosDe(consulta: ConsultaDeInforme) = ReportData(
         summary = SalesSummaryReport(
             grossSales = when (consulta.tipo) {
                 "hours" -> 100.0
                 "days" -> if (consulta.fin == null) 3000.0 else 777.0 // 1M, o el rango personalizado
                 else -> 50000.0
-            } + if (conElCobro) 10.0 else 0.0,
+            },
         ),
         paymentMethods = emptyList(),
         hourlySales = emptyList(),
@@ -89,7 +76,7 @@ class ReportsViewModelSinRedTest {
         categories = emptyList(),
     )
 
-    private fun crear(): ReportsViewModel {
+    private fun crear(factory: RefreshGateFactory? = null): ReportsViewModel {
         val repository = mockk<ReportsRepository>(relaxed = true)
         every { repository.informe } returns informeGuardado
         every { repository.ultimoFallo } returns falloGuardado
@@ -98,16 +85,14 @@ class ReportsViewModelSinRedTest {
         coEvery { repository.loadReport(any(), any()) } coAnswers {
             val consulta = firstArg<ConsultaDeInforme>()
             pedidas += consulta
-            val conElCobro = cobroSinRedYaSubio // lo que el servidor ya tenía cuando salió la consulta
             cargando.value = true
             try {
                 enCamino?.await()
-                alCargar?.invoke()
                 if (sinRed) {
                     falloGuardado.value = FalloDeLectura.SIN_RED
                     Result.failure(LecturaFallida(FalloDeLectura.SIN_RED))
                 } else {
-                    informeGuardado.value = InformeConsultado(consulta, datosDe(consulta, conElCobro))
+                    informeGuardado.value = InformeConsultado(consulta, datosDe(consulta))
                     falloGuardado.value = null
                     Result.success(Unit)
                 }
@@ -115,11 +100,12 @@ class ReportsViewModelSinRedTest {
                 cargando.value = false
             }
         }
-        val factory = mockk<RefreshGateFactory>()
-        every { factory.create(any(), any()) } returns RefreshGate(clock = { ahora }, random = { 0.5 })
+        val gateFactory = factory ?: mockk<RefreshGateFactory>().also {
+            every { it.create(any(), any()) } returns RefreshGate(clock = { ahora }, random = { 0.5 })
+        }
         val planManager = mockk<PlanManager>(relaxed = true)
         every { planManager.hasFeature("ADVANCED_REPORTS") } returns true
-        return ReportsViewModel(repository, planManager, factory, ReglaDeRecarga(monitor, porSubir, reloj = { scheduler.currentTime }))
+        return ReportsViewModel(repository, planManager, gateFactory)
     }
 
     private fun estado(vm: ReportsViewModel) = estadoDelInforme(
@@ -130,37 +116,34 @@ class ReportsViewModelSinRedTest {
     private fun brutasALaVista(vm: ReportsViewModel): Double? =
         (estado(vm) as? EstadoDelInforme.Listo)?.datos?.summary?.grossSales
 
-    private class Pantalla : LifecycleOwner {
-        val registro = LifecycleRegistry.createUnsafe(this)
-        override val lifecycle: Lifecycle get() = registro
-    }
+    // MARK: - Al volver la red, nada recarga solo (ronda 5)
 
-    /** Informes a la vista (RESUMED), con la regla corriendo. */
-    private fun TestScope.aLaVista(vm: ReportsViewModel): Pantalla {
-        val pantalla = Pantalla()
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
-        runCurrent()
-        return pantalla
-    }
-
-    private fun TestScope.wifiSeVaYVuelve() {
+    @Test
+    fun `al volver la red nada recarga solo, y Reintentar si recarga`() = runTest(scheduler) {
+        sinRed = true
         red.value = false
-        runCurrent()
-        red.value = true
-        runCurrent()
-    }
+        val vm = crear(factory = RefreshGateFactory(monitor)) // la fábrica de verdad, que sí mira la red
+        vm.autoRefresh() // sin red: «Sin conexión»
+        assertEquals(EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED), estado(vm))
 
-    private fun TestScope.servidorParpadea() {
-        servidor.value = false
+        sinRed = false
+        red.value = true // vuelve el WiFi
+        runCurrent()
+        servidor.value = false // y la bandera del servidor parpadea
         runCurrent()
         servidor.value = true
         runCurrent()
-    }
-
-    private fun TestScope.irA(ms: Long) {
-        advanceTimeBy(ms - scheduler.currentTime)
+        advanceTimeBy(10 * 60_000L)
         runCurrent()
+
+        assertEquals("nada recarga solo", 1, pedidas.size)
+        assertEquals(EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED), estado(vm))
+
+        vm.manualRefresh() // «Reintentar»
+        runCurrent()
+
+        assertEquals(2, pedidas.size)
+        assertEquals(100.0, brutasALaVista(vm))
     }
 
     // MARK: - El informe va ligado a su periodo
@@ -217,203 +200,6 @@ class ReportsViewModelSinRedTest {
 
         assertEquals(listOf("hours", "days"), pedidas.map { it.tipo })
         assertEquals(3000.0, brutasALaVista(vm))
-    }
-
-    // MARK: - «No se cargó»: se recarga en cuanto hay red, con espera creciente
-
-    @Test
-    fun `vuelve el WiFi y el informe que no se cargo se recarga solo`() = runTest(scheduler) {
-        sinRed = true
-        red.value = false
-        val vm = crear()
-        vm.autoRefresh() // sin red: «Sin conexión»
-        aLaVista(vm)
-        irA(20_000)
-        assertEquals("sin red no se intenta", 1, pedidas.size)
-
-        sinRed = false
-        red.value = true
-        runCurrent()
-
-        assertEquals(2, pedidas.size)
-        assertEquals(100.0, brutasALaVista(vm))
-    }
-
-    @Test
-    fun `N2 - el servidor vuelve a mitad de una carga que termina fallando - el informe se recupera solo`() = runTest(scheduler) {
-        val vm = crear()
-        aLaVista(vm) // todavía nada
-        sinRed = true
-        alCargar = { // una de las consultas del informe falla y apaga la bandera; otra contesta 200 y la prende
-            servidor.value = false
-            servidor.value = true
-        }
-        vm.autoRefresh()
-        runCurrent()
-        alCargar = null
-        assertEquals(EstadoDelInforme.NoSeCargo(FalloDeLectura.SIN_RED), estado(vm)) // con el servidor alcanzable
-        sinRed = false
-
-        irA(6_000)
-
-        assertEquals(100.0, brutasALaVista(vm))
-        assertEquals(2, pedidas.size)
-    }
-
-    @Test
-    fun `internet que vuelve sin que el WiFi se apague - el informe se recupera solo`() = runTest(scheduler) {
-        sinRed = true
-        servidor.value = false // el módem perdió internet; la red del aparato nunca bajó (WINDOWS igual)
-        val vm = crear()
-        vm.autoRefresh()
-        aLaVista(vm)
-
-        irA(7_000)
-        sinRed = false
-        servidor.value = true // vuelve internet
-        irA(40_000)
-
-        assertEquals(100.0, brutasALaVista(vm))
-        assertTrue("sin tormenta: ${pedidas.size} cargas", pedidas.size <= 3)
-    }
-
-    @Test
-    fun `fallo parcial con el servidor alcanzable - espera 5 s y luego 10 s, sin cargas en medio`() = runTest(scheduler) {
-        sinRed = true // una parte del informe no contesta aunque la salud del servidor sí
-        val vm = crear()
-        vm.autoRefresh() // a los 0 s: falla
-        aLaVista(vm)
-
-        for ((en, cargas) in listOf(4_999L to 1, 5_001L to 2, 14_999L to 2, 15_001L to 3)) {
-            irA(en)
-            assertEquals("a los $en ms", cargas, pedidas.size)
-        }
-    }
-
-    @Test
-    fun `pausar a media reconexion y volver - recalcula y recarga solo`() = runTest(scheduler) {
-        sinRed = true
-        red.value = false
-        val vm = crear()
-        vm.autoRefresh() // sin red
-        val pantalla = aLaVista(vm)
-
-        irA(10_000)
-        red.value = true // vuelve el WiFi, pero el servidor todavía no contesta
-        runCurrent()
-        assertEquals(2, pedidas.size)
-        pantalla.registro.currentState = Lifecycle.State.CREATED // la app al fondo
-        runCurrent()
-        irA(60_000)
-        assertEquals("en el fondo no carga", 2, pedidas.size)
-
-        pantalla.registro.currentState = Lifecycle.State.RESUMED // regresa antes de que vuelva el servidor
-        runCurrent()
-        assertEquals("recalcula al volver: hace falta y ya pasó la espera", 3, pedidas.size)
-        sinRed = false // ahora sí vuelve el servidor
-        irA(80_001)
-
-        assertEquals(100.0, brutasALaVista(vm))
-        assertEquals(4, pedidas.size)
-    }
-
-    @Test
-    fun `con Informes en segundo plano no hay ninguna carga`() = runTest(scheduler) {
-        sinRed = true
-        red.value = false
-        porSubir.value = 1
-        val vm = crear()
-        vm.autoRefresh()
-        sinRed = false
-        val pantalla = Pantalla()
-        pantalla.registro.currentState = Lifecycle.State.CREATED
-        backgroundScope.launch { vm.vigilarLaRedMientrasSeVe(pantalla) }
-        runCurrent()
-
-        red.value = true
-        runCurrent()
-        servidorParpadea()
-        porSubir.value = 0
-        runCurrent()
-        irA(10 * 60_000L)
-
-        assertEquals(1, pedidas.size)
-    }
-
-    // MARK: - El informe se pidió con cobros por subir: se recarga al vaciarse la cola
-
-    @Test
-    fun `la cola tarda 60 s en subir - al vaciarse recarga con el cobro aunque el informe se vea, y despues ya no`() = runTest(scheduler) {
-        porSubir.value = 1 // el cobro de 10 pesos en efectivo, hecho sin red
-        val vm = crear()
-        vm.autoRefresh()
-        aLaVista(vm)
-        assertEquals(100.0, brutasALaVista(vm))
-
-        irA(60_000)
-        assertEquals(1, pedidas.size)
-        cobroSinRedYaSubio = true
-        porSubir.value = 0 // la cola terminó de subir
-        runCurrent()
-        assertEquals(110.0, brutasALaVista(vm))
-
-        wifiSeVaYVuelve()
-        irA(15 * 60_000L)
-        assertEquals("una carga buena con la cola en 0 apaga la necesidad", 2, pedidas.size)
-    }
-
-    @Test
-    fun `cola atorada - con el informe a la vista no recarga mientras no suba, y recarga al vaciarse`() = runTest(scheduler) {
-        porSubir.value = 1 // un pendiente que no sube
-        val vm = crear()
-        vm.autoRefresh()
-        aLaVista(vm)
-
-        irA(10 * 60_000L)
-        assertEquals("sin tormenta", 1, pedidas.size)
-
-        porSubir.value = 0
-        runCurrent()
-        assertEquals(2, pedidas.size)
-    }
-
-    @Test
-    fun `si la consulta iba en camino cuando subio la cola, al terminar se pide otra con el cobro`() = runTest(scheduler) {
-        sinRed = true
-        red.value = false
-        porSubir.value = 1
-        val vm = crear()
-        vm.autoRefresh() // sin red: «Sin conexión»
-        aLaVista(vm)
-        irA(10_000)
-
-        sinRed = false
-        val lenta = CompletableDeferred<Unit>()
-        enCamino = lenta
-        red.value = true // la consulta sale antes de que suba la cola, y tarda
-        runCurrent()
-        cobroSinRedYaSubio = true
-        porSubir.value = 0 // la cola sube con esa consulta en camino
-        runCurrent()
-        enCamino = null
-        lenta.complete(Unit)
-        runCurrent()
-
-        assertEquals(3, pedidas.size)
-        assertEquals(110.0, brutasALaVista(vm))
-    }
-
-    @Test
-    fun `con el informe del periodo y nada en la cola, volver la red no recarga`() = runTest(scheduler) {
-        val vm = crear()
-        vm.autoRefresh()
-        aLaVista(vm)
-
-        wifiSeVaYVuelve()
-        servidorParpadea()
-        irA(10 * 60_000L)
-
-        assertEquals(1, pedidas.size)
     }
 
     // MARK: - Personalizado (Codex r1 #5)
