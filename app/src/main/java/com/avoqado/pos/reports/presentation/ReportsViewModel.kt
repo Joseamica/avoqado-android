@@ -196,7 +196,8 @@ class ReportsViewModel @Inject constructor(
         else repository.loadReport(consulta, hasta)
         necesidad.update {
             val error = resultado.exceptionOrNull()
-            if (error == null) it.alTerminarBien(inst) else it.alFallar(inst, ClaseDeFallo.de(error), reloj.ahora())
+            if (error == null) it.alTerminarBien(inst)
+            else it.alFallar(inst, ClaseDeFallo.de(error), reloj.ahora(), avisosAhora = avisosDeVentas.de(inst.sucursal))
         }
         return resultado
     }

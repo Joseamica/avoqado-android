@@ -8,6 +8,9 @@ import javax.inject.Singleton
 /** D22: lo que había cuando EMPEZÓ una carga. Su retorno sólo atiende esto: lo que llegue después queda pendiente. */
 data class Instantanea(val sucursal: String, val pedida: Long, val avisos: Long)
 
+/** D22 ronda 3: cuántos avisos tenía la sucursal cuando falló la última carga reintentable. */
+data class AvisosAlFallar(val sucursal: String, val avisos: Long)
+
 /**
  * D22 (diseño r2 §B): si a Ventas o Informes les hace falta recargar. Es un ESTADO del ViewModel, no un flanco: se compara
  * cada vez que algo cambia. Lo sube un fallo reintentable (`pedida`) o un aviso de [com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas]; lo
@@ -25,6 +28,8 @@ data class Necesidad(
     val fallosSeguidos: Int = 0,
     /** Antes de esto (reloj de [RelojDeRecarga]) la automática no reintenta: 5, 10, 20 y luego 30 s tras cada fallo. */
     val proximoIntentoEn: Long = 0,
+    /** Los avisos de la sucursal al fallar la última carga reintentable: uno que llegue después salta la escalera. */
+    val avisosAlUltimoFallo: AvisosAlFallar? = null,
 ) {
     fun instantanea(sucursal: String, avisos: Long) = Instantanea(sucursal, pedida, avisos)
 
@@ -33,6 +38,14 @@ data class Necesidad(
 
     /** Llegó un aviso de [sucursal] después de que empezó su última carga buena. Una sucursal nunca cargada no pide nada. */
     fun porAvisos(sucursal: String, avisos: Long): Boolean = avisosAtendidos[sucursal]?.let { avisos > it } ?: false
+
+    /**
+     * D22 ronda 3 (D3, 4-nov): llegó un aviso DESPUÉS del último fallo de la escalera. El ACK de una subida prueba que el
+     * servidor contesta: no se espera el escalón, se agrupa como cualquier aviso. Se cuenta, no se mide con la hora: la
+     * primera vuelta de la recarga no puede pasar por «aviso nuevo».
+     */
+    fun avisoDespuesDelUltimoFallo(sucursal: String, avisos: Long): Boolean =
+        avisosAlUltimoFallo?.let { it.sucursal == sucursal && avisos > it.avisos } ?: false
 
     fun haceFalta(sucursal: String, avisos: Long): Boolean =
         (porFallo() || porAvisos(sucursal, avisos)) && detenidaEn != instantanea(sucursal, avisos)
@@ -43,12 +56,19 @@ data class Necesidad(
         detenidaEn = null,
         fallosSeguidos = 0,
         proximoIntentoEn = 0,
+        avisosAlUltimoFallo = null,
     )
 
-    fun alFallar(inst: Instantanea, clases: List<ClaseDeFallo>, ahora: Long): Necesidad =
+    /** [avisosAhora]: los avisos de la sucursal al fallar (no al empezar): uno que llegue después salta la escalera. */
+    fun alFallar(inst: Instantanea, clases: List<ClaseDeFallo>, ahora: Long, avisosAhora: Long = inst.avisos): Necesidad =
         if (clases.laAutomaticaReintenta()) {
             val fallos = fallosSeguidos + 1
-            copy(pedida = pedida + 1, fallosSeguidos = fallos, proximoIntentoEn = ahora + esperaTras(fallos))
+            copy(
+                pedida = pedida + 1,
+                fallosSeguidos = fallos,
+                proximoIntentoEn = ahora + esperaTras(fallos),
+                avisosAlUltimoFallo = AvisosAlFallar(inst.sucursal, avisosAhora),
+            )
         } else {
             copy(detenidaEn = Instantanea(inst.sucursal, pedida, inst.avisos))
         }

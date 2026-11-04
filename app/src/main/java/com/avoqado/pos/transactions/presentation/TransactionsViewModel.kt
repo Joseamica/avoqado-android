@@ -626,6 +626,11 @@ class TransactionsViewModel @Inject constructor(
     /** D22: si a la lista le hace falta recargar (un fallo reintentable o un cobro de la sucursal que ya subió). */
     private val necesidad = MutableStateFlow(Necesidad())
 
+    private val _subidasAlInicio = MutableStateFlow(0L)
+
+    /** D22 ronda 3: sube con cada carga A MANO buena (la píldora, jalar, «Reintentar»): la lista vuelve al inicio. */
+    val subidasAlInicio: StateFlow<Long> = _subidasAlInicio.asStateFlow()
+
     /**
      * D22 (diseño r2 §E): con más de una página a la vista la lista no se mueve sola; hace falta por un cobro que subió y se
      * ofrece «Hay ventas nuevas · Actualizar» (al tocarla, lo mismo que jalar).
@@ -652,7 +657,8 @@ class TransactionsViewModel @Inject constructor(
         val resultado = repository.fetchTransactions(page = 1, search = busqueda, enFondo = enFondo)
         necesidad.update {
             val error = resultado.exceptionOrNull()
-            if (error == null) it.alTerminarBien(inst) else it.alFallar(inst, ClaseDeFallo.de(error), reloj.ahora())
+            if (error == null) it.alTerminarBien(inst)
+            else it.alFallar(inst, ClaseDeFallo.de(error), reloj.ahora(), avisosAhora = avisosDeVentas.de(inst.sucursal))
         }
         return resultado
     }
@@ -704,7 +710,12 @@ class TransactionsViewModel @Inject constructor(
         viewModelScope.launch {
             _isManualRefreshing.value = true
             try {
-                gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+                val salida = gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+                // D22 ronda 3: una carga a mano buena (la píldora, jalar, «Reintentar») lleva la lista al inicio. Si se unió a
+                // una carga en camino, cuenta si ésa salió bien.
+                val salioBien = salida == RefreshOutcome.Completed ||
+                    (salida == RefreshOutcome.Joined && repository.falloDeCarga.value == null)
+                if (salioBien) _subidasAlInicio.update { it + 1 }
             } finally {
                 _isManualRefreshing.value = false
             }

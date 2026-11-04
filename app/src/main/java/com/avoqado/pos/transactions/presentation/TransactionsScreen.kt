@@ -459,16 +459,12 @@ private fun TransactionListPanel(
                     val listState = rememberLazyListState()
                     // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
                     // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
-                    val primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" }
-                    var primeraLlaveAnterior by remember { mutableStateOf<String?>(null) }
-                    LaunchedEffect(primeraLlave) {
-                        val anterior = primeraLlaveAnterior
-                        primeraLlaveAnterior = primeraLlave
-                        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key
-                        if (subirAlInicioTrasRecarga(anterior, primeraLlave, visible, listState.firstVisibleItemScrollOffset)) {
-                            listState.scrollToItem(0)
-                        }
-                    }
+                    val subidasAlInicio by viewModel.subidasAlInicio.collectAsState()
+                    SubirAlInicioDeLaLista(
+                        listState = listState,
+                        primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" },
+                        subidasPedidas = subidasAlInicio,
+                    )
 
                     LazyColumn(
                         state = listState,
@@ -1300,6 +1296,33 @@ private fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
             )
+        }
+    }
+}
+
+/**
+ * D22: cuándo sube la lista al inicio.
+ * - Tras una carga A MANO buena (la píldora «Hay ventas nuevas · Actualizar», jalar, «Reintentar»): siempre, aunque la cajera
+ *   hubiera bajado; lo pidió ella ([subidasPedidas] sube con cada una).
+ * - Tras la automática: sólo si se veía desde arriba y entró algo nuevo arriba ([subirAlInicioTrasRecarga]); si la cajera
+ *   había bajado, no se mueve. «Cargar más» pega al final y no sube.
+ */
+@Composable
+internal fun SubirAlInicioDeLaLista(listState: androidx.compose.foundation.lazy.LazyListState, primeraLlave: Any?, subidasPedidas: Long) {
+    var primeraLlaveAnterior by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(primeraLlave) {
+        val anterior = primeraLlaveAnterior
+        primeraLlaveAnterior = primeraLlave
+        val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key
+        if (subirAlInicioTrasRecarga(anterior, primeraLlave, visible, listState.firstVisibleItemScrollOffset)) {
+            listState.scrollToItem(0)
+        }
+    }
+    var subidasAtendidas by remember { mutableStateOf(subidasPedidas) }
+    LaunchedEffect(subidasPedidas) {
+        if (subidasPedidas != subidasAtendidas) {
+            subidasAtendidas = subidasPedidas
+            listState.scrollToItem(0)
         }
     }
 }

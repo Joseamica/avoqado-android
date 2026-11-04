@@ -62,11 +62,14 @@ object RecargaSola {
                 continue
             }
             val faltaDeLaEspera = n.proximoIntentoEn - ahora
-            if (n.fallosSeguidos > 0 && faltaDeLaEspera > 0) {
+            // Ronda 3 (D3, 4-nov): un aviso que llegó después del último fallo prueba que el servidor contesta: no se espera
+            // el escalón, se agrupa como cualquier aviso. Sin aviso nuevo, la escalera sigue igual.
+            val avisoTrasElFallo = n.avisoDespuesDelUltimoFallo(suc, cuenta)
+            if (n.fallosSeguidos > 0 && faltaDeLaEspera > 0 && !avisoTrasElFallo) {
                 esperarCambio(despertador, visto, faltaDeLaEspera)
                 continue
             }
-            if (!n.porFallo()) {
+            if (!n.porFallo() || avisoTrasElFallo) {
                 val primero = primerAvisoPendienteEn ?: ahora.also { primerAvisoPendienteEn = it }
                 val falta = minOf(avisosCambiaronEn + AGRUPAR_MS, primero + AGRUPAR_COMO_MUCHO_MS) - ahora
                 if (falta > 0) {

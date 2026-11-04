@@ -92,4 +92,16 @@ class NecesidadTest {
         assertFalse(n.haceFalta("s", avisos.de("s")))
         assertTrue(n.porAvisos("s", avisos.de("s")))
     }
+
+    @Test fun `ronda 3 - un aviso despues del ultimo fallo se cuenta y uno de antes no`() {
+        var n = cargadaEn("s")
+        avisos.subio("s") // antes del fallo
+        n = n.alFallar(n.instantanea("s", avisos.de("s")), listOf(REINTENTABLE), ahora = 0, avisosAhora = avisos.de("s"))
+        assertFalse(n.avisoDespuesDelUltimoFallo("s", avisos.de("s")))
+        avisos.subio("s") // después
+        assertTrue(n.avisoDespuesDelUltimoFallo("s", avisos.de("s")))
+        assertFalse("de otra sucursal no cuenta", n.avisoDespuesDelUltimoFallo("otra", 99))
+        n = n.alTerminarBien(n.instantanea("s", avisos.de("s")))
+        assertFalse("una carga buena lo limpia", n.avisoDespuesDelUltimoFallo("s", avisos.de("s")))
+    }
 }

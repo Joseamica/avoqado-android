@@ -361,6 +361,107 @@ class TransactionsViewModelRecargaSolaTest {
         assertEquals(1, automaticas)
     }
 
+    // MARK: - Un aviso después del último fallo salta la escalera (ronda 3, D3 4-nov)
+
+    @Test fun `aviso tras un fallo - recarga a 1 s del aviso, no al escalon de 5 s`() = runTest(scheduler) {
+        contesta = sinRed
+        val vm = crear()
+        vm.autoRefresh() // a los 0 s falla: el escalón sería a los 5 s
+        aLaVista(vm)
+        irA(3_000)
+        contesta = null
+        avisos.subio("venue") // a los 3 s sube un cobro: el servidor contesta
+        irA(3_999)
+        assertEquals(0, automaticas)
+        irA(4_001)
+        assertEquals(1, automaticas)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+    }
+
+    @Test fun `tres fallos y un aviso - recarga a 1 s del aviso, no al escalon de 20 s`() = runTest(scheduler) {
+        contesta = sinRed
+        val vm = crear()
+        vm.autoRefresh() // 0 s
+        aLaVista(vm)
+        irA(15_001) // fallan los reintentos de los 5 y 15 s: el siguiente sería a los 35
+        assertEquals(2, automaticas)
+        contesta = null
+        avisos.subio("venue")
+        irA(16_002)
+        assertEquals(3, automaticas)
+        assertEquals(EstadoDeLaListaDeVentas.Lista, estado(vm))
+    }
+
+    @Test fun `un aviso de antes del fallo no salta la escalera`() = runTest(scheduler) {
+        val vm = conLaLista()
+        aLaVista(vm)
+        avisos.subio("venue")
+        contesta = sinRed
+        irA(1_001) // la recarga agrupada sale y falla: escalón de 5 s
+        assertEquals(1, automaticas)
+        irA(5_999)
+        assertEquals("sin aviso nuevo, la escalera sigue", 1, automaticas)
+        irA(6_001)
+        assertEquals(2, automaticas)
+    }
+
+    @Test fun `detenida por 403 y llega un aviso - una recarga de fondo agrupada sin esperar el escalon, y se vuelve a detener`() = runTest(scheduler) {
+        val vm = conLaLista()
+        aLaVista(vm)
+        contesta = sinRed
+        vm.manualRefresh() // 0 s
+        runCurrent()
+        irA(100)
+        vm.manualRefresh()
+        runCurrent()
+        irA(200)
+        vm.manualRefresh() // tres fallos: el escalón sería a los 20.2 s
+        runCurrent()
+        irA(300)
+        contesta = deNuestraApi(403)
+        vm.manualRefresh() // 403 propio, PIN cancelado: detenida
+        runCurrent()
+        irA(1_000)
+        assertEquals(0, automaticas)
+
+        avisos.subio("venue") // un cobro nuevo
+        irA(2_001)
+        assertEquals("una, de fondo y sin esperar el escalón", listOf(true), pedidas.filter { it.enFondo }.map { it.enFondo })
+        irA(10 * 60_000L)
+        assertEquals("403 otra vez: detenida hasta otro aviso", 1, automaticas)
+    }
+
+    // MARK: - Tocar la píldora (o jalar) lleva la lista al inicio (ronda 3, D3 4-nov)
+
+    @Test fun `tocar la pildora con la carga buena pide subir al inicio y si falla no`() = runTest(scheduler) {
+        val vm = conLaLista()
+        paginasCargadas.value = 5
+        aLaVista(vm)
+        avisos.subio("venue")
+        irA(5_000)
+        assertTrue(vm.hayVentasNuevas.value)
+        assertEquals(0L, vm.subidasAlInicio.value)
+
+        contesta = sinRed
+        vm.manualRefresh() // tocar la píldora: falla
+        runCurrent()
+        assertEquals("si falla, no se mueve", 0L, vm.subidasAlInicio.value)
+
+        contesta = null
+        vm.manualRefresh() // otra vez: sale bien
+        runCurrent()
+        assertEquals(1L, vm.subidasAlInicio.value)
+    }
+
+    @Test fun `la recarga automatica no pide subir al inicio`() = runTest(scheduler) {
+        val vm = conLaLista()
+        aLaVista(vm)
+        avisos.subio("venue")
+        irA(2_001)
+        assertEquals(1, automaticas)
+        assertEquals(0L, vm.subidasAlInicio.value)
+    }
+
     // MARK: - Lo que la detiene (r4-3, 401 y 4xx)
 
     @Test fun `r4-3 - el PIN cancelado no se vuelve a pedir y un aviso nuevo recarga de fondo sin abrir nada`() = runTest(scheduler) {
