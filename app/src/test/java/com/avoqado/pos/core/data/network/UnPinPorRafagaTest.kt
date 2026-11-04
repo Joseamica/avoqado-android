@@ -313,8 +313,12 @@ class UnPinPorRafagaTest {
         coordinator.esperarTeclado()
         val viva = informe(coordinator)
         coordinator.esperarUnidas("carga-1", "reports:read", 1)
-        val cancelada = informe(coordinator, vivo = { false })
+        // Entra viva y después se corta (D26: una ya cortada ni siquiera entra al grupo).
+        val sigue = java.util.concurrent.atomic.AtomicBoolean(true)
+        val cancelada = informe(coordinator, vivo = { sigue.get() })
         coordinator.esperarUnidas("carga-1", "reports:read", 2)
+        sigue.set(false)
+        assertTrue("se va sola, sin token", cancelada.listo.await(3, TimeUnit.SECONDS))
 
         runBlocking { coordinator.submitPin("venue_1", "1234", coordinator.prompt.value?.id) }
 
@@ -331,10 +335,13 @@ class UnPinPorRafagaTest {
         val red = RepoQueCuenta()
         val coordinator = TestCoordinator(red.repo)
 
-        val primera = informe(coordinator, vivo = { false })
+        val abreViva = java.util.concurrent.atomic.AtomicBoolean(true)
+        val primera = informe(coordinator, vivo = { abreViva.get() })
         coordinator.esperarTeclado()
         val viva = informe(coordinator)
         coordinator.esperarUnidas("carga-1", "reports:read", 1)
+        abreViva.set(false) // se corta la que abrió: el teclado sigue para la otra
+        assertTrue(primera.listo.await(3, TimeUnit.SECONDS))
         runBlocking { coordinator.submitPin("venue_1", "1234", coordinator.prompt.value?.id) }
         assertTrue(primera.listo.await(3, TimeUnit.SECONDS))
         assertTrue(viva.listo.await(3, TimeUnit.SECONDS))
@@ -342,11 +349,13 @@ class UnPinPorRafagaTest {
         assertEquals("tok1", viva.token)
         assertEquals(1, red.pedidos.size)
 
-        val sola = informe(coordinator, rafaga = "carga-2", vivo = { false })
-        val id = coordinator.esperarTeclado().id
+        val solaViva = java.util.concurrent.atomic.AtomicBoolean(true)
+        val sola = informe(coordinator, rafaga = "carga-2", vivo = { solaViva.get() })
+        val id = coordinator.esperarOtroTeclado(-1).id
+        solaViva.set(false) // ya nadie espera ese teclado: se retira solo
+        assertTrue(sola.listo.await(3, TimeUnit.SECONDS))
         val resultado = runBlocking { coordinator.submitPin("venue_1", "1234", id) }
         assertTrue(resultado is OverrideResult.Failed)
-        assertTrue(sola.listo.await(3, TimeUnit.SECONDS))
         assertNull(sola.token)
         assertEquals("no se mandó el PIN", 1, red.pedidos.size)
         Thread.sleep(100)
