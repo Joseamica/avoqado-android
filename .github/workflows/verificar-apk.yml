@@ -48,5 +48,7 @@ jobs:
         # Debe fallar POR la clase que R8 rompió, no por otra cosa (p. ej. la guarda de «dex2oat took»).
         run: |
           [ "${{ steps.art.outcome }}" = "failure" ] || { echo "::error::El guion NO detectó la 2.25.30 rota."; exit 1; }
-          grep -q "Verification error in void oc.b2.E(" art.log || { echo "::error::Falló, pero no por oc.b2.E:"; tail -20 art.log; exit 1; }
+          # «ART rechaza» sólo sale cuando el guion encontró clases rechazadas (exit 1), no en la guarda (exit 2).
+          grep -q "::error::ART rechaza clases" art.log && grep -q "Verification error in void oc.b2.E(" art.log \
+            || { echo "::error::Falló, pero no porque ART rechazara oc.b2.E:"; tail -20 art.log; exit 1; }
           echo "✅ La 2.25.30 sale rechazada por oc.b2.E."
