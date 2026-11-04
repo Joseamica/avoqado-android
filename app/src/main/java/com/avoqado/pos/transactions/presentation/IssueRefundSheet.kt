@@ -1546,14 +1546,28 @@ private fun TabPill(
     }
 }
 
-private fun formatRefundError(throwable: Throwable, refundMethod: String?): String {
+internal fun formatRefundError(throwable: Throwable, refundMethod: String?): String {
     val apiError = throwable as? RefundApiException
     return when (apiError?.statusCode) {
         403 -> textoDeSinPermisoParaReembolsar(refundMethod)
         400, 422 -> apiError.message.ifBlank { "Revisa los datos del reembolso" }
         in 500..599 -> "No se pudo emitir el reembolso. Intenta de nuevo."
-        else -> throwable.message ?: "Error al emitir reembolso"
+        else -> textoDeFalloDeRed(throwable) ?: throwable.message ?: "Error al emitir reembolso"
     }
+}
+
+/**
+ * D7: el texto crudo de la excepción llegaba a la pantalla («Failed to connect to…»). Un reembolso común no lleva llave, y
+ * ningún fallo de red prueba que no se aplicó: OkHttp reintenta, así que el primer POST pudo aplicarse y perder su respuesta,
+ * y lo último que falla es la reconexión (Codex r3). Por eso nunca se dice «no se hizo» ni se invita a repetirlo a ciegas.
+ */
+private fun textoDeFalloDeRed(error: Throwable): String? = when {
+    error is java.net.UnknownHostException || error is java.net.ConnectException || error is java.net.NoRouteToHostException ->
+        TextosCambio.REEMBOLSO_SIN_RED
+    // `servidor:` quiere decir que sí hay red y que contestó (ver D3): ahí no se dice «Sin conexión».
+    error is com.avoqado.pos.core.data.network.SesionSinRenovar && !error.motivo.startsWith("servidor:") -> TextosCambio.REEMBOLSO_SIN_RED
+    error is java.io.IOException -> TextosCambio.REEMBOLSO_SIN_RESPUESTA
+    else -> null
 }
 
 /** «Devolver con»: una pastilla por medio posible y la leyenda de lo que pasa con el dinero. */
