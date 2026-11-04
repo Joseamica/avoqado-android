@@ -24,6 +24,7 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ESCPOSPrinter.BarcodeSymbology
 import com.avoqado.pos.printing.data.AreaTicketPdfGenerator
 import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.routing.RoutableItem
@@ -764,6 +765,11 @@ class AreaTicketOperationsViewModel @Inject constructor(
      * se DICE, sin tapar el aviso del vale si lo hay.
      */
     private fun despacharComanda(ticket: AreaTicket, renglones: List<RenglonDeComandaDeVale>, venueId: String?) {
+        // D2 (La Galeterie, 3-nov): el área apagó su comanda (nadie prepara aparte, como la cremería). Sale sólo el vale.
+        if (ticket.fulfillmentArea.sendsComanda == false) {
+            Log.d("🍳", "🎟️ Vale ${ticket.code}: ${ticket.fulfillmentArea.name} no manda comanda — se omite")
+            return
+        }
         // D5: de los renglones guardados con el intento (con su categoría, Codex r2 #3), no del carrito vivo: «Recuperar» no tiene.
         val lineas = renglones.map { renglon ->
             RoutableItem(
@@ -777,8 +783,14 @@ class AreaTicketOperationsViewModel @Inject constructor(
             )
         }
         val avisar: (String?, List<String>) -> Unit = { causa, estaciones ->
+            // D2: si no salió porque nadie la recibe (sin impresora), puede ser un área que no prepara nada: se dice dónde apagarla.
+            val pista = if (causa == ReintentoDeComanda.CAUSA_SIN_IMPRESORA) {
+                " Si ${ticket.fulfillmentArea.name} no usa comanda, apágala en Más › Ajustes › Impresoras y cajón."
+            } else {
+                ""
+            }
             val aviso = "No salió la comanda de ${estaciones.joinToString()} del vale ${ticket.code}. " +
-                (causa ?: "La impresora no respondió.") + " Avísale a la cocina."
+                (causa ?: "La impresora no respondió.") + " Avísale a la cocina." + pista
             _state.value = _state.value.copy(error = listOfNotNull(_state.value.error, aviso).joinToString("\n\n"))
         }
         comandaScope.launch {

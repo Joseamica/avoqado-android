@@ -107,6 +107,83 @@ class PapelDelAparatoGateViewModelTest {
     /** Arranque o login sube `sesion`; ON_RESUME, red recuperada y cambio de sucursal sólo `vez`. */
     private fun disparo(vez: Int, sesion: Int = 1) = ConsultaDelPapel(vez = vez, sesion = sesion)
 
+    // ─── D2 (3-nov): «Manda comanda a cocina» del área que este aparato emite ───
+
+    private fun emiteCremeria(manda: Boolean?) = ajustes(
+        pendiente = false,
+        terminal = AreaTicketTerminalCapabilities(
+            id = "t1",
+            name = "PC",
+            fulfillmentArea = AreaTicketArea(id = "a1", name = "Cremería", fulfillmentMode = "HOLD_UNTIL_PAID", sendsComanda = manda),
+            canIssueAreaTickets = true,
+        ),
+    )
+
+    @Test
+    fun `D2 apagar la comanda la guarda en el servidor y se ve lo que quedo`() = runTest {
+        respondeAjustes(emiteCremeria(manda = true))
+        coEvery { api.setAreaComanda("v1", "a1", any(), any()) } returns AreaTicketEnvelope(true, emiteCremeria(manda = false))
+        val vm = vm()
+        vm.consultar(disparo(1))
+        assertEquals(true, vm.comandaDelAreaActual(vm.ajustes.value)?.manda)
+
+        vm.cambiarComanda(false)
+
+        // Fuera del bloque: leer otro mock adentro de coVerify lo toma como parte de lo que se verifica.
+        val sello = com.avoqado.pos.core.data.network.SelloDePeticion(storage.generacion)
+        coVerify(exactly = 1) {
+            api.setAreaComanda("v1", "a1", kotlinx.serialization.json.JsonObject(mapOf("sendsComanda" to kotlinx.serialization.json.JsonPrimitive(false))), sello)
+        }
+        assertEquals(false, vm.comandaDelAreaActual(vm.ajustes.value)?.manda)
+        assertFalse(vm.guardandoComanda.value)
+        assertNull(vm.errorDeComanda.value)
+    }
+
+    @Test
+    fun `D2 un segundo toque mientras guarda no manda otro`() = runTest {
+        respondeAjustes(emiteCremeria(manda = true))
+        val respuesta = CompletableDeferred<AreaTicketEnvelope<AreaTicketSettingsData>>()
+        coEvery { api.setAreaComanda("v1", "a1", any(), any()) } coAnswers { respuesta.await() }
+        val vm = vm()
+        vm.consultar(disparo(1))
+
+        vm.cambiarComanda(false)
+        vm.cambiarComanda(false)
+        assertTrue(vm.guardandoComanda.value)
+        respuesta.complete(AreaTicketEnvelope(true, emiteCremeria(manda = false)))
+
+        coVerify(exactly = 1) { api.setAreaComanda(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D2 sin red o sin permiso no se manda y se dice por que`() = runTest {
+        respondeAjustes(emiteCremeria(manda = true))
+        val vm = vm()
+        vm.consultar(disparo(1))
+
+        red.value = false
+        vm.cambiarComanda(false)
+        assertEquals("Necesita internet para cambiarlo", vm.errorDeComanda.value)
+
+        red.value = true
+        permiso = false
+        vm.cambiarComanda(false)
+        assertEquals("Pídele a tu administrador que lo cambie", vm.errorDeComanda.value)
+        coVerify(exactly = 0) { api.setAreaComanda(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D2 la caja y un servidor sin el dato no ven el interruptor`() = runTest {
+        respondeAjustes(emiteCremeria(manda = null))
+        val vm = vm()
+        vm.consultar(disparo(1))
+        assertNull(vm.comandaDelAreaActual(vm.ajustes.value))
+
+        respondeAjustes(ajustes(pendiente = false))
+        vm.consultar(disparo(2))
+        assertNull(vm.comandaDelAreaActual(vm.ajustes.value))
+    }
+
     @Test
     fun `muestra la pregunta cuando roleChoicePending y hay red`() = runTest {
         respondeAjustes(ajustes())

@@ -62,6 +62,11 @@ data class AreaTicketArea(
     val active: Boolean = true,
     /** Ruta VIGENTE del área ("AVOQADO" | "EXTERNAL"); sólo para el mensaje sin red. La del vale va congelada en [AreaTicket.settlementRoute]. */
     val settlementRoute: String = "AVOQADO",
+    /**
+     * D2 (3-nov-2026): `false` = al emitir sale sólo el vale, sin comanda ni aviso. `null` = SERVIDOR sin el interruptor:
+     * manda comanda, como siempre, y «Impresoras y cajón» no lo ofrece (no se podría guardar).
+     */
+    val sendsComanda: Boolean? = null,
 )
 
 @Serializable

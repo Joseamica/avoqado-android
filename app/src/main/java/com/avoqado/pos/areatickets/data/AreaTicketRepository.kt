@@ -415,6 +415,41 @@ class AreaTicketRepository @Inject constructor(
         }
     }
 
+    /**
+     * D2: apaga o prende la comanda del área que ESTE aparato emite. Online-only, como el papel: sin red no se encola. La
+     * respuesta (los ajustes ya actualizados) queda como copia, igual que al guardar el papel.
+     */
+    suspend fun cambiarComandaDelArea(venueId: String, areaId: String, manda: Boolean, sello: Long? = null): ResultadoPapel {
+        versionDelPapel++
+        papelGuardado = null
+        return try {
+            val ajustes = api.setAreaComanda(
+                venueId,
+                areaId,
+                JsonObject(mapOf("sendsComanda" to JsonPrimitive(manda))),
+                sello?.let { com.avoqado.pos.core.data.network.SelloDePeticion(it) },
+            ).unwrap()
+            versionDelPapel++
+            if (sello == null || secureStorage.generacion == sello) {
+                papelGuardado = ajustes
+                payloadCache.save(
+                    PayloadCache.TYPE_AREA_TICKET_SETTINGS,
+                    venueId,
+                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), ajustes),
+                )
+            }
+            ResultadoPapel.Guardado(ajustes)
+        } catch (error: HttpException) {
+            val rechazo = parseAreaTicketHttpError(error.response()?.errorBody()?.string(), error.code())
+            if (error.code() == 403 && rechazo.code != "AREA_TICKETS_DISABLED" && rechazo.code != "AREA_NOT_OF_THIS_DEVICE") ResultadoPapel.SinPermiso
+            else ResultadoPapel.Rechazado(rechazo.message)
+        } catch (error: AreaTicketException) {
+            ResultadoPapel.Rechazado(error.message)
+        } catch (error: java.io.IOException) {
+            ResultadoPapel.SinRed
+        }
+    }
+
     /** [venta]: la venta del carrito que pide la restauración; null = la recuperación del cobro, que no proyecta nada. */
     suspend fun restore(venta: String? = null): AreaTicketCheckout? {
         val venueId = venueId()
