@@ -181,6 +181,24 @@ jobs:
             || { echo "::error::El AAB NO está firmado."; exit 1; }
           echo "AAB firmado: $(du -h "$AAB" | cut -f1)"
 
+      # 🔴 4-nov-2026: la 2.25.30 pasó pruebas y CI y aun así se cerraba al imprimir: R8 dejó una
+      # clase que ART rechaza (VerifyError) y las pruebas corren la versión SIN optimizar. Antes de
+      # subir nada, el APK de release pasa por el verificador de ART de un emulador.
+      - name: Habilitar KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      - name: Verificar el APK de release con ART
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          script: bash scripts/verificar-apk-release.sh app/build/outputs/apk/release/app-release.apk
+
       # ── Publicar ─────────────────────────────────────────────────────────────
       - name: Publicar en Play
         env:

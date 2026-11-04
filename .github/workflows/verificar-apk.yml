@@ -1,0 +1,54 @@
+# Pasa el APK de un GitHub Release por el verificador de ART en un emulador.
+# El mismo guion corre dentro de release.yml antes de subir a Play; éste sirve para revisar un
+# APK ya publicado y para probar el guion. Ver scripts/verificar-apk-release.sh.
+name: Verificar APK con ART
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Etiqueta del GitHub Release (p. ej. v2.25.31-100)'
+        required: true
+  push:
+    branches: ['ci/verificar-apk-**']
+    paths: ['scripts/verificar-apk-release.sh', '.github/workflows/verificar-apk.yml']
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # En un push de prueba: la rota debe salir ❌ y la buena ✅.
+        tag: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('["{0}"]', github.event.inputs.tag)) || fromJSON('["v2.25.30-99","v2.25.31-100"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bajar el APK
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: gh release download "${{ matrix.tag }}" --repo "${{ github.repository }}" --pattern app-release.apk -D apk
+      - name: Habilitar KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Verificar con ART
+        id: art
+        continue-on-error: ${{ github.event_name == 'push' && matrix.tag == 'v2.25.30-99' }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          # El emulador corre cada línea con sh; tee deja la salida para el paso de abajo.
+          script: bash -c 'set -o pipefail; bash scripts/verificar-apk-release.sh apk/app-release.apk 2>&1 | tee art.log'
+      - name: La rota debe fallar
+        if: github.event_name == 'push' && matrix.tag == 'v2.25.30-99'
+        # Debe fallar POR la clase que R8 rompió, no por otra cosa (p. ej. la guarda de «dex2oat took»).
+        run: |
+          [ "${{ steps.art.outcome }}" = "failure" ] || { echo "::error::El guion NO detectó la 2.25.30 rota."; exit 1; }
+          # «ART rechaza» sólo sale cuando el guion encontró clases rechazadas (exit 1), no en la guarda (exit 2).
+          grep -q "::error::ART rechaza clases" art.log && grep -q "Verification error in void oc.b2.E(" art.log \
+            || { echo "::error::Falló, pero no porque ART rechazara oc.b2.E:"; tail -20 art.log; exit 1; }
+          echo "✅ La 2.25.30 sale rechazada por oc.b2.E."
