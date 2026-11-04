@@ -22,6 +22,7 @@ import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import com.avoqado.pos.printing.routing.RoutableItem
@@ -111,6 +112,45 @@ class AreaTicketComandaAlEmitirTest {
             ),
             lineas.captured,
         )
+    }
+
+    @Test
+    fun `D2 un area con la comanda apagada saca solo el vale, sin comanda ni aviso`() = runTest {
+        val vm = viewModel()
+        coEvery { repository.issue(any(), any()) } returns ticket(sendsComanda = false)
+
+        vm.issue(CartState(items = listOf(capuccino()))) {}
+
+        coVerify(exactly = 1) { printerService.printAreaTicket(any(), any(), any()) }
+        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(null, vm.state.value.error)
+    }
+
+    @Test
+    fun `D2 un SERVIDOR sin el interruptor manda la comanda como hoy`() = runTest {
+        val vm = viewModel()
+        coEvery { repository.issue(any(), any()) } returns ticket(sendsComanda = null)
+
+        vm.issue(CartState(items = listOf(capuccino()))) {}
+
+        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D2 si no salio por falta de impresora el aviso dice donde apagarla`() = runTest {
+        val vm = viewModel()
+        val aviso = slot<(EstadoDeComanda) -> Unit>()
+        coEvery {
+            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso))
+        } answers {
+            aviso.captured(EstadoDeComanda.NoSalio(listOf("SIN ESTACIÓN"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "9340048086"))
+            true
+        }
+
+        vm.issue(CartState(items = listOf(capuccino()))) {}
+
+        val error = vm.state.value.error.orEmpty()
+        assertTrue(error, error.contains("Si Cafetería no usa comanda, apágala en Más › Ajustes › Impresoras y cajón."))
     }
 
     @Test
@@ -226,11 +266,11 @@ class AreaTicketComandaAlEmitirTest {
         itemNote = "sin cebolla",
     )
 
-    private fun ticket() = AreaTicket(
+    private fun ticket(sendsComanda: Boolean? = true) = AreaTicket(
         id = "ticket-1",
         code = "9340048086",
         status = "ISSUED",
-        fulfillmentArea = AreaTicketArea(id = "area-1", name = "Cafetería", fulfillmentMode = "HOLD_UNTIL_PAID"),
+        fulfillmentArea = AreaTicketArea(id = "area-1", name = "Cafetería", fulfillmentMode = "HOLD_UNTIL_PAID", sendsComanda = sendsComanda),
         subtotal = "50.00",
         total = "50.00",
         issuedAt = "2026-10-05T21:30:06.432Z",

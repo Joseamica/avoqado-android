@@ -107,6 +107,17 @@ interface ApiService {
      * D3: el aparato guarda SU papel en los vales (el servidor lo busca por el `x-device-id`). El cuerpo va como objeto a
      * mano: el servidor rechaza cualquier llave de más y el `Json` compartido manda los nulos (`explicitNulls`).
      */
+    /** D2: «Manda comanda a cocina» del área que este aparato emite (body `{ sendsComanda }`). */
+    @Headers("X-Avoqado-Local-Error: 1")
+    @PUT("mobile/venues/{venueId}/fulfillment-areas/{areaId}/comanda")
+    suspend fun setAreaComanda(
+        @Path("venueId") venueId: String,
+        @Path("areaId") areaId: String,
+        @Body body: kotlinx.serialization.json.JsonObject,
+        /** La sesión de quien tocó (Codex r2 #4): si entró otra persona antes de salir, el interceptor no la manda. */
+        @retrofit2.http.Tag sello: SelloDePeticion? = null,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketSettingsData>
+
     @Headers("X-Avoqado-Local-Error: 1")
     @PUT("mobile/venues/{venueId}/terminals/{terminalId}/area-role")
     suspend fun setAreaTicketRole(

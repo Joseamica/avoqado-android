@@ -222,6 +222,9 @@ fun PrinterSettingsSheet(
                 onAbrir = { configPrinter = it },
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            // D2: el aviso «No salió la comanda» de un vale manda aquí; la cremería la apaga sin ir al panel.
+            TarjetaComandaDeVales()
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
             // D2 (founder, 28-oct): sin cocina el cobro ya no avisa «No salió la comanda» en cada venta (una tienda no
             // tiene cocina). Aquí se dice una vez, para el restaurante que nunca configuró la suya.

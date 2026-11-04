@@ -7,7 +7,10 @@ import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
 import com.avoqado.pos.areatickets.data.ResultadoPapel
 import com.avoqado.pos.areatickets.data.resultadoDelFallo
+import com.avoqado.pos.areatickets.domain.ComandaDelArea
 import com.avoqado.pos.areatickets.domain.PapelDelAparato
+import com.avoqado.pos.areatickets.domain.comandaDelArea
+import com.avoqado.pos.areatickets.domain.motivoParaNoCambiarComanda
 import com.avoqado.pos.areatickets.domain.etiquetaDelRecuadro
 import com.avoqado.pos.areatickets.domain.mismoPapel
 import com.avoqado.pos.areatickets.domain.motivoParaNoGuardar
@@ -122,6 +125,14 @@ class PapelDelAparatoGateViewModel @Inject constructor(
     val hayRed: StateFlow<Boolean> = combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { a, b -> a && b }
         .stateIn(viewModelScope, SharingStarted.Eagerly, connectivityMonitor.isFullyConnected)
 
+    /** D2: guardando el interruptor «Manda comanda a cocina» de «Impresoras y cajón». */
+    private val _guardandoComanda = MutableStateFlow(false)
+    val guardandoComanda: StateFlow<Boolean> = _guardandoComanda.asStateFlow()
+
+    /** D2: el rechazo del último cambio de comanda; se limpia al volver a intentar. */
+    private val _errorDeComanda = MutableStateFlow<String?>(null)
+    val errorDeComanda: StateFlow<String?> = _errorDeComanda.asStateFlow()
+
     /** Negocios donde dijeron «Ahora no» (o «Entendido» sin permiso) en esta sesión. */
     private val calladas = mutableSetOf<String>()
     private var sesionVista = 0
@@ -159,6 +170,48 @@ class PapelDelAparatoGateViewModel @Inject constructor(
 
     fun puedeConfigurar(): Boolean =
         roleManager.hasVenuePermission("area-tickets:configure", fallbackRoles = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN"))
+
+    /** D2: la comanda del área que este aparato emite, para «Impresoras y cajón»; null = no se enseña. */
+    fun comandaDelAreaActual(ajustes: AreaTicketSettingsData?): ComandaDelArea? =
+        ajustes?.takeIf { it.venueId == secureStorage.venueId }?.let(::comandaDelArea)
+
+    /** D2: por qué el interruptor está apagado (null = se puede tocar). */
+    fun motivoComanda(hayRed: Boolean): String? = motivoParaNoCambiarComanda(puedeConfigurar(), hayRed)
+
+    /**
+     * D2: apaga o prende la comanda del área de este aparato. Online-only; un segundo toque mientras guarda no sale. La
+     * respuesta del servidor (los ajustes con el valor que quedó) reemplaza la copia: lo que se ve es lo guardado.
+     */
+    fun cambiarComanda(manda: Boolean) {
+        if (_guardandoComanda.value) return
+        val ajustes = _ajustes.value?.takeIf { it.venueId == secureStorage.venueId } ?: return
+        val comanda = comandaDelArea(ajustes) ?: return
+        if (comanda.manda == manda) return
+        motivoComanda(connectivityMonitor.isFullyConnected)?.let { motivo ->
+            _errorDeComanda.value = motivo
+            return
+        }
+        _guardandoComanda.value = true
+        _errorDeComanda.value = null
+        val sesion = secureStorage.generacion
+        viewModelScope.launch {
+            try {
+                val resultado = repository.cambiarComandaDelArea(ajustes.venueId, comanda.areaId, manda, sello = sesion)
+                if (secureStorage.generacion != sesion || secureStorage.venueId != ajustes.venueId) return@launch
+                when (resultado) {
+                    is ResultadoPapel.Guardado -> {
+                        _ajustes.value = resultado.ajustes
+                        cambiosDelPapel.publicar(resultado.ajustes)
+                    }
+                    ResultadoPapel.SinPermiso -> _errorDeComanda.value = motivoParaNoCambiarComanda(puedeConfigurar = false, hayRed = true)
+                    ResultadoPapel.SinRed -> _errorDeComanda.value = motivoParaNoCambiarComanda(puedeConfigurar = true, hayRed = false)
+                    is ResultadoPapel.Rechazado -> _errorDeComanda.value = resultado.mensaje
+                }
+            } finally {
+                _guardandoComanda.value = false
+            }
+        }
+    }
 
     /** El recuadro «Vales» de «Más»: la misma hoja, sin «Ahora no». */
     fun abrirDesdeMas() {
