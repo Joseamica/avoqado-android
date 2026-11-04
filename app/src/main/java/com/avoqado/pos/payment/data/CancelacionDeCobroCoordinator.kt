@@ -211,10 +211,11 @@ class CancelacionDeCobroCoordinator internal constructor(
         val candado = candadoDe(id)
         if (!candado.tryLock()) return
         // Esta corrida empieza DESPUÉS de la declaración: ella misma cumple lo anotado. Lo que se anote mientras corre, sigue.
-        repreguntar.remove(id)
+        // Codex r3 #1: si quien se lleva la marca es el reloj, consulta YA aunque su espera no haya vencido; si no, se perdía.
+        val pedidaTrasDeclarar = repreguntar.remove(id)
         try {
             var intencion = store.leer(id) ?: return
-            if (!ignorarEspera && intencion.proximoIntentoEn > reloj()) return
+            if (!ignorarEspera && !pedidaTrasDeclarar && intencion.proximoIntentoEn > reloj()) return
             marcarEnCurso(id, true)
             publicar(id, EstadoDeCancelacion.EnCurso)
             publicar(id, correr(intencion))

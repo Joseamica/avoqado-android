@@ -217,6 +217,23 @@ class CancelacionDeCobroCoordinatorTest {
         assertEquals(null, store.leer("req-1"))
     }
 
+    // D19 (Codex r3 #1): si quien se lleva la marca es la corrida del RELOJ, consulta ya aunque su espera no haya vencido.
+    @Test
+    fun `D19 la corrida del reloj que se lleva la marca consulta aunque su espera no haya vencido`() = runTest {
+        val transporte = CancelacionTransportFalso().apply {
+            programarEstados(ChargeStatusProbe.Known("TIMED_OUT", false, failureCode = "AUTO_RELEASED", outcome = "UNRESOLVED"), cancelado)
+        }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+        c.procesar("req-1")                                // queda pendiente, con su próxima consulta en el futuro
+        assertTrue(store.leer("req-1")!!.proximoIntentoEn > testScheduler.currentTime)
+
+        c.procesarTrasDeclarar("req-1")                    // deja la marca (su corrida inmediata todavía no corre)
+        c.procesar("req-1", ignorarEspera = false)         // el reloj llega primero y se la lleva
+
+        assertEquals(transporte.llamadas.toString(), 1, transporte.llamadasBorrar.size)
+    }
+
     @Test
     fun `P1 un 404 sostenido queda pendiente y no borra`() = runTest {
         val transporte = CancelacionTransportFalso().apply { programarEstados(ChargeStatusProbe.NotFound) }

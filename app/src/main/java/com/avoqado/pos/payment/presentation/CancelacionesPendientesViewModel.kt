@@ -79,7 +79,10 @@ class CancelacionesPendientesViewModel @Inject constructor(
         }
     }
 
-    private class EsperaDelPin(val intencion: IntencionDeCancelarCobro, val rechazo: String)
+    private class EsperaDelPin(val intencion: IntencionDeCancelarCobro, val rechazo: String) {
+        /** Un solo envío por espera: un segundo «Autorizar» (o cerrar y reabrir) espera al primero, no manda otro. */
+        var envio: kotlinx.coroutines.Deferred<OverrideResult>? = null
+    }
     private var esperaDelPin: EsperaDelPin? = null
     private var idDelTeclado = 0L
     private val _pidiendoPin = MutableStateFlow<PeticionDePinDeGerente?>(null)
@@ -88,33 +91,37 @@ class CancelacionesPendientesViewModel @Inject constructor(
 
     /**
      * El PIN viaja en el cuerpo de la MISMA declaración y no se guarda. PIN equivocado ⇒ el teclado se queda; demasiados intentos ⇒ lo
-     * dice; cualquier otra respuesta cierra el teclado y se ve en la fila. Corre en `viewModelScope`: si el teclado se va con la
-     * declaración viajando, su respuesta se aplica igual.
+     * dice; cualquier otra respuesta cierra el teclado y se ve en la fila. 🔴 Codex r3 #2: el envío Y el trato de su respuesta corren en
+     * `viewModelScope`: si el teclado se cierra con la declaración viajando, la respuesta se aplica igual (el servidor pudo liberar).
      */
     suspend fun enviarPin(pin: String): OverrideResult {
         val espera = esperaDelPin ?: return TECLADO_CERRADO
+        espera.envio?.takeIf { it.isActive }?.let { return it.await() }
         val requestId = espera.intencion.requestId ?: return TECLADO_CERRADO
         val id = espera.intencion.id
-        val r = viewModelScope.async {
-            terminalPaymentService.declararNoCobrado(requestId, espera.intencion.venueId.takeIf { it.isNotBlank() }, supervisorPin = pin)
-        }.await()
-        if (r is ResultadoDeDeclaracion.Rechazada) when (r.code) {
-            CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE -> return OverrideResult.Insufficient
-            CancelacionDeCobro.CODIGO_DEMASIADOS_INTENTOS -> return OverrideResult.TooManyAttempts
+        val envio = viewModelScope.async {
+            val r = terminalPaymentService.declararNoCobrado(requestId, espera.intencion.venueId.takeIf { it.isNotBlank() }, supervisorPin = pin)
+            if (r is ResultadoDeDeclaracion.Rechazada) when (r.code) {
+                CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE -> return@async OverrideResult.Insufficient
+                CancelacionDeCobro.CODIGO_DEMASIADOS_INTENTOS -> return@async OverrideResult.TooManyAttempts
+            }
+            if (esperaDelPin === espera) { esperaDelPin = null; _pidiendoPin.value = null }
+            when (r) {
+                ResultadoDeDeclaracion.Liberada -> cancelacionDeCobro.procesarTrasDeclarar(id)
+                is ResultadoDeDeclaracion.Rechazada -> _avisos.update { it + (id to r.mensaje) }
+                ResultadoDeDeclaracion.SinConexion -> _avisos.update { it + (id to CancelacionDeCobro.DECLARACION_SIN_RED) }
+                ResultadoDeDeclaracion.SesionRenovada -> _avisos.update { it + (id to CancelacionDeCobro.DECLARACION_SESION_RENOVADA) }
+            }
+            TECLADO_CERRADO
         }
-        if (esperaDelPin === espera) { esperaDelPin = null; _pidiendoPin.value = null }
-        when (r) {
-            ResultadoDeDeclaracion.Liberada -> cancelacionDeCobro.procesarTrasDeclarar(id)
-            is ResultadoDeDeclaracion.Rechazada -> _avisos.update { it + (id to r.mensaje) }
-            ResultadoDeDeclaracion.SinConexion -> _avisos.update { it + (id to CancelacionDeCobro.DECLARACION_SIN_RED) }
-            ResultadoDeDeclaracion.SesionRenovada -> _avisos.update { it + (id to CancelacionDeCobro.DECLARACION_SESION_RENOVADA) }
-        }
-        return TECLADO_CERRADO
+        espera.envio = envio
+        return envio.await()
     }
 
-    /** Cerrar el teclado sin PIN: se ve el motivo del servidor y el botón vuelve a estar disponible. */
+    /** Cerrar el teclado sin PIN: se ve el motivo del servidor y el botón vuelve a estar disponible. Con un PIN viajando no hace nada. */
     fun cerrarPin() {
         val espera = esperaDelPin ?: return
+        if (espera.envio?.isActive == true) return
         esperaDelPin = null
         _pidiendoPin.value = null
         _avisos.update { it + (espera.intencion.id to espera.rechazo) }

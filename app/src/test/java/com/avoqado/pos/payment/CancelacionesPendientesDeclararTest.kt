@@ -12,6 +12,8 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -113,5 +115,25 @@ class CancelacionesPendientesDeclararTest {
         assertEquals(null, vm.pidiendoPin.value)
         assertEquals("Pide a un gerente que ingrese su PIN.", vm.avisos.value["req-1"])
         verify(exactly = 0) { coordinador.procesarTrasDeclarar(any()) }
+    }
+    @Test
+    fun `D19 cerrar el teclado con el PIN viajando no pierde la respuesta ni deja mandar otro`() = runTest {
+        val respuesta = CompletableDeferred<ResultadoDeDeclaracion>()
+        coEvery { servicio.declararNoCobrado("req-1", "venue-1", null) } returns
+            ResultadoDeDeclaracion.Rechazada("Pide a un gerente que ingrese su PIN.", CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE)
+        coEvery { servicio.declararNoCobrado("req-1", "venue-1", "4321") } coAnswers { respuesta.await() }
+        val vm = vm()
+        vm.declarar(intencion)
+
+        val teclado = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler) + kotlinx.coroutines.Job())
+        teclado.launch { vm.enviarPin("4321") }
+        vm.cerrarPin()                                         // con el PIN viajando, no hace nada
+        teclado.launch { vm.enviarPin("4321") }                // un segundo «Autorizar» espera al primero
+        teclado.cancel()                                       // el teclado se va (su scope muere)
+        respuesta.complete(ResultadoDeDeclaracion.Liberada)
+
+        verify(exactly = 1) { coordinador.procesarTrasDeclarar("req-1") }
+        coVerify(exactly = 1) { servicio.declararNoCobrado("req-1", "venue-1", "4321") }
+        assertEquals(null, vm.pidiendoPin.value)
     }
 }
