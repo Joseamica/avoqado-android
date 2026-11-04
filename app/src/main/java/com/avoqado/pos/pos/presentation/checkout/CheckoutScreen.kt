@@ -1090,7 +1090,7 @@ fun CheckoutScreen(
 
     // Venta por peso: panel de captura de peso (báscula/manual) para productos soldByWeight.
     weightProduct?.let { product ->
-        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
+        // La barrera la pone el propio panel (HojaConAtajo): F12 ahí es «Agregar», no Cobrar.
         LaunchedEffect(product.id, areaOperationsState.settings?.scaleIntegration) {
             scaleCaptureViewModel.start(areaOperationsState.settings?.scaleIntegration)
         }
