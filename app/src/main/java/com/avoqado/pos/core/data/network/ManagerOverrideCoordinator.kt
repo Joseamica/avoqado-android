@@ -6,7 +6,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,7 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,7 +28,7 @@ import javax.inject.Singleton
  * reintento sería invisible. Mismo patrón que `TokenRefreshAuthenticator` con
  * el 401.
  *
- * El `Mutex` garantiza UN teclado a la vez: dos acciones bloqueadas al mismo
+ * La fila garantiza UN teclado a la vez: dos acciones bloqueadas al mismo
  * tiempo hacen fila en vez de apilar dos diálogos.
  *
  * D24 (4-nov-2026): las consultas de una misma RÁFAGA (la marca `X-Avoqado-Rafaga`, que hoy pone Informes en sus 4
@@ -88,12 +89,10 @@ open class ManagerOverrideCoordinator @Inject constructor(
     /** Reloj MONOTÓNICO: mide tiempo transcurrido, inmune a que el reloj salte. */
     internal open val nowNanos: () -> Long = System::nanoTime
 
-    private val queue = Mutex()
-
     /**
-     * Donde vive cada teclado mientras está en fila o a la vista. D24: ya no vive en el hilo de quien lo abrió, porque
-     * esa consulta tiene que poder irse con su token en cuanto sale (Codex r1 #3: retenerlo mientras se reparten los demás
-     * podía dejarlo vencido, 60 s en el servidor) sin que se cierre el teclado de las demás.
+     * Donde corre el reloj de cada teclado (su vencimiento). D24: el teclado ya no vive en el hilo de quien lo abrió,
+     * porque esa consulta tiene que poder irse con su token en cuanto sale (Codex r1 #3: retenerlo mientras se reparten
+     * los demás podía dejarlo vencido, 60 s en el servidor) sin que se cierre el teclado de las demás.
      */
     private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -116,8 +115,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
         var autorizado = false
         /** Terminó de repartir a TODAS. Sólo así no se anota la ráfaga como soltada (Codex código r1 #2). */
         var exito = false
-        /** Se completa al terminar de repartir o al soltarse el grupo: entonces se cierra el teclado. */
-        val terminado = CompletableDeferred<Unit>()
+        /** El reloj de su teclado: al vencer, se suelta el grupo. Se apaga al retirar el teclado. */
+        var vence: Job? = null
         /**
          * Un envío a la vez POR TECLADO: dos toques casi juntos en «Autorizar» no reparten dos veces al mismo grupo. Es de
          * cada grupo y no de toda la app (Codex código r2): una autorización vieja atorada en la red no detiene el PIN del
@@ -146,6 +145,10 @@ open class ManagerOverrideCoordinator @Inject constructor(
     private var nextId: Long = 0
 
     private val candado = Any()
+
+    /** El grupo cuyo teclado está a la vista, y los que esperan su turno, en orden de llegada. Bajo [candado]. */
+    private var vigente: Grupo? = null
+    private val fila = ArrayDeque<Grupo>()
 
     /** D24: los grupos de ráfaga a los que todavía se puede unir alguien, por (ráfaga, permiso). */
     private val gruposAbiertos = HashMap<Pair<String, String>, Grupo>()
@@ -225,55 +228,73 @@ open class ManagerOverrideCoordinator @Inject constructor(
     }
 
     /**
-     * El teclado de verdad: una espera a la vez, acotada, y limpia al salir. Vive en [alcance], no en el hilo de quien lo
-     * abrió: cada petición del grupo sólo espera SU token.
+     * El teclado de verdad: UNO a la vez y en orden de llegada (la fila), acotado por su reloj, y limpio al salir.
+     *
+     * 🔴 Sin fila se publica YA, en el hilo de quien lo pide, como antes de D24: quien llama a [preauthorize] encuentra el
+     * teclado puesto al volver, y al terminar uno el siguiente de la fila se publica en el acto ([retirar]). Todo bajo
+     * [candado]: el estado de la fila no depende de cuándo despierte otro hilo.
      */
     private fun presentar(grupo: Grupo) {
-        alcance.launch {
-            queue.withLock {
-                val awaiting = synchronized(candado) {
-                    // Se soltó mientras hacía fila (quien lo pidió ya no espera): no se asoma un teclado para nadie.
-                    // Se mira bajo el MISMO candado con que se publica (Codex código r1 #3: entre mirar y publicar
-                    // podía soltarse).
-                    if (grupo.cerrado) return@synchronized null
-                    val id = ++nextId
-                    tecladosPublicados++
-                    Waiting(id, grupo).also {
-                        pending = it
-                        _prompt.value = Prompt(id, grupo.permission, PermissionLabels.of(grupo.permission))
-                    }
-                } ?: return@withLock
-                try {
-                    withTimeoutOrNull(promptTimeoutMs) { grupo.terminado.await() }
-                } finally {
-                    // Primero se quita el teclado y después se suelta a quien esperaba (vencer = cancelar).
-                    cerrarTeclado(awaiting)
-                    soltar(grupo)
-                }
-            }
+        synchronized(candado) {
+            if (vigente == null) publicar(grupo) else fila.addLast(grupo)
+        }
+    }
+
+    /** Bajo [candado]: pone el teclado de [grupo] a la vista y arranca su reloj. */
+    private fun publicar(grupo: Grupo) {
+        vigente = grupo
+        val id = ++nextId
+        tecladosPublicados++
+        pending = Waiting(id, grupo)
+        _prompt.value = Prompt(id, grupo.permission, PermissionLabels.of(grupo.permission))
+        // Vencer = cancelar: se suelta a quien esperaba y pasa el siguiente.
+        grupo.vence = alcance.launch {
+            delay(promptTimeoutMs)
+            soltar(grupo)
         }
     }
 
     /**
-     * Cierra el grupo y suelta con null a las que no alcanzaron token. Si no terminó de repartir a todas (canceló, venció,
-     * se fue la pantalla, faltó un token), su ráfaga queda anotada aunque alguna ya tuviera token: una respuesta tardía de
-     * esa misma carga no vuelve a preguntar (Codex código r1 #2).
+     * Bajo [candado]: el teclado de [grupo] ya no hace falta (repartió, se canceló o venció). Si estaba a la vista se
+     * quita y se publica el siguiente de la fila que siga abierto; si hacía fila, sale de ella sin asomarse nunca (Codex
+     * código r1 #3).
+     */
+    private fun retirar(grupo: Grupo) {
+        if (vigente !== grupo) {
+            fila.remove(grupo)
+            return
+        }
+        grupo.vence?.cancel()
+        vigente = null
+        if (pending?.grupo === grupo) pending = null
+        _prompt.value = null
+        while (vigente == null && fila.isNotEmpty()) {
+            val siguiente = fila.removeFirst()
+            if (!siguiente.cerrado) publicar(siguiente)
+        }
+    }
+
+    /**
+     * Cierra el grupo, quita su teclado y suelta con null a las que no alcanzaron token. Si no terminó de repartir a
+     * todas (canceló, venció, se fue la pantalla, faltó un token), su ráfaga queda anotada aunque alguna ya tuviera token:
+     * una respuesta tardía de esa misma carga no vuelve a preguntar (Codex código r1 #2).
      *
-     * 🔴 Todo bajo [candado], también completar con null: así «soltar» y «entregar un token» (en [enviar]) no se cruzan;
-     * gana el primero que toma el candado y el otro ya no hace nada (Codex código r1 #1).
+     * 🔴 Quién se queda con cada espera se decide bajo [candado] (aquí se sacan de la fila; [enviar] saca la suya antes de
+     * entregarle el token): «soltar» y «entregar» nunca reclaman a la misma (Codex código r1 #1). Se completan fuera del
+     * candado, para que nadie que despierte en este mismo hilo vuelva a entrar a medio cambio.
      */
     private fun soltar(grupo: Grupo) {
-        synchronized(candado) {
+        val sueltas = synchronized(candado) {
             val clave = grupo.rafaga?.let { it to grupo.permission }
             if (clave != null && !grupo.exito) {
                 rafagasSoltadas.add(clave)
                 while (rafagasSoltadas.size > RAFAGAS_RECORDADAS) rafagasSoltadas.remove(rafagasSoltadas.first())
             }
             cerrarAUniones(grupo)
-            grupo.pendientes.forEach { it.token.complete(null) }
-            grupo.pendientes.clear()
+            retirar(grupo)
+            grupo.pendientes.toList().also { grupo.pendientes.clear() }
         }
-        grupo.terminado.complete(Unit)
+        sueltas.forEach { it.token.complete(null) }
     }
 
     /** Pruebas (D24): cuántos teclados se han publicado en total. */
@@ -367,9 +388,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
                     // Entregar y soltar se deciden bajo el MISMO candado (Codex código r1 #1): si mientras viajaba este
                     // token se canceló o venció el teclado, ya se soltó a todas y el token se tira sin usarse.
                     val entrega = synchronized(candado) {
-                        if (grupo.cerrado) return@synchronized Entrega.DESCARTADA
+                        if (grupo.cerrado || !grupo.pendientes.remove(turno)) return@synchronized Entrega.DESCARTADA
                         grupo.autorizado = true
-                        grupo.pendientes.remove(turno)
                         // Ya no queda nadie: se cierra a nuevas uniones (una tardía abre su propio teclado).
                         val ultima = grupo.pendientes.isEmpty()
                         if (ultima) {
@@ -377,12 +397,13 @@ open class ManagerOverrideCoordinator @Inject constructor(
                             grupo.exito = true
                             // La última sale con el teclado ya cerrado, como siempre: la acción que sigue nunca ve el
                             // anterior.
-                            cerrarTeclado(awaiting)
+                            retirar(grupo)
                         }
-                        // Se entrega en cuanto sale: nadie retiene un token mientras se reparten los demás.
-                        turno.token.complete(result.token)
                         if (ultima) Entrega.ULTIMA else Entrega.SIGUE
                     }
+                    // Se entrega en cuanto sale (ya es sólo suya: salió de la fila bajo el candado): nadie retiene un
+                    // token mientras se reparten los demás.
+                    if (entrega != Entrega.DESCARTADA) turno.token.complete(result.token)
                     if (entrega == Entrega.DESCARTADA) {
                         Log.w("🔐 Override", "El teclado se cerró mientras salía un token de ${grupo.permission}; se tira")
                         break
@@ -398,39 +419,22 @@ open class ManagerOverrideCoordinator @Inject constructor(
                 } else {
                     // Ya se autorizó, pero este token no salió (429, sin red): ésta y las que faltan reciben null.
                     Log.w("🔐 Override", "Un token de la ráfaga no salió ($result); se sueltan las que faltan")
-                    cerrarTeclado(awaiting)
                     soltar(grupo)
                     break
                 }
             }
         } catch (e: CancellationException) {
             // El teclado salió de la pantalla a media repartición: nadie se queda esperando.
-            cerrarTeclado(awaiting)
             soltar(grupo)
             throw e
         }
         if (autorizacion == null) {
             // Ninguna petición del grupo seguía en pie (no se mandó el PIN, Codex r1 #4) o el teclado se cerró mientras
             // salía el primer token: el teclado se cierra.
-            cerrarTeclado(awaiting)
             soltar(grupo)
             return OverrideResult.Failed(YA_NO_ESPERA)
         }
-        cerrarTeclado(awaiting)
-        grupo.terminado.complete(Unit)
         return autorizacion
-    }
-
-    /**
-     * Quita el teclado de la pantalla AHORA, antes de entregar o soltar: quien esperaba sale con el teclado ya cerrado
-     * (como antes de D24) y la siguiente acción de la fila nunca encuentra el anterior. El ciclo del teclado lo vuelve a
-     * limpiar al terminar; mientras tanto conserva el turno de la fila.
-     */
-    private fun cerrarTeclado(awaiting: Waiting) {
-        synchronized(candado) {
-            if (pending === awaiting) pending = null
-            if (_prompt.value?.id == awaiting.id) _prompt.value = null
-        }
     }
 
     private enum class Entrega { SIGUE, ULTIMA, DESCARTADA }
@@ -462,6 +466,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
             if (elegida == null && grupo.autorizado && !grupo.cerrado) {
                 cerrarAUniones(grupo)
                 grupo.exito = true
+                retirar(grupo)
             }
             elegida
         }
@@ -480,7 +485,6 @@ open class ManagerOverrideCoordinator @Inject constructor(
     open fun cancel(promptId: Long? = null) {
         val awaiting = pending ?: return
         if (promptId != null && awaiting.id != promptId) return
-        cerrarTeclado(awaiting)
         soltar(awaiting.grupo)
     }
 }
