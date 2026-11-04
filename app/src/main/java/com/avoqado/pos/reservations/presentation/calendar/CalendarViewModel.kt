@@ -216,11 +216,13 @@ class CalendarViewModel @Inject constructor(
         fetchJob = viewModelScope.launch {
             val fromString = from.format(DateTimeFormatter.ISO_LOCAL_DATE)
             val toString = to.format(DateTimeFormatter.ISO_LOCAL_DATE)
+            // D26: reservas y clases piden «ver reservas»; con la misma marca, sin el permiso sale UN PIN de gerente.
+            val rafaga = java.util.UUID.randomUUID().toString()
             val reservationsDeferred = async {
-                repository.fetchCalendar(fromString, toString, background = background)
+                repository.fetchCalendar(fromString, toString, background = background, rafaga = rafaga)
             }
             val classSessionsDeferred = async {
-                classSessionRepository.fetchList(fromString, toString, background = background)
+                classSessionRepository.fetchList(fromString, toString, background = background, rafaga = rafaga)
             }
             val r = reservationsDeferred.await()
             val classResult = classSessionsDeferred.await()

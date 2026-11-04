@@ -93,8 +93,9 @@ class ReservationRepository @Inject constructor(
         dateFrom: String,
         dateTo: String,
         background: Boolean = false,
+        rafaga: String? = null,
     ): Result<List<Reservation>> =
-        api.calendar(dateFrom, dateTo, background = background)
+        api.calendar(dateFrom, dateTo, background = background, rafaga = rafaga)
 
     /** [venueId]: la sucursal de un aviso de la franja (null = la de la sesión). */
     suspend fun fetchOne(id: String, venueId: String? = null): Result<Reservation> = api.get(id, venueId)

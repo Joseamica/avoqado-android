@@ -99,12 +99,16 @@ class ReservationApi @Inject constructor(
         dateTo: String,
         groupBy: String? = null,
         background: Boolean = false,
+        /** D26: la marca de la carga del Calendario (reservas + clases comparten UN PIN de gerente). */
+        rafaga: String? = null,
     ): Result<List<Reservation>> = call(background) {
         val params = buildList {
             add("dateFrom=$dateFrom"); add("dateTo=$dateTo")
             groupBy?.let { add("groupBy=$it") }
         }.joinToString("&")
-        Request.Builder().url("${base() ?: error("No venue")}/calendar?$params").get().build()
+        Request.Builder().url("${base() ?: error("No venue")}/calendar?$params").get()
+            .apply { if (rafaga != null) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.RAFAGA_HEADER, rafaga) }
+            .build()
     }.mapCatching { body ->
         val element = json.parseToJsonElement(body)
         when (element) {

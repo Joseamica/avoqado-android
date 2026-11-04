@@ -42,6 +42,8 @@ class ClassSessionApi @Inject constructor(
         productId: String? = null,
         status: String? = null,
         background: Boolean = false,
+        /** D26: la marca de la carga del Calendario (reservas + clases comparten UN PIN de gerente). */
+        rafaga: String? = null,
     ): Result<List<ClassSession>> = call(background) {
         val params = buildList {
             add("dateFrom=$dateFrom")
@@ -49,7 +51,9 @@ class ClassSessionApi @Inject constructor(
             productId?.let { add("productId=$it") }
             status?.let { add("status=$it") }
         }.joinToString("&")
-        Request.Builder().url("${base() ?: error("No venue")}?$params").get().build()
+        Request.Builder().url("${base() ?: error("No venue")}?$params").get()
+            .apply { if (rafaga != null) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.RAFAGA_HEADER, rafaga) }
+            .build()
     }.mapCatching { json.decodeFromString(ListSerializer(ClassSession.serializer()), it) }
 
     suspend fun get(sessionId: String, background: Boolean = false): Result<ClassSession> = call(background) {

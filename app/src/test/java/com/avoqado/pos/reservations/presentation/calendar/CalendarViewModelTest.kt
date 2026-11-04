@@ -28,6 +28,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import com.avoqado.pos.reservations.domain.ReservationAction
 import io.mockk.coVerify
+import io.mockk.captureNullable
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CalendarViewModelTest {
@@ -52,7 +53,7 @@ class CalendarViewModelTest {
         every { storage.venueTimezone } returns "America/Mexico_City"
         every { storage.calendarViewForCurrentVenue } returns null
         every { storage.showClassSessionsForCurrentVenue } returns false
-        coEvery { repo.fetchCalendar(any(), any(), any()) } returns Result.success(listOf(stub("r1", ReservationStatus.CONFIRMED)))
+        coEvery { repo.fetchCalendar(any(), any(), any(), any()) } returns Result.success(listOf(stub("r1", ReservationStatus.CONFIRMED)))
 
         val connectivity: ConnectivityMonitor = mockk(relaxed = true)
         every { connectivity.isConnected } returns MutableStateFlow(true)
@@ -60,7 +61,7 @@ class CalendarViewModelTest {
         // v2.3.2 added classSessionRepository to the VM constructor; this test was never updated.
         val classRepo: ClassSessionRepository = mockk(relaxed = true)
         every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
-        coEvery { classRepo.fetchList(any(), any(), any()) } returns Result.success(emptyList())
+        coEvery { classRepo.fetchList(any(), any(), any(), any()) } returns Result.success(emptyList())
         val vm = CalendarViewModel(repo, classRepo, storage, connectivity)
         advanceUntilIdle()
 
@@ -77,7 +78,7 @@ class CalendarViewModelTest {
         every { storage.venueTimezone } returns "America/Mexico_City"
         every { storage.calendarViewForCurrentVenue } returns null
         every { storage.showClassSessionsForCurrentVenue } returns false
-        coEvery { repo.fetchCalendar(any(), any(), any()) } returnsMany listOf(
+        coEvery { repo.fetchCalendar(any(), any(), any(), any()) } returnsMany listOf(
             Result.success(emptyList()),
             Result.success(listOf(stub("r1", ReservationStatus.PENDING))),
         )
@@ -87,7 +88,7 @@ class CalendarViewModelTest {
         every { connectivity.isServerReachable } returns MutableStateFlow(true)
         val classRepo: ClassSessionRepository = mockk(relaxed = true)
         every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
-        coEvery { classRepo.fetchList(any(), any(), any()) } returns Result.success(emptyList())
+        coEvery { classRepo.fetchList(any(), any(), any(), any()) } returns Result.success(emptyList())
         val vm = CalendarViewModel(repo, classRepo, storage, connectivity)
         advanceUntilIdle()
         vm.setDate(LocalDate.now().plusDays(1))
@@ -96,12 +97,44 @@ class CalendarViewModelTest {
         assertEquals(1, vm.state.value.reservations.size)
     }
 
+    /** D26: reservas y clases de UNA carga viajan con la misma marca (UN PIN de gerente); la siguiente carga, con otra. */
+    @Test
+    fun `reservas y clases de una carga llevan la misma marca de rafaga y la siguiente carga otra`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk()
+        every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
+        val storage: SecureStorage = mockk()
+        every { storage.venueTimezone } returns "America/Mexico_City"
+        every { storage.calendarViewForCurrentVenue } returns null
+        every { storage.showClassSessionsForCurrentVenue } returns false
+        val marcasReservas = mutableListOf<String?>()
+        val marcasClases = mutableListOf<String?>()
+        coEvery { repo.fetchCalendar(any(), any(), any(), captureNullable(marcasReservas)) } returns Result.success(emptyList())
+        val connectivity: ConnectivityMonitor = mockk(relaxed = true)
+        every { connectivity.isConnected } returns MutableStateFlow(true)
+        every { connectivity.isServerReachable } returns MutableStateFlow(true)
+        val classRepo: ClassSessionRepository = mockk(relaxed = true)
+        every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
+        coEvery { classRepo.fetchList(any(), any(), any(), captureNullable(marcasClases)) } returns Result.success(emptyList())
+
+        val vm = CalendarViewModel(repo, classRepo, storage, connectivity)
+        advanceUntilIdle()
+        vm.setDate(LocalDate.now().plusDays(1))
+        advanceUntilIdle()
+
+        assertEquals(2, marcasReservas.size)
+        assertEquals(2, marcasClases.size)
+        assertTrue(marcasReservas.all { !it.isNullOrBlank() })
+        assertEquals("misma carga, misma marca", marcasReservas, marcasClases)
+        assertNotEquals("otra carga, otra marca", marcasReservas[0], marcasReservas[1])
+    }
+
     @Test
     fun `drag reschedule over capacity retries only after operator consent`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
         every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
         every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
-        coEvery { repo.fetchCalendar(any(), any(), any()) } returns Result.success(emptyList())
+        coEvery { repo.fetchCalendar(any(), any(), any(), any()) } returns Result.success(emptyList())
         val storage: SecureStorage = mockk()
         every { storage.venueTimezone } returns "America/Mexico_City"
         every { storage.calendarViewForCurrentVenue } returns null
@@ -111,7 +144,7 @@ class CalendarViewModelTest {
         every { connectivity.isServerReachable } returns MutableStateFlow(true)
         val classRepo: ClassSessionRepository = mockk(relaxed = true)
         every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
-        coEvery { classRepo.fetchList(any(), any(), any()) } returns Result.success(emptyList())
+        coEvery { classRepo.fetchList(any(), any(), any(), any()) } returns Result.success(emptyList())
         val starts = ZonedDateTime.of(2026, 4, 30, 15, 0, 0, 0, ZoneId.of("America/Mexico_City"))
         val ends = starts.plusHours(1)
         coEvery {
