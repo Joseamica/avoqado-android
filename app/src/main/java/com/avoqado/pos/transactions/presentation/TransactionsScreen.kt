@@ -54,6 +54,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,7 +74,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import kotlinx.coroutines.isActive
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.AvisoDeLecturaFallida
@@ -88,6 +88,9 @@ import com.avoqado.pos.transactions.data.model.TransactionFilters
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 
 @Composable
 fun TransactionsScreen(
@@ -425,11 +428,6 @@ private fun TransactionListPanel(
             onClearAll = { viewModel.clearAllFilters() },
         )
 
-        // D22: con más de una página a la vista la lista no se mueve sola; se ofrece actualizar (lo mismo que jalar).
-        if (hayVentasNuevas) {
-            PildoraDeVentasNuevas(onActualizar = viewModel::manualRefresh)
-        }
-
         // Content
         AvoqadoRefreshable(
             isRefreshing = isManualRefreshing,
@@ -460,61 +458,64 @@ private fun TransactionListPanel(
                     val listState = rememberLazyListState()
                     // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
                     // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
-                    val subidasAlInicio by viewModel.subidasAlInicio.collectAsState()
-                    val subidasHechas by viewModel.subidasHechas.collectAsState()
                     SubirAlInicioDeLaLista(
                         listState = listState,
                         primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" },
-                        subidasPedidas = subidasAlInicio,
-                        subidasHechas = subidasHechas,
-                        alSubir = viewModel::subidaAlInicioHecha,
                     )
+                    val alcanceDeLaLista = rememberCoroutineScope()
 
-                    LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(horizontal = horizontalPadding),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        grouped.forEach { (dateGroup, groupTransactions) ->
-                            item(key = "header_$dateGroup") {
-                                Text(
-                                    text = dateGroup,
-                                    style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(
-                                        top = dateHeaderTopPadding,
-                                        bottom = dateHeaderBottomPadding,
-                                    ),
-                                )
-                            }
+                    Column(Modifier.fillMaxSize()) {
+                        // D22: con más de una página a la vista la lista no se mueve sola; se ofrece actualizar. El toque sube la
+                        // lista en ese instante y luego pide la página 1 (rediseño r6): no queda ningún salto pendiente.
+                        if (hayVentasNuevas) {
+                            PildoraDeVentasNuevas(onActualizar = { alTocarLaPildora(alcanceDeLaLista, listState, viewModel::manualRefresh) })
+                        }
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = PaddingValues(horizontal = horizontalPadding),
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                        ) {
+                            grouped.forEach { (dateGroup, groupTransactions) ->
+                                item(key = "header_$dateGroup") {
+                                    Text(
+                                        text = dateGroup,
+                                        style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(
+                                            top = dateHeaderTopPadding,
+                                            bottom = dateHeaderBottomPadding,
+                                        ),
+                                    )
+                                }
 
-                            items(groupTransactions, key = { it.id }) { transaction ->
-                                val isSelected = isTablet && selectedTransactionId == transaction.id
+                                items(groupTransactions, key = { it.id }) { transaction ->
+                                    val isSelected = isTablet && selectedTransactionId == transaction.id
 
-                                TransactionRow(
-                                    transaction = transaction,
-                                    dense = denseList,
-                                    isSelected = isSelected,
-                                    onClick = { viewModel.selectTransaction(transaction.id) },
-                                )
+                                    TransactionRow(
+                                        transaction = transaction,
+                                        dense = denseList,
+                                        isSelected = isSelected,
+                                        onClick = { viewModel.selectTransaction(transaction.id) },
+                                    )
 
-                                // Trigger load-more
-                                LaunchedEffect(transaction.id) {
-                                    viewModel.loadMoreIfNeeded(transaction)
+                                    // Trigger load-more
+                                    LaunchedEffect(transaction.id) {
+                                        viewModel.loadMoreIfNeeded(transaction)
+                                    }
                                 }
                             }
-                        }
 
-                        // Loading more indicator
-                        if (isLoadingMore) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            // Loading more indicator
+                            if (isLoadingMore) {
+                                item {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                    }
                                 }
                             }
                         }
@@ -1287,7 +1288,7 @@ private fun paymentIcon(method: String?): ImageVector {
 
 /** D22: «Hay ventas nuevas · Actualizar», arriba de la lista cuando ya se bajaron más páginas. */
 @Composable
-private fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
+internal fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
     Box(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.xs), contentAlignment = Alignment.Center) {
         androidx.compose.material3.Surface(
             onClick = onActualizar,
@@ -1305,50 +1306,44 @@ private fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
 }
 
 /**
- * D22: cuándo sube la lista al inicio.
- * - Tras una carga A MANO buena (la píldora «Hay ventas nuevas · Actualizar», jalar, «Reintentar»): siempre, aunque la cajera
- *   hubiera bajado; lo pidió ella ([subidasPedidas] sube con cada una). [subidasHechas] es la última que de verdad se ejecutó
- *   (vive en el ViewModel) y [alSubir] la anota después de subir.
- * - Tras la automática: sólo si se veía desde arriba y entró algo nuevo arriba ([subirAlInicioTrasRecarga]); si la cajera
- *   había bajado, no se mueve. «Cargar más» pega al final y no sube.
+ * D22 (rediseño r6): al llegar la página 1 —automática o a mano—, si cambió la primera llave y la lista estaba exactamente
+ * arriba (la primera visible es la primera de antes, sin desplazamiento), sube para enseñar lo nuevo: con llaves estables se
+ * quedaba anclada a la fila de antes. Si la cajera está más abajo o moviéndose, no se cumple y no se hace nada. Ya no hay
+ * saltos pendientes: el toque de la píldora sube en ese instante ([alTocarLaPildora]).
  */
 @Composable
-internal fun SubirAlInicioDeLaLista(
-    listState: androidx.compose.foundation.lazy.LazyListState,
-    primeraLlave: Any?,
-    subidasPedidas: Long,
-    subidasHechas: Long,
-    alSubir: (Long) -> Unit,
-) {
+internal fun SubirAlInicioDeLaLista(listState: androidx.compose.foundation.lazy.LazyListState, primeraLlave: Any?) {
     var primeraLlaveAnterior by remember { mutableStateOf<Any?>(null) }
     LaunchedEffect(primeraLlave) {
         val anterior = primeraLlaveAnterior
         primeraLlaveAnterior = primeraLlave
         val visible = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key
-        if (subirAlInicioTrasRecarga(anterior, primeraLlave, visible, listState.firstVisibleItemScrollOffset)) {
+        // «Quieta»: con un dedo o una inercia en curso no se toca (el scrollToItem cortaría la inercia).
+        if (!listState.isScrollInProgress &&
+            subirAlInicioTrasRecarga(anterior, primeraLlave, visible, listState.firstVisibleItemScrollOffset)
+        ) {
             listState.scrollToItem(0)
-        }
-    }
-    // Ronda 4 (Codex código r3): lo hecho lo guarda el ViewModel, no `remember`. Si la carga a mano terminó con otra pestaña
-    // a la vista, al volver queda pendiente y se ejecuta aquí, encima de la posición que restauró la navegación.
-    LaunchedEffect(subidasPedidas, subidasHechas) {
-        if (subidasPedidas > subidasHechas) {
-            subirOAbandonar(subir = { listState.scrollToItem(0) }, anotar = { alSubir(subidasPedidas) })
         }
     }
 }
 
 /**
- * D22 ronda 5 (Codex código r4): sube la lista y anota la subida. Si la cajera toca o arrastra la lista, manda ella: un gesto
- * (`MutatePriority.UserInput`) interrumpe el salto, o lo rechaza si ya estaba en curso, y la subida se DESCARTA, anotada
- * como hecha, para que no salte nunca después. Se distingue de salir de la pantalla porque la corrutina sigue activa: si
- * salió de la composición, no se anota y queda pendiente para cuando vuelva.
+ * D22 (rediseño r6): tocar «Hay ventas nuevas · Actualizar». Primero sube la lista —es la acción de la cajera en ese
+ * instante, no algo diferido— y luego pide la página 1 ([actualizar]), que pide aunque el salto se corte. Al llegar la
+ * página, la lista ya está arriba y [SubirAlInicioDeLaLista] enseña lo nuevo. Si después la cajera la mueve, nada la regresa.
  */
-internal suspend fun subirOAbandonar(subir: suspend () -> Unit, anotar: () -> Unit) {
-    try {
-        subir()
-    } catch (cancelada: kotlinx.coroutines.CancellationException) {
-        if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw cancelada
+internal fun alTocarLaPildora(
+    alcance: CoroutineScope,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    actualizar: () -> Unit,
+) {
+    // Sin despachar: el salto corre dentro del mismo toque (sin competencia no suspende). Si una inercia lo hace esperar y la
+    // pantalla sale antes, el finally igual pide la página: el pedido nunca se pierde.
+    alcance.launch(start = CoroutineStart.UNDISPATCHED) {
+        try {
+            listState.scrollToItem(0)
+        } finally {
+            actualizar()
+        }
     }
-    anotar()
 }

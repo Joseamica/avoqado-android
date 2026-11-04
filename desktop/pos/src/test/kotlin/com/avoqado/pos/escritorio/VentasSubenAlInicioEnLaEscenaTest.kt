@@ -1,224 +1,217 @@
 package com.avoqado.pos.escritorio
 
 import androidx.compose.foundation.MutatePriority
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.transactions.presentation.PildoraDeVentasNuevas
 import com.avoqado.pos.transactions.presentation.SubirAlInicioDeLaLista
-import com.avoqado.pos.transactions.presentation.subirOAbandonar
+import com.avoqado.pos.transactions.presentation.TextosDeVentas
+import com.avoqado.pos.transactions.presentation.alTocarLaPildora
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * D22 ronda 3 (D3, 4-nov): con cinco páginas y la lista abajo, tocar «Hay ventas nuevas · Actualizar» reemplazaba las páginas
- * por la 1 nueva pero dejaba la lista a media altura. Tras una carga a mano buena sube al inicio; la automática con la cajera
- * abajo no la mueve. Lo mismo corre en ANDROID: es el mismo composable de la pantalla.
+ * D22 (rediseño r6): la lista de Ventas sube al inicio sólo en dos momentos, y nunca queda un salto pendiente.
+ * 1. Al llegar la página 1 (automática o a mano), si la lista estaba exactamente arriba y quieta, sube para enseñar lo nuevo.
+ * 2. Al tocar «Hay ventas nuevas · Actualizar», el mismo toque sube la lista y luego pide la página 1.
+ * La escena arma la lista igual que la pantalla (la píldora encima, la lista debajo) con los mismos composables; lo mismo
+ * corre en ANDROID.
  */
 @OptIn(ExperimentalTestApi::class)
 class VentasSubenAlInicioEnLaEscenaTest {
+    private val unaPagina = (1..20).map { "fila-$it" }
     private val cincoPaginas = (1..100).map { "fila-$it" }
+    private val paginaNueva = listOf("nueva") + unaPagina
 
-    private fun escena(test: (estado: LazyListState, cambiar: (List<String>, Long) -> Unit) -> Unit) = runComposeUiTest {
+    @Composable
+    private fun Ventas(estado: LazyListState, filas: List<String>, hayVentasNuevas: Boolean, actualizar: () -> Unit) {
+        val alcance = rememberCoroutineScope()
+        SubirAlInicioDeLaLista(estado, filas.first())
+        Column(Modifier.height(400.dp)) {
+            if (hayVentasNuevas) {
+                PildoraDeVentasNuevas(onActualizar = { alTocarLaPildora(alcance, estado, actualizar) })
+            }
+            LazyColumn(state = estado, modifier = Modifier.fillMaxWidth().weight(1f).testTag("lista")) {
+                items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
+            }
+        }
+    }
+
+    private val LazyListState.primeraVisible get() = layoutInfo.visibleItemsInfo.firstOrNull()?.key
+
+    @Test fun `a - tocar la pildora con varias paginas abajo y la carga buena - queda arriba y la venta nueva es la primera`() = runComposeUiTest {
         val estado = LazyListState()
         var filas by mutableStateOf(cincoPaginas)
-        var subidas by mutableLongStateOf(0L)
-        var hechas by mutableLongStateOf(0L) // lo que guarda el ViewModel
+        var hay by mutableStateOf(true)
+        var pedidas = 0
+        var indiceAlPedir = -1
         setContent {
-            Box(Modifier.height(400.dp)) {
-                LazyColumn(state = estado, modifier = Modifier.testTag("lista")) {
-                    items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
-                }
-            }
-            SubirAlInicioDeLaLista(estado, filas.first(), subidasPedidas = subidas, subidasHechas = hechas, alSubir = { hechas = it })
+            Ventas(estado, filas, hay) { pedidas++; indiceAlPedir = estado.firstVisibleItemIndex }
         }
-        onNodeWithTag("lista").performScrollToIndex(60) // la cajera bajó a la página 4
+        onNodeWithTag("lista").performScrollToIndex(60) // bajó a la página 4
         waitForIdle()
         assertTrue(estado.firstVisibleItemIndex >= 60)
-        test(estado) { nuevas, nuevasSubidas ->
-            filas = nuevas
-            subidas = nuevasSubidas
-            waitForIdle()
-        }
-    }
 
-    @Test fun `tocar la pildora con la carga buena sube al inicio aunque la cajera hubiera bajado`() = escena { estado, cambiar ->
-        cambiar(listOf("nueva") + cincoPaginas.take(20), 1L) // la página 1 nueva reemplaza las cinco
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).performClick()
+        waitForIdle()
+        assertEquals(1, pedidas, "el toque pide la página 1")
+        assertEquals(0, indiceAlPedir, "primero sube, luego pide")
+
+        filas = paginaNueva // la carga buena reemplaza las cinco páginas
+        hay = false
+        waitForIdle()
         assertEquals(0, estado.firstVisibleItemIndex)
+        assertEquals(0, estado.firstVisibleItemScrollOffset)
+        assertEquals("nueva", estado.primeraVisible)
     }
 
-    @Test fun `si la carga a mano falla la lista no se mueve`() = escena { estado, cambiar ->
-        cambiar(cincoPaginas, 0L)
-        assertTrue(estado.firstVisibleItemIndex >= 60)
-    }
-
-    @Test fun `ronda 4 - si la carga a mano termina con otra pestana, al volver la lista sube al inicio`() = runComposeUiTest {
+    @Test fun `b - tocar la pildora, cambiar de pestana, carga buena y volver - queda arriba`() = runComposeUiTest {
         var mostrar by mutableStateOf(true)
-        var estado = LazyListState()
         var filas by mutableStateOf(cincoPaginas)
-        var subidas by mutableLongStateOf(0L)
-        var hechas by mutableLongStateOf(0L) // en el ViewModel: sobrevive a la pestaña
+        var hay by mutableStateOf(true)
+        var pedidas = 0
+        lateinit var estado: LazyListState
         setContent {
+            val pestanas = rememberSaveableStateHolder() // lo que hace la navegación con cada pestaña
             if (mostrar) {
-                Box(Modifier.height(400.dp)) {
-                    LazyColumn(state = estado, modifier = Modifier.testTag("lista")) {
-                        items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
-                    }
+                pestanas.SaveableStateProvider("ventas") {
+                    estado = rememberLazyListState()
+                    Ventas(estado, filas, hay) { pedidas++ }
                 }
-                SubirAlInicioDeLaLista(estado, filas.first(), subidasPedidas = subidas, subidasHechas = hechas, alSubir = { hechas = it })
             }
         }
-        onNodeWithTag("lista").performScrollToIndex(60) // bajó varias páginas y tocó «Actualizar»
+        onNodeWithTag("lista").performScrollToIndex(60)
         waitForIdle()
-        val guardada = estado.firstVisibleItemIndex
-        assertTrue(guardada >= 60)
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).performClick()
+        waitForIdle()
+        assertEquals(1, pedidas)
 
-        mostrar = false // cambia de pestaña mientras consulta
+        mostrar = false // otra pestaña mientras consulta: la navegación guarda la posición
         waitForIdle()
-        filas = listOf("nueva") + cincoPaginas.take(20) // la carga termina bien con la pantalla desmontada
-        subidas = 1L
-        estado = LazyListState(firstVisibleItemIndex = guardada) // la navegación restaura la posición guardada
+        filas = paginaNueva // la carga termina bien con la pantalla desmontada
+        hay = false
         mostrar = true // vuelve a Ventas
         waitForIdle()
 
         assertEquals(0, estado.firstVisibleItemIndex)
         assertEquals(0, estado.firstVisibleItemScrollOffset)
-        assertEquals(1L, hechas)
+        assertEquals("nueva", estado.primeraVisible)
     }
 
-    @Test fun `la automatica con la cajera abajo no la mueve`() = escena { estado, cambiar ->
-        cambiar(listOf("nueva") + cincoPaginas, 0L) // entra una venta arriba, sin que nadie la pida
-        assertTrue(estado.firstVisibleItemIndex > 0)
-    }
-
-    @Test fun `Cargar mas pega al final y no sube`() = escena { estado, cambiar ->
-        cambiar(cincoPaginas + (101..120).map { "fila-$it" }, 0L) // llega la página siguiente
-        assertTrue(estado.firstVisibleItemIndex >= 60)
-    }
-
-    // MARK: - Ronda 5: si la cajera toca o arrastra la lista, manda ella (pasada completa de la familia)
-
-    @Test fun `3 - con el dedo encima cuando llega la carga no sube, queda anotada y no salta despues`() = runComposeUiTest {
-        var mostrar by mutableStateOf(true)
+    @Test fun `c - tocar la pildora y bajar la lista antes de la carga - no vuelve a subir`() = runComposeUiTest {
         val estado = LazyListState()
         var filas by mutableStateOf(cincoPaginas)
-        var subidas by mutableLongStateOf(0L)
-        var hechas by mutableLongStateOf(0L)
-        lateinit var alcance: CoroutineScope
-        setContent {
-            alcance = rememberCoroutineScope()
-            if (mostrar) {
-                Box(Modifier.height(400.dp)) {
-                    LazyColumn(state = estado, modifier = Modifier.testTag("lista")) {
-                        items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
-                    }
-                }
-                SubirAlInicioDeLaLista(estado, filas.first(), subidasPedidas = subidas, subidasHechas = hechas, alSubir = { hechas = it })
-            }
-        }
+        var hay by mutableStateOf(true)
+        setContent { Ventas(estado, filas, hay) {} }
         onNodeWithTag("lista").performScrollToIndex(60)
         waitForIdle()
-        val dedo = alcance.launch { estado.scroll(MutatePriority.UserInput) { awaitCancellation() } } // la cajera arrastra
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).performClick()
         waitForIdle()
 
-        filas = listOf("nueva") + cincoPaginas // la carga termina bien con el dedo encima
-        subidas = 1L
+        onNodeWithTag("lista").performScrollToIndex(10) // la cajera la baja otra vez
         waitForIdle()
-        assertTrue(estado.firstVisibleItemIndex > 0)
-        assertEquals(1L, hechas, "descartada: manda ella")
-
-        dedo.cancel() // suelta el dedo
+        filas = paginaNueva
+        hay = false
         waitForIdle()
-        assertTrue(estado.firstVisibleItemIndex > 0, "al soltar no salta")
-        mostrar = false
-        waitForIdle()
-        mostrar = true
-        waitForIdle()
-        assertTrue(estado.firstVisibleItemIndex > 0, "al reconstruirse tampoco")
+        assertEquals("fila-11", estado.primeraVisible, "manda ella")
     }
 
-    @Test fun `4 - un gesto que empieza durante el salto lo cancela y la subida queda anotada`() = runComposeUiTest {
+    @Test fun `c2 - inercia en curso justo arriba cuando llega la carga - no la corta ni sube`() = runComposeUiTest {
         val estado = LazyListState()
+        var filas by mutableStateOf(unaPagina)
         lateinit var alcance: CoroutineScope
         setContent {
             alcance = rememberCoroutineScope()
-            LazyColumn(state = estado) { items(cincoPaginas, key = { it }) { BasicText(it, Modifier.height(48.dp)) } }
+            Ventas(estado, filas, hayVentasNuevas = false) {}
         }
-        waitForIdle()
-        var anotada = false
-        // Un salto que tarda: así el gesto llega a medio camino (scrollToItem es instantáneo).
-        val salto = alcance.launch { subirOAbandonar(subir = { estado.scroll { awaitCancellation() } }, anotar = { anotada = true }) }
-        waitForIdle()
-        alcance.launch { estado.scroll(MutatePriority.UserInput) { } } // la cajera toca la lista
-        waitForIdle()
-        assertTrue(anotada)
-        assertTrue(salto.isCompleted)
-        assertFalse(salto.isCancelled)
-    }
-
-    @Test fun `5 - salir de la pantalla durante el salto no la anota`() = runComposeUiTest {
-        val estado = LazyListState()
-        lateinit var alcance: CoroutineScope
-        setContent {
-            alcance = rememberCoroutineScope()
-            LazyColumn(state = estado) { items(cincoPaginas, key = { it }) { BasicText(it, Modifier.height(48.dp)) } }
-        }
-        waitForIdle()
-        var anotada = false
-        val salto = alcance.launch { subirOAbandonar(subir = { estado.scroll { awaitCancellation() } }, anotar = { anotada = true }) }
-        waitForIdle()
-        salto.cancel() // la pantalla sale de la composición
-        waitForIdle()
-        assertFalse(anotada, "queda pendiente para cuando vuelva")
-        assertTrue(salto.isCancelled)
-    }
-
-    @Test fun `6 - dos cargas a mano buenas antes de saltar dan un solo salto y quedan las dos anotadas`() = runComposeUiTest {
-        var mostrar by mutableStateOf(true)
-        val estado = LazyListState()
-        var filas by mutableStateOf(cincoPaginas)
-        var subidas by mutableLongStateOf(0L)
-        var hechas by mutableLongStateOf(0L)
-        var saltos = 0
-        setContent {
-            if (mostrar) {
-                Box(Modifier.height(400.dp)) {
-                    LazyColumn(state = estado, modifier = Modifier.testTag("lista")) {
-                        items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
-                    }
-                }
-                SubirAlInicioDeLaLista(estado, filas.first(), subidasPedidas = subidas, subidasHechas = hechas, alSubir = { saltos++; hechas = it })
-            }
-        }
-        onNodeWithTag("lista").performScrollToIndex(60)
-        waitForIdle()
-        mostrar = false
-        waitForIdle()
-        filas = listOf("nueva") + cincoPaginas.take(20)
-        subidas = 2L // dos cargas a mano buenas mientras tanto
-        mostrar = true
         waitForIdle()
         assertEquals(0, estado.firstVisibleItemIndex)
-        assertEquals(1, saltos)
-        assertEquals(2L, hechas)
+        // La inercia corre con la prioridad de siempre (Default): un scrollToItem la cortaría.
+        val inercia = alcance.launch { estado.scroll(MutatePriority.Default) { awaitCancellation() } }
+        waitForIdle()
+
+        filas = paginaNueva // la automática llega con la lista en movimiento
+        waitForIdle()
+        assertTrue(inercia.isActive, "la inercia sigue")
+        assertEquals("fila-1", estado.primeraVisible, "no se movió")
+
+        inercia.cancel()
+        waitForIdle()
+        assertEquals("fila-1", estado.primeraVisible, "y nada salta después")
+    }
+
+    @Test fun `d1 - la automatica con la cajera abajo no la mueve`() = runComposeUiTest {
+        val estado = LazyListState()
+        var filas by mutableStateOf(unaPagina)
+        setContent { Ventas(estado, filas, hayVentasNuevas = false) {} }
+        onNodeWithTag("lista").performScrollToIndex(10)
+        waitForIdle()
+        filas = paginaNueva // entra una venta arriba, sin que nadie la pida
+        waitForIdle()
+        assertEquals("fila-11", estado.primeraVisible)
+    }
+
+    @Test fun `d2 - Cargar mas pega al final y no la mueve`() = runComposeUiTest {
+        val estado = LazyListState()
+        var filas by mutableStateOf(cincoPaginas)
+        setContent { Ventas(estado, filas, hayVentasNuevas = false) {} }
+        onNodeWithTag("lista").performScrollToIndex(60)
+        waitForIdle()
+        val antes = estado.primeraVisible
+        filas = cincoPaginas + (101..120).map { "fila-$it" } // llega la página siguiente
+        waitForIdle()
+        assertEquals(antes, estado.primeraVisible)
+    }
+
+    @Test fun `e - la automatica con la lista arriba ensena lo nuevo`() = runComposeUiTest {
+        val estado = LazyListState()
+        var filas by mutableStateOf(unaPagina)
+        setContent { Ventas(estado, filas, hayVentasNuevas = false) {} }
+        waitForIdle()
+        filas = paginaNueva
+        waitForIdle()
+        assertEquals(0, estado.firstVisibleItemIndex)
+        assertEquals("nueva", estado.primeraVisible)
+    }
+
+    @Test fun `f - tocar la pildora y la carga falla - queda arriba de lo de antes y la pildora sigue`() = runComposeUiTest {
+        val estado = LazyListState()
+        var pedidas = 0
+        setContent { Ventas(estado, cincoPaginas, hayVentasNuevas = true) { pedidas++ } } // el fallo no cambia nada
+        onNodeWithTag("lista").performScrollToIndex(60)
+        waitForIdle()
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).performClick()
+        waitForIdle()
+
+        assertEquals(1, pedidas)
+        assertEquals(0, estado.firstVisibleItemIndex)
+        assertEquals(0, estado.firstVisibleItemScrollOffset)
+        assertEquals("fila-1", estado.primeraVisible)
+        onNodeWithText(TextosDeVentas.HAY_VENTAS_NUEVAS).assertExists()
     }
 }

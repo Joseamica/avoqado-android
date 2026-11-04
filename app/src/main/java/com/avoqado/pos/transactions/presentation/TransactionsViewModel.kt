@@ -626,36 +626,6 @@ class TransactionsViewModel @Inject constructor(
     /** D22: si a la lista le hace falta recargar (un fallo reintentable o un cobro de la sucursal que ya subió). */
     private val necesidad = MutableStateFlow(Necesidad())
 
-    private val _subidasAlInicio = MutableStateFlow(0L)
-
-    /** D22 ronda 3: sube con cada carga A MANO buena (la píldora, jalar, «Reintentar»): la lista vuelve al inicio. */
-    val subidasAlInicio: StateFlow<Long> = _subidasAlInicio.asStateFlow()
-
-    private val _subidasHechas = MutableStateFlow(0L)
-
-    /**
-     * D22 ronda 4 (Codex código r3): la última subida que la pantalla de verdad ejecutó. Vive aquí y no en la pantalla: si la
-     * carga a mano termina con otra pestaña a la vista, al volver queda pendiente y se ejecuta.
-     */
-    val subidasHechas: StateFlow<Long> = _subidasHechas.asStateFlow()
-
-    /** La pantalla ya subió la lista al inicio por la [n]-ésima carga a mano buena (o la cajera mandó y se descartó). */
-    fun subidaAlInicioHecha(n: Long) {
-        _subidasHechas.update { maxOf(it, n) }
-    }
-
-    /** De qué consulta es la subida pendiente (ronda 5, caso 9). */
-    private var consultaDeLaSubida: ConsultaDeVentas? = null
-
-    /**
-     * Ronda 5 (caso 9): la subida pendiente es de SU consulta. Si la consulta cambia —otra sucursal, otra persona u otra
-     * búsqueda—, se descarta: no salta sobre la lista de otra consulta.
-     */
-    private fun descartarSubidaSiEsDeOtraConsulta(consulta: ConsultaDeVentas) {
-        val deLaSubida = consultaDeLaSubida ?: return
-        if (consulta != deLaSubida && _subidasAlInicio.value > _subidasHechas.value) _subidasHechas.value = _subidasAlInicio.value
-    }
-
     /**
      * D22 (diseño r2 §E): con más de una página a la vista la lista no se mueve sola; hace falta por un cobro que subió y se
      * ofrece «Hay ventas nuevas · Actualizar» (al tocarla, lo mismo que jalar).
@@ -676,7 +646,6 @@ class TransactionsViewModel @Inject constructor(
     private suspend fun cargarPrimeraPagina(enFondo: Boolean): Result<Unit> {
         val busqueda = _searchText.value.ifBlank { null }
         val consulta = repository.consultaPara(busqueda)
-        descartarSubidaSiEsDeOtraConsulta(consulta)
         _consultaVigente.value = consulta
         ultimaPedida = consulta
         val inst = necesidad.value.instantanea(consulta.sucursal, avisosDeVentas.de(consulta.sucursal))
@@ -736,15 +705,7 @@ class TransactionsViewModel @Inject constructor(
         viewModelScope.launch {
             _isManualRefreshing.value = true
             try {
-                val salida = gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
-                // D22 ronda 3: una carga a mano buena (la píldora, jalar, «Reintentar») lleva la lista al inicio. Si se unió a
-                // una carga en camino, cuenta si ésa salió bien.
-                val salioBien = salida == RefreshOutcome.Completed ||
-                    (salida == RefreshOutcome.Joined && repository.falloDeCarga.value == null)
-                if (salioBien) {
-                    consultaDeLaSubida = ultimaPedida
-                    _subidasAlInicio.update { it + 1 }
-                }
+                gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
             } finally {
                 _isManualRefreshing.value = false
             }
@@ -774,9 +735,7 @@ class TransactionsViewModel @Inject constructor(
                 .collect {
                     // D18 (Codex r1 #3): la búsqueda nueva es la consulta YA. Si no se puede pedir (sin red), no se queda
                     // a la vista lo de la búsqueda anterior bajo el texto nuevo.
-                    val nueva = repository.consultaPara(it.ifBlank { null })
-                    descartarSubidaSiEsDeOtraConsulta(nueva)
-                    _consultaVigente.value = nueva
+                    _consultaVigente.value = repository.consultaPara(it.ifBlank { null })
                     gate.invalidate()
                     do {
                         val salida = gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
