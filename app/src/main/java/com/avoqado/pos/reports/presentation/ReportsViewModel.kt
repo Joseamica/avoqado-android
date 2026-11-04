@@ -8,6 +8,7 @@ import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.core.domain.refresh.CargasDeLaPantalla
 import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
 import com.avoqado.pos.core.domain.refresh.PantallaQueSeRecarga
 import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
@@ -40,6 +41,9 @@ class ReportsViewModel @Inject constructor(
     // MARK: - Refresco (spec estrategia-de-refresco)
 
     private val gate = refreshGateFactory.create(viewModelScope)
+
+    /** D18 r4: lo que la regla de recarga necesita de cada carga (con qué cola se pidió, cuántas fallaron), junto a los datos. */
+    private val cargas = CargasDeLaPantalla(reglaDeRecarga)
 
     private val _isManualRefreshing = MutableStateFlow(false)
     val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
@@ -108,26 +112,21 @@ class ReportsViewModel @Inject constructor(
     /** La consulta de la última petición que salió (para saber si la que se unió en vuelo era de otro periodo). */
     private var ultimaPedida: ConsultaDeInforme? = null
 
-    /** D18 r3: Informes, visto desde la regla de recarga ([ReglaDeRecarga]). Recarga siempre por el gate, sin forzarlo. */
+    /** D18 r4: Informes, visto desde la regla de recarga ([ReglaDeRecarga]). */
     private val pantallaParaLaRegla = object : PantallaQueSeRecarga {
         override val estadoParaRecargar: Flow<EstadoParaRecargar> = combine(
             _consultaElegida, repository.informe, repository.isLoading, repository.ultimoFallo, _showCustomDatePicker,
         ) { elegida, informe, cargando, fallo, eligiendo ->
-            estadoDelInforme(elegida, informe, cargando, fallo, eligiendoFechas = eligiendo).paraLaRegla()
-        }
+            estadoDelInforme(elegida, informe, cargando, fallo, eligiendoFechas = eligiendo) to cargando
+        }.combine(cargas.registro) { (estado, cargando), registro -> estado.paraLaRegla(cargando, registro) }
 
-        override suspend fun recargar(): RefreshOutcome =
-            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
-
-        override suspend fun recargarAlVolverLaRed(): RefreshOutcome {
+        override suspend fun recargar(): RefreshOutcome {
+            gate.invalidate()
             gate.resetCooldown()
             return gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
         }
 
-        override suspend fun recargarConDatosNuevos(): RefreshOutcome {
-            gate.invalidate()
-            return gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
-        }
+        override fun marcarConPendientes() = cargas.marcarConPendientes()
     }
 
     // MARK: - Init
@@ -195,10 +194,10 @@ class ReportsViewModel @Inject constructor(
         val (consulta, hasta) = consultaYFin()
         _consultaElegida.value = consulta
         ultimaPedida = consulta
-        return repository.loadReport(consulta, hasta)
+        return cargas.cargar { repository.loadReport(consulta, hasta) }
     }
 
-    /** D18 r3: sólo mientras Informes se ve (RESUMED), la regla única de recarga: al volver a verse, al volver red y servidor, y al subir la cola. */
+    /** D18 r4: sólo mientras Informes se ve (RESUMED), la regla de recarga por nivel. */
     internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
         val regla = reglaDeRecarga ?: return
         owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { regla.mientrasSeVe(pantallaParaLaRegla) }

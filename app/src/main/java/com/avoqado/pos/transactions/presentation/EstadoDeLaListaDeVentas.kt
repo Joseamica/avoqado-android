@@ -2,6 +2,7 @@ package com.avoqado.pos.transactions.presentation
 
 import com.avoqado.pos.core.data.network.FalloDeLectura
 import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
+import com.avoqado.pos.core.domain.refresh.RegistroDeCargas
 import com.avoqado.pos.designsystem.components.TextosDeLecturaFallida
 
 /** Qué enseña la lista de Ventas (D18, 3-nov-2026). */
@@ -42,12 +43,13 @@ internal fun estadoDeLaListaDeVentas(
     else -> EstadoDeLaListaDeVentas.Cargando
 }
 
-/** Lo que la regla de recarga necesita saber de la lista (D18 r3). La lista vacía de un servidor que sí contestó es «con datos». */
-internal fun EstadoDeLaListaDeVentas.paraLaRegla(): EstadoParaRecargar = when (this) {
-    is EstadoDeLaListaDeVentas.NoSeCargo -> EstadoParaRecargar.NO_SE_CARGO
-    EstadoDeLaListaDeVentas.Lista, EstadoDeLaListaDeVentas.Vacia -> EstadoParaRecargar.CON_DATOS
-    EstadoDeLaListaDeVentas.Cargando -> EstadoParaRecargar.OTRO
-}
+/** Lo que la regla de recarga necesita saber de la lista (D18 r4). La lista vacía de un servidor que sí contestó es «con datos». */
+internal fun EstadoDeLaListaDeVentas.paraLaRegla(cargando: Boolean, cargas: RegistroDeCargas): EstadoParaRecargar = EstadoParaRecargar(
+    noSeCargo = this is EstadoDeLaListaDeVentas.NoSeCargo,
+    conDatos = this == EstadoDeLaListaDeVentas.Lista || this == EstadoDeLaListaDeVentas.Vacia,
+    cargando = cargando,
+    cargas = cargas,
+)
 
 /** Título y texto de la lista cuando [EstadoDeLaListaDeVentas.NoSeCargo]. */
 internal fun textosDeVentasSinCargar(fallo: FalloDeLectura): TextosDeLecturaFallida = when (fallo) {

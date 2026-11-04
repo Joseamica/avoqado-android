@@ -7,6 +7,7 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.core.domain.refresh.CargasDeLaPantalla
 import com.avoqado.pos.core.domain.refresh.EstadoParaRecargar
 import com.avoqado.pos.core.domain.refresh.PantallaQueSeRecarga
 import com.avoqado.pos.core.domain.refresh.ReglaDeRecarga
@@ -558,6 +559,9 @@ class TransactionsViewModel @Inject constructor(
 
     private val gate = refreshGateFactory.create(viewModelScope)
 
+    /** D18 r4: lo que la regla de recarga necesita de cada carga (con qué cola se pidió, cuántas fallaron), junto a los datos. */
+    private val cargas = CargasDeLaPantalla(reglaDeRecarga)
+
     private val _isManualRefreshing = MutableStateFlow(false)
     val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
 
@@ -620,7 +624,7 @@ class TransactionsViewModel @Inject constructor(
         val consulta = repository.consultaPara(busqueda)
         _consultaVigente.value = consulta
         ultimaPedida = consulta
-        return repository.fetchTransactions(page = 1, search = busqueda)
+        return cargas.cargar { repository.fetchTransactions(page = 1, search = busqueda) }
     }
 
     fun autoRefresh() {
@@ -640,29 +644,27 @@ class TransactionsViewModel @Inject constructor(
         }
     }
 
-    /** D18 r3: la lista, vista desde la regla de recarga ([ReglaDeRecarga]). Recarga siempre por el gate, sin forzarlo. */
+    /** D18 r4: la lista, vista desde la regla de recarga ([ReglaDeRecarga]). */
     private val pantallaParaLaRegla = object : PantallaQueSeRecarga {
         override val estadoParaRecargar: Flow<EstadoParaRecargar> = combine(
-            repository.transactions, repository.consultaDeLaLista, _consultaVigente, repository.isLoading, repository.falloDeCarga,
-        ) { lista, deLaLista, vigente, cargando, fallo ->
-            estadoDeLaListaDeVentas(deLaLista == vigente, lista.size, lista.size, cargando, fallo).paraLaRegla()
-        }
+            combine(
+                repository.transactions, repository.consultaDeLaLista, _consultaVigente, repository.isLoading, repository.falloDeCarga,
+            ) { lista, deLaLista, vigente, cargando, fallo ->
+                estadoDeLaListaDeVentas(deLaLista == vigente, lista.size, lista.size, cargando, fallo) to cargando
+            },
+            cargas.registro,
+        ) { (estado, cargando), registro -> estado.paraLaRegla(cargando, registro) }
 
-        override suspend fun recargar(): RefreshOutcome =
-            gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
-
-        override suspend fun recargarAlVolverLaRed(): RefreshOutcome {
+        override suspend fun recargar(): RefreshOutcome {
+            gate.invalidate()
             gate.resetCooldown()
             return gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
         }
 
-        override suspend fun recargarConDatosNuevos(): RefreshOutcome {
-            gate.invalidate()
-            return gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
-        }
+        override fun marcarConPendientes() = cargas.marcarConPendientes()
     }
 
-    /** D18 r3: sólo mientras la lista se ve (RESUMED), la regla única de recarga: al volver a verse, al volver red y servidor, y al subir la cola. */
+    /** D18 r4: sólo mientras la lista se ve (RESUMED), la regla de recarga por nivel. */
     internal suspend fun vigilarLaRedMientrasSeVe(owner: LifecycleOwner) {
         val regla = reglaDeRecarga ?: return
         owner.repeatOnLifecycle(Lifecycle.State.RESUMED) { regla.mientrasSeVe(pantallaParaLaRegla) }
