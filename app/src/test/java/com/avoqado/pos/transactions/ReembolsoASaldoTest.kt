@@ -772,7 +772,7 @@ class ReembolsoASaldoTest {
     @Test fun `toda devolución de la hoja pasa primero por la guarda del saldo a favor`() {
         val hoja = fuente("app/src/main/java/com/avoqado/pos/transactions/presentation/IssueRefundSheet.kt")
         val terminal = hoja.substring(hoja.indexOf("fun mandarATerminal("), hoja.indexOf("fun abrirEnTerminal()"))
-        val reembolsar = hoja.substring(hoja.indexOf("text = \"Reembolsar\""), hoja.indexOf("enabled = canSubmit", hoja.indexOf("text = \"Reembolsar\"")))
+        val reembolsar = hoja.substring(hoja.indexOf("text = textoDelBotonDeReembolso("), hoja.indexOf("enabled = canSubmit", hoja.indexOf("text = textoDelBotonDeReembolso(")))
         for (trozo in listOf(terminal, reembolsar)) {
             val guarda = trozo.indexOf("antesDeReembolsar()")
             assertTrue("falta la guarda del saldo a favor", guarda > 0)

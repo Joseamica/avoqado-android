@@ -137,7 +137,7 @@ class IssueRefundNetworkGateControlsTest {
         val fuente = fuente()
         val inicio = fuente.indexOf("fun mandarATerminal(")
         val lista = fuente.indexOf("fun abrirEnTerminal()")
-        val devolver = fuente.indexOf("text = \"Reembolsar\"")
+        val devolver = fuente.indexOf("text = textoDelBotonDeReembolso(")
         val trozos = listOf(
             Triple(fuente.substring(inicio, lista), "enviandoATerminal = false", "requestRefundOnTerminal("),
             Triple(fuente.substring(lista, fuente.indexOf("// Include-tip", lista)), "enviandoATerminal = false", "fetchOnlineTerminals()"),

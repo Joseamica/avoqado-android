@@ -93,6 +93,7 @@ import com.avoqado.pos.transactions.data.model.refundMethodForSubmit
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
 import com.avoqado.pos.transactions.data.model.avisoDeSoloRegistro
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
+import com.avoqado.pos.transactions.data.model.importeEnCentavosExactos
 import com.avoqado.pos.transactions.data.model.importeAjustadoAlTope
 import com.avoqado.pos.transactions.data.model.importeParaDevolver
 import com.avoqado.pos.transactions.data.model.puedeEnviarDevolucion
@@ -119,6 +120,7 @@ import com.avoqado.pos.transactions.data.model.restringe
 import com.avoqado.pos.transactions.data.model.opcionesConSaldo
 import com.avoqado.pos.transactions.data.model.pastillaDeSaldo
 import com.avoqado.pos.transactions.data.model.soloSaldoEfectivo
+import com.avoqado.pos.transactions.data.model.textoDelBotonDeReembolso
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeSettlement
 import com.avoqado.pos.transactions.presentation.exchange.ExchangeStoreCreditCustomer
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
@@ -329,7 +331,7 @@ fun IssueRefundSheet(
     val paymentTipAmount = transaction.tipAmount
     var includeTip by remember(transaction.id) { mutableStateOf(true) }
 
-    val parsedAmount = importeParaDevolver(amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0, maxRefundable, soloCompleto)
+    val parsedAmount = importeEnCentavosExactos(importeParaDevolver(amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0, maxRefundable, soloCompleto))
     val selectedItems = transaction.items.filter { item ->
         item.id != null && selectedItemIds.contains(item.id)
     }
@@ -972,7 +974,7 @@ fun IssueRefundSheet(
                     }
 
                     PrimaryButton(
-                        text = "Reembolsar",
+                        text = textoDelBotonDeReembolso(amountToRefund + propinaArticulos),
                         onClick = {
                             if (!puedeEnviar() || soloCompleto && enTerminal) return@PrimaryButton
                             val chosenReason = reason ?: return@PrimaryButton

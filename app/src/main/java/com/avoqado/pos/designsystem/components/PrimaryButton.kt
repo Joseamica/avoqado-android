@@ -1,7 +1,7 @@
 package com.avoqado.pos.designsystem.components
 
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -44,7 +44,8 @@ fun PrimaryButton(
         enabled = enabled && !isLoading,
         modifier = modifier
             .then(if (fullWidth) Modifier.fillMaxWidth() else Modifier)
-            .height(AvoqadoTheme.dimensions.buttonLarge),
+            // Mínimo y no fijo: con letra grande o un texto largo, el botón crece en vez de cortar lo que dice.
+            .heightIn(min = AvoqadoTheme.dimensions.buttonLarge),
         shape = RoundedCornerShape(50),
         contentPadding = PaddingValues(horizontal = adaptive.primaryButtonHorizontalPadding),
         colors = ButtonDefaults.buttonColors(

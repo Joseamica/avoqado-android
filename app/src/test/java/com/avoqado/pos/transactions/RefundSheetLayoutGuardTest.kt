@@ -404,9 +404,9 @@ class RefundSheetLayoutGuardTest {
     @Test
     fun `el envio sigue en el cierre, con sus comprobaciones de dinero`() {
         val cierre = PiezasDeLaHoja(leerCodigoSinComentarios(hoja)).cierre
-        val envio = cierre.substringAfter("text = \"Reembolsar\"", "").substringBefore("enabled = canSubmit", "")
+        val envio = cierre.substringAfter("text = textoDelBotonDeReembolso(", "").substringBefore("enabled = canSubmit", "")
 
-        assertTrue("No se encontró el envío entre `text = \"Reembolsar\"` y `enabled = canSubmit`.", envio.isNotBlank())
+        assertTrue("No se encontró el envío entre `text = textoDelBotonDeReembolso(` y `enabled = canSubmit`.", envio.isNotBlank())
         listOf("antesDeReembolsar()", "puedeEnviar()", "conexion.iniciar(", "refundRepository.issueAssociatedRefund(", "centavosDelImporte(", "tipRefundCentsParaEnvio(")
             .forEach { assertTrue("El envío perdió `$it`.", envio.contains(it)) }
     }
@@ -482,7 +482,7 @@ class RefundSheetLayoutGuardTest {
     /** El cuerpo de `IssueRefundSheet` hasta la hoja de escoger cliente, o sea la pantalla. */
     private fun ventanaDeLaPantalla(): String {
         val ventana = leerCodigoSinComentarios(hoja).substringAfter("fun IssueRefundSheet(").substringBefore("if (escogiendoCliente)")
-        assertTrue("El recorte de la pantalla ya no llega al botón de reembolsar.", ventana.contains("text = \"Reembolsar\""))
+        assertTrue("El recorte de la pantalla ya no llega al botón de reembolsar.", ventana.contains("text = textoDelBotonDeReembolso("))
         return ventana
     }
 

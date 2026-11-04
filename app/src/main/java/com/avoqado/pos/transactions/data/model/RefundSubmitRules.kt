@@ -1,6 +1,7 @@
 package com.avoqado.pos.transactions.data.model
 
 import com.avoqado.pos.core.util.aCentavos
+import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 
 data class RefundChainRules(val isCredit: Boolean, val options: List<OpcionDeDevolucion>, val blockedReason: String?)
@@ -105,6 +106,14 @@ fun faltaParaSaldo(online: Boolean, cliente: com.avoqado.pos.transactions.presen
  * redondean; truncar era la divergencia de Android.
  */
 fun centavosDelImporte(pesos: Double): Int = pesos.aCentavos()
+
+/**
+ * El importe en pesos, ya en los centavos que se mandan. El campo acepta más de dos decimales: con «1.005» la pantalla decía
+ * $1.01 y se mandaban 100 centavos (Codex, 3-nov). Resumen, botón y envío salen de esta misma cantidad.
+ */
+fun importeEnCentavosExactos(pesos: Double): Double =
+    // «NaN» e «Infinity» son números para `toDoubleOrNull()`, y `roundToInt()` revienta con NaN.
+    if (pesos.isFinite()) centavosDelImporte(pesos) / 100.0 else 0.0
 
 /**
  * Qué mandar en `tipRefundCents` al reembolsar por importe.
@@ -281,3 +290,10 @@ fun leyendaDeDevolucion(method: String?, refundMethod: String?): String = when {
     refundMethod == "BANK_TRANSFER" || (refundMethod == null && esTransferencia(method)) -> "Tú le haces la transferencia; aquí sólo queda registrado."
     else -> "Se devuelve por el mismo medio con que se pagó."
 }
+
+/**
+ * Lo que dice el botón de «Emitir reembolso»: el mismo importe que sale (D9). Un toque devuelve dinero y no hay
+ * confirmación aparte, así que el botón lo dice. Sin importe todavía, sólo el verbo.
+ */
+fun textoDelBotonDeReembolso(importe: Double): String =
+    if (importe > 0.0) "Reembolsar ${formatMoney(importe)}" else "Reembolsar"

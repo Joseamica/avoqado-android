@@ -9,6 +9,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsEnabled
@@ -20,6 +23,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.runDesktopComposeUiTest
@@ -156,10 +160,17 @@ class EmitirReembolsoEnLaEscenaTest {
     }
 
     /** Sin recortar: `getBoundsInRoot` recorta contra lo que lo contiene, y un botón fuera de la vista saldría «adentro». */
-    private fun ComposeUiTest.bordes(texto: String) = onNodeWithText(texto).getUnclippedBoundsInRoot()
+    /** «Reembolsar» o «Reembolsar $129.00»: el botón dice cuánto (D9). Las pestañas de arriba no cuentan. */
+    private val elBotonDeReembolsar = SemanticsMatcher("el botón Reembolsar") { nodo ->
+        nodo.config.getOrNull(SemanticsProperties.Text)?.any { Regex("""Reembolsar( \$[\d,.]+)?""").matches(it.text) } == true
+    }
+
+    private fun ComposeUiTest.nodo(texto: String) = if (texto == "Reembolsar") onNode(elBotonDeReembolsar) else onNodeWithText(texto)
+
+    private fun ComposeUiTest.bordes(texto: String) = nodo(texto).getUnclippedBoundsInRoot()
 
     /** Nada lo recorta: ni la ventana ni el deslizamiento que lo contiene. */
-    private fun ComposeUiTest.seVeEntero(texto: String) = onNodeWithText(texto).let { it.getBoundsInRoot() == it.getUnclippedBoundsInRoot() }
+    private fun ComposeUiTest.seVeEntero(texto: String) = nodo(texto).let { it.getBoundsInRoot() == it.getUnclippedBoundsInRoot() }
 
     private fun ComposeUiTest.aLaVista(vararg textos: String) = textos.forEach {
         assertTrue(seVeEntero(it), "«$it» no se ve entero: ${bordes(it)}")
@@ -261,15 +272,15 @@ class EmitirReembolsoEnLaEscenaTest {
     }
 
     @Test fun `en dos columnas escoger articulo y motivo enciende Reembolsar`() = pantalla(1007, 601) {
-        onNodeWithText("Reembolsar").assertIsNotEnabled()
+        nodo("Reembolsar").assertIsNotEnabled()
         escogerArticuloYMotivo()
-        onNodeWithText("Reembolsar").assertIsEnabled()
+        nodo("Reembolsar").assertIsEnabled()
     }
 
     @Test fun `en dos columnas el error del envio sale en lo fijo, arriba de los botones`() =
         pantalla(1007, 601, antesDeReembolsar = { "Un saldo a favor sigue sin confirmar." }) {
             escogerArticuloYMotivo()
-            onNodeWithText("Reembolsar").performClick()
+            nodo("Reembolsar").performClick()
             waitForIdle()
             aLaDerecha(1007.dp / 2, "Un saldo a favor sigue sin confirmar.")
             aLaVista("Un saldo a favor sigue sin confirmar.")
@@ -281,7 +292,7 @@ class EmitirReembolsoEnLaEscenaTest {
     @Test fun `en una columna el error del envio sale pegado a los botones`() =
         pantalla(601, 1007, antesDeReembolsar = { "Un saldo a favor sigue sin confirmar." }) {
             escogerArticuloYMotivo()
-            onNodeWithText("Reembolsar").performClick()
+            nodo("Reembolsar").performClick()
             waitForIdle()
             aLaVista("Un saldo a favor sigue sin confirmar.")
             assertTrue(bordes("Incluir propina en el reembolso").bottom <= bordes("Un saldo a favor sigue sin confirmar.").top, "el error va abajo del importe")
@@ -300,10 +311,65 @@ class EmitirReembolsoEnLaEscenaTest {
             onNodeWithText("Productos devueltos").performClick()
             waitForIdle()
             deslizarHastaVer("Reembolsar", 180.dp, 490.dp)
-            onNodeWithText("Reembolsar").performClick()
+            nodo("Reembolsar").performClick()
             waitForIdle()
             aLaVista("Un saldo a favor sigue sin confirmar.")
         }
+
+    @Test fun `el boton dice el mismo importe que sale`() = pantalla(1007, 601) {
+        onNodeWithText("Reembolsar", substring = false).assertExists()
+        escogerArticuloYMotivo()
+        onNodeWithText("Reembolsar $100.00").assertIsEnabled()
+    }
+
+    @Test fun `por importe el boton dice lo escrito`() = pantalla(1007, 601) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12.50")
+        waitForIdle()
+        onNodeWithText("Reembolsar $12.50").assertExists()
+    }
+
+    @Test fun `al devolver toda la venta el boton incluye la propina, igual que el importe`() = pantalla(1007, 601, venta(1)) {
+        onNodeWithText("Artículo 1").performClick()
+        waitForIdle()
+        onNodeWithText("Reembolsar $150.00").assertExists()
+        onNodeWithText("$150.00").assertExists()
+    }
+
+    @Test fun `en un celular se alcanza el boton con un monto de miles`() = pantalla(360, 640) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12345.50")
+        waitForIdle()
+        deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
+        onNodeWithText("Reembolsar $12,345.50").assertExists()
+    }
+
+    @Test fun `pegar algo que no es un importe no tumba la pantalla ni enciende el boton`() = pantalla(1007, 601) {
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        listOf("NaN", "Infinity").forEach { pegado ->
+            onNode(hasSetTextAction()).performTextClearance()
+            onNode(hasSetTextAction()).performTextInput(pegado)
+            waitForIdle()
+            onNodeWithText("Reembolsar", substring = false).assertIsNotEnabled()
+        }
+    }
+
+    /** Con alto fijo, el monto que debía aclarar cuánto se devuelve se cortaba al pasar a dos renglones. */
+    @Test fun `en un celular con letra grande el monto no se corta`() = pantalla(360, 640) {
+        letra.floatValue = 1.3f
+        waitForIdle()
+        onNodeWithText("Reembolsos por importe").performClick()
+        waitForIdle()
+        onNode(hasSetTextAction()).performTextInput("12345.50")
+        waitForIdle()
+        deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
+        val medidas = mutableListOf<TextLayoutResult>()
+        nodo("Reembolsar").fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action!!.invoke(medidas)
+        assertTrue(medidas.isNotEmpty() && medidas.none { it.didOverflowHeight }, "el monto se corta: ${medidas.map { it.size }}")
+    }
 
     @Test fun `el aviso de la terminal va a la izquierda y lo que no devuelve junto al boton`() = pantalla(1007, 601, ventaEnTerminal) {
         val mitad = 1007.dp / 2
@@ -447,7 +513,7 @@ class EmitirReembolsoEnLaEscenaTest {
         onNodeWithText("Productos devueltos").performClick()
         waitForIdle()
         deslizarHastaVer("Reembolsar", 180.dp, 640.dp)
-        onNodeWithText("Reembolsar").assertIsEnabled()
+        nodo("Reembolsar").assertIsEnabled()
     }
 
     @Test fun `con el teclado abierto en un celular el telefono del saldo queda a la vista con su foco y lo escrito`() =
