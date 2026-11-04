@@ -114,6 +114,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
         var cerrado = false
         /** El PIN ya sacó al menos un token: desde aquí un fallo suelta a las que faltan en vez de dejar el teclado. */
         var autorizado = false
+        /** Terminó de repartir a TODAS. Sólo así no se anota la ráfaga como soltada (Codex código r1 #2). */
+        var exito = false
         /** Se completa al terminar de repartir o al soltarse el grupo: entonces se cierra el teclado. */
         val terminado = CompletableDeferred<Unit>()
     }
@@ -223,15 +225,18 @@ open class ManagerOverrideCoordinator @Inject constructor(
     private fun presentar(grupo: Grupo) {
         alcance.launch {
             queue.withLock {
-                // Se soltó mientras hacía fila (quien lo pidió ya no espera): no se asoma un teclado para nadie.
-                if (grupo.terminado.isCompleted) return@withLock
                 val awaiting = synchronized(candado) {
+                    // Se soltó mientras hacía fila (quien lo pidió ya no espera): no se asoma un teclado para nadie.
+                    // Se mira bajo el MISMO candado con que se publica (Codex código r1 #3: entre mirar y publicar
+                    // podía soltarse).
+                    if (grupo.cerrado) return@synchronized null
                     val id = ++nextId
+                    tecladosPublicados++
                     Waiting(id, grupo).also {
                         pending = it
                         _prompt.value = Prompt(id, grupo.permission, PermissionLabels.of(grupo.permission))
                     }
-                }
+                } ?: return@withLock
                 try {
                     withTimeoutOrNull(promptTimeoutMs) { grupo.terminado.await() }
                 } finally {
@@ -244,24 +249,31 @@ open class ManagerOverrideCoordinator @Inject constructor(
     }
 
     /**
-     * Cierra el grupo y suelta con null a las que no alcanzaron token. Si nunca se autorizó (canceló, venció, se fue la
-     * pantalla), su ráfaga queda anotada: una respuesta tardía de esa misma carga no vuelve a preguntar.
+     * Cierra el grupo y suelta con null a las que no alcanzaron token. Si no terminó de repartir a todas (canceló, venció,
+     * se fue la pantalla, faltó un token), su ráfaga queda anotada aunque alguna ya tuviera token: una respuesta tardía de
+     * esa misma carga no vuelve a preguntar (Codex código r1 #2).
+     *
+     * 🔴 Todo bajo [candado], también completar con null: así «soltar» y «entregar un token» (en [enviar]) no se cruzan;
+     * gana el primero que toma el candado y el otro ya no hace nada (Codex código r1 #1).
      */
     private fun soltar(grupo: Grupo) {
-        val sueltas = synchronized(candado) {
-            cerrarAUniones(grupo)
+        synchronized(candado) {
             val clave = grupo.rafaga?.let { it to grupo.permission }
-            if (clave != null) {
-                if (!grupo.autorizado) {
-                    rafagasSoltadas.add(clave)
-                    while (rafagasSoltadas.size > RAFAGAS_RECORDADAS) rafagasSoltadas.remove(rafagasSoltadas.first())
-                }
+            if (clave != null && !grupo.exito) {
+                rafagasSoltadas.add(clave)
+                while (rafagasSoltadas.size > RAFAGAS_RECORDADAS) rafagasSoltadas.remove(rafagasSoltadas.first())
             }
-            grupo.pendientes.toList().also { grupo.pendientes.clear() }
+            cerrarAUniones(grupo)
+            grupo.pendientes.forEach { it.token.complete(null) }
+            grupo.pendientes.clear()
         }
-        sueltas.forEach { it.token.complete(null) }
         grupo.terminado.complete(Unit)
     }
+
+    /** Pruebas (D24): cuántos teclados se han publicado en total. */
+    @Volatile
+    internal var tecladosPublicados = 0
+        private set
 
     /** Pruebas (D24): cuántas peticiones se unieron al grupo abierto de [rafaga] y [permission] (sin la que lo abrió). */
     internal fun unidasAlGrupo(rafaga: String, permission: String): Int =
@@ -322,7 +334,13 @@ open class ManagerOverrideCoordinator @Inject constructor(
      *   fila instaló el suyo antes de que la pantalla se redibujara), no se pide NINGÚN token: el PIN que el encargado
      *   tecleó para A no autoriza a B. `null` = el vivo (pruebas y llamadas viejas).
      */
-    open suspend fun submitPin(venueId: String, pin: String, promptId: Long? = null): OverrideResult {
+    open suspend fun submitPin(venueId: String, pin: String, promptId: Long? = null): OverrideResult =
+        // Un envío a la vez: dos toques casi juntos en «Autorizar» no reparten dos veces al mismo grupo.
+        envio.withLock { enviar(venueId, pin, promptId) }
+
+    private val envio = Mutex()
+
+    private suspend fun enviar(venueId: String, pin: String, promptId: Long?): OverrideResult {
         // 🔴 UNA sola lectura: grupo, permiso e identidad salen del MISMO
         // objeto, así que no pueden pertenecer a esperas distintas.
         val awaiting = pending
@@ -339,21 +357,34 @@ open class ManagerOverrideCoordinator @Inject constructor(
                 // El PIN viaja una vez por token: el servidor lo valida y lo audita cada vez. Nunca se guarda.
                 val result = repository.requestToken(venueId, pin, grupo.permission)
                 if (result is OverrideResult.Granted) {
+                    // Entregar y soltar se deciden bajo el MISMO candado (Codex código r1 #1): si mientras viajaba este
+                    // token se canceló o venció el teclado, ya se soltó a todas y el token se tira sin usarse.
+                    val entrega = synchronized(candado) {
+                        if (grupo.cerrado) return@synchronized Entrega.DESCARTADA
+                        grupo.autorizado = true
+                        grupo.pendientes.remove(turno)
+                        // Ya no queda nadie: se cierra a nuevas uniones (una tardía abre su propio teclado).
+                        val ultima = grupo.pendientes.isEmpty()
+                        if (ultima) {
+                            cerrarAUniones(grupo)
+                            grupo.exito = true
+                            // La última sale con el teclado ya cerrado, como siempre: la acción que sigue nunca ve el
+                            // anterior.
+                            cerrarTeclado(awaiting)
+                        }
+                        // Se entrega en cuanto sale: nadie retiene un token mientras se reparten los demás.
+                        turno.token.complete(result.token)
+                        if (ultima) Entrega.ULTIMA else Entrega.SIGUE
+                    }
+                    if (entrega == Entrega.DESCARTADA) {
+                        Log.w("🔐 Override", "El teclado se cerró mientras salía un token de ${grupo.permission}; se tira")
+                        break
+                    }
                     if (autorizacion == null) {
                         Log.d("🔐 Override", "Autorizado por ${result.authorizedByName} para ${grupo.permission}")
                     }
                     autorizacion = autorizacion ?: result
-                    val ultima = synchronized(candado) {
-                        grupo.autorizado = true
-                        grupo.pendientes.remove(turno)
-                        // Ya no queda nadie: se cierra a nuevas uniones (una tardía abre su propio teclado).
-                        grupo.pendientes.isEmpty().also { if (it) cerrarAUniones(grupo) }
-                    }
-                    // La última sale con el teclado ya cerrado, como siempre: la acción que sigue nunca ve el anterior.
-                    if (ultima) cerrarTeclado(awaiting)
-                    // Se entrega en cuanto sale: nadie retiene un token mientras se reparten los demás.
-                    turno.token.complete(result.token)
-                    if (ultima) break
+                    if (entrega == Entrega.ULTIMA) break
                 } else if (autorizacion == null) {
                     // El PIN no sirvió (o no se pudo validar): el teclado sigue y nadie se suelta, como siempre.
                     return result
@@ -372,7 +403,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
             throw e
         }
         if (autorizacion == null) {
-            // Ninguna petición del grupo seguía en pie: no se mandó el PIN (Codex r1 #4) y el teclado se cierra.
+            // Ninguna petición del grupo seguía en pie (no se mandó el PIN, Codex r1 #4) o el teclado se cerró mientras
+            // salía el primer token: el teclado se cierra.
             cerrarTeclado(awaiting)
             soltar(grupo)
             return OverrideResult.Failed(YA_NO_ESPERA)
@@ -393,6 +425,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
             if (_prompt.value?.id == awaiting.id) _prompt.value = null
         }
     }
+
+    private enum class Entrega { SIGUE, ULTIMA, DESCARTADA }
 
     /** Bajo [candado]: desde aquí nadie más se une a [grupo]. */
     private fun cerrarAUniones(grupo: Grupo) {
@@ -418,7 +452,10 @@ open class ManagerOverrideCoordinator @Inject constructor(
                 grupo.pendientes.removeFirst()
                 muertas += primera
             }
-            if (elegida == null && grupo.autorizado && !grupo.cerrado) cerrarAUniones(grupo)
+            if (elegida == null && grupo.autorizado && !grupo.cerrado) {
+                cerrarAUniones(grupo)
+                grupo.exito = true
+            }
             elegida
         }
         muertas.forEach { it.token.complete(null) }

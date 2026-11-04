@@ -6,6 +6,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -76,18 +77,14 @@ class UnPinPorRafagaTest {
         error("Se esperaban $n consultas unidas a $rafaga y hay ${unidasAlGrupo(rafaga, permiso)}")
     }
 
-    /** Anota los teclados DISTINTOS que llegan a mostrarse durante los siguientes 5 s. */
-    private fun ManagerOverrideCoordinator.tecladosVistos(): MutableSet<Long> {
-        val vistos = Collections.synchronizedSet(mutableSetOf<Long>())
-        thread(isDaemon = true) {
-            val fin = System.currentTimeMillis() + 5_000
-            while (System.currentTimeMillis() < fin) {
-                prompt.value?.let { vistos.add(it.id) }
-                Thread.sleep(1)
-            }
+    /**
+     * Une [n] consultas de [rafaga] UNA POR UNA, esperando que cada una entre antes de lanzar la siguiente (Codex código
+     * r1 #4: crear hilos en orden no garantiza que entren en orden).
+     */
+    private fun ManagerOverrideCoordinator.unirEnOrden(n: Int, rafaga: String = "carga-1"): List<Consulta> =
+        (1..n).map { i ->
+            informe(this, rafaga).also { esperarUnidas(rafaga, "reports:read", i) }
         }
-        return vistos
-    }
 
     /** Una consulta que recibió un 403 y espera su token en su propio hilo, como el interceptor. */
     private class Consulta(
@@ -114,12 +111,11 @@ class UnPinPorRafagaTest {
     fun `cuatro consultas de la misma rafaga comparten UN teclado y cada una recibe su propio token`() {
         val red = RepoQueCuenta()
         val coordinator = TestCoordinator(red.repo)
-        val vistos = coordinator.tecladosVistos()
+        val antes = coordinator.tecladosPublicados
 
         val primera = informe(coordinator)
         coordinator.esperarTeclado()
-        val otras = List(3) { informe(coordinator) }
-        coordinator.esperarUnidas("carga-1", "reports:read", 3)
+        val otras = coordinator.unirEnOrden(3)
 
         val resultado = runBlocking { coordinator.submitPin("venue_1", "1234", coordinator.prompt.value?.id) }
 
@@ -134,19 +130,18 @@ class UnPinPorRafagaTest {
         assertEquals(List(4) { "reports:read" }, red.pedidos.toList())
         Thread.sleep(150)
         assertNull("no debe salir otro teclado", coordinator.prompt.value)
-        assertEquals("UN solo teclado para la ráfaga", 1, vistos.size)
+        assertEquals("UN solo teclado para la ráfaga", antes + 1, coordinator.tecladosPublicados)
     }
 
     @Test
     fun `cancelar suelta a TODA la rafaga sin abrir otro teclado ni pedir tokens`() {
         val red = RepoQueCuenta()
         val coordinator = TestCoordinator(red.repo)
-        val vistos = coordinator.tecladosVistos()
+        val antes = coordinator.tecladosPublicados
 
         val primera = informe(coordinator)
         val id = coordinator.esperarTeclado().id
-        val otras = List(3) { informe(coordinator) }
-        coordinator.esperarUnidas("carga-1", "reports:read", 3)
+        val otras = coordinator.unirEnOrden(3)
 
         coordinator.cancel(id)
 
@@ -156,7 +151,7 @@ class UnPinPorRafagaTest {
         }
         Thread.sleep(150)
         assertNull(coordinator.prompt.value)
-        assertEquals(1, vistos.size)
+        assertEquals(antes + 1, coordinator.tecladosPublicados)
         assertEquals(0, red.pedidos.size)
     }
 
@@ -191,8 +186,7 @@ class UnPinPorRafagaTest {
 
         val primera = informe(coordinator)
         coordinator.esperarTeclado()
-        val otras = List(3) { informe(coordinator) }
-        coordinator.esperarUnidas("carga-1", "reports:read", 3)
+        val otras = coordinator.unirEnOrden(3)
 
         (otras + primera).forEach {
             assertTrue("la espera debió vencer sola", it.listo.await(3, TimeUnit.SECONDS))
@@ -272,8 +266,7 @@ class UnPinPorRafagaTest {
 
         val primera = informe(coordinator)
         coordinator.esperarTeclado()
-        val otras = List(3) { informe(coordinator) }
-        coordinator.esperarUnidas("carga-1", "reports:read", 3)
+        val otras = coordinator.unirEnOrden(3)
 
         val resultado = runBlocking { coordinator.submitPin("venue_1", "1234", coordinator.prompt.value?.id) }
 
@@ -319,6 +312,7 @@ class UnPinPorRafagaTest {
         val primera = informe(coordinator)
         coordinator.esperarTeclado()
         val viva = informe(coordinator)
+        coordinator.esperarUnidas("carga-1", "reports:read", 1)
         val cancelada = informe(coordinator, vivo = { false })
         coordinator.esperarUnidas("carga-1", "reports:read", 2)
 
@@ -378,8 +372,7 @@ class UnPinPorRafagaTest {
 
         val primera = informe(coordinator)
         val id = coordinator.esperarTeclado().id
-        val otras = List(2) { informe(coordinator) }
-        coordinator.esperarUnidas("carga-1", "reports:read", 2)
+        val otras = coordinator.unirEnOrden(2)
 
         runBlocking {
             val envio = launch(Dispatchers.Default) { coordinator.submitPin("venue_1", "1234", id) }
@@ -393,6 +386,89 @@ class UnPinPorRafagaTest {
         assertEquals(listOf(null, null), otras.map { it.token })
         Thread.sleep(100)
         assertNull(coordinator.prompt.value)
+    }
+
+    /** Un repositorio cuyo token número [frenado] se queda en camino hasta que la prueba lo suelta. */
+    private class RepoConFreno(private val frenado: Int) {
+        val enCamino = CountDownLatch(1)
+        val suelta = CountDownLatch(1)
+        val pedidos = AtomicInteger(0)
+        val repo: PermissionOverrideRepository = mockk<PermissionOverrideRepository>().also { repo ->
+            coEvery { repo.requestToken(any(), any(), any()) } coAnswers {
+                val n = pedidos.incrementAndGet()
+                if (n == frenado) {
+                    enCamino.countDown()
+                    withContext(Dispatchers.IO) { suelta.await(5, TimeUnit.SECONDS) }
+                }
+                OverrideResult.Granted("tok$n", "Laura")
+            }
+        }
+    }
+
+    /** Codex código r1 #1: cancelar mientras sale un token. Gana cancelar: el token se tira y nadie lo usa. */
+    @Test
+    fun `cancelar mientras sale el token gana cancelar y el token se tira`() {
+        val red = RepoConFreno(frenado = 1)
+        val coordinator = TestCoordinator(red.repo)
+
+        val sola = Consulta(coordinator, "orders:merge", rafaga = null)
+        val id = coordinator.esperarTeclado().id
+        runBlocking {
+            val envio = launch(Dispatchers.Default) { coordinator.submitPin("venue_1", "1234", id) }
+            assertTrue(red.enCamino.await(3, TimeUnit.SECONDS))
+            coordinator.cancel(id)
+            assertTrue(sola.listo.await(3, TimeUnit.SECONDS))
+            red.suelta.countDown()
+            envio.join()
+        }
+        assertNull("el token que llegó tarde no se entrega", sola.token)
+        assertNull(coordinator.prompt.value)
+    }
+
+    /** Codex código r1 #1: lo mismo si el teclado VENCE mientras sale el token. */
+    @Test
+    fun `si el teclado vence mientras sale el token, el token se tira`() {
+        val red = RepoConFreno(frenado = 1)
+        val coordinator = TestCoordinator(red.repo, promptTimeoutMs = 400L)
+
+        val sola = Consulta(coordinator, "orders:merge", rafaga = null)
+        val id = coordinator.esperarTeclado().id
+        runBlocking {
+            val envio = launch(Dispatchers.Default) { coordinator.submitPin("venue_1", "1234", id) }
+            assertTrue(red.enCamino.await(3, TimeUnit.SECONDS))
+            assertTrue("vence solo", sola.listo.await(3, TimeUnit.SECONDS))
+            red.suelta.countDown()
+            envio.join()
+        }
+        assertNull(sola.token)
+    }
+
+    /** Codex código r1 #2: cancelar a MEDIA repartición también anota la carga; su respuesta tardía no pregunta. */
+    @Test
+    fun `cancelar a media reparticion anota la carga y su respuesta tardia no pregunta`() {
+        val red = RepoConFreno(frenado = 2)
+        val coordinator = TestCoordinator(red.repo)
+
+        val primera = informe(coordinator)
+        val id = coordinator.esperarTeclado().id
+        val otra = coordinator.unirEnOrden(1).single()
+        runBlocking {
+            val envio = launch(Dispatchers.Default) { coordinator.submitPin("venue_1", "1234", id) }
+            assertTrue(red.enCamino.await(3, TimeUnit.SECONDS))
+            coordinator.cancel(id)
+            red.suelta.countDown()
+            envio.join()
+        }
+        assertTrue(primera.listo.await(3, TimeUnit.SECONDS))
+        assertTrue(otra.listo.await(3, TimeUnit.SECONDS))
+        assertEquals("tok1", primera.token)
+        assertNull(otra.token)
+
+        val publicados = coordinator.tecladosPublicados
+        val tarde = informe(coordinator)
+        assertTrue(tarde.listo.await(3, TimeUnit.SECONDS))
+        assertNull(tarde.token)
+        assertEquals("sin teclado nuevo", publicados, coordinator.tecladosPublicados)
     }
 
     /** Una consulta que llega cuando su grupo ya repartió abre el suyo: nunca se queda sin respuesta. */
