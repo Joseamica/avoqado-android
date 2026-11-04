@@ -631,6 +631,19 @@ class TransactionsViewModel @Inject constructor(
     /** D22 ronda 3: sube con cada carga A MANO buena (la píldora, jalar, «Reintentar»): la lista vuelve al inicio. */
     val subidasAlInicio: StateFlow<Long> = _subidasAlInicio.asStateFlow()
 
+    private val _subidasHechas = MutableStateFlow(0L)
+
+    /**
+     * D22 ronda 4 (Codex código r3): la última subida que la pantalla de verdad ejecutó. Vive aquí y no en la pantalla: si la
+     * carga a mano termina con otra pestaña a la vista, al volver queda pendiente y se ejecuta.
+     */
+    val subidasHechas: StateFlow<Long> = _subidasHechas.asStateFlow()
+
+    /** La pantalla ya subió la lista al inicio por la [n]-ésima carga a mano buena. */
+    fun subidaAlInicioHecha(n: Long) {
+        _subidasHechas.update { maxOf(it, n) }
+    }
+
     /**
      * D22 (diseño r2 §E): con más de una página a la vista la lista no se mueve sola; hace falta por un cobro que subió y se
      * ofrece «Hay ventas nuevas · Actualizar» (al tocarla, lo mismo que jalar).

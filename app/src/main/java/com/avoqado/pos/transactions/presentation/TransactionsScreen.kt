@@ -460,10 +460,13 @@ private fun TransactionListPanel(
                     // D22 (prueba 2 en la D3): si la lista se veía desde arriba y entra algo nuevo arriba, sube para enseñarlo;
                     // con las llaves estables se quedaba anclada a la fila de antes y la venta nueva quedaba fuera de la vista.
                     val subidasAlInicio by viewModel.subidasAlInicio.collectAsState()
+                    val subidasHechas by viewModel.subidasHechas.collectAsState()
                     SubirAlInicioDeLaLista(
                         listState = listState,
                         primeraLlave = grouped.firstOrNull()?.let { (dateGroup, _) -> "header_$dateGroup" },
                         subidasPedidas = subidasAlInicio,
+                        subidasHechas = subidasHechas,
+                        alSubir = viewModel::subidaAlInicioHecha,
                     )
 
                     LazyColumn(
@@ -1303,12 +1306,19 @@ private fun PildoraDeVentasNuevas(onActualizar: () -> Unit) {
 /**
  * D22: cuándo sube la lista al inicio.
  * - Tras una carga A MANO buena (la píldora «Hay ventas nuevas · Actualizar», jalar, «Reintentar»): siempre, aunque la cajera
- *   hubiera bajado; lo pidió ella ([subidasPedidas] sube con cada una).
+ *   hubiera bajado; lo pidió ella ([subidasPedidas] sube con cada una). [subidasHechas] es la última que de verdad se ejecutó
+ *   (vive en el ViewModel) y [alSubir] la anota después de subir.
  * - Tras la automática: sólo si se veía desde arriba y entró algo nuevo arriba ([subirAlInicioTrasRecarga]); si la cajera
  *   había bajado, no se mueve. «Cargar más» pega al final y no sube.
  */
 @Composable
-internal fun SubirAlInicioDeLaLista(listState: androidx.compose.foundation.lazy.LazyListState, primeraLlave: Any?, subidasPedidas: Long) {
+internal fun SubirAlInicioDeLaLista(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    primeraLlave: Any?,
+    subidasPedidas: Long,
+    subidasHechas: Long,
+    alSubir: (Long) -> Unit,
+) {
     var primeraLlaveAnterior by remember { mutableStateOf<Any?>(null) }
     LaunchedEffect(primeraLlave) {
         val anterior = primeraLlaveAnterior
@@ -1318,11 +1328,12 @@ internal fun SubirAlInicioDeLaLista(listState: androidx.compose.foundation.lazy.
             listState.scrollToItem(0)
         }
     }
-    var subidasAtendidas by remember { mutableStateOf(subidasPedidas) }
-    LaunchedEffect(subidasPedidas) {
-        if (subidasPedidas != subidasAtendidas) {
-            subidasAtendidas = subidasPedidas
+    // Ronda 4 (Codex código r3): lo hecho lo guarda el ViewModel, no `remember`. Si la carga a mano terminó con otra pestaña
+    // a la vista, al volver queda pendiente y se ejecuta aquí, encima de la posición que restauró la navegación.
+    LaunchedEffect(subidasPedidas, subidasHechas) {
+        if (subidasPedidas > subidasHechas) {
             listState.scrollToItem(0)
+            alSubir(subidasPedidas)
         }
     }
 }

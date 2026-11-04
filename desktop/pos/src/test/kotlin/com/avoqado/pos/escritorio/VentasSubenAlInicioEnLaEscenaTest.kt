@@ -35,13 +35,14 @@ class VentasSubenAlInicioEnLaEscenaTest {
         val estado = LazyListState()
         var filas by mutableStateOf(cincoPaginas)
         var subidas by mutableLongStateOf(0L)
+        var hechas by mutableLongStateOf(0L) // lo que guarda el ViewModel
         setContent {
             Box(Modifier.height(400.dp)) {
                 LazyColumn(state = estado, modifier = Modifier.testTag("lista")) {
                     items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
                 }
             }
-            SubirAlInicioDeLaLista(estado, primeraLlave = filas.first(), subidasPedidas = subidas)
+            SubirAlInicioDeLaLista(estado, filas.first(), subidasPedidas = subidas, subidasHechas = hechas, alSubir = { hechas = it })
         }
         onNodeWithTag("lista").performScrollToIndex(60) // la cajera bajó a la página 4
         waitForIdle()
@@ -63,8 +64,47 @@ class VentasSubenAlInicioEnLaEscenaTest {
         assertTrue(estado.firstVisibleItemIndex >= 60)
     }
 
+    @Test fun `ronda 4 - si la carga a mano termina con otra pestana, al volver la lista sube al inicio`() = runComposeUiTest {
+        var mostrar by mutableStateOf(true)
+        var estado = LazyListState()
+        var filas by mutableStateOf(cincoPaginas)
+        var subidas by mutableLongStateOf(0L)
+        var hechas by mutableLongStateOf(0L) // en el ViewModel: sobrevive a la pestaña
+        setContent {
+            if (mostrar) {
+                Box(Modifier.height(400.dp)) {
+                    LazyColumn(state = estado, modifier = Modifier.testTag("lista")) {
+                        items(filas, key = { it }) { BasicText(it, Modifier.height(48.dp)) }
+                    }
+                }
+                SubirAlInicioDeLaLista(estado, filas.first(), subidasPedidas = subidas, subidasHechas = hechas, alSubir = { hechas = it })
+            }
+        }
+        onNodeWithTag("lista").performScrollToIndex(60) // bajó varias páginas y tocó «Actualizar»
+        waitForIdle()
+        val guardada = estado.firstVisibleItemIndex
+        assertTrue(guardada >= 60)
+
+        mostrar = false // cambia de pestaña mientras consulta
+        waitForIdle()
+        filas = listOf("nueva") + cincoPaginas.take(20) // la carga termina bien con la pantalla desmontada
+        subidas = 1L
+        estado = LazyListState(firstVisibleItemIndex = guardada) // la navegación restaura la posición guardada
+        mostrar = true // vuelve a Ventas
+        waitForIdle()
+
+        assertEquals(0, estado.firstVisibleItemIndex)
+        assertEquals(0, estado.firstVisibleItemScrollOffset)
+        assertEquals(1L, hechas)
+    }
+
     @Test fun `la automatica con la cajera abajo no la mueve`() = escena { estado, cambiar ->
         cambiar(listOf("nueva") + cincoPaginas, 0L) // entra una venta arriba, sin que nadie la pida
         assertTrue(estado.firstVisibleItemIndex > 0)
+    }
+
+    @Test fun `Cargar mas pega al final y no sube`() = escena { estado, cambiar ->
+        cambiar(cincoPaginas + (101..120).map { "fila-$it" }, 0L) // llega la página siguiente
+        assertTrue(estado.firstVisibleItemIndex >= 60)
     }
 }
