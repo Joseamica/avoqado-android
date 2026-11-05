@@ -6,6 +6,10 @@ import com.avoqado.pos.announcements.data.AnnouncementsRepository
 import com.avoqado.pos.announcements.data.AnnouncementsRepository.VentanaPendiente
 import com.avoqado.pos.announcements.data.Cierre
 import com.avoqado.pos.announcements.data.CierresDeAnuncios
+import com.avoqado.pos.announcements.data.ResultadoDelCierre.PENDIENTE
+import com.avoqado.pos.announcements.data.ResultadoDelCierre.RESUELTO
+import com.avoqado.pos.announcements.data.ResultadoDelCierre.SIN_RED
+import com.avoqado.pos.announcements.data.clasificarCierre
 import com.avoqado.pos.announcements.data.pendientesPorMandar
 import com.avoqado.pos.announcements.data.respuestaVigente
 import com.avoqado.pos.announcements.data.ventanaVisible
@@ -97,7 +101,7 @@ class CierrePendienteTest {
     @Test
     fun `un cierre sin red no vuelve a ensenar la ventana tras reiniciar`() {
         coEvery { repo.fetchVentanaPendiente() } returns ventanaA1
-        coEvery { repo.recordDismiss(any(), any()) } returns false   // sin red
+        coEvery { repo.recordDismiss(any(), any()) } returns SIN_RED
 
         val antes = gate()
         assertEquals("a1", antes.ventanaPendiente.value?.id)
@@ -114,7 +118,7 @@ class CierrePendienteTest {
     fun `el cierre se guarda antes de tocar la red`() {
         coEvery { repo.fetchVentanaPendiente() } returns ventanaA1
         var guardadoAlMandar: List<Cierre>? = null
-        coEvery { repo.recordDismiss("a1", "ana") } answers { guardadoAlMandar = almacen.datos["ana"]; true }
+        coEvery { repo.recordDismiss("a1", "ana") } answers { guardadoAlMandar = almacen.datos["ana"]; RESUELTO }
 
         gate().cerrar("a1")
 
@@ -126,7 +130,7 @@ class CierrePendienteTest {
     fun `al volver la red se manda el cierre y queda marcado como sincronizado (no se borra)`() {
         almacen.datos["ana"] = listOf(Cierre("a1", false))
         coEvery { repo.fetchVentanaPendiente() } returns ventanaA1
-        coEvery { repo.recordDismiss("a1", "ana") } returns true
+        coEvery { repo.recordDismiss("a1", "ana") } returns RESUELTO
 
         val vm = gate()
 
@@ -138,7 +142,7 @@ class CierrePendienteTest {
     @Test
     fun `con 409 el cierre sigue pendiente`() {
         almacen.datos["ana"] = listOf(Cierre("a1", false))
-        coEvery { repo.recordDismiss("a1", "ana") } returns false   // 409 CIERRE_DE_OTRA_PERSONA
+        coEvery { repo.recordDismiss("a1", "ana") } returns PENDIENTE   // 409 CIERRE_DE_OTRA_PERSONA
 
         gate()
 
@@ -149,7 +153,7 @@ class CierrePendienteTest {
     fun `el cierre pendiente de otra persona no se manda con la sesion actual`() {
         almacen.datos["beatriz"] = listOf(Cierre("b1", false))
         almacen.datos["ana"] = listOf(Cierre("a1", false))
-        coEvery { repo.recordDismiss(any(), any()) } returns true
+        coEvery { repo.recordDismiss(any(), any()) } returns RESUELTO
 
         gate()
 
@@ -159,15 +163,56 @@ class CierrePendienteTest {
     }
 
     @Test
-    fun `los pendientes se mandan uno por uno en orden y paran al primer fallo`() {
-        almacen.datos["ana"] = listOf(Cierre("a1", false), Cierre("a2", false), Cierre("a3", false))
+    fun `clasificarCierre - 2xx y 403 404 410 resuelven, 5xx es sin red, 409 y otros 4xx quedan pendientes`() {
+        listOf(200, 204, 403, 404, 410).forEach { assertEquals("$it", RESUELTO, clasificarCierre(it)) }
+        listOf(500, 502, 503).forEach { assertEquals("$it", SIN_RED, clasificarCierre(it)) }
+        listOf(400, 401, 409, 422).forEach { assertEquals("$it", PENDIENTE, clasificarCierre(it)) }
+    }
+
+    @Test
+    fun `sin red se detiene`() {
+        almacen.datos["ana"] = listOf(Cierre("a1", false), Cierre("a2", false))
         val mandados = mutableListOf<String>()
-        coEvery { repo.recordDismiss(any(), "ana") } answers { mandados += firstArg<String>(); firstArg<String>() != "a2" }
+        coEvery { repo.recordDismiss(any(), "ana") } answers { mandados += firstArg<String>(); SIN_RED }
 
         gate()
 
-        assertEquals(listOf("a1", "a2"), mandados)
-        assertEquals(listOf(Cierre("a1", true), Cierre("a2", false), Cierre("a3", false)), almacen.datos["ana"])
+        assertEquals(listOf("a1"), mandados)
+        assertEquals(listOf(Cierre("a1", false), Cierre("a2", false)), almacen.datos["ana"])
+    }
+
+    @Test
+    fun `el primero da 403 y el segundo se manda y queda sincronizado`() {
+        almacen.datos["ana"] = listOf(Cierre("a1", false), Cierre("a2", false))
+        coEvery { repo.recordDismiss("a1", "ana") } returns clasificarCierre(403)   // el acuse ya no existe
+        coEvery { repo.recordDismiss("a2", "ana") } returns RESUELTO
+
+        gate()
+
+        coVerify(exactly = 1) { repo.recordDismiss("a2", "ana") }
+        assertEquals(listOf(Cierre("a1", true), Cierre("a2", true)), almacen.datos["ana"])
+    }
+
+    @Test
+    fun `un 409 queda pendiente y el siguiente se manda`() {
+        almacen.datos["ana"] = listOf(Cierre("a1", false), Cierre("a2", false))
+        coEvery { repo.recordDismiss("a1", "ana") } returns clasificarCierre(409)
+        coEvery { repo.recordDismiss("a2", "ana") } returns RESUELTO
+
+        gate()
+
+        coVerify(exactly = 1) { repo.recordDismiss("a2", "ana") }
+        assertEquals(listOf(Cierre("a1", false), Cierre("a2", true)), almacen.datos["ana"])
+    }
+
+    @Test
+    fun `cerrar con 403 queda sincronizado`() {
+        coEvery { repo.fetchVentanaPendiente() } returns ventanaA1
+        coEvery { repo.recordDismiss("a1", "ana") } returns clasificarCierre(403)
+
+        gate().cerrar("a1")
+
+        assertEquals(listOf(Cierre("a1", true)), almacen.datos["ana"])
     }
 
     @Test
@@ -226,6 +271,18 @@ class CierrePendienteTest {
         assertNull(vm.ventanaPendiente.value)
     }
 
+    @Test
+    fun `la ventana que llega cuando ya no hay persona no se ensena aunque la generacion no haya cambiado`() {
+        val deAna = CompletableDeferred<VentanaPendiente?>()
+        coEvery { repo.fetchVentanaPendiente() } coAnswers { deAna.await() }
+        val vm = gate()
+
+        persona = null   // clearSession a medias: ya se borró la persona
+        deAna.complete(ventanaA1)
+
+        assertNull(vm.ventanaPendiente.value)
+    }
+
     /** La generación cambia pero el flujo todavía no avisa (la respuesta gana la carrera al disparador). */
     private fun storageCambiaSinAvisar(nueva: Long) {
         every { storage.generacion } returns nueva
@@ -258,6 +315,21 @@ class CierrePendienteTest {
     }
 
     @Test
+    fun `el detalle que llega cuando cambio la persona no se ensena aunque la generacion no haya cambiado`() {
+        val deAna = CompletableDeferred<AnnouncementsRepository.Detalle?>()
+        coEvery { repo.fetchDetail("a1") } coAnswers { deAna.await() }
+        val vm = AnnouncementViewModel(repo, storage)
+
+        vm.abrir("a1")
+        persona = "beatriz"
+        deAna.complete(detalle("a1"))
+
+        assertNull(vm.detalle.value)
+        assertTrue(vm.descartado.value)
+        coVerify(exactly = 0) { repo.recordOpen(any()) }
+    }
+
+    @Test
     fun `el detalle que llega con otra persona adentro no se ensena ni cuenta como abierto`() {
         val deAna = CompletableDeferred<AnnouncementsRepository.Detalle?>()
         coEvery { repo.fetchDetail("a1") } coAnswers { deAna.await() }
@@ -268,6 +340,12 @@ class CierrePendienteTest {
         deAna.complete(detalle("a1"))
 
         assertNull(vm.detalle.value)
+        // El diálogo no se queda girando: queda «descartado» (se cierra solo), no cargando.
+        assertFalse(vm.cargando.value)
+        assertTrue(vm.descartado.value)
         coVerify(exactly = 0) { repo.recordOpen(any()) }
+
+        vm.limpiar()
+        assertFalse(vm.descartado.value)
     }
 }

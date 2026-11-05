@@ -37,6 +37,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 fun AnnouncementDialog(
     announcementId: String,
     onCerrar: () -> Unit,
+    /** Cuando la carga se descarta por cambio de persona. La ventana lo usa para NO registrar un cierre ajeno. */
+    onDescartado: () -> Unit = onCerrar,
     viewModel: AnnouncementViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -44,7 +46,16 @@ fun AnnouncementDialog(
     val cargando by viewModel.cargando.collectAsState()
     val fallo by viewModel.fallo.collectAsState()
 
+    val descartado by viewModel.descartado.collectAsState()
+
     LaunchedEffect(announcementId) { viewModel.abrir(announcementId) }
+    // Lo que se cargaba era de otra persona: se cierra solo, nunca se queda girando (también desde la campana).
+    LaunchedEffect(descartado) {
+        if (descartado) {
+            viewModel.limpiar()
+            onDescartado()
+        }
+    }
 
     BarreraDeAtajos()   // POS de Windows: con el anuncio encima, las teclas de atajo esperan
     Dialog(

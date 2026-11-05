@@ -38,6 +38,13 @@ class AnnouncementViewModel @Inject constructor(
     private val _fallo = MutableStateFlow(false)
     val fallo: StateFlow<Boolean> = _fallo.asStateFlow()
 
+    /**
+     * La carga se descartó porque ya entró otra persona: el diálogo se cierra solo en vez de quedarse girando (un
+     * detalle nulo sin fallo pinta el cargador).
+     */
+    private val _descartado = MutableStateFlow(false)
+    val descartado: StateFlow<Boolean> = _descartado.asStateFlow()
+
     private var carga: Job? = null
 
     /**
@@ -46,14 +53,18 @@ class AnnouncementViewModel @Inject constructor(
      */
     fun abrir(announcementId: String) {
         val pedida = secureStorage.generacion
+        val staffId = secureStorage.userId
         carga?.cancel()
+        _descartado.value = false
         carga = viewModelScope.launch {
             _cargando.value = true
             _fallo.value = false
             val cargado = repository.fetchDetail(announcementId)
             ensureActive()
-            if (!respuestaVigente(pedida, secureStorage.generacion)) {
+            if (!respuestaVigente(pedida, secureStorage.generacion) || secureStorage.userId != staffId) {
+                _detalle.value = null
                 _cargando.value = false
+                _descartado.value = true
                 return@launch
             }
             _detalle.value = cargado
@@ -71,5 +82,6 @@ class AnnouncementViewModel @Inject constructor(
     fun limpiar() {
         _detalle.value = null
         _fallo.value = false
+        _descartado.value = false
     }
 }

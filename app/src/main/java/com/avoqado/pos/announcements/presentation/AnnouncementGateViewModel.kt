@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.announcements.data.AnnouncementsRepository
 import com.avoqado.pos.announcements.data.CierresDeAnuncios
+import com.avoqado.pos.announcements.data.ResultadoDelCierre
 import com.avoqado.pos.announcements.data.respuestaVigente
 import com.avoqado.pos.announcements.data.ventanaVisible
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -46,8 +47,9 @@ class AnnouncementGateViewModel @Inject constructor(
         consulta = viewModelScope.launch {
             val ventana = repository.fetchVentanaPendiente()
             ensureActive()   // El repositorio se traga la cancelación: una consulta reemplazada no publica nada.
-            // La respuesta de una sesión que ya no está no se enseña (codex r5 #3).
-            if (!respuestaVigente(pedida, secureStorage.generacion)) return@launch
+            // La respuesta de una sesión que ya no está no se enseña (codex r5 #3). La persona también: `clearSession` sube
+            // la generación antes de borrar a la persona.
+            if (!respuestaVigente(pedida, secureStorage.generacion) || secureStorage.userId != staffId) return@launch
             val cerrados = staffId?.let(cierres::cerrados).orEmpty()
             _ventanaPendiente.value = ventana?.takeIf { ventanaVisible(it.id, cerrados) }
             if (staffId != null) mandarPendientes(staffId, pedida)
@@ -63,16 +65,24 @@ class AnnouncementGateViewModel @Inject constructor(
         val staffId = secureStorage.userId ?: return
         cierres.marcar(staffId, announcementId)
         viewModelScope.launch {
-            if (repository.recordDismiss(announcementId, staffId)) cierres.marcarSincronizado(staffId, announcementId)
+            if (repository.recordDismiss(announcementId, staffId) == ResultadoDelCierre.RESUELTO) {
+                cierres.marcarSincronizado(staffId, announcementId)
+            }
         }
     }
 
-    /** Uno por uno, en el orden en que se cerraron; al primero que no llega se para (sin red, los demás tampoco). */
+    /**
+     * Uno por uno, en el orden en que se cerraron. Sólo sin red se para; un 409 u otro 4xx deja ESE pendiente y sigue
+     * con el siguiente, para que uno atorado no trabe a los demás.
+     */
     private suspend fun mandarPendientes(staffId: String, pedida: Long) {
         for (id in cierres.pendientes(staffId)) {
             if (!respuestaVigente(pedida, secureStorage.generacion)) return
-            if (!repository.recordDismiss(id, staffId)) return
-            cierres.marcarSincronizado(staffId, id)
+            when (repository.recordDismiss(id, staffId)) {
+                ResultadoDelCierre.SIN_RED -> return
+                ResultadoDelCierre.RESUELTO -> cierres.marcarSincronizado(staffId, id)
+                ResultadoDelCierre.PENDIENTE -> Unit
+            }
         }
     }
 }

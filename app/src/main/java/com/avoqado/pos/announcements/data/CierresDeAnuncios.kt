@@ -28,6 +28,20 @@ fun ventanaVisible(pendienteId: String?, cerrados: Set<String>): Boolean = pendi
 fun pendientesPorMandar(staffId: String, cierres: Map<String, List<Cierre>>): List<String> =
     cierres[staffId].orEmpty().filterNot { it.sincronizado }.map { it.id }
 
+/**
+ * Qué pasó al mandar un cierre. Ningún cierre traba a los demás (sin bloqueo por cabeza de fila):
+ *  - [SIN_RED]: sin red, timeout o 5xx → se para la fila; los demás tampoco llegarían.
+ *  - [RESUELTO]: 2xx, o 403/404/410 (el anuncio o su acuse ya no existen: no hay nada que cerrar) → sincronizado.
+ *  - [PENDIENTE]: 409 (`CIERRE_DE_OTRA_PERSONA`) u otro 4xx → sigue pendiente y se manda el siguiente.
+ */
+enum class ResultadoDelCierre { SIN_RED, RESUELTO, PENDIENTE }
+
+fun clasificarCierre(codigo: Int): ResultadoDelCierre = when {
+    codigo in 200..299 || codigo == 403 || codigo == 404 || codigo == 410 -> ResultadoDelCierre.RESUELTO
+    codigo >= 500 -> ResultadoDelCierre.SIN_RED
+    else -> ResultadoDelCierre.PENDIENTE
+}
+
 /** Dónde viven los cierres, por persona. En pruebas, uno en memoria. */
 interface AlmacenDeCierres {
     fun todos(): Map<String, List<Cierre>>

@@ -42,6 +42,8 @@ fun AnnouncementGate(viewModel: AnnouncementGateViewModel = hiltViewModel()) {
                 verCompleto = false
                 viewModel.cerrar(ventana.id)
             },
+            // El detalle era de otra persona: se cierra el «Ver más» sin marcar el anuncio como cerrado.
+            onDescartado = { verCompleto = false },
         )
         return
     }
