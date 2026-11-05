@@ -200,6 +200,75 @@ class ArticlesViewModelTest {
         assertFalse(json.containsKey("ivaTratamiento"))
     }
 
+    // MARK: - D4 (hz:71bf25d3:D4): la duración del servicio de cita se perdía al crear y al editar desde Artículos
+
+    @Test
+    fun `P2 crear un servicio de cita manda su duración`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.createProduct(capture(payload)) } returns true
+        createViewModel().createProduct(
+            name = "Corte de cabello",
+            type = com.avoqado.pos.articles.data.model.ProductType.APPOINTMENTS_SERVICE,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 250.0,
+            isActive = true,
+            trackInventory = false,
+            durationMinutes = 45,
+        )
+        advanceUntilIdle()
+        val json = Json.parseToJsonElement(payload.captured).jsonObject
+        assertEquals("45", json["durationMinutes"]?.toString())
+    }
+
+    @Test
+    fun `P2 editar un servicio de cita manda su duración, y vaciarla la borra`() = runTest {
+        val payloads = mutableListOf<String>()
+        coEvery { repository.updateProduct("p1", capture(payloads)) } returns true
+        val viewModel = createViewModel()
+        viewModel.updateProduct(
+            productId = "p1",
+            name = "Corte de cabello",
+            type = com.avoqado.pos.articles.data.model.ProductType.APPOINTMENTS_SERVICE,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 250.0,
+            isActive = true,
+            trackInventory = false,
+            durationMinutes = 30,
+        )
+        advanceUntilIdle()
+        viewModel.updateProduct(
+            productId = "p1",
+            name = "Corte de cabello",
+            type = com.avoqado.pos.articles.data.model.ProductType.APPOINTMENTS_SERVICE,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 250.0,
+            isActive = true,
+            trackInventory = false,
+            durationMinutes = null,
+        )
+        advanceUntilIdle()
+        assertEquals("30", Json.parseToJsonElement(payloads[0]).jsonObject["durationMinutes"]?.toString())
+        assertEquals("null", Json.parseToJsonElement(payloads[1]).jsonObject["durationMinutes"]?.toString())
+    }
+
+    @Test
+    fun `P2 un producto que no es servicio de cita no manda duración`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.updateProduct("p1", capture(payload)) } returns true
+        createViewModel().updateProduct(
+            productId = "p1",
+            name = "Agua",
+            type = com.avoqado.pos.articles.data.model.ProductType.FOOD_AND_BEV,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 25.0,
+            isActive = true,
+            trackInventory = false,
+            durationMinutes = 30,
+        )
+        advanceUntilIdle()
+        assertFalse(Json.parseToJsonElement(payload.captured).jsonObject.containsKey("durationMinutes"))
+    }
+
     @Test
     fun `P1 una ficha abierta sin conexion no guarda aunque la red ya volvio - mandaria precio y campos viejos (r2 R2-14)`() = runTest {
         var resultado: Boolean? = null
