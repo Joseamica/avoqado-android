@@ -8,9 +8,14 @@ import com.avoqado.pos.announcements.data.ResultadoDelCierre
 import com.avoqado.pos.announcements.data.respuestaVigente
 import com.avoqado.pos.announcements.data.ventanaVisible
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.payment.data.PaymentSyncService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +28,7 @@ class AnnouncementGateViewModel @Inject constructor(
     private val repository: AnnouncementsRepository,
     private val secureStorage: SecureStorage,
     private val cierres: CierresDeAnuncios,
+    private val conectividad: ConnectivityMonitor,
 ) : ViewModel() {
 
     private val _ventanaPendiente = MutableStateFlow<AnnouncementsRepository.VentanaPendiente?>(null)
@@ -33,10 +39,23 @@ class AnnouncementGateViewModel @Inject constructor(
 
     private var consulta: Job? = null
 
+    /** Un solo envío de pendientes a la vez: el arranque y la reconexión no se pisan. */
+    private val enviando = Mutex()
+
     init {
         // Se consulta al arrancar y cada vez que entra o sale alguien (codex r4 #4): si la app abrió sin sesión, la
         // ventana se pide al entrar, no nunca.
         viewModelScope.launch { secureStorage.generacionDeSesion.collect { consultar() } }
+        // Al volver la red (red + servidor), lo que se cerró sin red se manda sin esperar a otra sesión (codex impl r3 #1).
+        // La misma señal y la misma espera de estabilización que la cola de cobros.
+        viewModelScope.launch {
+            PaymentSyncService.alReconectar(
+                combine(conectividad.isConnected, conectividad.isServerReachable) { red, servidor -> red && servidor },
+            ) {
+                val staffId = secureStorage.userId ?: return@alReconectar
+                mandarPendientes(staffId, secureStorage.generacion)
+            }
+        }
     }
 
     fun consultar() {
@@ -76,6 +95,12 @@ class AnnouncementGateViewModel @Inject constructor(
      * con el siguiente, para que uno atorado no trabe a los demás.
      */
     private suspend fun mandarPendientes(staffId: String, pedida: Long) {
+        // Uno detrás de otro, nunca dos a la vez. El que espera vuelve a leer la lista: lo que el anterior ya sincronizó no
+        // sale otra vez.
+        enviando.withLock { mandarPendientesUnoPorUno(staffId, pedida) }
+    }
+
+    private suspend fun mandarPendientesUnoPorUno(staffId: String, pedida: Long) {
         for (id in cierres.pendientes(staffId)) {
             if (!respuestaVigente(pedida, secureStorage.generacion)) return
             when (repository.recordDismiss(id, staffId)) {

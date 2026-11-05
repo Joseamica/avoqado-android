@@ -6,6 +6,7 @@ import com.avoqado.pos.announcements.data.AnnouncementsRepository
 import com.avoqado.pos.announcements.data.AnnouncementsRepository.VentanaPendiente
 import com.avoqado.pos.announcements.data.Cierre
 import com.avoqado.pos.announcements.data.CierresDeAnuncios
+import com.avoqado.pos.announcements.data.ResultadoDelCierre
 import com.avoqado.pos.announcements.data.ResultadoDelCierre.PENDIENTE
 import com.avoqado.pos.announcements.data.ResultadoDelCierre.RESUELTO
 import com.avoqado.pos.announcements.data.ResultadoDelCierre.SIN_RED
@@ -17,6 +18,9 @@ import com.avoqado.pos.announcements.presentation.AnnouncementGateViewModel
 import com.avoqado.pos.announcements.presentation.AnnouncementViewModel
 import com.avoqado.pos.announcements.data.model.AnnouncementDetail
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.payment.data.PaymentSyncService
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -36,8 +40,10 @@ import org.junit.Test
  */
 class CierrePendienteTest {
 
+    private val despachador = UnconfinedTestDispatcher()
+
     @get:Rule
-    val mainDispatcherRule = MainDispatcherRule()
+    val mainDispatcherRule = MainDispatcherRule(despachador)
 
     /** El almacén en memoria: sobrevive a «reiniciar» porque se lo pasamos al ViewModel nuevo. */
     private class AlmacenEnMemoria : AlmacenDeCierres {
@@ -59,7 +65,19 @@ class CierrePendienteTest {
     }
     private val ventanaA1 = VentanaPendiente("a1", "Terminal nueva", "Ya disponible", null)
 
-    private fun gate() = AnnouncementGateViewModel(repo, storage, CierresDeAnuncios(almacen))
+    private val red = MutableStateFlow(true)
+    private val conectividad = mockk<ConnectivityMonitor> {
+        every { isConnected } returns red
+        every { isServerReachable } returns MutableStateFlow(true)
+    }
+
+    private fun gate() = AnnouncementGateViewModel(repo, storage, CierresDeAnuncios(almacen), conectividad)
+
+    /** La reconexión espera a que la red se estabilice antes de mandar (la misma espera que la cola de cobros). */
+    private fun vuelveLaRed() {
+        red.value = true
+        despachador.scheduler.advanceTimeBy(PaymentSyncService.ESPERA_DE_ESTABILIZACION_MS + 1)
+    }
 
     // ── Funciones puras ──────────────────────────────────────────────────────────────────
 
@@ -127,7 +145,7 @@ class CierrePendienteTest {
     }
 
     @Test
-    fun `al volver la red se manda el cierre y queda marcado como sincronizado (no se borra)`() {
+    fun `al arrancar con red se manda el cierre pendiente y queda sincronizado`() {
         almacen.datos["ana"] = listOf(Cierre("a1", false))
         coEvery { repo.fetchVentanaPendiente() } returns ventanaA1
         coEvery { repo.recordDismiss("a1", "ana") } returns RESUELTO
@@ -137,6 +155,51 @@ class CierrePendienteTest {
         coVerify(exactly = 1) { repo.recordDismiss("a1", "ana") }
         assertEquals(listOf(Cierre("a1", true)), almacen.datos["ana"])
         assertNull(vm.ventanaPendiente.value)
+    }
+
+    @Test
+    fun `al volver la red se manda el cierre y queda marcado como sincronizado (no se borra)`() {
+        red.value = false
+        coEvery { repo.fetchVentanaPendiente() } returns ventanaA1
+        coEvery { repo.recordDismiss("a1", "ana") } answers { if (red.value) RESUELTO else SIN_RED }
+        val vm = gate()
+
+        vm.cerrar("a1")   // sin red: queda pendiente
+        assertEquals(listOf(Cierre("a1", false)), almacen.datos["ana"])
+
+        vuelveLaRed()     // el MISMO ViewModel, vivo: nadie lo reinicia ni cambia la sesión
+
+        coVerify(exactly = 2) { repo.recordDismiss("a1", "ana") }
+        assertEquals(listOf(Cierre("a1", true)), almacen.datos["ana"])
+        assertNull(vm.ventanaPendiente.value)
+    }
+
+    @Test
+    fun `al volver la red no se manda dos veces a la vez`() {
+        almacen.datos["ana"] = listOf(Cierre("a1", false))
+        val enVuelo = CompletableDeferred<ResultadoDelCierre>()
+        var llamadas = 0
+        coEvery { repo.recordDismiss("a1", "ana") } coAnswers { llamadas++; enVuelo.await() }
+
+        gate()            // el arranque ya está mandando a1 y se quedó esperando
+        red.value = false
+        vuelveLaRed()
+
+        assertEquals(1, llamadas)
+        enVuelo.complete(RESUELTO)
+        assertEquals(listOf(Cierre("a1", true)), almacen.datos["ana"])
+    }
+
+    @Test
+    fun `al volver la red sin persona adentro no se manda nada`() {
+        almacen.datos["ana"] = listOf(Cierre("a1", false))
+        red.value = false
+        persona = null
+        gate()
+
+        vuelveLaRed()
+
+        coVerify(exactly = 0) { repo.recordDismiss(any(), any()) }
     }
 
     @Test
