@@ -74,6 +74,9 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 
+    /** De otra sucursal: se enseña para que nadie lo pierda de vista, pero sólo se resuelve con su sucursal activa. */
+    fun esDeOtraSucursal(paquete: com.avoqado.pos.customers.data.PendingGrant): Boolean = paquete.venueId != secureStorage.venueId
+
     fun reintentarPaquete(id: String) = entregarPaquete(id) { cola, fila -> cola.reintentar(fila) }
 
     /** «Sí se cobró»: ya confirmado en la pantalla. */

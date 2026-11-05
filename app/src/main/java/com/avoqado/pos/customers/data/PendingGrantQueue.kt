@@ -126,10 +126,14 @@ data class PendingGrant(
     }
 
     val porRevisar: Boolean get() = estado == Estado.RECHAZADA || estado == Estado.EN_DUDA
+
+    /** Cobrado, por revisar o con un cobro intentado: no se puede soltar sin su sucursal (ver `bloqueantes`). */
+    val esperaASuSucursal: Boolean get() = estado != Estado.POR_COBRAR || intentos.isNotEmpty()
 }
 
 // Cuarentena (los mismos textos para cuando le toque a iOS).
 const val PAQUETE_EN_DUDA = "No se pudo confirmar si este cobro se hizo. Revisa la terminal o la caja."
+const val PAQUETE_DE_OTRA_SUCURSAL = "Es de otra sucursal: entra a esa sucursal para que se entregue o se revise."
 const val PAQUETE_TARJETA_NO_PASO =
     "La tarjeta no pasó, pero el banco todavía puede aprobarla tarde. Si el cliente no pagó de otra forma, descártalo; si llega el cobro, se entrega solo."
 
@@ -189,9 +193,12 @@ class PendingGrantQueue @Inject constructor(
         sucursal.value = secureStorage.venueId
     }
 
-    /** Las de esta sucursal que una persona tiene que ver. */
+    /**
+     * Las que una persona tiene que ver: las de esta sucursal por revisar y, de las DEMÁS sucursales, lo cobrado o intentado que sólo se
+     * entrega con su sucursal activa. Sin esto, una sesión que se cerró sola y volvió a entrar en otra sucursal las escondía.
+     */
     val porRevisarEnLaSucursal: Flow<List<PendingGrant>> =
-        combine(filas, sucursal) { fs, venue -> fs.filter { it.porRevisar && it.venueId == venue } }
+        combine(filas, sucursal) { fs, venue -> fs.filter { if (it.venueId == venue) it.porRevisar else it.esperaASuSucursal } }
 
     val porRevisar: Flow<Int> = porRevisarEnLaSucursal.map { it.size }
 
@@ -203,9 +210,7 @@ class PendingGrantQueue @Inject constructor(
      * Lo de [venueId] que se quedaría varado si la sesión cambia de sucursal: cobrado por entregar, por revisar, o un cobro intentado
      * cuya evidencia aún no llega. Cierra el paso igual que las demás colas (`AppState.onLogout`, `MoreMenuViewModel.switchVenue`).
      */
-    fun bloqueantes(venueId: String?): Int = filas.value.count { f ->
-        f.venueId == venueId && (f.estado != PendingGrant.Estado.POR_COBRAR || f.intentos.isNotEmpty())
-    }
+    fun bloqueantes(venueId: String?): Int = filas.value.count { it.venueId == venueId && it.esperaASuSucursal }
 
     // MARK: - El almacén
 

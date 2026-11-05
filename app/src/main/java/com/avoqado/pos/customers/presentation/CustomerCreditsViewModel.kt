@@ -103,8 +103,10 @@ class CustomerCreditsViewModel @Inject constructor(
      * la respuesta, la cola reintenta con la misma llave y el servidor contesta la misma compra, en vez de vender otra.
      */
     fun sell(pack: CreditPack, customerId: String, customerName: String?, onDone: () -> Unit) {
+        // Un doble toque en «Cobrar y vender» llega dos veces antes de que se cierre la confirmación: la segunda no vende otra.
+        if (_sellingPackId.value != null) return
+        _sellingPackId.value = pack.id
         viewModelScope.launch {
-            _sellingPackId.value = pack.id
             _avisoDeVenta.value = null
             val fila = pendingGrantQueue.guardarVentaDeFicha(pack, customerId, customerName)
             if (fila == null) {

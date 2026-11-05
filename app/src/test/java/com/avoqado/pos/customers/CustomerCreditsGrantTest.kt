@@ -189,6 +189,21 @@ class CustomerCreditsGrantTest {
     }
 
     @Test
+    fun `doble toque en vender no vende dos veces`() = runTest {
+        val repo: ArticlesRepository = mockk(relaxed = true)
+        val queue: PendingGrantQueue = mockk(relaxed = true)
+        every { queue.guardarVentaDeFicha(pack, "cli-1", "Ana") } returns fila
+        coEvery { queue.entregarDeFicha("llave-1") } returns DesenlaceDeEntrega.SIN_RED
+
+        val vm = buildViewModel(repo, queue)
+        vm.sell(pack, "cli-1", "Ana") { }
+        vm.sell(pack, "cli-1", "Ana") { }
+        advanceUntilIdle()
+
+        verify(exactly = 1) { queue.guardarVentaDeFicha(any(), any(), any()) }
+    }
+
+    @Test
     fun `la ficha sin disco no manda nada`() = runTest {
         val repo: ArticlesRepository = mockk(relaxed = true)
         val queue: PendingGrantQueue = mockk(relaxed = true)

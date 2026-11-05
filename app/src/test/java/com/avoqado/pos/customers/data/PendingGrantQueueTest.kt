@@ -860,6 +860,31 @@ class PendingGrantQueueTest {
     }
 
     @Test
+    fun `lo de otra sucursal se ve en la revision aunque la sesion haya entrado sola en otra`() = runTest {
+        val q = cola()
+        q.armada()
+        q.marcarCobrada("venta-1")
+        every { storage.venueId } returns "venue-B"
+        q.alCambiarLaSesion()
+
+        val vistas = q.porRevisarEnLaSucursal.first()
+        assertEquals(1, vistas.size)
+        assertEquals(venue, vistas.single().venueId)
+        // Pero no se resuelve desde aquí: sólo con su sucursal activa.
+        assertFalse(q.descartar(vistas.single().id))
+    }
+
+    @Test
+    fun `lo de otra sucursal que nunca intento cobrar no estorba`() = runTest {
+        val q = cola()
+        q.armada()
+        every { storage.venueId } returns "venue-B"
+        q.alCambiarLaSesion()
+
+        assertTrue(q.porRevisarEnLaSucursal.first().isEmpty())
+    }
+
+    @Test
     fun `una fila de otra sucursal espera a su sucursal`() = runTest {
         val q = cola()
         q.armada()

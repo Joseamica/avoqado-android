@@ -266,8 +266,11 @@ fun QuarantineSheet(
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 Text(com.avoqado.pos.customers.data.tituloDePaquete(paquete), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatTime(paquete.createdAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                paquete.motivo?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                                if (viewModel.canResolve) {
+                                val deOtra = viewModel.esDeOtraSucursal(paquete)
+                                (if (deOtra) com.avoqado.pos.customers.data.PAQUETE_DE_OTRA_SUCURSAL else paquete.motivo)?.let {
+                                    Text(it, style = MaterialTheme.typography.bodyMedium)
+                                }
+                                if (viewModel.canResolve && !deOtra) {
                                     AccionDeRevision(
                                         text = if (enDuda) "Sí se cobró: entregar" else "Reintentar",
                                         onClick = { if (enDuda) viewModel.paqueteSiSeCobro(paquete.id) else viewModel.reintentarPaquete(paquete.id) },
