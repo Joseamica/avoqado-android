@@ -1452,6 +1452,8 @@ private fun SavedCartsSubView(
     var confirmarRestauracion by remember { mutableStateOf<SavedCart?>(null) }
     // Por qué no se puede restaurar (vales con abono, o una copia ya dejada para pagar después); null = nada que decir.
     var restauracionBloqueada by remember { mutableStateOf<String?>(null) }
+    // D13: borrar pide confirmación. Un toque por error perdía una venta guardada sin cobrar; iOS pide «Editar» y seleccionar.
+    var confirmarEliminacion by remember { mutableStateOf<SavedCart?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Carritos guardados", onBack = onBack)
@@ -1497,11 +1499,27 @@ private fun SavedCartsSubView(
                                     restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
                             }
                         },
-                        onDelete = {
-                            cartViewModel.deleteSavedCart(cart.id)
-                        },
+                        onDelete = { confirmarEliminacion = cart },
                     )
                 }
+            }
+        }
+    }
+
+    confirmarEliminacion?.let { carrito ->
+        AvoqadoDialog(
+            title = "¿Eliminar «${carrito.name}»?",
+            description = "Se borra esta venta guardada y no se puede recuperar.",
+            onDismiss = { confirmarEliminacion = null },
+            actionButton = {
+                PrimaryButton(text = "Eliminar", fullWidth = true, onClick = {
+                    cartViewModel.deleteSavedCart(carrito.id)
+                    confirmarEliminacion = null
+                })
+            },
+        ) {
+            OutlinedButton(onClick = { confirmarEliminacion = null }, shape = RoundedCornerShape(50), modifier = Modifier.fillMaxWidth()) {
+                Text("Cancelar")
             }
         }
     }
