@@ -395,6 +395,28 @@ class CartSplitContinuidadTest {
         assertNull(vm.pendingPackGrant)
     }
 
+    /** D4: la línea se cobra por su cantidad, así que se entrega una por pieza. */
+    @Test
+    fun `dos piezas de la misma membresia se entregan dos veces`() = runTest {
+        val vm = createViewModel()
+        vm.addCreditPack(membresia)
+        val linea = vm.cartState.value.items.single()
+        vm.updateQuantity(linea.id, 2)
+
+        vm.capturePendingPackGrant("cliente-1", vm.cartState.value)
+
+        assertEquals(listOf("pack-10-clases", "pack-10-clases"), vm.pendingPackGrant?.packIds)
+    }
+
+    @Test
+    fun `sin cola, capturar no impide cobrar`() = runTest {
+        val vm = createViewModel()
+        vm.addCreditPack(membresia)
+
+        assertEquals(true, vm.capturePendingPackGrant("cliente-1", vm.cartState.value))
+        assertEquals(vm.cartState.value.identidadDeVenta, vm.pendingPackGrant?.venta)
+    }
+
     // ── El caso feo: mercancía NUEVA a media split ─────────────────────────────
 
     // Tablero D3 (21-oct, founder «arréglalo de una vez»): antes lo agregado se cobraba como venta NUEVA llevándose el

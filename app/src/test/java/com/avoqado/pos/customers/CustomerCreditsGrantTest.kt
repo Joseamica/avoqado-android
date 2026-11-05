@@ -1,11 +1,15 @@
 package com.avoqado.pos.customers
 
 import com.avoqado.pos.articles.data.ArticlesRepository
+import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.customers.data.DesenlaceDeEntrega
+import com.avoqado.pos.customers.data.PendingGrant
 import com.avoqado.pos.customers.data.PendingGrantQueue
 import com.avoqado.pos.customers.presentation.CustomerCreditsViewModel
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -19,12 +23,15 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
  * La entrega de una membresía ocurre DESPUÉS de que el cliente ya pagó.
- * Si falla, tiene que pasar lo doble: encolarse (para no perder la entrega)
+ * Si falla, tiene que pasar lo doble: quedarse en la cola (para no perder la entrega)
  * y avisarse (para que el mostrador se entere de que hay dinero cobrado sin
  * su contraparte). Silenciar el modal global no puede significar silenciar
  * también al cajero — ése fue el defecto que estas pruebas fijan.
@@ -49,45 +56,43 @@ class CustomerCreditsGrantTest {
     }
 
     @Test
-    fun `entrega fallida tras el cobro se encola Y se avisa`() = runTest {
+    fun `entrega rechazada tras el cobro se avisa como rechazo`() = runTest {
         val repo: ArticlesRepository = mockk()
         val queue: PendingGrantQueue = mockk(relaxed = true)
-        // El 403/500 llega marcado como background: no hay modal global. Ese
-        // silencio es el correcto; el que NO puede quedarse callado es el aviso.
-        coEvery { repo.sellPackToCustomer("pack-1", "cli-1", background = true) } returns false
+        coEvery { queue.entregarVenta("venta-1") } returns listOf(DesenlaceDeEntrega.RECHAZADA)
 
         val vm = buildViewModel(repo, queue)
-        vm.grantPacks(listOf("pack-1"), "cli-1")
+        vm.entregarCobradas("venta-1")
         advanceUntilIdle()
 
-        verify(exactly = 1) { queue.enqueue("pack-1", "cli-1") }
         assertEquals(1, vm.undeliveredGrants.value)
+        assertFalse(vm.entregaSoloEsperaRed.value)
     }
 
     @Test
-    fun `la peticion sigue marcada background para no sacar el modal de permisos`() = runTest {
+    fun `sin red se dice sin alarma - espera sola`() = runTest {
         val repo: ArticlesRepository = mockk()
         val queue: PendingGrantQueue = mockk(relaxed = true)
-        coEvery { repo.sellPackToCustomer(any(), any(), background = true) } returns false
+        coEvery { queue.entregarVenta("venta-1") } returns listOf(DesenlaceDeEntrega.SIN_RED)
 
         val vm = buildViewModel(repo, queue)
-        vm.grantPacks(listOf("pack-1"), "cli-1")
+        vm.entregarCobradas("venta-1")
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { repo.sellPackToCustomer("pack-1", "cli-1", background = true) }
+        assertEquals(1, vm.undeliveredGrants.value)
+        assertTrue(vm.entregaSoloEsperaRed.value)
     }
 
     @Test
-    fun `entrega exitosa no encola ni avisa`() = runTest {
+    fun `entrega exitosa no avisa`() = runTest {
         val repo: ArticlesRepository = mockk()
         val queue: PendingGrantQueue = mockk(relaxed = true)
-        coEvery { repo.sellPackToCustomer("pack-1", "cli-1", background = true) } returns true
+        coEvery { queue.entregarVenta("venta-1") } returns listOf(DesenlaceDeEntrega.ENTREGADA)
 
         val vm = buildViewModel(repo, queue)
-        vm.grantPacks(listOf("pack-1"), "cli-1")
+        vm.entregarCobradas("venta-1")
         advanceUntilIdle()
 
-        verify(exactly = 0) { queue.enqueue(any(), any()) }
         assertEquals(0, vm.undeliveredGrants.value)
     }
 
@@ -95,36 +100,104 @@ class CustomerCreditsGrantTest {
     fun `avisa solo por las que fallaron cuando el carrito trae varias`() = runTest {
         val repo: ArticlesRepository = mockk()
         val queue: PendingGrantQueue = mockk(relaxed = true)
-        coEvery { repo.sellPackToCustomer("ok-1", "cli-1", background = true) } returns true
-        coEvery { repo.sellPackToCustomer("mal-1", "cli-1", background = true) } returns false
-        coEvery { repo.sellPackToCustomer("mal-2", "cli-1", background = true) } returns false
+        coEvery { queue.entregarVenta("venta-1") } returns
+            listOf(DesenlaceDeEntrega.ENTREGADA, DesenlaceDeEntrega.RECHAZADA, DesenlaceDeEntrega.SIN_RED)
 
         val vm = buildViewModel(repo, queue)
-        vm.grantPacks(listOf("ok-1", "mal-1", "mal-2"), "cli-1")
+        vm.entregarCobradas("venta-1")
         advanceUntilIdle()
 
-        verify(exactly = 1) { queue.enqueue("mal-1", "cli-1") }
-        verify(exactly = 1) { queue.enqueue("mal-2", "cli-1") }
-        verify(exactly = 0) { queue.enqueue("ok-1", "cli-1") }
         assertEquals(2, vm.undeliveredGrants.value)
+        assertFalse(vm.entregaSoloEsperaRed.value)
     }
 
     @Test
     fun `el aviso se limpia al acusarlo de recibo`() = runTest {
         val repo: ArticlesRepository = mockk()
         val queue: PendingGrantQueue = mockk(relaxed = true)
-        coEvery { repo.sellPackToCustomer(any(), any(), background = true) } returns false
+        coEvery { queue.entregarVenta("venta-1") } returns listOf(DesenlaceDeEntrega.SIN_RED)
 
         val vm = buildViewModel(repo, queue)
-        vm.grantPacks(listOf("pack-1"), "cli-1")
+        vm.entregarCobradas("venta-1")
         advanceUntilIdle()
         assertEquals(1, vm.undeliveredGrants.value)
 
         vm.clearUndeliveredGrants()
 
-        // Se limpia el AVISO, no la cola: la entrega sigue pendiente y se
-        // reintenta sola. Descartar el modal nunca puede borrar el dinero.
+        // Se limpia el AVISO, no la cola: descartar el modal nunca puede borrar el dinero.
         assertEquals(0, vm.undeliveredGrants.value)
-        verify(exactly = 1) { queue.enqueue("pack-1", "cli-1") }
+        verify(exactly = 0) { queue.descartar(any()) }
+    }
+
+    // MARK: - La ficha del cliente
+
+    private val pack = CreditPack(id = "pack-1", name = "10 clases", price = 500.0)
+    private val fila = PendingGrant(id = "llave-1", venueId = "v", packId = "pack-1", customerId = "cli-1", createdAt = 1)
+
+    @Test
+    fun `la ficha guarda antes de mandar y al entregar cierra`() = runTest {
+        val repo: ArticlesRepository = mockk(relaxed = true)
+        val queue: PendingGrantQueue = mockk(relaxed = true)
+        every { queue.guardarVentaDeFicha(pack, "cli-1", "Ana") } returns fila
+        coEvery { queue.entregarDeFicha("llave-1") } returns DesenlaceDeEntrega.ENTREGADA
+        var cerrada = false
+
+        val vm = buildViewModel(repo, queue)
+        vm.sell(pack, "cli-1", "Ana") { cerrada = true }
+        advanceUntilIdle()
+
+        coVerifyOrder {
+            queue.guardarVentaDeFicha(pack, "cli-1", "Ana")
+            queue.entregarDeFicha("llave-1")
+        }
+        assertTrue(cerrada)
+        assertNull(vm.avisoDeVenta.value)
+    }
+
+    @Test
+    fun `la ficha sin red no cierra ni pierde la venta - y lo dice`() = runTest {
+        val repo: ArticlesRepository = mockk(relaxed = true)
+        val queue: PendingGrantQueue = mockk(relaxed = true)
+        every { queue.guardarVentaDeFicha(pack, "cli-1", "Ana") } returns fila
+        coEvery { queue.entregarDeFicha("llave-1") } returns DesenlaceDeEntrega.SIN_RED
+        var cerrada = false
+
+        val vm = buildViewModel(repo, queue)
+        vm.sell(pack, "cli-1", "Ana") { cerrada = true }
+        advanceUntilIdle()
+
+        assertFalse(cerrada)
+        assertTrue(vm.avisoDeVenta.value!!.contains("guardada"))
+        verify(exactly = 0) { queue.olvidarRechazoDeFicha(any()) }
+    }
+
+    @Test
+    fun `la ficha rechazada ensena el motivo a quien lo toco`() = runTest {
+        val repo: ArticlesRepository = mockk(relaxed = true)
+        val queue: PendingGrantQueue = mockk(relaxed = true)
+        every { queue.guardarVentaDeFicha(pack, "cli-1", "Ana") } returns fila
+        coEvery { queue.entregarDeFicha("llave-1") } returns DesenlaceDeEntrega.RECHAZADA
+        every { queue.motivoDe("llave-1") } returns "El paquete no está activo"
+
+        val vm = buildViewModel(repo, queue)
+        vm.sell(pack, "cli-1", "Ana") { }
+        advanceUntilIdle()
+
+        assertEquals("El paquete no está activo", vm.avisoDeVenta.value)
+        verify(exactly = 1) { queue.olvidarRechazoDeFicha("llave-1") }
+    }
+
+    @Test
+    fun `la ficha sin disco no manda nada`() = runTest {
+        val repo: ArticlesRepository = mockk(relaxed = true)
+        val queue: PendingGrantQueue = mockk(relaxed = true)
+        every { queue.guardarVentaDeFicha(any(), any(), any()) } returns null
+
+        val vm = buildViewModel(repo, queue)
+        vm.sell(pack, "cli-1", "Ana") { }
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { queue.entregarDeFicha(any()) }
+        assertTrue(vm.avisoDeVenta.value!!.contains("No se pudo guardar"))
     }
 }

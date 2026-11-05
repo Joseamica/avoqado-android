@@ -40,7 +40,51 @@ class QuarantineViewModel @Inject constructor(
     private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository,
     /** «Pagar después» sin red (27-oct). Default para las pruebas que construyen este ViewModel a mano. */
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
+    /** Paquetes cobrados sin entregar (D4, 5-nov). Default para las pruebas que construyen este ViewModel a mano. */
+    private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
 ) : ViewModel() {
+
+    /**
+     * Paquetes que una persona tiene que ver: los que el servidor rechazó («Reintentar» o «Descartar») y aquéllos de cuyo cobro no se
+     * sabe («Sí se cobró» o «No se cobró»). El dinero pudo haber entrado: nunca se van solos.
+     */
+    val paquetesPorRevisar: StateFlow<List<com.avoqado.pos.customers.data.PendingGrant>> =
+        (pendingGrantQueue?.porRevisarEnLaSucursal ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+
+    /** El paquete que se está mandando ahora (el botón espera el desenlace real). */
+    private val _entregandoPaquete = MutableStateFlow<String?>(null)
+    val entregandoPaquete: StateFlow<String?> = _entregandoPaquete.asStateFlow()
+
+    private fun entregarPaquete(id: String, envio: suspend (com.avoqado.pos.customers.data.PendingGrantQueue, String) -> com.avoqado.pos.customers.data.DesenlaceDeEntrega?) {
+        val cola = pendingGrantQueue ?: return
+        if (!canResolve || _entregandoPaquete.value != null) return
+        _entregandoPaquete.value = id
+        viewModelScope.launch {
+            try {
+                when (envio(cola, id)) {
+                    com.avoqado.pos.customers.data.DesenlaceDeEntrega.ENTREGADA -> _successMessage.value = "Paquete entregado"
+                    com.avoqado.pos.customers.data.DesenlaceDeEntrega.RECHAZADA -> _errorMessage.value = cola.motivoDe(id) ?: "El servidor rechazó la entrega"
+                    null -> Unit
+                    else -> _errorMessage.value = "Sin conexión: el paquete sigue guardado en el aparato y se entrega solo."
+                }
+            } finally {
+                _entregandoPaquete.value = null
+            }
+        }
+    }
+
+    fun reintentarPaquete(id: String) = entregarPaquete(id) { cola, fila -> cola.reintentar(fila) }
+
+    /** «Sí se cobró»: ya confirmado en la pantalla. */
+    fun paqueteSiSeCobro(id: String) = entregarPaquete(id) { cola, fila -> cola.siSeCobro(fila) }
+
+    /** «Descartar» o «No se cobró»: ya confirmado en la pantalla. */
+    fun descartarPaquete(id: String) {
+        val cola = pendingGrantQueue ?: return
+        if (!canResolve) return
+        if (cola.descartar(id)) _successMessage.value = "Paquete descartado"
+    }
 
     /**
      * Cuentas de «Pagar después» de esta sucursal que una persona tiene que ver: RECHAZADA (el servidor no la creó: «Reintentar»

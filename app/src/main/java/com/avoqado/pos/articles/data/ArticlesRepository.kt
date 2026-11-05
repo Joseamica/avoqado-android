@@ -48,6 +48,9 @@ private data class CustomerBalanceEnvelope(
     val purchases: List<CreditPurchaseBalance> = emptyList(),
 )
 
+/** Lo que contestó el servidor al entregar un paquete. `code` null = no hubo respuesta. */
+data class RespuestaDeEntrega(val code: Int?, val mensaje: String?)
+
 @Singleton
 class ArticlesRepository @Inject constructor(
     private val secureStorage: SecureStorage,
@@ -964,40 +967,78 @@ class ArticlesRepository @Inject constructor(
         }
     }
 
-    /** Sell a pack to a customer in person (paid through the POS, not Stripe). */
     /**
-     * @param background la entrega la dispara la cola durable (`PendingGrantQueue`)
-     * o el post-cobro, no un toque. Un fallo ahí NO se pierde: vuelve a la cola.
+     * Sell a pack to a customer in person (paid through the POS, not Stripe).
+     *
+     * @param background la entrega la dispara la cola durable (`PendingGrantQueue`) o el post-cobro, no un toque.
+     * @param deliveryKey la llave de la entrega: una misma llave nunca crea dos compras (D4).
+     * @param saleProof la foto firmada de lo vendido, tal como la mandó el servidor en la lista.
+     * @return lo que contestó el servidor, sin decidir nada: lo clasifica la cola.
      */
     suspend fun sellPackToCustomer(
         packId: String,
         customerId: String,
         background: Boolean = false,
-    ): Boolean {
-        val url = baseUrl() ?: return false
+        deliveryKey: String? = null,
+        saleProof: String? = null,
+    ): RespuestaDeEntrega {
+        val url = baseUrl() ?: return RespuestaDeEntrega(null, null)
         return try {
             val payload = kotlinx.serialization.json.buildJsonObject {
                 put("customerId", kotlinx.serialization.json.JsonPrimitive(customerId))
+                deliveryKey?.let { put("deliveryKey", kotlinx.serialization.json.JsonPrimitive(it)) }
+                saleProof?.let { put("saleProof", kotlinx.serialization.json.JsonPrimitive(it)) }
             }.toString()
             val request = Request.Builder()
                 .url("$url/credit-packs/$packId/sell")
                 .markBackground(background)
                 .post(payload.toRequestBody(JSON_MEDIA))
                 .build()
-            val (code, _) = executeRequest(request)
+            val (code, body) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Pack $packId sold to $customerId")
-                true
+                RespuestaDeEntrega(code, null)
             } else {
                 Log.e(TAG, "❌ sellPackToCustomer error: HTTP $code")
-                _errorMessage.value = "Error al vender el paquete"
-                false
+                RespuestaDeEntrega(code, mensajeDelServidor(body))
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "❌ sellPackToCustomer exception: ${e.message}", e)
-            _errorMessage.value = "Error al vender el paquete"
-            false
+            RespuestaDeEntrega(null, null)
         }
+    }
+
+    private fun mensajeDelServidor(body: String): String? = runCatching {
+        (json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)?.get("message")
+            ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+            ?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    /**
+     * ¿El servidor tiene un cobro en efectivo con esa llave? Es evidencia, no un cobro: `null` = no se pudo saber (sin red, 403, 5xx,
+     * algo que no es nuestra API); `false` = contestó y no lo tiene. `by-key` sólo reconoce efectivo puro.
+     */
+    suspend fun cobroEnEfectivoPorLlave(venueId: String, llave: String): Boolean? = try {
+        val request = Request.Builder()
+            .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/by-key/$llave")
+            .markBackground(true)
+            .get()
+            .build()
+        val (code, body) = executeRequest(request)
+        if (code !in 200..299) {
+            null
+        } else {
+            val raiz = json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
+            val exito = (raiz?.get("success") as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
+            if (!exito || raiz == null || "data" !in raiz) null else raiz["data"] !is kotlinx.serialization.json.JsonNull
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "No se pudo consultar el cobro por llave: ${e.message}")
+        null
     }
 
     /** Redeem one credit from a balance. */

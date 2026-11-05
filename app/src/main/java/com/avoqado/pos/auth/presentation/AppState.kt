@@ -60,6 +60,8 @@ class AppState @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** D8: los carritos guardados se enseñan por sucursal. Default para las pruebas de JVM. */
     private val savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
+    /** D4 (5-nov): los paquetes vendidos por entregar: su fila arranca y para con la de los cobros. Default para las pruebas de JVM. */
+    private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
 ) : ViewModel() {
 
     /**
@@ -142,6 +144,7 @@ class AppState @Inject constructor(
         tableSyncCoordinator.onSessionChanged()
         // Codex ANDROID r1 A-8: los contadores y la cuarentena de «Pagar después» siguen a la sucursal de la sesión.
         payLaterQueue?.alCambiarLaSesion()
+        pendingGrantQueue?.alCambiarLaSesion()
         // D8: y los carritos guardados (también al entrar y salir, no sólo al cambiar de sucursal).
         savedCartsRepository?.alCambiarLaSesion()
         syncOutbox.refreshQ15Observation()
@@ -293,12 +296,13 @@ class AppState @Inject constructor(
 
     val failedPaymentCount: StateFlow<Int> = paymentSyncService.failedCount
 
-    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos + cuentas de «Pagar después» por subir. */
+    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos + cuentas de «Pagar después» + paquetes por entregar. */
     val offlinePendingCount: StateFlow<Int> = combine(
         syncOutbox.pendingCount,
         paymentSyncService.pendingCount,
         payLaterQueue?.porSubir ?: kotlinx.coroutines.flow.flowOf(0),
-    ) { intents, payments, cuentas -> intents + payments + cuentas }
+        pendingGrantQueue?.porEntregar ?: kotlinx.coroutines.flow.flowOf(0),
+    ) { intents, payments, cuentas, paquetes -> intents + payments + cuentas + paquetes }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -377,7 +381,11 @@ class AppState @Inject constructor(
      */
     val reservationQuarantinedCount: kotlinx.coroutines.flow.Flow<Int> get()=reservationRepository.quarantinedCount
 
-    val payLaterReviewCount: kotlinx.coroutines.flow.Flow<Int> = payLaterQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0)
+    /** Lo de las colas propias que una persona tiene que ver: «Pagar después» y paquetes cobrados sin entregar (D4). */
+    val payLaterReviewCount: kotlinx.coroutines.flow.Flow<Int> = combine(
+        payLaterQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0),
+        pendingGrantQueue?.porRevisar ?: kotlinx.coroutines.flow.flowOf(0),
+    ) { cuentas, paquetes -> cuentas + paquetes }
 
     val reconciliationCount: StateFlow<Int> by lazy {
         // Los cobros en efectivo interrumpidos (la app murió a media petición) también piden a una persona.
@@ -489,6 +497,7 @@ class AppState @Inject constructor(
                 startInventorySyncIfNeeded()
                 paymentSyncService.start()
                 payLaterQueue?.start()
+                pendingGrantQueue?.start()
                 startOfflineOutbox()
                 refreshPlanAndSettings(sesionNueva = true)
             }
@@ -526,6 +535,7 @@ class AppState @Inject constructor(
         notifyDeviceSessionChanged()
         paymentSyncService.start()
         payLaterQueue?.start()
+        pendingGrantQueue?.start()
         startOfflineOutbox()
         // refreshTabs rearma una sola generación de inventario para esta sesión/venue.
         refreshTabs()
@@ -565,6 +575,7 @@ class AppState @Inject constructor(
             }
             paymentSyncService.stop()
             payLaterQueue?.stop()
+            pendingGrantQueue?.stop()
             stopInventorySync()
             syncOutbox.stop()
             detenerRedLocal()

@@ -193,6 +193,7 @@ private fun SellPackDialog(
 ) {
     val packs by viewModel.packs.collectAsStateWithLifecycle()
     val sellingId by viewModel.sellingPackId.collectAsStateWithLifecycle()
+    val avisoDeVenta by viewModel.avisoDeVenta.collectAsStateWithLifecycle()
     var pendingPack by remember { mutableStateOf<CreditPack?>(null) }
 
     LaunchedEffect(Unit) { viewModel.loadPacks() }
@@ -203,6 +204,14 @@ private fun SellPackDialog(
         title = { Text("Vender a ${customer.fullName}") },
         text = {
             Column {
+                avisoDeVenta?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
+                    )
+                }
                 if (packs.isEmpty()) {
                     Text(
                         text = "No hay paquetes disponibles",
@@ -266,7 +275,7 @@ private fun SellPackDialog(
             confirmButton = {
                 TextButton(onClick = {
                     pendingPack = null
-                    viewModel.sell(pack.id, customer.id, onDone = onDismiss)
+                    viewModel.sell(pack, customer.id, customer.fullName, onDone = onDismiss)
                 }) { Text("Cobrar ${pack.displayPrice} y vender") }
             },
             dismissButton = { TextButton(onClick = { pendingPack = null }) { Text("Cancelar") } },
