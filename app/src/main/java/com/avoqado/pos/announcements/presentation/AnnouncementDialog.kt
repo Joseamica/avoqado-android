@@ -5,7 +5,7 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -36,6 +37,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 fun AnnouncementDialog(
     announcementId: String,
     onCerrar: () -> Unit,
+    /** Cuando la carga se descarta por cambio de persona. La ventana lo usa para NO registrar un cierre ajeno. */
+    onDescartado: () -> Unit = onCerrar,
     viewModel: AnnouncementViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -43,7 +46,16 @@ fun AnnouncementDialog(
     val cargando by viewModel.cargando.collectAsState()
     val fallo by viewModel.fallo.collectAsState()
 
+    val descartado by viewModel.descartado.collectAsState()
+
     LaunchedEffect(announcementId) { viewModel.abrir(announcementId) }
+    // Lo que se cargaba era de otra persona: se cierra solo, nunca se queda girando (también desde la campana).
+    LaunchedEffect(descartado) {
+        if (descartado) {
+            viewModel.limpiar()
+            onDescartado()
+        }
+    }
 
     BarreraDeAtajos()   // POS de Windows: con el anuncio encima, las teclas de atajo esperan
     Dialog(
@@ -55,7 +67,7 @@ fun AnnouncementDialog(
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth(0.92f)
+                .width(anchoDeVentana(LocalConfiguration.current.screenWidthDp.toFloat()).dp)
                 .clip(RoundedCornerShape(20.dp))
                 .background(MaterialTheme.colorScheme.surface),
             contentAlignment = Alignment.Center,

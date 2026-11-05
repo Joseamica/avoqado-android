@@ -43,7 +43,23 @@ class SecureStorage @Inject constructor(
      */
     @Volatile
     var generacion: Long = 0L
-        private set
+        private set(value) {
+            field = value
+            flujoDeGeneracion?.value = value
+        }
+
+    /**
+     * La misma [generacion] como flujo: lo que se pinta «para esta persona» se vuelve a pedir cuando cambia quién está
+     * adentro. Se crea al pedirlo, no en el constructor: hay pruebas que arman esta clase sin constructor (`Unsafe`) y un
+     * campo inicializado ahí quedaría nulo. Se crea y se actualiza bajo el mismo candado que sube la generación.
+     */
+    @Volatile
+    private var flujoDeGeneracion: kotlinx.coroutines.flow.MutableStateFlow<Long>? = null
+
+    val generacionDeSesion: kotlinx.coroutines.flow.StateFlow<Long>
+        get() = flujoDeGeneracion ?: synchronized(this) {
+            flujoDeGeneracion ?: kotlinx.coroutines.flow.MutableStateFlow(generacion).also { flujoDeGeneracion = it }
+        }
 
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)

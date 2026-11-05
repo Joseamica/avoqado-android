@@ -3,7 +3,11 @@ package com.avoqado.pos.announcements.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.announcements.data.AnnouncementsRepository
+import com.avoqado.pos.announcements.data.respuestaVigente
+import com.avoqado.pos.core.data.local.SecureStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,6 +21,7 @@ import javax.inject.Inject
 @HiltViewModel
 class AnnouncementViewModel @Inject constructor(
     private val repository: AnnouncementsRepository,
+    private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
     private val _detalle = MutableStateFlow<AnnouncementsRepository.Detalle?>(null)
@@ -33,11 +38,35 @@ class AnnouncementViewModel @Inject constructor(
     private val _fallo = MutableStateFlow(false)
     val fallo: StateFlow<Boolean> = _fallo.asStateFlow()
 
+    /**
+     * La carga se descartó porque ya entró otra persona: el diálogo se cierra solo en vez de quedarse girando (un
+     * detalle nulo sin fallo pinta el cargador).
+     */
+    private val _descartado = MutableStateFlow(false)
+    val descartado: StateFlow<Boolean> = _descartado.asStateFlow()
+
+    private var carga: Job? = null
+
+    /**
+     * La misma regla que la ventana (codex r6 #1): el detalle que llega cuando ya entró otra persona no se enseña ni
+     * cuenta como abierto, y una carga nueva reemplaza a la anterior.
+     */
     fun abrir(announcementId: String) {
-        viewModelScope.launch {
+        val pedida = secureStorage.generacion
+        val staffId = secureStorage.userId
+        carga?.cancel()
+        _descartado.value = false
+        carga = viewModelScope.launch {
             _cargando.value = true
             _fallo.value = false
             val cargado = repository.fetchDetail(announcementId)
+            ensureActive()
+            if (!respuestaVigente(pedida, secureStorage.generacion) || secureStorage.userId != staffId) {
+                _detalle.value = null
+                _cargando.value = false
+                _descartado.value = true
+                return@launch
+            }
             _detalle.value = cargado
             _fallo.value = cargado == null
             _cargando.value = false
@@ -53,5 +82,6 @@ class AnnouncementViewModel @Inject constructor(
     fun limpiar() {
         _detalle.value = null
         _fallo.value = false
+        _descartado.value = false
     }
 }

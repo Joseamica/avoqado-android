@@ -40,7 +40,13 @@ sealed interface ContentBlock {
     data class Heading(val text: String) : ContentBlock
     data class Paragraph(val text: String) : ContentBlock
     data class Bullets(val items: List<String>) : ContentBlock
-    data class Image(val url: String, val alt: String, val caption: String?) : ContentBlock
+    data class Image(
+        val url: String,
+        val alt: String,
+        val caption: String?,
+        val width: Int? = null,
+        val height: Int? = null,
+    ) : ContentBlock
     data class Gallery(val images: List<Image>) : ContentBlock
     data class Specs(val rows: List<Pair<String, String>>) : ContentBlock
     data class Callout(val text: String) : ContentBlock
@@ -50,6 +56,10 @@ sealed interface ContentBlock {
 
 private fun JsonObject.str(key: String): String? =
     (this[key] as? JsonPrimitive)?.contentOrNull
+
+/** Medida de una foto: sólo un número ENTERO de 1 a 10000 (un texto, 0, negativo o decimal queda en null). */
+private fun JsonObject.int(key: String): Int? =
+    (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()?.takeIf { it in 1..10000 }
 
 private val JsonPrimitive.contentOrNull: String?
     get() = if (isString) content else null
@@ -75,13 +85,13 @@ fun parseContentBlocks(raw: JsonArray?): List<ContentBlock> {
             }
             "image" -> {
                 val url = obj.str("url") ?: return@mapNotNull null
-                ContentBlock.Image(url, obj.str("alt").orEmpty(), obj.str("caption"))
+                ContentBlock.Image(url, obj.str("alt").orEmpty(), obj.str("caption"), obj.int("width"), obj.int("height"))
             }
             "gallery" -> {
                 val imagenes = (obj["images"] as? JsonArray)?.mapNotNull { img ->
                     val o = img as? JsonObject ?: return@mapNotNull null
                     val url = o.str("url") ?: return@mapNotNull null
-                    ContentBlock.Image(url, o.str("alt").orEmpty(), o.str("caption"))
+                    ContentBlock.Image(url, o.str("alt").orEmpty(), o.str("caption"), o.int("width"), o.int("height"))
                 }.orEmpty()
                 if (imagenes.isEmpty()) null else ContentBlock.Gallery(imagenes)
             }
