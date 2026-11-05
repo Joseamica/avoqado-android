@@ -1,5 +1,7 @@
 package com.avoqado.pos.announcements.presentation
 
+import android.os.Build
+import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,7 +29,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.components.ImmersiveWindow
@@ -103,6 +107,7 @@ fun VisorDeFoto(url: String, alt: String?, onCerrar: () -> Unit) {
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         ImmersiveWindow()   // primero: antes del primer dibujo, para que no asomen las barras
+        VentanaSinHuecos()  // y que la ventana mida la pantalla entera, no la pantalla menos las barras
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             AsyncImage(
                 model = url,
@@ -114,5 +119,37 @@ fun VisorDeFoto(url: String, alt: String?, onCerrar: () -> Unit) {
                 Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
             }
         }
+    }
+}
+
+/**
+ * 🔴 La ventana de un `Dialog` es «flotante» y, desde Android 11, su marco se encoge por las barras del sistema
+ * (`fitInsetsTypes = systemBars()` por defecto en ventanas flotantes; las de pantalla normal lo traen en 0). Ocultar las
+ * barras con [ImmersiveWindow] no basta: en la D3 (Android 14) el visor medía `[0,63][1920,1017]` y por los huecos de
+ * arriba y abajo se veía la app («Agregar cliente» y la barra «Cobrar · Inventario…»). Es el mismo límite que Mesas
+ * anotó en `ImmersiveDialogWindow` (probó `setLayout(MATCH_PARENT)` y `FLAG_LAYOUT_NO_LIMITS`, pero no `fitInsetsTypes`).
+ *
+ * Aquí la ventana deja de ajustarse a cualquier hueco (`fitInsetsTypes = 0`, lados = 0, también bajo el recorte de la
+ * cámara) y mide la pantalla completa. Mismo patrón que [ImmersiveWindow]: se toca en la composición, antes del primer
+ * dibujo. Sólo para el visor: las hojas de abajo se anclan al borde y no deben meterse bajo la barra de navegación.
+ */
+@Composable
+private fun VentanaSinHuecos() {
+    val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+    remember(window) {
+        window?.let { w ->
+            w.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+            w.attributes = w.attributes.apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    fitInsetsTypes = 0
+                    fitInsetsSides = 0
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+        }
+        window
     }
 }
