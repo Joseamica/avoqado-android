@@ -13,12 +13,20 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 @Singleton
 class DiscountsRepository @Inject constructor(
@@ -79,20 +87,29 @@ class DiscountsRepository @Inject constructor(
         return _discounts.value.filter { it.appliesTo(productId, categoryId) }
     }
 
-    // MARK: - Coupon Validation (POST /dashboard/venues/{id}/coupons/validate)
+    // MARK: - Coupon Validation (POST /mobile/venues/{id}/coupons/validate)
 
     sealed class CouponResult {
         data class Valid(val coupon: CouponCode) : CouponResult()
         data class Invalid(val reason: String) : CouponResult()
+        /** Nadie contestó ESTA petición. Se decide por cómo falló, nunca por la bandera global del aparato (memoria `bandera-de-conexion-vieja`). */
+        data object SinConexion : CouponResult()
         data class Error(val message: String) : CouponResult()
     }
 
-    suspend fun validateCoupon(code: String): CouponResult {
+    /**
+     * @param orderTotalCents lo que vale la venta sin el descuento de cuenta: el SERVIDOR mide contra eso la compra mínima.
+     * @param customerId el cliente de la venta: sin él no se puede mirar el límite por cliente.
+     */
+    suspend fun validateCoupon(code: String, orderTotalCents: Int, customerId: String?): CouponResult {
         val venue = secureStorage.venueId ?: return CouponResult.Error("No venue selected")
 
         return try {
-            val body = """{"code":"${code.uppercase()}"}"""
-                .toRequestBody("application/json".toMediaType())
+            val body = buildJsonObject {
+                put("code", code.trim().uppercase())
+                put("orderTotal", orderTotalCents / 100.0)
+                customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+            }.toString().toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/coupons/validate")
@@ -100,33 +117,49 @@ class DiscountsRepository @Inject constructor(
                 .build()
 
             val (responseCode, responseBody) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
-            }
-
-            when {
-                responseCode in 200..299 -> {
-                    val result = json.decodeFromString<CouponValidationResponse>(responseBody)
-                    val coupon = result.coupon
-                    if (coupon != null && coupon.isValid) {
-                        Log.d("🎟️", "Coupon valid: ${coupon.name} (${coupon.displayValue})")
-                        CouponResult.Valid(coupon)
-                    } else {
-                        val reason = coupon?.invalidReason ?: result.error ?: "Cupon no valido"
-                        CouponResult.Invalid(reason)
-                    }
+                // La cajera tiene a alguien enfrente: el «Validando...» no se queda los 90 s de los tres tiempos del cliente.
+                client.newBuilder().callTimeout(15, TimeUnit.SECONDS).build().newCall(request).execute().use {
+                    it.code to (it.body?.string() ?: "")
                 }
-                responseCode == 404 -> CouponResult.Invalid("Cupon no encontrado")
-                responseCode == 400 -> CouponResult.Invalid("Cupon no valido")
-                else -> CouponResult.Error("Error al validar cupon ($responseCode)")
             }
+            leerValidacionDeCupon(responseCode, responseBody)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.w("🎟️", "Coupon validation sin respuesta: ${e.message}")
+            CouponResult.SinConexion
         } catch (e: Exception) {
             Log.e("🎟️", "Coupon validation error: ${e.message}")
-            CouponResult.Error("Error de conexión")
+            CouponResult.Error(CUPON_NO_SE_PUDO_VALIDAR)
         }
     }
 
     fun clearCache() {
         _discounts.value = emptyList()
+    }
+}
+
+const val CUPON_NO_SE_PUDO_VALIDAR = "No se pudo validar el cupón. Intenta de nuevo."
+const val CUPON_SIN_RED_AL_VALIDAR = "Sin conexión: el cupón necesita internet para validarse. Reintenta cuando vuelva la conexión."
+const val CUPON_NO_ES_DE_CUENTA = "Este cupón sólo aplica a ciertos productos y todavía no se puede usar en caja."
+
+private val jsonDelCupon = Json { ignoreUnknownKeys = true }
+
+/**
+ * Cómo se lee la respuesta de validar un cupón. PURA, para fijarla con la respuesta real del SERVIDOR. Un `200` que no es la API (un portal
+ * cautivo) no dice nada del cupón: nunca se lee como «no es válido».
+ */
+fun leerValidacionDeCupon(codigoHttp: Int, cuerpo: String): DiscountsRepository.CouponResult {
+    if (codigoHttp !in 200..299) {
+        val mensaje = runCatching { jsonDelCupon.parseToJsonElement(cuerpo).jsonObject["message"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+        return DiscountsRepository.CouponResult.Error(mensaje?.takeIf { codigoHttp in 400..499 && it.isNotBlank() } ?: CUPON_NO_SE_PUDO_VALIDAR)
+    }
+    val datos = runCatching { jsonDelCupon.decodeFromString<CouponValidationResponse>(cuerpo).data }.getOrNull()
+        ?: return DiscountsRepository.CouponResult.Error(CUPON_NO_SE_PUDO_VALIDAR)
+    val cupon = datos.coupon
+    return when {
+        !datos.valid || cupon == null -> DiscountsRepository.CouponResult.Invalid(datos.error?.takeIf { it.isNotBlank() } ?: "Este cupón no es válido.")
+        !cupon.discount.scope.equals("ORDER", ignoreCase = true) -> DiscountsRepository.CouponResult.Invalid(CUPON_NO_ES_DE_CUENTA)
+        else -> DiscountsRepository.CouponResult.Valid(cupon.aCoupon())
     }
 }

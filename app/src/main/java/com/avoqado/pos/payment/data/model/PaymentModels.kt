@@ -231,6 +231,8 @@ data class CreateOrderRequest(
      * suba igual que en línea. Nulo = pedido de una versión anterior: la fila usa el default de siempre.
      */
     val orderType: String? = null,
+    /** D5: el cupón validado ([com.avoqado.pos.pos.data.model.Discount.couponCode]). El SERVIDOR lo revalida y calcula el monto. */
+    val couponCode: String? = null,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */
@@ -370,6 +372,17 @@ fun totalACobrarCents(
  */
 const val MENSAJE_PREMIO_SIN_RED =
     "Sin conexión: el premio necesita internet. Reintenta cuando vuelva la conexión, o quita el premio para cobrar sin él."
+
+/** 🔴 El cupón también es online a propósito: necesita validarse. Sin red no se encola: se dice, y se reintenta o se quita. */
+const val MENSAJE_CUPON_SIN_RED =
+    "Sin conexión: el cupón necesita internet. Reintenta cuando vuelva la conexión, o quita el cupón para cobrar sin él."
+
+/** El SERVIDOR calculó otro total que el de la pantalla (el cupón cambió de valor mientras tanto) y el efectivo ya no alcanza. */
+fun avisoDeEfectivoCortoPorCupon(totalRealCents: Int, recibidoCents: Int): String {
+    val falta = (totalRealCents - recibidoCents).coerceAtLeast(0)
+    return "El cupón cambió de valor. El total es ${com.avoqado.pos.core.util.formatMoney(totalRealCents / 100.0)}: " +
+        "faltan ${com.avoqado.pos.core.util.formatMoney(falta / 100.0)}."
+}
 
 /** Lo que se cobra en una venta con premio de cartilla, y qué hay que decirle al cajero. */
 data class CobroConPremio(val totalCents: Int, val aviso: String?)

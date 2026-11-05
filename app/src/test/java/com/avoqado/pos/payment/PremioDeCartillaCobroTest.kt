@@ -498,4 +498,111 @@ class PremioDeCartillaCobroTest {
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
         )
     }
+
+    // MARK: - D5 (5-nov): el cupón cobra lo que dice el SERVIDOR y, como el premio, sin red no se encola
+
+    private val cuponDiez = com.avoqado.pos.pos.data.model.Discount(
+        id = "coupon_c",
+        name = "Diez (DESC10)",
+        value = 10.0,
+        couponCode = "DESC10",
+    )
+    private val carritoConCupon = CartState(items = listOf(cafe), orderDiscount = cuponDiez)
+
+    private fun ordenConTotal(total: Double) = Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = total)))
+
+    @Test
+    fun `P1 el cupon viaja al crear la venta y se cobra el total del servidor`() = runTest {
+        val pedido = slot<com.avoqado.pos.payment.data.model.CreateOrderRequest>()
+        coEvery {
+            orderRepository.createOrder(capture(pedido), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns ordenConTotal(90.0)
+        val monto = slot<Int>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal timeout")
+
+        paymentViewModel.startPaymentFlow(carritoConCupon)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CARD)
+        paymentViewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals("DESC10", pedido.captured.couponCode)
+        assertEquals(1000, pedido.captured.discount)
+        assertEquals(9000, monto.captured)
+    }
+
+    @Test
+    fun `P1 si el cupon cambio de valor se cobra lo que calculo el servidor, no el estimado del carrito`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns ordenConTotal(80.0)
+        val monto = slot<Int>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal timeout")
+
+        paymentViewModel.startPaymentFlow(carritoConCupon)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CARD)
+        paymentViewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals(8000, monto.captured)
+    }
+
+    @Test
+    fun `P1 sin red, una venta con cupon NO se encola ni se registra`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException())
+
+        paymentViewModel.startPaymentFlow(carritoConCupon)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(9000)
+        advanceUntilIdle()
+
+        io.mockk.coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
+        }
+        io.mockk.coVerify(exactly = 0) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
+        }
+        io.mockk.coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
+        val estado = paymentViewModel.state.value
+        assertTrue("$estado", estado is PaymentFlowState.Error)
+        assertEquals(com.avoqado.pos.payment.data.model.MENSAJE_CUPON_SIN_RED, (estado as PaymentFlowState.Error).message)
+    }
+
+    @Test
+    fun `P1 sin respuesta del servidor con tarjeta, el mensaje es el del cupon`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.SocketTimeoutException())
+
+        paymentViewModel.startPaymentFlow(carritoConCupon)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CARD)
+        paymentViewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val estado = paymentViewModel.state.value
+        assertTrue("$estado", estado is PaymentFlowState.Error)
+        assertTrue((estado as PaymentFlowState.Error).message.startsWith("Sin conexión"))
+    }
+
+    @Test
+    fun `P1 con efectivo y un cupon que cambio de valor no se registra un cobro corto`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns ordenConTotal(95.0)
+
+        paymentViewModel.startPaymentFlow(carritoConCupon)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(9000)
+        advanceUntilIdle()
+
+        val estado = paymentViewModel.state.value
+        assertTrue("$estado", estado is PaymentFlowState.SelectingPaymentMethod)
+        assertEquals(9500, (estado as PaymentFlowState.SelectingPaymentMethod).amount)
+        assertTrue(paymentViewModel.avisoDelPremio.value!!.contains("cupón"))
+    }
 }
