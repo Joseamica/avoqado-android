@@ -108,8 +108,29 @@ class AnnouncementsRepository @Inject constructor(
      * 🔴 Marca propia, NO el estado de leído: la campana del dashboard marca todo como
      * leído nada más abrirla, así que asomarse al buzón apagaba una ventana que la
      * persona nunca vio.
+     *
+     * Lleva en el cuerpo el [staffId] de quien cerró: si el token ya es de otra persona (entró alguien a media
+     * petición, codex r3 #7) el servidor responde 409 `CIERRE_DE_OTRA_PERSONA` y no registra nada.
+     *
+     * @return `true` sólo con 2xx. Sin red, 409 o cualquier otra cosa: `false`, y el cierre sigue pendiente en el aparato.
      */
-    suspend fun recordDismiss(announcementId: String) = post("$announcementId/dismiss")
+    suspend fun recordDismiss(announcementId: String, staffId: String): Boolean {
+        val token = secureStorage.accessToken ?: return false
+        return try {
+            val cuerpo = JsonObject(mapOf("staffId" to JsonPrimitive(staffId))).toString()
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/announcements/$announcementId/dismiss")
+                .header("Authorization", "Bearer $token")
+                .post(cuerpo.toRequestBody("application/json".toMediaType()))
+                .build()
+            withContext(Dispatchers.IO) { client.newCall(request).execute().use { it.isSuccessful } }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo mandar el cierre del anuncio; queda pendiente en el aparato", e)
+            false
+        }
+    }
 
     private suspend fun post(path: String) {
         val token = secureStorage.accessToken ?: return

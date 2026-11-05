@@ -5,7 +5,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,9 +28,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 @Composable
 fun AnnouncementGate(viewModel: AnnouncementGateViewModel = hiltViewModel()) {
     val pendiente by viewModel.ventanaPendiente.collectAsState()
-    var verCompleto by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) { viewModel.consultar() }
+    val generacion by viewModel.generacion.collectAsState()
+    // Al cambiar de persona se cierra el «Ver más» (codex r6 #1). La consulta la dispara el ViewModel con cada sesión
+    // nueva (codex r4 #4): antes era `LaunchedEffect(Unit)` y, si la app abría sin sesión, nunca volvía a preguntar.
+    var verCompleto by remember(generacion) { mutableStateOf(false) }
 
     val ventana = pendiente ?: return
 

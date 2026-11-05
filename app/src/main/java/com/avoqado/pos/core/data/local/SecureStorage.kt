@@ -41,9 +41,14 @@ class SecureStorage @Inject constructor(
      * reenvía, no instala y no cierra. Se muta bajo el candado de esta clase; vive en memoria y empieza en 0 con el
      * proceso.
      */
-    @Volatile
-    var generacion: Long = 0L
-        private set
+    private val _generacion = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    var generacion: Long
+        get() = _generacion.value
+        private set(value) { _generacion.value = value }
+
+    /** La misma [generacion] como flujo: lo que se pinta «para esta persona» se vuelve a pedir cuando cambia quién está adentro. */
+    val generacionDeSesion: kotlinx.coroutines.flow.StateFlow<Long> get() = _generacion
 
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
