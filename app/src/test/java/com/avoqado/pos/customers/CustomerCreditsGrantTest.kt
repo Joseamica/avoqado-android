@@ -168,7 +168,7 @@ class CustomerCreditsGrantTest {
 
         assertFalse(cerrada)
         assertTrue(vm.avisoDeVenta.value!!.contains("guardada"))
-        verify(exactly = 0) { queue.olvidarRechazoDeFicha(any()) }
+        verify(exactly = 0) { queue.descartar(any()) }
     }
 
     @Test
@@ -183,8 +183,9 @@ class CustomerCreditsGrantTest {
         vm.sell(pack, "cli-1", "Ana") { }
         advanceUntilIdle()
 
-        assertEquals("El paquete no está activo", vm.avisoDeVenta.value)
-        verify(exactly = 1) { queue.olvidarRechazoDeFicha("llave-1") }
+        // La cajera ya cobró: lo ve aquí y se queda en la cuarentena aunque cierre la ventana.
+        assertTrue(vm.avisoDeVenta.value!!.startsWith("El paquete no está activo"))
+        verify(exactly = 0) { queue.descartar(any()) }
     }
 
     @Test

@@ -196,7 +196,13 @@ private fun SellPackDialog(
     val avisoDeVenta by viewModel.avisoDeVenta.collectAsStateWithLifecycle()
     var pendingPack by remember { mutableStateOf<CreditPack?>(null) }
 
-    LaunchedEffect(Unit) { viewModel.loadPacks() }
+    LaunchedEffect(Unit) {
+        viewModel.limpiarAvisoDeVenta()
+        viewModel.loadPacks()
+    }
+    // Una venta ya quedó guardada o rechazada en esta ventana: volver a tocar vendería OTRA (con otra llave). Para otra venta, se
+    // cierra y se vuelve a abrir.
+    val puedeVender = sellingId == null && avisoDeVenta == null
 
     BarreraDeAtajos()   // POS de Windows: con el diálogo encima, F12/F3 esperan
     AlertDialog(
@@ -223,7 +229,7 @@ private fun SellPackDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = sellingId == null) { pendingPack = pack }
+                                .clickable(enabled = puedeVender) { pendingPack = pack }
                                 .padding(vertical = AvoqadoTheme.spacing.sm),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {

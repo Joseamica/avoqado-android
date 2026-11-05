@@ -57,6 +57,8 @@ class MoreMenuViewModel @Inject constructor(
     private val pedidosEnLineaRepository: com.avoqado.pos.onlineorders.data.OnlineOrdersRepository,
     /** Las llegadas del kiosco guardadas sin red (Modo Autoservicio 0.e): también bloquean el cambio de sucursal. */
     private val pendingReservationDao: com.avoqado.pos.reservations.data.PendingReservationActionDao,
+    /** D4: paquetes cobrados por entregar. Default para las pruebas que construyen este ViewModel a mano. */
+    private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
 ) : ViewModel() {
 
     // MARK: - Pedidos en línea (A3)
@@ -249,7 +251,9 @@ class MoreMenuViewModel @Inject constructor(
                     pendingReservationDao.all(),
                     currentVenueId,
                     com.avoqado.pos.reservations.data.ReservationRepository.MAX_ATTEMPTS,
-                )
+                ) +
+                // D4: un paquete cobrado sólo se entrega con SU sucursal activa.
+                (pendingGrantQueue?.bloqueantes(currentVenueId) ?: 0)
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."

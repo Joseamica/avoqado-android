@@ -448,7 +448,11 @@ class CartViewModel @Inject constructor(
     @Volatile var cobroAbierto: Boolean = false
         private set
     fun abrirCobro() { cobroAbierto = true }
-    fun cerrarCobro() { cobroAbierto = false }
+    fun cerrarCobro() {
+        cobroAbierto = false
+        // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
+        pendingGrantQueue?.soltarVenta()
+    }
     /** Flujo (no un contador suelto) para que «Pagar después» pueda ESPERAR a que lleguen antes de separar la venta (R3-2). */
     private val consultasDeCodigo = MutableStateFlow(0)
     val hayConsultasDeCodigo: Boolean get() = consultasDeCodigo.value > 0

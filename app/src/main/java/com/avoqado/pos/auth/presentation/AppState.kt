@@ -554,7 +554,9 @@ class AppState @Inject constructor(
                 (venueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
                 secureStorage.areaTicketRecoveryCount() +
                 // Las llegadas del kiosco sólo se mandan con SU sucursal activa: entrar a otra las dejaría varadas.
-                reservationRepository.pendingKioskArrivals(venueId)
+                reservationRepository.pendingKioskArrivals(venueId) +
+                // D4: lo mismo los paquetes cobrados por entregar o por revisar.
+                (pendingGrantQueue?.bloqueantes(venueId) ?: 0)
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."

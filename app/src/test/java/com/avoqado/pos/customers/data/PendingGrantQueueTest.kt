@@ -549,6 +549,106 @@ class PendingGrantQueueTest {
         coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
     }
 
+    // MARK: - Codex r1
+
+    @Test
+    fun `un NO viejo no borra lo que ya consta como cobrado mientras se preguntaba`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave"))
+        q.soltarVenta()
+        coEvery { articulos.cobroEnEfectivoPorLlave(venue, "llave") } coAnswers {
+            q.marcarCobrada("venta-1")
+            false
+        }
+        conRed.value = true
+        entrega(null)
+
+        q.drenar()
+
+        assertEquals(Estado.POR_ENTREGAR, q.filas.value.single().estado)
+    }
+
+    @Test
+    fun `un NO viejo no borra una venta que volvio a la pantalla mientras se preguntaba`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        q.soltarVenta()
+        coEvery { terminal.consultarEstado(any(), any(), any()) } coAnswers {
+            q.armada()
+            ConsultaDeEstado(ChargeStatusProbe.Known(status = "FAILED", inProgress = false), sinRespuesta = false)
+        }
+
+        q.drenar()
+
+        assertEquals(1, q.filas.value.size)
+    }
+
+    @Test
+    fun `reabrir con OTRO cliente no le entrega a ese cliente el cobro del primero`() = runTest {
+        val q = cola()
+        val deAna = q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-ana"))
+
+        assertTrue(q.armar("venta-1", listOf(linea), "cli-beatriz", "Beatriz"))
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave-beatriz"))
+
+        val ana = q.filas.value.single { it.id == deAna.id }
+        val beatriz = q.filas.value.single { it.id != deAna.id }
+        assertEquals("cli-1", ana.customerId)
+        assertEquals(listOf(IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-ana")), ana.intentos)
+        assertNull(ana.venta)
+        assertEquals("cli-beatriz", beatriz.customerId)
+        assertEquals(listOf(IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave-beatriz")), beatriz.intentos)
+
+        // El cobro de Beatriz se confirma: sólo lo suyo pasa a entregarse; lo de Ana lo decide SU evidencia.
+        q.marcarCobrada("venta-1")
+        assertEquals(Estado.POR_COBRAR, q.filas.value.single { it.id == deAna.id }.estado)
+    }
+
+    @Test
+    fun `quitar el paquete despues de intentar cobrar - el cobro del resto no lo entrega`() = runTest {
+        val q = cola()
+        val fila = q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "rechazada"))
+
+        q.armar("venta-1", emptyList(), "cli-1", "Ana")
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave-del-resto"))
+        q.marcarCobrada("venta-1")
+
+        val suelta = q.filas.value.single { it.id == fila.id }
+        assertEquals(Estado.POR_COBRAR, suelta.estado)
+        assertEquals(listOf(IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "rechazada")), suelta.intentos)
+    }
+
+    @Test
+    fun `salir del cobro suelta la venta - su duda llega a revision aunque la app siga viva`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        coEvery { terminal.consultarEstado(any(), any(), any()) } returns ConsultaDeEstado(ChargeStatusProbe.NotFound, sinRespuesta = false)
+
+        q.soltarVenta()
+        q.drenar()
+        ahora += PendingGrantQueue.DUDA_MS + 1
+        q.drenar()
+
+        assertEquals(Estado.EN_DUDA, q.filas.value.single().estado)
+    }
+
+    @Test
+    fun `lo cobrado por entregar o por revisar cierra el paso a otra sucursal`() = runTest {
+        val q = cola()
+        q.armada("venta-1")
+        assertEquals(0, q.bloqueantes(venue))
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        assertEquals(1, q.bloqueantes(venue))
+        q.marcarCobrada("venta-1")
+        assertEquals(1, q.bloqueantes(venue))
+        assertEquals(0, q.bloqueantes("venue-B"))
+    }
+
     // MARK: - En duda: lo decide una persona
 
     private suspend fun PendingGrantQueue.enDuda(): PendingGrant {

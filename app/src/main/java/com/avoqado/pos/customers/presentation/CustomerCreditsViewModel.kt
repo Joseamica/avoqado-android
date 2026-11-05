@@ -62,6 +62,11 @@ class CustomerCreditsViewModel @Inject constructor(
     private val _avisoDeVenta = MutableStateFlow<String?>(null)
     val avisoDeVenta: StateFlow<String?> = _avisoDeVenta.asStateFlow()
 
+    /** Se abrió otra vez «Vender»: lo de la venta anterior ya se leyó. */
+    fun limpiarAvisoDeVenta() {
+        _avisoDeVenta.value = null
+    }
+
     /** El aviso ya se mostró y el usuario lo acusó de recibo. */
     fun clearUndeliveredGrants() {
         _undeliveredGrants.value = 0
@@ -115,11 +120,9 @@ class CustomerCreditsViewModel @Inject constructor(
                     load(customerId)
                     onDone()
                 }
-                // Lo ve aquí mismo quien lo tocó, así que no hace falta que también salga en la cuarentena.
-                DesenlaceDeEntrega.RECHAZADA -> {
-                    _avisoDeVenta.value = pendingGrantQueue.motivoDe(fila.id) ?: "No se pudo vender el paquete"
-                    pendingGrantQueue.olvidarRechazoDeFicha(fila.id)
-                }
+                // La cajera ya cobró: se queda en «Operaciones por revisar» aunque cierre esta ventana.
+                DesenlaceDeEntrega.RECHAZADA -> _avisoDeVenta.value =
+                    "${pendingGrantQueue.motivoDe(fila.id) ?: "No se pudo vender el paquete"}. Quedó en «Operaciones por revisar»."
                 // Sin red, un 5xx o la sesión vencida: ya está guardada y la cola la entrega. Volver a tocar vendería otra.
                 else -> _avisoDeVenta.value = "Sin conexión con Avoqado: la venta quedó guardada y el paquete se entrega solo al volver."
             }
