@@ -238,6 +238,20 @@ class PendingGrantQueue @Inject constructor(
         mutar { fs -> fs.map { if (it.id == id) cambio(it) else it } }
     }
 
+    /**
+     * Cambia la fila [id] sólo si, AL ESCRIBIR, [si] se cumple. Devuelve la fila escrita, o null si ya no estaba así (otra mano la cambió
+     * mientras tanto) o el disco no la aceptó.
+     */
+    private fun cambiarSi(id: String, si: (PendingGrant) -> Boolean, cambio: (PendingGrant) -> PendingGrant): PendingGrant? =
+        synchronized(candado) {
+            val actual = leer().firstOrNull { it.id == id }?.takeIf(si) ?: return@synchronized null
+            val nueva = cambio(actual)
+            nueva.takeIf { mutar { fs -> fs.map { f -> if (f.id == id) nueva else f } } }
+        }
+
+    /** La venta en pantalla, leída bajo el candado: toda decisión que dependa de ella se toma en el mismo candado en que se escribe. */
+    private fun estaViva(f: PendingGrant): Boolean = f.venta != null && f.venta == ventaViva
+
     private fun borrar(id: String): Boolean = mutar { fs -> fs.filterNot { it.id == id } }
 
     @androidx.annotation.VisibleForTesting
@@ -333,7 +347,7 @@ class PendingGrantQueue @Inject constructor(
 
     /** El cobro se cerró sin cobrar («Salir», «Cancelar»): la venta ya no está en pantalla y su evidencia decide desde ahora. */
     fun soltarVenta() {
-        ventaViva = null
+        synchronized(candado) { ventaViva = null }
     }
 
     /** Consta que ese intento nunca nació (el servidor lo rechazó sin crearlo): no hay por qué preguntar por él; su 404 sería una duda falsa. */
@@ -342,9 +356,10 @@ class PendingGrantQueue @Inject constructor(
     }
 
     /** Consta el cobro de [venta]: lo suyo pasa a por entregar. */
-    fun marcarCobrada(venta: String): Boolean {
-        if (ventaViva == venta) ventaViva = null
-        return mutar { fs ->
+    fun marcarCobrada(venta: String): Boolean = synchronized(candado) {
+        // 🔴 Codex r6: primero queda escrito el cobro y DESPUÉS sale de la pantalla, en el mismo candado. Al revés, un NO atrasado del
+        // barrido cabía en medio, veía la venta cerrada y la fila todavía por cobrar, y la borraba.
+        val ok = mutar { fs ->
             fs.map { f ->
                 if (f.venta == venta && (f.estado == PendingGrant.Estado.POR_COBRAR || f.estado == PendingGrant.Estado.EN_DUDA)) {
                     f.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null)
@@ -353,6 +368,8 @@ class PendingGrantQueue @Inject constructor(
                 }
             }
         }
+        if (ok && ventaViva == venta) ventaViva = null
+        ok
     }
 
     /**
@@ -411,24 +428,29 @@ class PendingGrantQueue @Inject constructor(
 
     /** «Reintentar» de la cuarentena: la misma llave. null = ya no está, es de otra sucursal o no está rechazada. */
     suspend fun reintentar(id: String): DesenlaceDeEntrega? = withContext(io) {
-        val fila = filas.value.firstOrNull { it.id == id && it.estado == PendingGrant.Estado.RECHAZADA && it.venueId == secureStorage.venueId }
-            ?: return@withContext null
-        cambiar(id) { it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null) }
-        enviar(fila)
+        val venue = secureStorage.venueId
+        cambiarSi(id, { it.estado == PendingGrant.Estado.RECHAZADA && it.venueId == venue }) {
+            it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null)
+        }?.let { enviar(it) }
     }
 
     /** «Sí se cobró» de la cuarentena. */
     suspend fun siSeCobro(id: String): DesenlaceDeEntrega? = withContext(io) {
-        val fila = filas.value.firstOrNull { it.id == id && it.estado == PendingGrant.Estado.EN_DUDA && it.venueId == secureStorage.venueId }
-            ?: return@withContext null
-        cambiar(id) { it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null) }
-        enviar(fila)
+        val venue = secureStorage.venueId
+        cambiarSi(id, { it.estado == PendingGrant.Estado.EN_DUDA && it.venueId == venue }) {
+            it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null)
+        }?.let { enviar(it) }
     }
 
-    /** «Descartar» o «No se cobró» de la cuarentena, ya confirmado por una persona. Sólo lo que está por revisar, de esta sucursal. */
+    /**
+     * «Descartar» o «No se cobró» de la cuarentena, ya confirmado por una persona. Sólo lo que SIGUE por revisar al escribir, de esta
+     * sucursal: si mientras tanto la evidencia confirmó el cobro, ya no se borra.
+     */
     fun descartar(id: String): Boolean {
-        if (filas.value.none { it.id == id && it.porRevisar && it.venueId == secureStorage.venueId }) return false
-        return borrar(id)
+        val venue = secureStorage.venueId
+        return synchronized(candado) {
+            leer().any { it.id == id && it.porRevisar && it.venueId == venue } && borrar(id)
+        }
     }
 
     // MARK: - Cómo se sabe si el cobro sucedió
@@ -494,19 +516,20 @@ class PendingGrantQueue @Inject constructor(
                 },
             )
             when (cobro) {
-                Cobro.SI -> cambiar(foto.id) { it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null) }
+                Cobro.SI -> cambiarSi(foto.id, { it.estado == PendingGrant.Estado.POR_COBRAR || it.estado == PendingGrant.Estado.EN_DUDA }) {
+                    it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null)
+                }
                 // Se decide con lo que hay en disco AL ESCRIBIR: mientras se preguntaba, el cobro pudo confirmarse (`marcarCobrada`), la venta
                 // volver a la pantalla o anotarse otro intento. Cualquiera de esos cambios vuelve viejo este NO.
                 Cobro.NO -> mutar { fs ->
                     fs.filterNot {
-                        it.id == foto.id && it.estado == foto.estado && it.intentos == foto.intentos && it.venta == foto.venta &&
-                            (it.venta == null || it.venta != ventaViva)
+                        it.id == foto.id && it.estado == foto.estado && it.intentos == foto.intentos && it.venta == foto.venta && !estaViva(it)
                     }
                 }
-                Cobro.NO_SE_SABE -> if (conRed && !viva) anotarDuda(foto.id)
+                Cobro.NO_SE_SABE -> if (conRed) anotarDuda(foto.id)
                 // Nunca borra sola: fuera del cobro en pantalla lo decide una persona, y la evidencia se sigue consultando.
-                Cobro.NO_REVERSIBLE -> if (!viva) cambiar(foto.id) {
-                    if (it.estado == PendingGrant.Estado.POR_COBRAR) it.copy(estado = PendingGrant.Estado.EN_DUDA, motivo = PAQUETE_TARJETA_NO_PASO) else it
+                Cobro.NO_REVERSIBLE -> cambiarSi(foto.id, { it.estado == PendingGrant.Estado.POR_COBRAR && !estaViva(it) }) {
+                    it.copy(estado = PendingGrant.Estado.EN_DUDA, motivo = PAQUETE_TARJETA_NO_PASO)
                 }
             }
         }
@@ -514,9 +537,9 @@ class PendingGrantQueue @Inject constructor(
 
     private fun anotarDuda(id: String) {
         val ahora = reloj()
-        cambiar(id) { f ->
+        cambiarSi(id, { it.estado == PendingGrant.Estado.POR_COBRAR && !estaViva(it) }) { f ->
             val desde = f.dudaDesde ?: ahora
-            if (f.estado == PendingGrant.Estado.POR_COBRAR && ahora - desde > DUDA_MS) {
+            if (ahora - desde > DUDA_MS) {
                 f.copy(estado = PendingGrant.Estado.EN_DUDA, motivo = PAQUETE_EN_DUDA, dudaDesde = desde)
             } else {
                 f.copy(dudaDesde = desde)

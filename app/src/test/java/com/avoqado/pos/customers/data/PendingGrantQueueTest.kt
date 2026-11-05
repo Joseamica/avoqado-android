@@ -773,6 +773,34 @@ class PendingGrantQueueTest {
         assertEquals("foto-al-vender", q.filas.value.single().saleProof)
     }
 
+    // MARK: - Codex r6: toda decisión sobre la venta en pantalla, en el candado en que se escribe
+
+    @Test
+    fun `si el disco no acepta marcarla cobrada, la venta sigue en pantalla y un NO no la borra`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        disco.discoSano = false
+        assertFalse(q.marcarCobrada("venta-1"))
+        disco.discoSano = true
+        tarjeta("FAILED")
+
+        q.drenar()
+
+        assertEquals(1, q.filas.value.size)
+    }
+
+    @Test
+    fun `Si se cobro sobre una fila que ya no esta en duda no manda nada`() = runTest {
+        val q = cola()
+        val fila = q.enDuda()
+        q.borrarParaPruebas(fila.id)
+
+        assertNull(q.siSeCobro(fila.id))
+
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+    }
+
     // MARK: - En duda: lo decide una persona
 
     private suspend fun PendingGrantQueue.enDuda(): PendingGrant {
