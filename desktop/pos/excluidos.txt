@@ -33,3 +33,5 @@ com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fij
 com/avoqado/pos/giftcards/presentation/CompartirLiga.kt # reemplazo: portapapeles de Windows | huella: 4777ca9b23e97480c02d8d9bf906dbbe776da54c2b57a4d9ec97d9344cda0e25
 
 com/avoqado/pos/giftcards/presentation/LectorHidDeLaVentana.kt # RULING-r3: ventana Android; Windows conserva PistolaDeLaVentana | huella: d7dd26d9a6408dfcdade8b92ef1d193901a82ca64d6bddb2e8f75aebbc5e762e
+
+com/avoqado/pos/announcements/presentation/VisorDeFoto.kt # reemplazo: ComponentDialog y AbstractComposeView no existen en escritorio; allá es un Dialog de Compose a toda la ventana | huella: d4d14c1a22e98fd84c5f7a9c497c61270d633ddcdb09445d7a1111f1a5310f85
