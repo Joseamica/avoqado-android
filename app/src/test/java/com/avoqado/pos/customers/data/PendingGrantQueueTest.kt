@@ -649,6 +649,107 @@ class PendingGrantQueueTest {
         assertEquals(0, q.bloqueantes("venue-B"))
     }
 
+    // MARK: - Codex r2
+
+    private fun tarjetaLiberada(failureCode: String?, evidencia: String?) {
+        coEvery { terminal.consultarEstado(any(), any(), any()) } returns ConsultaDeEstado(
+            ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcomeEvidence = evidencia, failureCode = failureCode),
+            sinRespuesta = false,
+        )
+    }
+
+    @Test
+    fun `tarjeta liberada sin respuesta - no se borra sola y la decide una persona`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        q.soltarVenta()
+        tarjetaLiberada("NO_EVIDENCE_AFTER_WINDOW", "NO_EVIDENCE_AFTER_WINDOW")
+
+        q.drenar()
+        ahora += 30L * 24 * 60 * 60 * 1000
+        q.drenar()
+
+        val fila = q.filas.value.single()
+        assertEquals(Estado.EN_DUDA, fila.estado)
+        assertEquals(PAQUETE_TARJETA_NO_PASO, fila.motivo)
+        assertEquals(1, q.porRevisar.first())
+        assertEquals(1, q.bloqueantes(venue))
+
+        // Llega la aprobación tardía, aunque sea días después: se entrega.
+        tarjeta("COMPLETED", paymentId = "pay-1")
+        entrega(201)
+        q.drenar()
+        assertTrue(q.filas.value.isEmpty())
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `el rechazo del banco y la declaracion de la cajera tampoco se borran solos`() = runTest {
+        for ((codigo, evidencia) in listOf("BANK_DECLINED" to "PROCESSOR_DECLINED", "OPERATOR_RECONCILED_NO_CHARGE" to "OPERATOR_RECONCILED")) {
+            disco.guardado.clear()
+            val q = cola()
+            q.armada()
+            q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+            q.soltarVenta()
+            tarjetaLiberada(codigo, evidencia)
+
+            q.drenar()
+
+            assertEquals(codigo, Estado.EN_DUDA, q.filas.value.single().estado)
+        }
+    }
+
+    @Test
+    fun `con el cobro en pantalla, un rechazo reversible no molesta - la cajera sigue cobrando`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        tarjetaLiberada("BANK_DECLINED", "PROCESSOR_DECLINED")
+
+        q.drenar()
+
+        assertEquals(Estado.POR_COBRAR, q.filas.value.single().estado)
+    }
+
+    @Test
+    fun `una cancelacion aceptada por la terminal si es definitiva`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+        q.soltarVenta()
+        coEvery { terminal.consultarEstado(any(), any(), any()) } returns ConsultaDeEstado(
+            ChargeStatusProbe.Known(status = "CANCELLED", inProgress = false, cancelDisposition = "ACCEPTED"),
+            sinRespuesta = false,
+        )
+
+        q.drenar()
+
+        assertTrue(q.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `reabrir tras refrescar el catalogo conserva la foto del cobro ya intentado`() = runTest {
+        val q = cola()
+        val conFoto = linea.copy(saleProof = "foto-al-vender")
+        assertTrue(q.armar("venta-1", listOf(conFoto), "cli-1", "Ana"))
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "req-1"))
+
+        assertTrue(q.armar("venta-1", listOf(conFoto.copy(saleProof = "foto-nueva", precioCents = 99)), "cli-1", "Ana"))
+
+        val fila = q.filas.value.single()
+        assertEquals("foto-al-vender", fila.saleProof)
+        assertEquals(50000, fila.precioCents)
+    }
+
+    @Test
+    fun `la foto de la linea gana a la del catalogo de ahora`() {
+        val q = cola()
+        assertTrue(q.armar("venta-1", listOf(linea.copy(saleProof = "foto-al-vender")), "cli-1", "Ana"))
+
+        assertEquals("foto-al-vender", q.filas.value.single().saleProof)
+    }
+
     // MARK: - En duda: lo decide una persona
 
     private suspend fun PendingGrantQueue.enDuda(): PendingGrant {

@@ -46,14 +46,29 @@ data class IntentoDeCobro(val tipo: Tipo, val id: String) {
 }
 
 /** Lo que dice la evidencia de un cobro. Nunca se concluye [NO] de una ignorancia. */
-enum class Cobro { SI, NO, NO_SE_SABE }
+enum class Cobro {
+    SI,
+    NO,
+    NO_SE_SABE,
+    /**
+     * El servidor dice que no se cobró, pero lo puede corregir si el banco aprueba tarde: la ventana sin respuesta, la declaración de la
+     * cajera o el rechazo del banco (`CODIGOS_DE_LIBERACION_REVERSIBLE` del SERVIDOR). Nunca borra sola: fuera del cobro en pantalla
+     * lo decide una persona, y se sigue preguntando por si llega el cobro tardío.
+     */
+    NO_REVERSIBLE,
+}
 
-/** Un SÍ basta (el dinero entró); sólo se borra si todos dicen NO. Sin intentos no salió ningún cobro: NO. */
+/** Un SÍ basta (el dinero entró); sólo se borra si todos dicen NO definitivo. Sin intentos no salió ningún cobro: NO. */
 internal fun decidirCobro(evidencias: List<Cobro>): Cobro = when {
     Cobro.SI in evidencias -> Cobro.SI
     Cobro.NO_SE_SABE in evidencias -> Cobro.NO_SE_SABE
+    Cobro.NO_REVERSIBLE in evidencias -> Cobro.NO_REVERSIBLE
     else -> Cobro.NO
 }
+
+/** Lo que el SERVIDOR libera «sin cobro» y todavía puede convertir en cobro (`terminal-payment.service.ts`). */
+private val LIBERACIONES_REVERSIBLES = setOf("NO_EVIDENCE_AFTER_WINDOW", "OPERATOR_RECONCILED_NO_CHARGE", "BANK_DECLINED")
+private val EVIDENCIAS_REVERSIBLES = setOf("NO_EVIDENCE_AFTER_WINDOW", "OPERATOR_RECONCILED", "PROCESSOR_DECLINED")
 
 /** Los desenlaces de mandar una entrega. Un booleano mezclaba «el servidor ya la tiene» con «la rechazó». */
 enum class DesenlaceDeEntrega { ENTREGADA, SIN_RED, REINTENTAR, SESION_VENCIDA, RECHAZADA }
@@ -67,8 +82,11 @@ internal fun clasificarEntrega(code: Int?): DesenlaceDeEntrega = when {
     else -> DesenlaceDeEntrega.RECHAZADA
 }
 
-/** Un paquete de la venta, una por pieza cobrada. [linea] es estable mientras la venta siga en el carrito. */
-data class LineaDePaquete(val linea: String, val packId: String, val nombre: String?, val precioCents: Int?)
+/**
+ * Un paquete de la venta, una por pieza cobrada. [linea] es estable mientras la venta siga en el carrito. [saleProof] es la foto que
+ * tomó la línea al entrar al carrito; sin ella se usa la del catálogo de ahora.
+ */
+data class LineaDePaquete(val linea: String, val packId: String, val nombre: String?, val precioCents: Int?, val saleProof: String? = null)
 
 /**
  * Lo que se debe entregar. [id] es la llave de la entrega (`deliveryKey`): con ella el servidor nunca crea dos compras.
@@ -112,6 +130,8 @@ data class PendingGrant(
 
 // Cuarentena (los mismos textos para cuando le toque a iOS).
 const val PAQUETE_EN_DUDA = "No se pudo confirmar si este cobro se hizo. Revisa la terminal o la caja."
+const val PAQUETE_TARJETA_NO_PASO =
+    "La tarjeta no pasó, pero el banco todavía puede aprobarla tarde. Si el cliente no pagó de otra forma, descártalo; si llega el cobro, se entrega solo."
 
 fun tituloDePaquete(fila: PendingGrant): String = listOfNotNull(
     "Paquete",
@@ -250,13 +270,19 @@ class PendingGrantQueue @Inject constructor(
             }.toMutableList()
             if (hayQueArmar) {
                 for (l in lineas) {
-                    val foto = catalogo.firstOrNull { it.id == l.packId }?.saleProof
+                    val foto = l.saleProof ?: catalogo.firstOrNull { it.id == l.packId }?.saleProof
                     val i = quedan.indexOfFirst { esDeLaLinea(it, l) }
                     if (i >= 0) {
-                        quedan[i] = quedan[i].copy(
-                            estado = PendingGrant.Estado.POR_COBRAR, clienteNombre = clienteNombre, nombre = l.nombre,
-                            precioCents = l.precioCents, saleProof = foto, motivo = null, dudaDesde = null,
-                        )
+                        val f = quedan[i]
+                        // Con un cobro ya intentado, lo vendido es lo de ESE cobro: un catálogo refrescado no lo cambia.
+                        quedan[i] = if (f.intentos.isNotEmpty()) {
+                            f.copy(clienteNombre = clienteNombre)
+                        } else {
+                            f.copy(
+                                estado = PendingGrant.Estado.POR_COBRAR, clienteNombre = clienteNombre, nombre = l.nombre,
+                                precioCents = l.precioCents, saleProof = foto, motivo = null, dudaDesde = null,
+                            )
+                        }
                     } else {
                         quedan += PendingGrant(
                             id = java.util.UUID.randomUUID().toString(),
@@ -399,7 +425,14 @@ class PendingGrantQueue @Inject constructor(
                 when (val d = CardChargeDecision.decide(probe, isFinalAttempt = true)) {
                     is ProbeDecision.Resolved -> when (d.outcome) {
                         is CardChargeOutcome.Charged -> Cobro.SI
-                        is CardChargeOutcome.NotCharged -> Cobro.NO
+                        is CardChargeOutcome.NotCharged -> {
+                            val conocido = probe as? com.avoqado.pos.payment.domain.ChargeStatusProbe.Known
+                            if (conocido?.failureCode in LIBERACIONES_REVERSIBLES || conocido?.outcomeEvidence in EVIDENCIAS_REVERSIBLES) {
+                                Cobro.NO_REVERSIBLE
+                            } else {
+                                Cobro.NO
+                            }
+                        }
                         is CardChargeOutcome.Undetermined -> Cobro.NO_SE_SABE
                     }
                     ProbeDecision.KeepPolling -> Cobro.NO_SE_SABE
@@ -445,7 +478,6 @@ class PendingGrantQueue @Inject constructor(
             )
             when (cobro) {
                 Cobro.SI -> cambiar(foto.id) { it.copy(estado = PendingGrant.Estado.POR_ENTREGAR, motivo = null) }
-                // Un intento nuevo pudo anotarse mientras se preguntaba: esa evidencia aún no se vio.
                 // Se decide con lo que hay en disco AL ESCRIBIR: mientras se preguntaba, el cobro pudo confirmarse (`marcarCobrada`), la venta
                 // volver a la pantalla o anotarse otro intento. Cualquiera de esos cambios vuelve viejo este NO.
                 Cobro.NO -> mutar { fs ->
@@ -455,6 +487,10 @@ class PendingGrantQueue @Inject constructor(
                     }
                 }
                 Cobro.NO_SE_SABE -> if (conRed && !viva) anotarDuda(foto.id)
+                // Nunca borra sola: fuera del cobro en pantalla lo decide una persona, y la evidencia se sigue consultando.
+                Cobro.NO_REVERSIBLE -> if (!viva) cambiar(foto.id) {
+                    if (it.estado == PendingGrant.Estado.POR_COBRAR) it.copy(estado = PendingGrant.Estado.EN_DUDA, motivo = PAQUETE_TARJETA_NO_PASO) else it
+                }
             }
         }
     }
@@ -528,5 +564,6 @@ class PendingGrantQueue @Inject constructor(
 
         /** Media hora con red sin poder saber: ya no se espera en silencio. */
         internal const val DUDA_MS = 30L * 60 * 1000
+
     }
 }

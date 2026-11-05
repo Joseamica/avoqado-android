@@ -600,9 +600,9 @@ class CartViewModel @Inject constructor(
             emptyList()
         } else {
             cart.items.flatMap { item ->
-                val pack = (item.type as? CartItemType.CreditPack)?.packId ?: return@flatMap emptyList()
+                val pack = item.type as? CartItemType.CreditPack ?: return@flatMap emptyList()
                 (1..item.quantity).map { n ->
-                    com.avoqado.pos.customers.data.LineaDePaquete("${item.id}#$n", pack, item.name, item.unitPrice)
+                    com.avoqado.pos.customers.data.LineaDePaquete("${item.id}#$n", pack.packId, item.name, item.unitPrice, pack.saleProof)
                 }
             }
         }
@@ -1423,7 +1423,7 @@ class CartViewModel @Inject constructor(
         lastPackAddId = pack.id
         lastPackAddAt = now
         val item = CartItem(
-            type = CartItemType.CreditPack(pack.id),
+            type = CartItemType.CreditPack(pack.id, pack.saleProof),
             name = pack.name,
             subtitle = if (pack.creditCount > 0) "${pack.creditCount} créditos" else "Membresía",
             unitPrice = pack.price.aCentavos(),
@@ -1743,6 +1743,7 @@ class CartViewModel @Inject constructor(
                         is CartItemType.CreditPack -> null
                     },
                     packId = (item.type as? CartItemType.CreditPack)?.packId,
+                    packSaleProof = (item.type as? CartItemType.CreditPack)?.saleProof,
                     name = item.name,
                     unitPrice = item.unitPrice,
                     quantity = item.quantity,
@@ -2650,7 +2651,7 @@ class CartViewModel @Inject constructor(
                 id = savedItem.lineId ?: UUID.randomUUID().toString(),
                 weightKg = savedItem.weightKg,
                 type = when {
-                    savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId)
+                    savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId, savedItem.packSaleProof)
                     savedItem.productId != null -> CartItemType.ProductItem(savedItem.productId)
                     else -> CartItemType.CustomAmount
                 },
