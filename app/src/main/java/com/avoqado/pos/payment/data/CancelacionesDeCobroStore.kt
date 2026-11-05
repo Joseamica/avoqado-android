@@ -61,6 +61,12 @@ data class IntencionDeCancelarCobro(
     val paymentId: String? = null,
     /** Lo que dijo el servidor la última vez, para la hoja de pendientes. */
     val motivo: String? = null,
+    /**
+     * D19 (4-nov): la última consulta vio la terminal ya suelta con la venta en duda. «Por revisar» lee ESTO, no la pantalla del
+     * cobro: sin la marca seguía prometiendo «se cancelará sola», que ya no va a pasar. `false` por omisión: lo que guardó una
+     * versión anterior se lee igual.
+     */
+    val terminalLibre: Boolean = false,
 ) {
     val faseActual: FaseDeCancelacion get() = FaseDeCancelacion.de(fase)
 }

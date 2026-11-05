@@ -90,6 +90,20 @@ object CancelacionDeCobro {
         "La terminal ya está libre, pero no consta si esta venta se cobró. Si no se cobró, decláralo aquí y la venta se cancela."
     const val CUERPO_SIN_RED =
         "Sin conexión en esta tablet: la cancelación se enviará en cuanto vuelva la red. La terminal podría seguir mostrando el cobro."
+    /** D19 (4-nov): lo que dice una cancelación en «Por revisar». Sin red manda la red; con la terminal suelta, ya no «se cancela sola». */
+    fun cuerpoDeLaFila(sinRed: Boolean, terminalLibre: Boolean): String = when {
+        sinRed -> CUERPO_SIN_RED
+        terminalLibre -> CUERPO_TERMINAL_LIBRE
+        else -> CUERPO_PENDIENTE
+    }
+
+    /**
+     * D19: la fila deja declarar «No se cobró» sólo cuando ya no hay nada que se confirme solo (terminal suelta), hay red y es un cobro
+     * con solicitud (la declaración va por ella). Un aviso de cobro hecho nunca se declara.
+     */
+    fun filaPuedeDeclarar(terminalLibre: Boolean, sinRed: Boolean, requestId: String?, esAvisoDeCobro: Boolean): Boolean =
+        terminalLibre && !sinRed && requestId != null && !esAvisoDeCobro
+
     const val BOTON_VOLVER_A_CONSULTAR = "Volver a consultar"
     const val BOTON_SALIR_PENDIENTE = "Salir (queda pendiente)"
     const val BOTON_CANCELAR_VENTA = "Cancelar la venta"
