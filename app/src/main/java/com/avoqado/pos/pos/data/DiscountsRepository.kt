@@ -141,6 +141,7 @@ class DiscountsRepository @Inject constructor(
 
 const val CUPON_NO_SE_PUDO_VALIDAR = "No se pudo validar el cupón. Intenta de nuevo."
 const val CUPON_SIN_RED_AL_VALIDAR = "Sin conexión: el cupón necesita internet para validarse. Reintenta cuando vuelva la conexión."
+const val CUPON_NO_SE_COMBINA_CON_PREMIO = "Un cupón y un premio de sellos no se combinan en la misma venta. Quita uno de los dos."
 const val CUPON_NO_ES_DE_CUENTA = "Este cupón sólo aplica a ciertos productos y todavía no se puede usar en caja."
 
 private val jsonDelCupon = Json { ignoreUnknownKeys = true }

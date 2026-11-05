@@ -76,6 +76,7 @@ import com.avoqado.pos.designsystem.theme.ActionRed
 import com.avoqado.pos.designsystem.theme.ActionTeal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.pos.data.CUPON_NO_SE_COMBINA_CON_PREMIO
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import androidx.compose.ui.platform.LocalContext
@@ -909,7 +910,12 @@ private fun CouponsSubView(
                         validatedCoupon = null
                         when (val result = discountsRepository.validateCoupon(couponCode, cartState.baseDelCuponCents, cliente?.id)) {
                             is DiscountsRepository.CouponResult.Valid -> {
-                                validatedCoupon = result.coupon
+                                // El SERVIDOR los rechaza juntos al crear la venta (Codex D5 r1 #3); se dice aquí, antes de aplicarlo.
+                                if (cartState.pendingStampReward != null) {
+                                    errorMessage = CUPON_NO_SE_COMBINA_CON_PREMIO
+                                } else {
+                                    validatedCoupon = result.coupon
+                                }
                             }
                             is DiscountsRepository.CouponResult.Invalid -> {
                                 errorMessage = result.reason
