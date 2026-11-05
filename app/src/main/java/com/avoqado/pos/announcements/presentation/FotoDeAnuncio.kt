@@ -1,7 +1,8 @@
 package com.avoqado.pos.announcements.presentation
 
-import android.os.Build
-import android.view.WindowManager
+import android.content.Context
+import android.view.Window
+import androidx.activity.ComponentDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,6 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCompositionContext
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,10 +33,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.platform.AbstractComposeView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.DialogWindowProvider
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.components.ImmersiveWindow
 import com.avoqado.pos.pos.presentation.product.EstadoDeFoto
@@ -99,57 +102,62 @@ internal fun FotoDeAnuncio(
     if (visor && estado != EstadoDeFoto.FALLO) VisorDeFoto(url, alt) { visor = false }
 }
 
-/** La foto a pantalla completa sobre negro, con botón de cerrar. Sin red usa la caché de Coil o se queda en negro. */
+/**
+ * La foto a pantalla completa sobre negro, con botón de cerrar. Sin red usa la caché de Coil o se queda en negro.
+ *
+ * 🔴 NO es un `Dialog` de Compose: su `DialogLayout` mide el contenido con `Configuration.screenHeightDp` (la pantalla
+ * MENOS las barras del sistema) y en cada layout fija la ventana a esa medida con `window.setLayout(ancho, alto)`. En la
+ * D3 eso daba 1920×954 centrada (`[0,63][1920,1017]`) y por arriba y abajo asomaba la app. Ningún flag de ventana lo
+ * evita (probado en la ronda 3: `fitInsetsTypes = 0`, `NO_LIMITS`, `MATCH_PARENT` llegan y el alto se vuelve a pisar).
+ *
+ * Es una ventana propia de pantalla completa (tema no flotante: `MATCH_PARENT` y sin huecos), con el mismo patrón que
+ * `CustomerDisplayPresentation`: un `ComposeView` dentro de un diálogo de plataforma. Se agrega DESPUÉS de la ventana
+ * del anuncio, así que queda encima. Atrás la cierra (cancelar el diálogo). Hereda el tema por [rememberCompositionContext].
+ */
 @Composable
 fun VisorDeFoto(url: String, alt: String?, onCerrar: () -> Unit) {
-    Dialog(
-        onDismissRequest = onCerrar,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        ImmersiveWindow()   // primero: antes del primer dibujo, para que no asomen las barras
-        VentanaSinHuecos()  // y que la ventana mida la pantalla entera, no la pantalla menos las barras
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            AsyncImage(
-                model = url,
-                contentDescription = alt,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
-            IconButton(onClick = onCerrar, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
-                Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
-            }
-        }
+    val context = LocalContext.current
+    val padre = rememberCompositionContext()
+    val alCerrar by rememberUpdatedState(onCerrar)
+    DisposableEffect(context, url) {
+        val dialogo = ComponentDialog(context, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        dialogo.setOnCancelListener { alCerrar() }   // Atrás
+        dialogo.setContentView(
+            VistaDelVisor(dialogo.context, dialogo.window!!) { ContenidoDelVisor(url, alt) { alCerrar() } }.apply {
+                setParentCompositionContext(padre)
+            },
+        )
+        dialogo.show()
+        onDispose { dialogo.dismiss() }
     }
 }
 
 /**
- * 🔴 La ventana de un `Dialog` es «flotante» y, desde Android 11, su marco se encoge por las barras del sistema
- * (`fitInsetsTypes = systemBars()` por defecto en ventanas flotantes; las de pantalla normal lo traen en 0). Ocultar las
- * barras con [ImmersiveWindow] no basta: en la D3 (Android 14) el visor medía `[0,63][1920,1017]` y por los huecos de
- * arriba y abajo se veía la app («Agregar cliente» y la barra «Cobrar · Inventario…»). Es el mismo límite que Mesas
- * anotó en `ImmersiveDialogWindow` (probó `setLayout(MATCH_PARENT)` y `FLAG_LAYOUT_NO_LIMITS`, pero no `fitInsetsTypes`).
- *
- * Aquí la ventana deja de ajustarse a cualquier hueco (`fitInsetsTypes = 0`, lados = 0, también bajo el recorte de la
- * cámara) y mide la pantalla completa. Mismo patrón que [ImmersiveWindow]: se toca en la composición, antes del primer
- * dibujo. Sólo para el visor: las hojas de abajo se anclan al borde y no deben meterse bajo la barra de navegación.
+ * La vista del visor es la que da su ventana a [ImmersiveWindow] (que la busca en `LocalView.current.parent`), igual
+ * que el `DialogLayout` de un `Dialog` de Compose. Medido en la D3: con un contenedor aparte no la encontraba y el dock
+ * de Sunmi se quedaba abajo.
  */
+private class VistaDelVisor(
+    context: Context,
+    override val window: Window,
+    private val contenido: @Composable () -> Unit,
+) : AbstractComposeView(context), DialogWindowProvider {
+    @Composable
+    override fun Content() = contenido()
+}
+
 @Composable
-private fun VentanaSinHuecos() {
-    val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-    remember(window) {
-        window?.let { w ->
-            w.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
-            w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
-            w.attributes = w.attributes.apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    fitInsetsTypes = 0
-                    fitInsetsSides = 0
-                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                }
-            }
+private fun ContenidoDelVisor(url: String, alt: String?, onCerrar: () -> Unit) {
+    ImmersiveWindow()   // primero: antes del primer dibujo, para que no asomen las barras
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        AsyncImage(
+            model = url,
+            contentDescription = alt,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize(),
+        )
+        IconButton(onClick = onCerrar, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
+            Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
         }
-        window
     }
 }
