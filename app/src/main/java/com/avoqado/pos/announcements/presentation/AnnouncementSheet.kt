@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,11 +25,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.avoqado.pos.announcements.data.model.AnnouncementDetail
 import com.avoqado.pos.announcements.data.model.ContentBlock
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -97,7 +93,7 @@ fun AnnouncementSheet(
             anuncio.imageUrl?.let { url ->
                 var estado by remember(url) { mutableStateOf(EstadoDeFoto.CARGANDO) }
                 if (mostrarImagenDeAnuncio(url, estado)) {
-                    ImagenDeAnuncio(url = url, contentDescription = null, alto = 180.dp, estado = estado) { estado = it }
+                    FotoDeAnuncio(url = url, alt = null, width = null, height = null, alCambiar = { estado = it })
                 }
             }
 
@@ -158,9 +154,13 @@ private fun BloqueDeContenido(bloque: ContentBlock, onAccion: (String) -> Unit) 
             var estado by remember(bloque.url) { mutableStateOf(EstadoDeFoto.CARGANDO) }
             if (mostrarImagenDeAnuncio(bloque.url, estado)) {
                 Column(verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
-                    ImagenDeAnuncio(url = bloque.url, contentDescription = bloque.alt, alto = 180.dp, estado = estado) {
-                        estado = it
-                    }
+                    FotoDeAnuncio(
+                        url = bloque.url,
+                        alt = bloque.alt,
+                        width = bloque.width,
+                        height = bloque.height,
+                        alCambiar = { estado = it },
+                    )
                     bloque.caption?.let {
                         Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -177,12 +177,13 @@ private fun BloqueDeContenido(bloque: ContentBlock, onAccion: (String) -> Unit) 
                     visibles.forEach { i ->
                         key(i) {
                             val img = bloque.images[i]
-                            ImagenDeAnuncio(
+                            FotoDeAnuncio(
                                 url = img.url,
-                                contentDescription = img.alt,
-                                alto = 150.dp,
-                                estado = estados[i] ?: EstadoDeFoto.CARGANDO,
-                            ) { estados[i] = it }
+                                alt = img.alt,
+                                width = img.width,
+                                height = img.height,
+                                alCambiar = { estados[i] = it },
+                            )
                         }
                     }
                 }
@@ -228,29 +229,4 @@ private fun BloqueDeContenido(bloque: ContentBlock, onAccion: (String) -> Unit) 
 
         ContentBlock.Divider -> HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
-}
-
-/** Una imagen del anuncio: mientras carga guarda su lugar con un gris tenue (el `placeholder` de iOS) y avisa si llegó o falló. */
-@Composable
-private fun ImagenDeAnuncio(
-    url: String,
-    contentDescription: String?,
-    alto: Dp,
-    estado: EstadoDeFoto,
-    alCambiar: (EstadoDeFoto) -> Unit,
-) {
-    AsyncImage(
-        model = url,
-        contentDescription = contentDescription,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(alto)
-            .clip(RoundedCornerShape(12.dp))
-            .then(
-                if (estado == EstadoDeFoto.CARGANDO) Modifier.background(MaterialTheme.colorScheme.surfaceVariant) else Modifier,
-            ),
-        onSuccess = { alCambiar(EstadoDeFoto.LISTA) },
-        onError = { alCambiar(EstadoDeFoto.FALLO) },
-    )
 }
