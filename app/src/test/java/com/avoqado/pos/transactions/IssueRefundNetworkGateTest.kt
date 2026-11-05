@@ -146,7 +146,9 @@ class IssueRefundNetworkGateControlsTest {
             assertTrue(trozo.indexOf("if (!puedeEnviar()") < trozo.indexOf("scope.launch"))
             assertTrue(trozo.indexOf("conexion.iniciar(necesitaRed, ::vigente)") in 1 until trozo.indexOf(llamada))
             assertTrue(trozo.indexOf(salida) in 1 until trozo.indexOf("if (!vigente()) return@launch"))
-            assertTrue(trozo.contains("TextosDeTarjetas.SIN_RED; return@launch"))
+            // D5: los dos caminos de la terminal dicen su propio «sin conexión» (o la duda, si un envío pudo llegar).
+            assertTrue(trozo.contains("TextosDeTarjetas.SIN_RED; return@launch") ||
+                trozo.contains("textoDeFalloDeListaDeTerminales(null, pudoLlego(transaction.id)); return@launch"))
         }
         assertEquals(2, Regex("refundRepository\\.issueAssociatedRefund\\(").findAll(trozos.last().first).count())
         assertTrue(Regex("""submitting = true\s+errorMsg = null\s+scope\.launch""").containsMatchIn(fuente))

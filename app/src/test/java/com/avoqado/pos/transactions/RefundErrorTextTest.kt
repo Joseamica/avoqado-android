@@ -5,6 +5,9 @@ import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import com.avoqado.pos.transactions.presentation.formatRefundError
 import com.avoqado.pos.transactions.presentation.textoDeFalloAlAbrirEnTerminal
+import com.avoqado.pos.transactions.presentation.textoDeFalloDeListaDeTerminales
+import com.avoqado.pos.transactions.presentation.esAvisoSinRed
+import com.avoqado.pos.transactions.presentation.AperturasEnTerminal
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.IOException
@@ -69,6 +72,55 @@ class RefundErrorTextTest {
     fun `abrir la devolucion en la terminal enseña tal cual lo que rechaza el servidor`() {
         assertEquals("La terminal está ocupada", textoDeFalloAlAbrirEnTerminal(Exception("La terminal está ocupada")))
         assertEquals("No se pudo abrir la devolución en la terminal.", textoDeFalloAlAbrirEnTerminal(Exception()))
+    }
+
+    // D5 (full-testing en el Alien, 4-nov): sin red de verdad la falla llega ANTES de mandar nada, al pedir la lista de
+    // terminales, y la pantalla enseñaba «Error de conexión» en rojo; con la puerta de conexión cerrada decía el texto de
+    // tarjetas de regalo. Nada salió, así que aquí sí se puede decir «sin conexión» e invitar a repetirlo con red.
+    @Test
+    fun `P2 sin red la lista de terminales dice sin conexion con el texto del reembolso`() {
+        val sinRed = com.avoqado.pos.payment.data.TerminalListResult.Error("Error de conexión", sinRed = true)
+        assertEquals(TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RED, textoDeFalloDeListaDeTerminales(sinRed))
+        assertEquals(TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RED, textoDeFalloDeListaDeTerminales(null))
+    }
+
+    @Test
+    fun `P2 un rechazo del servidor al pedir las terminales se enseña tal cual`() {
+        val rechazo = com.avoqado.pos.payment.data.TerminalListResult.Error("No tienes permiso", sinRed = false)
+        assertEquals("No tienes permiso", textoDeFalloDeListaDeTerminales(rechazo))
+    }
+
+    @Test
+    fun `P1 si un envio anterior pudo llegar a la terminal la duda gana al sin conexion`() {
+        val sinRed = com.avoqado.pos.payment.data.TerminalListResult.Error("Error de conexión", sinRed = true)
+        assertEquals(TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA, textoDeFalloDeListaDeTerminales(sinRed, pudoLlegarAntes = true))
+        assertEquals(TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA, textoDeFalloDeListaDeTerminales(null, pudoLlegarAntes = true))
+    }
+
+    @Test
+    fun `P1 la apertura en la terminal se recuerda por pago y abierta no se pierde con un fallo despues`() {
+        val pago = "pago-prueba-" + System.nanoTime()
+        assertEquals(null, AperturasEnTerminal.de(pago))
+        AperturasEnTerminal.anotar(pago, AperturasEnTerminal.Estado.PUDO_LLEGAR)
+        assertEquals(AperturasEnTerminal.Estado.PUDO_LLEGAR, AperturasEnTerminal.de(pago))
+        AperturasEnTerminal.anotar(pago, AperturasEnTerminal.Estado.ABIERTA)
+        AperturasEnTerminal.anotar(pago, AperturasEnTerminal.Estado.PUDO_LLEGAR)
+        assertEquals(AperturasEnTerminal.Estado.ABIERTA, AperturasEnTerminal.de(pago))
+        assertEquals(null, AperturasEnTerminal.de(pago + "-otro"))
+        AperturasEnTerminal.olvidar(pago)
+        assertEquals("al cerrar la hoja se puede volver a abrir", null, AperturasEnTerminal.de(pago))
+        val viejo = pago + "-viejo"
+        AperturasEnTerminal.anotar(viejo, AperturasEnTerminal.Estado.ABIERTA, ahora = 1_000L)
+        assertEquals(AperturasEnTerminal.Estado.ABIERTA, AperturasEnTerminal.de(viejo, ahora = 1_000L + AperturasEnTerminal.VIGENCIA_MS))
+        assertEquals("caduca si la hoja desapareció sin cerrarse", null, AperturasEnTerminal.de(viejo, ahora = 1_001L + AperturasEnTerminal.VIGENCIA_MS))
+    }
+
+    @Test
+    fun `P2 el aviso sin red no es de tarjetas de regalo ni promete que no se mando`() {
+        val texto = TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RED
+        assert(texto.startsWith("Sin conexión")) { texto }
+        assert(!texto.contains("tarjetas de regalo")) { texto }
+        assert(esAvisoSinRed(texto) && !esAvisoSinRed(TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA))
     }
 
     @Test

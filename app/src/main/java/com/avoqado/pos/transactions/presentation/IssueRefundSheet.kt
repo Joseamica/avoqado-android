@@ -258,8 +258,18 @@ fun IssueRefundSheet(
     // 🔴 Esto NO registra un reembolso en Avoqado: la TPV lo registra ella sola
     // cuando el dinero se mueve. Registrarlo también aquí lo contaría dos veces.
     var enviandoATerminal by remember(transaction.id) { mutableStateOf(false) }
-    var terminalMsg by remember(transaction.id) { mutableStateOf<String?>(null) }
-    var terminalAbierta by remember(transaction.id) { mutableStateOf(false) }
+    // D6: lo que ya pasó en la terminal con ESTE pago vive en `AperturasEnTerminal`, fuera de la pantalla: girar la tableta
+    // o pasar de la vista de teléfono a la de tableta ya no regresa el botón (y no la mandan dos veces).
+    val pudoLlegarAntes = AperturasEnTerminal.de(transaction.id) == AperturasEnTerminal.Estado.PUDO_LLEGAR
+    var terminalMsg by rememberSaveable(transaction.id) {
+        mutableStateOf(if (pudoLlegarAntes) TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA else null)
+    }
+    var terminalAbierta by remember(transaction.id) {
+        mutableStateOf(AperturasEnTerminal.de(transaction.id) == AperturasEnTerminal.Estado.ABIERTA)
+    }
+    // Codex r2 #1: el recuerdo dura mientras la hoja esté abierta (sobrevive al giro); al cerrarla se olvida, como antes,
+    // para que una devolución cancelada en la terminal se pueda volver a abrir.
+    val cerrar: () -> Unit = { AperturasEnTerminal.olvidar(transaction.id); onDismiss() }
     var terminalesParaElegir by remember(transaction.id) {
         mutableStateOf<List<com.avoqado.pos.payment.data.OnlineTerminal>>(emptyList())
     }
@@ -282,7 +292,7 @@ fun IssueRefundSheet(
             ) }
             enviandoATerminal = false
             if (!vigente()) return@launch
-            if (resultado == null) { terminalMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
+            if (resultado == null) { terminalMsg = textoDeFalloDeListaDeTerminales(null, pudoLlego(transaction.id)); return@launch }
             resultado.fold(
                 onSuccess = {
                     // 🔴 NO se cierra como "reembolsado": todavía no se devolvió
@@ -290,8 +300,11 @@ fun IssueRefundSheet(
                     // porque si esto se pintara como éxito daría por cerrada una
                     // devolución que sigue esperando a alguien en el aparato.
                     terminalAbierta = true
+                    AperturasEnTerminal.anotar(transaction.id, AperturasEnTerminal.Estado.ABIERTA)
                 },
                 onFailure = { e ->
+                    // Codex r1 #1: si el POST pudo llegar, esa duda gana a cualquier «sin conexión» que venga después.
+                    if (e is java.io.IOException) AperturasEnTerminal.anotar(transaction.id, AperturasEnTerminal.Estado.PUDO_LLEGAR)
                     terminalMsg = textoDeFalloAlAbrirEnTerminal(e)
                 },
             )
@@ -306,11 +319,11 @@ fun IssueRefundSheet(
             val lista = conexion.iniciar(necesitaRed, ::vigente) { terminalPaymentService.fetchOnlineTerminals() }
             enviandoATerminal = false
             if (!vigente()) return@launch
-            if (lista == null) { terminalMsg = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED; return@launch }
+            if (lista == null) { terminalMsg = textoDeFalloDeListaDeTerminales(null, pudoLlego(transaction.id)); return@launch }
             when (lista) {
                 is com.avoqado.pos.payment.data.TerminalListResult.Error -> {
                     enviandoATerminal = false
-                    terminalMsg = lista.message
+                    terminalMsg = textoDeFalloDeListaDeTerminales(lista, pudoLlego(transaction.id))
                 }
                 is com.avoqado.pos.payment.data.TerminalListResult.Success -> {
                     enviandoATerminal = false
@@ -429,7 +442,7 @@ fun IssueRefundSheet(
     }
 
     AvoqadoModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = cerrar,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,
         dragHandle = null,
@@ -440,7 +453,7 @@ fun IssueRefundSheet(
         val pieScroll = rememberScrollState()
         AvoqadoFullscreenHeader(
             title = "Emitir reembolso",
-            onNav = onDismiss,
+            onNav = cerrar,
             navStyle = FullscreenHeaderNav.CLOSE,
             showDivider = true,
         )
@@ -599,7 +612,8 @@ fun IssueRefundSheet(
                         //
                         // Compacto a propósito: título y botón en un renglón cuando cabe. Apilado medía ~180 dp y en la
                         // D3 horizontal la banda sólo tenía ~90: se veía medio botón (Testarudo, 30-sep).
-                        if (enTerminal) {
+                        // Codex r1 #2: ya abierta en la terminal se sigue viendo aunque al girar cambie el medio elegido.
+                        if (enTerminal || terminalAbierta) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -657,7 +671,9 @@ fun IssueRefundSheet(
                                     Text(
                                         text = msg,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.error,
+                                        // Sin red es un estado normal, no un error (regla «sin red»): no va en rojo.
+                                        color = if (esAvisoSinRed(msg)) MaterialTheme.colorScheme.onSurfaceVariant
+                                            else MaterialTheme.colorScheme.error,
                                     )
                                 }
                             }
@@ -967,7 +983,7 @@ fun IssueRefundSheet(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     TextButton(
-                        onClick = onDismiss,
+                        onClick = cerrar,
                         enabled = !submitting,
                     ) {
                         Text("Cancelar")
@@ -1009,7 +1025,7 @@ fun IssueRefundSheet(
                                     when (desenlace) {
                                         null -> errorMsg = TextosCambio.SALDO_SIN_RED
                                         // El detalle ya muestra el abono y lo pendiente (I1): sólo se cierra la hoja.
-                                        is DesenlaceDeSaldo.Hecho, is DesenlaceDeSaldo.Pendiente -> onDismiss()
+                                        is DesenlaceDeSaldo.Hecho, is DesenlaceDeSaldo.Pendiente -> cerrar()
                                         is DesenlaceDeSaldo.Rechazado -> {
                                             errorMsg = desenlace.mensaje
                                             if (desenlace.code == "STORE_CREDIT_CUSTOMER_PHONE_REQUIRED") saldo.pedirTelefono()
@@ -1076,6 +1092,7 @@ fun IssueRefundSheet(
                                         // local se ALIMENTA de lo confirmado; no se adelanta a ciegas.
                                         //
                                         // Vigilado por `RefundCashDrawerOwnershipTest`.
+                                        AperturasEnTerminal.olvidar(transaction.id)   // Codex r3: también al salir por éxito
                                         onRefunded()
                                     },
                                     onFailure = { throwable ->
@@ -1575,6 +1592,50 @@ private fun textoDeFalloDeRed(error: Throwable): String? = when {
  * D7, el mismo síntoma al abrir la devolución en la terminal (Codex r4): el rechazo del servidor se enseña tal cual, y un
  * fallo de red nunca se enseña crudo. La solicitud pudo haber llegado, así que tampoco se invita a reenviarla a ciegas.
  */
+/**
+ * D5: sin red la falla llega antes de mandar nada (al pedir la lista de terminales, o con la puerta de conexión cerrada:
+ * `null`). Como nada salió, se dice «sin conexión»; un rechazo del servidor se enseña tal cual.
+ */
+internal fun textoDeFalloDeListaDeTerminales(
+    error: com.avoqado.pos.payment.data.TerminalListResult.Error?,
+    pudoLlegarAntes: Boolean = false,
+): String = when {
+    // Un envío anterior de este pago pudo llegar a la terminal: no se invita a mandarlo otra vez (Codex r1 #1).
+    pudoLlegarAntes -> TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA
+    error == null || error.sinRed -> TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RED
+    else -> error.message
+}
+
+private fun pudoLlego(pagoId: String) = AperturasEnTerminal.de(pagoId) == AperturasEnTerminal.Estado.PUDO_LLEGAR
+
+/**
+ * D6 (Codex r1 #2 y #3): qué pasó en la terminal con cada pago, fuera de la pantalla, para que girar la tableta o pasar de
+ * la vista de teléfono a la de tableta no lo borre. Vive mientras viva la app: si se cierra, la terminal y el servidor
+ * siguen teniendo la solicitud, y lo peor es volver a ver «Abrir en la terminal». Se olvida al cerrar la hoja.
+ */
+internal object AperturasEnTerminal {
+    enum class Estado { ABIERTA, PUDO_LLEGAR }
+    /**
+     * ponytail: se olvida al cerrar la hoja o al terminar el reembolso; si la hoja desaparece por otro lado (cambio de
+     * sucursal a medio flujo), lo anotado caduca a los 10 min, más que la vida de la solicitud en el servidor (5 min).
+     */
+    const val VIGENCIA_MS = 10 * 60 * 1000L
+    private val porPago = java.util.concurrent.ConcurrentHashMap<String, Pair<Estado, Long>>()
+    fun de(pagoId: String, ahora: Long = System.currentTimeMillis()): Estado? {
+        val (estado, desde) = porPago[pagoId] ?: return null
+        if (ahora - desde > VIGENCIA_MS) { porPago.remove(pagoId); return null }
+        return estado
+    }
+    /** ABIERTA es definitiva: un fallo posterior no la regresa a «pudo llegar». */
+    fun anotar(pagoId: String, estado: Estado, ahora: Long = System.currentTimeMillis()) {
+        porPago.merge(pagoId, estado to ahora) { viejo, nuevo -> if (viejo.first == Estado.ABIERTA) viejo else nuevo }
+    }
+    /** Al cerrar la hoja o terminar el reembolso: lo de este pago se olvida (Codex r2 y r3). */
+    fun olvidar(pagoId: String) { porPago.remove(pagoId) }
+}
+
+internal fun esAvisoSinRed(texto: String): Boolean = texto == TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RED
+
 internal fun textoDeFalloAlAbrirEnTerminal(error: Throwable): String =
     if (error is java.io.IOException) {
         TextosCambio.DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA

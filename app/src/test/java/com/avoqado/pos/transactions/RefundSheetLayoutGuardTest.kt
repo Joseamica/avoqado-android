@@ -218,7 +218,8 @@ class RefundSheetLayoutGuardTest {
 
         assertEquals("La pantalla abre en una sola hoja.", 1, Regex("""\bAvoqadoModalBottomSheet\(""").findAll(ventana).count())
         val llamada = ventana.substringAfter("AvoqadoModalBottomSheet(").substringBefore(") {")
-        listOf("onDismissRequest = onDismiss", "aPantallaCompleta = true", "dragHandle = null", "conXPropia = true")
+        // D6: se cierra por `cerrar`, que sólo olvida la apertura en la terminal y llama a onDismiss (ver la prueba de abajo).
+        listOf("onDismissRequest = cerrar", "aPantallaCompleta = true", "dragHandle = null", "conXPropia = true")
             .forEach { assertTrue("La hoja perdió `$it`.", llamada.contains(it)) }
         // `\\b`: la lista de terminales, más arriba, es un `AvoqadoDialog(`, con su propia ventana.
         assertFalse(
@@ -267,8 +268,11 @@ class RefundSheetLayoutGuardTest {
     fun `cerrar no se bloquea ni cancela el envio a saldo a favor`() {
         val ventana = ventanaDeLaPantalla()
 
-        assertTrue(ventana.contains("onDismissRequest = onDismiss"))
-        assertTrue(ventana.contains("onNav = onDismiss"))
+        assertTrue(ventana.contains("onDismissRequest = cerrar"))
+        assertTrue(ventana.contains("onNav = cerrar"))
+        // `cerrar` no bloquea nada: olvida lo de la terminal de este pago (D6) y cierra, siempre.
+        val fuente = leerCodigoSinComentarios("app/src/main/java/com/avoqado/pos/transactions/presentation/IssueRefundSheet.kt")
+        assertTrue(fuente.contains("val cerrar: () -> Unit = { AperturasEnTerminal.olvidar(transaction.id); onDismiss() }"))
         assertFalse("La ✕ quedó con un bloqueo que hoy no existe.", ventana.contains("navEnabled"))
         assertTrue("El envío a saldo a favor ya no se lanza con `enviarASaldo`.", ventana.contains("{ enviar(cuerpo, llave) }"))
         assertTrue("La pantalla ya no sólo espera el envío.", ventana.contains("envio?.await()"))

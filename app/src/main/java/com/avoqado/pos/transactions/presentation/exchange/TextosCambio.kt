@@ -139,6 +139,8 @@ object TextosCambio {
     const val REEMBOLSO_SIN_RED = "Sin conexión: no se pudo confirmar el reembolso. Antes de repetirlo, revisa en Ventas si ya aparece."
     const val REEMBOLSO_SIN_RESPUESTA = "No se pudo confirmar el reembolso. Antes de repetirlo, revisa en Ventas si ya aparece."
     const val DEVOLUCION_EN_TERMINAL_SIN_RESPUESTA = "No se pudo confirmar que la devolución se abrió. Revisa la terminal antes de volver a enviarla."
+    /** D5: sin red no salió nada a la terminal (la falla es al pedir la lista o la puerta de conexión estaba cerrada). */
+    const val DEVOLUCION_EN_TERMINAL_SIN_RED = "Sin conexión: la devolución a la tarjeta necesita internet. Ábrela cuando vuelva la conexión."
     const val REEMBOLSO_SIN_CONFIRMAR = "Hay un reembolso a saldo a favor sin confirmar"
     const val REEMBOLSO_SIN_CONFIRMAR_DE = "Reembolso a saldo a favor sin confirmar (lo pidió {nombre})"
     const val REEMBOLSO_PIDE_GERENTE = "No tienes permiso: pide a un gerente que lo confirme"
