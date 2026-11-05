@@ -62,7 +62,7 @@ class PaquetesEnElCobroTest {
             every { it.userId } returns "c223456789012345678901234"
         }
         every { cash.processCashPayment(any(), any()) } returns CashPaymentResult.Success(changeCents = 0)
-        every { cola.anotarIntento(any(), any()) } returns true
+        every { cola.anotarIntento(any(), any(), any()) } returns true
         return PaymentFlowViewModel(
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
@@ -92,7 +92,7 @@ class PaquetesEnElCobroTest {
 
     private fun anotados(): List<IntentoDeCobro> {
         val capturados = mutableListOf<IntentoDeCobro>()
-        verify(atLeast = 0) { cola.anotarIntento(cart.identidadDeVenta, capture(capturados)) }
+        verify(atLeast = 0) { cola.anotarIntento(cart.identidadDeVenta, capture(capturados), true) }
         return capturados
     }
 
@@ -125,7 +125,7 @@ class PaquetesEnElCobroTest {
     @Test
     fun `si el disco no acepta el intento el efectivo no empieza`() = runTest {
         val m = vm()
-        every { cola.anotarIntento(any(), any()) } returns false
+        every { cola.anotarIntento(any(), any(), any()) } returns false
         m.startPaymentFlow(cart)
         m.selectPaymentMethod(PaymentMethod.CASH)
 

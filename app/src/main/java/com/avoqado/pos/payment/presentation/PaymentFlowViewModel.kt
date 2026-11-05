@@ -459,8 +459,9 @@ class PaymentFlowViewModel @Inject constructor(
      * ella se pregunta si el cobro sucedió; sin intentos no salió ninguno. false = no se pudo guardar y el cobro no debe salir.
      */
     private fun anotarIntentoDePaquetes(tipo: com.avoqado.pos.customers.data.IntentoDeCobro.Tipo, id: String): Boolean {
-        val venta = cartState?.identidadDeVenta ?: return true
-        return pendingGrantQueue?.anotarIntento(venta, com.avoqado.pos.customers.data.IntentoDeCobro(tipo, id)) ?: true
+        val cart = cartState ?: return true
+        val llevaPaquetes = cart.items.any { it.type is CartItemType.CreditPack }
+        return pendingGrantQueue?.anotarIntento(cart.identidadDeVenta, com.avoqado.pos.customers.data.IntentoDeCobro(tipo, id), llevaPaquetes) ?: true
     }
 
     /** La llave de este cobro (efectivo u «otra forma»), anotada; si el disco no la acepta, el error sale y el cobro no empieza. */

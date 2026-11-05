@@ -20,6 +20,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -159,6 +160,28 @@ class PendingGrantQueueTest {
         val q = cola()
         assertTrue(q.anotarIntento("venta-sin-paquetes", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave")))
         assertTrue(q.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `una venta con paquetes sin su fila no deja salir el cobro`() {
+        val q = cola()
+
+        assertFalse(q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave"), llevaPaquetes = true))
+        assertTrue(q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave"), llevaPaquetes = false))
+    }
+
+    @Test
+    fun `un barrido que cruza con abrir el cobro no borra la fila recien armada`() = runTest {
+        val q = cola()
+        // El barrido corre en el instante en que `armar` publica la fila (antes, la venta quedaba en pantalla después).
+        backgroundScope.launch(Dispatchers.Unconfined) {
+            q.filas.collect { if (it.isNotEmpty()) q.drenar() }
+        }
+
+        assertTrue(q.armar("venta-1", listOf(linea), "cli-1", "Ana"))
+
+        assertEquals(1, q.filas.value.size)
+        assertTrue(q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave"), llevaPaquetes = true))
     }
 
     @Test

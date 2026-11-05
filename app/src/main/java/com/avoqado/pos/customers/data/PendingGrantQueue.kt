@@ -256,7 +256,12 @@ class PendingGrantQueue @Inject constructor(
         val venue = secureStorage.venueId
         val catalogo = articlesRepository.creditPacks.value
         val hayQueArmar = venta != null && customerId != null && venue != null && lineas.isNotEmpty()
-        val ok = mutar { fs ->
+        // 🔴 Codex r5: la venta queda en pantalla en el MISMO candado en que su fila se publica. Si se marcara después, un barrido que la
+        // leyera en medio la vería sin venta viva ni intentos y la borraría antes de cobrar.
+        val ok = synchronized(candado) {
+            val anterior = ventaViva
+            ventaViva = venta.takeIf { hayQueArmar }
+            mutar { fs ->
             fun esDeLaLinea(f: PendingGrant, l: LineaDePaquete) =
                 f.venta == venta && f.linea == l.linea && f.packId == l.packId && f.customerId == customerId &&
                     (f.estado == PendingGrant.Estado.POR_COBRAR || f.estado == PendingGrant.Estado.EN_DUDA)
@@ -307,16 +312,23 @@ class PendingGrantQueue @Inject constructor(
                 }
             }
             quedan
+            }.also { if (!it) ventaViva = anterior }
         }
-        if (ok) ventaViva = venta.takeIf { hayQueArmar }
         return ok
     }
 
-    /** Sale un intento de cobro de [venta]. false = el disco no aceptó y el cobro no debe salir. Sin paquetes en esa venta no hace nada. */
-    fun anotarIntento(venta: String, intento: IntentoDeCobro): Boolean = mutar { fs ->
-        fs.map { f ->
-            if (f.venta == venta && f.estado != PendingGrant.Estado.RECHAZADA && intento !in f.intentos) f.copy(intentos = f.intentos + intento) else f
+    /**
+     * Sale un intento de cobro de [venta]. false = el cobro no debe salir: el disco no aceptó, o la venta lleva paquetes ([llevaPaquetes]) y
+     * no hay ninguna fila suya que los respalde (cobrarlos así sería entregar nada). Sin paquetes en esa venta no hace nada.
+     */
+    fun anotarIntento(venta: String, intento: IntentoDeCobro, llevaPaquetes: Boolean = false): Boolean = synchronized(candado) {
+        val actuales = leer()
+        val suyas = actuales.filter { it.venta == venta && it.estado != PendingGrant.Estado.RECHAZADA }
+        if (llevaPaquetes && suyas.none { it.estado == PendingGrant.Estado.POR_COBRAR || it.estado == PendingGrant.Estado.EN_DUDA }) {
+            Log.e(TAG, "La venta $venta lleva paquetes y no tiene su fila: el cobro no sale")
+            return@synchronized false
         }
+        mutar { fs -> fs.map { f -> if (f in suyas && intento !in f.intentos) f.copy(intentos = f.intentos + intento) else f } }
     }
 
     /** El cobro se cerró sin cobrar («Salir», «Cancelar»): la venta ya no está en pantalla y su evidencia decide desde ahora. */
