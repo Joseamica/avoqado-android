@@ -1512,7 +1512,7 @@ private fun SavedCartsSubView(
             description = "Se borra esta venta guardada y no se puede recuperar.",
             onDismiss = { confirmarEliminacion = null },
             actionButton = {
-                PrimaryButton(text = "Eliminar", fullWidth = true, onClick = {
+                PrimaryButton(text = "Eliminar", fullWidth = true, destructive = true, onClick = {
                     cartViewModel.deleteSavedCart(carrito.id)
                     confirmarEliminacion = null
                 })
