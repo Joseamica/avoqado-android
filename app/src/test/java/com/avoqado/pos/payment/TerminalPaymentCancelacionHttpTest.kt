@@ -84,6 +84,50 @@ class TerminalPaymentCancelacionHttpTest {
     private fun rechazoDeAdmision(code: String, requestId: String) =
         """{"success":false,"message":"rechazado","code":"$code","details":{"requestId":"$requestId"}}"""
 
+    // MARK: - D4: lo que depende del cobro se anota antes de que salga
+
+    @Test
+    fun `D4 el intento se anota con su requestId antes del POST y una sola vez`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(400).setBody(rechazoDeAdmision("X", "otro")))
+        var anotado: String? = null
+        var peticionesAlAnotar = -1
+        service.antesDelProximoEnvio = { requestId ->
+            anotado = requestId
+            peticionesAlAnotar = server.requestCount
+            true
+        }
+
+        cobrar()
+
+        assertEquals(0, peticionesAlAnotar)
+        val cuerpo = server.takeRequest().body.readUtf8()
+        assertTrue(cuerpo.contains(anotado!!))
+        assertEquals(null, service.antesDelProximoEnvio)
+    }
+
+    @Test
+    fun `D4 si no se pudo anotar el intento el cobro no sale`() = runBlocking {
+        service.antesDelProximoEnvio = { false }
+
+        val r = cobrar()
+
+        assertTrue(r is TerminalPaymentResult.Error)
+        assertEquals(0, server.requestCount)
+        assertTrue(idsPendientes().isEmpty())
+    }
+
+    @Test
+    fun `D4 otro cobro sin nadie que anote no hereda el de antes`() = runBlocking {
+        service.antesDelProximoEnvio = { false }
+        cobrar()
+        server.enqueue(MockResponse().setResponseCode(400).setBody(rechazoDeAdmision("X", "otro")))
+
+        cobrar()
+
+        // Sale: el anotador del cobro anterior ya no lo frena. (Tras el 400 el servicio además consulta el estado.)
+        assertEquals("POST", server.takeRequest().method)
+    }
+
     // MARK: - El cancel se manda y su respuesta se LEE
 
     @Test

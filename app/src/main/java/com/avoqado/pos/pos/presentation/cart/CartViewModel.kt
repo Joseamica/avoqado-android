@@ -431,6 +431,8 @@ class CartViewModel @Inject constructor(
     private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
     /** «Pagar después» sin red (27-oct). Default para las pruebas que no la usan; sin ella no se difiere. */
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
+    /** D4 (5-nov): la obligación de entregar un paquete vendido, en disco antes de cobrar. Default para las pruebas que no la usan. */
+    private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -453,7 +455,11 @@ class CartViewModel @Inject constructor(
     @Volatile var cobroAbierto: Boolean = false
         private set
     fun abrirCobro() { cobroAbierto = true }
-    fun cerrarCobro() { cobroAbierto = false }
+    fun cerrarCobro() {
+        cobroAbierto = false
+        // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
+        pendingGrantQueue?.soltarVenta()
+    }
     /** Flujo (no un contador suelto) para que «Pagar después» pueda ESPERAR a que lleguen antes de separar la venta (R3-2). */
     private val consultasDeCodigo = MutableStateFlow(0)
     val hayConsultasDeCodigo: Boolean get() = consultasDeCodigo.value > 0
@@ -558,8 +564,8 @@ class CartViewModel @Inject constructor(
 
     // MARK: - Membresías capturadas al abrir el cobro
 
-    /** Las membresías que este cobro tiene que otorgar, y a quién. */
-    data class PendingPackGrant(val customerId: String, val packIds: List<String>)
+    /** Las membresías que este cobro tiene que otorgar, y a quién. [venta] es su fila en `PendingGrantQueue`. */
+    data class PendingPackGrant(val customerId: String, val packIds: List<String>, val venta: String? = null)
 
     /**
      * 🔴 DINERO. Membresías (credit packs) que el carrito llevaba al abrirse el
@@ -579,28 +585,46 @@ class CartViewModel @Inject constructor(
      * Igual que el vínculo de orden, **`clearCart()` no lo toca**: se reescribe
      * SIEMPRE al abrir el cobro ([capturePendingPackGrant]), así que nunca se
      * puede leer uno viejo.
+     *
+     * 🔴 Y si el PROCESO muere, esta variable se va con él: la obligación completa vive en disco ([PendingGrantQueue], D4), escrita
+     * antes de cobrar. Esta copia sólo dice qué venta confirmar.
      */
     var pendingPackGrant: PendingPackGrant? = null
         private set
 
     /**
-     * Congela las membresías del carrito al abrir el cobro. Escribe siempre —
+     * Congela las membresías del carrito al abrir el cobro y las deja en disco ANTES de cobrar. Escribe siempre —
      * con `null` cuando no hay cliente o no hay packs— para que una venta nunca
      * herede la captura de la anterior.
+     *
+     * Una pieza por cada una cobrada: la línea se cobra por su cantidad.
+     *
+     * @return false = el disco no aceptó y el cobro no debe abrirse: se cobraría algo que nadie sabría entregar si la app muere.
      */
-    fun capturePendingPackGrant(customerId: String?, cart: CartState) {
+    fun capturePendingPackGrant(customerId: String?, cart: CartState, customerName: String? = null): Boolean {
         val id = customerId?.trim()?.takeIf { it.isNotEmpty() }
-        val packIds = cart.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
-        pendingPackGrant = if (id == null || packIds.isEmpty()) null else PendingPackGrant(id, packIds)
+        val lineas = if (id == null) {
+            emptyList()
+        } else {
+            cart.items.flatMap { item ->
+                val pack = item.type as? CartItemType.CreditPack ?: return@flatMap emptyList()
+                (1..item.quantity).map { n ->
+                    com.avoqado.pos.customers.data.LineaDePaquete("${item.id}#$n", pack.packId, item.name, item.unitPrice, pack.saleProof)
+                }
+            }
+        }
+        pendingPackGrant = if (id == null || lineas.isEmpty()) null else PendingPackGrant(id, lineas.map { it.packId }, cart.identidadDeVenta)
+        return pendingGrantQueue?.armar(cart.identidadDeVenta, lineas, id, customerName) ?: true
     }
 
     /**
      * Entrega las membresías UNA sola vez: devolver y limpiar en el mismo acto,
-     * para que un segundo commit del mismo cobro no las otorgue por duplicado.
+     * para que un segundo commit del mismo cobro no las otorgue por duplicado. El cobro ya consta: su fila pasa a por entregar.
      */
     fun consumePendingPackGrant(): PendingPackGrant? {
         val grant = pendingPackGrant
         pendingPackGrant = null
+        grant?.venta?.let { pendingGrantQueue?.marcarCobrada(it) }
         return grant
     }
 
@@ -1406,7 +1430,7 @@ class CartViewModel @Inject constructor(
         lastPackAddId = pack.id
         lastPackAddAt = now
         val item = CartItem(
-            type = CartItemType.CreditPack(pack.id),
+            type = CartItemType.CreditPack(pack.id, pack.saleProof),
             name = pack.name,
             subtitle = if (pack.creditCount > 0) "${pack.creditCount} créditos" else "Membresía",
             unitPrice = pack.price.aCentavos(),
@@ -1726,6 +1750,7 @@ class CartViewModel @Inject constructor(
                         is CartItemType.CreditPack -> null
                     },
                     packId = (item.type as? CartItemType.CreditPack)?.packId,
+                    packSaleProof = (item.type as? CartItemType.CreditPack)?.saleProof,
                     name = item.name,
                     unitPrice = item.unitPrice,
                     quantity = item.quantity,
@@ -2633,7 +2658,7 @@ class CartViewModel @Inject constructor(
                 id = savedItem.lineId ?: UUID.randomUUID().toString(),
                 weightKg = savedItem.weightKg,
                 type = when {
-                    savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId)
+                    savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId, savedItem.packSaleProof)
                     savedItem.productId != null -> CartItemType.ProductItem(savedItem.productId)
                     else -> CartItemType.CustomAmount
                 },

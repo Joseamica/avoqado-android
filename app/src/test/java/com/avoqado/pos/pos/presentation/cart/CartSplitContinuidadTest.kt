@@ -395,6 +395,62 @@ class CartSplitContinuidadTest {
         assertNull(vm.pendingPackGrant)
     }
 
+    /** D4: la línea se cobra por su cantidad, así que se entrega una por pieza. */
+    @Test
+    fun `dos piezas de la misma membresia se entregan dos veces`() = runTest {
+        val vm = createViewModel()
+        vm.addCreditPack(membresia)
+        val linea = vm.cartState.value.items.single()
+        vm.updateQuantity(linea.id, 2)
+
+        vm.capturePendingPackGrant("cliente-1", vm.cartState.value)
+
+        assertEquals(listOf("pack-10-clases", "pack-10-clases"), vm.pendingPackGrant?.packIds)
+    }
+
+    @Test
+    fun `la linea se queda con la foto que vio el cliente al agregarla`() = runTest {
+        val vm = createViewModel()
+        vm.addCreditPack(membresia.copy(saleProof = "foto-al-agregar"))
+
+        assertEquals("foto-al-agregar", (vm.cartState.value.items.single().type as com.avoqado.pos.pos.data.model.CartItemType.CreditPack).saleProof)
+    }
+
+    @Test
+    fun `guardar el carrito guarda la foto del paquete`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addCreditPack(membresia.copy(saleProof = "foto-al-agregar"))
+        val guardado = io.mockk.slot<SavedCart>()
+        every { savedCartsRepository.saveCart(capture(guardado)) } returns true
+
+        assertTrue(vm.saveCurrentCart("Para luego"))
+
+        assertEquals("foto-al-agregar", guardado.captured.items.single().packSaleProof)
+    }
+
+    @Test
+    fun `recuperar un carrito guardado conserva la foto del paquete`() = runTest {
+        val vm = createViewModel()
+        vm.restoreSavedCart(
+            SavedCart(id = "copia", name = "Ana", items = listOf(
+                SavedCartItem(productId = null, name = "10 clases", unitPrice = 50000, quantity = 1, packId = "pack-10-clases", packSaleProof = "foto-al-agregar"),
+            )),
+        )
+
+        val tipo = vm.cartState.value.items.single().type as com.avoqado.pos.pos.data.model.CartItemType.CreditPack
+        assertEquals("foto-al-agregar", tipo.saleProof)
+    }
+
+    @Test
+    fun `sin cola, capturar no impide cobrar`() = runTest {
+        val vm = createViewModel()
+        vm.addCreditPack(membresia)
+
+        assertEquals(true, vm.capturePendingPackGrant("cliente-1", vm.cartState.value))
+        assertEquals(vm.cartState.value.identidadDeVenta, vm.pendingPackGrant?.venta)
+    }
+
     // ── El caso feo: mercancía NUEVA a media split ─────────────────────────────
 
     // Tablero D3 (21-oct, founder «arréglalo de una vez»): antes lo agregado se cobraba como venta NUEVA llevándose el
