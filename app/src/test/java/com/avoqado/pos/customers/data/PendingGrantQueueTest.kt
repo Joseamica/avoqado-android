@@ -66,7 +66,7 @@ class PendingGrantQueueTest {
     }
 
     private fun entrega(code: Int?, mensaje: String? = null) {
-        coEvery { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) } returns RespuestaDeEntrega(code, mensaje)
+        coEvery { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) } returns RespuestaDeEntrega(code, mensaje)
     }
 
     private fun tarjeta(status: String, paymentId: String? = null) {
@@ -205,7 +205,7 @@ class PendingGrantQueueTest {
         val desenlaces = q.entregarVenta("venta-1")
 
         assertEquals(listOf(DesenlaceDeEntrega.ENTREGADA), desenlaces)
-        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1") }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(q.filas.value.isEmpty())
     }
 
@@ -224,7 +224,7 @@ class PendingGrantQueueTest {
         entrega(201)
         otra.drenar()
 
-        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1") }
+        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(otra.filas.value.isEmpty())
     }
 
@@ -237,7 +237,7 @@ class PendingGrantQueueTest {
 
         q.drenar()
 
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
         assertEquals(1, q.porEntregar.first())
     }
 
@@ -246,7 +246,7 @@ class PendingGrantQueueTest {
         val q = cola()
         val fila = q.armada()
         q.marcarCobrada("venta-1")
-        coEvery { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) } coAnswers {
+        coEvery { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) } coAnswers {
             q.borrarParaPruebas(fila.id)
             RespuestaDeEntrega(503, null)
         }
@@ -282,7 +282,7 @@ class PendingGrantQueueTest {
         assertEquals(Estado.RECHAZADA, fila.estado)
         assertEquals("El paquete no está activo", fila.motivo)
         assertEquals(1, q.porRevisar.first())
-        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -296,7 +296,7 @@ class PendingGrantQueueTest {
 
         assertEquals(DesenlaceDeEntrega.ENTREGADA, q.reintentar(fila.id))
 
-        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1") }
+        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(q.filas.value.isEmpty())
     }
 
@@ -334,7 +334,7 @@ class PendingGrantQueueTest {
         otra.drenar()
 
         assertTrue(otra.filas.value.isEmpty())
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -366,7 +366,7 @@ class PendingGrantQueueTest {
         otra.drenar()
 
         assertEquals(Estado.POR_COBRAR, otra.filas.value.single().estado)
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -394,7 +394,7 @@ class PendingGrantQueueTest {
         otra.drenar()
 
         assertTrue(otra.filas.value.isEmpty())
-        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -436,7 +436,7 @@ class PendingGrantQueueTest {
         otra.drenar()
 
         assertTrue(otra.filas.value.isEmpty())
-        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -450,7 +450,7 @@ class PendingGrantQueueTest {
         otra.drenar()
 
         assertTrue(otra.filas.value.isEmpty())
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -480,7 +480,7 @@ class PendingGrantQueueTest {
         otra.drenar()
 
         assertTrue(otra.filas.value.isEmpty())
-        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -532,7 +532,7 @@ class PendingGrantQueueTest {
         q.drenar()
 
         assertTrue(q.filas.value.isEmpty())
-        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -569,7 +569,7 @@ class PendingGrantQueueTest {
 
         assertTrue(q.entregarVenta("venta-1").isEmpty())
 
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     // MARK: - Codex r1
@@ -704,7 +704,7 @@ class PendingGrantQueueTest {
         entrega(201)
         q.drenar()
         assertTrue(q.filas.value.isEmpty())
-        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -798,7 +798,7 @@ class PendingGrantQueueTest {
 
         assertNull(q.siSeCobro(fila.id))
 
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     // MARK: - En duda: lo decide una persona
@@ -847,7 +847,7 @@ class PendingGrantQueueTest {
 
         assertEquals(DesenlaceDeEntrega.ENTREGADA, q.siSeCobro(fila.id))
 
-        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1") }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(q.filas.value.isEmpty())
     }
 
@@ -859,7 +859,7 @@ class PendingGrantQueueTest {
         assertTrue(q.descartar(fila.id))
 
         assertTrue(q.filas.value.isEmpty())
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -887,6 +887,29 @@ class PendingGrantQueueTest {
         assertNull(fila.venta)
         assertEquals(50000, fila.precioCents)
         assertEquals(1, reiniciar().filas.value.size)
+    }
+
+    // D17 (hz:433063d4:D17): la del carrito ya se cobró en una orden, cuyo cobro sumó al «Total gastado»: se avisa al servidor
+    // para que la entrega no lo vuelva a sumar. La de la ficha se cobra a mano, sin orden: ahí sí suma.
+    @Test
+    fun `D17 - la venta de la ficha se entrega SIN la marca de cobrada en orden`() = runTest {
+        val q = cola()
+        val fila = q.guardarVentaDeFicha(CreditPack(id = "pack-1", saleProof = "firma-1"), "cli-1", "Ana")!!
+        entrega(201)
+
+        q.entregarDeFicha(fila.id)
+
+        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", false, fila.id, "firma-1", false) }
+    }
+
+    @Test
+    fun `D17 - una fila del carrito sigue siendo del carrito aunque se suelte de su venta`() {
+        val base = PendingGrant(id = "f", venueId = venue, packId = "pack-1", customerId = "cli-1", createdAt = 1)
+        assertTrue(base.copy(venta = "venta-1", linea = "l#1").cobradaEnOrden)
+        // `armar` la suelta de la venta (se quitó el paquete tras intentar cobrar): la orden cobrada ya lo cuenta.
+        assertTrue(base.copy(venta = null, linea = "l#1").cobradaEnOrden)
+        // Ficha, o fila de la app de antes: suma en la entrega.
+        assertFalse(base.cobradaEnOrden)
     }
 
     @Test
@@ -945,7 +968,7 @@ class PendingGrantQueueTest {
 
         q.drenar()
 
-        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { articulos.sellPackToCustomer(any(), any(), any(), any(), any(), any()) }
         assertEquals(1, q.filas.value.size)
         assertEquals(0, q.porEntregar.first())
     }

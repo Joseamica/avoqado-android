@@ -127,6 +127,14 @@ data class PendingGrant(
 
     val porRevisar: Boolean get() = estado == Estado.RECHAZADA || estado == Estado.EN_DUDA
 
+    /**
+     * D17: se cobró en una orden del carrito, cuyo cobro suma al «Total gastado» al saldarse: la entrega no lo vuelve a sumar. Por la
+     * [linea], que nace en el carrito y nunca se borra: [venta] se suelta si el paquete o el cliente cambian tras intentar cobrar
+     * (Codex D12-D17 r1 #2). La ficha no tiene ninguna de las dos (cobra a mano, sin orden). Una fila de la app de antes de D4
+     * tampoco: no se sabe de dónde vino y suma, como antes.
+     */
+    val cobradaEnOrden: Boolean get() = linea != null || venta != null
+
     /** Cobrado, por revisar o con un cobro intentado: no se puede soltar sin su sucursal (ver `bloqueantes`). */
     val esperaASuSucursal: Boolean get() = estado != Estado.POR_COBRAR || intentos.isNotEmpty()
 }
@@ -396,7 +404,7 @@ class PendingGrantQueue @Inject constructor(
 
     /** Manda la fila tal como está en disco y deja escrito su desenlace. Rechazada = queda con su motivo, para una persona. */
     private suspend fun enviar(fila: PendingGrant, background: Boolean = true): DesenlaceDeEntrega {
-        val r = articlesRepository.sellPackToCustomer(fila.packId, fila.customerId, background, fila.id, fila.saleProof)
+        val r = articlesRepository.sellPackToCustomer(fila.packId, fila.customerId, background, fila.id, fila.saleProof, fila.cobradaEnOrden)
         val desenlace = clasificarEntrega(r.code)
         when (desenlace) {
             DesenlaceDeEntrega.ENTREGADA -> {
