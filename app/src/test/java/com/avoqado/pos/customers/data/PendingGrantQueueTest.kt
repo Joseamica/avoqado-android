@@ -205,7 +205,7 @@ class PendingGrantQueueTest {
         val desenlaces = q.entregarVenta("venta-1")
 
         assertEquals(listOf(DesenlaceDeEntrega.ENTREGADA), desenlaces)
-        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(q.filas.value.isEmpty())
     }
 
@@ -224,7 +224,7 @@ class PendingGrantQueueTest {
         entrega(201)
         otra.drenar()
 
-        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", any()) }
+        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(otra.filas.value.isEmpty())
     }
 
@@ -296,7 +296,7 @@ class PendingGrantQueueTest {
 
         assertEquals(DesenlaceDeEntrega.ENTREGADA, q.reintentar(fila.id))
 
-        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", any()) }
+        coVerify(exactly = 2) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(q.filas.value.isEmpty())
     }
 
@@ -847,7 +847,7 @@ class PendingGrantQueueTest {
 
         assertEquals(DesenlaceDeEntrega.ENTREGADA, q.siSeCobro(fila.id))
 
-        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", any()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", true, fila.id, "firma-1", true) }
         assertTrue(q.filas.value.isEmpty())
     }
 
@@ -899,7 +899,7 @@ class PendingGrantQueueTest {
 
         q.entregarDeFicha(fila.id)
 
-        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", false, fila.id, "firma-1", emptyList()) }
+        coVerify(exactly = 1) { articulos.sellPackToCustomer("pack-1", "cli-1", false, fila.id, "firma-1", false) }
     }
 
     @Test
@@ -910,10 +910,6 @@ class PendingGrantQueueTest {
         assertTrue(base.copy(venta = null, linea = "l#1").cobradaEnOrden)
         // Ficha, o fila de la app de antes: suma en la entrega.
         assertFalse(base.cobradaEnOrden)
-        // Manda las llaves de sus cobros para que el servidor compruebe de quién es la orden; la ficha no manda nada.
-        val intentos = listOf(IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "k1"), IntentoDeCobro(IntentoDeCobro.Tipo.TARJETA, "r1"))
-        assertEquals(listOf("k1", "r1"), base.copy(linea = "l#1", intentos = intentos).cobrosDeLaOrden)
-        assertEquals(emptyList<String>(), base.copy(intentos = intentos).cobrosDeLaOrden)
     }
 
     @Test

@@ -135,9 +135,6 @@ data class PendingGrant(
      */
     val cobradaEnOrden: Boolean get() = linea != null || venta != null
 
-    /** D17: las llaves de los cobros de su orden, para que el servidor compruebe que esa orden es de este cliente. */
-    val cobrosDeLaOrden: List<String> get() = if (cobradaEnOrden) intentos.map { it.id }.distinct().take(20) else emptyList()
-
     /** Cobrado, por revisar o con un cobro intentado: no se puede soltar sin su sucursal (ver `bloqueantes`). */
     val esperaASuSucursal: Boolean get() = estado != Estado.POR_COBRAR || intentos.isNotEmpty()
 }
@@ -407,7 +404,7 @@ class PendingGrantQueue @Inject constructor(
 
     /** Manda la fila tal como está en disco y deja escrito su desenlace. Rechazada = queda con su motivo, para una persona. */
     private suspend fun enviar(fila: PendingGrant, background: Boolean = true): DesenlaceDeEntrega {
-        val r = articlesRepository.sellPackToCustomer(fila.packId, fila.customerId, background, fila.id, fila.saleProof, fila.cobrosDeLaOrden)
+        val r = articlesRepository.sellPackToCustomer(fila.packId, fila.customerId, background, fila.id, fila.saleProof, fila.cobradaEnOrden)
         val desenlace = clasificarEntrega(r.code)
         when (desenlace) {
             DesenlaceDeEntrega.ENTREGADA -> {
