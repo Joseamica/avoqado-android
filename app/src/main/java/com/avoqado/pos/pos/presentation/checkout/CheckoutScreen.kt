@@ -139,6 +139,7 @@ fun CheckoutScreen(
     // Membresías cobradas que NO se entregaron: dinero adentro sin su
     // contraparte. Se avisa aquí, en el mostrador, no sólo en el log.
     val membresiasSinEntregar by creditsViewModel.undeliveredGrants.collectAsState()
+    val entregaSoloEsperaRed by creditsViewModel.entregaSoloEsperaRed.collectAsState()
     val cartState by cartViewModel.cartState.collectAsState()
     val tarjetasViewModel: com.avoqado.pos.giftcards.presentation.TarjetasDeRegaloViewModel = hiltViewModel()
     val hojaDeTarjetas by tarjetasViewModel.hoja.collectAsState()
@@ -555,7 +556,11 @@ fun CheckoutScreen(
         // 🔴 DINERO. Del FLUJO, no de la variable capturada: quién recibe las
         // membresías se decide con el cliente de AHORA. Mismo criterio que el
         // carrito en la firma de esta función.
-        cartViewModel.capturePendingPackGrant(cartViewModel.selectedCustomer.value?.id, cart)
+        val clienteDelPaquete = cartViewModel.selectedCustomer.value
+        if (!cartViewModel.capturePendingPackGrant(clienteDelPaquete?.id, cart, clienteDelPaquete?.name)) {
+            savedCartError = "No se pudo guardar el paquete en este aparato. Intenta de nuevo antes de cobrar."
+            return
+        }
         paymentCartSnapshot = cart.paymentSnapshot()
         // 🔴 DINERO. ¿Esta venta ya tiene una orden abierta de una parte anterior?
         // Se resuelve AQUÍ, en el momento del cobro, contra el carrito real: si el
@@ -1721,14 +1726,20 @@ fun CheckoutScreen(
     // cobro para no secuestrarle al cliente la propina/el recibo.
     if (membresiasSinEntregar > 0 && !showPaymentFlow) {
         val varias = membresiasSinEntregar > 1
+        // 🔴 Sin red es un estado normal: se dice sin alarma y se resuelve solo. Sólo un rechazo pide a una persona.
         AvoqadoDialog(
-            title = if (varias) "Membresías pendientes de entregar" else "Membresía pendiente de entregar",
-            description = if (varias) {
-                "El cobro sí se hizo, pero los $membresiasSinEntregar paquetes no se le " +
-                    "entregaron al cliente. La app lo sigue intentando. Avísale a un encargado."
-            } else {
-                "El cobro sí se hizo, pero el paquete no se le entregó al cliente. " +
-                    "La app lo sigue intentando. Avísale a un encargado."
+            title = when {
+                entregaSoloEsperaRed -> if (varias) "Paquetes por entregar" else "Paquete por entregar"
+                varias -> "Membresías pendientes de entregar"
+                else -> "Membresía pendiente de entregar"
+            },
+            description = when {
+                entregaSoloEsperaRed && varias -> "Sin conexión con Avoqado: el cobro ya quedó y los $membresiasSinEntregar paquetes se entregan solos al volver."
+                entregaSoloEsperaRed -> "Sin conexión con Avoqado: el cobro ya quedó y el paquete se entrega solo al volver."
+                varias -> "El cobro sí se hizo, pero el servidor no aceptó entregar los $membresiasSinEntregar paquetes. " +
+                    "Quedaron en «Operaciones por revisar». Avísale a un encargado."
+                else -> "El cobro sí se hizo, pero el servidor no aceptó entregar el paquete. " +
+                    "Quedó en «Operaciones por revisar». Avísale a un encargado."
             },
             onDismiss = { creditsViewModel.clearUndeliveredGrants() },
             actionButton = {
@@ -1954,9 +1965,7 @@ fun CheckoutScreen(
                             // que un segundo commit no las otorgue por duplicado.
                             // Va DESPUÉS de tocar el carrito sin problema: el grant
                             // está congelado en el ViewModel con su propio cliente.
-                            cartViewModel.consumePendingPackGrant()?.let {
-                                creditsViewModel.grantPacks(it.packIds, it.customerId)
-                            }
+                            cartViewModel.consumePendingPackGrant()?.venta?.let(creditsViewModel::entregarCobradas)
                             // TABLE_SERVICE (PAYING): the table's order was just
                             // fully paid through the normal flow — release it.
                             if (tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING) {

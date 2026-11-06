@@ -14,7 +14,8 @@ sealed class CartItemType {
     /** A prepaid credit pack (membresía) sold from the grid. Behaves like a custom
      *  amount for money/order purposes; the packId is carried so the credits can be
      *  granted to the attached customer on payment success. */
-    @Serializable data class CreditPack(val packId: String) : CartItemType()
+    /** [saleProof]: la foto firmada de lo que vio el cliente al entrar al carrito (D4). Se entrega eso, aunque el catálogo cambie después. */
+    @Serializable data class CreditPack(val packId: String, val saleProof: String? = null) : CartItemType()
 }
 
 @Serializable

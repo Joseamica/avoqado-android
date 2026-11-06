@@ -219,6 +219,8 @@ class PaymentFlowViewModel @Inject constructor(
      * panel (sus impresoras y estaciones). Default por el mismo patrón que [refrescoDelCatalogo].
      */
     val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository? = null,
+    /** D4 (5-nov): lo que depende de este cobro. Cada intento se anota ANTES de salir. Default por el mismo patrón que [refrescoDelCatalogo]. */
+    private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
 ) : ViewModel() {
     private val cuentaDeTarjetas = MutableStateFlow(false)
     val metodosHabilitados: StateFlow<Boolean> by lazy {
@@ -452,6 +454,32 @@ class PaymentFlowViewModel @Inject constructor(
     private fun estrenarLlaveTrasRechazoDeOrden(error: Throwable) {
         val esRechazoDeNegocio = error is OrderRepository.ServerException && error.code in 400..499
         if (esRechazoDeNegocio) paymentIdempotencyKey = null
+    }
+
+    /**
+     * 🔴 D4 (5-nov): la identidad de este intento, en disco ANTES de salir, en la fila de los paquetes de esta venta. Si la app muere, con
+     * ella se pregunta si el cobro sucedió; sin intentos no salió ninguno. false = no se pudo guardar y el cobro no debe salir.
+     */
+    private fun anotarIntentoDePaquetes(tipo: com.avoqado.pos.customers.data.IntentoDeCobro.Tipo, id: String): Boolean {
+        val cart = cartState ?: return true
+        val llevaPaquetes = cart.items.any { it.type is CartItemType.CreditPack }
+        return pendingGrantQueue?.anotarIntento(cart.identidadDeVenta, com.avoqado.pos.customers.data.IntentoDeCobro(tipo, id), llevaPaquetes) ?: true
+    }
+
+    /** La llave de este cobro (efectivo u «otra forma»), anotada; si el disco no la acepta, el error sale y el cobro no empieza. */
+    private fun anotarLlaveDePaquetes(llave: String): Boolean {
+        val tipo = if (manualMethod == null && selectedTender == null) {
+            com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.EFECTIVO
+        } else {
+            com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.OTRA_FORMA
+        }
+        if (anotarIntentoDePaquetes(tipo, llave)) return true
+        isProcessingPayment = false
+        _state.value = PaymentFlowState.Error(
+            message = "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
+            source = PaymentErrorSource.UNKNOWN,
+        )
+        return false
     }
 
     /**
@@ -2620,6 +2648,7 @@ class PaymentFlowViewModel @Inject constructor(
         val tipCapturado = currentTipCents
         val splitCapturado = _splitType.value
         val llaveCapturada = sessionIdempotencyKey()
+        if (!anotarLlaveDePaquetes(llaveCapturada)) return
         val total = currentBaseAmount() + tipCapturado
         // La hora de la venta se captura UNA vez, con el pedido (igual que en `processCashPayment`): la cola la hereda.
         val pedidoCapturado = buildOrderRequest(cart).copy(createdAtLocal = System.currentTimeMillis())
@@ -2940,6 +2969,12 @@ class PaymentFlowViewModel @Inject constructor(
                 if (bloqueoDelSaldoActual()) { isProcessingPayment = false; return }
                 _state.value = PaymentFlowState.SentToTerminal(total)
                 val generation = paymentGeneration
+                // D4: sin suspender de por medio, así el `requestId` que se anota es el de ESTE envío.
+                pendingGrantQueue?.let {
+                    terminalPaymentService.antesDelProximoEnvio = { requestId ->
+                        anotarIntentoDePaquetes(com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.TARJETA, requestId)
+                    }
+                }
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
                     terminalId = terminalId,
                     amountCents = currentBaseAmount(),
@@ -2970,6 +3005,12 @@ class PaymentFlowViewModel @Inject constructor(
                         // Consta que no se cobró: reintentar vuelve a ser seguro.
                         undeterminedRequestId = null
                         bloqueadorEnPantalla = terminalResult.bloqueador
+                        // D4: este intento nunca nació; preguntar por él sólo daría un 404 que parecería una duda.
+                        if (terminalResult.noSeCreo) terminalResult.requestId?.let { requestId ->
+                            cartState?.identidadDeVenta?.let { venta ->
+                                pendingGrantQueue?.quitarIntento(venta, com.avoqado.pos.customers.data.IntentoDeCobro(com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.TARJETA, requestId))
+                            }
+                        }
                         _state.value = PaymentFlowState.Error(
                             message = terminalResult.message,
                             source = PaymentErrorSource.TERMINAL,
@@ -3131,6 +3172,7 @@ class PaymentFlowViewModel @Inject constructor(
         val tipCapturado = currentTipCents
         val splitCapturado = _splitType.value
         val llaveCapturada = sessionIdempotencyKey()
+        if (!anotarLlaveDePaquetes(llaveCapturada)) return
         val total = currentBaseAmount() + tipCapturado
         // La hora de la venta se captura UNA vez, con el pedido: la reserva y la cola la heredan (`createdAtLocal`).
         val pedidoCapturado = cart?.let(::buildOrderRequest)?.copy(createdAtLocal = System.currentTimeMillis())
