@@ -148,9 +148,13 @@ object TextosPedidosEnLinea {
     const val FOLIO_VENCIDO = "Este pedido ya venció: cóbralo como venta normal"
     /** Igual, pero otra caja (o el panel) lo canceló antes de su hora. */
     const val FOLIO_CANCELADO = "Este folio ya se canceló: cóbralo como venta normal"
-    /** Otra caja ya lo cobró: «Este folio ya se pagó» + «Lo cobró otra caja a las HH:MM. Ya está en «Por entregar».» */
-    fun folioYaPagado(hora: String?) =
-        "Este folio ya se pagó. Lo cobró otra caja${hora?.let { " a las $it" }.orEmpty()}. Ya está en «Por entregar»."
+    /**
+     * Ya lo cobraron: «Este folio ya se pagó» + «Lo cobró otra caja a las HH:MM. Ya está en «Por entregar».». Si el cobro salió de
+     * ESTE aparato ([enEstaCaja]), no se culpa a otra caja: «Se cobró en esta caja a las HH:MM».
+     */
+    fun folioYaPagado(hora: String?, enEstaCaja: Boolean = false) =
+        "Este folio ya se pagó. ${if (enEstaCaja) "Se cobró en esta caja" else "Lo cobró otra caja"}" +
+            "${hora?.let { " a las $it" }.orEmpty()}. Ya está en «Por entregar»."
     const val CANCELAR_FOLIO = "Cancelar folio"
     fun cancelarFolioTitulo(folio: String) = "¿Cancelar el folio $folio?"
     fun cancelarFolioCuerpo(nombre: String?) =

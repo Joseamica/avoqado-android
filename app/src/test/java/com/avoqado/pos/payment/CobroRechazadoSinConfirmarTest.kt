@@ -957,7 +957,7 @@ class CobroRechazadoSinConfirmarTest {
         // (regla del founder del 3-oct: cobro nuevo sobre una cuenta cancelada). Nada se registró.
         payResponde(cuentaCancelada())
         vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "folio-1", apertura = "folio-1",
-            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = folioVencido)
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = { folioVencido })
         vm.confirmCashPreset(10_000)
         advanceUntilIdle()
 
@@ -971,6 +971,42 @@ class CobroRechazadoSinConfirmarTest {
         vm.startPaymentFlow(otroImporte(), apertura = "venta-normal")
         assertEquals(0, caja.darPorCobradasLasAbandonadas())
         assertTrue(disco.filas.isEmpty())
+    }
+
+    @Test
+    fun `P1 folio vencido cuyo apartado no se pudo borrar - no dice cobralo como venta normal y Reintentar borra primero`() = runTest {
+        // m3: con la reserva viva, decir «cóbralo como venta normal» invitaría a cobrar otra vez mientras la cola lo daría por cobrado.
+        payResponde(cuentaCancelada())
+        vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "folio-1", apertura = "folio-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = { folioVencido })
+        disco.fallaAlBorrar = true
+        vm.confirmCashPreset(10_000)
+        advanceUntilIdle()
+
+        assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, vm.cancelFailure.value)
+        val llave = enVuelo().single()
+        assertEquals("sigue del flujo: no se da por cobrada", 0, caja.darPorCobradasLasAbandonadas())
+
+        // «Reintentar» otra vez sin disco: sigue igual y no vuelve a cobrar.
+        vm.retry()
+        advanceUntilIdle()
+        assertEquals(listOf(llave), enVuelo())
+        assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, (vm.state.value as PaymentFlowState.Error).message)
+
+        // Con disco: borra primero y ENTONCES dice qué hacer, sin cerrar la pantalla ni cobrar otra vez.
+        disco.fallaAlBorrar = false
+        vm.retry()
+        advanceUntilIdle()
+        assertNull(disco.filas[llave])
+        assertEquals(folioVencido, (vm.state.value as PaymentFlowState.Error).message)
+        assertNull(vm.cancelFailure.value)
+        assertFalse(vm.debeSalir.value)
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any())
+        }
+        vm.startPaymentFlow(otroImporte(), apertura = "venta-normal")
+        assertEquals(0, caja.darPorCobradasLasAbandonadas())
     }
 
     @Test
@@ -992,7 +1028,7 @@ class CobroRechazadoSinConfirmarTest {
         // Sólo ORDER_CANCELLED_NO_NEW_CHARGE prueba que la cuenta se canceló y nada se registró; otro 400 sigue como hoy.
         payResponde(rechazo400())
         vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "folio-1", apertura = "folio-1",
-            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = folioVencido)
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = { folioVencido })
         vm.confirmCashPreset(10_000)
         advanceUntilIdle()
 

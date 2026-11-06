@@ -129,6 +129,8 @@ class OnlineOrdersViewModel internal constructor(
         { _, _, _ -> Result.success(LISTA_FOLIOS_NO_DISPONIBLE) },
     private val foliosGuardados: suspend () -> ListaPorPagar? = { null },
     private val ahoraMs: () -> Long = System::currentTimeMillis,
+    /** A3: los pedidos con efectivo de este aparato en la cola -> lo cobrado (`CashPaymentRepository.efectivoEnColaPorPedido`). */
+    private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
 ) : ViewModel() {
 
     @Inject
@@ -161,6 +163,7 @@ class OnlineOrdersViewModel internal constructor(
         tieneCanalDeReparto = { planManager.hasFeature("DELIVERY_CHANNELS") },
         leerPorPagar = { conLatido, seccion, cursor -> repositorio.porPagar(conLatido, seccion, cursor) },
         foliosGuardados = { repositorio.porPagarGuardado() },
+        efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -254,30 +257,33 @@ class OnlineOrdersViewModel internal constructor(
 
     fun buscarFolio(texto: String) { _busqueda.value = texto }
 
-    private val _cobradosEnElAparato = MutableStateFlow<Set<String>>(emptySet())
+    private val _cobradosEnElAparato = MutableStateFlow<Map<String, Long>>(emptyMap())
 
     /**
-     * A3: los folios de «Por pagar» con un efectivo de ESTE aparato en la cola (se sube solo al volver la red). La pantalla los pinta
-     * en «Por entregar» con «Cobro en efectivo guardado…» ([conLoCobradoEnElAparato]) sin esperar a la red: nadie los cobra dos veces.
-     * «Por revisar» no cuenta: no se sube solo y su «Cobrar» ya dice que lo resuelve un gerente.
+     * A3: los folios de «Por pagar» con un efectivo de ESTE aparato en la cola (se sube solo al volver la red) -> lo cobrado, en
+     * centavos (`amountCents` de la cola). La pantalla los pinta en «Por entregar» con «Pagado en efectivo $X» y «Cobro en efectivo
+     * guardado…» ([conLoCobradoEnElAparato]) sin esperar a la red: nadie los cobra dos veces. «Por revisar» no cuenta: no se sube
+     * solo y su «Cobrar» ya dice que lo resuelve un gerente.
      */
-    val cobradosEnElAparato: StateFlow<Set<String>> = _cobradosEnElAparato.asStateFlow()
+    val cobradosEnElAparato: StateFlow<Map<String, Long>> = _cobradosEnElAparato.asStateFlow()
 
-    /** Se relee de la cola del aparato después de CADA lectura de folios, salga bien o sin red. */
+    /**
+     * Una sola lectura de la cola del aparato (no una por folio). Corre ANTES de tocar la red (al abrir con lo guardado, al cerrar un
+     * cobro y al empezar cada lectura de folios) y otra vez después: con el WiFi «conectado sin datos» la red tarda, y lo cobrado ya
+     * tiene que verse en «Por entregar».
+     */
     private suspend fun releerCobradosEnElAparato() {
-        val enCola = mutableSetOf<String>()
-        for (f in _porPagar.value?.porPagar.orEmpty()) {
-            val estado = try {
-                efectivoDelPedido(f.orderId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // No se pudo leer la cola: el folio se queda en «Por pagar» y su «Cobrar» vuelve a revisar (y no abre otro).
-                EfectivoDelPedido.NINGUNO
-            }
-            if (estado == EfectivoDelPedido.EN_COLA) enCola += f.orderId
+        val folios = _porPagar.value?.porPagar.orEmpty().map { it.orderId }.toSet()
+        val enCola = try {
+            efectivoEnCola()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // No se pudo leer la cola: lo último que se supo se queda, y «Cobrar» vuelve a revisar (y no abre otro cobro).
+            Log.w(TAG, "No se pudo leer la cola de efectivo: ${e.message}")
+            return
         }
-        _cobradosEnElAparato.value = enCola
+        _cobradosEnElAparato.value = enCola.filterKeys { it in folios }
     }
 
     /** Páginas extra por sección (`toPay` / `toDeliver`) traídas con «Cargar más»; cada lectura las vuelve a recorrer. */
@@ -304,6 +310,7 @@ class OnlineOrdersViewModel internal constructor(
                 leidoEnMs = ahoraMs() - (guardada.guardadoHaceMin ?: 0L) * 60_000
             }
         }
+        releerCobradosEnElAparato() // antes de la red: lo cobrado aquí sin subir ya va en «Por entregar»
         mutex.withLock { refrescarPorPagar(comoBandeja = false) }
     }
 
@@ -316,6 +323,7 @@ class OnlineOrdersViewModel internal constructor(
      * pantalla es la bandeja visible Y la persona cobra (`payments:create`): el servidor lo vuelve a comprobar.
      */
     private suspend fun refrescarPorPagar(comoBandeja: Boolean) {
+        releerCobradosEnElAparato() // antes de la red, y otra vez al final con la lista nueva
         val primera = try {
             leerPorPagar(comoBandeja && permisoCobrar(), null, null)
         } catch (e: CancellationException) {
@@ -809,11 +817,9 @@ class OnlineOrdersViewModel internal constructor(
                     // Una cancelada «no debe» aunque nadie pagó: saldada sólo si está viva o si de verdad entró un cobro.
                     val pagada = releido.saldoCents <= 0L && (!cerrada || releido.pagadoA != null)
                     val aviso = when {
-                        pagada -> TextosPedidosEnLinea.folioYaPagado(releido.pagadoA?.let(::horaDelNegocio))
-                        cerrada -> {
-                            val vencio = folio.acceptDeadlineAt?.let { !it.isAfter(java.time.Instant.ofEpochMilli(ahoraMs())) } ?: true
-                            if (vencio) TextosPedidosEnLinea.FOLIO_VENCIDO else TextosPedidosEnLinea.FOLIO_CANCELADO
-                        }
+                        // Si el cobro salió de ESTE aparato (su fila ya subió), no se culpa a «otra caja».
+                        pagada -> TextosPedidosEnLinea.folioYaPagado(releido.pagadoA?.let(::horaDelNegocio), enEstaCaja = cobradoAqui(orderId))
+                        cerrada -> textoDeFolioCerrado(folio.acceptDeadlineAt, java.time.Instant.ofEpochMilli(ahoraMs()))
                         else -> null
                     }
                     if (aviso != null) {
@@ -839,11 +845,20 @@ class OnlineOrdersViewModel internal constructor(
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
                     origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
                     renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty(),
-                    esFolio = folio != null)
+                    esFolio = folio != null, venceA = folio?.acceptDeadlineAt)
             } finally {
                 _ocupados.value = _ocupados.value - orderId
             }
         }
+    }
+
+    /** ¿ESTE aparato ya subió un cobro de [orderId]? En duda, no: se dice lo de siempre («otra caja»). */
+    private suspend fun cobradoAqui(orderId: String): Boolean = try {
+        efectivoYaSubido(orderId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false
     }
 
     /**
@@ -853,7 +868,11 @@ class OnlineOrdersViewModel internal constructor(
     fun cobroTerminado() {
         if (_cobroAbierto.value == null) return
         _cobroAbierto.value = null
-        viewModelScope.launch { refrescar(imprimirPendientes = false) }
+        viewModelScope.launch {
+            // A3: lo cobrado sin red se mueve a «Por entregar» YA, sin esperar a que la bandeja conteste (o se rinda).
+            releerCobradosEnElAparato()
+            refrescar(imprimirPendientes = false)
+        }
     }
 
     private fun ejecutar(
@@ -936,9 +955,14 @@ data class CobroDePedido(
     val renglones: List<com.avoqado.pos.payment.data.model.PaymentItem> = emptyList(),
     /** A3: un folio de «Por pagar» (el renglón dice «Folio W7K3P» y el 400 de cuenta cancelada lleva su texto). */
     val esFolio: Boolean = false,
+    /** A3: la hora en que vence el folio, para decir «venció» o «se canceló» cuando el SERVIDOR rechaza el efectivo. */
+    val venceA: java.time.Instant? = null,
 ) {
-    /** Lo que dice el cobro si el SERVIDOR rechaza el efectivo en vivo porque la cuenta ya se canceló; null = como siempre. */
-    val textoSiLaCuentaSeCancelo: String? get() = if (esFolio) TextosPedidosEnLinea.FOLIO_VENCIDO else null
+    /**
+     * Lo que dice el cobro si el SERVIDOR rechaza el efectivo en vivo porque la cuenta ya se canceló, calculado AL FALLAR ([ahora]):
+     * pasada su hora, venció; antes, otra caja lo canceló. null = no es un folio (como siempre).
+     */
+    fun textoSiLaCuentaSeCancelo(ahora: java.time.Instant): String? = if (esFolio) textoDeFolioCerrado(venceA, ahora) else null
 }
 
 /**

@@ -48,6 +48,13 @@ fun textoDeCobro(sinConexion: Boolean): String =
 fun muestraCancelarFolio(pedido: OnlineOrder, puedeCancelar: Boolean, sinConexion: Boolean): Boolean =
     puedeCancelar && !sinConexion && sinDinero(pedido)
 
+/**
+ * A3: por qué ya no se cobra un folio cuya cuenta se canceló. Pasada su hora (o sin hora conocida), venció; antes, otra caja o el panel
+ * lo canceló. Las dos dicen «cóbralo como venta normal». Lo usan la relectura al tocar «Cobrar» y el 400 dentro del cobro.
+ */
+fun textoDeFolioCerrado(venceA: Instant?, ahora: Instant): String =
+    if (venceA == null || !venceA.isAfter(ahora)) TextosPedidosEnLinea.FOLIO_VENCIDO else TextosPedidosEnLinea.FOLIO_CANCELADO
+
 /** R67: «Pagado a las HH:MM» en «Por entregar»; null si el SERVIDOR no manda `paidAt` (se queda como hoy). */
 fun textoDePago(pedido: OnlineOrder): String? = pedido.paidAt?.let { TextosPedidosEnLinea.pagadoALas(horaDelNegocio(it)) }
 

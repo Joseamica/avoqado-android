@@ -33,12 +33,15 @@ import io.mockk.mockk
 import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import okhttp3.OkHttpClient
@@ -74,6 +77,9 @@ class CobroDeFolioTest {
     private var respuesta: Result<ListaPorPagar> = Result.failure(IOException("sin red"))
     private var guardada: ListaPorPagar? = null
 
+    /** Una red que no contesta («conectado sin datos»): la bandeja y «Por pagar» se quedan esperando mientras exista. */
+    private var compuerta: CompletableDeferred<Unit>? = null
+
     /** El folio vence a las 18:30 (UTC); el reloj del aparato marca las 18:10. */
     private var reloj = Instant.parse("2026-11-06T18:10:00Z").toEpochMilli()
 
@@ -81,9 +87,10 @@ class CobroDeFolioTest {
         Dispatchers.setMain(dispatcher)
         every { secureStorage.venueId } returns "venue-1"
         coEvery { dao.forVenue("venue-1") } answers { filas }
-        coEvery { repo.inbox(any(), any(), any()) } returns Result.success(
-            Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, 0, 0, emptyList(), storeOff = false, truncated = false, nextCursor = null),
-        )
+        coEvery { repo.inbox(any(), any(), any()) } coAnswers {
+            compuerta?.await()
+            Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, 0, 0, emptyList(), storeOff = false, truncated = false, nextCursor = null))
+        }
     }
 
     @After fun tearDown() { Dispatchers.resetMain() }
@@ -101,8 +108,8 @@ class CobroDeFolioTest {
     private fun lista(porPagar: List<OnlineOrder> = emptyList(), porEntregar: List<OnlineOrder> = emptyList()) =
         ListaPorPagar(true, true, 30, ConteosPorPagar(porPagar.size, porEntregar.size), porPagar, porEntregar, CursoresPorPagar(null, null))
 
-    private fun fila(orderId: String, estado: String) = PendingPaymentEntity(
-        id = "fila-$orderId-$estado", venueId = "venue-1", staffId = "staff-1", amountCents = 13400, tipCents = 0,
+    private fun fila(orderId: String, estado: String, cents: Int = 13400) = PendingPaymentEntity(
+        id = "fila-$orderId-$estado", venueId = "venue-1", staffId = "staff-1", amountCents = cents, tipCents = 0,
         method = "CASH", paymentType = "ORDER", orderId = orderId, syncStatus = estado,
     )
 
@@ -115,9 +122,10 @@ class CobroDeFolioTest {
         ventanaALaVista = MutableStateFlow(true),
         efectivoDelPedido = { cola.efectivoDelPedido(it) },
         efectivoYaSubido = { cola.huboEfectivoSubido(it) },
-        leerPorPagar = { _, _, _ -> respuesta },
+        leerPorPagar = { _, _, _ -> compuerta?.await(); respuesta },
         foliosGuardados = { guardada },
         ahoraMs = { reloj },
+        efectivoEnCola = { cola.efectivoEnColaPorPedido() },
     )
 
     // MARK: - Con red se relee el folio antes de abrir el cobro
@@ -186,7 +194,9 @@ class CobroDeFolioTest {
         assertTrue("con red se ofrece la terminal ligada", cobro.origen.permiteTarjeta)
         assertEquals("se cobra lo que dice el servidor, nunca el total", 5000, cobro.saldoCents)
         assertTrue(cobro.esFolio)
-        assertEquals("si vence con la pantalla abierta, el cobro lo dice así", TextosPedidosEnLinea.FOLIO_VENCIDO, cobro.textoSiLaCuentaSeCancelo)
+        // m1: el texto del 400 dentro del cobro se decide AL FALLAR: pasada la hora, venció; antes, otra caja lo canceló.
+        assertEquals(TextosPedidosEnLinea.FOLIO_VENCIDO, cobro.textoSiLaCuentaSeCancelo(Instant.parse("2026-11-06T18:31:00Z")))
+        assertEquals(TextosPedidosEnLinea.FOLIO_CANCELADO, cobro.textoSiLaCuentaSeCancelo(Instant.parse("2026-11-06T18:20:00Z")))
         val carrito = carritoDelCobro(cobro)
         assertEquals(5000, carrito.totalCents)
         assertEquals("vocabulario único: «folio», nunca «Pedido #»", "Folio W7K3P", carrito.items.single().name)
@@ -318,7 +328,7 @@ class CobroDeFolioTest {
         vm.descubrirPorPagar()
 
         // «Por revisar» (EN_VUELO) no se mueve: no se sube solo y su «Cobrar» dice que lo resuelve un gerente.
-        assertEquals(setOf("f2"), vm.cobradosEnElAparato.value)
+        assertEquals(mapOf("f2" to 13400L), vm.cobradosEnElAparato.value)
     }
 
     @Test
@@ -327,12 +337,78 @@ class CobroDeFolioTest {
         filas = listOf(fila("f1", "PENDING"))
         val vm = armar()
         vm.refrescar()
-        assertEquals(setOf("f1"), vm.cobradosEnElAparato.value)
+        assertEquals(mapOf("f1" to 13400L), vm.cobradosEnElAparato.value)
 
         filas = listOf(fila("f1", "SYNCED"))
         respuesta = Result.success(lista(porEntregar = listOf(folio("f1", pago = "PAID", falta = 0))))
         vm.refrescar()
-        assertEquals(emptySet<String>(), vm.cobradosEnElAparato.value)
+        assertEquals(emptyMap<String, Long>(), vm.cobradosEnElAparato.value)
+    }
+
+    @Test
+    fun `Pagado en efectivo dice lo que guardo la cola, no lo que falta segun la lista`() = runTest(dispatcher) {
+        // m4: la lista vieja decía $134; el cobro guardado en la cola fue de $90 (otra caja abonó antes y la lista no lo sabía).
+        respuesta = Result.success(lista(porPagar = listOf(folio("f1"))))
+        filas = listOf(fila("f1", "PENDING", cents = 9000), fila("otro", "PENDING"))
+        val vm = armar()
+        vm.refrescar()
+        assertEquals("sólo los folios de «Por pagar»", mapOf("f1" to 9000L), vm.cobradosEnElAparato.value)
+    }
+
+    // MARK: - I1: lo cobrado sin red se mueve ANTES de tocar la red
+
+    @Test
+    fun `al cerrar el cobro lo cobrado sin red pasa a Por entregar sin esperar a la red`() = runTest(dispatcher) {
+        respuesta = Result.success(lista(porPagar = listOf(folio("f1"))))
+        val vm = armar()
+        vm.refrescar()
+        coEvery { repo.saldoDelPedido("f1") } returns Result.failure(IOException("sin red"))
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertTrue(vm.cobroAbierto.value != null)
+
+        // El cobro guardó el efectivo en la cola; la red está «conectada sin datos»: nada contesta.
+        filas = listOf(fila("f1", "PENDING"))
+        compuerta = CompletableDeferred()
+        vm.cobroTerminado()
+        runCurrent()
+
+        assertEquals("ya está en «Por entregar» aunque la bandeja no haya contestado", mapOf("f1" to 13400L), vm.cobradosEnElAparato.value)
+        compuerta!!.complete(Unit)
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun `al abrir con lo guardado lo cobrado sin red ya sale en Por entregar antes de la red`() = runTest(dispatcher) {
+        guardada = lista(porPagar = listOf(folio("f1"), folio("f2", "W9D5F", "Pau")))
+        filas = listOf(fila("f2", "PENDING"))
+        compuerta = CompletableDeferred()
+        val vm = armar()
+
+        val abriendo = launch { vm.descubrirPorPagar() }
+        runCurrent()
+
+        assertEquals(mapOf("f2" to 13400L), vm.cobradosEnElAparato.value)
+        compuerta!!.complete(Unit)
+        abriendo.join()
+    }
+
+    @Test
+    fun `si este aparato cobro el folio no dice que lo cobro otra caja`() = runTest(dispatcher) {
+        // m7: la fila de este aparato ya subió (SYNCED) y la lista sigue vieja.
+        val pagadoA = Instant.parse("2026-11-06T18:21:00Z")
+        filas = listOf(fila("f1", "SYNCED"))
+        coEvery { repo.saldoDelPedido("f1") } returns Result.success(SaldoDelPedido(0L, estadoDeLaCuenta = "CONFIRMED", pagadoA = pagadoA))
+        val vm = armar()
+
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(
+            "Este folio ya se pagó. Se cobró en esta caja a las ${horaDelNegocio(pagadoA)}. Ya está en «Por entregar».",
+            vm.aviso.value,
+        )
     }
 
     // MARK: - R67: «Pagado a las HH:MM»

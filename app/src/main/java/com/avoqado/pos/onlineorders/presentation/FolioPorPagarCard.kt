@@ -55,7 +55,7 @@ private val ALTO_MINIMO = 48.dp
  * Un folio de «Pedir por QR y pagar en caja»: «Folio W7K3P» (letras separadas y más grande que el nombre), el nombre, qué pidió y
  * el dinero. «Por pagar» trae «Cobrar» («Cobrar en efectivo» sin red) y, sin dinero y con red, «Cancelar folio» a 16 dp de él
  * (A3). «Por entregar» trae «Listo» (con borde) y «Entregado» (relleno), apagados sin red porque el servidor es quien los cierra;
- * lo cobrado en efectivo en ESTE aparato que aún no sube ([guardadoEnElAparato]) dice «Cobro en efectivo guardado…».
+ * lo cobrado en efectivo en ESTE aparato que aún no sube ([cobradoEnElAparatoCents]) dice «Cobro en efectivo guardado…».
  */
 @Composable
 fun FolioPorPagarCard(
@@ -68,7 +68,8 @@ fun FolioPorPagarCard(
     onListo: () -> Unit,
     onEntregado: () -> Unit,
     modifier: Modifier = Modifier,
-    guardadoEnElAparato: Boolean = false,
+    /** Lo cobrado en efectivo en ESTE aparato que la cola aún no sube (`amountCents` de su fila); null = nada. */
+    cobradoEnElAparatoCents: Long? = null,
     puedeCobrar: Boolean = false,
     puedeCancelar: Boolean = false,
     onCobrar: () -> Unit = {},
@@ -108,13 +109,13 @@ fun FolioPorPagarCard(
 
             if (porEntregar) {
                 Text(
-                    // Lo cobrado aquí sin red: lo que se cobró en efectivo (lo que faltaba), no el total.
-                    if (guardadoEnElAparato) TextosPedidosEnLinea.pagadoEnEfectivo(formatoPesos(pedido.remainingCents))
+                    // Lo cobrado aquí sin red: lo que guardó la cola (no el total ni el saldo de la lista).
+                    if (cobradoEnElAparatoCents != null) TextosPedidosEnLinea.pagadoEnEfectivo(formatoPesos(cobradoEnElAparatoCents))
                     else TextosPedidosEnLinea.pagado(formatoPesos(pedido.totalCents)),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
-                if (guardadoEnElAparato) {
+                if (cobradoEnElAparatoCents != null) {
                     Text(
                         TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO,
                         style = MaterialTheme.typography.bodyMedium,
@@ -129,7 +130,7 @@ fun FolioPorPagarCard(
                 if (puedeActualizar) {
                     // Los dos pesan igual en la TPV y en el panel: «Listo» con borde y «Entregado» relleno, en ese orden.
                     // Lo cobrado aquí sin subir todavía no es «pagado» para el servidor: esperan a que suba.
-                    val enLinea = !sinConexion && !ocupado && !guardadoEnElAparato
+                    val enLinea = !sinConexion && !ocupado && cobradoEnElAparatoCents == null
                     // «Entregado» no se deshace: más aire entre los dos para no tocar el equivocado.
                     Row(horizontalArrangement = Arrangement.spacedBy(espacio.md)) {
                         OutlinedButton(onClick = onListo, enabled = enLinea, modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-listo-${pedido.orderId}")) {
@@ -205,7 +206,7 @@ internal fun LazyListScope.seccionesDeFolios(
     onCargarMas: (seccion: String) -> Unit,
     onReintentar: () -> Unit,
     // A3: cobrar y cancelar un folio; lo cobrado aquí sin subir ya viene movido a «Por entregar» (`conLoCobradoEnElAparato`).
-    cobradosEnElAparato: Set<String> = emptySet(),
+    cobradosEnElAparato: Map<String, Long> = emptyMap(),
     puedeCobrar: Boolean = false,
     puedeCancelar: Boolean = false,
     onCobrar: (OnlineOrder) -> Unit = {},
@@ -286,7 +287,7 @@ internal fun LazyListScope.seccionesDeFolios(
             FolioPorPagarCard(
                 pedido, true, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados,
                 onListo = { onListo(pedido.orderId) }, onEntregado = { onEntregado(pedido) },
-                guardadoEnElAparato = pedido.orderId in cobradosEnElAparato,
+                cobradoEnElAparatoCents = cobradosEnElAparato[pedido.orderId],
             )
         }
         if (hayMasPorEntregar) {

@@ -143,7 +143,7 @@ fun OnlineOrdersScreen(
     // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
     val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
     val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato) {
-        seccionFolios?.let { conLoCobradoEnElAparato(it, cobradosEnElAparato) }
+        seccionFolios?.let { conLoCobradoEnElAparato(it, cobradosEnElAparato.keys) }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -361,7 +361,8 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
             resumeOrderId = cobro.orderId,
             origen = cobro.origen,
             apertura = cobro.apertura,
-            textoSiLaCuentaSeCancelo = cobro.textoSiLaCuentaSeCancelo,
+            // m1: se decide al fallar (venció o lo canceló otra caja), no al abrir.
+            textoSiLaCuentaSeCancelo = { cobro.textoSiLaCuentaSeCancelo(Instant.now()) },
         )
     }
 }

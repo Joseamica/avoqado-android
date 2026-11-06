@@ -376,14 +376,34 @@ class VigilanteDePedidosEnLineaTest {
         suspend fun leer(conLatido: Boolean): Result<ListaPorPagar> { latidos += conLatido; return respuesta }
     }
 
-    private fun TestScope.armarConFolios(folios: Folios, puedeCobrar: Boolean = true, inbox: Inbox = inbox()): Fixture {
+    private fun TestScope.armarConFolios(
+        folios: Folios, puedeCobrar: Boolean = true, inbox: Inbox = inbox(), enCola: () -> Map<String, Long> = { emptyMap() },
+    ): Fixture {
         val f = Fixture(Falso(Result.success(inbox)))
         f.vigilante = VigilanteDePedidosEnLinea(
             consultar = f.falso::consultar, puedeLeer = { f.puedeLeer }, tienePlan = { f.tienePlan }, sonar = { f.sonidos++ },
             scope = backgroundScope, venueActual = { f.venue },
             consultarPorPagar = folios::leer, puedeCobrar = { puedeCobrar }, foliosGuardados = { folios.guardada },
+            efectivoEnCola = { enCola() },
         )
         return f
+    }
+
+    @Test
+    fun `A3 the menu number leaves out what this device charged in cash, also without network`() = runTest {
+        // La pantalla pinta en «Por entregar» lo cobrado aquí sin subir; el número del menú dice lo mismo.
+        var cola = mapOf("f2" to 13400L)
+        val folios = Folios(Result.success(listaFolios(3)))
+        val f = armarConFolios(folios, enCola = { cola })
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(2, f.vigilante.foliosPorPagar.value)
+
+        // Sin red se cobra otro: el siguiente sondeo falla, pero el número ya no lo cuenta.
+        folios.respuesta = Result.failure(IOException("sin red"))
+        cola = mapOf("f2" to 13400L, "f3" to 9500L)
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(1, f.vigilante.foliosPorPagar.value)
+        f.vigilante.onStop(owner)
     }
 
     @Test

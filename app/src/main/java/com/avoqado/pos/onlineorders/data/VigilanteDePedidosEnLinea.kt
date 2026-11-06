@@ -12,7 +12,9 @@ import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
 import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
+import com.avoqado.pos.payment.data.CashPaymentRepository
 import java.io.IOException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -66,6 +68,8 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val puedeCobrar: () -> Boolean = { false },
     /** La última lista que este aparato guardó: el número del menú de un arranque en frío sin red sale de ahí. */
     private val foliosGuardados: suspend () -> ListaPorPagar? = { null },
+    /** A3: los pedidos con efectivo de ESTE aparato en la cola: no cuentan como «por pagar» (igual que en la pantalla). */
+    private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -75,6 +79,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         planManager: PlanManager,
         secureStorage: SecureStorage,
         @ApplicationContext contexto: Context,
+        cashPaymentRepository: CashPaymentRepository,
     ) : this(
         consultar = { status, comoBandeja -> repositorio.inbox(status, comoBandeja) },
         puedeLeer = {
@@ -88,6 +93,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         consultarPorPagar = { conLatido -> repositorio.porPagar(conLatido) },
         puedeCobrar = { roleManager.hasVenuePermission("payments:create", setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")) },
         foliosGuardados = { repositorio.porPagarGuardado() },
+        efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
     )
 
     private val _pendientes = MutableStateFlow<List<OnlineOrder>>(emptyList())
@@ -112,6 +118,9 @@ class VigilanteDePedidosEnLinea internal constructor(
      * ver `numeroDeSeccion`. Se conserva si falla la red; 0 si el servidor dice que la sección no existe para esta persona.
      */
     val foliosPorPagar: StateFlow<Int> = _foliosPorPagar.asStateFlow()
+
+    /** La última lista de folios aplicada: sin red se vuelve a contar con la cola del aparato (lo cobrado aquí ya no cuenta). */
+    @Volatile private var ultimaListaDeFolios: ListaPorPagar? = null
 
     /** Hay folios por pagar o por entregar (conteos del último sondeo bueno): el menú se atiende aunque el plan haya vencido. */
     @Volatile private var hayFolios = false
@@ -156,6 +165,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         hayAbiertosEnInbox = false
         hayFolios = false
         huboLecturaDeFolios = false
+        ultimaListaDeFolios = null
         _foliosPorPagar.value = 0
         actualizarAbiertos()
         _sinConexion.value = false
@@ -266,6 +276,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         val consultar = consultarPorPagar ?: return INTERVALO_MS
         if (!puedeLeer()) {
             huboLecturaDeFolios = false
+            ultimaListaDeFolios = null
             _foliosPorPagar.value = 0
             hayFolios = false
             actualizarAbiertos()
@@ -297,16 +308,23 @@ class VigilanteDePedidosEnLinea internal constructor(
                 huboLecturaDeFolios = true
                 aplicarFolios(guardada)
             }
+        } else {
+            // Sin red, la última lista se vuelve a contar: lo cobrado aquí desde entonces ya está en la cola y no se cobra otra vez.
+            ultimaListaDeFolios?.let { aplicarFolios(it) }
         }
         return INTERVALO_MS
     }
 
-    private fun aplicarFolios(lista: ListaPorPagar) {
+    private suspend fun aplicarFolios(lista: ListaPorPagar) {
+        ultimaListaDeFolios = lista
         if (!lista.disponible) {
             _foliosPorPagar.value = 0
             hayFolios = false
         } else {
-            _foliosPorPagar.value = numeroDeSeccion(lista.counts.toPay, lista.porPagar.size, lista.nextCursors.toPay != null)
+            // A3 (m2): el mismo número que la pantalla: lo cobrado en efectivo en este aparato que aún no sube ya no está «por pagar».
+            val enCola = try { efectivoEnCola().keys } catch (e: CancellationException) { throw e } catch (e: Exception) { emptySet() }
+            val vista = conLoCobradoEnElAparato(lista, enCola)
+            _foliosPorPagar.value = numeroDeSeccion(vista.counts.toPay, vista.porPagar.size, vista.nextCursors.toPay != null)
             hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty()
         }
         actualizarAbiertos()
