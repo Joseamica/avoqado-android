@@ -396,7 +396,8 @@ class PendingGrantQueue @Inject constructor(
 
     /** Manda la fila tal como está en disco y deja escrito su desenlace. Rechazada = queda con su motivo, para una persona. */
     private suspend fun enviar(fila: PendingGrant, background: Boolean = true): DesenlaceDeEntrega {
-        val r = articlesRepository.sellPackToCustomer(fila.packId, fila.customerId, background, fila.id, fila.saleProof)
+        // D17: la del carrito (`venta`) se cobró en una orden, que ya sumó al «Total gastado»; la de la ficha, no.
+        val r = articlesRepository.sellPackToCustomer(fila.packId, fila.customerId, background, fila.id, fila.saleProof, fila.venta != null)
         val desenlace = clasificarEntrega(r.code)
         when (desenlace) {
             DesenlaceDeEntrega.ENTREGADA -> {
