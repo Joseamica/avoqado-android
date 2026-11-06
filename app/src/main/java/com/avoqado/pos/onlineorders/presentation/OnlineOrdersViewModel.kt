@@ -254,6 +254,32 @@ class OnlineOrdersViewModel internal constructor(
 
     fun buscarFolio(texto: String) { _busqueda.value = texto }
 
+    private val _cobradosEnElAparato = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * A3: los folios de «Por pagar» con un efectivo de ESTE aparato en la cola (se sube solo al volver la red). La pantalla los pinta
+     * en «Por entregar» con «Cobro en efectivo guardado…» ([conLoCobradoEnElAparato]) sin esperar a la red: nadie los cobra dos veces.
+     * «Por revisar» no cuenta: no se sube solo y su «Cobrar» ya dice que lo resuelve un gerente.
+     */
+    val cobradosEnElAparato: StateFlow<Set<String>> = _cobradosEnElAparato.asStateFlow()
+
+    /** Se relee de la cola del aparato después de CADA lectura de folios, salga bien o sin red. */
+    private suspend fun releerCobradosEnElAparato() {
+        val enCola = mutableSetOf<String>()
+        for (f in _porPagar.value?.porPagar.orEmpty()) {
+            val estado = try {
+                efectivoDelPedido(f.orderId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // No se pudo leer la cola: el folio se queda en «Por pagar» y su «Cobrar» vuelve a revisar (y no abre otro).
+                EfectivoDelPedido.NINGUNO
+            }
+            if (estado == EfectivoDelPedido.EN_COLA) enCola += f.orderId
+        }
+        _cobradosEnElAparato.value = enCola
+    }
+
     /** Páginas extra por sección (`toPay` / `toDeliver`) traídas con «Cargar más»; cada lectura las vuelve a recorrer. */
     private val paginasExtraFolios = mutableMapOf(SECCION_POR_PAGAR to 0, SECCION_POR_ENTREGAR to 0)
 
@@ -336,6 +362,7 @@ class OnlineOrdersViewModel internal constructor(
                 _errorFolios.value = true
             }
         }
+        releerCobradosEnElAparato()
         _leyendoFolios.value = false
     }
 
@@ -669,6 +696,26 @@ class OnlineOrdersViewModel internal constructor(
     )
 
     /**
+     * Tienda híbrida (A3): «Cobrar» de un folio de «Por pagar». Las MISMAS guardas que [cobrar] (un efectivo de este aparato sin
+     * subir bloquea; con red el saldo del servidor, con abono lo que falta y nunca el total; sin red el último `remaining` de la
+     * lista, sólo efectivo), más la relectura del folio con red: si su cuenta ya se canceló (venció o lo cancelaron) no abre el
+     * cobro y dice «cóbralo como venta normal»; si otra caja ya lo cobró, lo dice con la hora. Abierto, el cobro lleva el texto
+     * del folio vencido para el 400 de cuenta cancelada (decisión 16: ese efectivo en vivo se rechaza y su reserva se borra).
+     */
+    fun cobrarFolio(pedido: OnlineOrder) = abrirCobro(
+        orderId = pedido.orderId,
+        orderNumber = pedido.orderNumber,
+        saldoGuardado = pedido.remainingCents,
+        plataforma = null,
+        origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
+        origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
+        // R14: cobrar lo que ya existe nunca depende del plan; el folio sólo se ve si el servidor tiene la sección.
+        permitido = true,
+        productos = pedido.items,
+        folio = pedido,
+    )
+
+    /**
      * Rappi 2b: «Cobrar» de un pedido de «Rappi · por cobrar». Las MISMAS guardas que [cobrar] (cola del aparato, saldo del
      * servidor, sin red el último saldo visto, 0 ⇒ «Pagado»); cobra sólo en efectivo y sin propina (lo decide el origen).
      */
@@ -691,6 +738,8 @@ class OnlineOrdersViewModel internal constructor(
         origenSinSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
         permitido: Boolean,
         productos: List<OnlineOrderItem> = emptyList(),
+        /** A3: el folio de «Por pagar» que se cobra (null = pedido de «Mi equipo» o de reparto, como siempre). */
+        folio: OnlineOrder? = null,
     ) {
         if (!permisoActualizar() || !permisoCobrar() || !permitido) return
         if (_cobroAbierto.value != null) return
@@ -752,6 +801,27 @@ class OnlineOrdersViewModel internal constructor(
                         return@launch
                     }
                 }
+                // A3: con red se relee el folio. Su cuenta cancelada (venció o lo cancelaron) no se cobra: el SERVIDOR rechazaría el
+                // efectivo en vivo (regla del founder del 3-oct). Saldada, ya la cobró otra caja. Las dos releen la lista.
+                val releido = leido.getOrNull()
+                if (folio != null && releido != null) {
+                    val cerrada = releido.estadoDeLaCuenta in CUENTAS_CERRADAS
+                    // Una cancelada «no debe» aunque nadie pagó: saldada sólo si está viva o si de verdad entró un cobro.
+                    val pagada = releido.saldoCents <= 0L && (!cerrada || releido.pagadoA != null)
+                    val aviso = when {
+                        pagada -> TextosPedidosEnLinea.folioYaPagado(releido.pagadoA?.let(::horaDelNegocio))
+                        cerrada -> {
+                            val vencio = folio.acceptDeadlineAt?.let { !it.isAfter(java.time.Instant.ofEpochMilli(ahoraMs())) } ?: true
+                            if (vencio) TextosPedidosEnLinea.FOLIO_VENCIDO else TextosPedidosEnLinea.FOLIO_CANCELADO
+                        }
+                        else -> null
+                    }
+                    if (aviso != null) {
+                        _aviso.value = aviso
+                        refrescar(imprimirPendientes = false)
+                        return@launch
+                    }
+                }
                 if (saldo <= 0L) {
                     _aviso.value = TextosPedidosEnLinea.PAGADO
                     refrescar(imprimirPendientes = false)
@@ -768,7 +838,8 @@ class OnlineOrdersViewModel internal constructor(
                 _aviso.value = null
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
                     origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
-                    renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty())
+                    renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty(),
+                    esFolio = folio != null)
             } finally {
                 _ocupados.value = _ocupados.value - orderId
             }
@@ -839,6 +910,8 @@ class OnlineOrdersViewModel internal constructor(
         const val SECCION_POR_PAGAR = "toPay"
         const val SECCION_POR_ENTREGAR = "toDeliver"
         const val CLAVE_PAUSA = "__pausa__"
+        /** `Order.status` de una cuenta que ya no admite un cobro nuevo en vivo (A3). */
+        private val CUENTAS_CERRADAS = setOf("CANCELLED", "DELETED")
         private val IMPRIMIBLES = setOf(OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY)
         private val ABIERTOS = setOf(
             OnlineOrderStatus.PENDING_ACCEPTANCE, OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY,
@@ -861,7 +934,12 @@ data class CobroDePedido(
     val apertura: String = java.util.UUID.randomUUID().toString(),
     /** D4: los productos del pedido, sólo para «Ver productos»; vacío sin red, en Rappi o si no cuadran ([renglonesParaVer]). */
     val renglones: List<com.avoqado.pos.payment.data.model.PaymentItem> = emptyList(),
-)
+    /** A3: un folio de «Por pagar» (el renglón dice «Folio W7K3P» y el 400 de cuenta cancelada lleva su texto). */
+    val esFolio: Boolean = false,
+) {
+    /** Lo que dice el cobro si el SERVIDOR rechaza el efectivo en vivo porque la cuenta ya se canceló; null = como siempre. */
+    val textoSiLaCuentaSeCancelo: String? get() = if (esFolio) TextosPedidosEnLinea.FOLIO_VENCIDO else null
+}
 
 /**
  * D4 (28-oct): lo que enseña «Ver productos» al cobrar un pedido de la tienda web. Nombre, cantidad, extras y nota salen de la
@@ -901,7 +979,7 @@ fun carritoDelCobro(cobro: CobroDePedido): CartState = CartState(
             id = "pedido-en-linea-${cobro.orderId}",
             type = CartItemType.CustomAmount,
             name = cobro.plataforma?.let { TextosPedidosEnLinea.notaDeReparto(it, cobro.orderNumber) }
-                ?: TextosPedidosEnLinea.pedidoNumero(cobro.orderNumber),
+                ?: if (cobro.esFolio) TextosPedidosEnLinea.folio(cobro.orderNumber) else TextosPedidosEnLinea.pedidoNumero(cobro.orderNumber),
             unitPrice = cobro.saldoCents,
         ),
     ),

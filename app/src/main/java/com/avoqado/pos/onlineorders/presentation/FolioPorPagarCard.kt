@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,8 +53,9 @@ private val ALTO_MINIMO = 48.dp
 
 /**
  * Un folio de «Pedir por QR y pagar en caja»: «Folio W7K3P» (letras separadas y más grande que el nombre), el nombre, qué pidió y
- * el dinero. 🔴 Aquí NO se cobra ni se cancela (es de la tarea A3): «Por pagar» sólo muestra; «Por entregar» trae «Listo» (con
- * borde) y «Entregado» (relleno), apagados sin red porque el servidor es quien los cierra.
+ * el dinero. «Por pagar» trae «Cobrar» («Cobrar en efectivo» sin red) y, sin dinero y con red, «Cancelar folio» a 16 dp de él
+ * (A3). «Por entregar» trae «Listo» (con borde) y «Entregado» (relleno), apagados sin red porque el servidor es quien los cierra;
+ * lo cobrado en efectivo en ESTE aparato que aún no sube ([guardadoEnElAparato]) dice «Cobro en efectivo guardado…».
  */
 @Composable
 fun FolioPorPagarCard(
@@ -66,6 +68,11 @@ fun FolioPorPagarCard(
     onListo: () -> Unit,
     onEntregado: () -> Unit,
     modifier: Modifier = Modifier,
+    guardadoEnElAparato: Boolean = false,
+    puedeCobrar: Boolean = false,
+    puedeCancelar: Boolean = false,
+    onCobrar: () -> Unit = {},
+    onCancelar: () -> Unit = {},
 ) {
     val espacio = AvoqadoTheme.spacing
     Card(
@@ -101,13 +108,28 @@ fun FolioPorPagarCard(
 
             if (porEntregar) {
                 Text(
-                    TextosPedidosEnLinea.pagado(formatoPesos(pedido.totalCents)),
+                    // Lo cobrado aquí sin red: lo que se cobró en efectivo (lo que faltaba), no el total.
+                    if (guardadoEnElAparato) TextosPedidosEnLinea.pagadoEnEfectivo(formatoPesos(pedido.remainingCents))
+                    else TextosPedidosEnLinea.pagado(formatoPesos(pedido.totalCents)),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
+                if (guardadoEnElAparato) {
+                    Text(
+                        TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("folio-guardado-${pedido.orderId}"),
+                    )
+                } else {
+                    textoDePago(pedido)?.let {
+                        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 if (puedeActualizar) {
                     // Los dos pesan igual en la TPV y en el panel: «Listo» con borde y «Entregado» relleno, en ese orden.
-                    val enLinea = !sinConexion && !ocupado
+                    // Lo cobrado aquí sin subir todavía no es «pagado» para el servidor: esperan a que suba.
+                    val enLinea = !sinConexion && !ocupado && !guardadoEnElAparato
                     // «Entregado» no se deshace: más aire entre los dos para no tocar el equivocado.
                     Row(horizontalArrangement = Arrangement.spacedBy(espacio.md)) {
                         OutlinedButton(onClick = onListo, enabled = enLinea, modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-listo-${pedido.orderId}")) {
@@ -132,17 +154,31 @@ fun FolioPorPagarCard(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                // La cifra grande es lo que hay que cobrar, con «Cobrar» a su lado (mockup 3a).
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(espacio.md)) {
                     Text(
-                        TextosPedidosEnLinea.falta(formatoPesos(pedido.remainingCents)),
+                        if (hayAbono(pedido)) TextosPedidosEnLinea.falta(formatoPesos(pedido.remainingCents))
+                        else TextosPedidosEnLinea.totalACobrar(formatoPesos(pedido.remainingCents)),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
                     )
-                } else {
-                    Text(
-                        TextosPedidosEnLinea.totalACobrar(formatoPesos(pedido.remainingCents)),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    if (puedeCobrar) {
+                        Button(
+                            onClick = onCobrar,
+                            enabled = !ocupado,
+                            modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-cobrar-${pedido.orderId}"),
+                        ) { Text(textoDeCobro(sinConexion)) }
+                    }
+                }
+                if (muestraCancelarFolio(pedido, puedeCancelar, sinConexion)) {
+                    // Al menos 16 dp de «Cobrar»: los 8 del renglón + estos 8. Siempre pregunta antes (diálogo fuera de la lista).
+                    TextButton(
+                        onClick = onCancelar,
+                        enabled = !ocupado,
+                        modifier = Modifier.padding(top = espacio.sm).heightIn(min = ALTO_MINIMO).testTag("folio-cancelar-${pedido.orderId}"),
+                    ) { Text(TextosPedidosEnLinea.CANCELAR_FOLIO, color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -168,6 +204,12 @@ internal fun LazyListScope.seccionesDeFolios(
     onEntregado: (OnlineOrder) -> Unit,
     onCargarMas: (seccion: String) -> Unit,
     onReintentar: () -> Unit,
+    // A3: cobrar y cancelar un folio; lo cobrado aquí sin subir ya viene movido a «Por entregar» (`conLoCobradoEnElAparato`).
+    cobradosEnElAparato: Set<String> = emptySet(),
+    puedeCobrar: Boolean = false,
+    puedeCancelar: Boolean = false,
+    onCobrar: (OnlineOrder) -> Unit = {},
+    onCancelar: (orderId: String) -> Unit = {},
 ) {
     if (lista == null) {
         if (!error && leyendo) {
@@ -223,7 +265,11 @@ internal fun LazyListScope.seccionesDeFolios(
             }
         }
         items(porPagar, key = { "folio-pagar-${it.orderId}" }) { pedido ->
-            FolioPorPagarCard(pedido, false, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados, {}, {})
+            FolioPorPagarCard(
+                pedido, false, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados, {}, {},
+                puedeCobrar = puedeCobrar, puedeCancelar = puedeCancelar,
+                onCobrar = { onCobrar(pedido) }, onCancelar = { onCancelar(pedido.orderId) },
+            )
         }
         if (hayMasPorPagar) {
             item(key = "folios-pagar-mas") {
@@ -240,6 +286,7 @@ internal fun LazyListScope.seccionesDeFolios(
             FolioPorPagarCard(
                 pedido, true, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados,
                 onListo = { onListo(pedido.orderId) }, onEntregado = { onEntregado(pedido) },
+                guardadoEnElAparato = pedido.orderId in cobradosEnElAparato,
             )
         }
         if (hayMasPorEntregar) {

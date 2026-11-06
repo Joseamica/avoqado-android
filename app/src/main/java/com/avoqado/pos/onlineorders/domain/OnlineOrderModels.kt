@@ -51,14 +51,22 @@ data class OnlineOrder(
     val requiresAcceptance: Boolean? = null,
     /** De dónde pidió la clienta (p. ej. `QR`, `WEB`); null si el servidor es viejo. */
     val channel: String? = null,
+    /** R67: cuándo quedó pagado un folio de «Por entregar» («Pagado a las HH:MM»); null si el SERVIDOR no lo manda. */
+    val paidAt: Instant? = null,
 )
 
 /**
  * Lo que dice el servidor al tocar «Cobrar»: el saldo (lo único que mueve dinero) y el precio de cada producto del pedido, que
  * sólo sirve para enseñar «Ver productos». [precios] es null si ya hubo un pago o si algún producto no se pudo leer completo:
- * el saldo vale igual.
+ * el saldo vale igual. Tienda híbrida (A3): [estadoDeLaCuenta] (`Order.status`; `CANCELLED` = el folio venció o lo cancelaron)
+ * y [pagadoA] (el último cobro que entró) dicen, al releer un folio, si ya no se puede cobrar o si otra caja ya lo cobró.
  */
-data class SaldoDelPedido(val saldoCents: Long, val precios: List<PrecioDeRenglon>? = null)
+data class SaldoDelPedido(
+    val saldoCents: Long,
+    val precios: List<PrecioDeRenglon>? = null,
+    val estadoDeLaCuenta: String? = null,
+    val pagadoA: Instant? = null,
+)
 
 /**
  * Un producto del detalle del pedido: nombre guardado, cantidad, lo que cobra el renglón entero (con extras) en centavos, y su

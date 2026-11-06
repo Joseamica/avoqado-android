@@ -1,5 +1,7 @@
 package com.avoqado.pos.onlineorders.presentation
 
+import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import java.text.Normalizer
 import java.time.Duration
@@ -36,6 +38,32 @@ fun filtrarFolios(lista: List<OnlineOrder>, texto: String): List<OnlineOrder> {
     return lista.filter {
         normalizar(it.orderNumber).contains(folio) || normalizar(it.customerName.orEmpty()).contains(nombre)
     }
+}
+
+/** A3: el botón de cobrar un folio dice lo único que se puede sin red (la tarjeta y la tarjeta de regalo necesitan conexión). */
+fun textoDeCobro(sinConexion: Boolean): String =
+    if (sinConexion) TextosPedidosEnLinea.COBRAR_EN_EFECTIVO else TextosPedidosEnLinea.COBRAR
+
+/** A3: «Cancelar folio» no existe en un folio con dinero ni sin `orders:cancel-unpaid`; sin red vuelve con la conexión. */
+fun muestraCancelarFolio(pedido: OnlineOrder, puedeCancelar: Boolean, sinConexion: Boolean): Boolean =
+    puedeCancelar && !sinConexion && sinDinero(pedido)
+
+/** R67: «Pagado a las HH:MM» en «Por entregar»; null si el SERVIDOR no manda `paidAt` (se queda como hoy). */
+fun textoDePago(pedido: OnlineOrder): String? = pedido.paidAt?.let { TextosPedidosEnLinea.pagadoALas(horaDelNegocio(it)) }
+
+/**
+ * A3: lo cobrado en efectivo en ESTE aparato que la cola todavía no sube ([enCola]) sale de «Por pagar» y entra primero a «Por
+ * entregar», sin esperar a la red: así nadie lo cobra dos veces. La lista del servidor no se toca: esto es sólo lo que se pinta.
+ */
+fun conLoCobradoEnElAparato(lista: ListaPorPagar, enCola: Set<String>): ListaPorPagar {
+    val (movidos, quedan) = lista.porPagar.partition { it.orderId in enCola }
+    if (movidos.isEmpty()) return lista
+    val ids = movidos.map { it.orderId }.toSet()
+    return lista.copy(
+        porPagar = quedan,
+        porEntregar = movidos + lista.porEntregar.filter { it.orderId !in ids },
+        counts = ConteosPorPagar((lista.counts.toPay - movidos.size).coerceAtLeast(0), lista.counts.toDeliver + movidos.size),
+    )
 }
 
 /** Cuánto falta para que venza un folio. [pronto] = 5 min o menos: el punto se pinta en ámbar (nunca rojo, nunca el texto). */

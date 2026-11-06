@@ -181,6 +181,8 @@ class OnlineOrdersRepository @Inject constructor(
             rejectReason = o.textoONulo("rejectReason"),
             requiresAcceptance = if (o.isNull("requiresAcceptance")) null else o.optBoolean("requiresAcceptance"),
             channel = o.textoONulo("channel"),
+            // R67, opcional: una fecha rota no tumba el folio (se queda sin hora, como con un SERVIDOR viejo).
+            paidAt = o.textoONulo("paidAt")?.let { runCatching { Instant.parse(it) }.getOrNull() },
         )
     }
 
@@ -389,8 +391,22 @@ class OnlineOrdersRepository @Inject constructor(
             val saldo = balance.getLong("remainingBalanceCents")
             // Con cualquier pago previo la lista no se enseña: un abono y un cargo iguales cuadrarían la suma por casualidad.
             val sinPagos = balance.optLong("totalPaidCents", -1L) == 0L
-            SaldoDelPedido(saldo, if (sinPagos) runCatching { precios(orden) }.getOrNull() else null)
+            SaldoDelPedido(
+                saldo, if (sinPagos) runCatching { precios(orden) }.getOrNull() else null,
+                estadoDeLaCuenta = orden.textoONulo("status"),
+                pagadoA = runCatching { ultimoCobro(orden) }.getOrNull(),
+            )
         }
+    }
+
+    /** La hora del último cobro que entró (`COMPLETED` y positivo: un reembolso o un intento fallido no cuentan); null si no hay. */
+    private fun ultimoCobro(orden: JSONObject): Instant? {
+        val pagos = orden.optJSONArray("payments") ?: return null
+        return (0 until pagos.length()).mapNotNull { i ->
+            val p = pagos.getJSONObject(i)
+            if (p.optString("status") != "COMPLETED" || p.optDouble("amount", 0.0) <= 0.0) return@mapNotNull null
+            p.textoONulo("createdAt")?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        }.maxOrNull()
     }
 
     private fun precios(orden: JSONObject): List<PrecioDeRenglon> {

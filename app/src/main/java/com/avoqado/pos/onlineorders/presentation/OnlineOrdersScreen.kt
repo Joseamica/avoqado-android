@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +57,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
@@ -98,6 +101,8 @@ fun OnlineOrdersScreen(
     val errorFolios by viewModel.errorFolios.collectAsState()
     val leyendoFolios by viewModel.leyendoFolios.collectAsState()
     val busqueda by viewModel.busqueda.collectAsState()
+    // A3: lo cobrado en efectivo en este aparato que la cola aún no sube se pinta en «Por entregar».
+    val cobradosEnElAparato by viewModel.cobradosEnElAparato.collectAsState()
     // «Vence en N min» se recalcula solo aunque la lista no cambie.
     var ahora by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); ahora = Instant.now() } }
@@ -135,6 +140,11 @@ fun OnlineOrdersScreen(
     val puedeActualizar = viewModel.puedeActualizar
     val puedeCancelar = viewModel.puedeCancelar
     val dialogo = rememberDialogoDePedido()
+    // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
+    val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
+    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato) {
+        seccionFolios?.let { conLoCobradoEnElAparato(it, cobradosEnElAparato) }
+    }
 
     Box(Modifier.fillMaxSize()) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -163,8 +173,6 @@ fun OnlineOrdersScreen(
                 }
 
                 // Sin red = estado normal: texto neutro, nunca rojo de error.
-                // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
-                val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
                 val mostrarFolios = seccionFolios != null || (folios == null && (errorFolios || leyendoFolios))
                 // Un solo aviso: con folios dice además qué vuelve con la conexión.
                 if (sinConexion) AvisoNeutro(if (seccionFolios != null) TextosPedidosEnLinea.SIN_CONEXION_FOLIOS else TextosPedidosEnLinea.SIN_CONEXION)
@@ -217,7 +225,7 @@ fun OnlineOrdersScreen(
                             foliosAntes = if (!mostrarFolios) null else {
                                 {
                                     seccionesDeFolios(
-                                        lista = seccionFolios,
+                                        lista = foliosEnPantalla,
                                         error = errorFolios,
                                         leyendo = leyendoFolios,
                                         busqueda = busqueda,
@@ -231,6 +239,11 @@ fun OnlineOrdersScreen(
                                         onEntregado = viewModel::entregarFolio,
                                         onCargarMas = viewModel::cargarMasFolios,
                                         onReintentar = viewModel::reintentarFolios,
+                                        cobradosEnElAparato = cobradosEnElAparato,
+                                        puedeCobrar = viewModel.puedeCobrar && puedeActualizar,
+                                        puedeCancelar = puedeCancelar,
+                                        onCobrar = viewModel::cobrarFolio,
+                                        onCancelar = { dialogo.abrir(it, TipoDeDialogo.CANCELAR_FOLIO) },
                                     )
                                 }
                             },
@@ -286,6 +299,7 @@ fun OnlineOrdersScreen(
         onAceptar = viewModel::aceptar,
         onRechazar = viewModel::rechazar,
         onCancelar = viewModel::cancelar,
+        folios = foliosEnPantalla?.porPagar.orEmpty(),
     )
 
     if (pausando) {
@@ -347,6 +361,7 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
             resumeOrderId = cobro.orderId,
             origen = cobro.origen,
             apertura = cobro.apertura,
+            textoSiLaCuentaSeCancelo = cobro.textoSiLaCuentaSeCancelo,
         )
     }
 }
@@ -413,13 +428,19 @@ internal fun debeQuedarseArriba(estabaArriba: Boolean, primeraClaveAntes: String
 
 /**
  * El pedido de un diálogo abierto, o `null` si ya no vale: ACEPTAR y RECHAZAR sólo mientras siga en «Por aceptar»; CANCELAR mientras
- * siga en «En preparación» o «Listos» y sin dinero. PURA.
+ * siga en «En preparación» o «Listos» y sin dinero; CANCELAR_FOLIO mientras el folio siga en «Por pagar» ([folios]) y sin dinero. PURA.
  */
-internal fun pedidoDelDialogo(orderId: String, tipo: TipoDeDialogo, secciones: SeccionesBandeja): OnlineOrder? = when (tipo) {
+internal fun pedidoDelDialogo(
+    orderId: String,
+    tipo: TipoDeDialogo,
+    secciones: SeccionesBandeja,
+    folios: List<OnlineOrder> = emptyList(),
+): OnlineOrder? = when (tipo) {
     TipoDeDialogo.ACEPTAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId && sePuedeAceptar(it) }
     TipoDeDialogo.RECHAZAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId }
     TipoDeDialogo.CANCELAR ->
         (secciones.enPreparacion + secciones.listos).firstOrNull { it.orderId == orderId && sinDinero(it) }
+    TipoDeDialogo.CANCELAR_FOLIO -> folios.firstOrNull { it.orderId == orderId && sinDinero(it) }
 }
 
 /** El diálogo abierto de la bandeja (de qué pedido y cuál). Sobrevive a un giro de la tableta: se guarda como dos textos. */
@@ -571,12 +592,14 @@ internal fun DialogosDeLaBandeja(
     onAceptar: (orderId: String, minutos: Int) -> Unit,
     onRechazar: (orderId: String, motivo: String) -> Unit,
     onCancelar: (orderId: String) -> Unit,
+    /** A3: los folios de «Por pagar» (lo que se pinta), para «Cancelar folio». */
+    folios: List<OnlineOrder> = emptyList(),
 ) {
     val orderId = dialogo.orderId
     val tipo = dialogo.tipo
     if (orderId == null || tipo == null) return
     // Si el pedido ya no está donde la acción vale (otro aparato lo atendió), el diálogo se cierra, igual que cuando vivía en la tarjeta.
-    val pedido = pedidoDelDialogo(orderId, tipo, secciones)
+    val pedido = pedidoDelDialogo(orderId, tipo, secciones, folios)
     if (pedido == null) {
         SideEffect { dialogo.cerrar() }
         return
@@ -625,6 +648,27 @@ internal fun DialogosDeLaBandeja(
             },
             dismissButton = { TextButton(onClick = cerrar) { Text(TextosPedidosEnLinea.CANCELAR_VOLVER) } },
         )
+        // A3: siempre pregunta, con el folio y el nombre de quien lo verá cancelado.
+        TipoDeDialogo.CANCELAR_FOLIO -> AvoqadoDialog(
+            title = TextosPedidosEnLinea.cancelarFolioTitulo(pedido.orderNumber),
+            description = TextosPedidosEnLinea.cancelarFolioCuerpo(pedido.customerName),
+            onDismiss = cerrar,
+            actionButton = {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                    OutlinedButton(onClick = cerrar, modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("cancelar-folio-no")) {
+                        Text(TextosPedidosEnLinea.NO)
+                    }
+                    Button(
+                        onClick = { cerrar(); onCancelar(orderId) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        ),
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("cancelar-folio-si"),
+                    ) { Text(TextosPedidosEnLinea.SI_CANCELAR) }
+                }
+            },
+        ) {}
     }
 }
 
