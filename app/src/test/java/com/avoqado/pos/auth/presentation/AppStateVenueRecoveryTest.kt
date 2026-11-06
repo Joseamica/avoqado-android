@@ -91,6 +91,33 @@ class AppStateVenueRecoveryTest {
         assertEquals(false, appState.visibleTabs.value.isEmpty())
     }
 
+    // ── hz:0cf0dda9:D4: «Activar reservas» desde Mostrador cambia el modo, y cambiar de modo rearma toda la navegación
+    //    (AvoqadoNavGraph, key(contentKey)) ANTES de que la pantalla alcance a llamar refreshTabs(). Las pestañas que se
+    //    calculan con ese cambio de modo tienen que traer ya el Calendario (WINDOWS, 5-nov: no salía y caía en Cobrar). ──
+
+    @Test
+    fun `P2 D4 al prender reservas desde Mostrador el cambio de modo ya trae el Calendario sin refreshTabs`() = runTest {
+        val modo = MutableStateFlow(PosMode.RETAIL)
+        var reservasPrendidas = false
+        val plan = mockk<PlanManager>(relaxed = true) { every { hasFeature("RESERVATIONS") } returns true }
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {}, modo = modo, planManager = plan,
+            configurarSesion = { every { reservationsEnabled } answers { reservasPrendidas } },
+        )
+        runCurrent()
+        assertTrue(com.avoqado.pos.navigation.MainTab.CALENDAR !in appState.visibleTabs.value)
+
+        // Lo que hace ActivateReservationsViewModel.activate(): guarda el interruptor y pasa el aparato a «Citas».
+        reservasPrendidas = true
+        modo.value = PosMode.RESERVATIONS
+        runCurrent()
+
+        assertTrue(
+            "con el modo nuevo las pestañas deben traer el Calendario: ${appState.visibleTabs.value}",
+            com.avoqado.pos.navigation.MainTab.CALENDAR in appState.visibleTabs.value,
+        )
+    }
+
     // ── D8: los carritos guardados siguen a la sucursal de la sesión al entrar y al salir, no sólo al cambiar ──
 
     @Test
@@ -400,6 +427,8 @@ class AppStateVenueRecoveryTest {
         resolverReal: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta? = null,
         llegadasDelKiosco: Int = 0,
         savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
+        modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
+        planManager: PlanManager = mockk(relaxed = true),
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -432,7 +461,7 @@ class AppStateVenueRecoveryTest {
             coEvery { pendingKioskArrivals(any()) } returns llegadasDelKiosco
         }
         val posModeManager = mockk<PosModeManager>(relaxed = true) {
-            every { currentMode } returns MutableStateFlow(PosMode.RETAIL)
+            every { currentMode } returns modo
         }
         val tpvSettingsRepository = tpvSettingsRepository ?: mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
@@ -453,7 +482,7 @@ class AppStateVenueRecoveryTest {
             authRepository = authRepository,
             timeEntryRepository = mockk<TimeEntryRepository>(relaxed = true),
             roleManager = mockk<RoleManager>(relaxed = true),
-            planManager = mockk<PlanManager>(relaxed = true),
+            planManager = planManager,
             tpvSettingsRepository = tpvSettingsRepository,
             paymentSyncService = paymentSyncService,
             comandasPendientesStore = mockk(relaxed = true),
