@@ -423,7 +423,12 @@ class AppState @Inject constructor(
         _roleVersion,
         posModeManager.currentMode,
         _accessVersion,
-    ) { enabled, _, posMode, _ -> computeVisibleTabs(enabled, posMode) }
+    ) { _, _, posMode, _ ->
+        // El interruptor se lee de donde se guarda, no de la copia: _reservationsEnabled sólo AVISA que cambió. «Activar
+        // reservas» desde Mostrador guarda el interruptor y cambia el modo; ese cambio rearma toda la navegación antes de
+        // que la pantalla llame refreshTabs(), y con la copia vieja el Calendario no salía (hz:0cf0dda9:D4, WINDOWS 5-nov).
+        computeVisibleTabs(secureStorage.reservationsEnabled, posMode)
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
