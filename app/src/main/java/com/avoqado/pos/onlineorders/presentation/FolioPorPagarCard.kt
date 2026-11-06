@@ -108,7 +108,8 @@ fun FolioPorPagarCard(
                 if (puedeActualizar) {
                     // Los dos pesan igual en la TPV y en el panel: «Listo» con borde y «Entregado» relleno, en ese orden.
                     val enLinea = !sinConexion && !ocupado
-                    Row(horizontalArrangement = Arrangement.spacedBy(espacio.sm)) {
+                    // «Entregado» no se deshace: más aire entre los dos para no tocar el equivocado.
+                    Row(horizontalArrangement = Arrangement.spacedBy(espacio.md)) {
                         OutlinedButton(onClick = onListo, enabled = enLinea, modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-listo-${pedido.orderId}")) {
                             Text(TextosPedidosEnLinea.LISTO)
                         }
@@ -155,6 +156,7 @@ fun FolioPorPagarCard(
 internal fun LazyListScope.seccionesDeFolios(
     lista: ListaPorPagar?,
     error: Boolean,
+    leyendo: Boolean,
     busqueda: String,
     ahora: Instant,
     sinConexion: Boolean,
@@ -168,6 +170,11 @@ internal fun LazyListScope.seccionesDeFolios(
     onReintentar: () -> Unit,
 ) {
     if (lista == null) {
+        if (!error && leyendo) {
+            item(key = CLAVE_ERROR_FOLIOS) {
+                Text(TextosPedidosEnLinea.FOLIOS_LEYENDO, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("folios-leyendo"))
+            }
+        }
         if (error) {
             item(key = CLAVE_ERROR_FOLIOS) {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
@@ -189,18 +196,28 @@ internal fun LazyListScope.seccionesDeFolios(
     val hayMasPorEntregar = lista.nextCursors.toDeliver != null
 
     if (busca && porPagar.isEmpty() && porEntregar.isEmpty()) {
-        item(key = "folios-sin-resultados") {
-            Mensaje(TextosPedidosEnLinea.sinResultados(busqueda.trim()), TextosPedidosEnLinea.SIN_RESULTADOS_AYUDA, "folios-sin-resultados")
+        // Con más páginas por traer, el folio pudo quedar en una que no se ha cargado: nunca se dice «no encontramos».
+        if (hayMasPorPagar || hayMasPorEntregar) {
+            item(key = "folios-sin-resultados") {
+                Mensaje(
+                    TextosPedidosEnLinea.sinResultadosEntre(lista.porPagar.size + lista.porEntregar.size),
+                    TextosPedidosEnLinea.SIN_RESULTADOS_ENTRE_AYUDA, "folios-sin-resultados-parciales",
+                )
+            }
+        } else {
+            item(key = "folios-sin-resultados") {
+                Mensaje(TextosPedidosEnLinea.sinResultados(busqueda.trim()), TextosPedidosEnLinea.SIN_RESULTADOS_AYUDA, "folios-sin-resultados")
+            }
+            return
         }
-        return
     }
 
-    if (porPagar.isNotEmpty() || (!busca && lista.showTile)) {
+    if (porPagar.isNotEmpty() || (!busca && lista.showTile) || (busca && hayMasPorPagar)) {
         item(key = "h-folios-por-pagar") {
             val n = if (busca) porPagar.size else numeroDeSeccion(lista.counts.toPay, porPagar.size, hayMasPorPagar)
             CabeceraDeFolios(TextosPedidosEnLinea.SECCION_POR_PAGAR, n, lista.guardadoHaceMin, "seccion-por-pagar")
         }
-        if (porPagar.isEmpty()) {
+        if (porPagar.isEmpty() && !busca) {
             item(key = "folios-por-pagar-vacio") {
                 Mensaje(TextosPedidosEnLinea.POR_PAGAR_VACIO, TextosPedidosEnLinea.POR_PAGAR_VACIO_AYUDA, "folios-por-pagar-vacio")
             }
@@ -208,13 +225,13 @@ internal fun LazyListScope.seccionesDeFolios(
         items(porPagar, key = { "folio-pagar-${it.orderId}" }) { pedido ->
             FolioPorPagarCard(pedido, false, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados, {}, {})
         }
-        if (hayMasPorPagar && !busca) {
+        if (hayMasPorPagar) {
             item(key = "folios-pagar-mas") {
-                CargarMas(porPagar.size, lista.counts.toPay, sinConexion || cargandoMas, "cargar-mas-por-pagar") { onCargarMas(OnlineOrdersViewModel.SECCION_POR_PAGAR) }
+                CargarMas(lista.porPagar.size, lista.counts.toPay, sinConexion || cargandoMas, "cargar-mas-por-pagar") { onCargarMas(OnlineOrdersViewModel.SECCION_POR_PAGAR) }
             }
         }
     }
-    if (porEntregar.isNotEmpty()) {
+    if (porEntregar.isNotEmpty() || (busca && hayMasPorEntregar)) {
         item(key = "h-folios-por-entregar") {
             val n = if (busca) porEntregar.size else numeroDeSeccion(lista.counts.toDeliver, porEntregar.size, hayMasPorEntregar)
             CabeceraDeFolios(TextosPedidosEnLinea.SECCION_POR_ENTREGAR, n, if (porPagar.isEmpty()) lista.guardadoHaceMin else null, "seccion-por-entregar")
@@ -225,9 +242,9 @@ internal fun LazyListScope.seccionesDeFolios(
                 onListo = { onListo(pedido.orderId) }, onEntregado = { onEntregado(pedido) },
             )
         }
-        if (hayMasPorEntregar && !busca) {
+        if (hayMasPorEntregar) {
             item(key = "folios-entregar-mas") {
-                CargarMas(porEntregar.size, lista.counts.toDeliver, sinConexion || cargandoMas, "cargar-mas-por-entregar") { onCargarMas(OnlineOrdersViewModel.SECCION_POR_ENTREGAR) }
+                CargarMas(lista.porEntregar.size, lista.counts.toDeliver, sinConexion || cargandoMas, "cargar-mas-por-entregar") { onCargarMas(OnlineOrdersViewModel.SECCION_POR_ENTREGAR) }
             }
         }
     }

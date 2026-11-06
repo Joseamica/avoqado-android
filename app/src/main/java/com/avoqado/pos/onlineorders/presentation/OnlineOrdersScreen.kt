@@ -96,6 +96,7 @@ fun OnlineOrdersScreen(
     LaunchedEffect(viewModel) { viewModel.descubrirPorPagar() }
     val folios by viewModel.porPagar.collectAsState()
     val errorFolios by viewModel.errorFolios.collectAsState()
+    val leyendoFolios by viewModel.leyendoFolios.collectAsState()
     val busqueda by viewModel.busqueda.collectAsState()
     // «Vence en N min» se recalcula solo aunque la lista no cambie.
     var ahora by remember { mutableStateOf(Instant.now()) }
@@ -164,7 +165,7 @@ fun OnlineOrdersScreen(
                 // Sin red = estado normal: texto neutro, nunca rojo de error.
                 // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
                 val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
-                val mostrarFolios = seccionFolios != null || (folios == null && errorFolios)
+                val mostrarFolios = seccionFolios != null || (folios == null && (errorFolios || leyendoFolios))
                 // Un solo aviso: con folios dice además qué vuelve con la conexión.
                 if (sinConexion) AvisoNeutro(if (seccionFolios != null) TextosPedidosEnLinea.SIN_CONEXION_FOLIOS else TextosPedidosEnLinea.SIN_CONEXION)
                 if (noSePudoLeer) AvisoNeutro(TextosPedidosEnLinea.NO_SE_PUDO_LEER)
@@ -210,7 +211,7 @@ fun OnlineOrdersScreen(
                             onCargarMas = viewModel::cargarMas,
                             claveAntes = when {
                                 seccionFolios != null -> CLAVE_BUSCADOR_FOLIOS
-                                mostrarFolios -> CLAVE_ERROR_FOLIOS
+                                mostrarFolios -> CLAVE_ERROR_FOLIOS // también la del «Leyendo folios…»
                                 else -> null
                             },
                             foliosAntes = if (!mostrarFolios) null else {
@@ -218,6 +219,7 @@ fun OnlineOrdersScreen(
                                     seccionesDeFolios(
                                         lista = seccionFolios,
                                         error = errorFolios,
+                                        leyendo = leyendoFolios,
                                         busqueda = busqueda,
                                         ahora = ahora,
                                         sinConexion = sinConexion,

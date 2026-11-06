@@ -242,6 +242,11 @@ class OnlineOrdersViewModel internal constructor(
     /** No hay lista que enseñar y la lectura falló por algo que no es falta de red: «No se pudieron leer los folios» + «Reintentar». */
     val errorFolios: StateFlow<Boolean> = _errorFolios.asStateFlow()
 
+    private val _leyendoFolios = MutableStateFlow(true)
+
+    /** Primera lectura de folios todavía en curso (ni lista ni error): «Leyendo folios…». */
+    val leyendoFolios: StateFlow<Boolean> = _leyendoFolios.asStateFlow()
+
     private val _busqueda = MutableStateFlow("")
 
     /** Lo escrito en «Buscar folio o nombre». */
@@ -319,6 +324,8 @@ class OnlineOrdersViewModel internal constructor(
             val actual = _porPagar.value
             if (it is IOException) {
                 _sinConexion.value = true
+                // Sin red no es un error de lectura: el aviso de sin conexión y el de «no se pudieron leer» nunca van juntos.
+                _errorFolios.value = false
                 // Se conserva la última lista, diciendo qué tan vieja es.
                 if (actual != null && actual.disponible) {
                     _porPagar.value = actual.copy(guardadoHaceMin = ((ahoraMs() - leidoEnMs) / 60_000).coerceAtLeast(0))
@@ -329,6 +336,7 @@ class OnlineOrdersViewModel internal constructor(
                 _errorFolios.value = true
             }
         }
+        _leyendoFolios.value = false
     }
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =

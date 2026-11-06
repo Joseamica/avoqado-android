@@ -360,6 +360,39 @@ class PorPagarBandejaTest {
         assertEquals(101, vm.porPagar.value!!.porEntregar.size)
     }
 
+    @Test
+    fun `searching the 101st folio offers Cargar mas and finds it after loading`() = runTest(dispatcher) {
+        val cien = (1..100).map { folio("e$it", "W${"%04d".format(it).replace('0', 'A')}", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0) }
+        respuesta = Result.success(lista(porEntregar = cien, toDeliver = 101, cursorEntregar = "c1"))
+        respuestasPorCursor["c1"] = Result.success(lista(porEntregar = listOf(folio("e101", "WZZZZ", nombre = "Zoe", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)), toDeliver = 101))
+        val vm = armar()
+        vm.refrescar()
+        val antes = vm.porPagar.value!!
+        assertTrue("no está entre los cargados", filtrarFolios(antes.porEntregar, "zzzz").isEmpty())
+        assertNotNull("pero «Cargar más» sigue disponible: la pantalla no puede decir «no encontramos»", antes.nextCursors.toDeliver)
+        assertEquals("Sin resultados entre los 100 cargados", TextosPedidosEnLinea.sinResultadosEntre(100))
+
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_ENTREGAR)
+        advanceUntilIdle()
+        assertEquals(listOf("e101"), filtrarFolios(vm.porPagar.value!!.porEntregar, "zzzz").map { it.orderId })
+    }
+
+    @Test
+    fun `an offline read is never also a read error and reading is announced until the first answer`() = runTest(dispatcher) {
+        respuesta = Result.failure(IllegalStateException("500"))
+        val vm = armar()
+        assertTrue("antes de la primera lectura se anuncia", vm.leyendoFolios.value)
+        vm.descubrirPorPagar()
+        assertTrue(vm.errorFolios.value)
+        assertFalse(vm.leyendoFolios.value)
+
+        respuesta = Result.failure(IOException("sin red"))
+        vm.reintentarFolios()
+        advanceUntilIdle()
+        assertFalse("sin red no es error de lectura", vm.errorFolios.value)
+        assertTrue(vm.sinConexion.value)
+    }
+
     // MARK: - Latido
 
     @Test
