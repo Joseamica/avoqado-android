@@ -973,6 +973,8 @@ class ArticlesRepository @Inject constructor(
      * @param background la entrega la dispara la cola durable (`PendingGrantQueue`) o el post-cobro, no un toque.
      * @param deliveryKey la llave de la entrega: una misma llave nunca crea dos compras (D4).
      * @param saleProof la foto firmada de lo vendido, tal como la mandó el servidor en la lista.
+     * @param cobradoEnOrden se cobró en una orden del carrito, cuyo cobro ya sumó al «Total gastado» del cliente: el servidor no lo
+     *   vuelve a sumar (D17). La ficha cobra a mano, sin orden: false.
      * @return lo que contestó el servidor, sin decidir nada: lo clasifica la cola.
      */
     suspend fun sellPackToCustomer(
@@ -981,6 +983,7 @@ class ArticlesRepository @Inject constructor(
         background: Boolean = false,
         deliveryKey: String? = null,
         saleProof: String? = null,
+        cobradoEnOrden: Boolean = false,
     ): RespuestaDeEntrega {
         val url = baseUrl() ?: return RespuestaDeEntrega(null, null)
         return try {
@@ -988,6 +991,7 @@ class ArticlesRepository @Inject constructor(
                 put("customerId", kotlinx.serialization.json.JsonPrimitive(customerId))
                 deliveryKey?.let { put("deliveryKey", kotlinx.serialization.json.JsonPrimitive(it)) }
                 saleProof?.let { put("saleProof", kotlinx.serialization.json.JsonPrimitive(it)) }
+                if (cobradoEnOrden) put("cobradoEnOrden", kotlinx.serialization.json.JsonPrimitive(true))
             }.toString()
             val request = Request.Builder()
                 .url("$url/credit-packs/$packId/sell")
