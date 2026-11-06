@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -216,6 +217,8 @@ class ArticlesViewModel @Inject constructor(
         trackInventory: Boolean,
         inventoryMethod: String? = null,
         unit: String? = null,
+        /** Sólo cuenta en un servicio de cita, el único tipo que la muestra (D4: antes se perdía). */
+        durationMinutes: Int? = null,
         onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
@@ -239,6 +242,7 @@ class ArticlesViewModel @Inject constructor(
                     put("trackInventory", trackInventory)
                     if (inventoryMethod != null) put("inventoryMethod", inventoryMethod)
                     if (unit != null) put("unit", unit)
+                    if (type == ProductType.APPOINTMENTS_SERVICE && durationMinutes != null) put("durationMinutes", durationMinutes)
                 }.toString()
                 val success = repository.createProduct(payload)
                 Log.d(TAG, if (success) "✅ Product created" else "❌ Product creation failed")
@@ -268,6 +272,8 @@ class ArticlesViewModel @Inject constructor(
         trackInventory: Boolean,
         inventoryMethod: String? = null,
         unit: String? = null,
+        /** Sólo cuenta en un servicio de cita; `null` la borra (D4: antes se perdía al editar). */
+        durationMinutes: Int? = null,
         /** La ficha se abrió desde el catálogo guardado (sin red): trae datos viejos y no se guarda (r2 R2-14). */
         abiertaSinConexion: Boolean = false,
         onResult: (Boolean) -> Unit = {},
@@ -292,6 +298,7 @@ class ArticlesViewModel @Inject constructor(
                     put("trackInventory", trackInventory)
                     if (inventoryMethod != null) put("inventoryMethod", inventoryMethod)
                     if (unit != null) put("unit", unit)
+                    if (type == ProductType.APPOINTMENTS_SERVICE) put("durationMinutes", durationMinutes?.let { JsonPrimitive(it) } ?: JsonNull)
                 }.toString()
                 val success = repository.updateProduct(productId, payload)
                 Log.d(TAG, if (success) "✅ Product $productId updated" else "❌ Product update failed")
