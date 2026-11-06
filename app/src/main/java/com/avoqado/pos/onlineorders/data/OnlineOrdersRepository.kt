@@ -7,7 +7,10 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.onlineorders.domain.AccionResultado
+import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
+import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.domain.Inbox
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
@@ -99,10 +102,11 @@ class OnlineOrdersRepository @Inject constructor(
     private fun JSONObject.textoONulo(k: String): String? =
         if (isNull(k)) null else optString(k).takeIf { it.isNotBlank() }
 
-    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false): Request =
+    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false, latido: Boolean = false): Request =
         Request.Builder().url(url).header("Authorization", "Bearer $token").apply {
             if (fondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
             if (bandeja) header(TRAY_HEADER, "1")
+            if (latido) header(TO_PAY_HEADER, "1")
             // La ruta del dinero no espera un PIN dentro de su plazo corto: el 403 vuelve como respuesta, no como `IOException`.
             if (rapida) header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
         }.get().build()
@@ -175,6 +179,8 @@ class OnlineOrdersRepository @Inject constructor(
             cardStatus = o.textoONulo("cardStatus"),
             cardChargeStatus = o.optJSONObject("card")?.textoONulo("status"),
             rejectReason = o.textoONulo("rejectReason"),
+            requiresAcceptance = if (o.isNull("requiresAcceptance")) null else o.optBoolean("requiresAcceptance"),
+            channel = o.textoONulo("channel"),
         )
     }
 
@@ -315,6 +321,59 @@ class OnlineOrdersRepository @Inject constructor(
         )
     }
 
+    // MARK: - Tienda híbrida: «Por pagar» / «Por entregar»
+
+    /**
+     * `GET online-orders/to-pay` (+ `?section=toPay|toDeliver&cursor=…` para «Cargar más»). [conLatido] manda la cabecera que avisa
+     * al servidor que ESTE aparato cobra folios (sólo pantallas que cobran; el vigilante y el panel no). La página 1 sin sección se
+     * guarda en el aparato ([porPagarGuardado]). 403/404 ⇒ `disponible = false`, sin error.
+     */
+    suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val consulta = listOfNotNull(
+            seccion?.let { "section=" + URLEncoder.encode(it, "UTF-8") },
+            cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
+        ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
+        val leido = ejecutar(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido))
+        val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
+        if (rechazo != null && rechazo.status in setOf(403, 404)) {
+            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false))
+        }
+        return leido.mapCatching { cuerpo ->
+            parsePorPagar(cuerpo).also { if (seccion == null && cursor == null) cache.save(CACHE_POR_PAGAR, venueId, cuerpo) }
+        }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
+    }
+
+    /** La última página 1 que llegó del servidor, con su edad en [ListaPorPagar.guardadoHaceMin]; `null` si nunca se leyó. */
+    suspend fun porPagarGuardado(): ListaPorPagar? {
+        val venueId = secureStorage.venueId ?: return null
+        val c = cache.load(CACHE_POR_PAGAR, venueId) ?: return null
+        return runCatching { parsePorPagar(c.json).copy(guardadoHaceMin = c.ageMinutes) }.getOrNull()
+    }
+
+    private fun parsePorPagar(cuerpo: String): ListaPorPagar {
+        val data = JSONObject(cuerpo).getJSONObject("data")
+        val counts = data.optJSONObject("counts")
+        val cursores = data.optJSONObject("nextCursors")
+        // Un folio dañado se salta: no tumba la lista (el aviso de un folio real no puede depender de otro roto).
+        fun folios(clave: String): List<OnlineOrder> {
+            val lista = data.optJSONArray(clave)
+            return (0 until (lista?.length() ?: 0)).mapNotNull { i ->
+                runCatching { parseOrder(lista!!.getJSONObject(i)) }
+                    .onFailure { Log.w(TAG, "Folio $clave #$i ignorado por malformado: ${it.message}") }.getOrNull()
+            }
+        }
+        return ListaPorPagar(
+            disponible = true,
+            showTile = data.optBoolean("showTile", false),
+            pollSeconds = data.optInt("pollSeconds", 600),
+            counts = ConteosPorPagar(counts?.optInt("toPay") ?: 0, counts?.optInt("toDeliver") ?: 0),
+            porPagar = folios("toPay"),
+            porEntregar = folios("toDeliver"),
+            nextCursors = CursoresPorPagar(cursores?.textoONulo("toPay"), cursores?.textoONulo("toDeliver")),
+        )
+    }
+
     // MARK: - Saldo
 
     /**
@@ -352,6 +411,8 @@ class OnlineOrdersRepository @Inject constructor(
     private companion object {
         const val TRAY_HEADER = "x-online-orders-tray"
         const val DEVICE_HEADER = "x-device-id"
+        const val TO_PAY_HEADER = "x-online-orders-to-pay"
+        const val CACHE_POR_PAGAR = "to_pay"
         const val CACHE_POR_COBRAR = "delivery_cash"
     }
 }
