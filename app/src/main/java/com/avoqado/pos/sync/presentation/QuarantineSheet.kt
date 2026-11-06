@@ -318,6 +318,7 @@ fun QuarantineSheet(
                                 Text(formatMoney(payment.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 payment.orderNumber?.let { Text("Orden $it", style = MaterialTheme.typography.bodyMedium) }
                                 ReferenciaDeRevision("Folio ${payment.id.take(8)}", formatTime(payment.createdAt), abierto, { abierto = !abierto })
+                                viewModel.loVendido(payment)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium) }
                                 Text(viewModel.paymentResolutionHint(payment), style = MaterialTheme.typography.bodyMedium)
                                 if (viewModel.canResolve) {
                                     Text("El pago sigue conservado. No vuelvas a cobrar.", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)

@@ -533,6 +533,9 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 
+    /** D2 (6-nov): si el cobro fue de un paquete, qué se vendió, a quién y si ya se entregó. null = no fue un paquete. */
+    fun loVendido(payment: PendingPaymentEntity): String? = pendingGrantQueue?.loVendidoConElCobro(payment.id)
+
     fun paymentResolutionHint(payment: PendingPaymentEntity): String =
         payment.lastError?.let { detalleRechazo(it) }
             ?: "El cobro no logró confirmarse. Conserva el efectivo registrado y reintenta cuando el servidor esté disponible."
