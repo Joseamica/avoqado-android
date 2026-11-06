@@ -8,8 +8,11 @@ import com.avoqado.pos.articles.data.model.CreditPurchaseBalance
 import com.avoqado.pos.customers.data.DesenlaceDeEntrega
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -40,8 +43,13 @@ class CustomerCreditsViewModel @Inject constructor(
     private val _sellingPackId = MutableStateFlow<String?>(null)
     val sellingPackId: StateFlow<String?> = _sellingPackId.asStateFlow()
 
-    /** Packs available to sell (reuses the existing list load). */
+    /**
+     * Los paquetes que se pueden vender (reusa la lista de Artículos, que sí trae los apagados para administrarlos). D15: uno que el
+     * panel apagó no se ofrece ni en la cuadrícula ni en la ficha; antes se cobraba y el servidor lo rechazaba con el dinero ya cobrado.
+     */
     val packs: StateFlow<List<CreditPack>> = articlesRepository.creditPacks
+        .map(::paquetesVendibles)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, paquetesVendibles(articlesRepository.creditPacks.value))
 
     private val _loadError = MutableStateFlow(false)
     val loadError: StateFlow<Boolean> = _loadError.asStateFlow()
@@ -165,3 +173,6 @@ class CustomerCreditsViewModel @Inject constructor(
         }
     }
 }
+
+/** D15: sólo lo que el panel tiene prendido. `active == null` es un servidor viejo que no lo manda: se ofrece, como antes. */
+internal fun paquetesVendibles(packs: List<CreditPack>): List<CreditPack> = packs.filter { it.active != false }
