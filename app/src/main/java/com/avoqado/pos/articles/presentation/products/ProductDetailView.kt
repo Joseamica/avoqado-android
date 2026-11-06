@@ -128,6 +128,7 @@ fun ProductDetailView(
                 trackInventory = trackInventory,
                 inventoryMethod = if (trackInventory) inventoryMethod.name else null,
                 unit = if (trackInventory) unit.name else null,
+                durationMinutes = durationMinutes.toIntOrNull(),
                 onResult = handle,
             )
         } else {
@@ -146,6 +147,7 @@ fun ProductDetailView(
                 trackInventory = trackInventory,
                 inventoryMethod = if (trackInventory) inventoryMethod.name else null,
                 unit = if (trackInventory) unit.name else null,
+                durationMinutes = durationMinutes.toIntOrNull(),
                 abiertaSinConexion = abiertaSinConexion,
                 onResult = handle,
             )
