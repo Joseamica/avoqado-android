@@ -408,6 +408,7 @@ class PendingGrantQueue @Inject constructor(
         val desenlace = clasificarEntrega(r.code)
         when (desenlace) {
             DesenlaceDeEntrega.ENTREGADA -> {
+                recordarEntregado(fila)
                 borrar(fila.id)
                 Log.d(TAG, "Entregado ${fila.packId} → ${fila.customerId}")
             }
@@ -433,6 +434,39 @@ class PendingGrantQueue @Inject constructor(
 
     /** Qué dijo el servidor de esa fila, tal como quedó. */
     fun motivoDe(id: String): String? = filas.value.firstOrNull { it.id == id }?.motivo
+
+    /**
+     * D2 (6-nov): qué se vendió con el cobro [llave] (efectivo u otra forma) y a quién, para «Cobros sin confirmar». Un efectivo que el
+     * servidor rechazó al subir sí entró al cajón y su paquete se entrega igual (founder, 24-oct, «al estilo Toast»): el gerente tiene
+     * que saber que ya se dio. null = el cobro no fue de un paquete de este aparato, o se entregó hace más de 30 días.
+     */
+    fun loVendidoConElCobro(llave: String): String? {
+        val porEntregar = filas.value.filter { f -> f.intentos.any { it.id == llave } }.map(::tituloDePaquete)
+        val entregados = leerEntregados()[llave]?.takeIf { reloj() - it.en < OLVIDAR_ENTREGADOS_MS }?.titulos?.values.orEmpty()
+        if (porEntregar.isEmpty() && entregados.isEmpty()) return null
+        val vendido = "Vendido: ${(porEntregar + entregados).joinToString("; ")}."
+        return if (porEntregar.isEmpty()) "$vendido El paquete ya se entregó al cliente." else vendido
+    }
+
+    /** Lo entregado, por llave de cobro: [titulos] por fila (una por pieza), y cuándo. */
+    @Serializable
+    private data class Entregados(val titulos: Map<String, String>, val en: Long)
+
+    private fun leerEntregados(): Map<String, Entregados> = prefs.getString(LLAVE_ENTREGADOS, null)
+        ?.let { runCatching { json.decodeFromString<Map<String, Entregados>>(it) }.getOrNull() }
+        .orEmpty()
+
+    /** Antes de borrar lo entregado, para que «Cobros sin confirmar» lo siga diciendo. Es sólo texto: si el disco falla, no se dice. */
+    private fun recordarEntregado(fila: PendingGrant) = synchronized(candado) {
+        if (fila.intentos.isEmpty()) return@synchronized
+        val ahora = reloj()
+        val vigentes = leerEntregados().filterValues { ahora - it.en < OLVIDAR_ENTREGADOS_MS }.toMutableMap()
+        for (intento in fila.intentos) {
+            val antes = vigentes[intento.id]?.titulos.orEmpty()
+            vigentes[intento.id] = Entregados(antes + (fila.id to tituloDePaquete(fila)), ahora)
+        }
+        prefs.edit().putString(LLAVE_ENTREGADOS, json.encodeToString(vigentes)).apply()
+    }
 
     /** «Reintentar» de la cuarentena: la misma llave. null = ya no está, es de otra sucursal o no está rechazada. */
     suspend fun reintentar(id: String): DesenlaceDeEntrega? = withContext(io) {
@@ -608,6 +642,8 @@ class PendingGrantQueue @Inject constructor(
     companion object {
         private const val TAG = "🎟️"
         private const val LLAVE = "queue"
+        private const val LLAVE_ENTREGADOS = "entregados_por_cobro"
+        private const val OLVIDAR_ENTREGADOS_MS = 30L * 24 * 60 * 60 * 1000
         private const val CADA_MS = 60_000L
 
         /** Media hora con red sin poder saber: ya no se espera en silencio. */

@@ -972,4 +972,46 @@ class PendingGrantQueueTest {
         assertEquals(1, q.filas.value.size)
         assertEquals(0, q.porEntregar.first())
     }
+
+    // MARK: - «Cobros sin confirmar» dice qué se vendió (D2, 6-nov)
+
+    @Test
+    fun `cobro sin confirmar de un paquete - dice que se vendio y a quien, tambien despues de entregarlo`() = runTest {
+        val q = cola()
+        val fila = q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave"))
+        val titulo = tituloDePaquete(fila)
+
+        assertEquals("Vendido: $titulo.", q.loVendidoConElCobro("llave"))
+
+        // El servidor rechazó el efectivo al subir (FAILED): el billete está en el cajón y el paquete se entrega.
+        coEvery { pagos.findForVenue(venue, "llave") } returns filaDeEfectivo("llave", PaymentSyncStatus.FAILED)
+        entrega(201)
+        val otra = reiniciar()
+        otra.drenar()
+
+        assertTrue(otra.filas.value.isEmpty())
+        assertEquals("Vendido: $titulo. El paquete ya se entregó al cliente.", reiniciar().loVendidoConElCobro("llave"))
+        assertNull(otra.loVendidoConElCobro("otra-llave"))
+    }
+
+    @Test
+    fun `lo entregado se olvida a los 30 dias`() = runTest {
+        val q = cola()
+        q.armada()
+        q.anotarIntento("venta-1", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave"))
+        coEvery { pagos.findForVenue(venue, "llave") } returns filaDeEfectivo("llave", PaymentSyncStatus.FAILED)
+        entrega(201)
+        q.drenar()
+        assertTrue(q.loVendidoConElCobro("llave") != null)
+
+        ahora += 31L * 24 * 60 * 60 * 1000
+        q.armada("venta-2")
+        q.anotarIntento("venta-2", IntentoDeCobro(IntentoDeCobro.Tipo.EFECTIVO, "llave-2"))
+        coEvery { pagos.findForVenue(venue, "llave-2") } returns filaDeEfectivo("llave-2", PaymentSyncStatus.SYNCED)
+        q.drenar()
+
+        assertNull(q.loVendidoConElCobro("llave"))
+        assertTrue(q.loVendidoConElCobro("llave-2") != null)
+    }
 }
