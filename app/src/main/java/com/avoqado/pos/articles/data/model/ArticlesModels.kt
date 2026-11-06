@@ -315,6 +315,11 @@ data class CreditPack(
     val active: Boolean? = null,
     val displayOrder: Int? = null,
     val items: List<CreditPackItem>? = null,
+    /**
+     * La foto de este paquete firmada por el servidor (D4). Es opaca para la app: se guarda con la venta y se devuelve al entregar,
+     * para que se entregue lo vendido aunque el paquete cambie. Null = servidor viejo o paquete sin foto: se entrega el vigente.
+     */
+    val saleProof: String? = null,
 ) {
     val displayPrice: String
         get() = "$${String.format(Locale.US, "%.2f", price)}"

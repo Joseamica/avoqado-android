@@ -580,6 +580,14 @@ class TerminalPaymentService @Inject constructor(
      * POST /mobile/venues/{venueId}/terminal-payment
      * Sends payment to a specific terminal. Server long-polls until terminal succeeds, is cancelled, or times out.
      */
+    /**
+     * D4 (5-nov): se corre UNA vez, con el `requestId`, antes de que el próximo cobro salga: lo que depende de este cobro lo anota en
+     * disco para poder preguntar después por él (`PendingGrantQueue`). false = no se pudo guardar y el cobro no se envía. Quien lo pone
+     * llama a [sendPaymentToTerminal] sin suspender de por medio.
+     */
+    @Volatile
+    var antesDelProximoEnvio: ((String) -> Boolean)? = null
+
     suspend fun sendPaymentToTerminal(
         terminalId: String,
         amountCents: Int,
@@ -594,6 +602,8 @@ class TerminalPaymentService @Inject constructor(
          */
         customerId: String? = null,
     ): TerminalPaymentResult {
+        val antesDeEnviar = antesDelProximoEnvio
+        antesDelProximoEnvio = null
         // 🔴 Founder, 25-sep: sólo espera la MISMA venta. El pendiente de OTRA venta ya no frena este cobro
         // (la pantalla lo avisa); al de esta venta, sí: consultar y declarar, como siempre.
         pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
@@ -611,7 +621,7 @@ class TerminalPaymentService @Inject constructor(
             // Otra vez BAJO EL CANDADO, junto con la escritura: dos «Cobrar» de la misma venta a la vez no
             // salen los dos. La llave única lo impedía con su «ya hay llave»; la lista acepta varias.
             pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
-            if (!secureStorage.persistPendingCardCharge(requestId, orderId, context.toString())) {
+            if (antesDeEnviar?.invoke(requestId) == false || !secureStorage.persistPendingCardCharge(requestId, orderId, context.toString())) {
                 return TerminalPaymentResult.Error("No se pudo guardar el intento. No se envió el cobro.")
             }
             activePosts.add(requestId)

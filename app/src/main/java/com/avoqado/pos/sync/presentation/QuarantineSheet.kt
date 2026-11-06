@@ -95,6 +95,9 @@ fun QuarantineSheet(
     val revisionCancelada by viewModel.revisionCancelada.collectAsState()
     val cobrosInterrumpidos by viewModel.cobrosInterrumpidos.collectAsState()
     val cuentasPagarDespues by viewModel.cuentasPagarDespues.collectAsState()
+    val paquetesPorRevisar by viewModel.paquetesPorRevisar.collectAsState()
+    val entregandoPaquete by viewModel.entregandoPaquete.collectAsState()
+    var paquetePorDescartar by androidx.compose.runtime.remember { mutableStateOf<com.avoqado.pos.customers.data.PendingGrant?>(null) }
     val reintentandoCuenta by viewModel.reintentandoCuenta.collectAsState()
     val undoUi by viewModel.undo.ui.collectAsState()
     val resolviendoAviso by viewModel.resolviendoAviso.collectAsState()
@@ -164,7 +167,7 @@ fun QuarantineSheet(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = AvoqadoTheme.spacing.xxl, vertical = AvoqadoTheme.spacing.lg),
                 ) {
-                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty()))) {
+                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty()))) {
                         item {
                             Text(
                                 if (revisadas) "No hay cobros revisados." else "No hay operaciones pendientes de revisión.",
@@ -252,6 +255,34 @@ fun QuarantineSheet(
                                         AccionDeRevision(text = "Pasar a carritos guardados", onClick = { viewModel.pasarACarritosGuardados(cuenta.id) }, principal = true)
                                     }
                                     AccionDeRevision(text = "Descartar", onClick = { cuentaPorDescartar = cuenta }, enabled = reintentandoCuenta != cuenta.id)
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                        // D4 (5-nov): paquetes que el servidor rechazó o de cuyo cobro no se sabe. Nunca se van solos: el dinero pudo entrar.
+                        if (paquetesPorRevisar.isNotEmpty()) item { SeccionDeRevision("Paquetes por entregar") }
+                        items(paquetesPorRevisar, key = { "paquete-${it.id}" }) { paquete ->
+                            val enDuda = paquete.estado == com.avoqado.pos.customers.data.PendingGrant.Estado.EN_DUDA
+                            Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                                Text(com.avoqado.pos.customers.data.tituloDePaquete(paquete), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(formatTime(paquete.createdAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                val deOtra = viewModel.esDeOtraSucursal(paquete)
+                                (if (deOtra) com.avoqado.pos.customers.data.PAQUETE_DE_OTRA_SUCURSAL else paquete.motivo)?.let {
+                                    Text(it, style = MaterialTheme.typography.bodyMedium)
+                                }
+                                if (viewModel.canResolve && !deOtra) {
+                                    AccionDeRevision(
+                                        text = if (enDuda) "Sí se cobró: entregar" else "Reintentar",
+                                        onClick = { if (enDuda) viewModel.paqueteSiSeCobro(paquete.id) else viewModel.reintentarPaquete(paquete.id) },
+                                        enabled = entregandoPaquete == null,
+                                        isLoading = entregandoPaquete == paquete.id,
+                                        principal = true,
+                                    )
+                                    AccionDeRevision(
+                                        text = if (enDuda) "No se cobró: descartar" else "Descartar",
+                                        onClick = { paquetePorDescartar = paquete },
+                                        enabled = entregandoPaquete != paquete.id,
+                                    )
                                 }
                             }
                             HorizontalDivider()
@@ -365,7 +396,7 @@ fun QuarantineSheet(
                             HorizontalDivider()
                         }
                     }
-                    if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty() || cobrosInterrumpidos.isNotEmpty() || cuentasPagarDespues.isNotEmpty())) {
+                    if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty() || cobrosInterrumpidos.isNotEmpty() || cuentasPagarDespues.isNotEmpty() || paquetesPorRevisar.isNotEmpty())) {
                         item { Text("Pide a un gerente que revise y resuelva estas operaciones.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.lg)) }
                     }
                 }
@@ -401,6 +432,25 @@ fun QuarantineSheet(
                 com.avoqado.pos.designsystem.components.PrimaryButton(text = "Descartar", onClick = {
                     viewModel.descartarCuenta(cuenta.id)
                     cuentaPorDescartar = null
+                })
+            },
+        ) {}
+    }
+
+    paquetePorDescartar?.let { paquete ->
+        val enDuda = paquete.estado == com.avoqado.pos.customers.data.PendingGrant.Estado.EN_DUDA
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = if (enDuda) "¿No se cobró este paquete?" else "¿Descartar este paquete?",
+            onDismiss = { paquetePorDescartar = null },
+            description = if (enDuda) {
+                "Se borra de este aparato y el cliente no lo recibe. Hazlo sólo si comprobaste que no se cobró."
+            } else {
+                "El cobro ya se hizo: si lo descartas, el cliente no recibe el paquete y hay que resolverlo con él (devolverle o darle sus clases a mano)."
+            },
+            actionButton = {
+                com.avoqado.pos.designsystem.components.PrimaryButton(text = "Descartar", onClick = {
+                    viewModel.descartarPaquete(paquete.id)
+                    paquetePorDescartar = null
                 })
             },
         ) {}
