@@ -903,6 +903,16 @@ class PendingGrantQueueTest {
     }
 
     @Test
+    fun `D17 - una fila del carrito sigue siendo del carrito aunque se suelte de su venta`() {
+        val base = PendingGrant(id = "f", venueId = venue, packId = "pack-1", customerId = "cli-1", createdAt = 1)
+        assertTrue(base.copy(venta = "venta-1", linea = "l#1").cobradaEnOrden)
+        // `armar` la suelta de la venta (se quitó el paquete tras intentar cobrar): la orden cobrada ya lo cuenta.
+        assertTrue(base.copy(venta = null, linea = "l#1").cobradaEnOrden)
+        // Ficha, o fila de la app de antes: suma en la entrega.
+        assertFalse(base.cobradaEnOrden)
+    }
+
+    @Test
     fun `la ficha sin disco no vende`() = runTest {
         disco.discoSano = false
         assertNull(cola().guardarVentaDeFicha(CreditPack(id = "pack-1"), "cli-1", "Ana"))
