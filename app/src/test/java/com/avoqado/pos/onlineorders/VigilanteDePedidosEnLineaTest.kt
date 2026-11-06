@@ -2,7 +2,10 @@ package com.avoqado.pos.onlineorders
 
 import androidx.lifecycle.LifecycleOwner
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
+import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
+import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.domain.Inbox
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import io.mockk.mockk
@@ -355,6 +358,112 @@ class VigilanteDePedidosEnLineaTest {
         val sonidos = f.sonidos
         advanceTimeBy(30_000); runCurrent()
         assertEquals("ya no suena", sonidos, f.sonidos)
+        f.vigilante.onStop(owner)
+    }
+
+    // MARK: - Tienda híbrida (A2): los folios por pagar
+
+    private fun folioPorPagar(id: String) = pedido(id, folio = "W${id.uppercase()}AAA".take(5)).copy(requiresAcceptance = false)
+
+    private fun listaFolios(n: Int, toPay: Int = n, toDeliver: Int = 0, hayMas: Boolean = false, poll: Int = 30, disponible: Boolean = true) = ListaPorPagar(
+        disponible, true, poll, ConteosPorPagar(toPay, toDeliver), (1..n).map { folioPorPagar("f$it") }, emptyList(),
+        CursoresPorPagar(if (hayMas) "c" else null, null),
+    )
+
+    private class Folios(var respuesta: Result<ListaPorPagar>) {
+        val latidos = mutableListOf<Boolean>()
+        var guardada: ListaPorPagar? = null
+        suspend fun leer(conLatido: Boolean): Result<ListaPorPagar> { latidos += conLatido; return respuesta }
+    }
+
+    private fun TestScope.armarConFolios(folios: Folios, puedeCobrar: Boolean = true, inbox: Inbox = inbox()): Fixture {
+        val f = Fixture(Falso(Result.success(inbox)))
+        f.vigilante = VigilanteDePedidosEnLinea(
+            consultar = f.falso::consultar, puedeLeer = { f.puedeLeer }, tienePlan = { f.tienePlan }, sonar = { f.sonidos++ },
+            scope = backgroundScope, venueActual = { f.venue },
+            consultarPorPagar = folios::leer, puedeCobrar = { puedeCobrar }, foliosGuardados = { folios.guardada },
+        )
+        return f
+    }
+
+    @Test
+    fun `the watcher never rings for a folio and keeps them out of the pending list`() = runTest {
+        val folios = Folios(Result.success(listaFolios(3)))
+        val f = armarConFolios(folios)
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals("el conteo de folios llega al menú", 3, f.vigilante.foliosPorPagar.value)
+        assertEquals("un folio nunca suena", 0, f.sonidos)
+        assertTrue(f.vigilante.pendientes.value.isEmpty())
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(0, f.sonidos)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `the heartbeat only goes with payments create`() = runTest {
+        val con = Folios(Result.success(listaFolios(1)))
+        val a = armarConFolios(con, puedeCobrar = true)
+        a.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf(true), con.latidos)
+        a.vigilante.onStop(owner)
+
+        val sin = Folios(Result.success(listaFolios(1)))
+        val b = armarConFolios(sin, puedeCobrar = false)
+        b.vigilante.onStart(owner); runCurrent()
+        assertEquals("sin payments:create se lee la lista pero no se late", listOf(false), sin.latidos)
+        b.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `folios are polled every pollSeconds and open the entry`() = runTest {
+        val folios = Folios(Result.success(listaFolios(1, poll = 30)))
+        val f = armarConFolios(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(1, folios.latidos.size)
+        assertTrue("con folios el menú se atiende aunque el plan venza", f.vigilante.hayPedidosAbiertos.value)
+        advanceTimeBy(29_999); runCurrent()
+        assertEquals(1, folios.latidos.size)
+        advanceTimeBy(1); runCurrent()
+        assertEquals(2, folios.latidos.size)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `the menu number never contradicts the list and a failure keeps it`() = runTest {
+        val folios = Folios(Result.success(listaFolios(2, toPay = 3)))
+        val f = armarConFolios(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals("un folio dañado se saltó: el número es el de la lista", 2, f.vigilante.foliosPorPagar.value)
+
+        folios.respuesta = Result.failure(IOException("sin red"))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals("sin red se conserva el último número", 2, f.vigilante.foliosPorPagar.value)
+
+        folios.respuesta = Result.success(listaFolios(0, disponible = false))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals("el servidor dice que no hay sección: cero", 0, f.vigilante.foliosPorPagar.value)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `cold start without network takes the number from the saved list`() = runTest {
+        val folios = Folios(Result.failure(IOException("sin red")))
+        folios.guardada = listaFolios(4)
+        val f = armarConFolios(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(4, f.vigilante.foliosPorPagar.value)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `without orders read no folio is read`() = runTest {
+        val folios = Folios(Result.success(listaFolios(2)))
+        val f = armarConFolios(folios)
+        f.puedeLeer = false
+        f.vigilante.onStart(owner); runCurrent()
+        assertTrue(folios.latidos.isEmpty())
+        assertEquals(0, f.vigilante.foliosPorPagar.value)
         f.vigilante.onStop(owner)
     }
 }

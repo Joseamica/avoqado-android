@@ -63,6 +63,8 @@ import com.avoqado.pos.payment.domain.OrigenDelCobro
 import com.avoqado.pos.payment.domain.PaymentOverlayState
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
+import java.time.Instant
+import kotlinx.coroutines.delay
 
 /**
  * El sondeo de la bandeja vive MIENTRAS la pantalla está a la vista (`STARTED`), no mientras exista la composición: con la app en
@@ -90,6 +92,14 @@ fun OnlineOrdersScreen(
     // Rappi 2b: la lista guardada primero y una lectura con red, aunque la pantalla abra como teaser (descubre pedidos por cobrar).
     val porCobrar by viewModel.porCobrar.collectAsState()
     LaunchedEffect(viewModel) { viewModel.descubrirPorCobrar() }
+    // Tienda híbrida: los folios guardados primero (sin red salen de ahí) y una lectura con red.
+    LaunchedEffect(viewModel) { viewModel.descubrirPorPagar() }
+    val folios by viewModel.porPagar.collectAsState()
+    val errorFolios by viewModel.errorFolios.collectAsState()
+    val busqueda by viewModel.busqueda.collectAsState()
+    // «Vence en N min» se recalcula solo aunque la lista no cambie.
+    var ahora by remember { mutableStateOf(Instant.now()) }
+    LaunchedEffect(Unit) { while (true) { delay(15_000); ahora = Instant.now() } }
     // Se relee en cada recomposición: deja de ser teaser en cuanto el descubrimiento encuentra pedidos por cobrar.
     @Suppress("UNUSED_EXPRESSION") porCobrar
     val teaser = viewModel.esTeaser
@@ -152,7 +162,11 @@ fun OnlineOrdersScreen(
                 }
 
                 // Sin red = estado normal: texto neutro, nunca rojo de error.
-                if (sinConexion) AvisoNeutro(TextosPedidosEnLinea.SIN_CONEXION)
+                // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
+                val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
+                val mostrarFolios = seccionFolios != null || (folios == null && errorFolios)
+                // Un solo aviso: con folios dice además qué vuelve con la conexión.
+                if (sinConexion) AvisoNeutro(if (seccionFolios != null) TextosPedidosEnLinea.SIN_CONEXION_FOLIOS else TextosPedidosEnLinea.SIN_CONEXION)
                 if (noSePudoLeer) AvisoNeutro(TextosPedidosEnLinea.NO_SE_PUDO_LEER)
                 aviso?.let { texto ->
                     AvisoNeutro(texto, accion = TextosPedidosEnLinea.ENTENDIDO, onAccion = viewModel::cerrarAviso)
@@ -161,7 +175,7 @@ fun OnlineOrdersScreen(
                 // Rappi 2b: la sección sale si el servidor la tiene y hay pedidos; sin tienda web, también vacía (con su texto).
                 val reparto = porCobrar?.takeIf { it.disponible && viewModel.muestraReparto && (it.pedidos.isNotEmpty() || !muestraTienda) }
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                    if (reparto == null && cargando && secciones.vacia) {
+                    if (reparto == null && !mostrarFolios && cargando && secciones.vacia) {
                         // Primera lectura: nada que mostrar todavía (el banner de sin conexión, si aplica, ya está arriba).
                         Text(
                             "…",
@@ -169,7 +183,7 @@ fun OnlineOrdersScreen(
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    } else if (reparto == null && secciones.vacia) {
+                    } else if (reparto == null && !mostrarFolios && secciones.vacia) {
                         // «No hay pedidos» sólo dice la verdad tras una lectura buena; sin ella (sin red o fallo) basta el aviso de arriba.
                         if (leyoAlgunaVez) Text(
                             TextosPedidosEnLinea.SIN_PEDIDOS,
@@ -194,6 +208,30 @@ fun OnlineOrdersScreen(
                             onCobrar = viewModel::cobrar,
                             onReimprimir = viewModel::reimprimir,
                             onCargarMas = viewModel::cargarMas,
+                            claveAntes = when {
+                                seccionFolios != null -> CLAVE_BUSCADOR_FOLIOS
+                                mostrarFolios -> CLAVE_ERROR_FOLIOS
+                                else -> null
+                            },
+                            foliosAntes = if (!mostrarFolios) null else {
+                                {
+                                    seccionesDeFolios(
+                                        lista = seccionFolios,
+                                        error = errorFolios,
+                                        busqueda = busqueda,
+                                        ahora = ahora,
+                                        sinConexion = sinConexion,
+                                        puedeActualizar = puedeActualizar,
+                                        ocupados = ocupados,
+                                        cargandoMas = cargandoMas,
+                                        onBuscar = viewModel::buscarFolio,
+                                        onListo = viewModel::marcarListo,
+                                        onEntregado = viewModel::entregarFolio,
+                                        onCargarMas = viewModel::cargarMasFolios,
+                                        onReintentar = viewModel::reintentarFolios,
+                                    )
+                                }
+                            },
                             claveTrasPorAceptar = if (reparto != null) "h-reparto" else null,
                             trasPorAceptar = reparto?.let { lista ->
                                 {
@@ -357,7 +395,8 @@ private fun Teaser(plan: String) {
  * [claveTrasPorAceptar] es la cabecera de una sección que se emite justo después de «Por aceptar» cuando se muestra (Rappi 2b:
  * `h-reparto`); «Por aceptar» siempre va primero (Ruling 29). Sin ella, una sección que aparece arriba no movería el detector.
  */
-internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja, claveTrasPorAceptar: String? = null): String? = when {
+internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja, claveTrasPorAceptar: String? = null, claveAntes: String? = null): String? = when {
+    claveAntes != null -> claveAntes
     secciones.porAceptar.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_POR_ACEPTAR}"
     claveTrasPorAceptar != null -> claveTrasPorAceptar
     secciones.enPreparacion.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_EN_PREPARACION}"
@@ -436,6 +475,9 @@ internal fun ListaDeBandeja(
     claveTrasPorAceptar: String? = null,
     /** Rappi 2b: las filas de «Rappi · por cobrar», justo después de «Por aceptar» (lo único que suena y vence va primero). */
     trasPorAceptar: (LazyListScope.() -> Unit)? = null,
+    /** Tienda híbrida: la clave de la primera fila de [foliosAntes] (buscador o error) y sus filas, ANTES de «Por aceptar». */
+    claveAntes: String? = null,
+    foliosAntes: (LazyListScope.() -> Unit)? = null,
 ) {
     val espacio = AvoqadoTheme.spacing
 
@@ -444,7 +486,7 @@ internal fun ListaDeBandeja(
     // sin gesto en curso y en 0/0 hay que seguir en 0; con la primera fila distinta, `requestScrollToItem(0)` salta el anclaje sólo
     // en esa medición. Las claves de las filas no se tocan, y si la persona está más abajo (o deslizando) manda el anclaje de siempre.
     val estabaArriba = estadoLista.firstVisibleItemIndex == 0 && estadoLista.firstVisibleItemScrollOffset == 0 && !estadoLista.isScrollInProgress
-    val primeraClaveAhora = primeraClaveDeLaLista(secciones, claveTrasPorAceptar)
+    val primeraClaveAhora = primeraClaveDeLaLista(secciones, claveTrasPorAceptar, claveAntes)
     val primeraClaveAntes = remember { arrayOfNulls<String>(1) }
     val quedarseArriba = debeQuedarseArriba(estabaArriba, primeraClaveAntes[0], primeraClaveAhora)
     SideEffect {
@@ -496,6 +538,7 @@ internal fun ListaDeBandeja(
                 ) { Text(TextosPedidosEnLinea.CARGAR_MAS) }
             }
         }
+        foliosAntes?.invoke(this)
         tarjetas(TextosPedidosEnLinea.SECCION_POR_ACEPTAR, secciones.porAceptar, SeccionDePedido.POR_ACEPTAR)
         trasPorAceptar?.invoke(this)
         tarjetas(TextosPedidosEnLinea.SECCION_EN_PREPARACION, secciones.enPreparacion, SeccionDePedido.EN_PREPARACION, cargarMas)

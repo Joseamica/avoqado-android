@@ -17,6 +17,7 @@ import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
@@ -123,6 +124,11 @@ class OnlineOrdersViewModel internal constructor(
     private val leerPorCobrar: suspend (cursor: String?) -> Result<ListaPorCobrar> = { Result.success(LISTA_NO_DISPONIBLE) },
     private val porCobrarGuardado: suspend () -> ListaPorCobrar? = { null },
     private val tieneCanalDeReparto: () -> Boolean = { false },
+    // Tienda híbrida (A2): «Por pagar» y «Por entregar». Por omisión, sin folios (las pruebas de la bandeja no cambian).
+    private val leerPorPagar: suspend (conLatido: Boolean, seccion: String?, cursor: String?) -> Result<ListaPorPagar> =
+        { _, _, _ -> Result.success(LISTA_FOLIOS_NO_DISPONIBLE) },
+    private val foliosGuardados: suspend () -> ListaPorPagar? = { null },
+    private val ahoraMs: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
 
     @Inject
@@ -153,6 +159,8 @@ class OnlineOrdersViewModel internal constructor(
         leerPorCobrar = { cursor -> repositorio.porCobrar(cursor) },
         porCobrarGuardado = { repositorio.porCobrarGuardado() },
         tieneCanalDeReparto = { planManager.hasFeature("DELIVERY_CHANNELS") },
+        leerPorPagar = { conLatido, seccion, cursor -> repositorio.porPagar(conLatido, seccion, cursor) },
+        foliosGuardados = { repositorio.porPagarGuardado() },
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -218,6 +226,149 @@ class OnlineOrdersViewModel internal constructor(
 
     /** Sin tienda y sin reparto la pantalla es sólo el teaser. Cambia sola si el descubrimiento encuentra pedidos por cobrar. */
     val esTeaser: Boolean get() = !muestraTienda && !muestraReparto
+
+    // MARK: - Tienda híbrida (A2): «Por pagar» y «Por entregar»
+
+    private val _porPagar = MutableStateFlow<ListaPorPagar?>(null)
+
+    /**
+     * Los folios de ahora. null = todavía no se sabe (ni del aparato ni del servidor). `guardadoHaceMin != null` = la lista sale del
+     * aparato (sin red), con su edad. `disponible = false` = el servidor dijo que no hay sección: no se pinta aunque haya algo guardado.
+     */
+    val porPagar: StateFlow<ListaPorPagar?> = _porPagar.asStateFlow()
+
+    private val _errorFolios = MutableStateFlow(false)
+
+    /** No hay lista que enseñar y la lectura falló por algo que no es falta de red: «No se pudieron leer los folios» + «Reintentar». */
+    val errorFolios: StateFlow<Boolean> = _errorFolios.asStateFlow()
+
+    private val _busqueda = MutableStateFlow("")
+
+    /** Lo escrito en «Buscar folio o nombre». */
+    val busqueda: StateFlow<String> = _busqueda.asStateFlow()
+
+    fun buscarFolio(texto: String) { _busqueda.value = texto }
+
+    /** Páginas extra por sección (`toPay` / `toDeliver`) traídas con «Cargar más»; cada lectura las vuelve a recorrer. */
+    private val paginasExtraFolios = mutableMapOf(SECCION_POR_PAGAR to 0, SECCION_POR_ENTREGAR to 0)
+
+    /** Cuándo (reloj del aparato) salió la lista que se enseña: para decir «de hace N min» si después se cae la red. */
+    private var leidoEnMs = 0L
+
+    /**
+     * Al abrir la pantalla: lo guardado primero (sin red sale de ahí, con su edad) y una lectura con red. Lo guardado nunca pisa una
+     * respuesta del servidor ni vuelve después de que el servidor dijo «no disponible» (m2 de A1).
+     */
+    suspend fun descubrirPorPagar() {
+        if (_porPagar.value == null) {
+            val guardada = try {
+                foliosGuardados()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (_porPagar.value == null && guardada != null) {
+                _porPagar.value = guardada
+                leidoEnMs = ahoraMs() - (guardada.guardadoHaceMin ?: 0L) * 60_000
+            }
+        }
+        mutex.withLock { refrescarPorPagar(comoBandeja = false) }
+    }
+
+    fun reintentarFolios() {
+        viewModelScope.launch { mutex.withLock { refrescarPorPagar(comoBandeja = false) } }
+    }
+
+    /**
+     * La lista de folios con sus páginas extra. La falla de una lectura nunca borra lo último que se vio. El latido sólo sale si la
+     * pantalla es la bandeja visible Y la persona cobra (`payments:create`): el servidor lo vuelve a comprobar.
+     */
+    private suspend fun refrescarPorPagar(comoBandeja: Boolean) {
+        val primera = try {
+            leerPorPagar(comoBandeja && permisoCobrar(), null, null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+        primera.onSuccess { lista ->
+            var actual = lista
+            if (lista.disponible) {
+                for (seccion in listOf(SECCION_POR_PAGAR, SECCION_POR_ENTREGAR)) {
+                    var pagina = 0
+                    while (pagina < (paginasExtraFolios[seccion] ?: 0)) {
+                        val cursor = cursorDe(actual, seccion) ?: break
+                        val siguiente = try {
+                            leerPorPagar(false, seccion, cursor)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }.getOrNull() ?: break
+                        actual = sumarPagina(actual, siguiente, seccion)
+                        pagina++
+                    }
+                }
+            }
+            _porPagar.value = actual
+            leidoEnMs = ahoraMs()
+            _errorFolios.value = false
+        }.onFailure {
+            Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
+            val actual = _porPagar.value
+            if (it is IOException) {
+                _sinConexion.value = true
+                // Se conserva la última lista, diciendo qué tan vieja es.
+                if (actual != null && actual.disponible) {
+                    _porPagar.value = actual.copy(guardadoHaceMin = ((ahoraMs() - leidoEnMs) / 60_000).coerceAtLeast(0))
+                }
+            } else if (actual != null) {
+                _noSePudoLeer.value = true
+            } else {
+                _errorFolios.value = true
+            }
+        }
+    }
+
+    private fun cursorDe(lista: ListaPorPagar, seccion: String) =
+        if (seccion == SECCION_POR_PAGAR) lista.nextCursors.toPay else lista.nextCursors.toDeliver
+
+    /** La página extra de UNA sección: la otra viene vacía y no se toca. */
+    private fun sumarPagina(actual: ListaPorPagar, pagina: ListaPorPagar, seccion: String) =
+        if (seccion == SECCION_POR_PAGAR) {
+            actual.copy(
+                porPagar = (actual.porPagar + pagina.porPagar).distinctBy { it.orderId },
+                nextCursors = actual.nextCursors.copy(toPay = pagina.nextCursors.toPay),
+                counts = actual.counts.copy(toPay = pagina.counts.toPay),
+            )
+        } else {
+            actual.copy(
+                porEntregar = (actual.porEntregar + pagina.porEntregar).distinctBy { it.orderId },
+                nextCursors = actual.nextCursors.copy(toDeliver = pagina.nextCursors.toDeliver),
+                counts = actual.counts.copy(toDeliver = pagina.counts.toDeliver),
+            )
+        }
+
+    /** «Cargar más» de una sección de folios ([SECCION_POR_PAGAR] o [SECCION_POR_ENTREGAR]). */
+    fun cargarMasFolios(seccion: String) {
+        val lista = _porPagar.value ?: return
+        if (cursorDe(lista, seccion) == null || _cargandoMas.value) return
+        _cargandoMas.value = true
+        viewModelScope.launch {
+            try {
+                paginasExtraFolios[seccion] = (paginasExtraFolios[seccion] ?: 0) + 1
+                mutex.withLock { refrescarPorPagar(comoBandeja = false) }
+            } finally {
+                _cargandoMas.value = false
+            }
+        }
+    }
+
+    /** «Entregado» de un folio: el servidor lo cierra y el aviso dice a quién se le entregó. */
+    fun entregarFolio(pedido: OnlineOrder) = ejecutar(
+        pedido.orderId, permisoActualizar(), textoExito = TextosPedidosEnLinea.folioEntregado(pedido.orderNumber, pedido.customerName),
+    ) { repositorio.delivered(pedido.orderId) }
 
     /** Páginas extra de «Rappi · por cobrar» cargadas con «Cargar más»; cada lectura las vuelve a recorrer. */
     private var paginasExtraPorCobrar = 0
@@ -300,7 +451,8 @@ class OnlineOrdersViewModel internal constructor(
             val pendientes = leidos.map { if (it.orderId in confirmando) it.copy(cardStatus = "CONFIRMING") else it }
             _secciones.value = SeccionesBandeja(
                 porAceptar = pendientes,
-                enPreparacion = ordenes.filter { it.status == OnlineOrderStatus.ACCEPTED },
+                // Un folio pagado vive en «Por entregar»: aquí sólo lo que acepta el equipo (o un servidor viejo que no lo dice).
+                enPreparacion = ordenes.filter { it.status == OnlineOrderStatus.ACCEPTED && it.requiresAcceptance != false },
                 listos = ordenes.filter { it.status == OnlineOrderStatus.READY },
                 hoy = ordenes.filter { it.status !in ABIERTOS },
             )
@@ -321,6 +473,9 @@ class OnlineOrdersViewModel internal constructor(
                 _noSePudoLeer.value = true
             }
         }
+        // Los folios van DESPUÉS de la bandeja: si la red se cayó entre las dos lecturas, la última palabra es la suya. «Cargando»
+        // cubre las dos para que «No hay pedidos por ahora» no salga mientras los folios todavía no se sabe si existen.
+        refrescarPorPagar(comoBandeja)
         _cargando.value = false
     }
 
@@ -668,6 +823,13 @@ class OnlineOrdersViewModel internal constructor(
     companion object {
         const val INTERVALO_MS = 10_000L
         val LISTA_NO_DISPONIBLE = ListaPorCobrar(emptyList(), 0, false, null, disponible = false)
+        val LISTA_FOLIOS_NO_DISPONIBLE = ListaPorPagar(
+            false, false, 600, com.avoqado.pos.onlineorders.domain.ConteosPorPagar(0, 0), emptyList(), emptyList(),
+            com.avoqado.pos.onlineorders.domain.CursoresPorPagar(null, null),
+        )
+        /** Los nombres de sección que entiende `GET …/to-pay?section=`. */
+        const val SECCION_POR_PAGAR = "toPay"
+        const val SECCION_POR_ENTREGAR = "toDeliver"
         const val CLAVE_PAUSA = "__pausa__"
         private val IMPRIMIBLES = setOf(OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY)
         private val ABIERTOS = setOf(
