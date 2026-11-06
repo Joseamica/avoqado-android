@@ -1441,4 +1441,24 @@ class PagarDespuesCarritoTest {
         assertTrue(vm.cartState.value.isEmpty)
         assertNull(vm.cartState.value.creacionIncierta)
     }
+
+    @Test
+    fun `D5 la venta con cupon nunca entra a la fila, y sin red se queda en el carrito con su cupon`() = runTest {
+        val vm = createViewModel()
+        ventaDeAna(vm)
+        vm.applyOrderDiscount(com.avoqado.pos.pos.data.model.Discount(id = "coupon_c", name = "Diez (DESC10)", value = 10.0, couponCode = "DESC10"))
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { enviados += secondArg<String>(); respuesta.await() }
+
+        val resultado = async { vm.createPayLaterOrder("cli-1") }
+        runCurrent()
+        assertTrue("ni siquiera mientras se manda", disco.guardado.isEmpty())
+        respuesta.completeExceptionally(java.io.IOException("sin red"))
+
+        assertEquals(ResultadoPagarDespues.Error(PAGAR_DESPUES_CUPON_SIN_RED), resultado.await())
+        assertTrue(disco.guardado.isEmpty())
+        assertTrue("el cuerpo lleva el cupón", enviados.single().contains("\"couponCode\":\"DESC10\""))
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("DESC10", vm.cartState.value.couponCode)
+    }
 }

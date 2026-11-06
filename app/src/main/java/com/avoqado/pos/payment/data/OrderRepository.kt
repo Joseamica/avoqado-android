@@ -494,9 +494,11 @@ class OrderRepository @Inject constructor(
          * crea la orden y las siguientes le abonan, como una venta con productos (D2 etapa 2, 27-oct). Una sola parte sigue
          * siendo cobro rápido. Deciden con ESTA regla crear la orden ([createOrder]) y la fila de la cola sin red
          * ([CashPaymentRepository]): así la parte guardada sin red se reproduce contra la misma orden por su `externalId`.
+         * D5: también con cupón: un cobro rápido no tiene orden donde ligarlo y el cupón nunca contaría.
          */
         fun aceptaCrearOrden(request: CreateOrderRequest): Boolean =
             hasProductItems(request) ||
+                (request.items.isNotEmpty() && !request.couponCode.isNullOrBlank()) ||
                 (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT")
 
         /**
@@ -735,6 +737,8 @@ class OrderRepository @Inject constructor(
                 put("tip", request.tip)
                 put("total", request.total)
                 if (request.discount > 0) put("discount", request.discount)
+                // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
+                request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
                 // «Pagar después» como Toast (founder 26-oct): el método con el que nace la cuenta. El SERVIDOR sólo cuenta como
                 // deuda del cliente lo que llega con `PAY_LATER` (`CartViewModel.createPayLaterOrder`); con otro método, un cobro

@@ -192,6 +192,12 @@ data class CartState(
     /** Lo que de verdad se debe antes de aplicar un descuento de ORDEN. */
     private val netoTrasDescuentosDeLineaCents: Int get() = (subtotalCents - itemDiscountCents).coerceAtLeast(0)
 
+    /** Contra lo que el SERVIDOR mide el cupón: la misma base que su monto ([orderDiscountCents]). */
+    val baseDelCuponCents: Int get() = netoTrasDescuentosDeLineaCents
+
+    /** El cupón de la venta (D5). Es online a propósito, como el premio: una venta con cupón no entra a ninguna cola sin red. */
+    val couponCode: String? get() = orderDiscount?.couponCode?.takeIf { it.isNotBlank() }
+
     val taxableSubtotalCents: Int get() = items.filter { it.type is CartItemType.ProductItem }.sumOf { it.totalPrice }
 
     /**
@@ -336,6 +342,7 @@ data class EnvioPagarDespues(val cliente: String, val totalCents: Int)
 
 // «Pagar después» sin red (27-oct). Mismos textos en iOS.
 const val GUARDANDO_LA_CUENTA = "Guardando la cuenta…"
+const val PAGAR_DESPUES_CUPON_SIN_RED = "Sin conexión: el cupón necesita internet. Quita el cupón o espera la conexión para dejar esta cuenta abierta."
 const val PAGAR_DESPUES_PREMIO_SIN_RED = "Sin conexión: el premio de sellos necesita internet. Quita el premio o espera la red."
 const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no se pueden dejar para pagar después."
 fun pagarDespuesGuardadaSinRed(cliente: String) = "Sin conexión: la cuenta de $cliente quedó guardada en el aparato y se sube sola."
@@ -2803,12 +2810,15 @@ class CartViewModel @Inject constructor(
                 paymentMethod = "PAY_LATER",
                 note = venta.orderNote,
                 splitType = "FULLPAYMENT",
+                couponCode = venta.couponCode,
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")
             }
             // El carrito ya enseñó el total con el premio: la cuenta que queda abierta tiene que ser ésa (se canjea al crearla).
             val premio = venta.pendingStampRewardId?.takeIf { venta.premioAplica }
+            // D5: el cupón, igual que el premio, sólo se aplica con el SERVIDOR enfrente: nunca a la fila de reenvío.
+            val sinFila = premio != null || venta.couponCode != null
             val llave = venta.llavePagarDespues ?: "pay-later:${UUID.randomUUID()}"
             // La llave es de la venta desde ya: cualquier intento siguiente de ESTA venta la reusa (R2-2).
             _cartState.update { if (it.identidadDeVenta == venta.identidadDeVenta) it.copy(llavePagarDespues = llave) else it }
@@ -2847,10 +2857,10 @@ class CartViewModel @Inject constructor(
             // Codex A-5: la copia guardada lleva la llave y la marca de cobro iniciado ANTES de mandar nada. Con premio (sin fila
             // que la ligue) la marca además es vinculante hasta conocer el desenlace (Codex r2 #5).
             val copia = venta.carritoGuardadoId
-            if (copia != null && !savedCartsRepository.prepararPagarDespues(copia, llave, vinculante = premio != null)) {
+            if (copia != null && !savedCartsRepository.prepararPagarDespues(copia, llave, vinculante = sinFila)) {
                 return ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO)
             }
-            return if (premio != null) {
+            return if (sinFila) {
                 diferirConPremio(cola, s, venueId, cuerpo(reenvio = false))
             } else {
                 diferirConFila(cola, s, fila, venueId, cuerpo(reenvio = false))
@@ -2971,7 +2981,7 @@ class CartViewModel @Inject constructor(
                         }
                     }
                     is DesenlacePagarDespues.SesionVencida -> d.mensaje
-                    else -> PAGAR_DESPUES_PREMIO_SIN_RED
+                    else -> if (s.venta.pendingStampReward != null) PAGAR_DESPUES_PREMIO_SIN_RED else PAGAR_DESPUES_CUPON_SIN_RED
                 },
             )
         }
@@ -2980,11 +2990,13 @@ class CartViewModel @Inject constructor(
         cola.retirarCopia(copia)
         separarDelCarrito(s.venta)
         // Si el servidor no confirmó el premio como lo anunció el carrito, se DICE.
-        _avisoDelPremio.value = com.avoqado.pos.payment.data.model.cobroConPremio(
-            s.venta.totalCents,
-            s.venta.stampRewardCents,
-            d.orden?.stampReward,
-        ).aviso
+        if (s.venta.pendingStampReward != null) {
+            _avisoDelPremio.value = com.avoqado.pos.payment.data.model.cobroConPremio(
+                s.venta.totalCents,
+                s.venta.stampRewardCents,
+                d.orden?.stampReward,
+            ).aviso
+        }
         // Codex A-7: el premio puede salir bien y la cuenta quedar por otro importe (un extra que subió): también se dice.
         return when (val total = d.totalCents) {
             s.venta.totalCents -> ResultadoPagarDespues.Creada

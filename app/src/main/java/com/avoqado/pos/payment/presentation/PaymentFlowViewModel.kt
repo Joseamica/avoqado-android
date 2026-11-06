@@ -44,7 +44,9 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
+import com.avoqado.pos.payment.data.model.MENSAJE_CUPON_SIN_RED
 import com.avoqado.pos.payment.data.model.MENSAJE_PREMIO_SIN_RED
+import com.avoqado.pos.payment.data.model.avisoDeEfectivoCortoPorCupon
 import com.avoqado.pos.payment.data.model.avisoDeEfectivoCortoPorPremio
 import com.avoqado.pos.payment.data.model.cobroConPremio
 import com.avoqado.pos.payment.data.model.totalACobrarCents
@@ -505,7 +507,9 @@ class PaymentFlowViewModel @Inject constructor(
         if (!permiteColaCapturada) return Apartado.NINGUNO
         if (provisionalCapturada) return Apartado.NINGUNO
         if (cart.pendingStampRewardId != null && cart.premioAplica) return Apartado.NINGUNO
+        // D5: sin orden todavía, el cupón no se aparta: el apartado se sube como venta de la cola, donde el cupón no se valida.
         val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
+        if (cart.couponCode != null && ordenExistente == null) return Apartado.NINGUNO
         try {
             cashPaymentRepository.reservarCobro(
                 orderRequest = pedido,
@@ -2763,6 +2767,13 @@ class PaymentFlowViewModel @Inject constructor(
                                             message = MENSAJE_PREMIO_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
+                                    } else if (isQueueable && cart.couponCode != null) {
+                                        // 🔴 D5: el cupón, igual: necesita validarse, y encolado se subiría como un descuento libre.
+                                        if (otra) return@fold
+                                        _state.value = PaymentFlowState.Error(
+                                            message = MENSAJE_CUPON_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
                                     } else if (isQueueable) {
                                         val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
@@ -3343,6 +3354,14 @@ class PaymentFlowViewModel @Inject constructor(
                                         _state.value = PaymentFlowState.SelectingPaymentMethod(adoptado)
                                         return@fold
                                     }
+                                    // D5: lo mismo con un cupón que cambió de valor entre validarlo y cobrar; la orden ya lo trae.
+                                    if (orderRequest.couponCode != null && adoptado > cashReceivedCents) {
+                                        if (hayAvisoDePrecio) publicarAvisoDePrecio(totalNuevoCents = adoptado)
+                                        _avisoDelPremio.value = avisoDeEfectivoCortoPorCupon(totalRealCents = adoptado, recibidoCents = cashReceivedCents)
+                                        isProcessingPayment = false
+                                        _state.value = PaymentFlowState.SelectingPaymentMethod(adoptado)
+                                        return@fold
+                                    }
                                     val totalFinal = adoptado
                                         .takeIf { it <= cashReceivedCents }
                                         ?: estimado.also { serverTotalOverrideCents = null }
@@ -3429,6 +3448,12 @@ class PaymentFlowViewModel @Inject constructor(
                                         // llave deduplica si la creación sí llegó) o quita el premio.
                                         _state.value = PaymentFlowState.Error(
                                             message = MENSAJE_PREMIO_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable && cart.couponCode != null) {
+                                        // 🔴 D5: el cupón, igual: necesita validarse, y encolado se subiría como un descuento libre.
+                                        _state.value = PaymentFlowState.Error(
+                                            message = MENSAJE_CUPON_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
@@ -5528,6 +5553,7 @@ class PaymentFlowViewModel @Inject constructor(
             splitType = _splitType.value,
             reservationId = cart.reservationId,
             orderType = cart.orderType,
+            couponCode = cart.couponCode,
         )
     }
 
@@ -5758,7 +5784,8 @@ class PaymentFlowViewModel @Inject constructor(
             }
             return cobro.totalCents
         }
-        val laVentaLlevaPromocion = orderRequest.items.any { it.promotionRef != null }
+        // D5: con cupón también manda el SERVIDOR: él lo revalida y calcula el monto.
+        val laVentaLlevaPromocion = orderRequest.items.any { it.promotionRef != null } || orderRequest.couponCode != null
         // Se GUARDA aunque no se adopte. En pago dividido el importe de ESTA
         // parte lo eligió el cajero y no se toca, pero el RESTO tiene que salir
         // del total real o la suma de las partes no es lo que vale la venta.
@@ -5841,7 +5868,8 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
     private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
-        cart != null && cart.items.isNotEmpty() && split != "FULLPAYMENT"
+        // D5: con cupón también, para que el cupón tenga una orden donde ligarse y contar.
+        cart != null && cart.items.isNotEmpty() && (split != "FULLPAYMENT" || cart.couponCode != null)
 
     /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
     private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()

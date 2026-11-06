@@ -42,6 +42,11 @@ data class Discount(
      * debiendo. La línea del carrito lo congela en [CartItem.itemDiscountMax].
      */
     val maxDiscountAmount: Double? = null,
+    /**
+     * El código si este descuento salió de un cupón (D5, 5-nov). Viaja al crear la venta: el SERVIDOR lo revalida, calcula el monto y
+     * liga la fila, y el uso cuenta al quedar pagada. Sin él se quedaba como un descuento libre y el cupón nunca contaba.
+     */
+    val couponCode: String? = null,
 ) {
     val discountScope: DiscountScope
         get() = when (scope.uppercase()) {
@@ -178,6 +183,8 @@ data class CouponCode(
     val isValid: Boolean = true,
     val invalidReason: String? = null,
     val estimatedSavings: Double? = null,
+    /** Descuento máximo del catálogo, en pesos: sin él, la caja cobraría de menos (como [Discount.maxDiscountAmount]). */
+    val maxDiscountAmount: Double? = null,
 ) {
     /** Misma razón que en [Discount.discountType]: el server dice `FIXED_AMOUNT`. */
     val discountType: DiscountType
@@ -195,19 +202,60 @@ data class CouponCode(
     /** Convert to Discount for applying to cart. */
     fun toDiscount(): Discount = Discount(
         id = "coupon_$id",
-        name = name,
+        // El mismo nombre que le pone el SERVIDOR a la fila de la orden: lo que ve la cajera es lo que sale en el reporte.
+        name = "$name ($code)",
         value = value,
         type = type,
         scope = "ORDER",
+        maxDiscountAmount = maxDiscountAmount,
+        couponCode = code,
     )
 }
 
+/**
+ * 🔴 La respuesta REAL de `POST /mobile/venues/:id/coupons/validate` (`coupon.mobile.controller.ts`): todo viene en `data` y el descuento
+ * va anidado. Con `coupon` en la raíz (como antes) se leía siempre `null`: todo cupón válido salía «Cupon no valido» (D5, 5-nov).
+ */
 @Serializable
 data class CouponValidationResponse(
     val success: Boolean = true,
     val message: String? = null,
-    val coupon: CouponCode? = null,
+    val data: CouponValidationData? = null,
+)
+
+@Serializable
+data class CouponValidationData(
+    val valid: Boolean = false,
+    val coupon: CuponDelServidor? = null,
     val error: String? = null,
+    val errorCode: String? = null,
+)
+
+@Serializable
+data class CuponDelServidor(
+    val id: String,
+    val code: String,
+    val discount: DescuentoDelCupon,
+) {
+    fun aCoupon() = CouponCode(
+        id = id,
+        code = code,
+        name = discount.name,
+        // Una cortesía regala la base entera: para el carrito es un 100 %. El SERVIDOR pide su permiso al crear la venta.
+        type = if (discount.type.equals("COMP", ignoreCase = true)) "PERCENTAGE" else discount.type,
+        value = if (discount.type.equals("COMP", ignoreCase = true)) 100.0 else discount.value,
+        maxDiscountAmount = discount.maxDiscountAmount,
+    )
+}
+
+@Serializable
+data class DescuentoDelCupon(
+    val id: String,
+    val name: String,
+    val type: String,
+    val value: Double,
+    val scope: String = "ORDER",
+    val maxDiscountAmount: Double? = null,
 )
 
 // MARK: - Create Product response

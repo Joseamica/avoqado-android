@@ -76,6 +76,7 @@ import com.avoqado.pos.designsystem.theme.ActionRed
 import com.avoqado.pos.designsystem.theme.ActionTeal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.pos.data.CUPON_NO_SE_COMBINA_CON_PREMIO
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import androidx.compose.ui.platform.LocalContext
@@ -869,6 +870,8 @@ private fun CouponsSubView(
     var validatedCoupon by remember { mutableStateOf<com.avoqado.pos.pos.data.model.CouponCode?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
+    val cartState by cartViewModel.cartState.collectAsState()
+    val cliente by cartViewModel.selectedCustomer.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Cupones", onBack = onBack)
@@ -881,7 +884,7 @@ private fun CouponsSubView(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Ingresa el código del cupon",
+                text = "Ingresa el código del cupón",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -893,24 +896,32 @@ private fun CouponsSubView(
                     validatedCoupon = null
                     errorMessage = null
                 },
-                label = { Text("Código de cupon") },
+                label = { Text("Código de cupón") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
 
             PrimaryButton(
-                text = if (isValidating) "Validando..." else "Validar cupon",
+                text = if (isValidating) "Validando..." else "Validar cupón",
                 onClick = {
                     coroutineScope.launch {
                         isValidating = true
                         errorMessage = null
                         validatedCoupon = null
-                        when (val result = discountsRepository.validateCoupon(couponCode)) {
+                        when (val result = discountsRepository.validateCoupon(couponCode, cartState.baseDelCuponCents, cliente?.id)) {
                             is DiscountsRepository.CouponResult.Valid -> {
-                                validatedCoupon = result.coupon
+                                // El SERVIDOR los rechaza juntos al crear la venta (Codex D5 r1 #3); se dice aquí, antes de aplicarlo.
+                                if (cartState.pendingStampReward != null) {
+                                    errorMessage = CUPON_NO_SE_COMBINA_CON_PREMIO
+                                } else {
+                                    validatedCoupon = result.coupon
+                                }
                             }
                             is DiscountsRepository.CouponResult.Invalid -> {
                                 errorMessage = result.reason
+                            }
+                            DiscountsRepository.CouponResult.SinConexion -> {
+                                errorMessage = com.avoqado.pos.pos.data.CUPON_SIN_RED_AL_VALIDAR
                             }
                             is DiscountsRepository.CouponResult.Error -> {
                                 errorMessage = ServerErrorText.humanize(result.message)
@@ -990,7 +1001,7 @@ private fun CouponsSubView(
                     }
 
                     PrimaryButton(
-                        text = "Aplicar cupon",
+                        text = "Aplicar cupón",
                         onClick = {
                             cartViewModel.applyOrderDiscount(coupon.toDiscount())
                             onBack()
