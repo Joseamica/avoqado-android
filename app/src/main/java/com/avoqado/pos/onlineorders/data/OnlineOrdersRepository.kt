@@ -95,6 +95,32 @@ class OnlineOrdersRepository @Inject constructor(
         Result.failure(e)
     }
 
+    /**
+     * R103: como [ejecutar], pero la llamada se CANCELA de verdad si la corrutina se cancela (`execute()` dentro de `withContext` seguiría
+     * bloqueado hasta su plazo, con el candado de la página 1 tomado). Lo que llega después de cancelar se ignora.
+     */
+    private suspend fun ejecutarCancelable(request: Request): Result<String> = try {
+        val (code, body) = kotlinx.coroutines.suspendCancellableCoroutine<Pair<Int, String>> { cont ->
+            val call = client.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.failure(e))
+                }
+
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val leida = runCatching { response.use { it.code to it.body?.string().orEmpty() } }
+                    if (cont.isActive) cont.resumeWith(leida)
+                }
+            })
+        }
+        if (code in 200..299) Result.success(body) else Result.failure(RechazoException(leerRechazo(code, body)))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
     private fun leerRechazo(code: Int, body: String): Rechazo {
         val json = runCatching { JSONObject(body) }.getOrNull()
         val codigo = json?.textoONulo("code")
@@ -334,15 +360,29 @@ class OnlineOrdersRepository @Inject constructor(
      * al servidor que ESTE aparato cobra folios (sólo pantallas que cobran; el vigilante y el panel no). La página 1 sin sección se
      * guarda en el aparato ([porPagarGuardado]). 403/404 ⇒ `disponible = false`, sin error.
      */
-    suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> {
+    suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> =
+        // R103: la página 1 se lee ENTERA bajo [lecturaDePagina1]; «Cargar más» (sección y cursor) no la espera.
+        if (seccion != null || cursor != null) leerPorPagar(conLatido, seccion, cursor)
+        else lecturaDePagina1.withLock { leerPorPagar(conLatido, null, null) }
+
+    /**
+     * 🔴 R103 (Codex r5): el número de R102 dice cuándo SALIÓ la petición, no qué tan nueva es la foto del servidor; con dos lecturas a
+     * la vez el servidor puede atender la segunda primero. Así que la página 1 de «Por pagar» se lee ENTERA bajo este candado (red,
+     * leer y guardar la copia): la bandeja y el vigilante, que comparten este repositorio único, nunca se enciman, y cada lectura sale
+     * hacia el servidor después de que la anterior ya llegó. Orden fijo de candados: éste y luego [copiaDeFolios]; nada toma la copia y
+     * luego éste. Una lectura cancelada lo suelta al instante ([ejecutarCancelable]) y nunca se aplica.
+     */
+    private val lecturaDePagina1 = Mutex()
+
+    private suspend fun leerPorPagar(conLatido: Boolean, seccion: String?, cursor: String?): Result<ListaPorPagar> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        // R102: el número de la lectura se toma ANTES de la red: lo que cuenta es cuándo se PIDIÓ, no cuándo llegó.
+        // R102 (segunda red): el número de la lectura se toma ANTES de la red: lo que cuenta es cuándo se PIDIÓ, no cuándo llegó.
         val numero = secuenciaDeLecturas.incrementAndGet()
         val consulta = listOfNotNull(
             seccion?.let { "section=" + URLEncoder.encode(it, "UTF-8") },
             cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
         ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
-        val leido = ejecutar(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido))
+        val leido = ejecutarCancelable(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido))
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
             val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }

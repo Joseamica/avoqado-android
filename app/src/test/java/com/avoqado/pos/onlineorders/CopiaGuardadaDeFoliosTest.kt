@@ -205,33 +205,37 @@ class CopiaGuardadaDeFoliosTest {
     // MARK: - R102: la copia (y la lista en memoria) sólo avanza
 
     /**
-     * R102 (Codex r4 #1): el vigilante pidió `to-pay` ANTES del pago y su respuesta ($134) se demora; mientras, la bandeja lee después
-     * del pago, guarda la copia y suelta la marca. La respuesta vieja llega al final: se descarta (no guarda, no suelta, no arrastra).
+     * R103 (Codex r5): el número de R102 mide cuándo SALIÓ la petición, no qué tan nueva es la foto del servidor: con dos lecturas a la
+     * vez, el servidor puede atender la #2 antes que la #1. Por eso la página 1 de `to-pay` se lee ENTERA bajo un candado del
+     * repositorio único: la lectura de la bandeja no sale hasta que la del vigilante ya se aplicó, y su foto es posterior.
      */
     @Test
-    fun `P1 an old watcher response arriving after a newer tray save is discarded - the copy stays paid and a restart offline offers no Cobrar`() = runBlocking {
+    fun `P1 the tray and the watcher never overlap a to-pay read - the second request is not sent until the first response is applied`() = runBlocking {
         toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING"))
         val vm = pantalla()
         vm.descubrirPorPagar()
         marcas.anotar(FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 0, venueId = "v1", requestId = "req-1"))
 
-        // El vigilante (mismo repositorio) pide antes del pago; su respuesta se queda en el camino.
+        // El vigilante lee antes del pago; el servidor tarda en contestarle.
         val compuerta = CountDownLatch(1)
         retenidas.add(compuerta to cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING")))
-        val llegadas = llegadasToPay.get()
+        val antes = llegadasToPay.get()
         val delVigilante = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
-        esperarLlegadas(llegadas + 1)
+        esperarLlegadas(antes + 1)
 
-        // La bandeja lee DESPUÉS del pago: guarda la copia y suelta la marca.
+        // La bandeja quiere leer (ya después del pago): espera su turno, no sale a la red.
         toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
-        vm.refrescar()
-        assertTrue(marcas.marcas().isEmpty())
+        val deLaBandeja = async(Dispatchers.IO) { vm.refrescar() }
+        delay(400)
+        assertEquals("la segunda lectura no sale mientras la primera sigue en el aire", antes + 1, llegadasToPay.get())
+        assertEquals("y nada se soltó todavía", 1, marcas.marcas().size)
 
         compuerta.countDown()
-        val vieja = delVigilante.await().getOrThrow()
-        assertTrue("la respuesta vieja se reconoce como vieja", vieja.masViejaQueLaCopia)
-        assertFalse(vieja.copiaGuardada)
-        assertTrue("la copia sigue diciendo pagado, no «Por pagar $134»", repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f1" })
+        assertTrue(delVigilante.await().getOrThrow().copiaGuardada)
+        deLaBandeja.await()
+        assertEquals(antes + 2, llegadasToPay.get())
+        assertTrue("la lectura posterior al pago es la última: suelta la marca", marcas.marcas().isEmpty())
+        assertTrue("y la copia dice pagado", repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f1" })
 
         // Reinicio sin red: la lista guardada no ofrece «Cobrar» de ese folio.
         toPay = MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START)
@@ -241,21 +245,44 @@ class CopiaGuardadaDeFoliosTest {
         assertEquals(listOf("f1"), tras.porPagar.value!!.porEntregar.map { it.orderId })
     }
 
+    /** R103: una lectura que se abandona (cancelada) suelta el candado al instante y nunca se aplica. */
     @Test
-    fun `a newer response that lands after an older one is saved`() = runBlocking {
-        val vieja = CountDownLatch(1)
-        val nueva = CountDownLatch(1)
-        retenidas.add(vieja to cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING")))
-        retenidas.add(nueva to cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID")))
-        val primera = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
-        esperarLlegadas(1)
-        val segunda = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
-        esperarLlegadas(2)
+    fun `a cancelled to-pay read releases the lock at once and is never applied`() = runBlocking {
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING"))
+        repo.porPagar(conLatido = false).getOrThrow()
 
-        vieja.countDown()
-        assertTrue("la vieja llega primero: no hay nada más nuevo guardado", primera.await().getOrThrow().copiaGuardada)
-        nueva.countDown()
-        val luego = segunda.await().getOrThrow()
+        val compuerta = CountDownLatch(1)
+        retenidas.add(compuerta to cuerpo(porPagar = folio("f9", "PENDING_ACCEPTANCE", "99", "PENDING")))
+        val antes = llegadasToPay.get()
+        val abandonada = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        esperarLlegadas(antes + 1)
+        abandonada.cancel()
+
+        // Antes de que venza el plazo de lectura (2 s): la siguiente lectura ya pasa.
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        val siguiente = withTimeout(1_500) { repo.porPagar(conLatido = false).getOrThrow() }
+        assertTrue(siguiente.copiaGuardada)
+        compuerta.countDown()
+        assertTrue(abandonada.isCancelled)
+        val copia = repo.porPagarGuardado()!!
+        assertTrue("la abandonada no se aplicó", copia.porPagar.none { it.orderId == "f9" })
+        assertEquals(listOf("f1"), copia.porEntregar.map { it.orderId })
+    }
+
+    @Test
+    fun `reads are applied in order - a later read still replaces an earlier one`() = runBlocking {
+        val primera = CountDownLatch(1)
+        retenidas.add(primera to cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING")))
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        val a = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        esperarLlegadas(1)
+        val b = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        delay(200)
+        assertEquals("la segunda espera su turno", 1, llegadasToPay.get())
+
+        primera.countDown()
+        assertTrue(a.await().getOrThrow().copiaGuardada)
+        val luego = b.await().getOrThrow()
         assertTrue(luego.copiaGuardada)
         assertFalse(luego.masViejaQueLaCopia)
         assertTrue(repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f1" })
