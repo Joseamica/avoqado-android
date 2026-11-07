@@ -13,10 +13,15 @@ import com.avoqado.pos.onlineorders.presentation.yaEstaListo
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -28,6 +33,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -62,11 +68,21 @@ class CopiaGuardadaDeFoliosTest {
     /** Lo que contesta `to-pay` ahora mismo. */
     private var toPay: MockResponse = MockResponse().setResponseCode(500)
 
+    /** R102: respuestas de `to-pay` retenidas, en el orden en que llegan las peticiones: cada una sale cuando se abre su compuerta. */
+    private val retenidas = ConcurrentLinkedQueue<Pair<CountDownLatch, MockResponse>>()
+    private val llegadasToPay = AtomicInteger()
+
+    private suspend fun esperarLlegadas(n: Int) = withTimeout(5_000) { while (llegadasToPay.get() < n) delay(10) }
+
     @Before fun arrancar() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
-                request.path!!.contains("/online-orders/to-pay") -> toPay
+                request.path!!.contains("/online-orders/to-pay") -> {
+                    val retenida = retenidas.poll()
+                    llegadasToPay.incrementAndGet()
+                    if (retenida == null) toPay else retenida.first.await(5, TimeUnit.SECONDS).let { retenida.second }
+                }
                 request.path!!.contains("/online-orders/inbox") -> MockResponse().setBody(
                     """{"success":true,"data":{"serverTime":"2026-11-06T18:10:00.000Z","counts":{"pending":0,"active":0,"done":0},"orders":[]}}""",
                 )
@@ -184,6 +200,65 @@ class CopiaGuardadaDeFoliosTest {
         val copia = repo.porPagarGuardado()!!
         assertTrue("la copia guardada ya no dice «Por pagar $134»", copia.porPagar.none { it.orderId == "f1" })
         assertEquals(listOf("f1"), copia.porEntregar.map { it.orderId })
+    }
+
+    // MARK: - R102: la copia (y la lista en memoria) sólo avanza
+
+    /**
+     * R102 (Codex r4 #1): el vigilante pidió `to-pay` ANTES del pago y su respuesta ($134) se demora; mientras, la bandeja lee después
+     * del pago, guarda la copia y suelta la marca. La respuesta vieja llega al final: se descarta (no guarda, no suelta, no arrastra).
+     */
+    @Test
+    fun `P1 an old watcher response arriving after a newer tray save is discarded - the copy stays paid and a restart offline offers no Cobrar`() = runBlocking {
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        marcas.anotar(FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 0, venueId = "v1", requestId = "req-1"))
+
+        // El vigilante (mismo repositorio) pide antes del pago; su respuesta se queda en el camino.
+        val compuerta = CountDownLatch(1)
+        retenidas.add(compuerta to cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING")))
+        val llegadas = llegadasToPay.get()
+        val delVigilante = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        esperarLlegadas(llegadas + 1)
+
+        // La bandeja lee DESPUÉS del pago: guarda la copia y suelta la marca.
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        vm.refrescar()
+        assertTrue(marcas.marcas().isEmpty())
+
+        compuerta.countDown()
+        val vieja = delVigilante.await().getOrThrow()
+        assertTrue("la respuesta vieja se reconoce como vieja", vieja.masViejaQueLaCopia)
+        assertFalse(vieja.copiaGuardada)
+        assertTrue("la copia sigue diciendo pagado, no «Por pagar $134»", repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f1" })
+
+        // Reinicio sin red: la lista guardada no ofrece «Cobrar» de ese folio.
+        toPay = MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START)
+        val tras = pantalla()
+        tras.descubrirPorPagar()
+        assertTrue(tras.porPagar.value!!.porPagar.none { it.orderId == "f1" })
+        assertEquals(listOf("f1"), tras.porPagar.value!!.porEntregar.map { it.orderId })
+    }
+
+    @Test
+    fun `a newer response that lands after an older one is saved`() = runBlocking {
+        val vieja = CountDownLatch(1)
+        val nueva = CountDownLatch(1)
+        retenidas.add(vieja to cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "134", "PENDING")))
+        retenidas.add(nueva to cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID")))
+        val primera = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        esperarLlegadas(1)
+        val segunda = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        esperarLlegadas(2)
+
+        vieja.countDown()
+        assertTrue("la vieja llega primero: no hay nada más nuevo guardado", primera.await().getOrThrow().copiaGuardada)
+        nueva.countDown()
+        val luego = segunda.await().getOrThrow()
+        assertTrue(luego.copiaGuardada)
+        assertFalse(luego.masViejaQueLaCopia)
+        assertTrue(repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f1" })
     }
 
     @Test

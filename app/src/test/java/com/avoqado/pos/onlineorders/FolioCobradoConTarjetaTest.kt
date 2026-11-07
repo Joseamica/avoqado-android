@@ -312,6 +312,22 @@ class FolioCobradoConTarjetaTest {
         assertTrue(marcas.marcas().isEmpty())
     }
 
+    /** R102: una respuesta más vieja que la copia guardada no reemplaza la lista en memoria ni suelta ninguna marca. */
+    @Test
+    fun `an old to-pay response never replaces a newer list nor releases a marker`() = runTest(dispatcher) {
+        folioCobradoConTarjeta()
+        respuesta = Result.success(lista(porPagar = listOf(folio())))
+        val vm = armar()
+        vm.refrescar()
+
+        respuesta = Result.success(
+            lista(porEntregar = listOf(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED))).copy(masViejaQueLaCopia = true, copiaGuardada = false),
+        )
+        vm.refrescar()
+        assertEquals("la lista de memoria no retrocede", listOf("f1"), vm.porPagar.value!!.porPagar.map { it.orderId })
+        assertEquals("y la marca se queda", 1, marcas.marcas().size)
+    }
+
     @Test
     fun `an A5 marker without venue blocks everywhere and only the folio in sight releases it`() {
         val vieja = FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 0) // A5: sin negocio ni solicitud

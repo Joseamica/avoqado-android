@@ -336,6 +336,8 @@ class OnlineOrdersRepository @Inject constructor(
      */
     suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> {
         val (venueId, token) = sesion() ?: return sinSesion()
+        // R102: el número de la lectura se toma ANTES de la red: lo que cuenta es cuándo se PIDIÓ, no cuándo llegó.
+        val numero = secuenciaDeLecturas.incrementAndGet()
         val consulta = listOfNotNull(
             seccion?.let { "section=" + URLEncoder.encode(it, "UTF-8") },
             cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
@@ -343,30 +345,52 @@ class OnlineOrdersRepository @Inject constructor(
         val leido = ejecutar(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido))
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
-            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false))
+            val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }
+            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false, masViejaQueLaCopia = vieja))
         }
         val lista = leido.mapCatching { parsePorPagar(it) }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
         if (seccion != null || cursor != null) return lista
-        return lista.map { it.copy(copiaGuardada = guardarCopia(venueId, leido.getOrThrow(), it)) }
+        return lista.map {
+            when (guardarCopia(venueId, leido.getOrThrow(), it, numero)) {
+                Guardado.GUARDADA -> it
+                Guardado.FALLO -> it.copy(copiaGuardada = false)
+                Guardado.VIEJA -> it.copy(copiaGuardada = false, masViejaQueLaCopia = true)
+            }
+        }
     }
+
+    /**
+     * R102: la bandeja y el vigilante leen `to-pay` por separado y la red puede entregar al revés. Cada lectura de la página 1 lleva su
+     * número ([secuenciaDeLecturas], tomado antes de la red, en este repositorio ÚNICO que comparten) y la copia recuerda el de la
+     * lectura que la dejó ([secuenciaDeLaCopia]). En memoria basta: tras reiniciar, toda lectura nueva se pidió después de la copia.
+     */
+    private val secuenciaDeLecturas = java.util.concurrent.atomic.AtomicLong()
+    private val secuenciaDeLaCopia = mutableMapOf<String, Long>()
+
+    private enum class Guardado { GUARDADA, VIEJA, FALLO }
 
     /** Una escritura a la vez sobre la copia de «Por pagar»: la de cada lectura y la de lo escondido no se pisan. */
     private val copiaDeFolios = Mutex()
 
     /**
      * R101: la página 1 queda como la copia guardada, junto con lo escondido que todavía aplica ([ocultosQueSiguen]), en UNA sola
-     * escritura. `true` = la copia ya es esta lectura; `false` = sigue la de antes (la bandeja no suelta marcas de tarjeta con ella).
+     * escritura. R102: sólo si se PIDIÓ después de la lectura que dejó la copia de ahora; si no, se descarta (la copia sólo avanza).
      */
-    private suspend fun guardarCopia(venueId: String, cuerpo: String, lista: ListaPorPagar): Boolean = copiaDeFolios.withLock {
+    private suspend fun guardarCopia(venueId: String, cuerpo: String, lista: ListaPorPagar, numero: Long): Guardado = copiaDeFolios.withLock {
+        if (numero <= (secuenciaDeLaCopia[venueId] ?: 0L)) {
+            Log.d(TAG, "«Por pagar»: respuesta $numero más vieja que la copia (${secuenciaDeLaCopia[venueId]}): se descarta")
+            return@withLock Guardado.VIEJA
+        }
         try {
             val previos = cache.load(CACHE_POR_PAGAR, venueId)?.let { ocultosDe(JSONObject(it.json)) }.orEmpty()
             cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
-            true
+            secuenciaDeLaCopia[venueId] = numero
+            Guardado.GUARDADA
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "❌ No se pudo guardar la copia de «Por pagar»: ${e.message}")
-            false
+            Guardado.FALLO
         }
     }
 

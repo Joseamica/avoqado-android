@@ -149,6 +149,11 @@ data class ListaPorPagar(
      * tarjeta puede soltarse: no queda detrás una copia vieja con el saldo de antes del pago.
      */
     val copiaGuardada: Boolean = true,
+    /**
+     * R102: esta lectura se PIDIÓ antes que la que dejó la copia guardada (llegó tarde). Se descarta: no guarda, no suelta marcas, no
+     * arrastra lo escondido y no reemplaza ninguna lista más nueva en memoria.
+     */
+    val masViejaQueLaCopia: Boolean = false,
 )
 
 /** R100/R101 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección (`toPay`/`toDeliver`), su estado y lo que falta. */

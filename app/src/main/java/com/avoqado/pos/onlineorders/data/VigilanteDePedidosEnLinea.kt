@@ -310,8 +310,11 @@ class VigilanteDePedidosEnLinea internal constructor(
         }
         val lista = resultado.getOrNull()
         if (lista != null) {
-            huboLecturaDeFolios = true
-            aplicarFolios(lista)
+            // R102: una respuesta más vieja que la copia guardada (la bandeja ya guardó una más nueva) no mueve el número.
+            if (!lista.masViejaQueLaCopia) {
+                huboLecturaDeFolios = true
+                aplicarFolios(lista)
+            }
             return (lista.pollSeconds.coerceIn(10, 600) * 1000L)
         }
         Log.d(TAG, "Folios sin respuesta: ${resultado.exceptionOrNull()?.message}")

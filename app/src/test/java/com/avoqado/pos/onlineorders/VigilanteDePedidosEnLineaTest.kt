@@ -423,6 +423,20 @@ class VigilanteDePedidosEnLineaTest {
         f.vigilante.onStop(owner)
     }
 
+    /** R102: una respuesta más vieja que la copia guardada no mueve el número del menú. */
+    @Test
+    fun `an old to-pay response does not move the menu number`() = runTest {
+        val folios = Folios(Result.success(listaFolios(3)))
+        val f = armarConFolios(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(3, f.vigilante.foliosPorPagar.value)
+
+        folios.respuesta = Result.success(listaFolios(1).copy(masViejaQueLaCopia = true, copiaGuardada = false))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(3, f.vigilante.foliosPorPagar.value)
+        f.vigilante.onStop(owner)
+    }
+
     @Test
     fun `the watcher never rings for a folio and keeps them out of the pending list`() = runTest {
         val folios = Folios(Result.success(listaFolios(3)))

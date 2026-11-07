@@ -370,6 +370,13 @@ class OnlineOrdersViewModel internal constructor(
         } catch (e: Exception) {
             Result.failure(e)
         }
+        // R102: una respuesta más vieja que la copia guardada (otra lectura pedida después ya la dejó) no mueve nada en memoria.
+        if (primera.getOrNull()?.masViejaQueLaCopia == true) {
+            Log.d(TAG, "«Por pagar»: respuesta más vieja que la copia guardada; se queda la lista de ahora")
+            releerCobradosEnElAparato()
+            _leyendoFolios.value = false
+            return
+        }
         primera.onSuccess { lista ->
             var actual = lista
             // A5 (Codex r1 #4): la primera página contestó pero una extra no. Lo que ya se veía de esa sección se conserva (regla A2:
