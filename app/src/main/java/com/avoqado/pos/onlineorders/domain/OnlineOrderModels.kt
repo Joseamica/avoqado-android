@@ -139,7 +139,20 @@ data class ListaPorPagar(
     val porEntregar: List<OnlineOrder>,
     val nextCursors: CursoresPorPagar,
     val guardadoHaceMin: Long? = null,
+    /**
+     * R101: lo escondido tras una acción confirmada, guardado en la MISMA copia que la lista (sólo lo trae `porPagarGuardado()`): al
+     * reiniciar no vuelven botones viejos.
+     */
+    val ocultos: Map<String, HuellaDeFolio> = emptyMap(),
+    /**
+     * R101: la página 1 de esta lectura YA es la copia guardada en el aparato (`false` si no se pudo escribir). Sólo así una marca de
+     * tarjeta puede soltarse: no queda detrás una copia vieja con el saldo de antes del pago.
+     */
+    val copiaGuardada: Boolean = true,
 )
+
+/** R100/R101 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección (`toPay`/`toDeliver`), su estado y lo que falta. */
+data class HuellaDeFolio(val seccion: String, val status: OnlineOrderStatus, val remainingCents: Long)
 
 sealed interface AccionResultado {
     data object Hecho : AccionResultado

@@ -53,6 +53,8 @@ class PorPagarTest {
     private val guardado = mutableMapOf<String, String>()
     private val cache = mockk<PayloadCache>().also { c ->
         coEvery { c.save(any(), any(), any()) } answers { guardado["${firstArg<String>()}|${secondArg<String>()}"] = thirdArg() }
+        // R101: la copia de «Por pagar» se escribe con `saveDurable` (sabe si quedó).
+        coEvery { c.saveDurable(any(), any(), any()) } answers { guardado["${firstArg<String>()}|${secondArg<String>()}"] = thirdArg() }
         coEvery { c.load(any(), any()) } answers { guardado["${firstArg<String>()}|${secondArg<String>()}"]?.let { PayloadCache.Cached(it, 0L) } }
     }
     private lateinit var repo: OnlineOrdersRepository

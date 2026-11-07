@@ -258,6 +258,60 @@ class FolioCobradoConTarjetaTest {
         assertTrue(vm.cobradosConTarjeta.value.isEmpty())
     }
 
+    /** Lo que deja un cobro con tarjeta de folio ya reconocido: el positivo salió de la lista y quedó su marca. */
+    private fun folioCobradoConTarjeta() {
+        cobroEnviado("req-1", "f1")
+        servicio.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1"))
+        servicio.reconocerCobro("req-1")
+        assertEquals(1, marcas.marcas().size)
+    }
+
+    /**
+     * R101 (Codex r3 #1, regresión de A6): la Bandeja ya ve el pago, pero lo que alimenta «Cobrar» de un folio es «Por pagar», y esa
+     * lectura falló: conserva «$134». La Bandeja nunca suelta la marca de un folio.
+     */
+    @Test
+    fun `P1 the Inbox seeing the payment never releases a folio marker - with the folio read failing Cobrar stays blocked, also after a restart`() = runTest(dispatcher) {
+        folioCobradoConTarjeta()
+        respuesta = Result.success(lista(porPagar = listOf(folio())))
+        val vm = armar()
+        vm.refrescar()
+
+        inbox = bandeja(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED)) // el folio también sale en la Bandeja, ya pagado
+        respuesta = Result.failure(IllegalStateException("500"))
+        vm.refrescar()
+        assertEquals("la Bandeja no suelta la marca de un folio", 1, marcas.marcas().size)
+        assertEquals("«Por pagar» sigue diciendo $134", 13400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, vm.aviso.value)
+
+        reiniciar()
+        guardada = lista(porPagar = listOf(folio())).copy(guardadoHaceMin = 1)
+        val tras = armar()
+        tras.descubrirPorPagar()
+        tras.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertNull("tras reiniciar con la lista guardada, tampoco", tras.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, tras.aviso.value)
+    }
+
+    /** R101: se suelta en el MISMO paso en que esa lectura queda como copia guardada; si la copia no se escribió, no se suelta. */
+    @Test
+    fun `P1 a complete to-pay read releases a folio marker only when its saved copy was written`() = runTest(dispatcher) {
+        folioCobradoConTarjeta()
+        val pagado = lista(porEntregar = listOf(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED)))
+        respuesta = Result.success(pagado.copy(copiaGuardada = false))
+        val vm = armar()
+        vm.refrescar()
+        assertEquals("la copia vieja seguiría detrás: no se suelta", 1, marcas.marcas().size)
+
+        respuesta = Result.success(pagado)
+        vm.refrescar()
+        assertTrue(marcas.marcas().isEmpty())
+    }
+
     @Test
     fun `an A5 marker without venue blocks everywhere and only the folio in sight releases it`() {
         val vieja = FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 0) // A5: sin negocio ni solicitud

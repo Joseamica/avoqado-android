@@ -9,6 +9,7 @@ import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
+import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
@@ -19,7 +20,10 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.presentation.ocultosQueSiguen
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -341,16 +345,78 @@ class OnlineOrdersRepository @Inject constructor(
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
             return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false))
         }
-        return leido.mapCatching { cuerpo ->
-            parsePorPagar(cuerpo).also { if (seccion == null && cursor == null) cache.save(CACHE_POR_PAGAR, venueId, cuerpo) }
-        }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
+        val lista = leido.mapCatching { parsePorPagar(it) }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
+        if (seccion != null || cursor != null) return lista
+        return lista.map { it.copy(copiaGuardada = guardarCopia(venueId, leido.getOrThrow(), it)) }
     }
 
-    /** La última página 1 que llegó del servidor, con su edad en [ListaPorPagar.guardadoHaceMin]; `null` si nunca se leyó. */
+    /** Una escritura a la vez sobre la copia de «Por pagar»: la de cada lectura y la de lo escondido no se pisan. */
+    private val copiaDeFolios = Mutex()
+
+    /**
+     * R101: la página 1 queda como la copia guardada, junto con lo escondido que todavía aplica ([ocultosQueSiguen]), en UNA sola
+     * escritura. `true` = la copia ya es esta lectura; `false` = sigue la de antes (la bandeja no suelta marcas de tarjeta con ella).
+     */
+    private suspend fun guardarCopia(venueId: String, cuerpo: String, lista: ListaPorPagar): Boolean = copiaDeFolios.withLock {
+        try {
+            val previos = cache.load(CACHE_POR_PAGAR, venueId)?.let { ocultosDe(JSONObject(it.json)) }.orEmpty()
+            cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ No se pudo guardar la copia de «Por pagar»: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * R101: lo escondido tras una acción confirmada se guarda en la MISMA copia que la lista (misma fila, una escritura), con la edad de
+     * esa lista intacta. `false` si no hay copia o no se pudo escribir (queda sólo en memoria hasta la siguiente lectura buena).
+     */
+    suspend fun guardarOcultos(ocultos: Map<String, HuellaDeFolio>): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        return copiaDeFolios.withLock {
+            try {
+                val actual = cache.load(CACHE_POR_PAGAR, venueId) ?: return@withLock false
+                val raiz = JSONObject(actual.json)
+                cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(actual.json, ocultos, raiz.optLong(GUARDADA_EN, actual.updatedAt)))
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ No se pudo guardar lo escondido de «Por pagar»: ${e.message}")
+                false
+            }
+        }
+    }
+
+    /** La última página 1 que llegó del servidor, con su edad y lo escondido; `null` si nunca se leyó. */
     suspend fun porPagarGuardado(): ListaPorPagar? {
         val venueId = secureStorage.venueId ?: return null
         val c = cache.load(CACHE_POR_PAGAR, venueId) ?: return null
-        return runCatching { parsePorPagar(c.json).copy(guardadoHaceMin = c.ageMinutes) }.getOrNull()
+        return runCatching {
+            val raiz = JSONObject(c.json)
+            // La edad es la de la LISTA: guardar lo escondido no la rejuvenece.
+            val edad = if (raiz.has(GUARDADA_EN)) ((System.currentTimeMillis() - raiz.getLong(GUARDADA_EN)) / 60_000).coerceAtLeast(0) else c.ageMinutes
+            parsePorPagar(c.json).copy(guardadoHaceMin = edad, ocultos = ocultosDe(raiz))
+        }.getOrNull()
+    }
+
+    private fun conOcultos(cuerpo: String, ocultos: Map<String, HuellaDeFolio>, guardadaEn: Long): String {
+        val json = JSONObject()
+        ocultos.forEach { (id, h) ->
+            json.put(id, JSONObject().put("seccion", h.seccion).put("status", h.status.name).put("remainingCents", h.remainingCents))
+        }
+        return JSONObject(cuerpo).put(OCULTOS, json).put(GUARDADA_EN, guardadaEn).toString()
+    }
+
+    private fun ocultosDe(raiz: JSONObject): Map<String, HuellaDeFolio> {
+        val json = raiz.optJSONObject(OCULTOS) ?: return emptyMap()
+        return json.keys().asSequence().mapNotNull { id ->
+            val h = json.optJSONObject(id) ?: return@mapNotNull null
+            id to HuellaDeFolio(h.optString("seccion"), OnlineOrderStatus.from(h.optString("status")), h.optLong("remainingCents"))
+        }.toMap()
     }
 
     private fun parsePorPagar(cuerpo: String): ListaPorPagar {
@@ -429,6 +495,9 @@ class OnlineOrdersRepository @Inject constructor(
         const val DEVICE_HEADER = "x-device-id"
         const val TO_PAY_HEADER = "x-online-orders-to-pay"
         const val CACHE_POR_PAGAR = "to_pay"
+        /** R101: llaves que el aparato agrega a su copia de «Por pagar» (el SERVIDOR nunca las manda). */
+        const val OCULTOS = "ocultosDelAparato"
+        const val GUARDADA_EN = "guardadaEnMs"
         const val CACHE_POR_COBRAR = "delivery_cash"
     }
 }

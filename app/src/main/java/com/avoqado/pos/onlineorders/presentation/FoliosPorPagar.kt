@@ -2,6 +2,7 @@ package com.avoqado.pos.onlineorders.presentation
 
 import com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
+import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
@@ -118,9 +119,6 @@ fun cobradosConTarjetaEnLaLista(
     return (deMarcas.keys + positivos.keys.filter { it in porPagar }).associateWith { deMarcas[it] ?: positivos.getValue(it) }
 }
 
-/** R100 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección, su estado y lo que falta. */
-data class HuellaDeFolio(val seccion: String, val status: OnlineOrderStatus, val remainingCents: Long)
-
 /** La huella de [orderId] en [lista] (`toPay` / `toDeliver`); null si no está. PURA. */
 fun huellaDe(lista: ListaPorPagar?, orderId: String): HuellaDeFolio? {
     lista ?: return null
@@ -149,9 +147,20 @@ fun sinLosYaAtendidos(lista: ListaPorPagar, ocultos: Map<String, HuellaDeFolio>)
     )
 }
 
-/** Lo que queda escondido tras una lectura buena: sólo los folios que la lista sigue trayendo IGUAL; los demás se podan. PURA. */
+/**
+ * Lo que queda escondido tras una lectura buena (R100/R101, la misma regla en memoria y en la copia guardada): se queda lo que la lista
+ * sigue trayendo IGUAL; se suelta lo que trae distinto; lo que ya no trae se poda sólo si su sección vino entera (si no, pudo seguir
+ * igual en una página sin leer). PURA.
+ */
 fun ocultosQueSiguen(ocultos: Map<String, HuellaDeFolio>, lista: ListaPorPagar): Map<String, HuellaDeFolio> =
-    ocultos.filter { (id, huella) -> huellaDe(lista, id) == huella }
+    ocultos.filter { (id, huella) ->
+        val ahora = huellaDe(lista, id)
+        if (ahora != null) {
+            ahora == huella
+        } else {
+            (if (huella.seccion == OnlineOrdersViewModel.SECCION_POR_PAGAR) lista.nextCursors.toPay else lista.nextCursors.toDeliver) != null
+        }
+    }
 
 /** R98 (A): un folio ya marcado «Listo» sigue en «Por entregar» con su etiqueta y sólo «Entregado» (nunca «Listo» otra vez). */
 fun yaEstaListo(pedido: OnlineOrder): Boolean = pedido.status == OnlineOrderStatus.READY

@@ -17,6 +17,7 @@ import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.onlineorders.domain.AccionResultado
+import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
@@ -138,6 +139,8 @@ class OnlineOrdersViewModel internal constructor(
     private val cobrosConTarjeta: (venueId: String?) -> List<com.avoqado.pos.payment.data.ContextoDeCobro> = { emptyList() },
     /** El negocio de ahora: una marca sólo la suelta una lectura del MISMO negocio. */
     private val venueActual: () -> String? = { null },
+    /** R101: lo escondido se guarda en la MISMA copia que la lista de folios (`OnlineOrdersRepository.guardarOcultos`). */
+    private val guardarOcultos: suspend (Map<String, HuellaDeFolio>) -> Unit = {},
 ) : ViewModel() {
 
     @Inject
@@ -177,6 +180,7 @@ class OnlineOrdersViewModel internal constructor(
         foliosConTarjeta = foliosCobradosConTarjeta,
         cobrosConTarjeta = terminalPaymentService::cobrosConTarjetaDelNegocio,
         venueActual = { secureStorage.venueId },
+        guardarOcultos = { repositorio.guardarOcultos(it) },
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -339,6 +343,8 @@ class OnlineOrdersViewModel internal constructor(
             }
             if (_porPagar.value == null && guardada != null) {
                 _porPagar.value = guardada
+                // R101: lo escondido vuelve con la copia: tras reiniciar no regresan botones de acciones ya hechas.
+                _ocultos.value = guardada.ocultos + _ocultos.value
                 leidoEnMs = ahoraMs() - (guardada.guardadoHaceMin ?: 0L) * 60_000
             }
         }
@@ -402,12 +408,16 @@ class OnlineOrdersViewModel internal constructor(
                 Log.d(TAG, "«Por pagar» incompleto: ${falloDePagina.message}")
                 if (falloDePagina is IOException) _sinConexion.value = true else _noSePudoLeer.value = true
             }
-            // R100: sólo una lectura disponible, COMPLETA y del MISMO negocio suelta las marcas que ya cuenta.
-            if (lista.disponible && falloDePagina == null) {
-                soltarMarcasConfirmadas(venueDeLaLectura, actual.porPagar + actual.porEntregar, actual.porPagar.map { it.orderId }.toSet().takeIf { actual.nextCursors.toPay == null })
+            // R101: «Por pagar» es la fuente del «Cobrar» de un folio: sólo una lectura suya disponible, COMPLETA, del MISMO negocio y
+            // que YA quedó como copia guardada suelta las marcas de folios. Así ninguna copia vieja queda detrás de la marca soltada.
+            if (lista.disponible && falloDePagina == null && lista.copiaGuardada) {
+                soltarMarcasConfirmadas(
+                    venueDeLaLectura, deFolios = true, actual.porPagar + actual.porEntregar,
+                    actual.porPagar.map { it.orderId }.toSet().takeIf { actual.nextCursors.toPay == null },
+                )
             }
             // Codex r2 #3: lo escondido tras una acción se poda en cuanto el SERVIDOR lo trae distinto (o ya no lo trae).
-            _ocultos.value = ocultosQueSiguen(_ocultos.value, actual)
+            if (lista.disponible) _ocultos.value = ocultosQueSiguen(_ocultos.value, actual)
         }.onFailure {
             Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
             val actual = _porPagar.value
@@ -436,11 +446,18 @@ class OnlineOrdersViewModel internal constructor(
      * R100: suelta las marcas que una lectura del SERVIDOR ya cuenta, si la lectura es del negocio de ahora (otro negocio nunca suelta
      * nada). Quien llama garantiza que la lectura fue 2xx y completa.
      */
-    private fun soltarMarcasConfirmadas(venueDeLaLectura: String?, vistos: List<OnlineOrder>, porPagarCompleto: Set<String>?) {
+    private fun soltarMarcasConfirmadas(
+        venueDeLaLectura: String?,
+        /** R101: la fuente. `true` = «Por pagar» (sólo marcas de folios); `false` = la Bandeja (sólo las de «Mi equipo»). */
+        deFolios: Boolean,
+        vistos: List<OnlineOrder>,
+        porPagarCompleto: Set<String>?,
+    ) {
         val venue = venueDeLaLectura ?: return
         if (venueActual() != venue) return
         try {
-            foliosConTarjeta.olvidar(tarjetasConfirmadas(foliosConTarjeta.marcas(), venue, vistos, porPagarCompleto))
+            val deEstaFuente = foliosConTarjeta.marcas().filter { it.esFolio == deFolios }
+            foliosConTarjeta.olvidar(tarjetasConfirmadas(deEstaFuente, venue, vistos, porPagarCompleto))
         } catch (e: Exception) {
             Log.w(TAG, "No se pudieron soltar los cobros con tarjeta ya confirmados: ${e.message}")
         }
@@ -589,8 +606,6 @@ class OnlineOrdersViewModel internal constructor(
                 cursor = siguiente.nextCursor
                 pagina++
             }
-            // R100: lo que la Bandeja ya cuenta como pagado suelta su marca (también los pedidos de «Mi equipo»).
-            if (completa) soltarMarcasConfirmadas(venueDeLaLectura, ordenes, null)
             val leidos = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
             // Una lectura EXITOSA que salió DESPUÉS del 409 y ya no lo trae confirmando (o ya no por aceptar) libera «Aceptar».
             confirmando.entries.removeAll { (id, ultimaDeAntes) ->
@@ -606,6 +621,9 @@ class OnlineOrdersViewModel internal constructor(
                 listos = ordenes.filter { it.status == OnlineOrderStatus.READY && it.requiresAcceptance != false },
                 hoy = ordenes.filter { it.status !in ABIERTOS },
             )
+            // R101: la Bandeja es la fuente del «Cobrar» de «Mi equipo» (no tiene copia guardada: `_secciones` acaba de cambiar), así
+            // que sólo suelta marcas de «Mi equipo». Nunca las de un folio, aunque el folio también salga aquí: su fuente es «Por pagar».
+            if (completa) soltarMarcasConfirmadas(venueDeLaLectura, deFolios = false, ordenes, null)
             _hayMas.value = cursor != null
             _hoyRecortado.value = inbox.truncated
             _sinConexion.value = false
@@ -1029,6 +1047,14 @@ class OnlineOrdersViewModel internal constructor(
                 // Hecha (o ya no aplica): la tarjeta de antes no vuelve con sus botones aunque la relectura falle.
                 if (huella != null && (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible)) {
                     _ocultos.value = _ocultos.value + (clave to huella)
+                    // R101: en la MISMA copia que la lista guardada, para que un reinicio no devuelva el botón viejo.
+                    try {
+                        guardarOcultos(_ocultos.value)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "No se pudo guardar lo escondido de ${huella.seccion}: ${e.message}")
+                    }
                 }
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
