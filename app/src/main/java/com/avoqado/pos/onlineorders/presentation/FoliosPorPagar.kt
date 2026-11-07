@@ -76,17 +76,82 @@ fun conLoCobradoEnElAparato(lista: ListaPorPagar, enCola: Set<String>): ListaPor
 }
 
 /**
- * A5 (Codex fase 3-4 r1 #1): las marcas de tarjeta de este aparato que [lista] (una respuesta del SERVIDOR) ya cuenta: el folio salió
- * de «Por pagar» (y no quedan páginas por traer, donde pudo quedar) o lo que falta bajó al menos lo cobrado. Una lista de antes del
- * cobro no confirma nada: lo sigue trayendo con todo su saldo. PURA.
+ * R100: las marcas de tarjeta que una lectura 2xx y COMPLETA del negocio [venueId] ya cuenta (quien llama garantiza las dos cosas:
+ * un 403/404 «no disponible» o una lectura parcial nunca llegan aquí). [vistos] = las órdenes que trajo esa lectura; [porPagarCompleto]
+ * = los folios de su «Por pagar» si la sección vino ENTERA (null si esta lectura no lo dice). Se suelta una marca si:
+ * - la orden está a la vista y lo que falta bajó al menos lo cobrado (`remaining <= saldoAntes - monto`), o
+ * - es un folio de ESTE negocio y ya no está en un «Por pagar» completo.
+ * Nunca la de otro negocio. Una marca de A5 (sin negocio) sólo con la orden a la vista: su ausencia no prueba nada. Una lista de
+ * antes del cobro no suelta nada: trae la orden con todo su saldo. PURA.
  */
-fun tarjetasConfirmadas(marcas: List<FolioCobradoConTarjeta>, lista: ListaPorPagar): List<FolioCobradoConTarjeta> {
-    val porPagar = lista.porPagar.associateBy { it.orderId }
+fun tarjetasConfirmadas(
+    marcas: List<FolioCobradoConTarjeta>,
+    venueId: String,
+    vistos: List<OnlineOrder>,
+    porPagarCompleto: Set<String>? = null,
+): List<FolioCobradoConTarjeta> {
+    val porId = vistos.associateBy { it.orderId }
     return marcas.filter { marca ->
-        val folio = porPagar[marca.orderId]
-        if (folio == null) lista.nextCursors.toPay == null else folio.remainingCents <= marca.saldoAntesCents - marca.montoCents
+        if (marca.venueId != null && marca.venueId != venueId) return@filter false
+        val visto = porId[marca.orderId]
+        when {
+            visto != null -> visto.remainingCents <= marca.saldoAntesCents - marca.montoCents
+            marca.venueId == null -> false
+            else -> marca.esFolio && porPagarCompleto != null && marca.orderId !in porPagarCompleto
+        }
     }
 }
+
+/**
+ * R100: lo cobrado con tarjeta en ESTE aparato que la lista a la vista ([lista]) todavía no cuenta, por folio de «Por pagar» -> monto.
+ * Junta las marcas ([marcas], ya del negocio) y los positivos que siguen en la lista durable de cobros ([positivos], orden -> monto).
+ * La pantalla los pasa a «Por entregar» y el número del menú no los cuenta. PURA.
+ */
+fun cobradosConTarjetaEnLaLista(
+    marcas: List<FolioCobradoConTarjeta>,
+    positivos: Map<String, Long>,
+    lista: ListaPorPagar?,
+): Map<String, Long> {
+    val porPagar = lista?.porPagar.orEmpty().associateBy { it.orderId }
+    val deMarcas = marcas.filter { m -> porPagar[m.orderId]?.let { it.remainingCents > m.saldoAntesCents - m.montoCents } == true }
+        .groupBy { it.orderId }.mapValues { (_, m) -> m.sumOf { it.montoCents } }
+    return (deMarcas.keys + positivos.keys.filter { it in porPagar }).associateWith { deMarcas[it] ?: positivos.getValue(it) }
+}
+
+/** R100 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección, su estado y lo que falta. */
+data class HuellaDeFolio(val seccion: String, val status: OnlineOrderStatus, val remainingCents: Long)
+
+/** La huella de [orderId] en [lista] (`toPay` / `toDeliver`); null si no está. PURA. */
+fun huellaDe(lista: ListaPorPagar?, orderId: String): HuellaDeFolio? {
+    lista ?: return null
+    lista.porPagar.firstOrNull { it.orderId == orderId }?.let { return HuellaDeFolio("toPay", it.status, it.remainingCents) }
+    lista.porEntregar.firstOrNull { it.orderId == orderId }?.let { return HuellaDeFolio("toDeliver", it.status, it.remainingCents) }
+    return null
+}
+
+/**
+ * R100 (Codex r2 #3), la regla de la TPV y del DASHBOARD: tras una acción confirmada («Listo», «Entregado», «Cancelar folio») el
+ * folio se esconde mientras la lista lo siga trayendo con la huella de ANTES de la acción; así una relectura que falló nunca devuelve
+ * un «Listo» o un «Cancelar» vivos. En cuanto el SERVIDOR lo trae distinto, vuelve a salir. PURA.
+ */
+fun sinLosYaAtendidos(lista: ListaPorPagar, ocultos: Map<String, HuellaDeFolio>): ListaPorPagar {
+    if (ocultos.isEmpty()) return lista
+    val porPagar = lista.porPagar.filterNot { ocultos[it.orderId] == huellaDe(lista, it.orderId) }
+    val porEntregar = lista.porEntregar.filterNot { ocultos[it.orderId] == huellaDe(lista, it.orderId) }
+    if (porPagar.size == lista.porPagar.size && porEntregar.size == lista.porEntregar.size) return lista
+    return lista.copy(
+        porPagar = porPagar,
+        porEntregar = porEntregar,
+        counts = ConteosPorPagar(
+            (lista.counts.toPay - (lista.porPagar.size - porPagar.size)).coerceAtLeast(0),
+            (lista.counts.toDeliver - (lista.porEntregar.size - porEntregar.size)).coerceAtLeast(0),
+        ),
+    )
+}
+
+/** Lo que queda escondido tras una lectura buena: sólo los folios que la lista sigue trayendo IGUAL; los demás se podan. PURA. */
+fun ocultosQueSiguen(ocultos: Map<String, HuellaDeFolio>, lista: ListaPorPagar): Map<String, HuellaDeFolio> =
+    ocultos.filter { (id, huella) -> huellaDe(lista, id) == huella }
 
 /** R98 (A): un folio ya marcado «Listo» sigue en «Por entregar» con su etiqueta y sólo «Entregado» (nunca «Listo» otra vez). */
 fun yaEstaListo(pedido: OnlineOrder): Boolean = pedido.status == OnlineOrderStatus.READY

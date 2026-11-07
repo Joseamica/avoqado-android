@@ -452,23 +452,39 @@ class SecureStorage @Inject constructor(
     }
 
     /**
-     * Tienda híbrida (A5): los folios que este aparato cobró con tarjeta y la lista del servidor aún no cuenta
-     * (`FoliosCobradosConTarjeta`). En `commit()` y **NO se limpia en `clearSession`**, como la lista de cobros pendientes.
+     * Tienda híbrida (R100): los cobros con tarjeta de la bandeja que este aparato ya dio por buenos y la lista del servidor aún no
+     * cuenta (`FoliosCobradosConTarjeta`). En `commit()` y **NO se limpia en `clearSession`**, como la lista de cobros pendientes.
+     * Toda escritura lee y escribe bajo ESTE candado: la escriben la bandeja y `TerminalPaymentService`.
      */
     val foliosCobradosConTarjetaJson: String?
         @Synchronized get() = prefs.getString(KEY_FOLIOS_COBRADOS_CON_TARJETA, null)
 
     @Synchronized
-    fun guardarFoliosCobradosConTarjeta(json: String): Boolean =
-        prefs.edit().putString(KEY_FOLIOS_COBRADOS_CON_TARJETA, json).commit()
+    fun escribirFoliosCobradosConTarjeta(nueva: (String?) -> String): Boolean =
+        prefs.edit().putString(KEY_FOLIOS_COBRADOS_CON_TARJETA, nueva(foliosCobradosConTarjetaJson)).commit()
+
+    /**
+     * R100: un cobro con tarjeta que SÍ pasó sale de la lista de pendientes y, en el MISMO `commit`, deja su marca de la bandeja
+     * ([marcas]). No hay instante en que el aparato no sepa de ese dinero: antes lo dice la lista, después la marca.
+     */
+    @Synchronized
+    fun quitarCobroYAnotarFolio(requestId: String, marcas: (String?) -> String): Boolean =
+        escribirPendientes(ademas = { it.putString(KEY_FOLIOS_COBRADOS_CON_TARJETA, marcas(foliosCobradosConTarjetaJson)) }) {
+            PendientesDeTarjeta.quitar(it, requestId)
+        }
 
     /**
      * La lista nueva, en UN commit. M-10: si la que había no se pudo leer, en ese MISMO commit se guarda tal cual en
      * [KEY_PENDING_CARD_CHARGES_ILEGIBLE] — antes se leía como vacía y la escritura siguiente la borraba de verdad.
      */
-    private fun escribirPendientes(nueva: (String?) -> String): Boolean {
+    private fun escribirPendientes(
+        /** R100: otra llave que va en el MISMO commit (la marca de la bandeja). */
+        ademas: (android.content.SharedPreferences.Editor) -> Unit = {},
+        nueva: (String?) -> String,
+    ): Boolean {
         val crudo = pendingCardChargesJson
         val editor = prefs.edit().putString(KEY_PENDING_CARD_CHARGES, nueva(crudo))
+        ademas(editor)
         PendientesDeTarjeta.ilegible(crudo)?.let {
             android.util.Log.w("💳", "⚠️ La lista de cobros pendientes no se pudo leer (${it.length} caracteres): se respalda antes de escribir encima")
             editor.putString(KEY_PENDING_CARD_CHARGES_ILEGIBLE, it)

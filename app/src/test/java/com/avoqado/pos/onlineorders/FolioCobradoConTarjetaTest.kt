@@ -1,5 +1,8 @@
 package com.avoqado.pos.onlineorders
 
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta
 import com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
@@ -14,8 +17,14 @@ import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
 import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
 import com.avoqado.pos.onlineorders.presentation.tarjetasConfirmadas
+import com.avoqado.pos.payment.data.CashPaymentRepository
+import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.domain.CardChargeDecision
+import com.avoqado.pos.payment.domain.CardChargeOutcome
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import java.io.IOException
 import java.time.Instant
@@ -27,50 +36,74 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
- * Tienda híbrida (A5, Codex fase 3-4 r1 #1): un folio cobrado con la terminal ligada. La tarjeta pasó, se cayó la red antes de releer
- * la lista, y la lista vieja (en memoria o la guardada tras reiniciar) lo sigue diciendo «Por pagar»: sin la marca del aparato, la
- * cajera podía cobrarle EFECTIVO encima. La marca la escribe el cobro (`PaymentFlowViewModel`, ver `PaymentFlowViewModelTest`) antes
- * de soltar su pendiente; aquí, lo que la bandeja hace con ella: bloquea, la pinta en «Por entregar» y la suelta cuando el SERVIDOR
- * ya cuenta el pago.
+ * 🔴 R100 (Codex fase 3-4 r2 #1, #2 y #4): el dinero que ESTE aparato tiene de una orden de la bandeja y que el SERVIDOR todavía no
+ * confirma. Una prueba por fuente de `dineroSinConfirmar`, con las piezas REALES: `TerminalPaymentService` (la lista durable de cobros
+ * con tarjeta y el único punto donde un positivo sale de ella), `FoliosCobradosConTarjeta` y `CashPaymentRepository`, sobre un
+ * «disco» de texto que imita `SecureStorage` (lo de verdad en disco lo prueba `FolioPorPagarEnLaEscenaTest`, de escritorio).
+ * «Reiniciar» = servicio, marcas y bandeja nuevos sobre el mismo disco.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class FolioCobradoConTarjetaTest {
 
     private val dispatcher = StandardTestDispatcher()
     private val repo = mockk<OnlineOrdersRepository>()
+    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val dao = mockk<PendingPaymentDao>(relaxed = true)
 
-    /** El «disco» del aparato: lo comparten la bandeja de antes y la de después de reiniciar. */
-    private val marcas = FoliosCobradosConTarjeta.enMemoria()
+    // El disco: la lista durable de cobros con tarjeta y las marcas de la bandeja.
+    private var pendientes: String? = null
+    private var marcasEnDisco: String? = null
+    private var filas: List<PendingPaymentEntity> = emptyList()
+    private var venue = "venue-1"
 
     private var respuesta: Result<ListaPorPagar> = Result.failure(IOException("sin red"))
     private var guardada: ListaPorPagar? = null
+    private var inbox: Result<Inbox> = Result.failure(IOException("sin red"))
+
+    private lateinit var servicio: TerminalPaymentService
+    private lateinit var marcas: FoliosCobradosConTarjeta
 
     @Before fun setUp() {
         Dispatchers.setMain(dispatcher)
-        coEvery { repo.inbox(any(), any(), any()) } returns
-            Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, 0, 0, emptyList(), storeOff = false, truncated = false, nextCursor = null))
+        every { secureStorage.venueId } answers { venue }
+        every { secureStorage.pendingCardChargesJson } answers { pendientes }
+        every { secureStorage.persistCobroQueSiPaso(any(), any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg(), cobrado = true, cobradoEn = arg(3)); true
+        }
+        every { secureStorage.removePendingCardCharge(any()) } answers { pendientes = PendientesDeTarjeta.quitar(pendientes, firstArg()) }
+        every { secureStorage.foliosCobradosConTarjetaJson } answers { marcasEnDisco }
+        every { secureStorage.escribirFoliosCobradosConTarjeta(any()) } answers {
+            marcasEnDisco = firstArg<(String?) -> String>()(marcasEnDisco); true
+        }
+        // El MISMO commit: sale el positivo y entra su marca.
+        every { secureStorage.quitarCobroYAnotarFolio(any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.quitar(pendientes, firstArg())
+            marcasEnDisco = secondArg<(String?) -> String>()(marcasEnDisco); true
+        }
+        coEvery { dao.forVenue(any()) } answers { filas }
+        coEvery { repo.inbox(any(), any(), any()) } coAnswers { inbox }
         coEvery { repo.saldoDelPedido(any()) } returns Result.failure(IOException("sin red"))
+        reiniciar()
     }
 
     @After fun tearDown() { Dispatchers.resetMain() }
 
-    private fun folio(id: String = "f1", total: Long = 13400, falta: Long = 13400, status: OnlineOrderStatus = OnlineOrderStatus.PENDING_ACCEPTANCE) = OnlineOrder(
-        orderId = id, onlineOrderId = "oo-$id", orderNumber = "W7K3P", status = status, paymentMode = "PAY_AT_PICKUP",
-        paymentStatus = if (falta == 0L) "PAID" else "PENDING", customerName = "Ana", customerPhone = null, note = null,
-        createdAt = Instant.parse("2026-11-06T18:00:00Z"), acceptDeadlineAt = Instant.parse("2026-11-06T18:30:00Z"), estimatedReadyAt = null,
-        totalCents = total, remainingCents = falta, needsPrint = false, items = emptyList(), requiresAcceptance = false, channel = "QR",
-    )
-
-    private fun lista(porPagar: List<OnlineOrder> = emptyList(), porEntregar: List<OnlineOrder> = emptyList(), cursorPagar: String? = null) =
-        ListaPorPagar(true, true, 30, ConteosPorPagar(porPagar.size, porEntregar.size), porPagar, porEntregar, CursoresPorPagar(cursorPagar, null))
+    /** Lo que vive en memoria se pierde; el disco se queda. */
+    private fun reiniciar() {
+        servicio = TerminalPaymentService(secureStorage, OkHttpClient())
+        marcas = FoliosCobradosConTarjeta(secureStorage)
+    }
 
     private fun armar() = OnlineOrdersViewModel(
         repositorio = repo,
@@ -79,120 +112,221 @@ class FolioCobradoConTarjetaTest {
         tienePlan = { true },
         hayPedidosAbiertos = { true },
         ventanaALaVista = MutableStateFlow(true),
+        efectivoDelPedido = CashPaymentRepository(secureStorage, dao)::efectivoDelPedido,
         leerPorPagar = { _, _, _ -> respuesta },
         foliosGuardados = { guardada },
         foliosConTarjeta = marcas,
+        cobrosConTarjeta = servicio::cobrosConTarjetaDelNegocio,
+        venueActual = { venue },
     )
 
+    private fun folio(id: String = "f1", total: Long = 13400, falta: Long = 13400, status: OnlineOrderStatus = OnlineOrderStatus.PENDING_ACCEPTANCE, requiere: Boolean = false) = OnlineOrder(
+        orderId = id, onlineOrderId = "oo-$id", orderNumber = "W7K3P", status = status, paymentMode = "PAY_AT_PICKUP",
+        paymentStatus = if (falta == 0L) "PAID" else "PENDING", customerName = "Ana", customerPhone = null, note = null,
+        createdAt = Instant.parse("2026-11-06T18:00:00Z"), acceptDeadlineAt = Instant.parse("2099-11-06T18:30:00Z"), estimatedReadyAt = null,
+        totalCents = total, remainingCents = falta, needsPrint = false, items = emptyList(), requiresAcceptance = requiere, channel = "QR",
+    )
+
+    private fun lista(porPagar: List<OnlineOrder> = emptyList(), porEntregar: List<OnlineOrder> = emptyList(), cursorPagar: String? = null, disponible: Boolean = true) =
+        ListaPorPagar(disponible, true, 30, ConteosPorPagar(porPagar.size, porEntregar.size), porPagar, porEntregar, CursoresPorPagar(cursorPagar, null))
+
+    private fun bandeja(vararg pedidos: OnlineOrder) =
+        Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, pedidos.size, 0, pedidos.toList(), storeOff = false, truncated = false, nextCursor = null))
+
+    /** Un cobro con tarjeta de la bandeja tal como lo deja `sendPaymentToTerminal` ANTES del POST (todavía en duda). */
+    private fun cobroEnviado(requestId: String, orderId: String, monto: Int = 13400, esFolio: Boolean = true, venueDelCobro: String = venue) {
+        val contexto = """{"requestId":"$requestId","venueId":"$venueDelCobro","terminalId":"t1","orderId":"$orderId","amountCents":$monto,""" +
+            """"tipCents":0,"creadoEn":${System.currentTimeMillis()},"bandejaSaldoAntesCents":$monto,"bandejaEsFolio":$esFolio}"""
+        pendientes = PendientesDeTarjeta.agregar(pendientes, requestId, orderId, contexto)
+    }
+
+    private fun fila(orderId: String, estado: String) = PendingPaymentEntity(
+        id = "fila-$orderId", venueId = venue, staffId = "staff-1", amountCents = 13400, tipCents = 0,
+        method = "CASH", paymentType = "ORDER", orderId = orderId, syncStatus = estado,
+    )
+
+    // MARK: - (a) la cola de efectivo
+
     @Test
-    fun `P1 card success then offline with the stale list - Cobrar is blocked and the folio moves to Por entregar`() = runTest(dispatcher) {
-        respuesta = Result.success(lista(porPagar = listOf(folio())))
+    fun `a - a cash row of this device in the queue blocks Cobrar`() = runTest(dispatcher) {
+        filas = listOf(fila("f1", "PENDING"))
         val vm = armar()
-        vm.refrescar()
-
-        // La terminal cobró $134 (lo anota el cobro, antes de soltar su pendiente) y la red se cae antes de releer.
-        marcas.marcar("f1", montoCents = 13400, saldoAntesCents = 13400)
-        respuesta = Result.failure(IOException("sin red"))
-        vm.refrescar()
-        assertEquals("la lista vieja lo sigue diciendo por pagar", listOf("f1"), vm.porPagar.value!!.porPagar.map { it.orderId })
-
         vm.cobrarFolio(folio())
         advanceUntilIdle()
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO, vm.aviso.value)
 
-        assertNull("no se abre un cobro en efectivo encima de la tarjeta", vm.cobroAbierto.value)
+        filas = listOf(fila("f1", "FAILED"))
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR, vm.aviso.value)
+    }
+
+    // MARK: - (b) el positivo en la lista durable, por cualquier camino
+
+    @Test
+    fun `P1 b - a late card positive from the stale path blocks cash, also after a restart`() = runTest(dispatcher) {
+        // La cajera salió del cobro; el éxito llegó tarde (`handleStaleCardResult` → `aplicarDesenlaceTardio`).
+        cobroEnviado("req-1", "f1")
+        assertTrue(servicio.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1")))
+        guardada = lista(porPagar = listOf(folio())).copy(guardadoHaceMin = 3)
+
+        val vm = armar()
+        vm.descubrirPorPagar() // sin red: la lista vieja
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertNull("no se cobra efectivo encima de la tarjeta", vm.cobroAbierto.value)
         assertEquals("Este folio ya se cobró con tarjeta en esta caja.", vm.aviso.value)
-        assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, vm.aviso.value)
         coVerify(exactly = 0) { repo.saldoDelPedido(any()) }
-        // Igual que el efectivo en la cola: se pinta en «Por entregar» con lo cobrado.
-        assertEquals(mapOf("f1" to 13400L), vm.cobradosConTarjeta.value)
-        val pantalla = conLoCobradoEnElAparato(vm.porPagar.value!!, vm.cobradosConTarjeta.value.keys)
-        assertTrue(pantalla.porPagar.isEmpty())
-        assertEquals(listOf("f1"), pantalla.porEntregar.map { it.orderId })
+        assertEquals("se pinta en «Por entregar»", mapOf("f1" to 13400L), vm.cobradosConTarjeta.value)
+
+        reiniciar()
+        val tras = armar()
+        tras.descubrirPorPagar()
+        tras.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertNull(tras.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, tras.aviso.value)
     }
 
     @Test
-    fun `P1 an app restart with the stale saved list - still blocked`() = runTest(dispatcher) {
-        marcas.marcar("f1", montoCents = 13400, saldoAntesCents = 13400)
-        // Reinicia sin red: la lista guardada es de antes del cobro.
-        guardada = lista(porPagar = listOf(folio())).copy(guardadoHaceMin = 2)
-        respuesta = Result.failure(IOException("sin red"))
-        val vm = armar()
-        vm.descubrirPorPagar()
+    fun `P1 b to c - releasing the positive writes the marker in the same commit, never leaving a gap`() {
+        cobroEnviado("req-1", "f1")
+        servicio.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1"))
+        assertTrue(servicio.cobrosConTarjetaDelNegocio(venue).single().cobrado)
 
-        assertEquals(mapOf("f1" to 13400L), vm.cobradosConTarjeta.value)
+        servicio.reconocerCobro("req-1") // «Entendido» (o la adopción del flujo que lo mandó)
+
+        assertTrue("salió de la lista durable", PendientesDeTarjeta.leer(pendientes).isEmpty())
+        val marca = marcas.marcas().single()
+        assertEquals(FolioCobradoConTarjeta("f1", 13400, 13400, marca.enMs, venueId = venue, requestId = "req-1", esFolio = true), marca)
+        // Idempotente por requestId: el mismo cobro nunca cuenta dos veces.
+        marcas.anotar(marca.copy(enMs = 1))
+        assertEquals(1, marcas.marcas().size)
+    }
+
+    @Test
+    fun `a card charge that did not come from the tray leaves no marker`() {
+        pendientes = PendientesDeTarjeta.agregar(
+            null, "req-9", "venta-9", """{"requestId":"req-9","venueId":"$venue","orderId":"venta-9","amountCents":500,"creadoEn":${System.currentTimeMillis()}}""",
+        )
+        servicio.aplicarDesenlaceTardio("req-9", CardChargeOutcome.Charged("pay-9"))
+        servicio.reconocerCobro("req-9")
+        assertTrue(PendientesDeTarjeta.leer(pendientes).isEmpty())
+        assertTrue(marcas.marcas().isEmpty())
+    }
+
+    // MARK: - (c) la marca
+
+    @Test
+    fun `P1 c - the marker survives a restart and only a complete same-venue read that counts the payment releases it`() = runTest(dispatcher) {
+        cobroEnviado("req-1", "f1")
+        servicio.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1"))
+        servicio.reconocerCobro("req-1")
+        reiniciar()
+
+        // Otro negocio: su lista completa sin f1 no suelta nada.
+        venue = "venue-2"
+        respuesta = Result.success(lista(porPagar = listOf(folio("g1"))))
+        armar().refrescar()
+        assertEquals("la lectura de otro negocio no la suelta", 1, marcas.marcas().size)
+
+        venue = "venue-1"
+        // 403/404: «no disponible» no prueba ningún pago.
+        respuesta = Result.success(lista(disponible = false))
+        val vm = armar()
+        vm.refrescar()
+        assertEquals("un 403/404 no la suelta", 1, marcas.marcas().size)
+        // Lectura que todavía no lo cuenta (salió antes del cobro).
+        respuesta = Result.success(lista(porPagar = listOf(folio())))
+        vm.refrescar()
+        assertEquals(1, marcas.marcas().size)
         vm.cobrarFolio(folio())
         advanceUntilIdle()
         assertNull(vm.cobroAbierto.value)
         assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, vm.aviso.value)
-    }
-
-    @Test
-    fun `the server confirming the payment clears the marker`() = runTest(dispatcher) {
-        marcas.marcar("f1", montoCents = 13400, saldoAntesCents = 13400)
-        val vm = armar()
-
-        // Una lectura con red que todavía no lo cuenta (salió antes del cobro): la marca se queda.
-        respuesta = Result.success(lista(porPagar = listOf(folio())))
+        // Sin f1 en «Por pagar» pero con páginas por leer: pudo quedar en otra.
+        respuesta = Result.success(lista(porPagar = listOf(folio("f0")), cursorPagar = "c1"))
         vm.refrescar()
         assertEquals(1, marcas.marcas().size)
 
-        // El SERVIDOR ya lo cuenta: salió de «Por pagar» (está en «Por entregar»).
+        // Completa, del mismo negocio y ya lo cuenta (está en «Por entregar»): se suelta.
         respuesta = Result.success(lista(porEntregar = listOf(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED))))
         vm.refrescar()
         assertTrue(marcas.marcas().isEmpty())
         assertTrue(vm.cobradosConTarjeta.value.isEmpty())
+    }
 
-        // Ya sin marca, «Cobrar» vuelve a preguntar al servidor (la marca no se queda para siempre).
+    @Test
+    fun `an A5 marker without venue blocks everywhere and only the folio in sight releases it`() {
+        val vieja = FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 0) // A5: sin negocio ni solicitud
+        assertTrue("su ausencia no prueba nada", tarjetasConfirmadas(listOf(vieja), venue, emptyList(), porPagarCompleto = emptySet()).isEmpty())
+        assertEquals(listOf(vieja), tarjetasConfirmadas(listOf(vieja), venue, listOf(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED))))
+        marcas.anotar(vieja)
+        assertEquals(listOf(vieja), marcas.marcasDe("venue-2"))
+    }
+
+    // MARK: - (d) la tarjeta en duda
+
+    @Test
+    fun `d - a card still in doubt lets cash through with the warning`() = runTest(dispatcher) {
+        cobroEnviado("req-1", "f1") // sin desenlace
         coEvery { repo.saldoDelPedido("f1") } returns Result.success(SaldoDelPedido(13400L))
+        val vm = armar()
         vm.cobrarFolio(folio())
         advanceUntilIdle()
-        coVerify(exactly = 1) { repo.saldoDelPedido("f1") }
+        assertNotNull("el efectivo no se frena (founder, 2-nov «B»)", vm.cobroAbierto.value)
+        assertEquals(CardChargeDecision.UNDETERMINED_MESSAGE, vm.aviso.value)
     }
 
-    @Test
-    fun `an abono by card clears when what is missing dropped by at least the charge`() {
-        val marca = FolioCobradoConTarjeta("f1", montoCents = 10000, saldoAntesCents = 18500, enMs = 0)
-        val vieja = lista(porPagar = listOf(folio(total = 18500, falta = 18500)))
-        val nueva = lista(porPagar = listOf(folio(total = 18500, falta = 8500)))
-        assertTrue("la lista de antes del cobro no confirma nada", tarjetasConfirmadas(listOf(marca), vieja).isEmpty())
-        assertEquals(listOf(marca), tarjetasConfirmadas(listOf(marca), nueva))
-        // Fuera de «Por pagar» pero con más páginas por traer: pudo quedar en otra; no se suelta.
-        assertTrue(tarjetasConfirmadas(listOf(marca), lista(cursorPagar = "c1")).isEmpty())
-        assertEquals(listOf(marca), tarjetasConfirmadas(listOf(marca), lista()))
-    }
+    // MARK: - «Mi equipo» (Codex r2 #4)
 
     @Test
-    fun `two card parts of the same folio add up and keep the first balance`() {
-        marcas.marcar("f1", montoCents = 5000, saldoAntesCents = 18500, enMs = 1)
-        marcas.marcar("f1", montoCents = 3000, saldoAntesCents = 13500, enMs = 2)
-        assertEquals(listOf(FolioCobradoConTarjeta("f1", montoCents = 8000, saldoAntesCents = 18500, enMs = 1)), marcas.marcas())
-        // Un olvido con la marca de antes (ya cambió) no borra la suma nueva.
-        marcas.olvidar(listOf(FolioCobradoConTarjeta("f1", montoCents = 5000, saldoAntesCents = 18500, enMs = 1)))
-        assertEquals(1, marcas.marcas().size)
+    fun `P1 a Mi equipo order charged by card and then offline with the stale list is blocked`() = runTest(dispatcher) {
+        val pedido = folio("p1", requiere = true, status = OnlineOrderStatus.ACCEPTED)
+        cobroEnviado("req-7", "p1", esFolio = false)
+        servicio.aplicarDesenlaceTardio("req-7", CardChargeOutcome.Charged("pay-7"))
+        servicio.reconocerCobro("req-7")
+        assertFalse(marcas.marcas().single().esFolio)
+
+        inbox = Result.failure(IOException("sin red"))
+        val vm = armar()
+        vm.cobrar(pedido)
+        advanceUntilIdle()
+        assertNull(vm.cobroAbierto.value)
+        assertEquals("Este pedido ya se cobró con tarjeta en esta caja.", vm.aviso.value)
+
+        // La Bandeja del mismo negocio ya lo trae pagado: se suelta.
+        inbox = bandeja(pedido.copy(remainingCents = 0, paymentStatus = "PAID"))
+        respuesta = Result.success(lista())
+        vm.refrescar()
+        assertTrue(marcas.marcas().isEmpty())
     }
 
+    // MARK: - lo que se pinta
+
     @Test
-    fun `a re-read whose second page fails keeps the card folio and its marker`() = runTest(dispatcher) {
+    fun `the card folio moves to Por entregar and a re-read whose second page fails keeps it`() = runTest(dispatcher) {
         var segunda: Result<ListaPorPagar> = Result.success(lista(porPagar = listOf(folio("f1"))))
         val vm = OnlineOrdersViewModel(
             repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true }, hayPedidosAbiertos = { true },
             ventanaALaVista = MutableStateFlow(true),
             leerPorPagar = { _, _, cursor -> if (cursor == null) respuesta else segunda },
-            foliosConTarjeta = marcas,
+            foliosConTarjeta = marcas, cobrosConTarjeta = servicio::cobrosConTarjetaDelNegocio, venueActual = { venue },
         )
-        // El folio f1 está en la segunda página, traída con «Cargar más».
         respuesta = Result.success(lista(porPagar = listOf(folio("f0")), cursorPagar = "c1"))
         vm.refrescar()
         vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_PAGAR)
         advanceUntilIdle()
-        assertEquals(listOf("f0", "f1"), vm.porPagar.value!!.porPagar.map { it.orderId })
-
-        marcas.marcar("f1", montoCents = 13400, saldoAntesCents = 13400)
+        marcas.anotar(FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 0, venueId = venue, requestId = "req-1"))
         segunda = Result.failure(IllegalStateException("500"))
         vm.refrescar()
 
         assertEquals("la lectura incompleta no lo borra", listOf("f0", "f1"), vm.porPagar.value!!.porPagar.map { it.orderId })
         assertEquals("ni suelta su marca", 1, marcas.marcas().size)
         assertEquals(mapOf("f1" to 13400L), vm.cobradosConTarjeta.value)
+        val pantalla = conLoCobradoEnElAparato(vm.porPagar.value!!, vm.cobradosConTarjeta.value.keys)
+        assertEquals(listOf("f1"), pantalla.porEntregar.map { it.orderId })
     }
 }

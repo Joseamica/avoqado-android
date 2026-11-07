@@ -8,70 +8,83 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 /**
- * Tienda híbrida (A5, Codex fase 3-4 r1 #1): ESTE aparato cobró [montoCents] con tarjeta al folio [orderId], que debía
- * [saldoAntesCents] al cobrarse, a las [enMs] (reloj del aparato).
+ * Tienda híbrida (R100): el cobro con tarjeta se abrió desde la bandeja «Pedidos en línea». [saldoAntesCents] = lo que debía la
+ * orden al abrirlo; [esFolio] = folio de «Nadie» (si no, un pedido de «Mi equipo»). Viaja en el contexto durable del cobro
+ * (`TerminalPaymentService.sendPaymentToTerminal`): con él, el positivo deja su marca «aquí ya se cobró» al salir de la lista.
  */
-@Serializable
-data class FolioCobradoConTarjeta(val orderId: String, val montoCents: Long, val saldoAntesCents: Long, val enMs: Long)
+data class CobroDeLaBandeja(val saldoAntesCents: Long, val esFolio: Boolean)
 
 /**
- * 🔴 DINERO. Los folios que este aparato cobró con la terminal ligada y que la lista del SERVIDOR todavía no cuenta. El cobro los
- * anota ANTES de soltar su pendiente de tarjeta (`PaymentFlowViewModel.applyCardCharged` → `reconocerCobro`): si la red se cae antes
- * de releer, la lista vieja (o la guardada, tras reiniciar) sigue diciendo «Por pagar», y sin esto la cajera podía cobrarle efectivo
- * encima. «Cobrar» se niega mientras haya marca, la pantalla lo pinta en «Por entregar» como el efectivo en cola, y la bandeja la
- * suelta cuando una lectura del SERVIDOR ya cuenta el pago (`tarjetasConfirmadas`).
+ * R100: ESTE aparato cobró [montoCents] con tarjeta (la solicitud [requestId]) a la orden [orderId] del negocio [venueId], que debía
+ * [saldoAntesCents]. Las marcas que dejó A5 no traen negocio ni solicitud (null) y eran sólo de folios.
+ */
+@Serializable
+data class FolioCobradoConTarjeta(
+    val orderId: String,
+    val montoCents: Long,
+    val saldoAntesCents: Long,
+    val enMs: Long,
+    val venueId: String? = null,
+    val requestId: String? = null,
+    val esFolio: Boolean = true,
+)
+
+/**
+ * 🔴 DINERO (R100, fuente (c) de `dineroSinConfirmar`). Los cobros con tarjeta de la bandeja que este aparato ya dio por buenos y que
+ * la lista del SERVIDOR quizá todavía no cuenta. La escribe `TerminalPaymentService` en el MISMO `commit` en que un positivo sale de
+ * la lista durable de cobros con tarjeta (adopción del flujo, «Entendido» o vencimiento de su ventana): así un éxito directo, tardío
+ * o de conciliación nunca queda sin protección. Mientras el positivo sigue en esa lista, la fuente (b) es la que frena.
  *
- * En disco con `commit()` (SecureStorage, como la lista de cobros con tarjeta pendientes) y fuera de `clearSession`: un cobro no deja
- * de existir porque alguien cierre sesión. Si el disco no acepta la escritura, SharedPreferences ya la tiene en memoria: protege
- * mientras viva el proceso.
+ * En `SecureStorage` (`commit()`, fuera de `clearSession`). Sólo la suelta una lectura 2xx, COMPLETA y del MISMO negocio que ya
+ * cuenta el pago (`tarjetasConfirmadas`): nunca un 403/404, una lectura parcial ni la de otro negocio.
  */
 @Singleton
 class FoliosCobradosConTarjeta internal constructor(
     private val leerCrudo: () -> String?,
-    private val escribirCrudo: (String) -> Boolean,
+    /** Lee y escribe bajo el mismo candado que la lista de cobros pendientes (la escribe también `TerminalPaymentService`). */
+    private val escribirCrudo: ((String?) -> String) -> Boolean,
 ) {
     @Inject
     constructor(secureStorage: SecureStorage) : this(
         leerCrudo = { secureStorage.foliosCobradosConTarjetaJson },
-        escribirCrudo = secureStorage::guardarFoliosCobradosConTarjeta,
+        escribirCrudo = secureStorage::escribirFoliosCobradosConTarjeta,
     )
 
-    @Synchronized
-    fun marcas(): List<FolioCobradoConTarjeta> =
-        leerCrudo()?.let { runCatching { json.decodeFromString(serializer, it) }.getOrNull() } ?: emptyList()
+    fun marcas(): List<FolioCobradoConTarjeta> = leer(leerCrudo())
 
-    /**
-     * Otra parte con tarjeta del mismo folio se SUMA a su marca y conserva el saldo de antes de la primera: así «lo que falta bajó al
-     * menos lo cobrado» se mide contra el mismo punto de partida. @return `false` si el disco no aceptó la escritura.
-     */
-    @Synchronized
-    fun marcar(orderId: String, montoCents: Long, saldoAntesCents: Long, enMs: Long = System.currentTimeMillis()): Boolean {
-        val lista = marcas()
-        val nueva = if (lista.none { it.orderId == orderId }) {
-            lista + FolioCobradoConTarjeta(orderId, montoCents, saldoAntesCents, enMs)
-        } else {
-            lista.map { if (it.orderId == orderId) it.copy(montoCents = it.montoCents + montoCents) else it }
-        }
-        return escribirCrudo(json.encodeToString(serializer, nueva))
-    }
+    /** Las marcas que pueden ser de [venueId]: las suyas y las de A5, que no dicen de qué negocio son. [venueId] null = todas. */
+    fun marcasDe(venueId: String?): List<FolioCobradoConTarjeta> =
+        marcas().filter { venueId == null || it.venueId == null || it.venueId == venueId }
 
-    /** Suelta las marcas que el SERVIDOR ya cuenta. Sólo las IGUALES: una que cambió mientras tanto (otra parte) se queda. */
-    @Synchronized
+    /** @return `false` si el disco no aceptó la escritura. */
+    fun anotar(marca: FolioCobradoConTarjeta): Boolean = escribirCrudo { agregar(it, marca) }
+
+    /** Suelta las marcas que el SERVIDOR ya cuenta. Sólo las IGUALES: una que cambió mientras tanto se queda. */
     fun olvidar(confirmadas: Collection<FolioCobradoConTarjeta>) {
         if (confirmadas.isEmpty()) return
-        val lista = marcas()
-        val quedan = lista.filterNot { it in confirmadas }
-        if (quedan.size != lista.size) escribirCrudo(json.encodeToString(serializer, quedan))
+        escribirCrudo { crudo -> encode(leer(crudo).filterNot { it in confirmadas }) }
     }
 
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
         private val serializer = ListSerializer(FolioCobradoConTarjeta.serializer())
 
+        fun leer(crudo: String?): List<FolioCobradoConTarjeta> =
+            crudo?.let { runCatching { json.decodeFromString(serializer, it) }.getOrNull() } ?: emptyList()
+
+        private fun encode(lista: List<FolioCobradoConTarjeta>): String = json.encodeToString(serializer, lista)
+
+        /** Idempotente por `requestId`: el mismo cobro nunca cuenta dos veces. PURA. */
+        fun agregar(crudo: String?, marca: FolioCobradoConTarjeta): String {
+            val lista = leer(crudo)
+            if (marca.requestId != null && lista.any { it.requestId == marca.requestId }) return encode(lista)
+            return encode(lista + marca)
+        }
+
         /** Para pruebas y para quien no lo inyecta: el «disco» es un texto en memoria. */
         fun enMemoria(): FoliosCobradosConTarjeta {
             var crudo: String? = null
-            return FoliosCobradosConTarjeta({ crudo }, { crudo = it; true })
+            return FoliosCobradosConTarjeta({ crudo }, { nueva -> crudo = nueva(crudo); true })
         }
     }
 }

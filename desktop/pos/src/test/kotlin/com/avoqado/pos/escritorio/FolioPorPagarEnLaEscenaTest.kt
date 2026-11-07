@@ -21,7 +21,9 @@ import com.avoqado.escritorio.configuracionDeAndroid
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta
 import com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.presentation.FolioPorPagarCard
@@ -110,8 +112,21 @@ class FolioPorPagarEnLaEscenaTest {
     }
 
     @Test fun `the card marker survives reopening the app`() {
-        FoliosCobradosConTarjeta(SecureStorage(ContextoDeEscritorio(folder))).marcar("f1", montoCents = 13400, saldoAntesCents = 13400, enMs = 7)
+        val marca = FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 7, venueId = "venue-1", requestId = "req-1")
+        FoliosCobradosConTarjeta(SecureStorage(ContextoDeEscritorio(folder))).anotar(marca)
         val reabierto = FoliosCobradosConTarjeta(SecureStorage(ContextoDeEscritorio(folder)))
-        assertEquals(listOf("f1" to 13400L), reabierto.marcas().map { it.orderId to it.montoCents })
+        assertEquals(listOf(marca), reabierto.marcas())
+    }
+
+    /** R100: en disco de verdad, el positivo sale de la lista de cobros y su marca entra en el MISMO commit; al reabrir, ahí está. */
+    @Test fun `releasing a card positive writes its marker in the same commit on the real disk`() {
+        val disco = SecureStorage(ContextoDeEscritorio(folder))
+        assertEquals(true, disco.persistCobroQueSiPaso("req-1", "f1", "{}", 7))
+        val marca = FolioCobradoConTarjeta("f1", 13400, 13400, enMs = 7, venueId = "venue-1", requestId = "req-1")
+        assertEquals(true, disco.quitarCobroYAnotarFolio("req-1") { FoliosCobradosConTarjeta.agregar(it, marca) })
+
+        val reabierto = SecureStorage(ContextoDeEscritorio(folder))
+        assertEquals(0, PendientesDeTarjeta.leer(reabierto.pendingCardChargesJson).size)
+        assertEquals(listOf(marca), FoliosCobradosConTarjeta(reabierto).marcas())
     }
 }

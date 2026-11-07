@@ -105,6 +105,8 @@ fun OnlineOrdersScreen(
     val cobradosEnElAparato by viewModel.cobradosEnElAparato.collectAsState()
     // A5: y lo cobrado aquí con tarjeta que la lista todavía no cuenta.
     val cobradosConTarjeta by viewModel.cobradosConTarjeta.collectAsState()
+    // R100: un folio con su acción ya hecha no vuelve con sus botones mientras la lista lo traiga igual que antes.
+    val ocultos by viewModel.ocultos.collectAsState()
     // «Vence en N min» se recalcula solo aunque la lista no cambie.
     var ahora by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); ahora = Instant.now() } }
@@ -144,8 +146,8 @@ fun OnlineOrdersScreen(
     val dialogo = rememberDialogoDePedido()
     // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
     val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
-    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta) {
-        seccionFolios?.let { conLoCobradoEnElAparato(it, cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
+    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos) {
+        seccionFolios?.let { conLoCobradoEnElAparato(sinLosYaAtendidos(it, ocultos), cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -366,8 +368,8 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
             apertura = cobro.apertura,
             // m1: se decide al fallar (venció o lo canceló otra caja), no al abrir.
             textoSiLaCuentaSeCancelo = { cobro.textoSiLaCuentaSeCancelo(Instant.now()) },
-            // A5: con la tarjeta confirmada, el aparato anota que ya cobró este folio (la lista vieja no lo deja cobrar otra vez).
-            saldoDelFolioCents = cobro.saldoCents.takeIf { cobro.esFolio },
+            // R100: folio o «Mi equipo», la tarjeta lleva el saldo de la bandeja: su positivo deja la marca «aquí ya se cobró».
+            cobroDeLaBandeja = com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(cobro.saldoCents.toLong(), cobro.esFolio),
         )
     }
 }

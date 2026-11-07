@@ -132,8 +132,12 @@ class OnlineOrdersViewModel internal constructor(
     private val ahoraMs: () -> Long = System::currentTimeMillis,
     /** A3: los pedidos con efectivo de este aparato en la cola -> lo cobrado (`CashPaymentRepository.efectivoEnColaPorPedido`). */
     private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
-    /** A5: los folios que este aparato cobró con tarjeta y la lista del SERVIDOR aún no cuenta (bloquean «Cobrar»). */
+    /** R100 (c): las marcas «aquí ya se cobró con tarjeta» de la bandeja (las escribe `TerminalPaymentService`). */
     private val foliosConTarjeta: FoliosCobradosConTarjeta = FoliosCobradosConTarjeta.enMemoria(),
+    /** R100 (b) y (d): los cobros con tarjeta de este aparato que siguen en la lista durable, del negocio dado. */
+    private val cobrosConTarjeta: (venueId: String?) -> List<com.avoqado.pos.payment.data.ContextoDeCobro> = { emptyList() },
+    /** El negocio de ahora: una marca sólo la suelta una lectura del MISMO negocio. */
+    private val venueActual: () -> String? = { null },
 ) : ViewModel() {
 
     @Inject
@@ -146,6 +150,8 @@ class OnlineOrdersViewModel internal constructor(
         syncOutbox: Provider<SyncOutbox>,
         cashPaymentRepository: CashPaymentRepository,
         foliosCobradosConTarjeta: FoliosCobradosConTarjeta,
+        terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
+        secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
     ) : this(
         repositorio = repositorio,
         permisoActualizar = { roleManager.canOperateOnlineOrders },
@@ -169,6 +175,8 @@ class OnlineOrdersViewModel internal constructor(
         foliosGuardados = { repositorio.porPagarGuardado() },
         efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
         foliosConTarjeta = foliosCobradosConTarjeta,
+        cobrosConTarjeta = terminalPaymentService::cobrosConTarjetaDelNegocio,
+        venueActual = { secureStorage.venueId },
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -290,9 +298,10 @@ class OnlineOrdersViewModel internal constructor(
         val lista = _porPagar.value
         val folios = lista?.porPagar.orEmpty().map { it.orderId }.toSet()
         try {
-            val marcas = foliosConTarjeta.marcas()
-            val confirmadas = lista?.let { tarjetasConfirmadas(marcas, it) }.orEmpty()
-            _cobradosConTarjeta.value = marcas.filter { it.orderId in folios && it !in confirmadas }.associate { it.orderId to it.montoCents }
+            val venue = venueActual()
+            val positivos = cobrosConTarjeta(venue).filter { it.cobrado && it.orderId != null }
+                .associate { it.orderId!! to (it.amountCents ?: 0).toLong() }
+            _cobradosConTarjeta.value = cobradosConTarjetaEnLaLista(foliosConTarjeta.marcasDe(venue), positivos, lista)
         } catch (e: Exception) {
             // No se pudo leer la marca: lo último que se supo se queda, y «Cobrar» vuelve a revisar (y no abre otro cobro).
             Log.w(TAG, "No se pudieron leer los folios cobrados con tarjeta: ${e.message}")
@@ -347,6 +356,7 @@ class OnlineOrdersViewModel internal constructor(
      */
     private suspend fun refrescarPorPagar(comoBandeja: Boolean) {
         releerCobradosEnElAparato() // antes de la red, y otra vez al final con la lista nueva
+        val venueDeLaLectura = venueActual()
         val primera = try {
             leerPorPagar(comoBandeja && permisoCobrar(), null, null)
         } catch (e: CancellationException) {
@@ -392,12 +402,12 @@ class OnlineOrdersViewModel internal constructor(
                 Log.d(TAG, "«Por pagar» incompleto: ${falloDePagina.message}")
                 if (falloDePagina is IOException) _sinConexion.value = true else _noSePudoLeer.value = true
             }
-            // A5 (#1): lo que el SERVIDOR ya cuenta suelta su marca de tarjeta (una lista de antes del cobro no suelta nada).
-            try {
-                foliosConTarjeta.olvidar(tarjetasConfirmadas(foliosConTarjeta.marcas(), actual))
-            } catch (e: Exception) {
-                Log.w(TAG, "No se pudieron soltar los folios cobrados con tarjeta: ${e.message}")
+            // R100: sólo una lectura disponible, COMPLETA y del MISMO negocio suelta las marcas que ya cuenta.
+            if (lista.disponible && falloDePagina == null) {
+                soltarMarcasConfirmadas(venueDeLaLectura, actual.porPagar + actual.porEntregar, actual.porPagar.map { it.orderId }.toSet().takeIf { actual.nextCursors.toPay == null })
             }
+            // Codex r2 #3: lo escondido tras una acción se poda en cuanto el SERVIDOR lo trae distinto (o ya no lo trae).
+            _ocultos.value = ocultosQueSiguen(_ocultos.value, actual)
         }.onFailure {
             Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
             val actual = _porPagar.value
@@ -421,6 +431,20 @@ class OnlineOrdersViewModel internal constructor(
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =
         if (seccion == SECCION_POR_PAGAR) lista.nextCursors.toPay else lista.nextCursors.toDeliver
+
+    /**
+     * R100: suelta las marcas que una lectura del SERVIDOR ya cuenta, si la lectura es del negocio de ahora (otro negocio nunca suelta
+     * nada). Quien llama garantiza que la lectura fue 2xx y completa.
+     */
+    private fun soltarMarcasConfirmadas(venueDeLaLectura: String?, vistos: List<OnlineOrder>, porPagarCompleto: Set<String>?) {
+        val venue = venueDeLaLectura ?: return
+        if (venueActual() != venue) return
+        try {
+            foliosConTarjeta.olvidar(tarjetasConfirmadas(foliosConTarjeta.marcas(), venue, vistos, porPagarCompleto))
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudieron soltar los cobros con tarjeta ya confirmados: ${e.message}")
+        }
+    }
 
     /**
      * A5 (#4): una página extra de [seccion] no llegó. Lo que [previa] enseñaba de esa sección y la lectura nueva no trae (en ninguna
@@ -476,7 +500,16 @@ class OnlineOrdersViewModel internal constructor(
     /** «Entregado» de un folio: el servidor lo cierra y el aviso dice a quién se le entregó. */
     fun entregarFolio(pedido: OnlineOrder) = ejecutar(
         pedido.orderId, permisoActualizar(), textoExito = TextosPedidosEnLinea.folioEntregado(pedido.orderNumber, pedido.customerName),
+        huella = huellaDe(_porPagar.value, pedido.orderId),
     ) { repositorio.delivered(pedido.orderId) }
+
+    private val _ocultos = MutableStateFlow<Map<String, HuellaDeFolio>>(emptyMap())
+
+    /**
+     * R100 (Codex r2 #3): folios con una acción ya confirmada («Listo», «Entregado», «Cancelar folio») -> su huella de ANTES. La pantalla
+     * los esconde mientras la lista los traiga igual ([sinLosYaAtendidos]); una lectura buena que los trae distintos los suelta.
+     */
+    val ocultos: StateFlow<Map<String, HuellaDeFolio>> = _ocultos.asStateFlow()
 
     /** Páginas extra de «Rappi · por cobrar» cargadas con «Cargar más»; cada lectura las vuelve a recorrer. */
     private var paginasExtraPorCobrar = 0
@@ -527,6 +560,7 @@ class OnlineOrdersViewModel internal constructor(
             return@withLock
         }
         val estaLectura = ++lecturasIniciadas
+        val venueDeLaLectura = venueActual()
         val primera = try {
             repositorio.inbox("all", comoBandeja, null)
         } catch (e: CancellationException) {
@@ -538,6 +572,7 @@ class OnlineOrdersViewModel internal constructor(
             var ordenes = inbox.orders
             var cursor = inbox.nextCursor
             var pagina = 0
+            var completa = true
             while (pagina < paginasExtra && cursor != null) {
                 val siguiente = try {
                     repositorio.inbox("active", comoBandeja, cursor)
@@ -545,11 +580,17 @@ class OnlineOrdersViewModel internal constructor(
                     throw e
                 } catch (e: Exception) {
                     Result.failure(e)
-                }.getOrNull() ?: break
+                }.getOrNull()
+                if (siguiente == null) {
+                    completa = false
+                    break
+                }
                 ordenes = (ordenes + siguiente.orders).distinctBy { it.orderId }
                 cursor = siguiente.nextCursor
                 pagina++
             }
+            // R100: lo que la Bandeja ya cuenta como pagado suelta su marca (también los pedidos de «Mi equipo»).
+            if (completa) soltarMarcasConfirmadas(venueDeLaLectura, ordenes, null)
             val leidos = ordenes.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
             // Una lectura EXITOSA que salió DESPUÉS del 409 y ya no lo trae confirmando (o ya no por aceptar) libera «Aceptar».
             confirmando.entries.removeAll { (id, ultimaDeAntes) ->
@@ -685,11 +726,15 @@ class OnlineOrdersViewModel internal constructor(
     fun rechazar(orderId: String, motivo: String) =
         ejecutar(orderId, permisoActualizar(), sonidoCambia = true) { repositorio.reject(orderId, motivo, null) }
 
-    fun marcarListo(orderId: String) = ejecutar(orderId, permisoActualizar()) { repositorio.ready(orderId) }
+    // La huella se toma ANTES de mandar la acción (null si no es un folio: la Bandeja de siempre).
+    fun marcarListo(orderId: String) =
+        ejecutar(orderId, permisoActualizar(), huella = huellaDe(_porPagar.value, orderId)) { repositorio.ready(orderId) }
 
-    fun marcarEntregado(orderId: String) = ejecutar(orderId, permisoActualizar()) { repositorio.delivered(orderId) }
+    fun marcarEntregado(orderId: String) =
+        ejecutar(orderId, permisoActualizar(), huella = huellaDe(_porPagar.value, orderId)) { repositorio.delivered(orderId) }
 
-    fun cancelar(orderId: String) = ejecutar(orderId, permisoCancelar()) { repositorio.cancel(orderId) }
+    fun cancelar(orderId: String) =
+        ejecutar(orderId, permisoCancelar(), huella = huellaDe(_porPagar.value, orderId)) { repositorio.cancel(orderId) }
 
     /** 15/30/60 o `null` = reanudar. Sin `online-orders:pause` sí llega al servidor: su 403 `overridable` pide el PIN del gerente. */
     fun pausar(minutos: Int?) = ejecutar(CLAVE_PAUSA, permitido = true, textoExito = minutos?.let { TextosPedidosEnLinea.pausadaPor(it) }
@@ -821,39 +866,10 @@ class OnlineOrdersViewModel internal constructor(
         _ocupados.value = _ocupados.value + orderId
         viewModelScope.launch {
             try {
-                val guardado = try {
-                    efectivoDelPedido(orderId)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // No se pudo leer la cola del aparato: no se sabe si hay un cobro guardado, así que no se abre otro.
-                    Log.w(TAG, "No se pudo revisar la cola de efectivo de $orderNumber: ${e.message}")
-                    _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
-                    return@launch
-                }
-                when (guardado) {
-                    EfectivoDelPedido.NINGUNO -> Unit
-                    // Los dos bloquean; el texto dice la verdad de quién lo sube (Ruling 21 #2).
-                    EfectivoDelPedido.EN_COLA -> {
-                        _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO
-                        return@launch
-                    }
-                    EfectivoDelPedido.POR_REVISAR -> {
-                        _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR
-                        return@launch
-                    }
-                }
-                // A5 (Codex r1 #1): este aparato ya cobró el folio con tarjeta y la lista todavía no lo cuenta. Sin red la lista vieja
-                // seguiría diciendo todo el saldo: no se cobra otra vez hasta que el SERVIDOR lo confirme (y suelte la marca).
-                val conTarjeta = try {
-                    foliosConTarjeta.marcas().any { it.orderId == orderId }
-                } catch (e: Exception) {
-                    Log.w(TAG, "No se pudieron revisar los cobros con tarjeta de $orderNumber: ${e.message}")
-                    _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
-                    return@launch
-                }
-                if (conTarjeta) {
-                    _aviso.value = TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA
+                // R100: UNA sola pregunta por todo el dinero de este aparato que el SERVIDOR todavía no confirma.
+                val dinero = dineroSinConfirmar(venueActual(), orderId, esFolio = folio != null)
+                if (dinero.bloquea) {
+                    _aviso.value = dinero.aviso
                     return@launch
                 }
                 val leido = try {
@@ -920,7 +936,8 @@ class OnlineOrdersViewModel internal constructor(
                 // Dos toques rápidos en pedidos distintos pasan los dos la revisión del principio: el que tarda más no
                 // reemplaza a un cobro que ya está abierto (el cajero pudo haber recibido el efectivo del primero).
                 if (_cobroAbierto.value != null) return@launch
-                _aviso.value = null
+                // (d) Una tarjeta en duda no frena el efectivo (founder, 2-nov «B»): sólo se avisa.
+                _aviso.value = dinero.aviso
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
                     origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
                     renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty(),
@@ -929,6 +946,37 @@ class OnlineOrdersViewModel internal constructor(
                 _ocupados.value = _ocupados.value - orderId
             }
         }
+    }
+
+    /**
+     * 🔴 R100 (como R89 en la TPV): TODO el dinero de [orderId] que ESTE aparato tiene y el SERVIDOR todavía no confirma. Lo consulta
+     * cada «Cobrar» de la bandeja (folio, «Mi equipo» y reparto). En orden:
+     * - (a) la cola de efectivo: en cola, o fallido / por revisar sin reconocer ⇒ bloquea con su texto de siempre;
+     * - (b) un positivo de tarjeta que sigue en la lista durable (respuesta directa, desenlace tardío o conciliación) ⇒ bloquea;
+     * - (c) la marca «aquí ya se cobró» que dejó ese positivo al salir de la lista ⇒ bloquea;
+     * - (d) una tarjeta EN DUDA de la orden ⇒ NO bloquea (founder, 2-nov «B»): se cobra y se avisa.
+     * Si algo truena, falla CERRADO.
+     */
+    internal suspend fun dineroSinConfirmar(venueId: String?, orderId: String, esFolio: Boolean): DineroSinConfirmar = try {
+        val efectivo = efectivoDelPedido(orderId)
+        val tarjetas = cobrosConTarjeta(venueId).filter { it.orderId == orderId }
+        val yaConTarjeta = if (esFolio) TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA else TextosPedidosEnLinea.PEDIDO_COBRADO_CON_TARJETA
+        when {
+            // Los dos de efectivo bloquean; el texto dice la verdad de quién lo sube (Ruling 21 #2).
+            efectivo == EfectivoDelPedido.EN_COLA ->
+                DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO)
+            efectivo == EfectivoDelPedido.POR_REVISAR ->
+                DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR)
+            tarjetas.any { it.cobrado } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
+            foliosConTarjeta.marcasDe(venueId).any { it.orderId == orderId } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
+            tarjetas.isNotEmpty() -> DineroSinConfirmar(bloquea = false, aviso = com.avoqado.pos.payment.domain.CardChargeDecision.UNDETERMINED_MESSAGE)
+            else -> DineroSinConfirmar.NADA
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "No se pudo revisar el dinero sin confirmar de $orderId: ${e.message}")
+        DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.SALDO_NO_LEIDO)
     }
 
     /** ¿ESTE aparato ya subió un cobro de [orderId]? En duda, no: se dice lo de siempre («otra caja»). */
@@ -960,6 +1008,8 @@ class OnlineOrdersViewModel internal constructor(
         textoExito: String? = null,
         sonidoCambia: Boolean = false,
         alHechoYReleido: () -> Unit = {},
+        /** R100: la huella del folio tomada ANTES de la petición; con la acción confirmada se esconde hasta que el SERVIDOR cambie. */
+        huella: HuellaDeFolio? = null,
         llamada: suspend () -> AccionResultado,
     ) {
         if (!permitido) return
@@ -976,6 +1026,10 @@ class OnlineOrdersViewModel internal constructor(
                 }
                 // Cualquier acción puede recibirlo: rechazar también, si otro aparato ya está cobrando (Codex ANDROID r2).
                 if (resultado is AccionResultado.ConfirmandoPago) marcarConfirmando(clave)
+                // Hecha (o ya no aplica): la tarjeta de antes no vuelve con sus botones aunque la relectura falle.
+                if (huella != null && (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible)) {
+                    _ocultos.value = _ocultos.value + (clave to huella)
+                }
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
                     is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
@@ -1014,6 +1068,13 @@ class OnlineOrdersViewModel internal constructor(
         private val ABIERTOS = setOf(
             OnlineOrderStatus.PENDING_ACCEPTANCE, OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY,
         )
+    }
+}
+
+/** R100: lo que contesta `dineroSinConfirmar`. [bloquea] = «Cobrar» no abre; si no, [aviso] (si hay) se dice y se cobra igual. */
+data class DineroSinConfirmar(val bloquea: Boolean, val aviso: String?) {
+    companion object {
+        val NADA = DineroSinConfirmar(bloquea = false, aviso = null)
     }
 }
 

@@ -17,6 +17,8 @@ import com.avoqado.pos.onlineorders.presentation.formatoPesos
 import com.avoqado.pos.onlineorders.presentation.hayAbono
 import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
 import com.avoqado.pos.onlineorders.presentation.numeroDelMenu
+import com.avoqado.pos.onlineorders.presentation.sinLosYaAtendidos
+import com.avoqado.pos.onlineorders.presentation.yaEstaListo
 import com.avoqado.pos.onlineorders.presentation.textoDeVencimiento
 import com.avoqado.pos.onlineorders.presentation.yaPagadoCents
 import io.mockk.coVerify
@@ -292,6 +294,59 @@ class PorPagarBandejaTest {
         respuesta = Result.success(lista())
         vm.refrescar()
         assertTrue(vm.porPagar.value!!.porEntregar.isEmpty())
+    }
+
+    /**
+     * R100 (Codex r2 #3), la regla de la TPV y del DASHBOARD: la huella se toma ANTES de la acción; confirmada la acción, la tarjeta de
+     * antes no vuelve con sus botones mientras la lista la traiga igual, aunque la relectura falle. Vuelve en cuanto cambia.
+     */
+    @Test
+    fun `P2 Listo confirmed and the re-read fails - no live Listo, and a READY read brings it back with only Entregado`() = runTest(dispatcher) {
+        val aceptado = folio("f1", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)
+        respuesta = Result.success(lista(porEntregar = listOf(aceptado)))
+        coEvery { repo.ready("f1") } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+
+        respuesta = Result.failure(IllegalStateException("500"))
+        vm.marcarListo("f1")
+        advanceUntilIdle()
+        assertEquals("la lista de antes se conserva", listOf("f1"), vm.porPagar.value!!.porEntregar.map { it.orderId })
+        assertTrue("pero sin su «Listo» vivo", sinLosYaAtendidos(vm.porPagar.value!!, vm.ocultos.value).porEntregar.isEmpty())
+
+        // Una lectura que lo sigue trayendo igual tampoco lo devuelve.
+        respuesta = Result.success(lista(porEntregar = listOf(aceptado)))
+        vm.refrescar()
+        assertTrue(sinLosYaAtendidos(vm.porPagar.value!!, vm.ocultos.value).porEntregar.isEmpty())
+
+        // El SERVIDOR lo trae READY: vuelve, con la etiqueta «Listo» y sólo «Entregado».
+        respuesta = Result.success(lista(porEntregar = listOf(aceptado.copy(status = OnlineOrderStatus.READY))))
+        vm.refrescar()
+        val vuelve = sinLosYaAtendidos(vm.porPagar.value!!, vm.ocultos.value).porEntregar.single()
+        assertEquals(OnlineOrderStatus.READY, vuelve.status)
+        assertTrue(yaEstaListo(vuelve))
+        assertTrue("la huella se suelta", vm.ocultos.value.isEmpty())
+    }
+
+    @Test
+    fun `a rejected Cancelar folio keeps its card, a confirmed one hides it and is pruned when the folio leaves`() = runTest(dispatcher) {
+        respuesta = Result.success(lista(porPagar = listOf(folio("p1"))))
+        coEvery { repo.cancel("p1") } returns AccionResultado.Error("Este folio ya tiene un cobro")
+        val vm = armar()
+        vm.refrescar()
+        vm.cancelar("p1")
+        advanceUntilIdle()
+        assertTrue("no se hizo: nada se esconde", vm.ocultos.value.isEmpty())
+
+        coEvery { repo.cancel("p1") } returns AccionResultado.Hecho
+        respuesta = Result.failure(IOException("sin red"))
+        vm.cancelar("p1")
+        advanceUntilIdle()
+        assertTrue("sin red, la lista vieja no devuelve «Cancelar folio»", sinLosYaAtendidos(vm.porPagar.value!!, vm.ocultos.value).porPagar.isEmpty())
+
+        respuesta = Result.success(lista())
+        vm.refrescar()
+        assertTrue("ya no está en ninguna lista: se poda", vm.ocultos.value.isEmpty())
     }
 
     @Test

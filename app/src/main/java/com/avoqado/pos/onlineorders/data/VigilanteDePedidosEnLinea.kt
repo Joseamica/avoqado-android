@@ -14,7 +14,7 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
 import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
-import com.avoqado.pos.onlineorders.presentation.tarjetasConfirmadas
+import com.avoqado.pos.onlineorders.presentation.cobradosConTarjetaEnLaLista
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import java.io.IOException
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -71,8 +71,12 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val foliosGuardados: suspend () -> ListaPorPagar? = { null },
     /** A3: los pedidos con efectivo de ESTE aparato en la cola: no cuentan como «por pagar» (igual que en la pantalla). */
     private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
-    /** A5: los folios que ESTE aparato cobró con tarjeta: mientras la lista no los cuente, tampoco son «por pagar». */
-    private val foliosConTarjeta: () -> List<FolioCobradoConTarjeta> = { emptyList() },
+    /**
+     * R100: lo que ESTE aparato cobró con tarjeta en el negocio: las marcas y los positivos que siguen en la lista durable (orden ->
+     * monto). Mientras la lista no lo cuente, tampoco es «por pagar».
+     */
+    private val foliosConTarjeta: (venueId: String?) -> List<FolioCobradoConTarjeta> = { emptyList() },
+    private val positivosConTarjeta: (venueId: String?) -> Map<String, Long> = { emptyMap() },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -84,6 +88,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         @ApplicationContext contexto: Context,
         cashPaymentRepository: CashPaymentRepository,
         foliosCobradosConTarjeta: FoliosCobradosConTarjeta,
+        terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
     ) : this(
         consultar = { status, comoBandeja -> repositorio.inbox(status, comoBandeja) },
         puedeLeer = {
@@ -98,7 +103,11 @@ class VigilanteDePedidosEnLinea internal constructor(
         puedeCobrar = { roleManager.hasVenuePermission("payments:create", setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")) },
         foliosGuardados = { repositorio.porPagarGuardado() },
         efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
-        foliosConTarjeta = foliosCobradosConTarjeta::marcas,
+        foliosConTarjeta = foliosCobradosConTarjeta::marcasDe,
+        positivosConTarjeta = { venue ->
+            terminalPaymentService.cobrosConTarjetaDelNegocio(venue).filter { it.cobrado && it.orderId != null }
+                .associate { it.orderId!! to (it.amountCents ?: 0).toLong() }
+        },
     )
 
     private val _pendientes = MutableStateFlow<List<OnlineOrder>>(emptyList())
@@ -328,9 +337,13 @@ class VigilanteDePedidosEnLinea internal constructor(
         } else {
             // A3 (m2): el mismo número que la pantalla: lo cobrado en efectivo en este aparato que aún no sube ya no está «por pagar».
             val enCola = try { efectivoEnCola().keys } catch (e: CancellationException) { throw e } catch (e: Exception) { emptySet() }
-            // A5: lo cobrado aquí con tarjeta que esta lista todavía no cuenta, igual que en la pantalla.
-            val marcas = try { foliosConTarjeta() } catch (e: Exception) { emptyList() }
-            val conTarjeta = (marcas - tarjetasConfirmadas(marcas, lista).toSet()).map { it.orderId }
+            // R100: lo cobrado aquí con tarjeta que esta lista todavía no cuenta, igual que en la pantalla.
+            val venue = venueActual()
+            val conTarjeta = try {
+                cobradosConTarjetaEnLaLista(foliosConTarjeta(venue), positivosConTarjeta(venue), lista).keys
+            } catch (e: Exception) {
+                emptySet()
+            }
             val vista = conLoCobradoEnElAparato(lista, enCola + conTarjeta)
             _foliosPorPagar.value = numeroDeSeccion(vista.counts.toPay, vista.porPagar.size, vista.nextCursors.toPay != null)
             hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty()

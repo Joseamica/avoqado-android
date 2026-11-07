@@ -221,11 +221,6 @@ class PaymentFlowViewModel @Inject constructor(
     val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository? = null,
     /** D4 (5-nov): lo que depende de este cobro. Cada intento se anota ANTES de salir. Default por el mismo patrón que [refrescoDelCatalogo]. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
-    /**
-     * Tienda híbrida (A5): donde se anota que ESTE aparato cobró un folio con tarjeta, antes de soltar su pendiente. Default por el
-     * mismo patrón que [refrescoDelCatalogo].
-     */
-    private val foliosCobradosConTarjeta: com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta? = null,
 ) : ViewModel() {
     private val cuentaDeTarjetas = MutableStateFlow(false)
     val metodosHabilitados: StateFlow<Boolean> by lazy {
@@ -852,8 +847,8 @@ class PaymentFlowViewModel @Inject constructor(
     /** A3: el texto del folio para el 400 de cuenta cancelada ([startPaymentFlow]); null = como siempre. */
     private var siLaCuentaSeCancelo: (() -> String?)? = null
 
-    /** A5: lo que faltaba del folio que se cobra ([startPaymentFlow]); null = no es un folio. Baja con cada parte con tarjeta. */
-    private var saldoDelFolio: Int? = null
+    /** R100: el cobro salió de la bandeja «Pedidos en línea» ([startPaymentFlow]); viaja con la tarjeta. null = otro cobro. */
+    private var cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null
 
     /**
      * A3 (m3): el 400 de cuenta cancelada llegó pero su apartado NO se pudo borrar. La pantalla dice «No se pudo cancelar el cobro»
@@ -2060,11 +2055,11 @@ class PaymentFlowViewModel @Inject constructor(
          */
         textoSiLaCuentaSeCancelo: (() -> String?)? = null,
         /**
-         * Tienda híbrida (A5, Codex fase 3-4 r1 #1): el cobro es de un folio que debía esto. Al confirmarse la tarjeta, el aparato
-         * anota «aquí ya se cobró» ANTES de soltar el pendiente del cobro: sin red, la lista vieja ya no lo deja cobrar en efectivo.
-         * null = no es un folio (como siempre).
+         * Tienda híbrida (R100): el cobro es de un pedido de la bandeja «Pedidos en línea» (folio o «Mi equipo») que debía esto. Viaja
+         * en el contexto durable de la tarjeta: cuando su positivo sale de la lista, `TerminalPaymentService` deja la marca «aquí ya se
+         * cobró» en el mismo commit, y la bandeja ya no ofrece efectivo encima con una lista vieja. null = otro cobro (como siempre).
          */
-        saldoDelFolioCents: Int? = null,
+        cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -2081,7 +2076,7 @@ class PaymentFlowViewModel @Inject constructor(
         this.cuentaDeTarjetas.value = cuentaDeTarjetas
         origenDelCobro = origen
         siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
-        saldoDelFolio = saldoDelFolioCents
+        this.cobroDeLaBandeja = cobroDeLaBandeja
         textoDeFolioPorBorrar = null
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
         flowSettings = tpvSettingsRepository.getCurrentSettings()
@@ -3023,6 +3018,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // nacía anónima aunque el cajero sí lo hubiera elegido. Espejo exacto
                     // del camino de EFECTIVO (`recordFastCashPayment`).
                     customerId = attachedCustomerId,
+                    // R100: un cobro de la bandeja lleva su saldo; su positivo deja la marca «aquí ya se cobró» al reconocerse.
+                    deLaBandeja = cobroDeLaBandeja,
                 )
                 recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
@@ -4071,19 +4068,6 @@ class PaymentFlowViewModel @Inject constructor(
         /** Se descubrió al cancelar: la pantalla lo DICE, porque el cajero creía cancelada la venta. */
         trasCancelar: Boolean = false,
     ) {
-        // 🔴 A5 (Codex fase 3-4 r1 #1): un folio cobrado con tarjeta se anota en el aparato YA, antes de cualquier espera y antes de
-        // soltar su pendiente (`reconocerCobro`, abajo): es dinero de ESTE folio pase lo que pase con la pantalla. Si la red se cae
-        // antes de releer, la lista vieja ya no deja cobrarle efectivo encima. Si el proceso muere entre las dos, quedan la marca y
-        // el pendiente: lo seguro.
-        val folio = saldoDelFolio
-        val ordenDelFolio = createdOrderId
-        if (folio != null && ordenDelFolio != null) {
-            val monto = (total - currentTipCents).coerceAtLeast(0)
-            val guardada = foliosCobradosConTarjeta?.marcar(ordenDelFolio, monto.toLong(), folio.toLong()) ?: false
-            if (!guardada) Log.e("💳", "❌ No se pudo anotar en disco que el folio $ordenDelFolio se cobró con tarjeta")
-            // Otra parte con tarjeta de este mismo folio parte de lo que quedó.
-            saldoDelFolio = (folio - monto).coerceAtLeast(0)
-        }
         // D7 (27-oct): la terminal no dice cuánto queda de una venta partida. Se le pregunta al SERVIDOR ANTES de soltar la
         // protección durable del cobro (`reconocerCobro`) y antes de publicar el éxito, que es lo que entrega el resultado
         // al carrito. Si el cajero se fue mientras tanto, el dinero no se pierde: va por el camino del desenlace tardío.

@@ -386,7 +386,7 @@ class VigilanteDePedidosEnLineaTest {
             scope = backgroundScope, venueActual = { f.venue },
             consultarPorPagar = folios::leer, puedeCobrar = { puedeCobrar }, foliosGuardados = { folios.guardada },
             efectivoEnCola = { enCola() },
-            foliosConTarjeta = { conTarjeta() },
+            foliosConTarjeta = { _ -> conTarjeta() },
         )
         return f
     }
