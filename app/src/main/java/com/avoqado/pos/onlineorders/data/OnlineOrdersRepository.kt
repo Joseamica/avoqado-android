@@ -7,7 +7,11 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.onlineorders.domain.AccionResultado
+import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
+import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
+import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.Inbox
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
@@ -16,7 +20,10 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.presentation.ocultosQueSiguen
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -88,6 +95,32 @@ class OnlineOrdersRepository @Inject constructor(
         Result.failure(e)
     }
 
+    /**
+     * R103: como [ejecutar], pero la llamada se CANCELA de verdad si la corrutina se cancela (`execute()` dentro de `withContext` seguiría
+     * bloqueado hasta su plazo, con el candado de la página 1 tomado). Lo que llega después de cancelar se ignora.
+     */
+    private suspend fun ejecutarCancelable(request: Request, cliente: OkHttpClient = client): Result<String> = try {
+        val (code, body) = kotlinx.coroutines.suspendCancellableCoroutine<Pair<Int, String>> { cont ->
+            val call = cliente.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.failure(e))
+                }
+
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val leida = runCatching { response.use { it.code to it.body?.string().orEmpty() } }
+                    if (cont.isActive) cont.resumeWith(leida)
+                }
+            })
+        }
+        if (code in 200..299) Result.success(body) else Result.failure(RechazoException(leerRechazo(code, body)))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
     private fun leerRechazo(code: Int, body: String): Rechazo {
         val json = runCatching { JSONObject(body) }.getOrNull()
         val codigo = json?.textoONulo("code")
@@ -99,10 +132,11 @@ class OnlineOrdersRepository @Inject constructor(
     private fun JSONObject.textoONulo(k: String): String? =
         if (isNull(k)) null else optString(k).takeIf { it.isNotBlank() }
 
-    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false): Request =
+    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false, latido: Boolean = false): Request =
         Request.Builder().url(url).header("Authorization", "Bearer $token").apply {
             if (fondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
             if (bandeja) header(TRAY_HEADER, "1")
+            if (latido) header(TO_PAY_HEADER, "1")
             // La ruta del dinero no espera un PIN dentro de su plazo corto: el 403 vuelve como respuesta, no como `IOException`.
             if (rapida) header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
         }.get().build()
@@ -175,6 +209,10 @@ class OnlineOrdersRepository @Inject constructor(
             cardStatus = o.textoONulo("cardStatus"),
             cardChargeStatus = o.optJSONObject("card")?.textoONulo("status"),
             rejectReason = o.textoONulo("rejectReason"),
+            requiresAcceptance = if (o.isNull("requiresAcceptance")) null else o.optBoolean("requiresAcceptance"),
+            channel = o.textoONulo("channel"),
+            // R67, opcional: una fecha rota no tumba el folio (se queda sin hora, como con un SERVIDOR viejo).
+            paidAt = o.textoONulo("paidAt")?.let { runCatching { Instant.parse(it) }.getOrNull() },
         )
     }
 
@@ -315,6 +353,171 @@ class OnlineOrdersRepository @Inject constructor(
         )
     }
 
+    // MARK: - Tienda híbrida: «Por pagar» / «Por entregar»
+
+    /**
+     * `GET online-orders/to-pay` (+ `?section=toPay|toDeliver&cursor=…` para «Cargar más»). [conLatido] manda la cabecera que avisa
+     * al servidor que ESTE aparato cobra folios (sólo pantallas que cobran; el vigilante y el panel no). La página 1 sin sección se
+     * guarda en el aparato ([porPagarGuardado]). 403/404 ⇒ `disponible = false`, sin error.
+     */
+    suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> =
+        // R103: la página 1 se lee ENTERA bajo [lecturaDePagina1]; «Cargar más» (sección y cursor) no la espera.
+        if (seccion != null || cursor != null) {
+            leerPorPagar(conLatido, seccion, cursor)
+        } else {
+            lecturaDePagina1.withLock { leerPorPagar(conLatido, null, null) }
+        }
+
+    /**
+     * R104/R105 (Codex r6 #2, r7 #1): el plazo TOTAL de cada lectura de «Por pagar», página 1 y extras (`callTimeout`: conectar,
+     * esperar y leer TODO el cuerpo). El plazo de lectura del cliente vale por cada lectura del socket: una respuesta a gotas nunca lo
+     * vencía. Al vencer, OkHttp corta la llamada y falla como sin red: la página 1 suelta [lecturaDePagina1] y nada se aplica. En
+     * tiempo real (no el virtual de las corrutinas de prueba). Las pruebas lo acortan.
+     */
+    internal var plazoTotalDeFoliosMs: Long = 20_000L
+
+    /**
+     * 🔴 R103 (Codex r5): el número de R102 dice cuándo SALIÓ la petición, no qué tan nueva es la foto del servidor; con dos lecturas a
+     * la vez el servidor puede atender la segunda primero. Así que la página 1 de «Por pagar» se lee ENTERA bajo este candado (red,
+     * leer y guardar la copia): la bandeja y el vigilante, que comparten este repositorio único, nunca se enciman, y cada lectura sale
+     * hacia el servidor después de que la anterior ya llegó. Orden fijo de candados: éste y luego [copiaDeFolios]; nada toma la copia y
+     * luego éste. Una lectura cancelada lo suelta al instante ([ejecutarCancelable]) y nunca se aplica.
+     */
+    private val lecturaDePagina1 = Mutex()
+
+    private suspend fun leerPorPagar(conLatido: Boolean, seccion: String?, cursor: String?): Result<ListaPorPagar> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        // R102 (segunda red): el número de la lectura se toma ANTES de la red: lo que cuenta es cuándo se PIDIÓ, no cuándo llegó.
+        val numero = secuenciaDeLecturas.incrementAndGet()
+        val consulta = listOfNotNull(
+            seccion?.let { "section=" + URLEncoder.encode(it, "UTF-8") },
+            cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
+        ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
+        val cliente = client.newBuilder().callTimeout(plazoTotalDeFoliosMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+        val leido = ejecutarCancelable(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido), cliente)
+        val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
+        if (rechazo != null && rechazo.status in setOf(403, 404)) {
+            val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }
+            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false, masViejaQueLaCopia = vieja))
+        }
+        val lista = leido.mapCatching { parsePorPagar(it) }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
+        if (seccion != null || cursor != null) return lista
+        return lista.map {
+            when (guardarCopia(venueId, leido.getOrThrow(), it, numero)) {
+                Guardado.GUARDADA -> it
+                Guardado.FALLO -> it.copy(copiaGuardada = false)
+                Guardado.VIEJA -> it.copy(copiaGuardada = false, masViejaQueLaCopia = true)
+            }
+        }
+    }
+
+    /**
+     * R102: la bandeja y el vigilante leen `to-pay` por separado y la red puede entregar al revés. Cada lectura de la página 1 lleva su
+     * número ([secuenciaDeLecturas], tomado antes de la red, en este repositorio ÚNICO que comparten) y la copia recuerda el de la
+     * lectura que la dejó ([secuenciaDeLaCopia]). En memoria basta: tras reiniciar, toda lectura nueva se pidió después de la copia.
+     */
+    private val secuenciaDeLecturas = java.util.concurrent.atomic.AtomicLong()
+    private val secuenciaDeLaCopia = mutableMapOf<String, Long>()
+
+    private enum class Guardado { GUARDADA, VIEJA, FALLO }
+
+    /** Una escritura a la vez sobre la copia de «Por pagar»: la de cada lectura y la de lo escondido no se pisan. */
+    private val copiaDeFolios = Mutex()
+
+    /**
+     * R101: la página 1 queda como la copia guardada, junto con lo escondido que todavía aplica ([ocultosQueSiguen]), en UNA sola
+     * escritura. R102: sólo si se PIDIÓ después de la lectura que dejó la copia de ahora; si no, se descarta (la copia sólo avanza).
+     */
+    private suspend fun guardarCopia(venueId: String, cuerpo: String, lista: ListaPorPagar, numero: Long): Guardado = copiaDeFolios.withLock {
+        if (numero <= (secuenciaDeLaCopia[venueId] ?: 0L)) {
+            Log.d(TAG, "«Por pagar»: respuesta $numero más vieja que la copia (${secuenciaDeLaCopia[venueId]}): se descarta")
+            return@withLock Guardado.VIEJA
+        }
+        try {
+            val previos = cache.load(CACHE_POR_PAGAR, venueId)?.let { ocultosDe(JSONObject(it.json)) }.orEmpty()
+            cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
+            secuenciaDeLaCopia[venueId] = numero
+            Guardado.GUARDADA
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ No se pudo guardar la copia de «Por pagar»: ${e.message}")
+            Guardado.FALLO
+        }
+    }
+
+    /**
+     * R101: lo escondido tras una acción confirmada se guarda en la MISMA copia que la lista (misma fila, una escritura), con la edad de
+     * esa lista intacta. `false` si no hay copia o no se pudo escribir (queda sólo en memoria hasta la siguiente lectura buena).
+     */
+    suspend fun guardarOcultos(ocultos: Map<String, HuellaDeFolio>): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        return copiaDeFolios.withLock {
+            try {
+                val actual = cache.load(CACHE_POR_PAGAR, venueId) ?: return@withLock false
+                val raiz = JSONObject(actual.json)
+                cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(actual.json, ocultos, raiz.optLong(GUARDADA_EN, actual.updatedAt)))
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ No se pudo guardar lo escondido de «Por pagar»: ${e.message}")
+                false
+            }
+        }
+    }
+
+    /** La última página 1 que llegó del servidor, con su edad y lo escondido; `null` si nunca se leyó. */
+    suspend fun porPagarGuardado(): ListaPorPagar? {
+        val venueId = secureStorage.venueId ?: return null
+        val c = cache.load(CACHE_POR_PAGAR, venueId) ?: return null
+        return runCatching {
+            val raiz = JSONObject(c.json)
+            // La edad es la de la LISTA: guardar lo escondido no la rejuvenece.
+            val edad = if (raiz.has(GUARDADA_EN)) ((System.currentTimeMillis() - raiz.getLong(GUARDADA_EN)) / 60_000).coerceAtLeast(0) else c.ageMinutes
+            parsePorPagar(c.json).copy(guardadoHaceMin = edad, ocultos = ocultosDe(raiz))
+        }.getOrNull()
+    }
+
+    private fun conOcultos(cuerpo: String, ocultos: Map<String, HuellaDeFolio>, guardadaEn: Long): String {
+        val json = JSONObject()
+        ocultos.forEach { (id, h) ->
+            json.put(id, JSONObject().put("seccion", h.seccion).put("status", h.status.name).put("remainingCents", h.remainingCents))
+        }
+        return JSONObject(cuerpo).put(OCULTOS, json).put(GUARDADA_EN, guardadaEn).toString()
+    }
+
+    private fun ocultosDe(raiz: JSONObject): Map<String, HuellaDeFolio> {
+        val json = raiz.optJSONObject(OCULTOS) ?: return emptyMap()
+        return json.keys().asSequence().mapNotNull { id ->
+            val h = json.optJSONObject(id) ?: return@mapNotNull null
+            id to HuellaDeFolio(h.optString("seccion"), OnlineOrderStatus.from(h.optString("status")), h.optLong("remainingCents"))
+        }.toMap()
+    }
+
+    private fun parsePorPagar(cuerpo: String): ListaPorPagar {
+        val data = JSONObject(cuerpo).getJSONObject("data")
+        val counts = data.optJSONObject("counts")
+        val cursores = data.optJSONObject("nextCursors")
+        // Un folio dañado se salta: no tumba la lista (el aviso de un folio real no puede depender de otro roto).
+        fun folios(clave: String): List<OnlineOrder> {
+            val lista = data.optJSONArray(clave)
+            return (0 until (lista?.length() ?: 0)).mapNotNull { i ->
+                runCatching { parseOrder(lista!!.getJSONObject(i)) }
+                    .onFailure { Log.w(TAG, "Folio $clave #$i ignorado por malformado: ${it.message}") }.getOrNull()
+            }
+        }
+        return ListaPorPagar(
+            disponible = true,
+            showTile = data.optBoolean("showTile", false),
+            pollSeconds = data.optInt("pollSeconds", 600),
+            counts = ConteosPorPagar(counts?.optInt("toPay") ?: 0, counts?.optInt("toDeliver") ?: 0),
+            porPagar = folios("toPay"),
+            porEntregar = folios("toDeliver"),
+            nextCursors = CursoresPorPagar(cursores?.textoONulo("toPay"), cursores?.textoONulo("toDeliver")),
+        )
+    }
+
     // MARK: - Saldo
 
     /**
@@ -330,8 +533,22 @@ class OnlineOrdersRepository @Inject constructor(
             val saldo = balance.getLong("remainingBalanceCents")
             // Con cualquier pago previo la lista no se enseña: un abono y un cargo iguales cuadrarían la suma por casualidad.
             val sinPagos = balance.optLong("totalPaidCents", -1L) == 0L
-            SaldoDelPedido(saldo, if (sinPagos) runCatching { precios(orden) }.getOrNull() else null)
+            SaldoDelPedido(
+                saldo, if (sinPagos) runCatching { precios(orden) }.getOrNull() else null,
+                estadoDeLaCuenta = orden.textoONulo("status"),
+                pagadoA = runCatching { ultimoCobro(orden) }.getOrNull(),
+            )
         }
+    }
+
+    /** La hora del último cobro que entró (`COMPLETED` y positivo: un reembolso o un intento fallido no cuentan); null si no hay. */
+    private fun ultimoCobro(orden: JSONObject): Instant? {
+        val pagos = orden.optJSONArray("payments") ?: return null
+        return (0 until pagos.length()).mapNotNull { i ->
+            val p = pagos.getJSONObject(i)
+            if (p.optString("status") != "COMPLETED" || p.optDouble("amount", 0.0) <= 0.0) return@mapNotNull null
+            p.textoONulo("createdAt")?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        }.maxOrNull()
     }
 
     private fun precios(orden: JSONObject): List<PrecioDeRenglon> {
@@ -352,6 +569,11 @@ class OnlineOrdersRepository @Inject constructor(
     private companion object {
         const val TRAY_HEADER = "x-online-orders-tray"
         const val DEVICE_HEADER = "x-device-id"
+        const val TO_PAY_HEADER = "x-online-orders-to-pay"
+        const val CACHE_POR_PAGAR = "to_pay"
+        /** R101: llaves que el aparato agrega a su copia de «Por pagar» (el SERVIDOR nunca las manda). */
+        const val OCULTOS = "ocultosDelAparato"
+        const val GUARDADA_EN = "guardadaEnMs"
         const val CACHE_POR_COBRAR = "delivery_cash"
     }
 }

@@ -408,20 +408,31 @@ class CashPaymentRepository @Inject constructor(
     suspend fun efectivoDelPedido(orderId: String): EfectivoDelPedido {
         val venueId = secureStorage.venueId ?: return EfectivoDelPedido.NINGUNO
         if (orderId.isBlank()) return EfectivoDelPedido.NINGUNO
-        val estados = pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map { fila ->
-            when (fila.syncStatus) {
-                PaymentSyncStatus.SYNCING.name -> EfectivoDelPedido.EN_COLA
-                PaymentSyncStatus.PENDING.name ->
-                    if (fila.q15Reason == null) EfectivoDelPedido.EN_COLA else EfectivoDelPedido.POR_REVISAR
-                PaymentSyncStatus.EN_VUELO.name, PaymentSyncStatus.FAILED.name -> EfectivoDelPedido.POR_REVISAR
-                else -> EfectivoDelPedido.NINGUNO
-            }
-        }
-        return when {
-            EfectivoDelPedido.POR_REVISAR in estados -> EfectivoDelPedido.POR_REVISAR
-            EfectivoDelPedido.EN_COLA in estados -> EfectivoDelPedido.EN_COLA
-            else -> EfectivoDelPedido.NINGUNO
-        }
+        return combinar(pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map(::estadoDe))
+    }
+
+    /**
+     * Tienda híbrida (A3): de UNA lectura, los pedidos cuyo efectivo de ESTE aparato sólo espera la cola ([EfectivoDelPedido.EN_COLA],
+     * nada por revisar), con lo cobrado (la suma de `amountCents` de esas filas). La misma regla que [efectivoDelPedido].
+     */
+    suspend fun efectivoEnColaPorPedido(): Map<String, Long> {
+        val venueId = secureStorage.venueId ?: return emptyMap()
+        return pendingPaymentDao.forVenue(venueId).filter { !it.orderId.isNullOrBlank() }.groupBy { it.orderId!! }
+            .filterValues { filas -> combinar(filas.map(::estadoDe)) == EfectivoDelPedido.EN_COLA }
+            .mapValues { (_, filas) -> filas.filter { estadoDe(it) == EfectivoDelPedido.EN_COLA }.sumOf { it.amountCents.toLong() } }
+    }
+
+    private fun estadoDe(fila: PendingPaymentEntity): EfectivoDelPedido = when (fila.syncStatus) {
+        PaymentSyncStatus.SYNCING.name -> EfectivoDelPedido.EN_COLA
+        PaymentSyncStatus.PENDING.name -> if (fila.q15Reason == null) EfectivoDelPedido.EN_COLA else EfectivoDelPedido.POR_REVISAR
+        PaymentSyncStatus.EN_VUELO.name, PaymentSyncStatus.FAILED.name -> EfectivoDelPedido.POR_REVISAR
+        else -> EfectivoDelPedido.NINGUNO
+    }
+
+    private fun combinar(estados: List<EfectivoDelPedido>): EfectivoDelPedido = when {
+        EfectivoDelPedido.POR_REVISAR in estados -> EfectivoDelPedido.POR_REVISAR
+        EfectivoDelPedido.EN_COLA in estados -> EfectivoDelPedido.EN_COLA
+        else -> EfectivoDelPedido.NINGUNO
     }
 
     /**

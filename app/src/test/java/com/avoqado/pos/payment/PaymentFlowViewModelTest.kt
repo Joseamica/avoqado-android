@@ -3186,6 +3186,48 @@ class PaymentFlowViewModelTest {
         assertEquals(before, viewModel.state.value)
     }
 
+    /**
+     * R100: un cobro de la bandeja «Pedidos en línea» manda su saldo y si es folio en el contexto durable de la tarjeta. Con eso,
+     * `TerminalPaymentService` deja la marca «aquí ya se cobró» en el MISMO commit en que su positivo sale de la lista (cubre la
+     * respuesta directa, el desenlace tardío y la conciliación; lo prueban `FolioCobradoConTarjetaTest` y la escena de escritorio).
+     */
+    @Test
+    fun `P1 a tray card charge carries its balance to the durable card context`() = runTest {
+        val bandeja = slot<com.avoqado.pos.onlineorders.data.CobroDeLaBandeja>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), capture(bandeja))
+        } returns TerminalPaymentResult.Success(paymentId = "pay-folio", requestId = "req-folio")
+        coEvery { orderRepository.saldoDeLaOrden(any()) } returns OrderRepository.SaldoDeLaOrden(remainingCents = 0, paymentStatus = "PAID")
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(13400), resumeOrderId = "folio-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
+            cobroDeLaBandeja = com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(13400, esFolio = true))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals(com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(13400, esFolio = true), bandeja.captured)
+        verify(exactly = 1) { terminalPaymentService.reconocerCobro("req-folio") }
+    }
+
+    @Test
+    fun `a card charge that is not from the tray sends no tray context`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), null)
+        } returns TerminalPaymentResult.Success(paymentId = "pay-web", requestId = "req-web")
+        coEvery { orderRepository.saldoDeLaOrden(any()) } returns OrderRepository.SaldoDeLaOrden(remainingCents = 0, paymentStatus = "PAID")
+
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(13400), resumeOrderId = "web-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), null) }
+    }
+
     private fun mesaCobrando() = com.avoqado.pos.tables.data.TableSession.Active(
         tableId = "mesa-5", tableNumber = "5", areaName = null, orderId = "orden-de-la-mesa", orderNumber = "M5",
         version = 1, totalCents = 30000, mode = com.avoqado.pos.tables.data.TableSession.Mode.PAYING,

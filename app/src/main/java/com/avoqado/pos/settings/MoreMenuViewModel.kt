@@ -66,6 +66,9 @@ class MoreMenuViewModel @Inject constructor(
     /** Los pedidos por aceptar de ahora: su número es la insignia de la entrada. */
     val pedidosEnLineaPendientes = vigilanteDePedidos.pendientes
 
+    /** Tienda híbrida: folios que esperan pago en caja; se suman a la insignia (`numeroDelMenu`). */
+    val foliosPorPagar = vigilanteDePedidos.foliosPorPagar
+
     /** `pendientes + activos > 0`: con eso la entrada se atiende aunque el plan haya vencido (R14). */
     val hayPedidosEnLineaAbiertos = vigilanteDePedidos.hayPedidosAbiertos
 

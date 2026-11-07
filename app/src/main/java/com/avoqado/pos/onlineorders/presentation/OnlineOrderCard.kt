@@ -28,8 +28,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 
-/** Los diálogos que una tarjeta pide a la bandeja (viven fuera de la lista). */
-enum class TipoDeDialogo { ACEPTAR, RECHAZAR, CANCELAR }
+/** Los diálogos que una tarjeta pide a la bandeja (viven fuera de la lista). CANCELAR_FOLIO (A3): el de «Por pagar», con su texto. */
+enum class TipoDeDialogo { ACEPTAR, RECHAZAR, CANCELAR, CANCELAR_FOLIO }
 
 /** En qué sección de la bandeja vive la tarjeta: de ella dependen sus acciones. */
 enum class SeccionDePedido { POR_ACEPTAR, EN_PREPARACION, LISTOS, HOY }
