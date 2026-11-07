@@ -378,6 +378,7 @@ class VigilanteDePedidosEnLineaTest {
 
     private fun TestScope.armarConFolios(
         folios: Folios, puedeCobrar: Boolean = true, inbox: Inbox = inbox(), enCola: () -> Map<String, Long> = { emptyMap() },
+        conTarjeta: () -> List<com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta> = { emptyList() },
     ): Fixture {
         val f = Fixture(Falso(Result.success(inbox)))
         f.vigilante = VigilanteDePedidosEnLinea(
@@ -385,8 +386,24 @@ class VigilanteDePedidosEnLineaTest {
             scope = backgroundScope, venueActual = { f.venue },
             consultarPorPagar = folios::leer, puedeCobrar = { puedeCobrar }, foliosGuardados = { folios.guardada },
             efectivoEnCola = { enCola() },
+            foliosConTarjeta = { conTarjeta() },
         )
         return f
+    }
+
+    @Test
+    fun `A5 the menu number leaves out a folio this device charged by card until the server counts it`() = runTest {
+        val marca = com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta("f2", montoCents = 10000, saldoAntesCents = 10000, enMs = 0)
+        val folios = Folios(Result.success(listaFolios(3)))
+        val f = armarConFolios(folios, conTarjeta = { listOf(marca) })
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals("la lista todavía lo trae con todo su saldo: ya no es «por pagar»", 2, f.vigilante.foliosPorPagar.value)
+
+        // El SERVIDOR ya lo cuenta (salió de «Por pagar»): el número es el de la lista, sin restar nada más.
+        folios.respuesta = Result.success(listaFolios(3).let { it.copy(porPagar = it.porPagar.filter { p -> p.orderId != "f2" }, counts = ConteosPorPagar(2, 1)) })
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(2, f.vigilante.foliosPorPagar.value)
+        f.vigilante.onStop(owner)
     }
 
     @Test

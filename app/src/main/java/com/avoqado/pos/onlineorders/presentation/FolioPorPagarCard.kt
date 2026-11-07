@@ -25,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,7 +56,9 @@ private val ALTO_MINIMO = 48.dp
  * Un folio de «Pedir por QR y pagar en caja»: «Folio W7K3P» (letras separadas y más grande que el nombre), el nombre, qué pidió y
  * el dinero. «Por pagar» trae «Cobrar» («Cobrar en efectivo» sin red) y, sin dinero y con red, «Cancelar folio» a 16 dp de él
  * (A3). «Por entregar» trae «Listo» (con borde) y «Entregado» (relleno), apagados sin red porque el servidor es quien los cierra;
- * lo cobrado en efectivo en ESTE aparato que aún no sube ([cobradoEnElAparatoCents]) dice «Cobro en efectivo guardado…».
+ * lo cobrado en efectivo en ESTE aparato que aún no sube ([cobradoEnElAparatoCents]) dice «Cobro en efectivo guardado…», y lo cobrado
+ * aquí con tarjeta que la lista aún no cuenta ([cobradoConTarjetaCents], A5) «Pagado con tarjeta $X». R98: ya «Listo» (READY), la
+ * etiqueta «Listo» y sólo «Entregado».
  */
 @Composable
 fun FolioPorPagarCard(
@@ -74,6 +77,8 @@ fun FolioPorPagarCard(
     puedeCancelar: Boolean = false,
     onCobrar: () -> Unit = {},
     onCancelar: () -> Unit = {},
+    /** A5: lo cobrado con tarjeta en ESTE aparato que la lista del servidor todavía no cuenta; null = nada. */
+    cobradoConTarjetaCents: Long? = null,
 ) {
     val espacio = AvoqadoTheme.spacing
     Card(
@@ -95,7 +100,24 @@ fun FolioPorPagarCard(
                 Text(horaDelPedido(pedido), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (porEntregar) {
-                Text(TextosPedidosEnLinea.PARA_RECOGER, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(espacio.sm)) {
+                    Text(TextosPedidosEnLinea.PARA_RECOGER, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (yaEstaListo(pedido)) {
+                        // R98: una etiqueta neutra del tema (nunca rojo): ya se avisó que está listo, falta entregarlo.
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.testTag("folio-listo-chip-${pedido.orderId}"),
+                        ) {
+                            Text(
+                                TextosPedidosEnLinea.LISTO,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = espacio.sm, vertical = espacio.xxs),
+                            )
+                        }
+                    }
+                }
             }
             pedido.customerName?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
             if (pedido.items.isNotEmpty()) {
@@ -109,32 +131,43 @@ fun FolioPorPagarCard(
 
             if (porEntregar) {
                 Text(
-                    // Lo cobrado aquí sin red: lo que guardó la cola (no el total ni el saldo de la lista).
-                    if (cobradoEnElAparatoCents != null) TextosPedidosEnLinea.pagadoEnEfectivo(formatoPesos(cobradoEnElAparatoCents))
-                    else TextosPedidosEnLinea.pagado(formatoPesos(pedido.totalCents)),
+                    // Lo cobrado aquí sin red: lo que guardó la cola (no el total ni el saldo de la lista); con tarjeta, lo que cobró la terminal.
+                    when {
+                        cobradoEnElAparatoCents != null -> TextosPedidosEnLinea.pagadoEnEfectivo(formatoPesos(cobradoEnElAparatoCents))
+                        cobradoConTarjetaCents != null -> TextosPedidosEnLinea.pagadoConTarjeta(formatoPesos(cobradoConTarjetaCents))
+                        else -> TextosPedidosEnLinea.pagado(formatoPesos(pedido.totalCents))
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
-                if (cobradoEnElAparatoCents != null) {
-                    Text(
+                when {
+                    cobradoEnElAparatoCents != null -> Text(
                         TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.testTag("folio-guardado-${pedido.orderId}"),
                     )
-                } else {
-                    textoDePago(pedido)?.let {
+                    cobradoConTarjetaCents != null -> Text(
+                        TextosPedidosEnLinea.COBRO_CON_TARJETA_AQUI,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("folio-tarjeta-${pedido.orderId}"),
+                    )
+                    else -> textoDePago(pedido)?.let {
                         Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (puedeActualizar) {
                     // Los dos pesan igual en la TPV y en el panel: «Listo» con borde y «Entregado» relleno, en ese orden.
-                    // Lo cobrado aquí sin subir todavía no es «pagado» para el servidor: esperan a que suba.
-                    val enLinea = !sinConexion && !ocupado && cobradoEnElAparatoCents == null
+                    // Lo cobrado aquí que el servidor todavía no cuenta (efectivo sin subir, tarjeta sin releer): esperan a que lo cuente.
+                    val enLinea = !sinConexion && !ocupado && cobradoEnElAparatoCents == null && cobradoConTarjetaCents == null
                     // «Entregado» no se deshace: más aire entre los dos para no tocar el equivocado.
                     Row(horizontalArrangement = Arrangement.spacedBy(espacio.md)) {
-                        OutlinedButton(onClick = onListo, enabled = enLinea, modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-listo-${pedido.orderId}")) {
-                            Text(TextosPedidosEnLinea.LISTO)
+                        // R98: ya «Listo», sólo queda «Entregado» (la etiqueta de arriba lo dice).
+                        if (!yaEstaListo(pedido)) {
+                            OutlinedButton(onClick = onListo, enabled = enLinea, modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-listo-${pedido.orderId}")) {
+                                Text(TextosPedidosEnLinea.LISTO)
+                            }
                         }
                         Button(onClick = onEntregado, enabled = enLinea, modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("folio-entregado-${pedido.orderId}")) {
                             Text(TextosPedidosEnLinea.ENTREGADO)
@@ -207,6 +240,8 @@ internal fun LazyListScope.seccionesDeFolios(
     onReintentar: () -> Unit,
     // A3: cobrar y cancelar un folio; lo cobrado aquí sin subir ya viene movido a «Por entregar» (`conLoCobradoEnElAparato`).
     cobradosEnElAparato: Map<String, Long> = emptyMap(),
+    // A5: lo cobrado aquí con tarjeta que la lista todavía no cuenta (también viene movido a «Por entregar»).
+    cobradosConTarjeta: Map<String, Long> = emptyMap(),
     puedeCobrar: Boolean = false,
     puedeCancelar: Boolean = false,
     onCobrar: (OnlineOrder) -> Unit = {},
@@ -288,6 +323,7 @@ internal fun LazyListScope.seccionesDeFolios(
                 pedido, true, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados,
                 onListo = { onListo(pedido.orderId) }, onEntregado = { onEntregado(pedido) },
                 cobradoEnElAparatoCents = cobradosEnElAparato[pedido.orderId],
+                cobradoConTarjetaCents = cobradosConTarjeta[pedido.orderId],
             )
         }
         if (hayMasPorEntregar) {

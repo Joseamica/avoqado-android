@@ -257,6 +257,43 @@ class PorPagarBandejaTest {
         assertEquals("W8M2C entregado a Leo", TextosPedidosEnLinea.folioEntregado("W8M2C", "Leo"))
     }
 
+    /** R98 (A): un folio READY vive en «Por entregar» (con su etiqueta «Listo» y sólo «Entregado»), nunca también en «Listos». */
+    @Test
+    fun `a folio does not repeat in Listos`() = runTest(dispatcher) {
+        val folioListo = folio("f1", status = OnlineOrderStatus.READY, pago = "PAID", falta = 0, requiere = false)
+        val delEquipo = folio("t1", status = OnlineOrderStatus.READY, requiere = true)
+        val viejo = folio("v1", status = OnlineOrderStatus.READY, requiere = null)
+        coEvery { repo.inbox(any(), any(), any()) } returns Result.success(inbox(folioListo, delEquipo, viejo))
+        val vm = armar()
+        vm.refrescar()
+        assertEquals(listOf("t1", "v1"), vm.secciones.value.listos.map { it.orderId })
+    }
+
+    /** R98 + Codex #3: tras «Listo» el folio se sigue viendo, como READY en «Por entregar», aunque la Bandeja esté fallando. */
+    @Test
+    fun `P2 after Listo the folio shows READY in Por entregar even while the Inbox read fails`() = runTest(dispatcher) {
+        coEvery { repo.inbox(any(), any(), any()) } returns Result.failure(IllegalStateException("500"))
+        coEvery { repo.ready("f1") } returns AccionResultado.Hecho
+        respuesta = Result.success(lista(porEntregar = listOf(folio("f1", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0))))
+        val vm = armar()
+        vm.refrescar()
+
+        respuesta = Result.success(lista(porEntregar = listOf(folio("f1", status = OnlineOrderStatus.READY, pago = "PAID", falta = 0))))
+        vm.marcarListo("f1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { repo.ready("f1") }
+        val enPantalla = vm.porPagar.value!!.porEntregar.single()
+        assertEquals("f1", enPantalla.orderId)
+        assertEquals(OnlineOrderStatus.READY, enPantalla.status)
+        assertTrue(vm.secciones.value.listos.isEmpty())
+
+        // SERVIDOR viejo (READY fuera de `toDeliver`): sale de la lista sin tronar nada.
+        respuesta = Result.success(lista())
+        vm.refrescar()
+        assertTrue(vm.porPagar.value!!.porEntregar.isEmpty())
+    }
+
     @Test
     fun `a folio does not repeat in En preparacion`() = runTest(dispatcher) {
         val folioPagado = folio("f1", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0, requiere = false)
@@ -358,6 +395,41 @@ class PorPagarBandejaTest {
         // La lectura del siguiente compás vuelve a recorrer la página extra: no se tira.
         vm.refrescar()
         assertEquals(101, vm.porPagar.value!!.porEntregar.size)
+    }
+
+    /** A5 (Codex fase 3-4 r1 #4, regla A2): una relectura a la que le falla una página extra nunca recorta lo que ya se veía. */
+    @Test
+    fun `P2 an incomplete re-read never truncates - the 101st stays visible with an error flag`() = runTest(dispatcher) {
+        val cien = (1..100).map { folio("e$it", "W${"%04d".format(it).replace('0', 'A')}", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0) }
+        respuesta = Result.success(lista(porEntregar = cien, toDeliver = 101, cursorEntregar = "c1"))
+        respuestasPorCursor["c1"] = Result.success(lista(porEntregar = listOf(folio("e101", "WZZZZ", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)), toDeliver = 101))
+        val vm = armar()
+        vm.refrescar()
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_ENTREGAR)
+        advanceUntilIdle()
+        assertEquals(101, vm.porPagar.value!!.porEntregar.size)
+        assertFalse(vm.noSePudoLeer.value)
+
+        // El siguiente sondeo: la primera página contesta, la segunda truena.
+        respuestasPorCursor["c1"] = Result.failure(IllegalStateException("500"))
+        vm.refrescar()
+        assertEquals("el 101 no desaparece", 101, vm.porPagar.value!!.porEntregar.size)
+        assertTrue(vm.porPagar.value!!.porEntregar.any { it.orderId == "e101" })
+        assertNull("«Cargar más» no vuelve a ofrecer lo que ya se ve", vm.porPagar.value!!.nextCursors.toDeliver)
+        assertTrue("la lectura no se da por buena", vm.noSePudoLeer.value)
+
+        // Sin red en la segunda página: igual, y lo dice como «sin conexión».
+        respuestasPorCursor["c1"] = Result.failure(IOException("sin red"))
+        vm.refrescar()
+        assertEquals(101, vm.porPagar.value!!.porEntregar.size)
+        assertTrue(vm.sinConexion.value)
+
+        // Una relectura completa vuelve a ser la verdad.
+        respuestasPorCursor["c1"] = Result.success(lista(porEntregar = listOf(folio("e101", "WZZZZ", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)), toDeliver = 101))
+        vm.refrescar()
+        assertEquals(101, vm.porPagar.value!!.porEntregar.size)
+        assertFalse(vm.noSePudoLeer.value)
+        assertFalse(vm.sinConexion.value)
     }
 
     @Test
@@ -472,6 +544,17 @@ class PorPagarBandejaTest {
         val v = textoDeVencimiento(folio("a", vence = "2026-11-06T18:30:00Z"), ahora, sinConexion = false)!!
         assertTrue(v.texto.startsWith("Venció a las "))
         assertFalse("nunca rojo ni ámbar", v.pronto)
+    }
+
+    /** A5 (Codex fase 3-4 r1 #5): el SERVIDOR conserva vivo un folio con dinero: sin cuenta regresiva y sin «Venció». */
+    @Test
+    fun `P2 a folio with a partial payment never counts down nor says it expired`() {
+        val abono = folio("a", total = 18500, falta = 8500, pago = "PARTIAL", vence = "2026-11-06T18:30:00Z")
+        assertNull("antes de la hora", textoDeVencimiento(abono, Instant.parse("2026-11-06T18:10:00Z"), sinConexion = false))
+        assertNull("sin red", textoDeVencimiento(abono, Instant.parse("2026-11-06T18:10:00Z"), sinConexion = true))
+        assertNull("pasada la hora", textoDeVencimiento(abono, Instant.parse("2026-11-06T18:40:00Z"), sinConexion = false))
+        // Sin abono, como siempre.
+        assertNotNull(textoDeVencimiento(folio("b", vence = "2026-11-06T18:30:00Z"), Instant.parse("2026-11-06T18:10:00Z"), false))
     }
 
     @Test

@@ -94,6 +94,8 @@ fun PaymentFlowScreen(
     onCuentaConSaldo: ((String) -> Unit)? = null,
     /** Tienda híbrida (A3): un folio. Ver `PaymentFlowViewModel.startPaymentFlow`. null (o que devuelva null) = como siempre. */
     textoSiLaCuentaSeCancelo: (() -> String?)? = null,
+    /** Tienda híbrida (A5): lo que debía el folio que se cobra. Ver `PaymentFlowViewModel.startPaymentFlow`. null = no es un folio. */
+    saldoDelFolioCents: Int? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -192,6 +194,7 @@ fun PaymentFlowScreen(
             onCreacionResuelta = onCreacionResuelta,
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
+            saldoDelFolioCents = saldoDelFolioCents,
         )
         aperturaIniciada = true
     }

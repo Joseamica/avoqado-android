@@ -452,6 +452,17 @@ class SecureStorage @Inject constructor(
     }
 
     /**
+     * Tienda híbrida (A5): los folios que este aparato cobró con tarjeta y la lista del servidor aún no cuenta
+     * (`FoliosCobradosConTarjeta`). En `commit()` y **NO se limpia en `clearSession`**, como la lista de cobros pendientes.
+     */
+    val foliosCobradosConTarjetaJson: String?
+        @Synchronized get() = prefs.getString(KEY_FOLIOS_COBRADOS_CON_TARJETA, null)
+
+    @Synchronized
+    fun guardarFoliosCobradosConTarjeta(json: String): Boolean =
+        prefs.edit().putString(KEY_FOLIOS_COBRADOS_CON_TARJETA, json).commit()
+
+    /**
      * La lista nueva, en UN commit. M-10: si la que había no se pudo leer, en ese MISMO commit se guarda tal cual en
      * [KEY_PENDING_CARD_CHARGES_ILEGIBLE] — antes se leía como vacía y la escritura siguiente la borraba de verdad.
      */
@@ -895,6 +906,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PENDING_CARD_CHARGE = "pendingCardChargeRequestId"
         private const val KEY_PENDING_CARD_CHARGE_CONTEXT = "pendingCardChargeContext"
         private const val KEY_PENDING_CARD_CHARGES = "pendingCardCharges"
+        private const val KEY_FOLIOS_COBRADOS_CON_TARJETA = "foliosCobradosConTarjeta"
         /** M-10: el último blob de la lista que no se pudo leer, tal cual, para conciliar. No lo borra `clearSession`. */
         private const val KEY_PENDING_CARD_CHARGES_ILEGIBLE = "pendingCardChargesIlegible"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"

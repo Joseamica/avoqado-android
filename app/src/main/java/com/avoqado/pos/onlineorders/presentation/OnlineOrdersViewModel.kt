@@ -8,6 +8,7 @@ import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta
 import com.avoqado.pos.onlineorders.data.ImpresionDePedidoEnLinea
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.data.ResultadoImpresion
@@ -131,6 +132,8 @@ class OnlineOrdersViewModel internal constructor(
     private val ahoraMs: () -> Long = System::currentTimeMillis,
     /** A3: los pedidos con efectivo de este aparato en la cola -> lo cobrado (`CashPaymentRepository.efectivoEnColaPorPedido`). */
     private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
+    /** A5: los folios que este aparato cobró con tarjeta y la lista del SERVIDOR aún no cuenta (bloquean «Cobrar»). */
+    private val foliosConTarjeta: FoliosCobradosConTarjeta = FoliosCobradosConTarjeta.enMemoria(),
 ) : ViewModel() {
 
     @Inject
@@ -142,6 +145,7 @@ class OnlineOrdersViewModel internal constructor(
         impresion: ImpresionDePedidoEnLinea,
         syncOutbox: Provider<SyncOutbox>,
         cashPaymentRepository: CashPaymentRepository,
+        foliosCobradosConTarjeta: FoliosCobradosConTarjeta,
     ) : this(
         repositorio = repositorio,
         permisoActualizar = { roleManager.canOperateOnlineOrders },
@@ -164,6 +168,7 @@ class OnlineOrdersViewModel internal constructor(
         leerPorPagar = { conLatido, seccion, cursor -> repositorio.porPagar(conLatido, seccion, cursor) },
         foliosGuardados = { repositorio.porPagarGuardado() },
         efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
+        foliosConTarjeta = foliosCobradosConTarjeta,
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -267,13 +272,31 @@ class OnlineOrdersViewModel internal constructor(
      */
     val cobradosEnElAparato: StateFlow<Map<String, Long>> = _cobradosEnElAparato.asStateFlow()
 
+    private val _cobradosConTarjeta = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /**
+     * A5 (Codex fase 3-4 r1 #1): los folios de «Por pagar» que ESTE aparato ya cobró con tarjeta y la lista todavía no cuenta (la red se
+     * cayó antes de releer, o la lista es la guardada) -> lo cobrado. Igual que el efectivo en cola: la pantalla los pinta en «Por
+     * entregar» («Pagado con tarjeta $X») y «Cobrar» se niega.
+     */
+    val cobradosConTarjeta: StateFlow<Map<String, Long>> = _cobradosConTarjeta.asStateFlow()
+
     /**
      * Una sola lectura de la cola del aparato (no una por folio). Corre ANTES de tocar la red (al abrir con lo guardado, al cerrar un
      * cobro y al empezar cada lectura de folios) y otra vez después: con el WiFi «conectado sin datos» la red tarda, y lo cobrado ya
      * tiene que verse en «Por entregar».
      */
     private suspend fun releerCobradosEnElAparato() {
-        val folios = _porPagar.value?.porPagar.orEmpty().map { it.orderId }.toSet()
+        val lista = _porPagar.value
+        val folios = lista?.porPagar.orEmpty().map { it.orderId }.toSet()
+        try {
+            val marcas = foliosConTarjeta.marcas()
+            val confirmadas = lista?.let { tarjetasConfirmadas(marcas, it) }.orEmpty()
+            _cobradosConTarjeta.value = marcas.filter { it.orderId in folios && it !in confirmadas }.associate { it.orderId to it.montoCents }
+        } catch (e: Exception) {
+            // No se pudo leer la marca: lo último que se supo se queda, y «Cobrar» vuelve a revisar (y no abre otro cobro).
+            Log.w(TAG, "No se pudieron leer los folios cobrados con tarjeta: ${e.message}")
+        }
         val enCola = try {
             efectivoEnCola()
         } catch (e: CancellationException) {
@@ -333,7 +356,11 @@ class OnlineOrdersViewModel internal constructor(
         }
         primera.onSuccess { lista ->
             var actual = lista
+            // A5 (Codex r1 #4): la primera página contestó pero una extra no. Lo que ya se veía de esa sección se conserva (regla A2:
+            // una lectura fallida nunca borra la lista) y la lectura no se da por buena.
+            var fallo: Throwable? = null
             if (lista.disponible) {
+                val previa = _porPagar.value
                 for (seccion in listOf(SECCION_POR_PAGAR, SECCION_POR_ENTREGAR)) {
                     var pagina = 0
                     while (pagina < (paginasExtraFolios[seccion] ?: 0)) {
@@ -344,15 +371,33 @@ class OnlineOrdersViewModel internal constructor(
                             throw e
                         } catch (e: Exception) {
                             Result.failure(e)
-                        }.getOrNull() ?: break
-                        actual = sumarPagina(actual, siguiente, seccion)
+                        }
+                        val leida = siguiente.getOrNull()
+                        if (leida == null) {
+                            fallo = siguiente.exceptionOrNull()
+                            actual = conservarLoQueSeVeia(actual, previa, seccion)
+                            break
+                        }
+                        actual = sumarPagina(actual, leida, seccion)
                         pagina++
                     }
                 }
             }
             _porPagar.value = actual
-            leidoEnMs = ahoraMs()
             _errorFolios.value = false
+            val falloDePagina = fallo
+            if (falloDePagina == null) {
+                leidoEnMs = ahoraMs()
+            } else {
+                Log.d(TAG, "«Por pagar» incompleto: ${falloDePagina.message}")
+                if (falloDePagina is IOException) _sinConexion.value = true else _noSePudoLeer.value = true
+            }
+            // A5 (#1): lo que el SERVIDOR ya cuenta suelta su marca de tarjeta (una lista de antes del cobro no suelta nada).
+            try {
+                foliosConTarjeta.olvidar(tarjetasConfirmadas(foliosConTarjeta.marcas(), actual))
+            } catch (e: Exception) {
+                Log.w(TAG, "No se pudieron soltar los folios cobrados con tarjeta: ${e.message}")
+            }
         }.onFailure {
             Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
             val actual = _porPagar.value
@@ -376,6 +421,26 @@ class OnlineOrdersViewModel internal constructor(
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =
         if (seccion == SECCION_POR_PAGAR) lista.nextCursors.toPay else lista.nextCursors.toDeliver
+
+    /**
+     * A5 (#4): una página extra de [seccion] no llegó. Lo que [previa] enseñaba de esa sección y la lectura nueva no trae (en ninguna
+     * de las dos secciones) se queda, con el cursor de entonces: así «Cargar más» no vuelve a ofrecer lo que ya se ve.
+     */
+    private fun conservarLoQueSeVeia(nueva: ListaPorPagar, previa: ListaPorPagar?, seccion: String): ListaPorPagar {
+        if (previa == null || !previa.disponible) return nueva
+        val vistos = (nueva.porPagar + nueva.porEntregar).map { it.orderId }.toSet()
+        return if (seccion == SECCION_POR_PAGAR) {
+            nueva.copy(
+                porPagar = nueva.porPagar + previa.porPagar.filter { it.orderId !in vistos },
+                nextCursors = nueva.nextCursors.copy(toPay = previa.nextCursors.toPay),
+            )
+        } else {
+            nueva.copy(
+                porEntregar = nueva.porEntregar + previa.porEntregar.filter { it.orderId !in vistos },
+                nextCursors = nueva.nextCursors.copy(toDeliver = previa.nextCursors.toDeliver),
+            )
+        }
+    }
 
     /** La página extra de UNA sección: la otra viene vacía y no se toca. */
     private fun sumarPagina(actual: ListaPorPagar, pagina: ListaPorPagar, seccion: String) =
@@ -496,7 +561,8 @@ class OnlineOrdersViewModel internal constructor(
                 porAceptar = pendientes,
                 // Un folio pagado vive en «Por entregar»: aquí sólo lo que acepta el equipo (o un servidor viejo que no lo dice).
                 enPreparacion = ordenes.filter { it.status == OnlineOrderStatus.ACCEPTED && it.requiresAcceptance != false },
-                listos = ordenes.filter { it.status == OnlineOrderStatus.READY },
+                // R98: un folio READY sigue en «Por entregar» (con su «Listo» y sólo «Entregado»): aquí tampoco se repite.
+                listos = ordenes.filter { it.status == OnlineOrderStatus.READY && it.requiresAcceptance != false },
                 hoy = ordenes.filter { it.status !in ABIERTOS },
             )
             _hayMas.value = cursor != null
@@ -776,6 +842,19 @@ class OnlineOrdersViewModel internal constructor(
                         _aviso.value = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR
                         return@launch
                     }
+                }
+                // A5 (Codex r1 #1): este aparato ya cobró el folio con tarjeta y la lista todavía no lo cuenta. Sin red la lista vieja
+                // seguiría diciendo todo el saldo: no se cobra otra vez hasta que el SERVIDOR lo confirme (y suelte la marca).
+                val conTarjeta = try {
+                    foliosConTarjeta.marcas().any { it.orderId == orderId }
+                } catch (e: Exception) {
+                    Log.w(TAG, "No se pudieron revisar los cobros con tarjeta de $orderNumber: ${e.message}")
+                    _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
+                    return@launch
+                }
+                if (conTarjeta) {
+                    _aviso.value = TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA
+                    return@launch
                 }
                 val leido = try {
                     repositorio.saldoDelPedido(orderId)

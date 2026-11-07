@@ -1,8 +1,10 @@
 package com.avoqado.pos.onlineorders.presentation
 
+import com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import java.text.Normalizer
 import java.time.Duration
 import java.time.Instant
@@ -73,14 +75,32 @@ fun conLoCobradoEnElAparato(lista: ListaPorPagar, enCola: Set<String>): ListaPor
     )
 }
 
+/**
+ * A5 (Codex fase 3-4 r1 #1): las marcas de tarjeta de este aparato que [lista] (una respuesta del SERVIDOR) ya cuenta: el folio salió
+ * de «Por pagar» (y no quedan páginas por traer, donde pudo quedar) o lo que falta bajó al menos lo cobrado. Una lista de antes del
+ * cobro no confirma nada: lo sigue trayendo con todo su saldo. PURA.
+ */
+fun tarjetasConfirmadas(marcas: List<FolioCobradoConTarjeta>, lista: ListaPorPagar): List<FolioCobradoConTarjeta> {
+    val porPagar = lista.porPagar.associateBy { it.orderId }
+    return marcas.filter { marca ->
+        val folio = porPagar[marca.orderId]
+        if (folio == null) lista.nextCursors.toPay == null else folio.remainingCents <= marca.saldoAntesCents - marca.montoCents
+    }
+}
+
+/** R98 (A): un folio ya marcado «Listo» sigue en «Por entregar» con su etiqueta y sólo «Entregado» (nunca «Listo» otra vez). */
+fun yaEstaListo(pedido: OnlineOrder): Boolean = pedido.status == OnlineOrderStatus.READY
+
 /** Cuánto falta para que venza un folio. [pronto] = 5 min o menos: el punto se pinta en ámbar (nunca rojo, nunca el texto). */
 data class VencimientoFolio(val texto: String, val pronto: Boolean)
 
 /**
  * Con red «Vence en N min» (N redondeado hacia arriba: nunca promete de más); sin red la hora fija «Vence a las HH:MM», porque un
- * contador sin conexión miente. Ya vencido: «Venció a las HH:MM», sin cuenta ni color. `null` si el folio no trae vencimiento.
+ * contador sin conexión miente. Ya vencido: «Venció a las HH:MM», sin cuenta ni color. `null` si el folio no trae vencimiento, o si
+ * tiene abono (A5, Codex r1 #5): el SERVIDOR conserva vivo un folio con dinero; la tarjeta dice «Ya pagó $X de $Y» y «Falta $Z».
  */
 fun textoDeVencimiento(pedido: OnlineOrder, ahora: Instant, sinConexion: Boolean): VencimientoFolio? {
+    if (hayAbono(pedido)) return null
     val vence = pedido.acceptDeadlineAt ?: return null
     if (!vence.isAfter(ahora)) return VencimientoFolio(TextosPedidosEnLinea.yaVencio(horaDelNegocio(vence)), pronto = false)
     if (sinConexion) return VencimientoFolio(TextosPedidosEnLinea.venceALas(horaDelNegocio(vence)), pronto = false)

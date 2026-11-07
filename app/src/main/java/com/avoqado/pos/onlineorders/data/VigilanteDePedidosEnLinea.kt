@@ -14,6 +14,7 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
 import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
+import com.avoqado.pos.onlineorders.presentation.tarjetasConfirmadas
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import java.io.IOException
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -70,6 +71,8 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val foliosGuardados: suspend () -> ListaPorPagar? = { null },
     /** A3: los pedidos con efectivo de ESTE aparato en la cola: no cuentan como «por pagar» (igual que en la pantalla). */
     private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
+    /** A5: los folios que ESTE aparato cobró con tarjeta: mientras la lista no los cuente, tampoco son «por pagar». */
+    private val foliosConTarjeta: () -> List<FolioCobradoConTarjeta> = { emptyList() },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -80,6 +83,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         secureStorage: SecureStorage,
         @ApplicationContext contexto: Context,
         cashPaymentRepository: CashPaymentRepository,
+        foliosCobradosConTarjeta: FoliosCobradosConTarjeta,
     ) : this(
         consultar = { status, comoBandeja -> repositorio.inbox(status, comoBandeja) },
         puedeLeer = {
@@ -94,6 +98,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         puedeCobrar = { roleManager.hasVenuePermission("payments:create", setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")) },
         foliosGuardados = { repositorio.porPagarGuardado() },
         efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
+        foliosConTarjeta = foliosCobradosConTarjeta::marcas,
     )
 
     private val _pendientes = MutableStateFlow<List<OnlineOrder>>(emptyList())
@@ -323,7 +328,10 @@ class VigilanteDePedidosEnLinea internal constructor(
         } else {
             // A3 (m2): el mismo número que la pantalla: lo cobrado en efectivo en este aparato que aún no sube ya no está «por pagar».
             val enCola = try { efectivoEnCola().keys } catch (e: CancellationException) { throw e } catch (e: Exception) { emptySet() }
-            val vista = conLoCobradoEnElAparato(lista, enCola)
+            // A5: lo cobrado aquí con tarjeta que esta lista todavía no cuenta, igual que en la pantalla.
+            val marcas = try { foliosConTarjeta() } catch (e: Exception) { emptyList() }
+            val conTarjeta = (marcas - tarjetasConfirmadas(marcas, lista).toSet()).map { it.orderId }
+            val vista = conLoCobradoEnElAparato(lista, enCola + conTarjeta)
             _foliosPorPagar.value = numeroDeSeccion(vista.counts.toPay, vista.porPagar.size, vista.nextCursors.toPay != null)
             hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty()
         }

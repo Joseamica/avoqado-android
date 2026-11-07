@@ -103,6 +103,8 @@ fun OnlineOrdersScreen(
     val busqueda by viewModel.busqueda.collectAsState()
     // A3: lo cobrado en efectivo en este aparato que la cola aún no sube se pinta en «Por entregar».
     val cobradosEnElAparato by viewModel.cobradosEnElAparato.collectAsState()
+    // A5: y lo cobrado aquí con tarjeta que la lista todavía no cuenta.
+    val cobradosConTarjeta by viewModel.cobradosConTarjeta.collectAsState()
     // «Vence en N min» se recalcula solo aunque la lista no cambie.
     var ahora by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); ahora = Instant.now() } }
@@ -142,8 +144,8 @@ fun OnlineOrdersScreen(
     val dialogo = rememberDialogoDePedido()
     // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
     val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
-    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato) {
-        seccionFolios?.let { conLoCobradoEnElAparato(it, cobradosEnElAparato.keys) }
+    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta) {
+        seccionFolios?.let { conLoCobradoEnElAparato(it, cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -240,6 +242,7 @@ fun OnlineOrdersScreen(
                                         onCargarMas = viewModel::cargarMasFolios,
                                         onReintentar = viewModel::reintentarFolios,
                                         cobradosEnElAparato = cobradosEnElAparato,
+                                        cobradosConTarjeta = cobradosConTarjeta,
                                         puedeCobrar = viewModel.puedeCobrar && puedeActualizar,
                                         puedeCancelar = puedeCancelar,
                                         onCobrar = viewModel::cobrarFolio,
@@ -363,6 +366,8 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
             apertura = cobro.apertura,
             // m1: se decide al fallar (venció o lo canceló otra caja), no al abrir.
             textoSiLaCuentaSeCancelo = { cobro.textoSiLaCuentaSeCancelo(Instant.now()) },
+            // A5: con la tarjeta confirmada, el aparato anota que ya cobró este folio (la lista vieja no lo deja cobrar otra vez).
+            saldoDelFolioCents = cobro.saldoCents.takeIf { cobro.esFolio },
         )
     }
 }

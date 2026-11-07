@@ -164,4 +164,8 @@ object TextosPedidosEnLinea {
     const val SI_CANCELAR = "Sí, cancelar"
     fun pagadoEnEfectivo(monto: String) = "Pagado en efectivo $monto"
     fun pagadoALas(hora: String) = "Pagado a las $hora"
+    // A5 (Codex fase 3-4 r1 #1): un folio cobrado con la terminal ligada que la lista todavía no cuenta. iOS los copia igual.
+    const val FOLIO_COBRADO_CON_TARJETA = "Este folio ya se cobró con tarjeta en esta caja."
+    const val COBRO_CON_TARJETA_AQUI = "Se cobró con tarjeta en esta caja: se actualiza al volver la conexión"
+    fun pagadoConTarjeta(monto: String) = "$PAGADO_CON_TARJETA $monto"
 }
