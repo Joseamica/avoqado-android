@@ -470,6 +470,7 @@ class PorPagarBandejaTest {
         // El siguiente sondeo: la primera página contesta, la segunda truena.
         respuestasPorCursor["c1"] = Result.failure(IllegalStateException("500"))
         vm.refrescar()
+        advanceUntilIdle() // R105: las páginas extra se releen en su propio trabajo, después de publicar la página 1
         assertEquals("el 101 no desaparece", 101, vm.porPagar.value!!.porEntregar.size)
         assertTrue(vm.porPagar.value!!.porEntregar.any { it.orderId == "e101" })
         assertNull("«Cargar más» no vuelve a ofrecer lo que ya se ve", vm.porPagar.value!!.nextCursors.toDeliver)
@@ -478,15 +479,45 @@ class PorPagarBandejaTest {
         // Sin red en la segunda página: igual, y lo dice como «sin conexión».
         respuestasPorCursor["c1"] = Result.failure(IOException("sin red"))
         vm.refrescar()
+        advanceUntilIdle()
         assertEquals(101, vm.porPagar.value!!.porEntregar.size)
         assertTrue(vm.sinConexion.value)
 
         // Una relectura completa vuelve a ser la verdad.
         respuestasPorCursor["c1"] = Result.success(lista(porEntregar = listOf(folio("e101", "WZZZZ", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)), toDeliver = 101))
         vm.refrescar()
+        advanceUntilIdle()
         assertEquals(101, vm.porPagar.value!!.porEntregar.size)
         assertFalse(vm.noSePudoLeer.value)
         assertFalse(vm.sinConexion.value)
+    }
+
+    /** R105 (c): «Reintentar» no se queda detrás de una página extra atorada; la lectura nueva la corta. */
+    @Test
+    fun `Reintentar proceeds while an extra page is stuck`() = runTest(dispatcher) {
+        val atorada = kotlinx.coroutines.CompletableDeferred<Result<ListaPorPagar>>()
+        respuesta = Result.success(lista(porEntregar = listOf(folio("e1", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)), toDeliver = 2, cursorEntregar = "c1"))
+        val vm = OnlineOrdersViewModel(
+            repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true }, hayPedidosAbiertos = { true },
+            ventanaALaVista = kotlinx.coroutines.flow.MutableStateFlow(true),
+            leerPorPagar = { latido, seccion, cursor ->
+                llamadas += Llamada(latido, seccion, cursor)
+                if (cursor != null) atorada.await() else respuesta
+            },
+        )
+        vm.refrescar()
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_ENTREGAR)
+        advanceUntilIdle()
+        assertTrue("la extra está en el aire", llamadas.any { it.cursor == "c1" })
+
+        val antes = llamadas.count { it.cursor == null }
+        respuesta = Result.success(lista(porPagar = listOf(folio("n1")), porEntregar = listOf(folio("e1", status = OnlineOrderStatus.ACCEPTED, pago = "PAID", falta = 0)), toDeliver = 2, cursorEntregar = "c1"))
+        vm.reintentarFolios()
+        advanceUntilIdle()
+        assertTrue("«Reintentar» leyó la página 1", llamadas.count { it.cursor == null } > antes)
+        assertTrue("y el folio nuevo ya se ve", vm.porPagar.value!!.porPagar.any { it.orderId == "n1" })
+        atorada.complete(Result.failure(IOException("sin red")))
+        advanceUntilIdle()
     }
 
     @Test

@@ -369,12 +369,12 @@ class OnlineOrdersRepository @Inject constructor(
         }
 
     /**
-     * R104 (Codex r6 #2): el plazo TOTAL de la llamada de la página 1 (`callTimeout`: conectar, esperar y leer TODO el cuerpo). El plazo
-     * de lectura del cliente vale por cada lectura del socket: una respuesta a gotas nunca lo vencía y retenía [lecturaDePagina1] sin
-     * fin. Al vencer, OkHttp corta la llamada, falla como sin red, se suelta el candado y no se aplica. En tiempo real (no el virtual de
-     * las corrutinas de prueba). Las pruebas lo acortan.
+     * R104/R105 (Codex r6 #2, r7 #1): el plazo TOTAL de cada lectura de «Por pagar», página 1 y extras (`callTimeout`: conectar,
+     * esperar y leer TODO el cuerpo). El plazo de lectura del cliente vale por cada lectura del socket: una respuesta a gotas nunca lo
+     * vencía. Al vencer, OkHttp corta la llamada y falla como sin red: la página 1 suelta [lecturaDePagina1] y nada se aplica. En
+     * tiempo real (no el virtual de las corrutinas de prueba). Las pruebas lo acortan.
      */
-    internal var plazoTotalDePagina1Ms: Long = 20_000L
+    internal var plazoTotalDeFoliosMs: Long = 20_000L
 
     /**
      * 🔴 R103 (Codex r5): el número de R102 dice cuándo SALIÓ la petición, no qué tan nueva es la foto del servidor; con dos lecturas a
@@ -393,11 +393,7 @@ class OnlineOrdersRepository @Inject constructor(
             seccion?.let { "section=" + URLEncoder.encode(it, "UTF-8") },
             cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
         ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
-        val cliente = if (seccion == null && cursor == null) {
-            client.newBuilder().callTimeout(plazoTotalDePagina1Ms, java.util.concurrent.TimeUnit.MILLISECONDS).build()
-        } else {
-            client
-        }
+        val cliente = client.newBuilder().callTimeout(plazoTotalDeFoliosMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
         val leido = ejecutarCancelable(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido), cliente)
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {

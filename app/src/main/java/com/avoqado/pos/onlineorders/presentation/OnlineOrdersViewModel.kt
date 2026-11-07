@@ -362,6 +362,10 @@ class OnlineOrdersViewModel internal constructor(
      * pantalla es la bandeja visible Y la persona cobra (`payments:create`): el servidor lo vuelve a comprobar.
      */
     private suspend fun refrescarPorPagar(comoBandeja: Boolean) {
+        // R105 (c): una lectura nueva corta el recorrido de páginas extra de la anterior (y su resultado ya no se publica).
+        val generacion = ++generacionDeFolios
+        trabajoDeExtras?.cancel()
+        trabajoDeExtras = null
         releerCobradosEnElAparato() // antes de la red, y otra vez al final con la lista nueva
         val primera = try {
             leerPorPagar(comoBandeja && permisoCobrar(), null, null)
@@ -378,48 +382,28 @@ class OnlineOrdersViewModel internal constructor(
             return
         }
         primera.onSuccess { lista ->
+            // R105 (c) (Codex r7 #1): la página 1 se publica YA, sin esperar a las extras (un folio nuevo por cobrar no espera a una
+            // página de «Por entregar»). Lo que ya se veía de las extras se conserva mientras se releen aparte (regla A2).
+            val previa = _porPagar.value
+            val conExtras = lista.disponible && SECCIONES.any { (paginasExtraFolios[it] ?: 0) > 0 && cursorDe(lista, it) != null }
             var actual = lista
-            // A5 (Codex r1 #4): la primera página contestó pero una extra no. Lo que ya se veía de esa sección se conserva (regla A2:
-            // una lectura fallida nunca borra la lista) y la lectura no se da por buena.
-            var fallo: Throwable? = null
-            if (lista.disponible) {
-                val previa = _porPagar.value
-                for (seccion in listOf(SECCION_POR_PAGAR, SECCION_POR_ENTREGAR)) {
-                    var pagina = 0
-                    while (pagina < (paginasExtraFolios[seccion] ?: 0)) {
-                        val cursor = cursorDe(actual, seccion) ?: break
-                        val siguiente = try {
-                            leerPorPagar(false, seccion, cursor)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Result.failure(e)
-                        }
-                        val leida = siguiente.getOrNull()
-                        if (leida == null) {
-                            fallo = siguiente.exceptionOrNull()
-                            actual = conservarLoQueSeVeia(actual, previa, seccion)
-                            break
-                        }
-                        actual = sumarPagina(actual, leida, seccion)
-                        pagina++
+            if (conExtras) {
+                for (seccion in SECCIONES) {
+                    if ((paginasExtraFolios[seccion] ?: 0) > 0 && cursorDe(lista, seccion) != null) {
+                        actual = conservarLoQueSeVeia(actual, previa, seccion)
                     }
                 }
             }
             _porPagar.value = actual
             _errorFolios.value = false
-            val falloDePagina = fallo
-            if (falloDePagina == null) {
-                leidoEnMs = ahoraMs()
-            } else {
-                Log.d(TAG, "«Por pagar» incompleto: ${falloDePagina.message}")
-                if (falloDePagina is IOException) _sinConexion.value = true else _noSePudoLeer.value = true
-            }
+            if (!conExtras) leidoEnMs = ahoraMs()
             // R104: tras guardar la copia, se mira la copia EN DISCO (no esta lista con sus páginas extra) y se sueltan las marcas de
             // folios que ella ya cuenta.
             if (lista.disponible && lista.copiaGuardada) soltarMarcasDeFoliosConLaCopia()
             // Codex r2 #3: lo escondido tras una acción se poda en cuanto el SERVIDOR lo trae distinto (o ya no lo trae).
             if (lista.disponible) _ocultos.value = ocultosQueSiguen(_ocultos.value, actual)
+            // Las extras van en su propio trabajo, FUERA del candado de la pantalla: «Reintentar» nunca espera detrás de ellas.
+            if (conExtras) trabajoDeExtras = viewModelScope.launch { recorrerExtras(lista, previa, generacion) }
         }.onFailure {
             Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
             val actual = _porPagar.value
@@ -443,6 +427,54 @@ class OnlineOrdersViewModel internal constructor(
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =
         if (seccion == SECCION_POR_PAGAR) lista.nextCursors.toPay else lista.nextCursors.toDeliver
+
+    /** R105 (c): cada lectura de página 1 lleva su número; el recorrido de extras de una lectura vieja no publica nada. */
+    private var generacionDeFolios = 0L
+
+    /** El recorrido de páginas extra en curso (fuera de [mutex]); una lectura nueva lo cancela. */
+    private var trabajoDeExtras: kotlinx.coroutines.Job? = null
+
+    /**
+     * R105 (c): las páginas extra de [primera], cada una con su plazo total (el del repositorio). Termina publicando la lista completa;
+     * si una falla, conserva lo que ya se veía de esa sección (A5 #4) y lo dice, sin dar la lectura por buena. Nunca suelta marcas: eso
+     * sólo lo hace la copia guardada (R104).
+     */
+    private suspend fun recorrerExtras(primera: ListaPorPagar, previa: ListaPorPagar?, generacion: Long) {
+        var actual = primera
+        var fallo: Throwable? = null
+        for (seccion in SECCIONES) {
+            var pagina = 0
+            while (pagina < (paginasExtraFolios[seccion] ?: 0)) {
+                val cursor = cursorDe(actual, seccion) ?: break
+                val siguiente = try {
+                    leerPorPagar(false, seccion, cursor)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Result.failure(e)
+                }
+                val leida = siguiente.getOrNull()
+                if (leida == null) {
+                    fallo = siguiente.exceptionOrNull()
+                    actual = conservarLoQueSeVeia(actual, previa, seccion)
+                    break
+                }
+                actual = sumarPagina(actual, leida, seccion)
+                pagina++
+            }
+        }
+        if (generacion != generacionDeFolios) return // ya publicó una lectura más nueva
+        _porPagar.value = actual
+        val falloDePagina = fallo
+        if (falloDePagina == null) {
+            leidoEnMs = ahoraMs()
+        } else {
+            Log.d(TAG, "«Por pagar» incompleto: ${falloDePagina.message}")
+            if (falloDePagina is IOException) _sinConexion.value = true else _noSePudoLeer.value = true
+        }
+        _ocultos.value = ocultosQueSiguen(_ocultos.value, actual)
+        releerCobradosEnElAparato()
+    }
 
     /**
      * 🔴 R104, la ÚNICA puerta para soltar la marca de un FOLIO: la copia guardada EN DISCO del negocio de ahora (lo que «Cobrar» usa
@@ -522,6 +554,8 @@ class OnlineOrdersViewModel internal constructor(
             try {
                 paginasExtraFolios[seccion] = (paginasExtraFolios[seccion] ?: 0) + 1
                 mutex.withLock { refrescarPorPagar(comoBandeja = false) }
+                // «Cargar más» sigue ocupado hasta que llegue la página (o la corte su plazo o una lectura nueva), sin tomar el candado.
+                trabajoDeExtras?.join()
             } finally {
                 _cargandoMas.value = false
             }
@@ -1118,6 +1152,7 @@ class OnlineOrdersViewModel internal constructor(
         /** Los nombres de sección que entiende `GET …/to-pay?section=`. */
         const val SECCION_POR_PAGAR = "toPay"
         const val SECCION_POR_ENTREGAR = "toDeliver"
+        private val SECCIONES = listOf(SECCION_POR_PAGAR, SECCION_POR_ENTREGAR)
         const val CLAVE_PAUSA = "__pausa__"
         /** `Order.status` de una cuenta que ya no admite un cobro nuevo en vivo (A3). */
         private val CUENTAS_CERRADAS = setOf("CANCELLED", "DELETED")

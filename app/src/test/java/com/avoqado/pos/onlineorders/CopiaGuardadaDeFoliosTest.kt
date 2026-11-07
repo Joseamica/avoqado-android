@@ -68,6 +68,11 @@ class CopiaGuardadaDeFoliosTest {
     /** Lo que contesta `to-pay` ahora mismo. */
     private var toPay: MockResponse = MockResponse().setResponseCode(500)
 
+    /** R105: lo que contesta una página extra (con `cursor=`) y el refresco de sesión; y si la próxima página 1 da 401. */
+    private var extra: MockResponse = MockResponse().setResponseCode(500)
+    private var refresco: MockResponse = MockResponse().setResponseCode(500)
+    private var proxima401 = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** R102: respuestas de `to-pay` retenidas, en el orden en que llegan las peticiones: cada una sale cuando se abre su compuerta. */
     private val retenidas = ConcurrentLinkedQueue<Pair<CountDownLatch, MockResponse>>()
     private val llegadasToPay = AtomicInteger()
@@ -78,6 +83,12 @@ class CopiaGuardadaDeFoliosTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path!!.endsWith("/mobile/auth/refresh") -> refresco
+                request.path!!.contains("/online-orders/to-pay") && request.path!!.contains("cursor=") -> extra
+                request.path!!.contains("/online-orders/to-pay") && proxima401.getAndSet(false) -> {
+                    llegadasToPay.incrementAndGet()
+                    MockResponse().setResponseCode(401).setBody("""{"error":"Unauthorized","message":"Token has expired"}""")
+                }
                 request.path!!.contains("/online-orders/to-pay") -> {
                     val retenida = retenidas.poll()
                     llegadasToPay.incrementAndGet()
@@ -129,6 +140,11 @@ class CopiaGuardadaDeFoliosTest {
         "pollSeconds":30,"counts":{"toPay":${if (porPagar.isEmpty()) 0 else 1},"toDeliver":${if (porEntregar.isEmpty()) 0 else 1}},
         "toPay":[$porPagar],"toDeliver":[$porEntregar],"nextCursors":{"toPay":null,"toDeliver":null},"store":null}}""",
     )
+
+    private fun cuerpoConCursor(porPagar: String, porEntregar: String, cursorEntregar: String) =
+        """{"success":true,"data":{"serverTime":"2026-11-06T18:10:00.000Z","enabled":true,"requiresAcceptance":false,"showTile":true,
+        "pollSeconds":30,"counts":{"toPay":${if (porPagar.isEmpty()) 0 else 1},"toDeliver":2},
+        "toPay":[$porPagar],"toDeliver":[$porEntregar],"nextCursors":{"toPay":null,"toDeliver":"$cursorEntregar"},"store":null}}"""
 
     private suspend fun esperarQueTermine(vm: OnlineOrdersViewModel, orderId: String) =
         withTimeout(5_000) { vm.ocupados.first { orderId !in it } }
@@ -275,7 +291,7 @@ class CopiaGuardadaDeFoliosTest {
      */
     @Test
     fun `a slow-drip to-pay response is cut by the total deadline and the tray reads`() = runBlocking {
-        repo.plazoTotalDePagina1Ms = 1_000
+        repo.plazoTotalDeFoliosMs = 1_000
         val gotas = cuerpo(porPagar = folio("f9", "PENDING_ACCEPTANCE", "99", "PENDING")).throttleBody(16, 250, TimeUnit.MILLISECONDS)
         retenidas.add(CountDownLatch(0) to gotas)
         val antes = llegadasToPay.get()
@@ -287,6 +303,69 @@ class CopiaGuardadaDeFoliosTest {
         assertTrue(deLaBandeja.copiaGuardada)
         assertTrue("la lectura a gotas venció y no se aplicó", delVigilante.await().isFailure)
         assertTrue(repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f9" })
+    }
+
+    // MARK: - R105: todo lo que esta pantalla espera lleva plazo TOTAL
+
+    /**
+     * R105 (a) (Codex r7 #2): la página 1 recibe 401 y el autenticador renueva la sesión con su cliente propio; esa renovación llega a
+     * gotas. Cancelar la llamada original no la corta, así que sin un plazo total propio la página 1 se quedaba con el candado.
+     */
+    @Test
+    fun `a slow-drip session refresh after a 401 releases the page-1 lock within its deadline`() = runBlocking {
+        val sesion = mockk<SecureStorage>(relaxed = true).also { every { it.refreshToken } returns "refresh-viejo" }
+        val autenticador = com.avoqado.pos.core.data.network.TokenRefreshAuthenticator(sesion, com.avoqado.pos.core.data.network.RefrescoExclusivo())
+        autenticador.refreshBaseUrl = server.url("/api/v1").toString().trimEnd('/')
+        autenticador.plazoTotalDelRefrescoMs = 1_000
+        autenticador.reportarFallo = {}
+        val conSesion = OnlineOrdersRepository(
+            secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).authenticator(autenticador).build(), cache,
+        )
+        refresco = MockResponse().setBody("""{"accessToken":"a","refreshToken":"r","padding":"${"x".repeat(400)}"}""").throttleBody(8, 250, TimeUnit.MILLISECONDS)
+        proxima401.set(true)
+        val antes = llegadasToPay.get()
+        val conRenovacion = async(Dispatchers.IO) { conSesion.porPagar(conLatido = false) }
+        esperarLlegadas(antes + 1)
+
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        val luego = withTimeout(3_500) { conSesion.porPagar(conLatido = false).getOrThrow() }
+        assertTrue("la página 1 siguiente sí pasó", luego.copiaGuardada)
+        assertTrue("la renovación vencida falla como sin red, sin cerrar sesión", conRenovacion.await().isFailure)
+        io.mockk.verify(exactly = 0) { sesion.clearSessionSiSigue(any()) }
+    }
+
+    @Test
+    fun `the session refresh client has a total deadline by default`() {
+        val autenticador = com.avoqado.pos.core.data.network.TokenRefreshAuthenticator(mockk(relaxed = true), com.avoqado.pos.core.data.network.RefrescoExclusivo())
+        assertEquals(15_000L, autenticador.plazoTotalDelRefrescoMs)
+    }
+
+    /**
+     * R105 (b) y (c) (Codex r7 #1): una página extra que llega a gotas no retrasa la página 1 (un folio nuevo por cobrar sale YA) y la
+     * corta su propio plazo total; lo que ya se veía de las extras no se borra.
+     */
+    @Test
+    fun `a slow-drip extra page does not delay page 1 and is cut by its deadline`() = runBlocking {
+        repo.plazoTotalDeFoliosMs = 1_000
+        toPay = MockResponse().setBody(cuerpoConCursor(porPagar = "", porEntregar = folio("e1", "ACCEPTED", "0", "PAID"), cursorEntregar = "d1"))
+        extra = cuerpo(porEntregar = folio("e2", "ACCEPTED", "0", "PAID"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_ENTREGAR)
+        withTimeout(5_000) { while (vm.porPagar.value!!.porEntregar.none { it.orderId == "e2" }) delay(20) }
+
+        // La extra ahora gotea; la página 1 trae un folio NUEVO por cobrar.
+        extra = cuerpo(porEntregar = folio("e2", "ACCEPTED", "0", "PAID")).throttleBody(8, 250, TimeUnit.MILLISECONDS)
+        toPay = MockResponse().setBody(
+            cuerpoConCursor(porPagar = folio("n1", "PENDING_ACCEPTANCE", "50", "PENDING"), porEntregar = folio("e1", "ACCEPTED", "0", "PAID"), cursorEntregar = "d1"),
+        )
+        withTimeout(800) { vm.refrescar() }
+        assertTrue("el folio nuevo sale sin esperar a la extra", vm.porPagar.value!!.porPagar.any { it.orderId == "n1" })
+        assertTrue("y lo de la extra no se borra mientras", vm.porPagar.value!!.porEntregar.any { it.orderId == "e2" })
+
+        // El plazo total corta la extra: se dice, y la lista no se recorta.
+        withTimeout(4_000) { while (!vm.sinConexion.value && !vm.noSePudoLeer.value) delay(20) }
+        assertTrue(vm.porPagar.value!!.porEntregar.any { it.orderId == "e2" })
     }
 
     @Test
