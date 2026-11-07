@@ -348,6 +348,7 @@ class OnlineOrdersViewModel internal constructor(
                 leidoEnMs = ahoraMs() - (guardada.guardadoHaceMin ?: 0L) * 60_000
             }
         }
+        soltarMarcasDeFoliosConLaCopia() // R104: al abrir, contra la copia en disco
         releerCobradosEnElAparato() // antes de la red: lo cobrado aquí sin subir ya va en «Por entregar»
         mutex.withLock { refrescarPorPagar(comoBandeja = false) }
     }
@@ -362,7 +363,6 @@ class OnlineOrdersViewModel internal constructor(
      */
     private suspend fun refrescarPorPagar(comoBandeja: Boolean) {
         releerCobradosEnElAparato() // antes de la red, y otra vez al final con la lista nueva
-        val venueDeLaLectura = venueActual()
         val primera = try {
             leerPorPagar(comoBandeja && permisoCobrar(), null, null)
         } catch (e: CancellationException) {
@@ -415,14 +415,9 @@ class OnlineOrdersViewModel internal constructor(
                 Log.d(TAG, "«Por pagar» incompleto: ${falloDePagina.message}")
                 if (falloDePagina is IOException) _sinConexion.value = true else _noSePudoLeer.value = true
             }
-            // R101: «Por pagar» es la fuente del «Cobrar» de un folio: sólo una lectura suya disponible, COMPLETA, del MISMO negocio y
-            // que YA quedó como copia guardada suelta las marcas de folios. Así ninguna copia vieja queda detrás de la marca soltada.
-            if (lista.disponible && falloDePagina == null && lista.copiaGuardada) {
-                soltarMarcasConfirmadas(
-                    venueDeLaLectura, deFolios = true, actual.porPagar + actual.porEntregar,
-                    actual.porPagar.map { it.orderId }.toSet().takeIf { actual.nextCursors.toPay == null },
-                )
-            }
+            // R104: tras guardar la copia, se mira la copia EN DISCO (no esta lista con sus páginas extra) y se sueltan las marcas de
+            // folios que ella ya cuenta.
+            if (lista.disponible && lista.copiaGuardada) soltarMarcasDeFoliosConLaCopia()
             // Codex r2 #3: lo escondido tras una acción se poda en cuanto el SERVIDOR lo trae distinto (o ya no lo trae).
             if (lista.disponible) _ocultos.value = ocultosQueSiguen(_ocultos.value, actual)
         }.onFailure {
@@ -450,21 +445,33 @@ class OnlineOrdersViewModel internal constructor(
         if (seccion == SECCION_POR_PAGAR) lista.nextCursors.toPay else lista.nextCursors.toDeliver
 
     /**
-     * R100: suelta las marcas que una lectura del SERVIDOR ya cuenta, si la lectura es del negocio de ahora (otro negocio nunca suelta
-     * nada). Quien llama garantiza que la lectura fue 2xx y completa.
+     * 🔴 R104, la ÚNICA puerta para soltar la marca de un FOLIO: la copia guardada EN DISCO del negocio de ahora (lo que «Cobrar» usa
+     * sin red) ya cuenta el pago ([tarjetasConfirmadasPorLaCopia]). Corre tras guardar una copia y al abrir la pantalla. Nada en
+     * memoria, ninguna página extra y ninguna Bandeja suelta la marca de un folio.
      */
-    private fun soltarMarcasConfirmadas(
-        venueDeLaLectura: String?,
-        /** R101: la fuente. `true` = «Por pagar» (sólo marcas de folios); `false` = la Bandeja (sólo las de «Mi equipo»). */
-        deFolios: Boolean,
-        vistos: List<OnlineOrder>,
-        porPagarCompleto: Set<String>?,
-    ) {
+    private suspend fun soltarMarcasDeFoliosConLaCopia() {
+        val venue = venueActual() ?: return
+        try {
+            val copia = foliosGuardados() ?: return
+            if (venueActual() != venue) return
+            foliosConTarjeta.olvidar(tarjetasConfirmadasPorLaCopia(foliosConTarjeta.marcas(), venue, copia))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo revisar la copia guardada para soltar marcas: ${e.message}")
+        }
+    }
+
+    /**
+     * R101: la Bandeja es la fuente del «Cobrar» de «Mi equipo» y no tiene copia guardada: su lista en memoria (`_secciones`) cambia en
+     * este mismo paso. Sólo suelta marcas de «Mi equipo» y sólo con una lectura 2xx, completa y del negocio de ahora.
+     */
+    private fun soltarMarcasDeMiEquipo(venueDeLaLectura: String?, vistos: List<OnlineOrder>) {
         val venue = venueDeLaLectura ?: return
         if (venueActual() != venue) return
         try {
-            val deEstaFuente = foliosConTarjeta.marcas().filter { it.esFolio == deFolios }
-            foliosConTarjeta.olvidar(tarjetasConfirmadas(deEstaFuente, venue, vistos, porPagarCompleto))
+            val deMiEquipo = foliosConTarjeta.marcas().filter { !it.esFolio }
+            foliosConTarjeta.olvidar(tarjetasConfirmadas(deMiEquipo, venue, vistos, null))
         } catch (e: Exception) {
             Log.w(TAG, "No se pudieron soltar los cobros con tarjeta ya confirmados: ${e.message}")
         }
@@ -630,7 +637,7 @@ class OnlineOrdersViewModel internal constructor(
             )
             // R101: la Bandeja es la fuente del «Cobrar» de «Mi equipo» (no tiene copia guardada: `_secciones` acaba de cambiar), así
             // que sólo suelta marcas de «Mi equipo». Nunca las de un folio, aunque el folio también salga aquí: su fuente es «Por pagar».
-            if (completa) soltarMarcasConfirmadas(venueDeLaLectura, deFolios = false, ordenes, null)
+            if (completa) soltarMarcasDeMiEquipo(venueDeLaLectura, ordenes)
             _hayMas.value = cursor != null
             _hoyRecortado.value = inbox.truncated
             _sinConexion.value = false
@@ -921,7 +928,24 @@ class OnlineOrdersViewModel internal constructor(
                             _aviso.value = TextosPedidosEnLinea.REINTENTA
                             return@launch
                         }
-                        saldoGuardado
+                        if (folio == null) {
+                            saldoGuardado
+                        } else {
+                            // R104: el saldo de un folio sin red sale SÓLO de la copia guardada, la misma contra la que se sueltan las
+                            // marcas de tarjeta. Si no está ahí (p. ej. vino de una página extra), no se inventa ni se reusa uno.
+                            val enLaCopia = try {
+                                foliosGuardados()?.porPagar?.firstOrNull { it.orderId == orderId }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                null
+                            }
+                            if (enLaCopia == null) {
+                                _aviso.value = TextosPedidosEnLinea.FOLIO_SIN_SALDO_GUARDADO
+                                return@launch
+                            }
+                            enLaCopia.remainingCents
+                        }
                     } else {
                         // El servidor contestó otra cosa (404, 5xx, JSON roto): no se adivina con la bandeja.
                         Log.w(TAG, "Saldo de $orderNumber no leído: ${error.message}")

@@ -104,6 +104,29 @@ fun tarjetasConfirmadas(
 }
 
 /**
+ * 🔴 R104, la ÚNICA regla para soltar la marca de un FOLIO: la copia guardada en disco ([copia], la página 1 de «Por pagar» del
+ * negocio [venueId]; es lo que «Cobrar» usa sin red) ya cuenta el pago. Así la protección y el respaldo sin red no se pueden separar:
+ * - el folio está en su «Por pagar» y lo que falta bajó al menos lo cobrado; o
+ * - ya no está en su «Por pagar» y esa sección vino entera (si quedaban páginas, pudo seguir debiendo en otra).
+ * Nunca la de otro negocio ni una de «Mi equipo» (ésas las suelta la Bandeja). Una de A5 (sin negocio) sólo con el folio a la vista en
+ * la copia. Ninguna lista en memoria, página extra ni Bandeja suelta la marca de un folio. PURA.
+ */
+fun tarjetasConfirmadasPorLaCopia(marcas: List<FolioCobradoConTarjeta>, venueId: String, copia: ListaPorPagar): List<FolioCobradoConTarjeta> {
+    if (!copia.disponible) return emptyList()
+    val porPagar = copia.porPagar.associateBy { it.orderId }
+    val porEntregar = copia.porEntregar.map { it.orderId }.toSet()
+    return marcas.filter { marca ->
+        if (!marca.esFolio || (marca.venueId != null && marca.venueId != venueId)) return@filter false
+        val debe = porPagar[marca.orderId]
+        when {
+            debe != null -> debe.remainingCents <= marca.saldoAntesCents - marca.montoCents
+            marca.venueId == null -> marca.orderId in porEntregar
+            else -> copia.nextCursors.toPay == null
+        }
+    }
+}
+
+/**
  * R100: lo cobrado con tarjeta en ESTE aparato que la lista a la vista ([lista]) todavía no cuenta, por folio de «Por pagar» -> monto.
  * Junta las marcas ([marcas], ya del negocio) y los positivos que siguen en la lista durable de cobros ([positivos], orden -> monto).
  * La pantalla los pasa a «Por entregar» y el número del menú no los cuenta. PURA.

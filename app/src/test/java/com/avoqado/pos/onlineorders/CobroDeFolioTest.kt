@@ -207,6 +207,8 @@ class CobroDeFolioTest {
     fun `sin red abre PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO solo efectivo con lo que falta segun la lista`() = runTest(dispatcher) {
         val conAbono = folio(total = 18500, falta = 8500, pago = "PARTIAL")
         coEvery { repo.saldoDelPedido("f1") } returns Result.failure(IOException("sin red"))
+        // R104: sin red, el saldo sale de la copia guardada (la que el aparato sí tiene en disco).
+        guardada = lista(porPagar = listOf(conAbono))
         val vm = armar()
 
         vm.cobrarFolio(conAbono)
@@ -224,6 +226,7 @@ class CobroDeFolioTest {
         // Decisión 16: lo capturado sin red entra por la cola (`isOfflineReplay`) y el SERVIDOR lo deja en «Por entregar».
         reloj = Instant.parse("2026-11-06T18:45:00Z").toEpochMilli()
         coEvery { repo.saldoDelPedido("f1") } returns Result.failure(IOException("sin red"))
+        guardada = lista(porPagar = listOf(folio()))
         val vm = armar()
 
         vm.cobrarFolio(folio())
@@ -360,6 +363,7 @@ class CobroDeFolioTest {
     @Test
     fun `al cerrar el cobro lo cobrado sin red pasa a Por entregar sin esperar a la red`() = runTest(dispatcher) {
         respuesta = Result.success(lista(porPagar = listOf(folio("f1"))))
+        guardada = respuesta.getOrThrow() // R104: la página 1 queda como copia (así lo hace el repositorio); sin red se cobra de ella
         val vm = armar()
         vm.refrescar()
         coEvery { repo.saldoDelPedido("f1") } returns Result.failure(IOException("sin red"))

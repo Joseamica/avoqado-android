@@ -68,8 +68,27 @@ class FolioCobradoConTarjetaTest {
     private var venue = "venue-1"
 
     private var respuesta: Result<ListaPorPagar> = Result.failure(IOException("sin red"))
-    private var guardada: ListaPorPagar? = null
+
+    /**
+     * La copia guardada de «Por pagar», por negocio, como la deja `OnlineOrdersRepository`: sólo una página 1 disponible que sí se
+     * guardó (`copiaGuardada`) y que no es más vieja que la copia (R102). Es lo que «Cobrar» usa sin red (R104).
+     */
+    private val copias = mutableMapOf<String, ListaPorPagar>()
+    private var guardada: ListaPorPagar?
+        get() = copias[venue]
+        set(v) { if (v == null) copias.remove(venue) else copias[venue] = v }
+
+    private fun leerComoElRepositorio(seccion: String?, cursor: String?, r: Result<ListaPorPagar>): Result<ListaPorPagar> {
+        val lista = r.getOrNull()
+        if (seccion == null && cursor == null && lista != null && lista.disponible && lista.copiaGuardada && !lista.masViejaQueLaCopia) {
+            copias[venue] = lista
+        }
+        return r
+    }
     private var inbox: Result<Inbox> = Result.failure(IOException("sin red"))
+
+    /** Lo que contesta una página extra («Cargar más»). */
+    private var extra: Result<ListaPorPagar> = Result.failure(IOException("sin red"))
 
     private lateinit var servicio: TerminalPaymentService
     private lateinit var marcas: FoliosCobradosConTarjeta
@@ -113,7 +132,7 @@ class FolioCobradoConTarjetaTest {
         hayPedidosAbiertos = { true },
         ventanaALaVista = MutableStateFlow(true),
         efectivoDelPedido = CashPaymentRepository(secureStorage, dao)::efectivoDelPedido,
-        leerPorPagar = { _, _, _ -> respuesta },
+        leerPorPagar = { _, seccion, cursor -> leerComoElRepositorio(seccion, cursor, if (cursor == null) respuesta else extra) },
         foliosGuardados = { guardada },
         foliosConTarjeta = marcas,
         cobrosConTarjeta = servicio::cobrosConTarjetaDelNegocio,
@@ -127,8 +146,10 @@ class FolioCobradoConTarjetaTest {
         totalCents = total, remainingCents = falta, needsPrint = false, items = emptyList(), requiresAcceptance = requiere, channel = "QR",
     )
 
-    private fun lista(porPagar: List<OnlineOrder> = emptyList(), porEntregar: List<OnlineOrder> = emptyList(), cursorPagar: String? = null, disponible: Boolean = true) =
-        ListaPorPagar(disponible, true, 30, ConteosPorPagar(porPagar.size, porEntregar.size), porPagar, porEntregar, CursoresPorPagar(cursorPagar, null))
+    private fun lista(
+        porPagar: List<OnlineOrder> = emptyList(), porEntregar: List<OnlineOrder> = emptyList(), cursorPagar: String? = null,
+        disponible: Boolean = true, cursorEntregar: String? = null,
+    ) = ListaPorPagar(disponible, true, 30, ConteosPorPagar(porPagar.size, porEntregar.size), porPagar, porEntregar, CursoresPorPagar(cursorPagar, cursorEntregar))
 
     private fun bandeja(vararg pedidos: OnlineOrder) =
         Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, pedidos.size, 0, pedidos.toList(), storeOff = false, truncated = false, nextCursor = null))
@@ -326,6 +347,71 @@ class FolioCobradoConTarjetaTest {
         vm.refrescar()
         assertEquals("la lista de memoria no retrocede", listOf("f1"), vm.porPagar.value!!.porPagar.map { it.orderId })
         assertEquals("y la marca se queda", 1, marcas.marcas().size)
+    }
+
+    // MARK: - R104: la ÚNICA regla para soltar la marca de un folio es la copia guardada en disco
+
+    /**
+     * R104 (Codex r6 #1): una página extra de «Por entregar» trae el folio ya pagado, pero la copia guardada (sólo la página 1) sigue
+     * diciendo «Por pagar $134». La marca NO se suelta: si se soltara, al reiniciar sin red se cobraría otra vez.
+     */
+    @Test
+    fun `P1 an extra page bringing the paid folio does not release the marker - a restart offline still blocks`() = runTest(dispatcher) {
+        folioCobradoConTarjeta()
+        respuesta = Result.success(lista(porPagar = listOf(folio()), cursorEntregar = "d1"))
+        val vm = armar()
+        vm.refrescar()
+        extra = Result.success(lista(porEntregar = listOf(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED))))
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_ENTREGAR)
+        advanceUntilIdle()
+        assertTrue("la página extra sí lo trae pagado", vm.porPagar.value!!.porEntregar.any { it.orderId == "f1" })
+        assertEquals("pero la copia guardada sigue con $134: la marca se queda", 1, marcas.marcas().size)
+
+        reiniciar()
+        respuesta = Result.failure(IOException("sin red"))
+        val tras = armar()
+        tras.descubrirPorPagar()
+        tras.cobrarFolio(folio())
+        advanceUntilIdle()
+        assertNull(tras.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, tras.aviso.value)
+    }
+
+    /** R104: la marca se suelta cuando la copia guardada YA cuenta el pago, también al abrir la pantalla. */
+    @Test
+    fun `a saved copy that already counts the payment releases the marker, also on screen open`() = runTest(dispatcher) {
+        folioCobradoConTarjeta()
+        guardada = lista(porEntregar = listOf(folio(falta = 0, status = OnlineOrderStatus.ACCEPTED)))
+        respuesta = Result.failure(IOException("sin red"))
+        armar().descubrirPorPagar()
+        assertTrue("al abrir, la copia en disco ya lo cuenta", marcas.marcas().isEmpty())
+    }
+
+    @Test
+    fun `a saved copy with more unread Por pagar pages proves nothing by absence`() = runTest(dispatcher) {
+        folioCobradoConTarjeta()
+        guardada = lista(porPagar = listOf(folio("f0")), cursorPagar = "c1")
+        respuesta = Result.failure(IOException("sin red"))
+        armar().descubrirPorPagar()
+        assertEquals(1, marcas.marcas().size)
+    }
+
+    /** R104: sin red, el saldo de un folio sale SÓLO de la copia guardada; si no está ahí (vino de una página extra), no se cobra. */
+    @Test
+    fun `P1 a folio only in an extra page cannot be charged offline`() = runTest(dispatcher) {
+        respuesta = Result.success(lista(porPagar = listOf(folio("f0")), cursorPagar = "c1"))
+        val vm = armar()
+        vm.refrescar()
+        extra = Result.success(lista(porPagar = listOf(folio("f2", total = 5000, falta = 5000))))
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_PAGAR)
+        advanceUntilIdle()
+        assertTrue(vm.porPagar.value!!.porPagar.any { it.orderId == "f2" })
+
+        vm.cobrarFolio(folio("f2", total = 5000, falta = 5000)) // saldoDelPedido: sin red
+        advanceUntilIdle()
+        assertNull("no inventa ni reusa un saldo de memoria", vm.cobroAbierto.value)
+        assertEquals("Sin conexión: no se puede confirmar el saldo de este folio.", vm.aviso.value)
+        assertEquals(TextosPedidosEnLinea.FOLIO_SIN_SALDO_GUARDADO, vm.aviso.value)
     }
 
     @Test

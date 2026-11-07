@@ -269,6 +269,26 @@ class CopiaGuardadaDeFoliosTest {
         assertEquals(listOf("f1"), copia.porEntregar.map { it.orderId })
     }
 
+    /**
+     * R104 (Codex r6 #2, regresión de A9): una respuesta que llega a gotas no vence el plazo de LECTURA (cada gota llega a tiempo) y
+     * retenía el candado sin fin. La página 1 lleva un plazo TOTAL: al vencer se cancela, suelta el candado y no se aplica.
+     */
+    @Test
+    fun `a slow-drip to-pay response is cut by the total deadline and the tray reads`() = runBlocking {
+        repo.plazoTotalDePagina1Ms = 1_000
+        val gotas = cuerpo(porPagar = folio("f9", "PENDING_ACCEPTANCE", "99", "PENDING")).throttleBody(16, 250, TimeUnit.MILLISECONDS)
+        retenidas.add(CountDownLatch(0) to gotas)
+        val antes = llegadasToPay.get()
+        val delVigilante = async(Dispatchers.IO) { repo.porPagar(conLatido = false) }
+        esperarLlegadas(antes + 1)
+
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        val deLaBandeja = withTimeout(4_000) { repo.porPagar(conLatido = false).getOrThrow() }
+        assertTrue(deLaBandeja.copiaGuardada)
+        assertTrue("la lectura a gotas venció y no se aplicó", delVigilante.await().isFailure)
+        assertTrue(repo.porPagarGuardado()!!.porPagar.none { it.orderId == "f9" })
+    }
+
     @Test
     fun `reads are applied in order - a later read still replaces an earlier one`() = runBlocking {
         val primera = CountDownLatch(1)

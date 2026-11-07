@@ -99,9 +99,9 @@ class OnlineOrdersRepository @Inject constructor(
      * R103: como [ejecutar], pero la llamada se CANCELA de verdad si la corrutina se cancela (`execute()` dentro de `withContext` seguiría
      * bloqueado hasta su plazo, con el candado de la página 1 tomado). Lo que llega después de cancelar se ignora.
      */
-    private suspend fun ejecutarCancelable(request: Request): Result<String> = try {
+    private suspend fun ejecutarCancelable(request: Request, cliente: OkHttpClient = client): Result<String> = try {
         val (code, body) = kotlinx.coroutines.suspendCancellableCoroutine<Pair<Int, String>> { cont ->
-            val call = client.newCall(request)
+            val call = cliente.newCall(request)
             cont.invokeOnCancellation { call.cancel() }
             call.enqueue(object : okhttp3.Callback {
                 override fun onFailure(call: okhttp3.Call, e: IOException) {
@@ -362,8 +362,19 @@ class OnlineOrdersRepository @Inject constructor(
      */
     suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> =
         // R103: la página 1 se lee ENTERA bajo [lecturaDePagina1]; «Cargar más» (sección y cursor) no la espera.
-        if (seccion != null || cursor != null) leerPorPagar(conLatido, seccion, cursor)
-        else lecturaDePagina1.withLock { leerPorPagar(conLatido, null, null) }
+        if (seccion != null || cursor != null) {
+            leerPorPagar(conLatido, seccion, cursor)
+        } else {
+            lecturaDePagina1.withLock { leerPorPagar(conLatido, null, null) }
+        }
+
+    /**
+     * R104 (Codex r6 #2): el plazo TOTAL de la llamada de la página 1 (`callTimeout`: conectar, esperar y leer TODO el cuerpo). El plazo
+     * de lectura del cliente vale por cada lectura del socket: una respuesta a gotas nunca lo vencía y retenía [lecturaDePagina1] sin
+     * fin. Al vencer, OkHttp corta la llamada, falla como sin red, se suelta el candado y no se aplica. En tiempo real (no el virtual de
+     * las corrutinas de prueba). Las pruebas lo acortan.
+     */
+    internal var plazoTotalDePagina1Ms: Long = 20_000L
 
     /**
      * 🔴 R103 (Codex r5): el número de R102 dice cuándo SALIÓ la petición, no qué tan nueva es la foto del servidor; con dos lecturas a
@@ -382,7 +393,12 @@ class OnlineOrdersRepository @Inject constructor(
             seccion?.let { "section=" + URLEncoder.encode(it, "UTF-8") },
             cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
         ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
-        val leido = ejecutarCancelable(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido))
+        val cliente = if (seccion == null && cursor == null) {
+            client.newBuilder().callTimeout(plazoTotalDePagina1Ms, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+        } else {
+            client
+        }
+        val leido = ejecutarCancelable(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido), cliente)
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
             val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }

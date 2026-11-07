@@ -168,6 +168,8 @@ object TextosPedidosEnLinea {
     const val FOLIO_COBRADO_CON_TARJETA = "Este folio ya se cobró con tarjeta en esta caja."
     // R100: lo mismo para un pedido de «Mi equipo» (vocabulario: «pedido», nunca «folio»). iOS lo copia igual.
     const val PEDIDO_COBRADO_CON_TARJETA = "Este pedido ya se cobró con tarjeta en esta caja."
+    // R104: sin red, el saldo de un folio sólo sale de la copia guardada; si no está ahí, no se cobra. iOS lo copia igual.
+    const val FOLIO_SIN_SALDO_GUARDADO = "Sin conexión: no se puede confirmar el saldo de este folio."
     const val COBRO_CON_TARJETA_AQUI = "Se cobró con tarjeta en esta caja: se actualiza al volver la conexión"
     fun pagadoConTarjeta(monto: String) = "$PAGADO_CON_TARJETA $monto"
 }
