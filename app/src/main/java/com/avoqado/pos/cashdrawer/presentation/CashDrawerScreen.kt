@@ -10,7 +10,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.FlowRowScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -52,8 +57,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
@@ -853,8 +860,30 @@ private fun EmptyDrawerState(onOpenDrawer: () -> Unit) {
     }
 }
 
+/**
+ * Cuatro piezas en una fila, o 2×2 si no caben: en la OrderPAD vertical (~500 dp) y en la tablet vertical
+ * (el panel izquierdo le quita 280 dp) partían la palabra o la cifra («Ingre/so», «$600./00»). Igual que iOS.
+ * 520 dp a tamaño de letra normal deja ~10 dp de aire por botón.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FilaDeCuatro(content: @Composable FlowRowScope.(enDosFilas: Boolean) -> Unit) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val enDosFilas = maxWidth < 520.dp * LocalDensity.current.fontScale
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            maxItemsInEachRow = if (enDosFilas) 2 else 4,
+        ) {
+            content(enDosFilas)
+        }
+    }
+}
+
 // MARK: - Open Drawer Content
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OpenDrawerContent(
     session: CashDrawerSessionEntity,
@@ -925,10 +954,7 @@ private fun OpenDrawerContent(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         // Summary cards row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-        ) {
+        FilaDeCuatro { _ ->
             SummaryCard(
                 label = "Monto inicial",
                 amountCents = session.startingAmountCents,
@@ -957,13 +983,12 @@ private fun OpenDrawerContent(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         // Action buttons
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-        ) {
+        FilaDeCuatro { enDosFilas ->
+            val rellenoDeBoton = PaddingValues(horizontal = AvoqadoTheme.spacing.md)
             Button(
                 onClick = onPayIn,
                 shape = RoundedCornerShape(50),
+                contentPadding = rellenoDeBoton,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -982,12 +1007,15 @@ private fun OpenDrawerContent(
                     text = "Ingreso",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
 
             Button(
                 onClick = onPayOut,
                 shape = RoundedCornerShape(50),
+                contentPadding = rellenoDeBoton,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = MaterialTheme.colorScheme.onSurface,
@@ -1006,6 +1034,8 @@ private fun OpenDrawerContent(
                     text = "Egreso",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
 
@@ -1016,24 +1046,28 @@ private fun OpenDrawerContent(
                 onClick = onPrintPartial,
                 enabled = !isPrintingCorte,
                 shape = RoundedCornerShape(50),
+                contentPadding = rellenoDeBoton,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = MaterialTheme.colorScheme.onSurface,
                 ),
                 modifier = Modifier
-                    .weight(1.4f)
+                    .weight(if (enDosFilas) 1f else 1.4f)
                     .height(44.dp),
             ) {
                 Text(
                     text = if (isPrintingCorte) "Imprimiendo…" else "Corte parcial",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
 
             Button(
                 onClick = onCloseDrawer,
                 shape = RoundedCornerShape(50),
+                contentPadding = rellenoDeBoton,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Error.copy(alpha = 0.1f),
                     contentColor = Error,
@@ -1046,6 +1080,8 @@ private fun OpenDrawerContent(
                     text = "Cerrar caja",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
