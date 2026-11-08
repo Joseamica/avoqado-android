@@ -232,6 +232,102 @@ class Fui5CanceladoEnVueloTest {
         }
     }
 
+    /** Testarudo 8-nov: el mismo histórico, pero el 400 del pago lo dejó RECHAZADO (FAILED) y sin motivo Q15. */
+    private fun historicalFailed(currentDate: Long = 1792853416610L) =
+        historical(currentDate).copy(syncStatus = "FAILED", q15Reason = null)
+
+    @Test fun `TESTARUDO historico FAILED reescrito consulta el folio de la captura y se revisa igual que EN_VUELO`() = runBlocking {
+        val row = historicalFailed()
+        assertNotNull(RevisionCanceladoCero.evidencia(row, response(external = key)))
+        assertTrue(RevisionCanceladoCero.revisado(reviewed(row, response(external = key))))
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            f.prepare(row); f.realReaders()
+            val before = f.row(key)
+            assertEquals(listOf(key), f.dao.getFailedPayments().map { it.id })
+            val calls = f.respond(key) { MockResponse().setBody(response(external = key)) }
+            val proposal = f.proposal()
+            assertEquals(1, calls.get()); assertEquals(before, f.row(key))
+            assertTrue(f.service.confirmarRevisionCancelada(proposal)); assertEquals(2, calls.get())
+            f.reopen(); val after = f.row(key)
+            for (field in listOf("id", "venueId", "syncStatus", "orderId", "orderRequestJson", "q15CaptureJson", "createdAt", "capturedOrderRef", "lastError", "retryCount"))
+                assertEquals(field, before[field], after[field])
+            assertEquals("FAILED", after["syncStatus"])
+            assertTrue(RevisionCanceladoCero.revisado(f.decode(after)))
+            assertTrue(f.dao.getFailedPayments().isEmpty()); assertEquals(0, f.dao.getFailedCount().first())
+            assertEquals(0, f.query("SELECT * FROM pending_payments WHERE syncStatus='PENDING'").size)
+        }
+    }
+
+    @Test fun `TESTARUDO historico FAILED reescrito exige los mismos vinculos y pruebas que EN_VUELO`() {
+        val row = historicalFailed()
+        fun current(field: String, value: Any?) = JSONObject(row.orderRequestJson!!).put(field, value ?: JSONObject.NULL).toString()
+        fun captureBody(field: String, value: Any?): String = JSONObject(row.q15CaptureJson!!).apply {
+            put("orderRequestJson", JSONObject(getString("orderRequestJson")).put(field, value ?: JSONObject.NULL).toString())
+        }.toString()
+        val invalidRows = listOf(
+            row.copy(orderId = null), row.copy(orderId = " "), row.copy(orderId = "otra-orden"),
+            row.copy(capturedOrderRef = null), row.copy(capturedOrderRef = "otra-ref"),
+            row.copy(q15CaptureJson = null), row.copy(q15CaptureJson = "{}"),
+            row.copy(q15CaptureJson = JSONObject(row.q15CaptureJson!!).put("amountCents", 1).toString()),
+            row.copy(q15CaptureJson = captureBody("externalId", "otra-identidad")),
+            row.copy(orderRequestJson = current("externalId", "offline-order:otra-llave")),
+            row.copy(orderRequestJson = current("total", 1)), row.copy(orderRequestJson = current("staffId", "otro-staff")),
+            row.copy(createdAt = 1792853416611L), row.copy(method = "CARD"), row.copy(tenderTypeId = "vale", tenderRevision = 1),
+            row.copy(amountCents = 1), row.copy(tipCents = 1), row.copy(paymentType = "FAST"),
+        )
+        for (bad in invalidRows) {
+            assertNull(bad.toString(), RevisionCanceladoCero.evidencia(bad, response(external = key)))
+            assertFalse(bad.toString(), RevisionCanceladoCero.revisado(reviewed(bad, response(external = key))))
+        }
+        // Ya revisado: no se vuelve a pedir prueba (la revisión guardada sí sigue válida).
+        assertNull(RevisionCanceladoCero.evidencia(row.copy(q15ReviewedAt = 10), response(external = key)))
+        for (bad in listOf(response(external = "offline-order:$key"), response(orderId = "otra-orden", external = key),
+            response(payment = true, external = key), response(terminal = true, external = key),
+            response(external = key).replace("CANCELLED", "CONFIRMED"))) {
+            assertNull(bad, RevisionCanceladoCero.evidencia(row, bad))
+            assertFalse(bad, RevisionCanceladoCero.revisado(reviewed(row, bad)))
+        }
+        // Un FAILED con su cuerpo sin reescribir sigue preguntando por el externalId del cuerpo, como hoy.
+        val direct = original().copy(syncStatus = "FAILED", q15Reason = null)
+        assertNotNull(RevisionCanceladoCero.evidencia(direct, response()))
+        // Codex r1: el pre-Q15 nació con offline-order:<llave> y SIN captura; se sigue revisando por ese texto, y su
+        // revisión ya guardada no se reabre.
+        val prefixed = "offline-order:$key"
+        val preQ15 = original(orderId = "orden-cancelada").copy(syncStatus = "FAILED", q15Reason = null, q15CaptureJson = null,
+            orderRequestJson = JSONObject(body).put("externalId", prefixed).toString())
+        assertEquals(prefixed, RevisionCanceladoCero.externalId(preQ15))
+        assertNotNull(RevisionCanceladoCero.evidencia(preQ15, response(external = prefixed)))
+        assertTrue(RevisionCanceladoCero.revisado(reviewed(preQ15, response(external = prefixed))))
+        assertNull(RevisionCanceladoCero.evidencia(preQ15, response(external = key)))
+        // Codex r2: captura ausente o incompatible ⇒ vuelve al folio directo y su prueba válida sigue sirviendo.
+        for (partial in listOf(row.copy(q15CaptureJson = null), row.copy(q15CaptureJson = "{}"),
+            row.copy(q15CaptureJson = captureBody("externalId", "otra-identidad")))) {
+            assertEquals(prefixed, RevisionCanceladoCero.externalId(partial))
+            assertNotNull(partial.toString(), RevisionCanceladoCero.evidencia(partial, response(external = prefixed)))
+            assertTrue(partial.toString(), RevisionCanceladoCero.revisado(reviewed(partial, response(external = prefixed))))
+        }
+    }
+
+    @Test fun `TESTARUDO historico FAILED segunda consulta distinta o fila cambiada nunca guarda revision`() = runBlocking {
+        for (kind in listOf("order", "payment", "terminal", "status", "capture", "body", "role")) Q16PrecioCapturadoTest.Fixture().use { f ->
+            f.prepare(historicalFailed())
+            val calls = f.respond(key) { n ->
+                if (n == 2) when (kind) {
+                    "status" -> f.sql("UPDATE pending_payments SET syncStatus='PENDING' WHERE id=:id", mapOf("id" to key))
+                    "capture" -> f.sql("UPDATE pending_payments SET q15CaptureJson='{}' WHERE id=:id", mapOf("id" to key))
+                    "body" -> f.sql("UPDATE pending_payments SET orderRequestJson='{}' WHERE id=:id", mapOf("id" to key))
+                    "role" -> every { f.storage.userRole } returns "CASHIER"
+                }
+                MockResponse().setBody(response(external = key, orderId = if (n == 2 && kind == "order") "otra-orden" else "orden-cancelada",
+                    payment = n == 2 && kind == "payment", terminal = n == 2 && kind == "terminal"))
+            }
+            val proposal = f.proposal()
+            assertFalse(kind, f.service.confirmarRevisionCancelada(proposal))
+            assertTrue(kind, calls.get() <= 2)
+            assertNull(kind, f.row(key)["q15ReviewedAt"])
+        }
+    }
+
     @Test fun `FUI5 segunda consulta distinta pago TPR contexto o CAS cambiado nunca guarda revision`() = runBlocking {
         for (kind in listOf("order", "payment", "terminal", "actor", "role", "venue", "epoch", "status", "capture", "reason", "body", "method", "tender"))
             Q16PrecioCapturadoTest.Fixture().use { f ->
