@@ -39,6 +39,12 @@ import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
+/**
+ * Al editar, un límite vacío se manda como `null` y quita el límite. Por eso el campo sólo deja dígitos y un largo que
+ * cabe en un Int: lo que no se pudiera leer como número también daría `null` y borraría el límite en silencio.
+ */
+internal fun soloDigitosDeLimite(texto: String): String = texto.filter(Char::isDigit).take(9)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CouponFormSheet(
@@ -188,7 +194,7 @@ fun CouponFormSheet(
                 )
                 OutlinedTextField(
                     value = maxUses,
-                    onValueChange = { maxUses = it },
+                    onValueChange = { maxUses = soloDigitosDeLimite(it) },
                     label = { Text("Usos totales") },
                     placeholder = { Text("Ilimitado") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -197,7 +203,7 @@ fun CouponFormSheet(
                 )
                 OutlinedTextField(
                     value = maxUsesPerCustomer,
-                    onValueChange = { maxUsesPerCustomer = it },
+                    onValueChange = { maxUsesPerCustomer = soloDigitosDeLimite(it) },
                     label = { Text("Usos por cliente") },
                     placeholder = { Text("Ilimitado") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
