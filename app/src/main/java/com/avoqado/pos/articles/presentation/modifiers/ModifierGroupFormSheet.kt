@@ -39,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -133,9 +134,10 @@ fun ModifierGroupFormSheet(
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
             val handle: (Boolean) -> Unit = { ok ->
-                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+                if (ok) onDismiss() else saveError = viewModel.errorMessage.value ?: "No se pudo guardar. Intenta de nuevo."
             }
             if (isEditing) {
+                val filas = modifiers.toList()
                 viewModel.updateModifierGroup(
                     groupId = group!!.id,
                     name = groupName,
@@ -144,13 +146,18 @@ fun ModifierGroupFormSheet(
                     minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
                     maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
                     originalModifiers = group.modifiers ?: emptyList(),
-                    currentModifiers = modifiers.map {
+                    currentModifiers = filas.map {
                         ArticlesViewModel.InlineModifier(
                             id = it.id,
                             name = it.name,
                             price = it.price.toDoubleOrNull() ?: 0.0,
                             isDeleted = it.isDeleted,
                         )
+                    },
+                    onModificadorCreado = { indice, id ->
+                        // Por llave: mientras guarda, quitar una fila nueva recorre las posiciones de las demás.
+                        val fila = modifiers.indexOfFirst { it.key == filas[indice].key }
+                        if (fila >= 0) modifiers[fila] = modifiers[fila].copy(id = id)
                     },
                     onResult = handle,
                 )
@@ -219,7 +226,7 @@ fun ModifierGroupFormSheet(
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                     OutlinedTextField(
                         value = maxSelections,
-                        onValueChange = { maxSelections = it },
+                        onValueChange = { maxSelections = soloDigitosDeLimite(it, maxSelections) },
                         label = { Text("Max") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,

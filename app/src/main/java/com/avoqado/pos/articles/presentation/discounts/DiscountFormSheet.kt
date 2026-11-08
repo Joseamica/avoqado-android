@@ -104,7 +104,7 @@ fun DiscountFormSheet(
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
             val handle: (Boolean) -> Unit = { ok ->
-                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+                if (ok) onDismiss() else saveError = viewModel.errorMessage.value ?: "No se pudo guardar. Intenta de nuevo."
             }
             val resolvedValue = if (type == DiscountType.COMP) {
                 100.0

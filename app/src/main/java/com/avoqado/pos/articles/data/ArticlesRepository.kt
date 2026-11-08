@@ -24,6 +24,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -233,7 +236,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createProduct exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear producto"
+            _errorMessage.value = motivoDelFallo(e, "Error al crear producto")
             false
         }
     }
@@ -259,7 +262,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateProduct exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar producto"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar producto")
             false
         }
     }
@@ -333,19 +336,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Category created")
                 fetchCategories()
                 true
             } else {
                 Log.e(TAG, "❌ createCategory error: HTTP $code")
-                _errorMessage.value = "Error al crear categoría"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear categoría")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCategory exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear categoría"
+            _errorMessage.value = motivoDelFallo(e, "Error al crear categoría")
             false
         }
     }
@@ -359,19 +362,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Category $categoryId updated")
                 fetchCategories()
                 true
             } else {
                 Log.e(TAG, "❌ updateCategory error: HTTP $code")
-                _errorMessage.value = "Error al actualizar categoría"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar categoría")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCategory exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar categoría"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar categoría")
             false
         }
     }
@@ -444,19 +447,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier group created")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ createModifierGroup error: HTTP $code")
-                _errorMessage.value = "Error al crear grupo de modificadores"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear grupo de modificadores")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createModifierGroup exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear grupo de modificadores"
+            _errorMessage.value = motivoDelFallo(e, "Error al crear grupo de modificadores")
             false
         }
     }
@@ -470,19 +473,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier group $groupId updated")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ updateModifierGroup error: HTTP $code")
-                _errorMessage.value = "Error al actualizar grupo de modificadores"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar grupo de modificadores")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateModifierGroup exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar grupo de modificadores"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar grupo de modificadores")
             false
         }
     }
@@ -514,31 +517,48 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Individual Modifiers
 
-    suspend fun addModifierToGroup(groupId: String, payload: String): Boolean {
-        val url = modifierBaseUrl() ?: return false
-        return try {
+    /**
+     * Devuelve el id que le dio el servidor al modificador; `null` si no se creó o no se puede confirmar (el motivo queda
+     * en [errorMessage]).
+     */
+    suspend fun addModifierToGroup(groupId: String, payload: String): String? {
+        val url = modifierBaseUrl() ?: return null
+        var idCreado: String? = null
+        val aceptado = try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
                 .url("$url/modifier-groups/$groupId/modifiers")
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier added to group $groupId")
                 fetchModifierGroups()
-                true
+                idCreado = idEnLaRespuesta(responseBody)
+                if (idCreado == null) {
+                    // Un 2xx sin id casi siempre es un portal de WiFi o un proxy, no nuestra API. Si fuera nuestra, ya se
+                    // creó: la persona tiene que revisarlo antes de reintentar, y no se sigue con los demás pasos.
+                    _errorMessage.value =
+                        "No pudimos confirmar si se agregó el modificador. Cierra y vuelve a abrir el grupo para revisarlo antes de guardar de nuevo."
+                }
+                idCreado != null
             } else {
                 Log.e(TAG, "❌ addModifierToGroup error: HTTP $code")
-                _errorMessage.value = "Error al agregar modificador"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al agregar modificador")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ addModifierToGroup exception: ${e.message}", e)
-            _errorMessage.value = "Error al agregar modificador"
+            _errorMessage.value = motivoDelFallo(e, "Error al agregar modificador")
             false
         }
+        return idCreado.takeIf { aceptado }
     }
+
+    private fun idEnLaRespuesta(body: String): String? = runCatching {
+        ((json.parseToJsonElement(body) as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     suspend fun updateModifier(groupId: String, modifierId: String, payload: String): Boolean {
         val url = modifierBaseUrl() ?: return false
@@ -549,19 +569,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier $modifierId updated in group $groupId")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ updateModifier error: HTTP $code")
-                _errorMessage.value = "Error al actualizar modificador"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar modificador")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateModifier exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar modificador"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar modificador")
             false
         }
     }
@@ -574,19 +594,19 @@ class ArticlesRepository @Inject constructor(
                 .delete()
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier $modifierId deleted from group $groupId")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ deleteModifier error: HTTP $code")
-                _errorMessage.value = "Error al eliminar modificador"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al eliminar modificador")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ deleteModifier exception: ${e.message}", e)
-            _errorMessage.value = "Error al eliminar modificador"
+            _errorMessage.value = motivoDelFallo(e, "Error al eliminar modificador")
             false
         }
     }
@@ -634,19 +654,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Discount created")
                 fetchDiscounts()
                 true
             } else {
                 Log.e(TAG, "❌ createDiscount error: HTTP $code")
-                _errorMessage.value = "Error al crear descuento"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear descuento")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createDiscount exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear descuento"
+            _errorMessage.value = motivoDelFallo(e, "Error al crear descuento")
             false
         }
     }
@@ -660,19 +680,19 @@ class ArticlesRepository @Inject constructor(
                 .put(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Discount $discountId updated")
                 fetchDiscounts()
                 true
             } else {
                 Log.e(TAG, "❌ updateDiscount error: HTTP $code")
-                _errorMessage.value = "Error al actualizar descuento"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar descuento")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateDiscount exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar descuento"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar descuento")
             false
         }
     }
@@ -745,19 +765,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Coupon created")
                 fetchCoupons()
                 true
             } else {
                 Log.e(TAG, "❌ createCoupon error: HTTP $code")
-                _errorMessage.value = "Error al crear cupón"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear cupón")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCoupon exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear cupón"
+            _errorMessage.value = motivoDelFallo(e, "Error al crear cupón")
             false
         }
     }
@@ -771,19 +791,19 @@ class ArticlesRepository @Inject constructor(
                 .put(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Coupon $couponId updated")
                 fetchCoupons()
                 true
             } else {
                 Log.e(TAG, "❌ updateCoupon error: HTTP $code")
-                _errorMessage.value = "Error al actualizar cupón"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar cupón")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCoupon exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar cupón"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar cupón")
             false
         }
     }
@@ -862,19 +882,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Credit pack created")
                 fetchCreditPacks()
                 true
             } else {
                 Log.e(TAG, "❌ createCreditPack error: HTTP $code")
-                _errorMessage.value = "Error al crear paquete de crédito"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear paquete de crédito")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCreditPack exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear paquete de crédito"
+            _errorMessage.value = motivoDelFallo(e, "Error al crear paquete de crédito")
             false
         }
     }
@@ -888,19 +908,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Credit pack $packId updated")
                 fetchCreditPacks()
                 true
             } else {
                 Log.e(TAG, "❌ updateCreditPack error: HTTP $code")
-                _errorMessage.value = "Error al actualizar paquete de crédito"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar paquete de crédito")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCreditPack exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar paquete de crédito"
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar paquete de crédito")
             false
         }
     }
@@ -1013,6 +1033,10 @@ class ArticlesRepository @Inject constructor(
             RespuestaDeEntrega(null, null)
         }
     }
+
+    /** Lo que dice la hoja si el guardado no llegó a tener respuesta: un fallo de red se dice como tal, y lo demás nunca enseña el texto técnico de la excepción. */
+    private fun motivoDelFallo(e: Exception, respaldo: String): String =
+        if (ServerErrorText.isOffline(e)) ServerErrorText.humanize(e, respaldo) else respaldo
 
     private fun mensajeDelServidor(body: String): String? = runCatching {
         (json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)?.get("message")
