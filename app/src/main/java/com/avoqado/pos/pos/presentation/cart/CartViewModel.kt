@@ -837,6 +837,11 @@ class CartViewModel @Inject constructor(
     fun hayConexionConAvoqado(): Boolean =
         connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
 
+    /** La misma pregunta, para volver a leer en cuanto cambia (los sellos del cliente al regresar la red). */
+    val conexionConAvoqado: kotlinx.coroutines.flow.Flow<Boolean> =
+        connectivityMonitor?.let { combine(it.isConnected, it.isServerReachable) { red, servidor -> red && servidor } }
+            ?: kotlinx.coroutines.flow.flowOf(true)
+
     /** Aviso de vales (rojo, no el de impuesto): un candado de D5 o del rediseño r7 que el cajero tiene que leer. */
     private val _avisoDeVales = MutableStateFlow<String?>(null)
     val avisoDeVales: StateFlow<String?> = _avisoDeVales.asStateFlow()
