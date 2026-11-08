@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -51,6 +52,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -866,7 +868,7 @@ private fun MainScaffold(
                                     }
                                 }
                             },
-                            label = { Text(tab.shortLabel) },
+                            label = { EtiquetaDePestana(tab.shortLabel) },
                         )
                     }
                 }
@@ -1294,6 +1296,24 @@ private fun TabBarItem(
             )
         }
     }
+}
+
+/**
+ * Un solo renglón en la barra de abajo: en pantalla angosta o con letra grande se achica lo justo,
+ * en vez de partir «Inventari/o» o cortarlo con «…».
+ */
+@Composable
+private fun EtiquetaDePestana(texto: String) {
+    // ponytail: sólo se achica; si la ventana de WINDOWS crece, se queda chica hasta reabrir la pantalla.
+    var escala by remember(texto) { mutableFloatStateOf(1f) }
+    val estilo = LocalTextStyle.current
+    Text(
+        text = texto,
+        style = estilo.copy(fontSize = estilo.fontSize * escala),
+        maxLines = 1,
+        softWrap = false,
+        onTextLayout = { if (it.didOverflowWidth && escala > 0.7f) escala -= 0.05f },
+    )
 }
 
 private const val EXCHANGE_ROUTE = "exchange"
