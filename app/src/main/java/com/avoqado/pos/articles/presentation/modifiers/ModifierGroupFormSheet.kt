@@ -39,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -219,7 +220,7 @@ fun ModifierGroupFormSheet(
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                     OutlinedTextField(
                         value = maxSelections,
-                        onValueChange = { maxSelections = it },
+                        onValueChange = { maxSelections = soloDigitosDeLimite(it) },
                         label = { Text("Max") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,

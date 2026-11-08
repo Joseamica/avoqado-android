@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -205,7 +206,7 @@ fun CreditPackFormSheet(
                 )
                 OutlinedTextField(
                     value = maxPerCustomer,
-                    onValueChange = { maxPerCustomer = it },
+                    onValueChange = { maxPerCustomer = soloDigitosDeLimite(it) },
                     label = { Text("Max por cliente") },
                     placeholder = { Text("Ilimitado") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

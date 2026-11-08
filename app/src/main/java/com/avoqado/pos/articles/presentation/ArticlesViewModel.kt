@@ -438,7 +438,9 @@ class ArticlesViewModel @Inject constructor(
                     put("required", required)
                     put("allowMultiple", allowMultiple)
                     if (minSelections != null) put("minSelections", minSelections)
-                    if (maxSelections != null) put("maxSelections", maxSelections)
+                    // Con selección múltiple, vacío = sin máximo: va `null` explícito porque, sin el campo, el servidor deja
+                    // el máximo que tenía. Sin selección múltiple el campo ni se ve: ahí `null` no es «lo vació alguien».
+                    if (allowMultiple) put("maxSelections", maxSelections)
                 }.toString()
                 if (!repository.updateModifierGroup(groupId, groupPayload)) {
                     // Rechazado: el repositorio ya dejó el motivo del servidor. No se toca ningún modificador, para que
@@ -785,7 +787,8 @@ class ArticlesViewModel @Inject constructor(
                     if (description != null) put("description", description)
                     put("price", price)
                     if (validityDays != null) put("validityDays", validityDays)
-                    if (maxPerCustomer != null) put("maxPerCustomer", maxPerCustomer)
+                    // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
+                    put("maxPerCustomer", maxPerCustomer)
                     put("active", active)
                     putJsonArray("items") {
                         filteredItems.forEach { item ->
