@@ -21,10 +21,21 @@ internal object RevisionCanceladoCero {
         if (row.paymentType != "ORDER" || row.amountCents != 0 || row.tipCents != 0 ||
             row.id.isBlank() || row.venueId.isBlank() || row.orderId?.isBlank() == true) return null
         val body = objeto(row.orderRequestJson) ?: return null
-        if (row.syncStatus == "FAILED") return body.texto("externalId")
+        if (row.syncStatus == "FAILED") {
+            val direct = body.texto("externalId")
+            // Testarudo 8-nov: un «Reintentar» viejo reescribió el cuerpo a offline-order:<llave> y el 400 lo dejó FAILED.
+            // Sólo con la huella estricta completa se pregunta por el folio de la captura; si no, como siempre (Codex r1:
+            // los pre-Q15 nacieron con ese prefijo y sin captura, y su revisión ya guardada no debe reabrirse).
+            if (direct != "offline-order:${row.id}" || (row.q15Reason != null && row.q15Reason != MOTIVO) ||
+                row.method != "CASH" || row.tenderTypeId != null || row.tenderRevision != null) return direct
+            return historicoEstricto(row, body) ?: direct
+        }
         if (row.syncStatus != "EN_VUELO" ||
             (row.q15Reason != ConciliacionDelCobro.RESULTADO_NO_COMPROBADO && row.q15Reason != MOTIVO) ||
             row.method != "CASH" || row.tenderTypeId != null || row.tenderRevision != null) return null
+        return historicoEstricto(row, body)
+    }
+    private fun historicoEstricto(row: PendingPaymentEntity, body: JsonObject): String? {
         val capture = ConciliacionDelCobro.leerCaptura(row.q15CaptureJson, row.venueId, row.id) ?: return null
         if (objeto(ConciliacionDelCobro.guardarCaptura(capture)) != objeto(row.q15CaptureJson) ||
             capture.amountCents != 0 || capture.tipCents != 0 || capture.method != "CASH" ||
