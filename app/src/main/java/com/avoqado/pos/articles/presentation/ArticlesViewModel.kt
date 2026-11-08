@@ -278,7 +278,7 @@ class ArticlesViewModel @Inject constructor(
         abiertaSinConexion: Boolean = false,
         onResult: (Boolean) -> Unit = {},
     ) {
-        if (abiertaSinConexion) { onResult(false); return } // r2 R2-14: la ficha trae datos viejos
+        if (abiertaSinConexion) { repository.clearError(); onResult(false); return } // r2 R2-14: la ficha trae datos viejos (sin motivo viejo: la hoja lee errorMessage)
         viewModelScope.launch {
             _isSaving.value = true
             try {
@@ -336,6 +336,7 @@ class ArticlesViewModel @Inject constructor(
                     if (description != null) put("description", description)
                     if (color != null) put("color", color)
                 }.toString()
+                repository.clearError()
                 val success = repository.createCategory(payload)
                 Log.d(TAG, if (success) "✅ Category created" else "❌ Category creation failed")
                 onResult(success)
@@ -360,6 +361,7 @@ class ArticlesViewModel @Inject constructor(
                     if (description != null) put("description", description)
                     if (color != null) put("color", color)
                 }.toString()
+                repository.clearError()
                 val success = repository.updateCategory(categoryId, payload)
                 Log.d(TAG, if (success) "✅ Category $categoryId updated" else "❌ Category update failed")
                 onResult(success)
@@ -404,6 +406,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.createModifierGroup(payload)
                 Log.d(TAG, if (success) "✅ Modifier group created" else "❌ Modifier group creation failed")
                 onResult(success)
@@ -426,7 +429,9 @@ class ArticlesViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             _isSaving.value = true
+            val respaldo = "No se pudo guardar el grupo de modificadores. Intenta de nuevo."
             try {
+                repository.clearError()
                 // PATCH group metadata
                 val groupPayload = buildJsonObject {
                     put("name", name)
@@ -435,7 +440,15 @@ class ArticlesViewModel @Inject constructor(
                     if (minSelections != null) put("minSelections", minSelections)
                     if (maxSelections != null) put("maxSelections", maxSelections)
                 }.toString()
-                repository.updateModifierGroup(groupId, groupPayload)
+                if (!repository.updateModifierGroup(groupId, groupPayload)) {
+                    // Rechazado: el repositorio ya dejó el motivo del servidor. No se toca ningún modificador, para que
+                    // reintentar no duplique los nuevos ni borre dos veces los quitados.
+                    if (repository.errorMessage.value.isNullOrBlank()) {
+                        repository.setError(respaldo)
+                    }
+                    onResult(false)
+                    return@launch
+                }
 
                 // DELETE removed modifiers (exist in original but not in current)
                 val currentIds = currentModifiers.mapNotNull { it.id }.toSet()
@@ -469,7 +482,9 @@ class ArticlesViewModel @Inject constructor(
                 onResult(true)
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Modifier group update failed: ${e.message}")
-                repository.setError("No se pudo guardar el grupo de modificadores. Intenta de nuevo.")
+                if (repository.errorMessage.value.isNullOrBlank()) {
+                    repository.setError(respaldo)
+                }
                 onResult(false)
             } finally {
                 _isSaving.value = false
@@ -735,6 +750,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.createCreditPack(payload)
                 Log.d(TAG, if (success) "✅ Credit pack created" else "❌ Credit pack creation failed")
                 onResult(success)
@@ -775,6 +791,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.updateCreditPack(packId, payload)
                 Log.d(TAG, if (success) "✅ Credit pack $packId updated" else "❌ Credit pack update failed")
                 onResult(success)

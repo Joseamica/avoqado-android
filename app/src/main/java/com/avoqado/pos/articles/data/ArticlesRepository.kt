@@ -233,7 +233,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createProduct exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear producto"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear producto")
             false
         }
     }
@@ -259,7 +259,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateProduct exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar producto"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar producto")
             false
         }
     }
@@ -333,19 +333,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Category created")
                 fetchCategories()
                 true
             } else {
                 Log.e(TAG, "❌ createCategory error: HTTP $code")
-                _errorMessage.value = "Error al crear categoría"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear categoría")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCategory exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear categoría"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear categoría")
             false
         }
     }
@@ -359,19 +359,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Category $categoryId updated")
                 fetchCategories()
                 true
             } else {
                 Log.e(TAG, "❌ updateCategory error: HTTP $code")
-                _errorMessage.value = "Error al actualizar categoría"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar categoría")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCategory exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar categoría"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar categoría")
             false
         }
     }
@@ -444,19 +444,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier group created")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ createModifierGroup error: HTTP $code")
-                _errorMessage.value = "Error al crear grupo de modificadores"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear grupo de modificadores")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createModifierGroup exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear grupo de modificadores"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear grupo de modificadores")
             false
         }
     }
@@ -470,19 +470,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier group $groupId updated")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ updateModifierGroup error: HTTP $code")
-                _errorMessage.value = "Error al actualizar grupo de modificadores"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar grupo de modificadores")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateModifierGroup exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar grupo de modificadores"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar grupo de modificadores")
             false
         }
     }
@@ -862,19 +862,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Credit pack created")
                 fetchCreditPacks()
                 true
             } else {
                 Log.e(TAG, "❌ createCreditPack error: HTTP $code")
-                _errorMessage.value = "Error al crear paquete de crédito"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear paquete de crédito")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCreditPack exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear paquete de crédito"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear paquete de crédito")
             false
         }
     }
@@ -888,19 +888,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Credit pack $packId updated")
                 fetchCreditPacks()
                 true
             } else {
                 Log.e(TAG, "❌ updateCreditPack error: HTTP $code")
-                _errorMessage.value = "Error al actualizar paquete de crédito"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar paquete de crédito")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCreditPack exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar paquete de crédito"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar paquete de crédito")
             false
         }
     }
