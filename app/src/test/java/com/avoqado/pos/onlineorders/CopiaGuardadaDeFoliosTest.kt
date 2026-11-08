@@ -13,6 +13,7 @@ import com.avoqado.pos.onlineorders.presentation.yaEstaListo
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import java.net.InetAddress
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -101,11 +102,15 @@ class CopiaGuardadaDeFoliosTest {
                 else -> MockResponse().setResponseCode(404)
             }
         }
-        server.start()
+        server.start(InetAddress.getByName("127.0.0.1"), 0)
         System.setProperty("avoqado.test.baseUrl", server.url("/api/v1").toString().trimEnd('/'))
         every { secureStorage.venueId } returns "v1"
         every { secureStorage.accessToken } returns "tok"
-        repo = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).retryOnConnectionFailure(false).build(), cache)
+        // Tras cancelar, OkHttp puede intentar la otra dirección de localhost, donde este servidor no escucha.
+        repo = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).retryOnConnectionFailure(false)
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String) = listOf(InetAddress.getByName("127.0.0.1"))
+            }).build(), cache)
     }
 
     @After fun apagar() {
