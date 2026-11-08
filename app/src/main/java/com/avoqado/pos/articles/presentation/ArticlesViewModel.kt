@@ -425,6 +425,7 @@ class ArticlesViewModel @Inject constructor(
         maxSelections: Int? = null,
         originalModifiers: List<ArticleModifier>,
         currentModifiers: List<InlineModifier>,
+        onModificadorCreado: (indice: Int, id: String) -> Unit = { _, _ -> },
         onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
@@ -442,7 +443,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 // Se detiene en el primer paso rechazado: el repositorio ya dejó el motivo y la hoja se queda abierta.
                 val guardado = repository.updateModifierGroup(groupId, groupPayload) &&
-                    guardarModificadores(groupId, originalModifiers, currentModifiers)
+                    guardarModificadores(groupId, originalModifiers, currentModifiers, onModificadorCreado)
                 if (!guardado && repository.errorMessage.value.isNullOrBlank()) {
                     repository.setError(respaldo)
                 }
@@ -463,14 +464,16 @@ class ArticlesViewModel @Inject constructor(
     /**
      * Aplica la hoja a los modificadores del grupo, paso por paso, y devuelve false en el primero que se rechace.
      *
-     * Al fallar, la hoja conserva su lista vieja, así que un reintento se salta lo que ya quedó según la lista del
-     * repositorio, que acaba de refrescar el PATCH del grupo. El cambio se calcula siempre contra [originalModifiers]:
-     * lo que esté en esa lista y no en la hoja pudo agregarlo otro aparato, y no se borra.
+     * Cada alta le avisa a la hoja el id que recibió, con su índice en [currentModifiers], antes del siguiente paso: en un
+     * reintento esa fila ya trae `id` y va por PATCH. Los borrados se saltan los que ya no existen en la lista del
+     * repositorio, que acaba de refrescar el PATCH del grupo, y se calculan contra [originalModifiers]: lo que esté en esa
+     * lista y no en la hoja pudo agregarlo otro aparato, y no se borra.
      */
     private suspend fun guardarModificadores(
         groupId: String,
         originalModifiers: List<ArticleModifier>,
         currentModifiers: List<InlineModifier>,
+        onModificadorCreado: (indice: Int, id: String) -> Unit,
     ): Boolean {
         val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
         val idsVivos = vivos.map { it.id }.toSet()
@@ -483,27 +486,20 @@ class ArticlesViewModel @Inject constructor(
             }
         }
 
-        // Los que creó un intento anterior. Cada uno se usa una sola vez: dos nuevos con el mismo nombre son dos.
-        // ponytail: se reconocen por nombre; si entre intentos renombran o quitan el nuevo, el ya creado se queda. Si
-        // llega a pasar, que la hoja adopte los ids tras un fallo.
-        val idsOriginales = originalModifiers.map { it.id }.toSet()
-        val creadosAntes = vivos.filter { it.id !in idsOriginales }.toMutableList()
-
-        for (modifier in currentModifiers) {
+        for ((indice, modifier) in currentModifiers.withIndex()) {
             if (modifier.isDeleted) continue
 
             val payload = buildJsonObject {
                 put("name", modifier.name)
                 put("price", modifier.price)
             }.toString()
-            // Uno ya creado se trata como existente (PATCH, idempotente): si le cambiaron el precio, también llega.
-            val id = modifier.id ?: creadosAntes.firstOrNull { it.name == modifier.name }?.also { creadosAntes.remove(it) }?.id
-            val aplicado = if (id != null) {
-                repository.updateModifier(groupId, id, payload)
+            if (modifier.id != null) {
+                if (!repository.updateModifier(groupId, modifier.id, payload)) return false
             } else {
-                repository.addModifierToGroup(groupId, payload)
+                // Si el POST llegó y se perdió la respuesta, el reintento puede duplicar: esta ruta no tiene llave de idempotencia.
+                val idCreado = repository.addModifierToGroup(groupId, payload) ?: return false
+                onModificadorCreado(indice, idCreado)
             }
-            if (!aplicado) return false
         }
         return true
     }

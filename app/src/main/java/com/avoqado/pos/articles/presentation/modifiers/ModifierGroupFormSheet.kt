@@ -136,6 +136,7 @@ fun ModifierGroupFormSheet(
                 if (ok) onDismiss() else saveError = viewModel.errorMessage.value ?: "No se pudo guardar. Intenta de nuevo."
             }
             if (isEditing) {
+                val filas = modifiers.toList()
                 viewModel.updateModifierGroup(
                     groupId = group!!.id,
                     name = groupName,
@@ -144,13 +145,18 @@ fun ModifierGroupFormSheet(
                     minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
                     maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
                     originalModifiers = group.modifiers ?: emptyList(),
-                    currentModifiers = modifiers.map {
+                    currentModifiers = filas.map {
                         ArticlesViewModel.InlineModifier(
                             id = it.id,
                             name = it.name,
                             price = it.price.toDoubleOrNull() ?: 0.0,
                             isDeleted = it.isDeleted,
                         )
+                    },
+                    onModificadorCreado = { indice, id ->
+                        // Por llave: mientras guarda, quitar una fila nueva recorre las posiciones de las demás.
+                        val fila = modifiers.indexOfFirst { it.key == filas[indice].key }
+                        if (fila >= 0) modifiers[fila] = modifiers[fila].copy(id = id)
                     },
                     onResult = handle,
                 )

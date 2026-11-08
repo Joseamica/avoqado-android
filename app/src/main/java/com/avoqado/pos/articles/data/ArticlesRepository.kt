@@ -24,6 +24,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -514,9 +517,14 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Individual Modifiers
 
-    suspend fun addModifierToGroup(groupId: String, payload: String): Boolean {
-        val url = modifierBaseUrl() ?: return false
-        return try {
+    /**
+     * Devuelve el id que le dio el servidor al modificador; `null` si no se creó o no se puede confirmar (el motivo queda
+     * en [errorMessage]).
+     */
+    suspend fun addModifierToGroup(groupId: String, payload: String): String? {
+        val url = modifierBaseUrl() ?: return null
+        var idCreado: String? = null
+        val aceptado = try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
                 .url("$url/modifier-groups/$groupId/modifiers")
@@ -527,7 +535,14 @@ class ArticlesRepository @Inject constructor(
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier added to group $groupId")
                 fetchModifierGroups()
-                true
+                idCreado = idEnLaRespuesta(responseBody)
+                if (idCreado == null) {
+                    // Un 2xx sin id casi siempre es un portal de WiFi o un proxy, no nuestra API. Si fuera nuestra, ya se
+                    // creó: la persona tiene que revisarlo antes de reintentar, y no se sigue con los demás pasos.
+                    _errorMessage.value =
+                        "No pudimos confirmar si se agregó el modificador. Cierra y vuelve a abrir el grupo para revisarlo antes de guardar de nuevo."
+                }
+                idCreado != null
             } else {
                 Log.e(TAG, "❌ addModifierToGroup error: HTTP $code")
                 _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al agregar modificador")
@@ -538,7 +553,12 @@ class ArticlesRepository @Inject constructor(
             _errorMessage.value = ServerErrorText.humanize(e, "Error al agregar modificador")
             false
         }
+        return idCreado.takeIf { aceptado }
     }
+
+    private fun idEnLaRespuesta(body: String): String? = runCatching {
+        ((json.parseToJsonElement(body) as? JsonObject)?.get("id") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     suspend fun updateModifier(groupId: String, modifierId: String, payload: String): Boolean {
         val url = modifierBaseUrl() ?: return false
