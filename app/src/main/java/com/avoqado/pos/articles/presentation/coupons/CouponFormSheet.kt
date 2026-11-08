@@ -157,14 +157,18 @@ fun CouponFormSheet(
                     onExpandedChange = { discountMenuExpanded = it },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
+                    // Al editar el descuento se ve pero no se cambia: el SERVIDOR no lo actualiza (igual que el panel web).
                     OutlinedTextField(
                         value = selectedDiscount?.let { "${it.name} (${it.formattedValue})" } ?: "",
                         onValueChange = {},
                         readOnly = true,
+                        enabled = !isEditing,
                         label = { Text("Descuento") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = discountMenuExpanded) },
+                        trailingIcon = if (isEditing) null else {
+                            { ExposedDropdownMenuDefaults.TrailingIcon(expanded = discountMenuExpanded) }
+                        },
                         modifier = Modifier
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = !isEditing)
                             .fillMaxWidth(),
                         isError = selectedDiscountId.isBlank(),
                     )
@@ -182,6 +186,13 @@ fun CouponFormSheet(
                             )
                         }
                     }
+                }
+                if (isEditing) {
+                    Text(
+                        text = "El descuento de un cupón no se cambia. Para usar otro, crea un cupón nuevo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 
