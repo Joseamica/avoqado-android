@@ -684,8 +684,9 @@ class ArticlesViewModel @Inject constructor(
                 val payload = buildJsonObject {
                     put("code", code.uppercase())
                     put("discountId", discountId)
-                    if (maxUses != null) put("maxUses", maxUses)
-                    if (maxUsesPerCustomer != null) put("maxUsesPerCustomer", maxUsesPerCustomer)
+                    // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
+                    put("maxUses", maxUses)
+                    put("maxUsesPerCustomer", maxUsesPerCustomer)
                     put("active", active)
                 }.toString()
                 val success = repository.updateCoupon(couponId, payload)

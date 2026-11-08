@@ -4,6 +4,7 @@ import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.articles.data.ArticlesRepository
 import com.avoqado.pos.articles.data.model.ArticleSection
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coVerify
@@ -379,6 +380,69 @@ class ArticlesViewModelTest {
         viewModel.deleteCoupon("coup-xyz")
 
         coVerify { repository.deleteCoupon("coup-xyz") }
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.limitesAlEditar(maxUses: Int?, maxUsesPerCustomer: Int?) =
+        slot<String>().let { payload ->
+            coEvery { repository.updateCoupon("coup-1", capture(payload)) } returns true
+            createViewModel().updateCoupon("coup-1", "VERANO", "desc-1", maxUses, maxUsesPerCustomer, active = true)
+            advanceUntilIdle()
+            Json.parseToJsonElement(payload.captured).jsonObject
+        }
+
+    @Test
+    fun `P1 editar un cupon con los limites vacios manda null explicito en los dos`() = runTest {
+        val json = limitesAlEditar(maxUses = null, maxUsesPerCustomer = null)
+
+        assertEquals("null", json["maxUses"]?.toString())
+        assertEquals("null", json["maxUsesPerCustomer"]?.toString())
+    }
+
+    @Test
+    fun `P1 editar un cupon vaciando solo un limite conserva el otro numero`() = runTest {
+        val json = limitesAlEditar(maxUses = null, maxUsesPerCustomer = 2)
+
+        assertEquals("null", json["maxUses"]?.toString())
+        assertEquals("2", json["maxUsesPerCustomer"]?.toString())
+    }
+
+    @Test
+    fun `editar un cupon con numeros los manda y el cero llega para que el servidor lo explique`() = runTest {
+        val json = limitesAlEditar(maxUses = 5, maxUsesPerCustomer = 0)
+
+        assertEquals("5", json["maxUses"]?.toString())
+        assertEquals("0", json["maxUsesPerCustomer"]?.toString())
+    }
+
+    @Test
+    fun `crear un cupon con los limites vacios no manda los campos`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.createCoupon(capture(payload)) } returns true
+        createViewModel().createCoupon("VERANO", "desc-1", maxUses = null, maxUsesPerCustomer = null, active = true)
+        advanceUntilIdle()
+
+        val json = Json.parseToJsonElement(payload.captured).jsonObject
+        assertFalse("maxUses" in json)
+        assertFalse("maxUsesPerCustomer" in json)
+    }
+
+    @Test
+    fun `P1 el campo de limite solo deja digitos y un largo que cabe en un Int`() {
+        assertEquals("", soloDigitosDeLimite(""))
+        assertEquals("", soloDigitosDeLimite("-"))
+        assertEquals("", soloDigitosDeLimite(" "))
+        assertEquals("15", soloDigitosDeLimite("1.5"))
+        assertEquals("3", soloDigitosDeLimite("-3"))
+        assertEquals("0", soloDigitosDeLimite("0"))
+        assertEquals("123456789", soloDigitosDeLimite("12345678901"))
+    }
+
+    @Test
+    fun `P1 lo que deja el campo de limite es vacio o un numero, nunca un texto que se lea como vacio`() {
+        listOf("-", "--", "1.5", "1,5", "-3", "+7", " 4 ", "abc", "2147483648", "99999999999999999999").forEach { escrito ->
+            val enElCampo = soloDigitosDeLimite(escrito)
+            assertEquals("«$escrito» dejó «$enElCampo»", enElCampo.isEmpty(), enElCampo.toIntOrNull() == null)
+        }
     }
 
     // MARK: - Credit Packs CRUD
