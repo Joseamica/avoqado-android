@@ -523,19 +523,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier added to group $groupId")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ addModifierToGroup error: HTTP $code")
-                _errorMessage.value = "Error al agregar modificador"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al agregar modificador")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ addModifierToGroup exception: ${e.message}", e)
-            _errorMessage.value = "Error al agregar modificador"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al agregar modificador")
             false
         }
     }
@@ -549,19 +549,19 @@ class ArticlesRepository @Inject constructor(
                 .patch(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier $modifierId updated in group $groupId")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ updateModifier error: HTTP $code")
-                _errorMessage.value = "Error al actualizar modificador"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar modificador")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateModifier exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar modificador"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar modificador")
             false
         }
     }
@@ -574,19 +574,19 @@ class ArticlesRepository @Inject constructor(
                 .delete()
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Modifier $modifierId deleted from group $groupId")
                 fetchModifierGroups()
                 true
             } else {
                 Log.e(TAG, "❌ deleteModifier error: HTTP $code")
-                _errorMessage.value = "Error al eliminar modificador"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al eliminar modificador")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ deleteModifier exception: ${e.message}", e)
-            _errorMessage.value = "Error al eliminar modificador"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al eliminar modificador")
             false
         }
     }

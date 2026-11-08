@@ -44,6 +44,9 @@ class ArticulosMotivoDelRechazoRepositorioTest {
         "Error al actualizar categoría" to { it.updateCategory("categoria-1", "{}") },
         "Error al crear grupo de modificadores" to { it.createModifierGroup("{}") },
         "Error al actualizar grupo de modificadores" to { it.updateModifierGroup("grupo-1", "{}") },
+        "Error al agregar modificador" to { it.addModifierToGroup("grupo-1", "{}") },
+        "Error al actualizar modificador" to { it.updateModifier("grupo-1", "modificador-1", "{}") },
+        "Error al eliminar modificador" to { it.deleteModifier("grupo-1", "modificador-1") },
         "Error al crear paquete de crédito" to { it.createCreditPack("{}") },
         "Error al actualizar paquete de crédito" to { it.updateCreditPack("paquete-1", "{}") },
     )
@@ -269,6 +272,9 @@ class ArticulosMotivoAlGuardarViewModelTest {
     @Test
     fun `grupo aceptado sigue con sus modificadores como hasta hoy`() = runTest {
         coEvery { repository.updateModifierGroup("g", any()) } returns true
+        coEvery { repository.deleteModifier("g", any()) } returns true
+        coEvery { repository.updateModifier("g", any(), any()) } returns true
+        coEvery { repository.addModifierToGroup("g", any()) } returns true
         var resultado: Boolean? = null
 
         viewModel().updateModifierGroup(
