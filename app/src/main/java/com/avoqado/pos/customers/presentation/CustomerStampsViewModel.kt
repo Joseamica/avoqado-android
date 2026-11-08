@@ -25,6 +25,13 @@ sealed interface EstadoDeSellos {
     data class Listo(val tarjeta: TarjetaDeSellos, val puedeAjustar: Boolean) : EstadoDeSellos
 }
 
+/** Lo que dice el carrito junto al nombre del cliente; null = nada (leyendo, sin plan o programa apagado). */
+fun sellosEnElCarrito(estado: EstadoDeSellos): String? = when (estado) {
+    is EstadoDeSellos.Listo -> "${estado.tarjeta.stampsEarned} de ${estado.tarjeta.stampsRequired} sellos"
+    EstadoDeSellos.SinRed -> "Sellos: sin conexión"
+    EstadoDeSellos.Cargando, EstadoDeSellos.Oculto -> null
+}
+
 @HiltViewModel
 class CustomerStampsViewModel @Inject constructor(
     private val repo: SellosRepository,
@@ -58,6 +65,12 @@ class CustomerStampsViewModel @Inject constructor(
         }
         jobDeCarga?.cancel()
         jobDeCarga = viewModelScope.launch { recargar(customerId) }
+    }
+
+    /** El carrito soltó al cliente: si lo vuelven a elegir se lee de cero, sin enseñar los sellos de antes de su venta. */
+    fun olvidarCliente() {
+        clienteActual = null
+        _estado.value = EstadoDeSellos.Cargando
     }
 
     private suspend fun recargar(customerId: String) {

@@ -387,6 +387,16 @@ fun CheckoutScreen(
     // después de `chargingAgainstOrderId` y `pendingPackGrant`. Ver
     // `CartViewModel.selectedCustomer`.
     val selectedCustomer by cartViewModel.selectedCustomer.collectAsState()
+    // Los sellos del cliente de la venta, junto a su nombre: se lean como se haya elegido (lista, escáner o carrito guardado).
+    val sellosViewModel: com.avoqado.pos.customers.presentation.CustomerStampsViewModel =
+        hiltViewModel(key = "sellos-del-carrito")
+    val estadoDeSellos by sellosViewModel.estado.collectAsState()
+    val conexionParaSellos by cartViewModel.conexionConAvoqado.collectAsState(initial = true)
+    // También con la conexión: al volver la red, «Sellos: sin conexión» no se queda pegado hasta cambiar de cliente.
+    LaunchedEffect(selectedCustomer?.id, conexionParaSellos) {
+        selectedCustomer?.id?.let(sellosViewModel::cargar) ?: sellosViewModel.olvidarCliente()
+    }
+    val sellosDelCliente = com.avoqado.pos.customers.presentation.sellosEnElCarrito(estadoDeSellos)
     // Membresías: a credit-pack sale needs a customer; grant captured at charge time.
     var showPackCustomerRequired by remember { mutableStateOf(false) }
     var showPackNoSplitAlert by remember { mutableStateOf(false) }
@@ -888,6 +898,7 @@ fun CheckoutScreen(
                         onCustomerTap = openGeneralCustomerPicker,
                         onCustomerRemove = { cartViewModel.setSelectedCustomer(null) },
                         clienteQuitable = !cartViewModel.hayVentaAMedias(),
+                        sellosDelCliente = sellosDelCliente,
                         staffName = cartState.selectedStaffName,
                         onStaffTap = {
                             cartViewModel.fetchStaff()
@@ -1350,6 +1361,7 @@ fun CheckoutScreen(
             onCustomerTap = openGeneralCustomerPicker,
             onCustomerRemove = { cartViewModel.setSelectedCustomer(null) },
             clienteQuitable = !cartViewModel.hayVentaAMedias(),
+            sellosDelCliente = sellosDelCliente,
             referralCode = referralCodeState,
             referralUiState = referralUiState,
             customerSelectedForReferral = selectedCustomer != null,
@@ -2471,6 +2483,7 @@ private fun IPhoneCartSheet(
     onCustomerTap: () -> Unit = {},
     onCustomerRemove: () -> Unit,
     clienteQuitable: Boolean,
+    sellosDelCliente: String? = null,
     referralCode: String = "",
     referralUiState: com.avoqado.pos.referrals.presentation.ReferralCaptureUiState =
         com.avoqado.pos.referrals.presentation.ReferralCaptureUiState.Idle,
@@ -2543,6 +2556,7 @@ private fun IPhoneCartSheet(
                 onCustomerTap = onCustomerTap,
                 onCustomerRemove = onCustomerRemove,
                 clienteQuitable = clienteQuitable,
+                sellosDelCliente = sellosDelCliente,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
                 onSplitPayment = onSplitPayment,
