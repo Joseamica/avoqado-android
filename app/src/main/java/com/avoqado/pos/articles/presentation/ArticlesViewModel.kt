@@ -440,46 +440,14 @@ class ArticlesViewModel @Inject constructor(
                     if (minSelections != null) put("minSelections", minSelections)
                     if (maxSelections != null) put("maxSelections", maxSelections)
                 }.toString()
-                if (!repository.updateModifierGroup(groupId, groupPayload)) {
-                    // Rechazado: el repositorio ya dejó el motivo del servidor. No se toca ningún modificador, para que
-                    // reintentar no duplique los nuevos ni borre dos veces los quitados.
-                    if (repository.errorMessage.value.isNullOrBlank()) {
-                        repository.setError(respaldo)
-                    }
-                    onResult(false)
-                    return@launch
+                // Se detiene en el primer paso rechazado: el repositorio ya dejó el motivo y la hoja se queda abierta.
+                val guardado = repository.updateModifierGroup(groupId, groupPayload) &&
+                    guardarModificadores(groupId, originalModifiers, currentModifiers)
+                if (!guardado && repository.errorMessage.value.isNullOrBlank()) {
+                    repository.setError(respaldo)
                 }
-
-                // DELETE removed modifiers (exist in original but not in current)
-                val currentIds = currentModifiers.mapNotNull { it.id }.toSet()
-                val deletedModifiers = originalModifiers.filter { it.id !in currentIds }
-                for (deleted in deletedModifiers) {
-                    repository.deleteModifier(groupId, deleted.id)
-                }
-
-                // Process current modifiers
-                for (modifier in currentModifiers) {
-                    if (modifier.isDeleted) continue
-
-                    if (modifier.id != null) {
-                        // PATCH existing modifier
-                        val modPayload = buildJsonObject {
-                            put("name", modifier.name)
-                            put("price", modifier.price)
-                        }.toString()
-                        repository.updateModifier(groupId, modifier.id, modPayload)
-                    } else {
-                        // POST new modifier
-                        val newModPayload = buildJsonObject {
-                            put("name", modifier.name)
-                            put("price", modifier.price)
-                        }.toString()
-                        repository.addModifierToGroup(groupId, newModPayload)
-                    }
-                }
-
-                Log.d(TAG, "✅ Modifier group $groupId fully updated")
-                onResult(true)
+                Log.d(TAG, if (guardado) "✅ Modifier group $groupId fully updated" else "❌ Modifier group $groupId not fully updated")
+                onResult(guardado)
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Modifier group update failed: ${e.message}")
                 if (repository.errorMessage.value.isNullOrBlank()) {
@@ -490,6 +458,54 @@ class ArticlesViewModel @Inject constructor(
                 _isSaving.value = false
             }
         }
+    }
+
+    /**
+     * Aplica la hoja a los modificadores del grupo, paso por paso, y devuelve false en el primero que se rechace.
+     *
+     * Al fallar, la hoja conserva su lista vieja, así que un reintento se salta lo que ya quedó según la lista del
+     * repositorio, que acaba de refrescar el PATCH del grupo. El cambio se calcula siempre contra [originalModifiers]:
+     * lo que esté en esa lista y no en la hoja pudo agregarlo otro aparato, y no se borra.
+     */
+    private suspend fun guardarModificadores(
+        groupId: String,
+        originalModifiers: List<ArticleModifier>,
+        currentModifiers: List<InlineModifier>,
+    ): Boolean {
+        val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
+        val idsVivos = vivos.map { it.id }.toSet()
+
+        // DELETE removed modifiers (exist in original but not in current), menos los que ya no existen
+        val currentIds = currentModifiers.mapNotNull { it.id }.toSet()
+        for (deleted in originalModifiers) {
+            if (deleted.id !in currentIds && deleted.id in idsVivos && !repository.deleteModifier(groupId, deleted.id)) {
+                return false
+            }
+        }
+
+        // Los que creó un intento anterior. Cada uno se usa una sola vez: dos nuevos con el mismo nombre son dos.
+        // ponytail: se reconocen por nombre; si entre intentos renombran o quitan el nuevo, el ya creado se queda. Si
+        // llega a pasar, que la hoja adopte los ids tras un fallo.
+        val idsOriginales = originalModifiers.map { it.id }.toSet()
+        val creadosAntes = vivos.filter { it.id !in idsOriginales }.toMutableList()
+
+        for (modifier in currentModifiers) {
+            if (modifier.isDeleted) continue
+
+            val payload = buildJsonObject {
+                put("name", modifier.name)
+                put("price", modifier.price)
+            }.toString()
+            // Uno ya creado se trata como existente (PATCH, idempotente): si le cambiaron el precio, también llega.
+            val id = modifier.id ?: creadosAntes.firstOrNull { it.name == modifier.name }?.also { creadosAntes.remove(it) }?.id
+            val aplicado = if (id != null) {
+                repository.updateModifier(groupId, id, payload)
+            } else {
+                repository.addModifierToGroup(groupId, payload)
+            }
+            if (!aplicado) return false
+        }
+        return true
     }
 
     fun deleteModifierGroup(groupId: String) {
