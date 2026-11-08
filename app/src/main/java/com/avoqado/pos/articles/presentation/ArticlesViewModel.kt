@@ -577,6 +577,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.createDiscount(payload)
                 Log.d(TAG, if (success) "✅ Discount created" else "❌ Discount creation failed")
                 onResult(success)
@@ -625,6 +626,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.updateDiscount(discountId, payload)
                 Log.d(TAG, if (success) "✅ Discount $discountId updated" else "❌ Discount update failed")
                 onResult(success)
@@ -660,6 +662,7 @@ class ArticlesViewModel @Inject constructor(
                     if (maxUsesPerCustomer != null) put("maxUsesPerCustomer", maxUsesPerCustomer)
                     put("active", active)
                 }.toString()
+                repository.clearError()
                 val success = repository.createCoupon(payload)
                 Log.d(TAG, if (success) "✅ Coupon created" else "❌ Coupon creation failed")
                 onResult(success)
@@ -688,6 +691,7 @@ class ArticlesViewModel @Inject constructor(
                     if (maxUsesPerCustomer != null) put("maxUsesPerCustomer", maxUsesPerCustomer)
                     put("active", active)
                 }.toString()
+                repository.clearError()
                 val success = repository.updateCoupon(couponId, payload)
                 Log.d(TAG, if (success) "✅ Coupon $couponId updated" else "❌ Coupon update failed")
                 onResult(success)

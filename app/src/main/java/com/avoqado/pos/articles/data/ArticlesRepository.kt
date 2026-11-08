@@ -634,19 +634,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Discount created")
                 fetchDiscounts()
                 true
             } else {
                 Log.e(TAG, "❌ createDiscount error: HTTP $code")
-                _errorMessage.value = "Error al crear descuento"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear descuento")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createDiscount exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear descuento"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear descuento")
             false
         }
     }
@@ -660,19 +660,19 @@ class ArticlesRepository @Inject constructor(
                 .put(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Discount $discountId updated")
                 fetchDiscounts()
                 true
             } else {
                 Log.e(TAG, "❌ updateDiscount error: HTTP $code")
-                _errorMessage.value = "Error al actualizar descuento"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar descuento")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateDiscount exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar descuento"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar descuento")
             false
         }
     }
@@ -745,19 +745,19 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Coupon created")
                 fetchCoupons()
                 true
             } else {
                 Log.e(TAG, "❌ createCoupon error: HTTP $code")
-                _errorMessage.value = "Error al crear cupón"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear cupón")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCoupon exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear cupón"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear cupón")
             false
         }
     }
@@ -771,19 +771,19 @@ class ArticlesRepository @Inject constructor(
                 .put(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Coupon $couponId updated")
                 fetchCoupons()
                 true
             } else {
                 Log.e(TAG, "❌ updateCoupon error: HTTP $code")
-                _errorMessage.value = "Error al actualizar cupón"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar cupón")
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCoupon exception: ${e.message}", e)
-            _errorMessage.value = "Error al actualizar cupón"
+            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar cupón")
             false
         }
     }

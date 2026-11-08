@@ -58,6 +58,32 @@ class ArticlesViewModelTest {
         return ArticlesViewModel(repository, PlanManager(storage), refreshGateFactory)
     }
 
+    // MARK: - D23: el motivo que enseña la hoja es el de ESTE guardado
+
+    @Test
+    fun `guardar cupon o descuento limpia el motivo anterior antes de llamar al servidor`() = runTest {
+        val viewModel = createViewModel()
+        val tipo = com.avoqado.pos.articles.data.model.DiscountType.PERCENTAGE
+        val alcance = com.avoqado.pos.articles.data.model.DiscountScope.ORDER
+
+        viewModel.createCoupon(code = "A1", discountId = "d", active = true)
+        viewModel.updateCoupon(couponId = "c", code = "A1", discountId = "d", active = true)
+        viewModel.createDiscount("D", tipo, 10.0, alcance, active = true, requiresApproval = false)
+        viewModel.updateDiscount("d", "D", tipo, 10.0, alcance, active = true, requiresApproval = false)
+        advanceUntilIdle()
+
+        io.mockk.coVerifyOrder {
+            repository.clearError()
+            repository.createCoupon(any())
+            repository.clearError()
+            repository.updateCoupon("c", any())
+            repository.clearError()
+            repository.createDiscount(any())
+            repository.clearError()
+            repository.updateDiscount("d", any())
+        }
+    }
+
     // MARK: - Initial State
 
     @Test
