@@ -220,7 +220,7 @@ fun ModifierGroupFormSheet(
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                     OutlinedTextField(
                         value = maxSelections,
-                        onValueChange = { maxSelections = soloDigitosDeLimite(it) },
+                        onValueChange = { maxSelections = soloDigitosDeLimite(it, maxSelections) },
                         label = { Text("Max") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,

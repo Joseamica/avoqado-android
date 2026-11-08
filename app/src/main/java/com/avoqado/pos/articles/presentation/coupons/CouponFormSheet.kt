@@ -40,10 +40,12 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
 /**
- * Al editar, un límite vacío se manda como `null` y quita el límite. Por eso el campo sólo deja dígitos y un largo que
- * cabe en un Int: lo que no se pudiera leer como número también daría `null` y borraría el límite en silencio.
+ * Al editar, un límite vacío se manda como `null` y quita el límite. Por eso sólo se acepta un cambio de puros dígitos y
+ * un largo que cabe en un Int; cualquier otro se ignora y el campo se queda como estaba. Si se limpiara el texto, pegar
+ * «abc» encima del límite dejaría el campo vacío y lo borraría sin que nadie lo pidiera. Sólo borrar lo deja vacío.
  */
-internal fun soloDigitosDeLimite(texto: String): String = texto.filter(Char::isDigit).take(9)
+internal fun soloDigitosDeLimite(texto: String, anterior: String): String =
+    if (texto.length <= 9 && texto.all(Char::isDigit)) texto else anterior
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -205,7 +207,7 @@ fun CouponFormSheet(
                 )
                 OutlinedTextField(
                     value = maxUses,
-                    onValueChange = { maxUses = soloDigitosDeLimite(it) },
+                    onValueChange = { maxUses = soloDigitosDeLimite(it, maxUses) },
                     label = { Text("Usos totales") },
                     placeholder = { Text("Ilimitado") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -214,7 +216,7 @@ fun CouponFormSheet(
                 )
                 OutlinedTextField(
                     value = maxUsesPerCustomer,
-                    onValueChange = { maxUsesPerCustomer = soloDigitosDeLimite(it) },
+                    onValueChange = { maxUsesPerCustomer = soloDigitosDeLimite(it, maxUsesPerCustomer) },
                     label = { Text("Usos por cliente") },
                     placeholder = { Text("Ilimitado") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

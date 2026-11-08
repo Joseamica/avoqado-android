@@ -52,6 +52,30 @@ class CuponesYDescuentosMotivoDelRechazoTest {
     }
 
     @Test
+    fun `una conexion que se corta dice sin conexion`() = runTest {
+        guardados.forEach { (_, guardar) ->
+            val call = mockk<Call>()
+            every { call.execute() } throws java.net.SocketException("Connection reset")
+            val repository = repositorio(mockk { every { newCall(any()) } returns call })
+
+            assertFalse(guardar(repository))
+            assertEquals("Sin conexión. Revisa la red e inténtalo de nuevo.", repository.errorMessage.value)
+        }
+    }
+
+    @Test
+    fun `una excepcion tecnica nunca llega a la pantalla`() = runTest {
+        guardados.forEach { (respaldo, guardar) ->
+            val call = mockk<Call>()
+            every { call.execute() } throws java.io.IOException("unexpected end of stream on http://127.0.0.1:3079/...")
+            val repository = repositorio(mockk { every { newCall(any()) } returns call })
+
+            assertFalse(guardar(repository))
+            assertEquals(respaldo, repository.errorMessage.value)
+        }
+    }
+
+    @Test
     fun `una respuesta que no es de la API cae al texto propio`() = runTest {
         guardados.forEach { (respaldo, guardar) ->
             val repository = repositorio(clientQueResponde(502, "<html>Bad Gateway</html>"))

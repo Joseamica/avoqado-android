@@ -45,8 +45,7 @@ object ServerErrorText {
         if (error == null) return fallback
         return when (error) {
             is java.net.UnknownHostException,
-            is java.net.ConnectException,
-            is java.net.NoRouteToHostException,
+            is java.net.SocketException, // ConnectException, NoRouteToHostException, «Connection reset»
             is javax.net.ssl.SSLException,
             -> offlineMessage
             is java.net.SocketTimeoutException,

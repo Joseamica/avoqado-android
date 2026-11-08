@@ -233,7 +233,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createProduct exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear producto")
+            _errorMessage.value = motivoDelFallo(e, "Error al crear producto")
             false
         }
     }
@@ -259,7 +259,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateProduct exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar producto")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar producto")
             false
         }
     }
@@ -345,7 +345,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCategory exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear categoría")
+            _errorMessage.value = motivoDelFallo(e, "Error al crear categoría")
             false
         }
     }
@@ -371,7 +371,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCategory exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar categoría")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar categoría")
             false
         }
     }
@@ -456,7 +456,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createModifierGroup exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear grupo de modificadores")
+            _errorMessage.value = motivoDelFallo(e, "Error al crear grupo de modificadores")
             false
         }
     }
@@ -482,7 +482,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateModifierGroup exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar grupo de modificadores")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar grupo de modificadores")
             false
         }
     }
@@ -535,7 +535,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ addModifierToGroup exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al agregar modificador")
+            _errorMessage.value = motivoDelFallo(e, "Error al agregar modificador")
             false
         }
     }
@@ -561,7 +561,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateModifier exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar modificador")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar modificador")
             false
         }
     }
@@ -586,7 +586,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ deleteModifier exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al eliminar modificador")
+            _errorMessage.value = motivoDelFallo(e, "Error al eliminar modificador")
             false
         }
     }
@@ -646,7 +646,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createDiscount exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear descuento")
+            _errorMessage.value = motivoDelFallo(e, "Error al crear descuento")
             false
         }
     }
@@ -672,7 +672,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateDiscount exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar descuento")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar descuento")
             false
         }
     }
@@ -757,7 +757,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCoupon exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear cupón")
+            _errorMessage.value = motivoDelFallo(e, "Error al crear cupón")
             false
         }
     }
@@ -783,7 +783,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCoupon exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar cupón")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar cupón")
             false
         }
     }
@@ -874,7 +874,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createCreditPack exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al crear paquete de crédito")
+            _errorMessage.value = motivoDelFallo(e, "Error al crear paquete de crédito")
             false
         }
     }
@@ -900,7 +900,7 @@ class ArticlesRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ updateCreditPack exception: ${e.message}", e)
-            _errorMessage.value = ServerErrorText.humanize(e, "Error al actualizar paquete de crédito")
+            _errorMessage.value = motivoDelFallo(e, "Error al actualizar paquete de crédito")
             false
         }
     }
@@ -1013,6 +1013,10 @@ class ArticlesRepository @Inject constructor(
             RespuestaDeEntrega(null, null)
         }
     }
+
+    /** Lo que dice la hoja si el guardado no llegó a tener respuesta: un fallo de red se dice como tal, y lo demás nunca enseña el texto técnico de la excepción. */
+    private fun motivoDelFallo(e: Exception, respaldo: String): String =
+        if (ServerErrorText.isOffline(e)) ServerErrorText.humanize(e, respaldo) else respaldo
 
     private fun mensajeDelServidor(body: String): String? = runCatching {
         (json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)?.get("message")

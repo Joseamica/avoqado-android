@@ -453,21 +453,17 @@ class ArticlesViewModelTest {
     }
 
     @Test
-    fun `P1 el campo de limite solo deja digitos y un largo que cabe en un Int`() {
-        assertEquals("", soloDigitosDeLimite(""))
-        assertEquals("", soloDigitosDeLimite("-"))
-        assertEquals("", soloDigitosDeLimite(" "))
-        assertEquals("15", soloDigitosDeLimite("1.5"))
-        assertEquals("3", soloDigitosDeLimite("-3"))
-        assertEquals("0", soloDigitosDeLimite("0"))
-        assertEquals("123456789", soloDigitosDeLimite("12345678901"))
+    fun `P1 el campo de limite acepta digitos y borrar, y cualquier otra cosa lo deja como estaba`() {
+        assertEquals("", soloDigitosDeLimite("", "5"))
+        assertEquals("15", soloDigitosDeLimite("15", "5"))
+        assertEquals("0", soloDigitosDeLimite("0", ""))
+        assertEquals("123456789", soloDigitosDeLimite("123456789", "5"))
     }
 
     @Test
-    fun `P1 lo que deja el campo de limite es vacio o un numero, nunca un texto que se lea como vacio`() {
-        listOf("-", "--", "1.5", "1,5", "-3", "+7", " 4 ", "abc", "2147483648", "99999999999999999999").forEach { escrito ->
-            val enElCampo = soloDigitosDeLimite(escrito)
-            assertEquals("«$escrito» dejó «$enElCampo»", enElCampo.isEmpty(), enElCampo.toIntOrNull() == null)
+    fun `P1 texto invalido encima de un limite no lo vacia`() {
+        listOf("-", "--", " ", "1.5", "1,5", "-3", "+7", " 4 ", "abc", "2147483648", "99999999999999999999").forEach { escrito ->
+            assertEquals("«$escrito»", "5", soloDigitosDeLimite(escrito, "5"))
         }
     }
 

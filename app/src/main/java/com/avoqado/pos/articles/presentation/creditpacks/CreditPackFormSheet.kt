@@ -206,7 +206,7 @@ fun CreditPackFormSheet(
                 )
                 OutlinedTextField(
                     value = maxPerCustomer,
-                    onValueChange = { maxPerCustomer = soloDigitosDeLimite(it) },
+                    onValueChange = { maxPerCustomer = soloDigitosDeLimite(it, maxPerCustomer) },
                     label = { Text("Max por cliente") },
                     placeholder = { Text("Ilimitado") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
