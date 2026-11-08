@@ -9,8 +9,13 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.onlineorders.domain.Inbox
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
+import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
+import com.avoqado.pos.onlineorders.presentation.cobradosConTarjetaEnLaLista
+import com.avoqado.pos.payment.data.CashPaymentRepository
 import java.io.IOException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -58,6 +63,20 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val scope: CoroutineScope,
     /** La sucursal de ahora: un sondeo que vuelve tras un cambio de sucursal se descarta. */
     private val venueActual: () -> String? = { null },
+    /** Tienda híbrida: lee «Por pagar»; `conLatido` avisa al servidor que este aparato cobra folios. null = sin folios. */
+    private val consultarPorPagar: (suspend (conLatido: Boolean) -> Result<ListaPorPagar>)? = null,
+    /** `payments:create`: sólo quien cobra late (un aparato que no cobra no cuenta como «hay quien cobre folios»). */
+    private val puedeCobrar: () -> Boolean = { false },
+    /** La última lista que este aparato guardó: el número del menú de un arranque en frío sin red sale de ahí. */
+    private val foliosGuardados: suspend () -> ListaPorPagar? = { null },
+    /** A3: los pedidos con efectivo de ESTE aparato en la cola: no cuentan como «por pagar» (igual que en la pantalla). */
+    private val efectivoEnCola: suspend () -> Map<String, Long> = { emptyMap() },
+    /**
+     * R100: lo que ESTE aparato cobró con tarjeta en el negocio: las marcas y los positivos que siguen en la lista durable (orden ->
+     * monto). Mientras la lista no lo cuente, tampoco es «por pagar».
+     */
+    private val foliosConTarjeta: (venueId: String?) -> List<FolioCobradoConTarjeta> = { emptyList() },
+    private val positivosConTarjeta: (venueId: String?) -> Map<String, Long> = { emptyMap() },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -67,6 +86,9 @@ class VigilanteDePedidosEnLinea internal constructor(
         planManager: PlanManager,
         secureStorage: SecureStorage,
         @ApplicationContext contexto: Context,
+        cashPaymentRepository: CashPaymentRepository,
+        foliosCobradosConTarjeta: FoliosCobradosConTarjeta,
+        terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
     ) : this(
         consultar = { status, comoBandeja -> repositorio.inbox(status, comoBandeja) },
         puedeLeer = {
@@ -77,6 +99,15 @@ class VigilanteDePedidosEnLinea internal constructor(
         sonar = { sonarAviso(contexto) },
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
         venueActual = { secureStorage.venueId },
+        consultarPorPagar = { conLatido -> repositorio.porPagar(conLatido) },
+        puedeCobrar = { roleManager.hasVenuePermission("payments:create", setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")) },
+        foliosGuardados = { repositorio.porPagarGuardado() },
+        efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
+        foliosConTarjeta = foliosCobradosConTarjeta::marcasDe,
+        positivosConTarjeta = { venue ->
+            terminalPaymentService.cobrosConTarjetaDelNegocio(venue).filter { it.cobrado && it.orderId != null }
+                .associate { it.orderId!! to (it.amountCents ?: 0).toLong() }
+        },
     )
 
     private val _pendientes = MutableStateFlow<List<OnlineOrder>>(emptyList())
@@ -93,6 +124,25 @@ class VigilanteDePedidosEnLinea internal constructor(
 
     /** `pendientes + activos > 0` según los conteos del último sondeo bueno (el menú se ve sin plan mientras haya pedidos). */
     val hayPedidosAbiertos: StateFlow<Boolean> = _hayPedidosAbiertos.asStateFlow()
+
+    private val _foliosPorPagar = MutableStateFlow(0)
+
+    /**
+     * Tienda híbrida: cuántos folios esperan pago en caja (el número que se suma a la insignia del menú). Nunca contradice la lista:
+     * ver `numeroDeSeccion`. Se conserva si falla la red; 0 si el servidor dice que la sección no existe para esta persona.
+     */
+    val foliosPorPagar: StateFlow<Int> = _foliosPorPagar.asStateFlow()
+
+    /** La última lista de folios aplicada: sin red se vuelve a contar con la cola del aparato (lo cobrado aquí ya no cuenta). */
+    @Volatile private var ultimaListaDeFolios: ListaPorPagar? = null
+
+    /** Hay folios por pagar o por entregar (conteos del último sondeo bueno): el menú se atiende aunque el plan haya vencido. */
+    @Volatile private var hayFolios = false
+
+    /** Del inbox, sin folios: se junta con [hayFolios] en [_hayPedidosAbiertos]. */
+    @Volatile private var hayAbiertosEnInbox = false
+
+    private fun actualizarAbiertos() { _hayPedidosAbiertos.value = hayAbiertosEnInbox || hayFolios }
 
     private val _bandejaSolicitada = MutableStateFlow(false)
 
@@ -113,6 +163,7 @@ class VigilanteDePedidosEnLinea internal constructor(
     fun silenciarHastaNuevo() { silenciados.value = _pendientes.value.map { it.orderId }.toSet() }
 
     private var ciclo: Job? = null
+    private var cicloFolios: Job? = null
     private var sonido: Job? = null
     @Volatile private var ultimosConteos: Inbox? = null
 
@@ -125,7 +176,12 @@ class VigilanteDePedidosEnLinea internal constructor(
         venueDeLosDatos = null
         _pendientes.value = emptyList()
         silenciados.value = emptySet()
-        _hayPedidosAbiertos.value = false
+        hayAbiertosEnInbox = false
+        hayFolios = false
+        huboLecturaDeFolios = false
+        ultimaListaDeFolios = null
+        _foliosPorPagar.value = 0
+        actualizarAbiertos()
         _sinConexion.value = false
     }
 
@@ -135,6 +191,7 @@ class VigilanteDePedidosEnLinea internal constructor(
     @Synchronized
     override fun onStart(owner: LifecycleOwner) {
         ciclo?.cancel()
+        cicloFolios?.cancel()
         sonido?.cancel()
         sonidoListo.value = false
         sonido = scope.launch {
@@ -159,6 +216,11 @@ class VigilanteDePedidosEnLinea internal constructor(
                 delay(proximoIntervalo())
             }
         }
+        // Los folios van a su propio compás (`pollSeconds` del servidor: 30 s con la tienda híbrida encendida, 10 min si no).
+        cicloFolios = scope.launch {
+            if (consultarPorPagar == null) return@launch
+            while (isActive) delay(sondearFolios())
+        }
     }
 
     /** Un sondeo ya (la bandeja aceptó o rechazó): el sonido para en esta petición y no en el siguiente compás. */
@@ -171,6 +233,7 @@ class VigilanteDePedidosEnLinea internal constructor(
     @Synchronized
     override fun onStop(owner: LifecycleOwner) {
         ciclo?.cancel(); ciclo = null
+        cicloFolios?.cancel(); cicloFolios = null
         sonido?.cancel(); sonido = null
     }
 
@@ -207,7 +270,8 @@ class VigilanteDePedidosEnLinea internal constructor(
             val lista = inbox.orders.filter { it.status == OnlineOrderStatus.PENDING_ACCEPTANCE }
             _pendientes.value = lista
             silenciados.value = silenciados.value intersect lista.map { it.orderId }.toSet()
-            _hayPedidosAbiertos.value = inbox.pending + inbox.active > 0
+            hayAbiertosEnInbox = inbox.pending + inbox.active > 0
+            actualizarAbiertos()
             _sinConexion.value = false
             sonidoListo.value = true
         }.onFailure {
@@ -216,6 +280,78 @@ class VigilanteDePedidosEnLinea internal constructor(
             Log.d(TAG, "Sondeo sin respuesta: ${it.message}")
             if (it is IOException) _sinConexion.value = true
         }
+    }
+
+    /** Hubo una lectura (buena o la guardada) de folios en esta sucursal: la guardada no vuelve a pisar un «no disponible». */
+    @Volatile private var huboLecturaDeFolios = false
+
+    /** Un sondeo de «Por pagar» (con latido sólo si la persona cobra). Devuelve cuánto esperar al siguiente. Nunca suena. */
+    private suspend fun sondearFolios(): Long {
+        val consultar = consultarPorPagar ?: return INTERVALO_MS
+        if (!puedeLeer()) {
+            huboLecturaDeFolios = false
+            ultimaListaDeFolios = null
+            _foliosPorPagar.value = 0
+            hayFolios = false
+            actualizarAbiertos()
+            return INTERVALO_MS
+        }
+        val venue = venueActual()
+        val resultado = try {
+            consultar(puedeCobrar())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+        if (venueActual() != venue) {
+            huboLecturaDeFolios = false
+            return INTERVALO_MS // el olvido de lo de la sucursal anterior lo hace el sondeo principal
+        }
+        val lista = resultado.getOrNull()
+        if (lista != null) {
+            // R102: una respuesta más vieja que la copia guardada (la bandeja ya guardó una más nueva) no mueve el número.
+            if (!lista.masViejaQueLaCopia) {
+                huboLecturaDeFolios = true
+                aplicarFolios(lista)
+            }
+            return (lista.pollSeconds.coerceIn(10, 600) * 1000L)
+        }
+        Log.d(TAG, "Folios sin respuesta: ${resultado.exceptionOrNull()?.message}")
+        if (!huboLecturaDeFolios) {
+            // Arranque en frío sin red: el número del menú sale de lo que este aparato guardó (igual que la pantalla).
+            val guardada = try { foliosGuardados() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+            if (guardada != null && venueActual() == venue) {
+                huboLecturaDeFolios = true
+                aplicarFolios(guardada)
+            }
+        } else {
+            // Sin red, la última lista se vuelve a contar: lo cobrado aquí desde entonces ya está en la cola y no se cobra otra vez.
+            ultimaListaDeFolios?.let { aplicarFolios(it) }
+        }
+        return INTERVALO_MS
+    }
+
+    private suspend fun aplicarFolios(lista: ListaPorPagar) {
+        ultimaListaDeFolios = lista
+        if (!lista.disponible) {
+            _foliosPorPagar.value = 0
+            hayFolios = false
+        } else {
+            // A3 (m2): el mismo número que la pantalla: lo cobrado en efectivo en este aparato que aún no sube ya no está «por pagar».
+            val enCola = try { efectivoEnCola().keys } catch (e: CancellationException) { throw e } catch (e: Exception) { emptySet() }
+            // R100: lo cobrado aquí con tarjeta que esta lista todavía no cuenta, igual que en la pantalla.
+            val venue = venueActual()
+            val conTarjeta = try {
+                cobradosConTarjetaEnLaLista(foliosConTarjeta(venue), positivosConTarjeta(venue), lista).keys
+            } catch (e: Exception) {
+                emptySet()
+            }
+            val vista = conLoCobradoEnElAparato(lista, enCola + conTarjeta)
+            _foliosPorPagar.value = numeroDeSeccion(vista.counts.toPay, vista.porPagar.size, vista.nextCursors.toPay != null)
+            hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty()
+        }
+        actualizarAbiertos()
     }
 
     private fun proximoIntervalo(): Long {

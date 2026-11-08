@@ -112,6 +112,10 @@ class TerminalPaymentService @Inject constructor(
          */
         const val MAX_REINTENTOS_DE_ADMISION = 2
         const val ESPERA_DE_ADMISION_MS = 400L
+
+        /** R100: llaves del contexto durable de un cobro que salió de la bandeja «Pedidos en línea». */
+        const val BANDEJA_SALDO = "bandejaSaldoAntesCents"
+        const val BANDEJA_FOLIO = "bandejaEsFolio"
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
@@ -229,6 +233,11 @@ class TerminalPaymentService @Inject constructor(
             // Ronda 2: la ventana de 10 min arranca en el cobro (`creadoEn`); si no consta, en cuándo se CONFIRMÓ.
             desdeMillis = if (datos.has("creadoEn")) datos.optLong("creadoEn") else entrada.cobradoEn,
             cobrado = entrada.cobrado,
+            deLaBandeja = if (datos.has(BANDEJA_SALDO)) {
+                com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(datos.optLong(BANDEJA_SALDO), datos.optBoolean(BANDEJA_FOLIO))
+            } else {
+                null
+            },
         )
     }
 
@@ -284,8 +293,45 @@ class TerminalPaymentService @Inject constructor(
         reconocidos += entrada.requestId
         marcasSinGuardar.remove(entrada.requestId)
         synchronized(soltados) { soltados[entrada.requestId] = entrada }
-        secureStorage.removePendingCardCharge(entrada.requestId)
+        val marca = marcaDeLaBandeja(entrada)
+        if (marca == null) {
+            secureStorage.removePendingCardCharge(entrada.requestId)
+        } else if (!secureStorage.quitarCobroYAnotarFolio(entrada.requestId) { com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.agregar(it, marca) }) {
+            Log.e("💳", "❌ No se pudo guardar en disco que ${entrada.orderId} se cobró con tarjeta (${entrada.requestId})")
+        }
     }
+
+    /**
+     * 🔴 R100: el ÚNICO punto donde un positivo sale de la lista durable es [quitar] (adopción del flujo que lo mandó, «Entendido» o
+     * vencimiento de su ventana), y los tres caminos que lo traen —respuesta directa, desenlace tardío y conciliación— lo MARCAN antes
+     * de entregarlo ([marcarCobrado]). Si el cobro salió de la bandeja de «Pedidos en línea», al salir deja su marca «aquí ya se
+     * cobró» en el MISMO commit: la bandeja nunca vuelve a ofrecer efectivo sobre él con una lista vieja. null = no era un positivo,
+     * o no era de la bandeja, o su contexto no dice de qué negocio y orden es.
+     */
+    private fun marcaDeLaBandeja(entrada: CobroPendiente): com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta? {
+        if (!entrada.cobrado) return null
+        val contexto = contextoDeEntrada(entrada) ?: return null
+        val bandeja = contexto.deLaBandeja ?: return null
+        val orden = contexto.orderId ?: return null
+        return com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta(
+            orderId = orden,
+            montoCents = (contexto.amountCents ?: 0).toLong(),
+            saldoAntesCents = bandeja.saldoAntesCents,
+            enMs = entrada.cobradoEn ?: System.currentTimeMillis(),
+            venueId = contexto.venueId,
+            requestId = entrada.requestId,
+            esFolio = bandeja.esFolio,
+        )
+    }
+
+    /**
+     * R100, fuentes (b) y (d) de `dineroSinConfirmar`: los cobros con tarjeta de este aparato que siguen en la lista durable y pueden
+     * ser del negocio [venueId] (un contexto ilegible o sin negocio cuenta: falla cerrado). `cobrado` = consta que SÍ pasó (por
+     * cualquier camino); si no, sigue en duda. Las dudas ya declaradas sin cobro no salen.
+     */
+    fun cobrosConTarjetaDelNegocio(venueId: String?): List<ContextoDeCobro> = vigentes()
+        .map { contextoDeEntrada(it) ?: ContextoDeCobro(it.requestId, venueId = null, terminalId = null, orderId = it.orderId, cobrado = it.cobrado) }
+        .filter { venueId == null || it.venueId == null || it.venueId == venueId }
 
     /**
      * H2: consta que ese cobro SÍ pasó: se MARCA (no se borra), también si ya no estaba — N2: ausencia no es «Entendido»;
@@ -601,6 +647,8 @@ class TerminalPaymentService @Inject constructor(
          * camino por el que el cliente puede llegar a la venta `FAST-*`.
          */
         customerId: String? = null,
+        /** R100: el cobro sale de la bandeja «Pedidos en línea» (lo que debía la orden y si es folio). null = cualquier otro cobro. */
+        deLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
     ): TerminalPaymentResult {
         val antesDeEnviar = antesDelProximoEnvio
         antesDelProximoEnvio = null
@@ -617,6 +665,7 @@ class TerminalPaymentService @Inject constructor(
             .put("terminalId", terminalId).put("orderId", orderId)
             .put("amountCents", amountCents).put("tipCents", tipCents)
             .put("creadoEn", System.currentTimeMillis())
+            .apply { deLaBandeja?.let { put(BANDEJA_SALDO, it.saldoAntesCents).put(BANDEJA_FOLIO, it.esFolio) } }
         synchronized(attemptLock) {
             // Otra vez BAJO EL CANDADO, junto con la escritura: dos «Cobrar» de la misma venta a la vez no
             // salen los dos. La llave única lo impedía con su «ya hay llave»; la lista acepta varias.
@@ -1567,6 +1616,8 @@ data class ContextoDeCobro(
     val desdeMillis: Long? = null,
     /** H2: consta que SÍ pasó: no se vuelve a consultar y dura 10 min desde el cobro (o hasta su «Entendido»). */
     val cobrado: Boolean = false,
+    /** R100: salió de la bandeja «Pedidos en línea» (lo que debía la orden y si es folio); null = cualquier otro cobro. */
+    val deLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
 )
 
 /**

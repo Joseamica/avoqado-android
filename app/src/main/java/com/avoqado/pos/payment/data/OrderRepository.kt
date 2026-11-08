@@ -177,6 +177,8 @@ class OrderRepository @Inject constructor(
         val code: Int,
         message: String,
         val cambiosDePrecio: List<CambioDePrecio> = emptyList(),
+        /** El `code` del cuerpo de NUESTRA API (p. ej. `ORDER_CANCELLED_NO_NEW_CHARGE`); null si no vino. Hoy sólo lo llena el `/pay`. */
+        val codigo: String? = null,
     ) : Exception(message)
 
     /**
@@ -770,6 +772,11 @@ class OrderRepository @Inject constructor(
          */
         fun mensajeDelRechazo(code: Int, body: String): String = extractErrorMessage(body) ?: "Error al registrar pago ($code)"
 
+        /** El `code` de un rechazo de nuestra API (`{"message":…,"code":…}`); null sin él o si el cuerpo no es JSON. PURA. */
+        fun codigoDelRechazo(body: String): String? = runCatching {
+            errorParserJson.parseToJsonElement(body).jsonObject["code"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+
         /**
          * Cómo se lee la respuesta al crear una cuenta de «Pagar después». PURA. Un 2xx sólo es la cuenta si trae `order.id`
          * (R2-1): la página 200 de un portal no prueba nada y la fila sigue con su llave. El total va en pesos y se compara en
@@ -1349,7 +1356,7 @@ class OrderRepository @Inject constructor(
                 }
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
-                Result.failure(ServerException(code, mensajeDelRechazo(code, body)))
+                Result.failure(ServerException(code, mensajeDelRechazo(code, body), codigo = codigoDelRechazo(body)))
             }
         } catch (e: Exception) {
             Log.e("💵", "❌ Cash payment error: ${e.message}")

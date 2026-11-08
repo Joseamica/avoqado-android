@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +57,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
@@ -63,6 +66,8 @@ import com.avoqado.pos.payment.domain.OrigenDelCobro
 import com.avoqado.pos.payment.domain.PaymentOverlayState
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
+import java.time.Instant
+import kotlinx.coroutines.delay
 
 /**
  * El sondeo de la bandeja vive MIENTRAS la pantalla está a la vista (`STARTED`), no mientras exista la composición: con la app en
@@ -90,6 +95,21 @@ fun OnlineOrdersScreen(
     // Rappi 2b: la lista guardada primero y una lectura con red, aunque la pantalla abra como teaser (descubre pedidos por cobrar).
     val porCobrar by viewModel.porCobrar.collectAsState()
     LaunchedEffect(viewModel) { viewModel.descubrirPorCobrar() }
+    // Tienda híbrida: los folios guardados primero (sin red salen de ahí) y una lectura con red.
+    LaunchedEffect(viewModel) { viewModel.descubrirPorPagar() }
+    val folios by viewModel.porPagar.collectAsState()
+    val errorFolios by viewModel.errorFolios.collectAsState()
+    val leyendoFolios by viewModel.leyendoFolios.collectAsState()
+    val busqueda by viewModel.busqueda.collectAsState()
+    // A3: lo cobrado en efectivo en este aparato que la cola aún no sube se pinta en «Por entregar».
+    val cobradosEnElAparato by viewModel.cobradosEnElAparato.collectAsState()
+    // A5: y lo cobrado aquí con tarjeta que la lista todavía no cuenta.
+    val cobradosConTarjeta by viewModel.cobradosConTarjeta.collectAsState()
+    // R100: un folio con su acción ya hecha no vuelve con sus botones mientras la lista lo traiga igual que antes.
+    val ocultos by viewModel.ocultos.collectAsState()
+    // «Vence en N min» se recalcula solo aunque la lista no cambie.
+    var ahora by remember { mutableStateOf(Instant.now()) }
+    LaunchedEffect(Unit) { while (true) { delay(15_000); ahora = Instant.now() } }
     // Se relee en cada recomposición: deja de ser teaser en cuanto el descubrimiento encuentra pedidos por cobrar.
     @Suppress("UNUSED_EXPRESSION") porCobrar
     val teaser = viewModel.esTeaser
@@ -124,6 +144,11 @@ fun OnlineOrdersScreen(
     val puedeActualizar = viewModel.puedeActualizar
     val puedeCancelar = viewModel.puedeCancelar
     val dialogo = rememberDialogoDePedido()
+    // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
+    val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
+    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos) {
+        seccionFolios?.let { conLoCobradoEnElAparato(sinLosYaAtendidos(it, ocultos), cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
+    }
 
     Box(Modifier.fillMaxSize()) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -152,7 +177,9 @@ fun OnlineOrdersScreen(
                 }
 
                 // Sin red = estado normal: texto neutro, nunca rojo de error.
-                if (sinConexion) AvisoNeutro(TextosPedidosEnLinea.SIN_CONEXION)
+                val mostrarFolios = seccionFolios != null || (folios == null && (errorFolios || leyendoFolios))
+                // Un solo aviso: con folios dice además qué vuelve con la conexión.
+                if (sinConexion) AvisoNeutro(if (seccionFolios != null) TextosPedidosEnLinea.SIN_CONEXION_FOLIOS else TextosPedidosEnLinea.SIN_CONEXION)
                 if (noSePudoLeer) AvisoNeutro(TextosPedidosEnLinea.NO_SE_PUDO_LEER)
                 aviso?.let { texto ->
                     AvisoNeutro(texto, accion = TextosPedidosEnLinea.ENTENDIDO, onAccion = viewModel::cerrarAviso)
@@ -161,7 +188,7 @@ fun OnlineOrdersScreen(
                 // Rappi 2b: la sección sale si el servidor la tiene y hay pedidos; sin tienda web, también vacía (con su texto).
                 val reparto = porCobrar?.takeIf { it.disponible && viewModel.muestraReparto && (it.pedidos.isNotEmpty() || !muestraTienda) }
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                    if (reparto == null && cargando && secciones.vacia) {
+                    if (reparto == null && !mostrarFolios && cargando && secciones.vacia) {
                         // Primera lectura: nada que mostrar todavía (el banner de sin conexión, si aplica, ya está arriba).
                         Text(
                             "…",
@@ -169,7 +196,7 @@ fun OnlineOrdersScreen(
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    } else if (reparto == null && secciones.vacia) {
+                    } else if (reparto == null && !mostrarFolios && secciones.vacia) {
                         // «No hay pedidos» sólo dice la verdad tras una lectura buena; sin ella (sin red o fallo) basta el aviso de arriba.
                         if (leyoAlgunaVez) Text(
                             TextosPedidosEnLinea.SIN_PEDIDOS,
@@ -194,6 +221,37 @@ fun OnlineOrdersScreen(
                             onCobrar = viewModel::cobrar,
                             onReimprimir = viewModel::reimprimir,
                             onCargarMas = viewModel::cargarMas,
+                            claveAntes = when {
+                                seccionFolios != null -> CLAVE_BUSCADOR_FOLIOS
+                                mostrarFolios -> CLAVE_ERROR_FOLIOS // también la del «Leyendo folios…»
+                                else -> null
+                            },
+                            foliosAntes = if (!mostrarFolios) null else {
+                                {
+                                    seccionesDeFolios(
+                                        lista = foliosEnPantalla,
+                                        error = errorFolios,
+                                        leyendo = leyendoFolios,
+                                        busqueda = busqueda,
+                                        ahora = ahora,
+                                        sinConexion = sinConexion,
+                                        puedeActualizar = puedeActualizar,
+                                        ocupados = ocupados,
+                                        cargandoMas = cargandoMas,
+                                        onBuscar = viewModel::buscarFolio,
+                                        onListo = viewModel::marcarListo,
+                                        onEntregado = viewModel::entregarFolio,
+                                        onCargarMas = viewModel::cargarMasFolios,
+                                        onReintentar = viewModel::reintentarFolios,
+                                        cobradosEnElAparato = cobradosEnElAparato,
+                                        cobradosConTarjeta = cobradosConTarjeta,
+                                        puedeCobrar = viewModel.puedeCobrar && puedeActualizar,
+                                        puedeCancelar = puedeCancelar,
+                                        onCobrar = viewModel::cobrarFolio,
+                                        onCancelar = { dialogo.abrir(it, TipoDeDialogo.CANCELAR_FOLIO) },
+                                    )
+                                }
+                            },
                             claveTrasPorAceptar = if (reparto != null) "h-reparto" else null,
                             trasPorAceptar = reparto?.let { lista ->
                                 {
@@ -246,6 +304,7 @@ fun OnlineOrdersScreen(
         onAceptar = viewModel::aceptar,
         onRechazar = viewModel::rechazar,
         onCancelar = viewModel::cancelar,
+        folios = foliosEnPantalla?.porPagar.orEmpty(),
     )
 
     if (pausando) {
@@ -307,6 +366,10 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
             resumeOrderId = cobro.orderId,
             origen = cobro.origen,
             apertura = cobro.apertura,
+            // m1: se decide al fallar (venció o lo canceló otra caja), no al abrir.
+            textoSiLaCuentaSeCancelo = { cobro.textoSiLaCuentaSeCancelo(Instant.now()) },
+            // R100: folio o «Mi equipo», la tarjeta lleva el saldo de la bandeja: su positivo deja la marca «aquí ya se cobró».
+            cobroDeLaBandeja = com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(cobro.saldoCents.toLong(), cobro.esFolio),
         )
     }
 }
@@ -357,7 +420,8 @@ private fun Teaser(plan: String) {
  * [claveTrasPorAceptar] es la cabecera de una sección que se emite justo después de «Por aceptar» cuando se muestra (Rappi 2b:
  * `h-reparto`); «Por aceptar» siempre va primero (Ruling 29). Sin ella, una sección que aparece arriba no movería el detector.
  */
-internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja, claveTrasPorAceptar: String? = null): String? = when {
+internal fun primeraClaveDeLaLista(secciones: SeccionesBandeja, claveTrasPorAceptar: String? = null, claveAntes: String? = null): String? = when {
+    claveAntes != null -> claveAntes
     secciones.porAceptar.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_POR_ACEPTAR}"
     claveTrasPorAceptar != null -> claveTrasPorAceptar
     secciones.enPreparacion.isNotEmpty() -> "h-${TextosPedidosEnLinea.SECCION_EN_PREPARACION}"
@@ -372,13 +436,19 @@ internal fun debeQuedarseArriba(estabaArriba: Boolean, primeraClaveAntes: String
 
 /**
  * El pedido de un diálogo abierto, o `null` si ya no vale: ACEPTAR y RECHAZAR sólo mientras siga en «Por aceptar»; CANCELAR mientras
- * siga en «En preparación» o «Listos» y sin dinero. PURA.
+ * siga en «En preparación» o «Listos» y sin dinero; CANCELAR_FOLIO mientras el folio siga en «Por pagar» ([folios]) y sin dinero. PURA.
  */
-internal fun pedidoDelDialogo(orderId: String, tipo: TipoDeDialogo, secciones: SeccionesBandeja): OnlineOrder? = when (tipo) {
+internal fun pedidoDelDialogo(
+    orderId: String,
+    tipo: TipoDeDialogo,
+    secciones: SeccionesBandeja,
+    folios: List<OnlineOrder> = emptyList(),
+): OnlineOrder? = when (tipo) {
     TipoDeDialogo.ACEPTAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId && sePuedeAceptar(it) }
     TipoDeDialogo.RECHAZAR -> secciones.porAceptar.firstOrNull { it.orderId == orderId }
     TipoDeDialogo.CANCELAR ->
         (secciones.enPreparacion + secciones.listos).firstOrNull { it.orderId == orderId && sinDinero(it) }
+    TipoDeDialogo.CANCELAR_FOLIO -> folios.firstOrNull { it.orderId == orderId && sinDinero(it) }
 }
 
 /** El diálogo abierto de la bandeja (de qué pedido y cuál). Sobrevive a un giro de la tableta: se guarda como dos textos. */
@@ -436,6 +506,9 @@ internal fun ListaDeBandeja(
     claveTrasPorAceptar: String? = null,
     /** Rappi 2b: las filas de «Rappi · por cobrar», justo después de «Por aceptar» (lo único que suena y vence va primero). */
     trasPorAceptar: (LazyListScope.() -> Unit)? = null,
+    /** Tienda híbrida: la clave de la primera fila de [foliosAntes] (buscador o error) y sus filas, ANTES de «Por aceptar». */
+    claveAntes: String? = null,
+    foliosAntes: (LazyListScope.() -> Unit)? = null,
 ) {
     val espacio = AvoqadoTheme.spacing
 
@@ -444,7 +517,7 @@ internal fun ListaDeBandeja(
     // sin gesto en curso y en 0/0 hay que seguir en 0; con la primera fila distinta, `requestScrollToItem(0)` salta el anclaje sólo
     // en esa medición. Las claves de las filas no se tocan, y si la persona está más abajo (o deslizando) manda el anclaje de siempre.
     val estabaArriba = estadoLista.firstVisibleItemIndex == 0 && estadoLista.firstVisibleItemScrollOffset == 0 && !estadoLista.isScrollInProgress
-    val primeraClaveAhora = primeraClaveDeLaLista(secciones, claveTrasPorAceptar)
+    val primeraClaveAhora = primeraClaveDeLaLista(secciones, claveTrasPorAceptar, claveAntes)
     val primeraClaveAntes = remember { arrayOfNulls<String>(1) }
     val quedarseArriba = debeQuedarseArriba(estabaArriba, primeraClaveAntes[0], primeraClaveAhora)
     SideEffect {
@@ -496,6 +569,7 @@ internal fun ListaDeBandeja(
                 ) { Text(TextosPedidosEnLinea.CARGAR_MAS) }
             }
         }
+        foliosAntes?.invoke(this)
         tarjetas(TextosPedidosEnLinea.SECCION_POR_ACEPTAR, secciones.porAceptar, SeccionDePedido.POR_ACEPTAR)
         trasPorAceptar?.invoke(this)
         tarjetas(TextosPedidosEnLinea.SECCION_EN_PREPARACION, secciones.enPreparacion, SeccionDePedido.EN_PREPARACION, cargarMas)
@@ -526,12 +600,14 @@ internal fun DialogosDeLaBandeja(
     onAceptar: (orderId: String, minutos: Int) -> Unit,
     onRechazar: (orderId: String, motivo: String) -> Unit,
     onCancelar: (orderId: String) -> Unit,
+    /** A3: los folios de «Por pagar» (lo que se pinta), para «Cancelar folio». */
+    folios: List<OnlineOrder> = emptyList(),
 ) {
     val orderId = dialogo.orderId
     val tipo = dialogo.tipo
     if (orderId == null || tipo == null) return
     // Si el pedido ya no está donde la acción vale (otro aparato lo atendió), el diálogo se cierra, igual que cuando vivía en la tarjeta.
-    val pedido = pedidoDelDialogo(orderId, tipo, secciones)
+    val pedido = pedidoDelDialogo(orderId, tipo, secciones, folios)
     if (pedido == null) {
         SideEffect { dialogo.cerrar() }
         return
@@ -580,6 +656,27 @@ internal fun DialogosDeLaBandeja(
             },
             dismissButton = { TextButton(onClick = cerrar) { Text(TextosPedidosEnLinea.CANCELAR_VOLVER) } },
         )
+        // A3: siempre pregunta, con el folio y el nombre de quien lo verá cancelado.
+        TipoDeDialogo.CANCELAR_FOLIO -> AvoqadoDialog(
+            title = TextosPedidosEnLinea.cancelarFolioTitulo(pedido.orderNumber),
+            description = TextosPedidosEnLinea.cancelarFolioCuerpo(pedido.customerName),
+            onDismiss = cerrar,
+            actionButton = {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                    OutlinedButton(onClick = cerrar, modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("cancelar-folio-no")) {
+                        Text(TextosPedidosEnLinea.NO)
+                    }
+                    Button(
+                        onClick = { cerrar(); onCancelar(orderId) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        ),
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("cancelar-folio-si"),
+                    ) { Text(TextosPedidosEnLinea.SI_CANCELAR) }
+                }
+            },
+        ) {}
     }
 }
 
