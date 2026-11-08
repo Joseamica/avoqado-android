@@ -44,6 +44,29 @@ class CustomerStampsViewModelTest {
     }
 
     @Test
+    fun `P1 el carrito dice los sellos, y sin red lo dice sin inventar un numero`() {
+        assertEquals("3 de 8 sellos", sellosEnElCarrito(EstadoDeSellos.Listo(tarjeta, puedeAjustar = false)))
+        assertEquals("Sellos: sin conexión", sellosEnElCarrito(EstadoDeSellos.SinRed))
+        assertNull(sellosEnElCarrito(EstadoDeSellos.Cargando))
+        assertNull(sellosEnElCarrito(EstadoDeSellos.Oculto))
+    }
+
+    @Test
+    fun `P1 al volver a elegir al mismo cliente no ensena los sellos de antes de su venta`() {
+        coEvery { repo.obtener("c1") } returns Result.success(tarjeta)
+        val v = vm(puede = false)
+        v.cargar("c1")
+        v.olvidarCliente()
+        val respuesta = CompletableDeferred<Result<TarjetaDeSellos?>>()
+        coEvery { repo.obtener("c1") } coAnswers { respuesta.await() }
+        v.cargar("c1")
+        assertEquals(EstadoDeSellos.Cargando, v.estado.value)
+        val despues = tarjeta.copy(stampsEarned = 4)
+        respuesta.complete(Result.success(despues))
+        assertEquals(EstadoDeSellos.Listo(despues, puedeAjustar = false), v.estado.value)
+    }
+
+    @Test
     fun `P1 sin plan o sin sellos la seccion se oculta`() {
         coEvery { repo.obtener("c1") } returns Result.success(null)
         val v = vm()

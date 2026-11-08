@@ -110,6 +110,8 @@ fun CartPanelView(
     onCustomerRemove: () -> Unit,
     /** false con una venta a medio cobrar: el cliente ya quedó en su orden y «Quitar» se ve apagado. */
     clienteQuitable: Boolean = true,
+    /** «3 de 10 sellos» junto al nombre; null = no se dice nada. */
+    sellosDelCliente: String? = null,
     staffName: String = cartState.selectedStaffName,
     onStaffTap: () -> Unit = {},
     /**
@@ -174,6 +176,7 @@ fun CartPanelView(
                 onCustomerTap = onCustomerTap,
                 onCustomerRemove = onCustomerRemove,
                 clienteQuitable = clienteQuitable,
+                sellosDelCliente = sellosDelCliente,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
                 useDenseTabletLayout = useDenseTabletLayout,
@@ -493,6 +496,7 @@ private fun CustomerHeader(
     onCustomerTap: () -> Unit,
     onCustomerRemove: () -> Unit,
     clienteQuitable: Boolean,
+    sellosDelCliente: String?,
     staffName: String,
     onStaffTap: () -> Unit,
     useDenseTabletLayout: Boolean = false,
@@ -551,6 +555,15 @@ private fun CustomerHeader(
                             contentDescription = "Opciones del cliente",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        // Sin peso a propósito: si el nombre es largo se recorta el nombre, no los sellos.
+                        sellosDelCliente?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
                     }
                 }
                 if (showCustomerMenu) BarreraDeAtajos()   // menú abierto: F12 espera
