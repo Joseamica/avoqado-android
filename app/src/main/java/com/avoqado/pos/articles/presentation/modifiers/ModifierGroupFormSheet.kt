@@ -73,7 +73,7 @@ fun ModifierGroupFormSheet(
     var maxSelections by remember { mutableStateOf(group?.maxSelections?.toString() ?: "") }
     val modifiers = remember {
         mutableStateListOf<InlineModifierState>().apply {
-            group?.modifiers?.forEach { m ->
+            group?.modificadoresEditables()?.forEach { m ->
                 add(
                     InlineModifierState(
                         id = m.id,
@@ -93,7 +93,7 @@ fun ModifierGroupFormSheet(
         AlertDialog(
             onDismissRequest = { showDeleteModifierDialog = null },
             title = { Text("Eliminar modificador") },
-            text = { Text("Esta acción no se puede deshacer") },
+            text = { Text("Ya no se ofrecerá al vender. Las ventas y los reportes anteriores no cambian. Puedes volver a activarlo desde la lista de modificadores.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -145,7 +145,7 @@ fun ModifierGroupFormSheet(
                     allowMultiple = allowMultiple,
                     minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
                     maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
-                    originalModifiers = group.modifiers ?: emptyList(),
+                    originalModifiers = group.modificadoresEditables(),
                     currentModifiers = filas.map {
                         ArticlesViewModel.InlineModifier(
                             id = it.id,

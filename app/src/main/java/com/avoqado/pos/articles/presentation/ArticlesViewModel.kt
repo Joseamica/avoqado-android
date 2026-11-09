@@ -433,6 +433,18 @@ class ArticlesViewModel @Inject constructor(
             val respaldo = "No se pudo guardar el grupo de modificadores. Intenta de nuevo."
             try {
                 repository.clearError()
+                // La caja exige ese mínimo y sólo ofrece las activas: quitar de más dejaría el producto imposible de agregar.
+                // Vacío no borra el mínimo: el PATCH omite el campo y el servidor conserva el que tenía.
+                val minimoGuardado = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.minSelections
+                val minimo = if (required) minSelections ?: minimoGuardado ?: 1 else 0
+                val quedan = currentModifiers.count { !it.isDeleted }
+                val quitaAlguno = currentModifiers.any { it.isDeleted && it.id != null } ||
+                    originalModifiers.any { original -> currentModifiers.none { it.id == original.id } }
+                if (quitaAlguno && quedan < minimo) {
+                    repository.setError(textoFaltanOpciones(minimo))
+                    onResult(false)
+                    return@launch
+                }
                 // PATCH group metadata
                 val groupPayload = buildJsonObject {
                     put("name", name)
@@ -445,7 +457,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 // Se detiene en el primer paso rechazado: el repositorio ya dejó el motivo y la hoja se queda abierta.
                 val guardado = repository.updateModifierGroup(groupId, groupPayload) &&
-                    guardarModificadores(groupId, originalModifiers, currentModifiers, onModificadorCreado)
+                    guardarModificadores(groupId, originalModifiers, currentModifiers, minimo, onModificadorCreado)
                 if (!guardado && repository.errorMessage.value.isNullOrBlank()) {
                     repository.setError(respaldo)
                 }
@@ -467,27 +479,21 @@ class ArticlesViewModel @Inject constructor(
      * Aplica la hoja a los modificadores del grupo, paso por paso, y devuelve false en el primero que se rechace.
      *
      * Cada alta le avisa a la hoja el id que recibió, con su índice en [currentModifiers], antes del siguiente paso: en un
-     * reintento esa fila ya trae `id` y va por PATCH. Los borrados se saltan los que ya no existen en la lista del
-     * repositorio, que acaba de refrescar el PATCH del grupo, y se calculan contra [originalModifiers]: lo que esté en esa
-     * lista y no en la hoja pudo agregarlo otro aparato, y no se borra.
+     * reintento esa fila ya trae `id` y va por PATCH.
+     *
+     * Eliminar un modificador lo ARCHIVA (`active: false`, founder 9-nov, igual que Toast y que los productos): así el reporte,
+     * las ligas de pago ya enviadas y una venta hecha sin red que lo traiga siguen valiendo. Se archiva lo que la hoja abrió y ya
+     * no conserva, y lo que ella misma creó y luego quitó; lo que sólo esté en la lista viva pudo agregarlo otro aparato, y no
+     * se toca. Lo ya archivado o inexistente se salta. Archivar va al final: si un alta falla, el grupo no se queda sin la
+     * opción que se iba a reemplazar.
      */
     private suspend fun guardarModificadores(
         groupId: String,
         originalModifiers: List<ArticleModifier>,
         currentModifiers: List<InlineModifier>,
+        minimo: Int,
         onModificadorCreado: (indice: Int, id: String) -> Unit,
     ): Boolean {
-        val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
-        val idsVivos = vivos.map { it.id }.toSet()
-
-        // DELETE removed modifiers (exist in original but not in current), menos los que ya no existen
-        val currentIds = currentModifiers.mapNotNull { it.id }.toSet()
-        for (deleted in originalModifiers) {
-            if (deleted.id !in currentIds && deleted.id in idsVivos && !repository.deleteModifier(groupId, deleted.id)) {
-                return false
-            }
-        }
-
         for ((indice, modifier) in currentModifiers.withIndex()) {
             if (modifier.isDeleted) continue
 
@@ -503,7 +509,27 @@ class ArticlesViewModel @Inject constructor(
                 onModificadorCreado(indice, idCreado)
             }
         }
+
+        val listaViva = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers
+        val archivables = (listaViva ?: originalModifiers).filter { it.active != false }.map { it.id }.toSet()
+        val seQuedan = currentModifiers.filterNot { it.isDeleted }.mapNotNull { it.id }.toSet()
+        val quitados = (originalModifiers.map { it.id } + currentModifiers.filter { it.isDeleted }.mapNotNull { it.id }).distinct()
+        val aArchivar = quitados.filter { it !in seQuedan && it in archivables }
+        // Otro aparato pudo apagar opciones con la hoja abierta: el mínimo se revisa otra vez con lo que hay ahora.
+        if (aArchivar.isNotEmpty() && listaViva != null && listaViva.count { it.active != false && it.id !in aArchivar } < minimo) {
+            repository.setError(textoFaltanOpciones(minimo))
+            return false
+        }
+        val archivar = buildJsonObject { put("active", false) }.toString()
+        for (id in aArchivar) {
+            if (!repository.updateModifier(groupId, id, archivar)) return false
+        }
         return true
+    }
+
+    private fun textoFaltanOpciones(minimo: Int): String {
+        val opciones = if (minimo == 1) "opción" else "opciones"
+        return "Este grupo es obligatorio y pide al menos $minimo $opciones. Déjalas o baja el mínimo antes de quitar esta."
     }
 
     fun deleteModifierGroup(groupId: String) {
