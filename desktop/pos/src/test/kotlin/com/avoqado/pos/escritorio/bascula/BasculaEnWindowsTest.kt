@@ -58,9 +58,8 @@ class BasculaEnWindowsTest {
     /** CREMERIA 1 de La Galeterie (9-nov): la Rhino brinca un paso de 2 g con el producto quieto y no debe apagar «Agregar». */
     @Test fun `la Rhino sigue estable si su ultimo digito brinca un paso`() = runBlocking<Unit> {
         manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII"), ScaleUsageContext.AREA_TICKET_LINE)
-        canal.llega("0.004 kg")
-        canal.llega("0.004 kg")
-        assertIs<ScaleConnectionState.Stable>(esperar { it is ScaleConnectionState.Stable }, "dos lecturas iguales dan estable")
+        repeat(3) { canal.llega("0.004 kg"); Thread.sleep(30) }
+        assertIs<ScaleConnectionState.Stable>(esperar { it is ScaleConnectionState.Stable }, "tres lecturas iguales dan estable")
         canal.llega("0.002 kg")
         val estado = esperar { it is ScaleConnectionState.Unstable || (it as? ScaleConnectionState.Stable)?.reading?.netKg == "0.002" }
         assertIs<ScaleConnectionState.Stable>(estado, "un paso de 2 g no apaga «Agregar»: $estado")
