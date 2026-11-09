@@ -297,7 +297,8 @@ private fun PhoneOrdersLayout(
                 })
             } else OrderDetailView(
                 order = pedido,
-                onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
+                onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                onSalioSinCobrar = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                 onCuentaCancelada = onCuentaCancelada,
                 onBack = { viewModel.clearSelection() },
                 modifier = Modifier.fillMaxSize(),
@@ -493,7 +494,8 @@ private fun OrderDetailPanel(
                     })
                 } else OrderDetailView(
                     order = pedido,
-                    onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
+                    onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                    onSalioSinCobrar = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                     onCuentaCancelada = onCuentaCancelada,
                     onBack = null,
                     modifier = Modifier.fillMaxSize(),
@@ -535,6 +537,7 @@ fun OrderDetailView(
     order: OrderDetail,
     onBack: (() -> Unit)?,
     onCuentaActualizada: () -> Unit,
+    onSalioSinCobrar: () -> Unit,
     onCuentaCancelada: () -> Unit,
     modifier: Modifier = Modifier,
     // Reimpresión de comanda (mostrador, Task 6) — defaults para no romper otros
@@ -586,7 +589,7 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
-            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada)
+            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar)
 
             // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
             // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.

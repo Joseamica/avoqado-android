@@ -238,6 +238,7 @@ fun AccionesDeCuentaAbierta(
     order: com.avoqado.pos.orders.data.model.OrderDetail,
     onActualizar: () -> Unit,
     onCancelada: () -> Unit,
+    onSalioSinCobrar: () -> Unit,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-${order.id}"),
 ) {
     if (order.status in listOf("CANCELLED", "DELETED") || order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID ||
@@ -279,7 +280,8 @@ fun AccionesDeCuentaAbierta(
     if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
         abierta = false
         if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
-        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id, onActualizar, onCancelada, onResultadoDeTarjetas)
+        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id,
+            if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
         scope.launch { if (enLinea) viewModel.cargar(order.id) }
     }, viewModel = viewModel)
 }

@@ -15,8 +15,9 @@ class ConnectivityInterceptor(
         } catch (e: IOException) {
             if (e is com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.Changed) throw e
             // Cerrar una pantalla cancela su petición, y eso no dice nada del servidor. Con `callTimeout` (el cobro),
-            // OkHttp también cancela al vencer el plazo y aquí no se distingue: ésa sigue contando como falla.
-            val laCanceloLaApp = chain.call().isCanceled() && chain.call().timeout().timeoutNanos() == 0L
+            // OkHttp también cancela al vencer el plazo y aquí no se distingue: ésa sigue contando como falla. Una sesión
+            // que no se pudo renovar tampoco se ignora: su falla viene de OTRA llamada, que el servidor sí contestó mal.
+            val laCanceloLaApp = e !is SesionSinRenovar && chain.call().isCanceled() && chain.call().timeout().timeoutNanos() == 0L
             if (!laCanceloLaApp) connectivityMonitor.reportServerError()
             throw e
         }

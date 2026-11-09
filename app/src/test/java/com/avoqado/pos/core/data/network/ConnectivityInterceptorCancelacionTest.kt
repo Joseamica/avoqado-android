@@ -1,6 +1,7 @@
 package com.avoqado.pos.core.data.network
 
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import okhttp3.OkHttpClient
@@ -39,6 +40,17 @@ class ConnectivityInterceptorCancelacionTest {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
         val llamada = cliente { callTimeout(300, TimeUnit.MILLISECONDS) }.newCall(peticion())
         assertThrows(IOException::class.java) { llamada.execute() }
+        verify(exactly = 1) { monitor.reportServerError() }
+    }
+
+    @Test fun `una sesion sin renovar cuenta aunque se haya cerrado la pantalla`() {
+        val llamada = mockk<okhttp3.Call> { every { isCanceled() } returns true; every { timeout() } returns okio.Timeout() }
+        val cadena = mockk<okhttp3.Interceptor.Chain> {
+            every { call() } returns llamada
+            every { request() } returns peticion()
+            every { proceed(any()) } throws SesionSinRenovar("503")
+        }
+        assertThrows(IOException::class.java) { ConnectivityInterceptor(monitor).intercept(cadena) }
         verify(exactly = 1) { monitor.reportServerError() }
     }
 
