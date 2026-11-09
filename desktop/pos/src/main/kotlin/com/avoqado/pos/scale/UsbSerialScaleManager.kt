@@ -69,6 +69,8 @@ class UsbSerialScaleManager @Inject constructor() {
     internal var puertos: () -> List<PuertoSerie> = {
         if (System.getProperty("os.name").orEmpty().startsWith("Windows")) puertosSerie(RegistroDeWindows) else emptyList()
     }
+    /** Cuánto se espera la primera respuesta de un puerto escogido por descarte (D14) antes de soltarlo. */
+    internal var esperaDeRespuestaMs: Long = 3_000
     internal var abrir: (PuertoSerie, Int, Int, String?, Int?) -> CanalSerie =
         { p, baudios, datos, paridad, parada -> abrirCanalSerieDeWindows(p.nombre, baudios, datos, paridad, parada) }
 
@@ -77,10 +79,16 @@ class UsbSerialScaleManager @Inject constructor() {
      * consulta y una apertura tardía sólo publican si su conexión sigue siendo [actual], y la comprobación y el cambio de estado
      * van juntos bajo el candado: una conexión vieja nunca pisa a la nueva (ni su peso, ni su error, ni su «Lista»).
      */
-    private inner class Conexion(val profile: ScaleProfile, val protocol: ScaleProtocol, val canal: CanalSerie) {
+    private inner class Conexion(
+        val profile: ScaleProfile,
+        val protocol: ScaleProtocol,
+        val canal: CanalSerie,
+        val porDescarte: Boolean,
+    ) {
         val frameAssembler = ScaleFrameAssembler()
         val stabilityTracker = stabilityTrackerFor(protocol)
         @Volatile var consulta: Job? = null
+        @Volatile var contesto = false
     }
 
     private val candado = Any()
@@ -120,10 +128,11 @@ class UsbSerialScaleManager @Inject constructor() {
             return@withContext
         }
 
-        val puerto = when (val e = elegirPuerto(runCatching { puertos() }.getOrDefault(emptyList()), profile.vendorId, profile.productId)) {
+        val eleccion = when (val e = elegirPuerto(runCatching { puertos() }.getOrDefault(emptyList()), profile.vendorId, profile.productId)) {
             is EleccionDePuerto.Falla -> { fallar(e.mensaje); return@withContext }
-            is EleccionDePuerto.Elegido -> e.puerto
+            is EleccionDePuerto.Elegido -> e
         }
+        val puerto = eleccion.puerto
 
         val abierto = runCatching {
             abrir(puerto, profile.baudRate ?: protocol.defaultBaudRate, profile.dataBits ?: 8, profile.parity, profile.stopBits)
@@ -133,9 +142,12 @@ class UsbSerialScaleManager @Inject constructor() {
         }
         // Abrir puede tardar: si mientras tanto se desconectó (el cajero cerró el panel), esta apertura ya no es de nadie. La
         // conexión y su «Lista» se publican JUNTAS: un disconnect no puede caer en medio.
-        val c = Conexion(profile, protocol, abierto)
+        val c = Conexion(profile, protocol, abierto, eleccion.porDescarte)
+        // Por descarte, «Lista» espera a que el puerto conteste (onNewData): hasta entonces sigue «Conectando».
         val vigente = synchronized(candado) {
-            (generacion == mia && isActive).also { if (it) { actual = c; _state.value = ScaleConnectionState.Ready(profile.name) } }
+            (generacion == mia && isActive).also {
+                if (it) { actual = c; if (!c.porDescarte) _state.value = ScaleConnectionState.Ready(profile.name) }
+            }
         }
         if (!vigente) {
             runCatching { abierto.cerrar() }
@@ -143,6 +155,16 @@ class UsbSerialScaleManager @Inject constructor() {
         }
         leer(c)
         startPolling(c)
+        if (c.porDescarte) scope.launch {
+            delay(esperaDeRespuestaMs)
+            if (!c.contesto) {
+                perder(
+                    c,
+                    "La PC probó ${puerto.nombre} y no contestó como báscula. Revisa que la báscula esté prendida y conectada " +
+                        "por USB; si sigue igual, pide ayuda a soporte de Avoqado.",
+                )
+            }
+        }
         Log.i(TAG, "Connected ${profile.name} with ${protocol.profileType} on ${puerto.nombre} for ${usageContext.wireValue}")
     }
 
@@ -180,6 +202,11 @@ class UsbSerialScaleManager @Inject constructor() {
     }
 
     private fun onNewData(c: Conexion, data: ByteArray) {
+        // La primera respuesta confirma el puerto escogido por descarte. Va ANTES de las tramas: su peso pisa este «Lista».
+        if (!c.contesto) {
+            c.contesto = true
+            if (c.porDescarte) publicar(c, ScaleConnectionState.Ready(c.profile.name))
+        }
         val text = data.toString(StandardCharsets.US_ASCII)
         val frames = synchronized(c.frameAssembler) {
             c.frameAssembler.append(c.protocol, text)
@@ -188,8 +215,11 @@ class UsbSerialScaleManager @Inject constructor() {
     }
 
     /** Sólo la conexión vigente se da por perdida: el error de una anterior no toca a la nueva (ni cancela SU consulta). */
-    private fun onRunError(c: Conexion, e: Exception) {
-        val message = "Se perdió la conexión con la báscula: ${e.message ?: "revisa el cable"}"
+    private fun onRunError(c: Conexion, e: Exception) =
+        perder(c, "Se perdió la conexión con la báscula: ${e.message ?: "revisa el cable"}")
+
+    /** La conexión vigente se da por perdida con [message]: deja de leer y de consultar, y suelta el puerto. */
+    private fun perder(c: Conexion, message: String) {
         val mia = synchronized(candado) {
             (actual === c).also { if (it) { actual = null; _state.value = ScaleConnectionState.Problem(c.profile.name, message) } }
         }

@@ -29,10 +29,10 @@ class BasculaEnWindowsTest {
 
     @AfterTest fun soltar() = manager.disconnect()
 
-    private fun perfil(activo: Boolean = true, tipo: String? = "JUSTA_LP7516_ASCII") = ScaleProfile(
+    private fun perfil(activo: Boolean = true, tipo: String? = "JUSTA_LP7516_ASCII", conVidPid: Boolean = true) = ScaleProfile(
         id = "justa-1", name = "Justa mostrador", location = "Mostrador", model = "LP7516",
         allowedContexts = listOf("AREA_TICKET_LINE"), transport = "ANDROID_USB_SERIAL",
-        vendorId = 0x1A86, productId = 0x7523, frameParser = tipo?.let { buildJsonObject { put("type", JsonPrimitive(it)) } },
+        vendorId = 0x1A86.takeIf { conVidPid }, productId = 0x7523.takeIf { conVidPid }, frameParser = tipo?.let { buildJsonObject { put("type", JsonPrimitive(it)) } },
         active = activo,
     )
 
@@ -72,6 +72,46 @@ class BasculaEnWindowsTest {
         for (kg in listOf("0.430", "0.434", "0.000", "0.430")) { canal.llega("$kg kg"); Thread.sleep(30) }
         val estado = esperar { it is ScaleConnectionState.Stable || (it as? ScaleConnectionState.Unstable)?.reading?.netKg == "0.430" }
         assertIs<ScaleConnectionState.Unstable>(estado, "el cero corta la racha: $estado")
+    }
+
+    // D14 + Codex r1: con COM1 de la tarjeta madre y un solo cable USB-serie, ese cable se escoge POR DESCARTE. Puede ser un
+    // visor de cliente con el mismo chip: no se dice «Lista» hasta que el puerto conteste, y si calla se suelta.
+    private val tarjetaMadre = PuertoSerie("COM1", "\\Device\\Serial0", null, null)
+
+    @Test fun `por descarte - si el cable contesta, aunque sea un cero, queda Lista y sigue leyendo`() = runBlocking<Unit> {
+        manager.puertos = { listOf(tarjetaMadre, puerto) }
+        manager.esperaDeRespuestaMs = 200
+        manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII", conVidPid = false), ScaleUsageContext.AREA_TICKET_LINE)
+        assertEquals("COM3", abiertoCon.first())
+        assertIs<ScaleConnectionState.Connecting>(manager.state.value, "sin respuesta todavía no dice «Lista»")
+        canal.llega("0.000 kg")   // la Rhino vacía: trama que no da peso, pero sí es la báscula contestando
+        assertIs<ScaleConnectionState.Ready>(esperar { it is ScaleConnectionState.Ready })
+        Thread.sleep(400)
+        assertIs<ScaleConnectionState.Ready>(manager.state.value, "pasada la espera, sigue conectada")
+        repeat(3) { canal.llega("0.430 kg"); Thread.sleep(30) }
+        assertIs<ScaleConnectionState.Stable>(esperar { it is ScaleConnectionState.Stable })
+    }
+
+    @Test fun `por descarte - si el cable no contesta, suelta el puerto y lo dice`() = runBlocking<Unit> {
+        manager.puertos = { listOf(tarjetaMadre, puerto) }
+        manager.esperaDeRespuestaMs = 200
+        manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII", conVidPid = false), ScaleUsageContext.AREA_TICKET_LINE)
+        val estado = esperar { it is ScaleConnectionState.Problem }
+        assertIs<ScaleConnectionState.Problem>(estado)
+        assertTrue(estado.message.startsWith("La PC probó COM3 y no contestó como báscula"), estado.message)
+        assertTrue(esperar { canal.cerrado }.let { canal.cerrado }, "suelta el puerto: puede ser un visor u otro aparato")
+        val escritos = canal.escrito.size
+        Thread.sleep(700)
+        assertEquals(escritos, canal.escrito.size, "ya no le manda la consulta")
+    }
+
+    @Test fun `con VID PID o un solo puerto no se espera respuesta - queda Lista como antes`() = runBlocking<Unit> {
+        manager.esperaDeRespuestaMs = 200
+        manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII"), ScaleUsageContext.AREA_TICKET_LINE)
+        assertIs<ScaleConnectionState.Ready>(manager.state.value)
+        Thread.sleep(400)
+        assertIs<ScaleConnectionState.Ready>(manager.state.value)
+        assertTrue(!canal.cerrado)
     }
 
     @Test fun `una trama de sobrecarga se dice como en Android`() = runBlocking {

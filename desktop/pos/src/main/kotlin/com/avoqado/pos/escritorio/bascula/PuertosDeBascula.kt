@@ -10,7 +10,8 @@ import com.sun.jna.platform.win32.WinReg
 /*
  * La báscula en Windows es un puerto COM (adaptador USB-serie CH340, FTDI, Prolific, Silicon Labs, o un COM de la tarjeta
  * madre). Android la busca por el VID/PID del USB; aquí se lee del registro qué COM es de qué VID/PID, y se elige con la
- * MISMA regla de Android: nunca adivinar entre varios.
+ * MISMA regla de Android: nunca adivinar entre varios. Única excepción, que Android no necesita porque no tiene puertos de
+ * tarjeta madre: un solo cable USB-serie junto a COM de la tarjeta madre (D14).
  */
 
 /**
@@ -31,8 +32,18 @@ private val VID_PID = Regex("""VID_([0-9A-Fa-f]{4})[&+]PID_([0-9A-Fa-f]{4})""")
 internal fun vidPidDe(clave: String): Pair<Int, Int>? =
     VID_PID.find(clave)?.let { it.groupValues[1].toInt(16) to it.groupValues[2].toInt(16) }
 
+/**
+ * Fabricantes de chips USB-serie (CH340/CH9102, FTDI, Prolific, Silicon Labs): un COM con uno de estos VID es un CABLE serie,
+ * no un aparato con COM virtual propio (una impresora USB trae el VID de su marca).
+ */
+internal val CHIPS_USB_SERIE = setOf(0x1A86, 0x0403, 0x067B, 0x10C4)
+
+/** Un COM de la tarjeta madre: sin VID/PID y sin que dos adaptadores USB lo reclamen. */
+private fun PuertoSerie.esDeTarjetaMadre() = !ambiguo && vendorId == null && productId == null
+
 sealed interface EleccionDePuerto {
-    data class Elegido(val puerto: PuertoSerie) : EleccionDePuerto
+    /** [porDescarte]: nadie dijo que ése es la báscula (D14); puede ser un visor con el mismo chip, hay que oírlo contestar. */
+    data class Elegido(val puerto: PuertoSerie, val porDescarte: Boolean = false) : EleccionDePuerto
     data class Falla(val mensaje: String) : EleccionDePuerto
 }
 
@@ -50,6 +61,14 @@ internal fun elegirPuerto(puertos: List<PuertoSerie>, vendorId: Int?, productId:
         else -> true
     }
     candidatos.singleOrNull(::coincide)?.let { return EleccionDePuerto.Elegido(it) }
+    // D14: los COM de la tarjeta madre (COM1, COM2) no se pueden desconectar. Si la báscula va por el ÚNICO cable USB-serie y
+    // lo demás es tarjeta madre, se prueba ese cable. Una impresora con COM virtual no es cable: con ella no se escoge por
+    // descarte. Un visor de cliente SÍ puede traer el mismo chip: el lector no dice «Lista» hasta oírlo contestar (Codex r1).
+    val coinciden = candidatos.filter(::coincide)
+    val cables = coinciden.filter { it.vendorId in CHIPS_USB_SERIE }
+    if (coinciden.size > 1 && cables.size == 1 && coinciden.all { it in cables || it.esDeTarjetaMadre() }) {
+        return EleccionDePuerto.Elegido(cables.single(), porDescarte = true)
+    }
     val ambiguo = candidatos.firstOrNull { it.ambiguo }
     return EleccionDePuerto.Falla(
         when {
@@ -57,7 +76,9 @@ internal fun elegirPuerto(puertos: List<PuertoSerie>, vendorId: Int?, productId:
             candidatos.none(::coincide) && ambiguo != null ->
                 "Windows tiene ${ambiguo.nombre} registrado para dos adaptadores distintos y no se sabe si es la báscula. " +
                     "Desconecta los adaptadores que no uses y vuelve a conectar la báscula."
-            candidatos.count(::coincide) > 1 -> "Hay más de una báscula compatible conectada; configura VID/PID."
+            coinciden.size > 1 ->
+                "Hay varios puertos COM y la PC no sabe cuál es la báscula. Desconecta los adaptadores USB que no sean de la " +
+                    "báscula; si sigue igual, pide ayuda a soporte de Avoqado."
             vendorId == null || productId == null -> "Hay varios puertos seriales; configura VID/PID para elegir la báscula."
             else -> "La báscula configurada no está conectada."
         },

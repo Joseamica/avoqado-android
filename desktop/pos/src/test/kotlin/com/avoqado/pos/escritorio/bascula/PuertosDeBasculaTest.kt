@@ -15,6 +15,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+private const val VARIOS_PUERTOS =
+    "Hay varios puertos COM y la PC no sabe cuál es la báscula. Desconecta los adaptadores USB que no sean de la báscula; " +
+        "si sigue igual, pide ayuda a soporte de Avoqado."
+
 class PuertosDeBasculaTest {
     private val ch340 = PuertoSerie("COM3", "\\Device\\Serial2", 0x1A86, 0x7523)
     private val ftdi = PuertoSerie("COM4", "\\Device\\VCP0", 0x0403, 0x6001)
@@ -60,13 +64,13 @@ class PuertosDeBasculaTest {
         assertEquals(EleccionDePuerto.Elegido(ftdi), elegirPuerto(listOf(tarjetaMadre, ch340, ftdi), 0x0403, 0x6001))
     }
 
-    @Test fun `nunca adivina - los mismos mensajes que Android`() {
+    @Test fun `nunca adivina entre varios - y dice que hacer`() {
         assertEquals(
             EleccionDePuerto.Falla("No se detectó una báscula serial (USB o COM). Revisa cable y adaptador."),
             elegirPuerto(listOf(bluetooth), null, null),
         )
         assertEquals(
-            EleccionDePuerto.Falla("Hay más de una báscula compatible conectada; configura VID/PID."),
+            EleccionDePuerto.Falla(VARIOS_PUERTOS),
             elegirPuerto(listOf(ch340, ftdi), null, null),
         )
         assertEquals(
@@ -76,6 +80,39 @@ class PuertosDeBasculaTest {
         assertEquals(
             EleccionDePuerto.Falla("Hay varios puertos seriales; configura VID/PID para elegir la báscula."),
             elegirPuerto(listOf(ch340, ftdi), 0x067B, null),
+        )
+    }
+
+    // D14 (CREMERIA 1 de La Galeterie, 9-nov): COM1 y COM2 de la tarjeta madre y la báscula en un cable USB CH340 (COM3).
+    private val com2 = PuertoSerie("COM2", "\\Device\\Serial1", null, null)
+    private val impresoraUsb = PuertoSerie("COM6", "\\Device\\BxlVcom0", 0x1504, 0x0006)   // impresora con COM virtual (BIXOLON)
+
+    @Test fun `con COM de la tarjeta madre y UN cable USB-serie, se usa el cable`() {
+        assertEquals(EleccionDePuerto.Elegido(ch340), elegirPuerto(listOf(tarjetaMadre, com2, ch340, bluetooth), null, null))
+        assertEquals(EleccionDePuerto.Elegido(ftdi), elegirPuerto(listOf(ftdi, tarjetaMadre), null, null))
+        val prolific = PuertoSerie("COM7", "\\Device\\ProlificSerial0", 0x067B, 0x2303)
+        assertEquals(EleccionDePuerto.Elegido(prolific), elegirPuerto(listOf(tarjetaMadre, prolific), null, null))
+        val siliconLabs = PuertoSerie("COM8", "\\Device\\Silabser0", 0x10C4, 0xEA60)
+        assertEquals(EleccionDePuerto.Elegido(siliconLabs), elegirPuerto(listOf(tarjetaMadre, siliconLabs), null, null))
+    }
+
+    @Test fun `con COM de la tarjeta madre no se adivina si hay dos cables, un USB que no es cable serie o un COM ambiguo`() {
+        assertEquals(EleccionDePuerto.Falla(VARIOS_PUERTOS), elegirPuerto(listOf(tarjetaMadre, ch340, ftdi), null, null))
+        // Una impresora con COM virtual NO es un cable USB-serie: nunca se le manda la consulta por descarte.
+        assertEquals(EleccionDePuerto.Falla(VARIOS_PUERTOS), elegirPuerto(listOf(tarjetaMadre, impresoraUsb), null, null))
+        assertEquals(EleccionDePuerto.Falla(VARIOS_PUERTOS), elegirPuerto(listOf(tarjetaMadre, ch340, impresoraUsb), null, null))
+        // Un COM ambiguo puede ser otro cable USB: no cuenta como tarjeta madre.
+        val com4Ambiguo = PuertoSerie("COM4", "\\Device\\Serial3", null, null, ambiguo = true)
+        assertEquals(EleccionDePuerto.Falla(VARIOS_PUERTOS), elegirPuerto(listOf(tarjetaMadre, com4Ambiguo, ch340), null, null))
+        // Sólo tarjeta madre: no hay cable que escoger.
+        assertEquals(EleccionDePuerto.Falla(VARIOS_PUERTOS), elegirPuerto(listOf(tarjetaMadre, com2), null, null))
+    }
+
+    @Test fun `con VID PID en el perfil manda el perfil, aunque haya un solo cable USB`() {
+        assertEquals(EleccionDePuerto.Elegido(ch340), elegirPuerto(listOf(tarjetaMadre, com2, ch340), 0x1A86, 0x7523))
+        assertEquals(
+            EleccionDePuerto.Falla("La báscula configurada no está conectada."),
+            elegirPuerto(listOf(tarjetaMadre, com2, ch340), 0x0403, 0x6001),
         )
     }
 
