@@ -66,6 +66,14 @@ class BasculaEnWindowsTest {
         assertEquals("0.002", estado.reading.netKg)
     }
 
+    /** Codex r2: quitar el producto (llega un cero) y volver a ponerlo no completa las 3 lecturas de la Rhino. */
+    @Test fun `la Rhino no da estable si en medio llega un cero`() = runBlocking<Unit> {
+        manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII"), ScaleUsageContext.AREA_TICKET_LINE)
+        for (kg in listOf("0.430", "0.434", "0.000", "0.430")) { canal.llega("$kg kg"); Thread.sleep(30) }
+        val estado = esperar { it is ScaleConnectionState.Stable || (it as? ScaleConnectionState.Unstable)?.reading?.netKg == "0.430" }
+        assertIs<ScaleConnectionState.Unstable>(estado, "el cero corta la racha: $estado")
+    }
+
     @Test fun `una trama de sobrecarga se dice como en Android`() = runBlocking {
         manager.connect(perfil(), ScaleUsageContext.AREA_TICKET_LINE)
         canal.llega("OL,GS,+99.999kg\r\n")

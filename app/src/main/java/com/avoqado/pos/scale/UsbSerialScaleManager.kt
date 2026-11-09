@@ -236,6 +236,7 @@ class UsbSerialScaleManager @Inject constructor(
             }
             return
         }
+        if (protocol.requiresSyntheticStability) stabilityTracker.rejected()
         when (decoded.rejection) {
             ScaleFrameRejection.OVERLOAD ->
                 fail(profile, "La báscula reporta sobrecarga o peso fuera de rango.")

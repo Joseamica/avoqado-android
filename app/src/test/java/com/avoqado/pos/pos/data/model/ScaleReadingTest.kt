@@ -244,6 +244,34 @@ class ScaleReadingTest {
         assertTrue(tracker.observe(rhino("0.500", now + 3_000)).stable)
     }
 
+    /** Codex r2: un cero en medio (quitar el producto y volver a ponerlo) corta la racha de la Rhino. */
+    @Test
+    fun `Rhino rejected frame breaks the run of readings`() {
+        val tracker = rhinoTracker()
+
+        assertFalse(tracker.observe(rhino("0.430", now)).stable)
+        assertFalse(tracker.observe(rhino("0.434", now + 500)).stable)
+        tracker.rejected()
+        assertFalse(tracker.observe(rhino("0.430", now + 1_500)).stable)
+        assertFalse(tracker.observe(rhino("0.430", now + 2_000)).stable)
+        assertTrue(tracker.observe(rhino("0.430", now + 2_500)).stable)
+    }
+
+    @Test
+    fun `Torrey ignores a rejected frame as before`() {
+        val tracker = stabilityTrackerFor(ScaleProtocol.TORREY_PCR_ASCII)
+        fun torrey(weight: String, at: Long) = decodeScaleFrame(
+            ScaleProtocol.TORREY_PCR_ASCII,
+            "torrey-pcr",
+            "$weight kg",
+            at,
+        ).reading!!
+
+        assertFalse(tracker.observe(torrey("0.435", now)).stable)
+        tracker.rejected()
+        assertTrue(tracker.observe(torrey("0.435", now + 250)).stable)
+    }
+
     /** Codex r1 #2: Torrey (pasos de 1 g en la PCR-20) debe seguir rechazando un brinco de 2 g, como antes. */
     @Test
     fun `Torrey keeps comparing each reading with the previous one`() {

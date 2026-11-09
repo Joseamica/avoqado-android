@@ -197,6 +197,14 @@ class ScaleStabilityTracker(
         return reading.copy(stable = stable)
     }
 
+    /**
+     * Una trama rechazada (cero, sobrecarga, basura). Con más de 2 lecturas la regla pide N SEGUIDAS, así que la corta:
+     * quitar el producto y volver a ponerlo no puede completar la racha (Codex r2). Con 2 se conserva lo de antes (Torrey).
+     */
+    fun rejected() {
+        if (requiredMatches > 2) reset()
+    }
+
     fun reset() {
         window.clear()
         previousObservedAt = null
