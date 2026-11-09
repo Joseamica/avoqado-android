@@ -73,6 +73,7 @@ import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.unitSuffixOf
 import com.avoqado.pos.scale.ScaleConnectionState
+import com.avoqado.pos.scale.vigentePara
 import java.util.Locale
 
 // MARK: - Main Counting View
@@ -616,7 +617,8 @@ private fun InventoryScaleReading(
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            when (state) {
+            // D15: el peso del artículo anterior, o uno de hace más de 2 s (báscula callada), no se ofrece para éste.
+            when (val state = state.vigentePara(item.id to item.productId)) {
                 is ScaleConnectionState.Connecting ->
                     Text("Conectando ${state.profileName}…", style = MaterialTheme.typography.bodySmall)
                 is ScaleConnectionState.Ready ->
