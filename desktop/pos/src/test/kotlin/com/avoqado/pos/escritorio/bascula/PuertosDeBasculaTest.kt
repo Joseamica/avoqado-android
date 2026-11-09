@@ -88,12 +88,12 @@ class PuertosDeBasculaTest {
     private val impresoraUsb = PuertoSerie("COM6", "\\Device\\BxlVcom0", 0x1504, 0x0006)   // impresora con COM virtual (BIXOLON)
 
     @Test fun `con COM de la tarjeta madre y UN cable USB-serie, se usa el cable`() {
-        assertEquals(EleccionDePuerto.Elegido(ch340), elegirPuerto(listOf(tarjetaMadre, com2, ch340, bluetooth), null, null))
-        assertEquals(EleccionDePuerto.Elegido(ftdi), elegirPuerto(listOf(ftdi, tarjetaMadre), null, null))
+        assertEquals(EleccionDePuerto.Elegido(ch340, porDescarte = true), elegirPuerto(listOf(tarjetaMadre, com2, ch340, bluetooth), null, null))
+        assertEquals(EleccionDePuerto.Elegido(ftdi, porDescarte = true), elegirPuerto(listOf(ftdi, tarjetaMadre), null, null))
         val prolific = PuertoSerie("COM7", "\\Device\\ProlificSerial0", 0x067B, 0x2303)
-        assertEquals(EleccionDePuerto.Elegido(prolific), elegirPuerto(listOf(tarjetaMadre, prolific), null, null))
+        assertEquals(EleccionDePuerto.Elegido(prolific, porDescarte = true), elegirPuerto(listOf(tarjetaMadre, prolific), null, null))
         val siliconLabs = PuertoSerie("COM8", "\\Device\\Silabser0", 0x10C4, 0xEA60)
-        assertEquals(EleccionDePuerto.Elegido(siliconLabs), elegirPuerto(listOf(tarjetaMadre, siliconLabs), null, null))
+        assertEquals(EleccionDePuerto.Elegido(siliconLabs, porDescarte = true), elegirPuerto(listOf(tarjetaMadre, siliconLabs), null, null))
     }
 
     @Test fun `con COM de la tarjeta madre no se adivina si hay dos cables, un USB que no es cable serie o un COM ambiguo`() {
