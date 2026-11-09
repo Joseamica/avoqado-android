@@ -16,6 +16,7 @@ import com.avoqado.pos.pos.data.model.ScaleFrameRejection
 import com.avoqado.pos.pos.data.model.ScaleFrameAssembler
 import com.avoqado.pos.pos.data.model.ScaleProtocol
 import com.avoqado.pos.pos.data.model.ScaleStabilityTracker
+import com.avoqado.pos.pos.data.model.stabilityTrackerFor
 import com.avoqado.pos.pos.data.model.decodeScaleFrame
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -162,7 +163,7 @@ class UsbSerialScaleManager @Inject constructor(
                 profile.parity.toUsbParity(),
             )
             serialPort = port
-            stabilityTracker = ScaleStabilityTracker()
+            stabilityTracker = stabilityTrackerFor(protocol)
             synchronized(frameAssembler) { frameAssembler.clear() }
             inputOutputManager = SerialInputOutputManager(port, this@UsbSerialScaleManager).also {
                 it.start()
@@ -235,6 +236,7 @@ class UsbSerialScaleManager @Inject constructor(
             }
             return
         }
+        if (protocol.requiresSyntheticStability) stabilityTracker.rejected()
         when (decoded.rejection) {
             ScaleFrameRejection.OVERLOAD ->
                 fail(profile, "La báscula reporta sobrecarga o peso fuera de rango.")
