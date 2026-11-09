@@ -83,6 +83,7 @@ fun ModifierDetailSheet(
         )
     }
     var selectedMaterial by remember { mutableStateOf<RawMaterial?>(null) }
+    var cambioElInsumo by remember { mutableStateOf(false) }
     var quantityPerUnit by remember { mutableStateOf(modifier.quantityPerUnit?.toString() ?: "") }
     var selectedUnit by remember {
         mutableStateOf<MeasurementUnit?>(
@@ -104,7 +105,7 @@ fun ModifierDetailSheet(
                 name = name,
                 price = price.toDoubleOrNull() ?: 0.0,
                 active = active,
-                rawMaterialId = insumoAlGuardar(trackInventory, selectedMaterial?.id, modifier.rawMaterialId),
+                rawMaterialId = insumoAlGuardar(trackInventory, selectedMaterial?.id, modifier.rawMaterialId, cambioElInsumo),
                 inventoryMode = if (trackInventory) inventoryMode.name else null,
                 quantityPerUnit = if (trackInventory) quantityPerUnit.toDoubleOrNull() else null,
                 unit = if (trackInventory) selectedUnit?.name else null,
@@ -254,6 +255,7 @@ fun ModifierDetailSheet(
                                         .fillMaxWidth()
                                         .clickable {
                                             selectedMaterial = material
+                                            cambioElInsumo = true
                                             materialSearchQuery = material.name
                                             selectedUnit = material.unit?.let {
                                                 try { MeasurementUnit.valueOf(it) } catch (_: Exception) { null }
@@ -440,6 +442,12 @@ private fun UnitDropdownSelector(
     }
 }
 
-/** Sin elegir otro insumo se conserva el que ya tenía: reactivar o renombrar un extra no debe romper su inventario. */
-internal fun insumoAlGuardar(rastrea: Boolean, elegido: String?, actual: String?): String? =
-    if (rastrea) elegido ?: actual else null
+/**
+ * Si no se tocó el insumo se conserva el que ya tenía: reactivar o renombrar un extra no debe romper su inventario.
+ * Si se eligió otro y luego se quitó, la unidad ya es la de ese otro: no se regresa al original.
+ */
+internal fun insumoAlGuardar(rastrea: Boolean, elegido: String?, actual: String?, cambioElInsumo: Boolean): String? = when {
+    !rastrea -> null
+    cambioElInsumo -> elegido
+    else -> actual
+}

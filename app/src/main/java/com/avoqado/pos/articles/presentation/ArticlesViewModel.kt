@@ -434,7 +434,9 @@ class ArticlesViewModel @Inject constructor(
             try {
                 repository.clearError()
                 // La caja exige ese mínimo y sólo ofrece las activas: quitar de más dejaría el producto imposible de agregar.
-                val minimo = if (required) minSelections ?: 1 else 0
+                // Vacío no borra el mínimo: el PATCH omite el campo y el servidor conserva el que tenía.
+                val minimoGuardado = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.minSelections
+                val minimo = if (required) minSelections ?: minimoGuardado ?: 1 else 0
                 val quedan = currentModifiers.count { !it.isDeleted }
                 val quitaAlguno = currentModifiers.any { it.isDeleted && it.id != null } ||
                     originalModifiers.any { original -> currentModifiers.none { it.id == original.id } }
@@ -483,7 +485,8 @@ class ArticlesViewModel @Inject constructor(
      * Eliminar un modificador lo ARCHIVA (`active: false`, founder 9-nov, igual que Toast y que los productos): así el reporte,
      * las ligas de pago ya enviadas y una venta hecha sin red que lo traiga siguen valiendo. Se archiva lo que la hoja abrió y ya
      * no conserva, y lo que ella misma creó y luego quitó; lo que sólo esté en la lista viva pudo agregarlo otro aparato, y no
-     * se toca. Lo ya archivado o inexistente se salta, porque la lista acaba de refrescarse con el PATCH del grupo.
+     * se toca. Lo ya archivado o inexistente se salta. Archivar va al final: si un alta falla, el grupo no se queda sin la
+     * opción que se iba a reemplazar.
      */
     private suspend fun guardarModificadores(
         groupId: String,
@@ -491,15 +494,6 @@ class ArticlesViewModel @Inject constructor(
         currentModifiers: List<InlineModifier>,
         onModificadorCreado: (indice: Int, id: String) -> Unit,
     ): Boolean {
-        val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
-        val archivables = vivos.filter { it.active != false }.map { it.id }.toSet()
-        val seQuedan = currentModifiers.filterNot { it.isDeleted }.mapNotNull { it.id }.toSet()
-        val quitados = (originalModifiers.map { it.id } + currentModifiers.filter { it.isDeleted }.mapNotNull { it.id }).distinct()
-        val archivar = buildJsonObject { put("active", false) }.toString()
-        for (id in quitados) {
-            if (id !in seQuedan && id in archivables && !repository.updateModifier(groupId, id, archivar)) return false
-        }
-
         for ((indice, modifier) in currentModifiers.withIndex()) {
             if (modifier.isDeleted) continue
 
@@ -514,6 +508,15 @@ class ArticlesViewModel @Inject constructor(
                 val idCreado = repository.addModifierToGroup(groupId, payload) ?: return false
                 onModificadorCreado(indice, idCreado)
             }
+        }
+
+        val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
+        val archivables = vivos.filter { it.active != false }.map { it.id }.toSet()
+        val seQuedan = currentModifiers.filterNot { it.isDeleted }.mapNotNull { it.id }.toSet()
+        val quitados = (originalModifiers.map { it.id } + currentModifiers.filter { it.isDeleted }.mapNotNull { it.id }).distinct()
+        val archivar = buildJsonObject { put("active", false) }.toString()
+        for (id in quitados) {
+            if (id !in seQuedan && id in archivables && !repository.updateModifier(groupId, id, archivar)) return false
         }
         return true
     }

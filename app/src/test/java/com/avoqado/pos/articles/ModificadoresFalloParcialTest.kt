@@ -192,12 +192,12 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, hoja)
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno", "POST Nuevo"), peticiones)
+        assertEquals(listOf("PATCH grupo", "PATCH m-uno", "POST Nuevo", "ARCHIVA m-viejo"), peticiones)
         assertEquals(listOf("Uno" to 2.0, "Nuevo" to 3.0), activos().map { it.name to it.price })
     }
 
     @Test
-    fun `falla al archivar, no sigue y avisa false con el motivo`() = runTest {
+    fun `falla al archivar, avisa false con el motivo`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         val hoja = mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0), InlineModifier(name = "Nuevo", price = 3.0))
         falla = { it == "ARCHIVA m-viejo" }
@@ -206,7 +206,7 @@ class ModificadoresFalloParcialTest {
 
         assertEquals(false, resultado)
         assertEquals(motivo, repositoryError.value)
-        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo"), peticiones)
+        assertEquals(listOf("PATCH grupo", "PATCH m-uno", "POST Nuevo", "ARCHIVA m-viejo"), peticiones)
         verify(exactly = 0) { repository.setError(any()) }
     }
 
@@ -368,17 +368,16 @@ class ModificadoresFalloParcialTest {
     @Test
     fun `reintento donde ya se archivo no vuelve a archivar`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
-        val hoja = mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0))
         val vm = viewModel()
-        falla = { it == "PATCH m-uno" }
-        assertEquals(false, guardar(vm, originales, hoja))
+        falla = { it == "ARCHIVA m-uno" }
+        assertEquals(false, guardar(vm, originales, mutableListOf()))
 
         reintentoSinFallas()
-        val resultado = guardar(vm, originales, hoja)
+        val resultado = guardar(vm, originales, mutableListOf())
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "PATCH m-uno"), peticiones)
-        assertEquals(listOf("Uno" to 2.0), activos().map { it.name to it.price })
+        assertEquals(listOf("PATCH grupo", "ARCHIVA m-uno"), peticiones)
+        assertTrue(activos().isEmpty())
     }
 
     @Test
@@ -431,7 +430,7 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, hoja)
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno"), peticiones)
+        assertEquals(listOf("PATCH grupo", "PATCH m-uno", "ARCHIVA m-viejo"), peticiones)
         assertEquals(listOf("m-viejo" to false, "m-uno" to null), enServidor.map { it.id to it.active })
     }
 
@@ -460,7 +459,7 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(vm, originales, hoja)
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "ARCHIVA creado-1", "POST Dos"), peticiones)
+        assertEquals(listOf("PATCH grupo", "POST Dos", "ARCHIVA creado-1"), peticiones)
         assertEquals(listOf("Dos"), activos().map { it.name })
     }
 
@@ -544,10 +543,40 @@ class ModificadoresFalloParcialTest {
     }
 
     @Test
-    fun `D8, reactivar o renombrar sin elegir otro insumo conserva el que tenia`() {
-        assertEquals("insumo-1", insumoAlGuardar(rastrea = true, elegido = null, actual = "insumo-1"))
-        assertEquals("insumo-2", insumoAlGuardar(rastrea = true, elegido = "insumo-2", actual = "insumo-1"))
-        assertNull(insumoAlGuardar(rastrea = false, elegido = "insumo-2", actual = "insumo-1"))
+    fun `D8, si no se cambio el insumo se conserva, y si se cambio manda lo elegido`() {
+        assertEquals("insumo-1", insumoAlGuardar(rastrea = true, elegido = null, actual = "insumo-1", cambioElInsumo = false))
+        assertEquals("insumo-2", insumoAlGuardar(rastrea = true, elegido = "insumo-2", actual = "insumo-1", cambioElInsumo = true))
+        assertNull(insumoAlGuardar(rastrea = true, elegido = null, actual = "insumo-1", cambioElInsumo = true))
+        assertNull(insumoAlGuardar(rastrea = false, elegido = "insumo-2", actual = "insumo-1", cambioElInsumo = true))
+    }
+
+    @Test
+    fun `D8, si falla crear la opcion nueva no se archiva la que iba a reemplazar`() = runTest {
+        val originales = abreLaHojaCon(uno)
+        val hoja = mutableListOf(
+            InlineModifier(id = "m-uno", name = "Uno", price = 1.0, isDeleted = true),
+            InlineModifier(name = "", price = 2.0),
+        )
+        falla = { it == "POST " }
+
+        assertEquals(false, guardar(viewModel(), originales, hoja))
+
+        assertEquals(listOf("PATCH grupo", "POST "), peticiones)
+        assertEquals(listOf("m-uno"), activos().map { it.id })
+    }
+
+    @Test
+    fun `D8, vaciar el minimo no se salta el que tiene guardado el grupo`() = runTest {
+        val originales = abreLaHojaCon(viejo, uno)
+        loQueDevuelveLaLista = { listOf(ModifierGroup(id = "g", minSelections = 2, modifiers = enServidor.toList())) }
+        listaViva.value = loQueDevuelveLaLista()
+        val hoja = listOf(
+            InlineModifier(id = "m-viejo", name = "Viejo", price = 1.0, isDeleted = true),
+            InlineModifier(id = "m-uno", name = "Uno", price = 1.0),
+        )
+
+        assertEquals(false, guardarGrupoRequerido(viewModel(), originales, hoja, minimo = null, multiple = true))
+        assertTrue(peticiones.isEmpty())
     }
 
     @Test
@@ -559,7 +588,7 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0)))
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno"), peticiones)
+        assertEquals(listOf("PATCH grupo", "PATCH m-uno", "ARCHIVA m-viejo"), peticiones)
     }
 
     @Test
@@ -571,7 +600,7 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0)))
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno"), peticiones)
+        assertEquals(listOf("PATCH grupo", "PATCH m-uno", "ARCHIVA m-viejo"), peticiones)
     }
 }
 
