@@ -204,21 +204,24 @@ class OrdersRepository @Inject constructor(
         return result.map { }
     }
 
-    suspend fun loadOrderDetail(orderId: String) {
+    /** @param silencioso actualiza el pedido que ya se ve: sin círculo de carga, y si falla se queda lo que hay en pantalla. */
+    suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false) {
         val solicitud = orderId to Any()
         detalleSolicitado = solicitud
-        _isLoadingDetail.value = true
-        _errorMessage.value = null
+        if (!silencioso) {
+            _isLoadingDetail.value = true
+            _errorMessage.value = null
+        }
 
         try {
             val detail = fetchOrderDetail(orderId)
-            if (detalleSolicitado != solicitud) return
+            if (detalleSolicitado != solicitud || (silencioso && detail == null)) return
             _selectedOrder.value = detail
             if (detail == null) {
                 _errorMessage.value = "No se encontró la orden"
             }
         } catch (e: Exception) {
-            if (detalleSolicitado != solicitud) return
+            if (detalleSolicitado != solicitud || silencioso) return
             Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
             _errorMessage.value = "Error al cargar detalle de orden"
         } finally {

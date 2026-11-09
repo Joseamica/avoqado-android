@@ -148,6 +148,11 @@ class OrdersViewModel @Inject constructor(
         }
     }
 
+    /** Actualiza el pedido a la vista sin desmontarlo: quitarlo borraba su aviso y cortaba sus peticiones. */
+    fun refrescarDetalle(orderId: String) {
+        viewModelScope.launch { repository.loadOrderDetail(orderId, silencioso = true) }
+    }
+
     fun clearSelection() {
         _selectedOrderId.value = null
         _mensajeDeReimpresion.value = null

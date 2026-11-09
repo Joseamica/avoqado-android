@@ -253,9 +253,8 @@ internal fun estadoDelDetalle(
     errorMessage: String?,
 ): EstadoDelDetalle = when {
     selectedOrderId == null -> if (host == HostDelDetalle.TELEFONO) EstadoDelDetalle.Lista else EstadoDelDetalle.Vacio
-    // Al refrescar el MISMO pedido se deja lo que hay en pantalla: quitarlo borraba su aviso y cortaba sus peticiones.
-    selectedOrder?.id == selectedOrderId -> EstadoDelDetalle.Detalle(selectedOrder)
     isLoadingDetail -> EstadoDelDetalle.Cargando
+    selectedOrder?.id == selectedOrderId -> EstadoDelDetalle.Detalle(selectedOrder)
     else -> EstadoDelDetalle.Fallo(errorMessage ?: "No se pudo cargar el pedido")
 }
 
@@ -298,7 +297,7 @@ private fun PhoneOrdersLayout(
                 })
             } else OrderDetailView(
                 order = pedido,
-                onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                 onCuentaCancelada = onCuentaCancelada,
                 onBack = { viewModel.clearSelection() },
                 modifier = Modifier.fillMaxSize(),
@@ -494,7 +493,7 @@ private fun OrderDetailPanel(
                     })
                 } else OrderDetailView(
                     order = pedido,
-                    onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                    onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                     onCuentaCancelada = onCuentaCancelada,
                     onBack = null,
                     modifier = Modifier.fillMaxSize(),

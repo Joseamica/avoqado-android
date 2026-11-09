@@ -273,7 +273,7 @@ fun AccionesDeCuentaAbierta(
         onCancelada = { onCancelada(); onActualizar() })
     if (detalle?.esCuentaDeTarjetas == true) CancelarCuenta(viewModel) { onCancelada(); onActualizar() }
     if (oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
-    (if (enLinea) aviso ?: mensaje else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
+    (if (enLinea) mensaje ?: aviso else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
         order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
         sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
     if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->

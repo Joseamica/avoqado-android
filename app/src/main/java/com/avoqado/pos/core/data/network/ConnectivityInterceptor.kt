@@ -14,7 +14,10 @@ class ConnectivityInterceptor(
             chain.proceed(chain.request())
         } catch (e: IOException) {
             if (e is com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.Changed) throw e
-            connectivityMonitor.reportServerError()
+            // Cerrar una pantalla cancela su petición, y eso no dice nada del servidor. Con `callTimeout` (el cobro),
+            // OkHttp también cancela al vencer el plazo y aquí no se distingue: ésa sigue contando como falla.
+            val laCanceloLaApp = chain.call().isCanceled() && chain.call().timeout().timeoutNanos() == 0L
+            if (!laCanceloLaApp) connectivityMonitor.reportServerError()
             throw e
         }
 
