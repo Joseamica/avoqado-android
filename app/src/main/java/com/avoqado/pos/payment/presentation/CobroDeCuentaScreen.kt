@@ -27,6 +27,7 @@ import com.avoqado.pos.tables.data.restanteCents
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -52,7 +53,14 @@ class CobroDeCuentaViewModel @Inject constructor(
     private var venueDeLaCuenta: String? = null
     private val ofertaActual = MutableStateFlow(com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA)
     val oferta = ofertaActual.asStateFlow()
+    private val enVuelo = MutableStateFlow(0)
+    /** Consultas de la cuenta que aún no vuelven. Es contador y no booleano porque pueden correr dos a la vez. */
+    val consultasEnCurso = enVuelo.asStateFlow()
     suspend fun cargar(orderId: String) {
+        enVuelo.update { it + 1 } // Antes de vaciar la foto: «sin foto y sin consulta» significa que ya falló.
+        try { consultar(orderId) } finally { enVuelo.update { it - 1 } }
+    }
+    private suspend fun consultar(orderId: String) {
         foto.value = null
         aviso.value = null
         val venue = storage.venueId
@@ -251,6 +259,7 @@ fun AccionesDeCuentaAbierta(
     val oferta by viewModel.oferta.collectAsState()
     val cuentaDelCarrito = LocalCuentaDelCarrito.current
     val detalle by viewModel.detalle.collectAsState()
+    val consultasEnCurso by viewModel.consultasEnCurso.collectAsState()
     val mensaje by viewModel.mensaje.collectAsState()
     val scope = rememberCoroutineScope()
     var abierta by rememberSaveable(order.id) { mutableStateOf(false) }
@@ -261,7 +270,8 @@ fun AccionesDeCuentaAbierta(
     LaunchedEffect(order, solicitudesPropias) { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
     val cents = detalle?.let(::restanteCents)
     if (elegible) {
-        if (detalle == null) TextButton(enabled = enLinea, onClick = {
+        if (detalle == null && consultasEnCurso > 0) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
+        else if (detalle == null) TextButton(enabled = enLinea, onClick = {
             scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
         }) { Text(TextosDeTarjetas.REINTENTAR) }
         else if (cents == null && detalle != null) Text("No se pudo consultar lo que falta. Vuelve a abrir la cuenta.")
