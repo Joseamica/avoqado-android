@@ -46,7 +46,6 @@ class ArticulosMotivoDelRechazoRepositorioTest {
         "Error al actualizar grupo de modificadores" to { it.updateModifierGroup("grupo-1", "{}") },
         "Error al agregar modificador" to { it.addModifierToGroup("grupo-1", "{}") != null },
         "Error al actualizar modificador" to { it.updateModifier("grupo-1", "modificador-1", "{}") },
-        "Error al eliminar modificador" to { it.deleteModifier("grupo-1", "modificador-1") },
         "Error al crear paquete de crédito" to { it.createCreditPack("{}") },
         "Error al actualizar paquete de crédito" to { it.updateCreditPack("paquete-1", "{}") },
     )
@@ -218,8 +217,7 @@ class ArticulosMotivoAlGuardarViewModelTest {
 
         assertEquals(false, resultado)
         assertEquals(motivo, queLeeLaHoja)
-        // Nada a medias: reintentar no duplica el modificador nuevo ni borra dos veces.
-        coVerify(exactly = 0) { repository.deleteModifier(any(), any()) }
+        // Nada a medias: reintentar no duplica el modificador nuevo ni archiva dos veces.
         coVerify(exactly = 0) { repository.updateModifier(any(), any(), any()) }
         coVerify(exactly = 0) { repository.addModifierToGroup(any(), any()) }
         verify(exactly = 0) { repository.setError(any()) }
@@ -272,7 +270,6 @@ class ArticulosMotivoAlGuardarViewModelTest {
     @Test
     fun `grupo aceptado sigue con sus modificadores como hasta hoy`() = runTest {
         coEvery { repository.updateModifierGroup("g", any()) } returns true
-        coEvery { repository.deleteModifier("g", any()) } returns true
         coEvery { repository.updateModifier("g", any(), any()) } returns true
         coEvery { repository.addModifierToGroup("g", any()) } returns "m-nuevo"
         var resultado: Boolean? = null
@@ -292,7 +289,7 @@ class ArticulosMotivoAlGuardarViewModelTest {
         advanceUntilIdle()
 
         assertEquals(true, resultado)
-        coVerify(exactly = 1) { repository.deleteModifier("g", "m-viejo") }
+        coVerify(exactly = 1) { repository.updateModifier("g", "m-viejo", """{"active":false}""") }
         coVerify(exactly = 1) { repository.updateModifier("g", "m-uno", any()) }
         coVerify(exactly = 1) { repository.addModifierToGroup("g", any()) }
     }

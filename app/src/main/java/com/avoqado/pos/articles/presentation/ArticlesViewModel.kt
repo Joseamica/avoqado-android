@@ -467,9 +467,12 @@ class ArticlesViewModel @Inject constructor(
      * Aplica la hoja a los modificadores del grupo, paso por paso, y devuelve false en el primero que se rechace.
      *
      * Cada alta le avisa a la hoja el id que recibió, con su índice en [currentModifiers], antes del siguiente paso: en un
-     * reintento esa fila ya trae `id` y va por PATCH. Los borrados se saltan los que ya no existen en la lista del
-     * repositorio, que acaba de refrescar el PATCH del grupo, y se calculan contra [originalModifiers]: lo que esté en esa
-     * lista y no en la hoja pudo agregarlo otro aparato, y no se borra.
+     * reintento esa fila ya trae `id` y va por PATCH.
+     *
+     * Eliminar un modificador lo ARCHIVA (`active: false`, founder 9-nov, igual que Toast y que los productos): así el reporte,
+     * las ligas de pago ya enviadas y una venta hecha sin red que lo traiga siguen valiendo. Se archiva lo que la hoja abrió y ya
+     * no conserva, y lo que ella misma creó y luego quitó; lo que sólo esté en la lista viva pudo agregarlo otro aparato, y no
+     * se toca. Lo ya archivado o inexistente se salta, porque la lista acaba de refrescarse con el PATCH del grupo.
      */
     private suspend fun guardarModificadores(
         groupId: String,
@@ -478,14 +481,12 @@ class ArticlesViewModel @Inject constructor(
         onModificadorCreado: (indice: Int, id: String) -> Unit,
     ): Boolean {
         val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
-        val idsVivos = vivos.map { it.id }.toSet()
-
-        // DELETE removed modifiers (exist in original but not in current), menos los que ya no existen
-        val currentIds = currentModifiers.mapNotNull { it.id }.toSet()
-        for (deleted in originalModifiers) {
-            if (deleted.id !in currentIds && deleted.id in idsVivos && !repository.deleteModifier(groupId, deleted.id)) {
-                return false
-            }
+        val archivables = vivos.filter { it.active != false }.map { it.id }.toSet()
+        val seQuedan = currentModifiers.filterNot { it.isDeleted }.mapNotNull { it.id }.toSet()
+        val quitados = (originalModifiers.map { it.id } + currentModifiers.filter { it.isDeleted }.mapNotNull { it.id }).distinct()
+        val archivar = buildJsonObject { put("active", false) }.toString()
+        for (id in quitados) {
+            if (id !in seQuedan && id in archivables && !repository.updateModifier(groupId, id, archivar)) return false
         }
 
         for ((indice, modifier) in currentModifiers.withIndex()) {

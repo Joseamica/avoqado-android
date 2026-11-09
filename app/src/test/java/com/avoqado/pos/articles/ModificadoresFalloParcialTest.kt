@@ -11,6 +11,7 @@ import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -39,8 +41,8 @@ import org.junit.Test
  * hoja el id que le dio el servidor, así que en el reintento esa fila va por PATCH. Nada se reconoce por nombre: la hoja
  * sólo toca lo que abrió o lo que ella misma creó.
  *
- * El repositorio es un servidor de mentira que se porta como el de verdad: cada paso exitoso refresca la lista, y borrar
- * dos veces lo mismo da 404. Lo que se comprueba al final es lo que quedó en el servidor.
+ * El repositorio es un servidor de mentira que se porta como el de verdad: cada paso exitoso refresca la lista, y archivar
+ * deja la fila con active=false. Lo que se comprueba al final es lo que quedó en el servidor.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ModificadoresFalloParcialTest {
@@ -87,6 +89,8 @@ class ModificadoresFalloParcialTest {
 
     private fun nombreDe(payload: String) = Json.parseToJsonElement(payload).jsonObject["name"]!!.jsonPrimitive.content
     private fun precioDe(payload: String) = Json.parseToJsonElement(payload).jsonObject["price"]!!.jsonPrimitive.double
+    private fun archivaPayload(payload: String) = Json.parseToJsonElement(payload).jsonObject["active"]?.jsonPrimitive?.booleanOrNull == false
+    private fun activos() = enServidor.filter { it.active != false }
 
     private fun viewModel(): ArticlesViewModel {
         every { repository.products } returns MutableStateFlow(emptyList())
@@ -101,16 +105,15 @@ class ModificadoresFalloParcialTest {
         every { repository.clearError() } answers { repositoryError.value = null }
 
         coEvery { repository.updateModifierGroup("g", any()) } answers { responde("PATCH grupo") { true } }
-        coEvery { repository.deleteModifier("g", any()) } answers {
-            val id = secondArg<String>()
-            responde("DELETE $id") { enServidor.removeAll { it.id == id } }
-        }
         coEvery { repository.updateModifier("g", any(), any()) } answers {
             val id = secondArg<String>()
             val payload = thirdArg<String>()
-            responde("PATCH $id") {
+            val archiva = archivaPayload(payload)
+            responde(if (archiva) "ARCHIVA $id" else "PATCH $id") {
                 val i = enServidor.indexOfFirst { it.id == id }
-                if (i >= 0) enServidor[i] = enServidor[i].copy(name = nombreDe(payload), price = precioDe(payload))
+                if (i >= 0) {
+                    enServidor[i] = if (archiva) enServidor[i].copy(active = false) else enServidor[i].copy(name = nombreDe(payload), price = precioDe(payload))
+                }
                 i >= 0
             }
         }
@@ -188,21 +191,21 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, hoja)
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "DELETE m-viejo", "PATCH m-uno", "POST Nuevo"), peticiones)
-        assertEquals(listOf("Uno" to 2.0, "Nuevo" to 3.0), enServidor.map { it.name to it.price })
+        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno", "POST Nuevo"), peticiones)
+        assertEquals(listOf("Uno" to 2.0, "Nuevo" to 3.0), activos().map { it.name to it.price })
     }
 
     @Test
-    fun `falla un DELETE, no sigue y avisa false con el motivo`() = runTest {
+    fun `falla al archivar, no sigue y avisa false con el motivo`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         val hoja = mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0), InlineModifier(name = "Nuevo", price = 3.0))
-        falla = { it == "DELETE m-viejo" }
+        falla = { it == "ARCHIVA m-viejo" }
 
         val resultado = guardar(viewModel(), originales, hoja)
 
         assertEquals(false, resultado)
         assertEquals(motivo, repositoryError.value)
-        assertEquals(listOf("PATCH grupo", "DELETE m-viejo"), peticiones)
+        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo"), peticiones)
         verify(exactly = 0) { repository.setError(any()) }
     }
 
@@ -241,7 +244,7 @@ class ModificadoresFalloParcialTest {
     fun `un paso rechazado sin motivo cae al texto propio`() = runTest {
         val originales = abreLaHojaCon(viejo)
         motivoDelRechazo = null
-        falla = { it == "DELETE m-viejo" }
+        falla = { it == "ARCHIVA m-viejo" }
 
         val resultado = guardar(viewModel(), originales, mutableListOf())
 
@@ -362,7 +365,7 @@ class ModificadoresFalloParcialTest {
     }
 
     @Test
-    fun `reintento donde el borrado ya se hizo no vuelve a borrar`() = runTest {
+    fun `reintento donde ya se archivo no vuelve a archivar`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         val hoja = mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0))
         val vm = viewModel()
@@ -374,18 +377,18 @@ class ModificadoresFalloParcialTest {
 
         assertEquals(true, resultado)
         assertEquals(listOf("PATCH grupo", "PATCH m-uno"), peticiones)
-        assertEquals(listOf("Uno" to 2.0), enServidor.map { it.name to it.price })
+        assertEquals(listOf("Uno" to 2.0), activos().map { it.name to it.price })
     }
 
     @Test
-    fun `si el DELETE llego pero se perdio la respuesta el reintento no falla por 404`() = runTest {
+    fun `si archivar llego pero se perdio la respuesta el reintento no lo repite`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         val hoja = mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0))
         val vm = viewModel()
-        seCortaLaRespuesta = { it == "DELETE m-viejo" }
+        seCortaLaRespuesta = { it == "ARCHIVA m-viejo" }
         assertEquals(false, guardar(vm, originales, hoja))
 
-        // La lista todavía no sabe del DELETE: se entera con el PATCH del grupo con el que empieza el reintento.
+        // La lista todavía no sabe que se archivó: se entera con el PATCH del grupo con el que empieza el reintento.
         reintentoSinFallas()
         val resultado = guardar(vm, originales, hoja)
 
@@ -394,7 +397,7 @@ class ModificadoresFalloParcialTest {
     }
 
     @Test
-    fun `un modificador de otro aparato en la lista viva no se borra ni se toca`() = runTest {
+    fun `un modificador de otro aparato en la lista viva no se archiva ni se toca`() = runTest {
         val originales = abreLaHojaCon(uno)
         otroAparatoCrea("m-ajeno", "Ajeno", 9.0)
 
@@ -417,6 +420,64 @@ class ModificadoresFalloParcialTest {
     }
 
     @Test
+    fun `D8, eliminar una fila existente la archiva y no la borra`() = runTest {
+        val originales = abreLaHojaCon(viejo, uno)
+        val hoja = mutableListOf(
+            InlineModifier(id = "m-viejo", name = "Viejo", price = 1.0, isDeleted = true),
+            InlineModifier(id = "m-uno", name = "Uno", price = 1.0),
+        )
+
+        val resultado = guardar(viewModel(), originales, hoja)
+
+        assertEquals(true, resultado)
+        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno"), peticiones)
+        assertEquals(listOf("m-viejo" to false, "m-uno" to null), enServidor.map { it.id to it.active })
+    }
+
+    @Test
+    fun `D8, archivar manda solo active false para no pisar nombre ni precio`() = runTest {
+        val originales = abreLaHojaCon(viejo)
+        val mandado = slot<String>()
+        val vm = viewModel()
+        coEvery { repository.updateModifier("g", "m-viejo", capture(mandado)) } returns true
+
+        guardar(vm, originales, mutableListOf(InlineModifier(id = "m-viejo", name = "Otro", price = 9.0, isDeleted = true)))
+
+        assertEquals("""{"active":false}""", mandado.captured)
+    }
+
+    @Test
+    fun `D8, una fila creada en un intento anterior y luego eliminada tambien se archiva`() = runTest {
+        val originales = abreLaHojaCon()
+        val hoja = mutableListOf(InlineModifier(name = "Uno", price = 1.0), InlineModifier(name = "Dos", price = 2.0))
+        val vm = viewModel()
+        falla = { it == "POST Dos" }
+        assertEquals(false, guardar(vm, originales, hoja))
+        hoja[0] = hoja[0].copy(isDeleted = true)
+
+        reintentoSinFallas()
+        val resultado = guardar(vm, originales, hoja)
+
+        assertEquals(true, resultado)
+        assertEquals(listOf("PATCH grupo", "ARCHIVA creado-1", "POST Dos"), peticiones)
+        assertEquals(listOf("Dos"), activos().map { it.name })
+    }
+
+    @Test
+    fun `D8, la hoja de edicion no ofrece los archivados y uno ya archivado no se reenvia`() = runTest {
+        val archivado = ArticleModifier(id = "m-arch", name = "Archivado", price = 1.0, active = false)
+        val grupo = ModifierGroup(id = "g", modifiers = listOf(archivado, uno))
+
+        assertEquals(listOf("m-uno"), grupo.modificadoresEditables().map { it.id })
+
+        val originales = abreLaHojaCon(archivado, uno)
+        val resultado = guardar(viewModel(), originales, mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0)))
+
+        assertEquals(true, resultado)
+        assertEquals(listOf("PATCH grupo", "PATCH m-uno"), peticiones)
+    }
+
+    @Test
     fun `sin el grupo en la lista viva usa los originales tal cual`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         loQueDevuelveLaLista = { emptyList() }
@@ -425,11 +486,11 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0)))
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "DELETE m-viejo", "PATCH m-uno"), peticiones)
+        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno"), peticiones)
     }
 
     @Test
-    fun `un grupo que llega sin su lista de modificadores tampoco cancela el borrado`() = runTest {
+    fun `un grupo que llega sin su lista de modificadores tampoco cancela el archivado`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         loQueDevuelveLaLista = { listOf(ModifierGroup(id = "g", modifiers = null)) }
         listaViva.value = loQueDevuelveLaLista()
@@ -437,7 +498,7 @@ class ModificadoresFalloParcialTest {
         val resultado = guardar(viewModel(), originales, mutableListOf(InlineModifier(id = "m-uno", name = "Uno", price = 2.0)))
 
         assertEquals(true, resultado)
-        assertEquals(listOf("PATCH grupo", "DELETE m-viejo", "PATCH m-uno"), peticiones)
+        assertEquals(listOf("PATCH grupo", "ARCHIVA m-viejo", "PATCH m-uno"), peticiones)
     }
 }
 

@@ -586,31 +586,6 @@ class ArticlesRepository @Inject constructor(
         }
     }
 
-    suspend fun deleteModifier(groupId: String, modifierId: String): Boolean {
-        val url = modifierBaseUrl() ?: return false
-        return try {
-            val request = Request.Builder()
-                .url("$url/modifier-groups/$groupId/modifiers/$modifierId")
-                .delete()
-                .build()
-
-            val (code, responseBody) = executeRequest(request)
-            if (code in 200..299) {
-                Log.d(TAG, "✅ Modifier $modifierId deleted from group $groupId")
-                fetchModifierGroups()
-                true
-            } else {
-                Log.e(TAG, "❌ deleteModifier error: HTTP $code")
-                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al eliminar modificador")
-                false
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ deleteModifier exception: ${e.message}", e)
-            _errorMessage.value = motivoDelFallo(e, "Error al eliminar modificador")
-            false
-        }
-    }
-
     // MARK: - Discounts
 
     suspend fun fetchDiscounts(): Result<Unit> {

@@ -185,7 +185,10 @@ data class ModifierGroup(
     val active: Boolean? = null,
     val modifiers: List<ArticleModifier>? = null,
 ) {
-    val modifierCount: Int get() = modifiers?.size ?: 0
+    val modifierCount: Int get() = modificadoresEditables().size
+
+    /** Lo que se ofrece y se edita en la hoja del grupo: los archivados no cuentan. */
+    fun modificadoresEditables(): List<ArticleModifier> = modifiers.orEmpty().filter { it.active != false }
 }
 
 /**
