@@ -566,6 +566,23 @@ class ModificadoresFalloParcialTest {
     }
 
     @Test
+    fun `D8, si otro aparato apago una opcion con la hoja abierta no se archiva la ultima`() = runTest {
+        val originales = abreLaHojaCon(viejo, uno)
+        val hoja = listOf(
+            InlineModifier(id = "m-viejo", name = "Viejo", price = 1.0, isDeleted = true),
+            InlineModifier(id = "m-uno", name = "Uno", price = 1.0),
+        )
+        enServidor[1] = enServidor[1].copy(active = false)
+        listaViva.value = loQueDevuelveLaLista()
+
+        val resultado = guardarGrupoRequerido(viewModel(), originales, hoja, minimo = 1, multiple = true)
+
+        assertEquals(false, resultado)
+        assertTrue(repositoryError.value.orEmpty().contains("al menos 1"))
+        assertEquals(listOf("m-viejo"), activos().map { it.id })
+    }
+
+    @Test
     fun `D8, vaciar el minimo no se salta el que tiene guardado el grupo`() = runTest {
         val originales = abreLaHojaCon(viejo, uno)
         loQueDevuelveLaLista = { listOf(ModifierGroup(id = "g", minSelections = 2, modifiers = enServidor.toList())) }

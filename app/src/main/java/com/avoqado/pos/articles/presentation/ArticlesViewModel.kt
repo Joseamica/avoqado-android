@@ -441,8 +441,7 @@ class ArticlesViewModel @Inject constructor(
                 val quitaAlguno = currentModifiers.any { it.isDeleted && it.id != null } ||
                     originalModifiers.any { original -> currentModifiers.none { it.id == original.id } }
                 if (quitaAlguno && quedan < minimo) {
-                    val opciones = if (minimo == 1) "opción" else "opciones"
-                    repository.setError("Este grupo es obligatorio y pide al menos $minimo $opciones. Déjalas o baja el mínimo antes de quitar esta.")
+                    repository.setError(textoFaltanOpciones(minimo))
                     onResult(false)
                     return@launch
                 }
@@ -458,7 +457,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 // Se detiene en el primer paso rechazado: el repositorio ya dejó el motivo y la hoja se queda abierta.
                 val guardado = repository.updateModifierGroup(groupId, groupPayload) &&
-                    guardarModificadores(groupId, originalModifiers, currentModifiers, onModificadorCreado)
+                    guardarModificadores(groupId, originalModifiers, currentModifiers, minimo, onModificadorCreado)
                 if (!guardado && repository.errorMessage.value.isNullOrBlank()) {
                     repository.setError(respaldo)
                 }
@@ -492,6 +491,7 @@ class ArticlesViewModel @Inject constructor(
         groupId: String,
         originalModifiers: List<ArticleModifier>,
         currentModifiers: List<InlineModifier>,
+        minimo: Int,
         onModificadorCreado: (indice: Int, id: String) -> Unit,
     ): Boolean {
         for ((indice, modifier) in currentModifiers.withIndex()) {
@@ -510,15 +510,26 @@ class ArticlesViewModel @Inject constructor(
             }
         }
 
-        val vivos = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers ?: originalModifiers
-        val archivables = vivos.filter { it.active != false }.map { it.id }.toSet()
+        val listaViva = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers
+        val archivables = (listaViva ?: originalModifiers).filter { it.active != false }.map { it.id }.toSet()
         val seQuedan = currentModifiers.filterNot { it.isDeleted }.mapNotNull { it.id }.toSet()
         val quitados = (originalModifiers.map { it.id } + currentModifiers.filter { it.isDeleted }.mapNotNull { it.id }).distinct()
+        val aArchivar = quitados.filter { it !in seQuedan && it in archivables }
+        // Otro aparato pudo apagar opciones con la hoja abierta: el mínimo se revisa otra vez con lo que hay ahora.
+        if (aArchivar.isNotEmpty() && listaViva != null && listaViva.count { it.active != false && it.id !in aArchivar } < minimo) {
+            repository.setError(textoFaltanOpciones(minimo))
+            return false
+        }
         val archivar = buildJsonObject { put("active", false) }.toString()
-        for (id in quitados) {
-            if (id !in seQuedan && id in archivables && !repository.updateModifier(groupId, id, archivar)) return false
+        for (id in aArchivar) {
+            if (!repository.updateModifier(groupId, id, archivar)) return false
         }
         return true
+    }
+
+    private fun textoFaltanOpciones(minimo: Int): String {
+        val opciones = if (minimo == 1) "opción" else "opciones"
+        return "Este grupo es obligatorio y pide al menos $minimo $opciones. Déjalas o baja el mínimo antes de quitar esta."
     }
 
     fun deleteModifierGroup(groupId: String) {
