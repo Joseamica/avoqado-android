@@ -10,6 +10,12 @@ fun ofertaDeLaCuenta(restanteDelServerCents: Int?, cuentaTerminada: Boolean, laT
     cobroLocalPendiente -> OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR
     else -> OfertaDeLaCuenta.OFRECER
 }
+/** Sin red, qué se le dice a la cajera de una cuenta abierta. Sólo nombra las tarjetas de regalo si la cuenta las trae. */
+fun avisoDeCuentaSinRed(traeTarjetas: Boolean, sePuedeCobrar: Boolean): String? = when {
+    traeTarjetas -> TextosDeTarjetas.SIN_RED
+    sePuedeCobrar -> TextosDeTarjetas.COBRAR_CUENTA_SIN_RED
+    else -> null
+}
 fun estadoDeLaVenta(ajustes: EstadoDeAjustes, enLinea: Boolean, puedeCobrar: Boolean, cuentaDeTarjetas: Boolean,
     llevaVales: Boolean, llevaMembresia: Boolean, hayOrdenOArticulos: Boolean, mesaProvisional: Boolean,
     creacionEnDuda: Boolean, vieneDeCarritoGuardado: Boolean, cuentaTrabada: Boolean, enMesa: Boolean,
