@@ -65,7 +65,10 @@ class CobroDeCuentaViewModel @Inject constructor(
             else if (it.paymentStatus == "PAID" || it.status in listOf("CANCELLED", "DELETED"))
                 aviso.value = "Esta cuenta no tiene saldo pendiente."
             else foto.value = it
-        }, onFailure = { aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it) })
+        }, onFailure = {
+            if (it is kotlinx.coroutines.CancellationException) throw it // `getOrderDetail` la atrapa con runCatching.
+            aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it)
+        })
     }
     suspend fun ofertaParaCobrar(orderId: String, laTraeUnCarrito: Boolean = false): com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta {
         cargar(orderId)
@@ -235,6 +238,7 @@ fun AccionesDeCuentaAbierta(
     order: com.avoqado.pos.orders.data.model.OrderDetail,
     onActualizar: () -> Unit,
     onCancelada: () -> Unit,
+    onSalioSinCobrar: () -> Unit,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-${order.id}"),
 ) {
     if (order.status in listOf("CANCELLED", "DELETED") || order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID ||
@@ -270,13 +274,14 @@ fun AccionesDeCuentaAbierta(
         onCancelada = { onCancelada(); onActualizar() })
     if (detalle?.esCuentaDeTarjetas == true) CancelarCuenta(viewModel) { onCancelada(); onActualizar() }
     if (oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
-    (if (enLinea) aviso ?: mensaje else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
+    (if (enLinea) mensaje ?: aviso else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
         order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
         sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
     if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
         abierta = false
         if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
-        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id, onActualizar, onCancelada, onResultadoDeTarjetas)
+        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id,
+            if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
         scope.launch { if (enLinea) viewModel.cargar(order.id) }
     }, viewModel = viewModel)
 }

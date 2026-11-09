@@ -386,6 +386,21 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
         }
     }
 
+    @Test fun `una consulta cancelada no deja un texto tecnico en la cuenta`() = runTest {
+        val storage = mockk<SecureStorage>(relaxed = true) {
+            every { venueId } returns "v"; every { giftCardRequestsJson } returns "[]"
+        }
+        val repo = mockk<TableServiceRepository>()
+        val roles = mockk<com.avoqado.pos.core.domain.RoleManager> { every { hasVenuePermission(any()) } returns true }
+        val m = com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel(repo, storage, red, roles,
+            com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore(storage))
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.failure(
+            kotlinx.coroutines.CancellationException("The coroutine scope left the composition"))
+        val cancelada = runCatching { m.cargar("o") }.exceptionOrNull()
+        assertTrue("La cancelación sigue su camino", cancelada is kotlinx.coroutines.CancellationException)
+        assertNull("Cancelar no es un error que se le enseñe a la cajera", m.mensaje.value)
+    }
+
     @Test fun `wrapper no ofrece otra vez una cuenta que el servidor ya cerro`() = runTest {
         val storage = mockk<SecureStorage>(relaxed = true) {
             every { venueId } returns "v"; every { giftCardRequestsJson } returns "[]"
