@@ -48,6 +48,7 @@ object TextosDeTarjetas {
     const val DE_PARTE_DE = "De parte de"
     const val AGREGAR_OTRA = "Agregar otra tarjeta"
     const val CUENTA_SIN_RED = "Esta cuenta es de tarjetas de regalo; cóbrala cuando vuelva la conexión."
+    const val COBRAR_CUENTA_SIN_RED = "Sin conexión: para cobrar esta cuenta necesitas internet"
     const val NOMBRE_EN_CUENTAS = "Tarjetas de regalo"
     const val ACTIVANDO = "Activando…"
     const val ENVIANDO = "Enviando…"
