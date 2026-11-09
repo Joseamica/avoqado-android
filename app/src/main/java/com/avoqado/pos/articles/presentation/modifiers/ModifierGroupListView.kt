@@ -317,7 +317,7 @@ private fun ModifierGroupCard(
 
                     // Modifier count
                     Text(
-                        text = "${group.modifierCount} opciones",
+                        text = "${group.modifierCount} ${if (group.modifierCount == 1) "opción" else "opciones"}",
                         style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

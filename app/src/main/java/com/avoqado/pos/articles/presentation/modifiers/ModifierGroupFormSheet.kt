@@ -192,7 +192,7 @@ fun ModifierGroupFormSheet(
             OutlinedTextField(
                 value = groupName,
                 onValueChange = { groupName = it },
-                label = { Text("Nombre del grupo (ej: Tamano)") },
+                label = { Text("Nombre del grupo (ej: Tamaño)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 isError = groupName.isBlank(),
@@ -205,7 +205,7 @@ fun ModifierGroupFormSheet(
                 onCheckedChange = { required = it },
             )
             SwitchRow(
-                label = "Permitir multiples",
+                label = "Permitir múltiples",
                 checked = allowMultiple,
                 onCheckedChange = { allowMultiple = it },
             )
@@ -218,7 +218,7 @@ fun ModifierGroupFormSheet(
                     OutlinedTextField(
                         value = minSelections,
                         onValueChange = { minSelections = it },
-                        label = { Text("Min") },
+                        label = { Text("Mín") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -227,7 +227,7 @@ fun ModifierGroupFormSheet(
                     OutlinedTextField(
                         value = maxSelections,
                         onValueChange = { maxSelections = soloDigitosDeLimite(it, maxSelections) },
-                        label = { Text("Max") },
+                        label = { Text("Máx") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
