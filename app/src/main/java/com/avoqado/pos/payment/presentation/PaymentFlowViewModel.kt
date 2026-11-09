@@ -1872,6 +1872,12 @@ class PaymentFlowViewModel @Inject constructor(
                 tarjetasRepository?.cambiosDeAjustes ?: MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())) { _, _, _ -> Unit }
                 .collect { actualizarFilaDeSaldo() }
         }
+        // El «Sin conexión» de un intento fallido deja de ser cierto al volver la red. Un rechazo del servidor se queda.
+        viewModelScope.launch {
+            combine(conexionDelSaldo, servidorDelSaldo) { conectado, servidor -> conectado && servidor }.collect { enLinea ->
+                if (enLinea && _cancelFailure.value == TextosDeTarjetas.SIN_RED) _cancelFailure.value = null
+            }
+        }
     }
     private fun ajustesParaSaldo(): EstadoDeAjustes = secureStorage.venueId?.let { secureStorage.leerAjustesDeTarjetas(it) }?.let {
         if (it == "null") EstadoDeAjustes.NoDisponible else runCatching { EstadoDeAjustes.Disponible(GiftCardsApi.parsearAjustes(it)) }.getOrNull()

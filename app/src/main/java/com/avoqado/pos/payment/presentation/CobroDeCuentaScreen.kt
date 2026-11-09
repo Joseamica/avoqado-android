@@ -196,7 +196,6 @@ private fun CancelarCuenta(viewModel: CobroDeCuentaViewModel, onCancelada: () ->
     var enviando by remember { mutableStateOf(false) }
     TextButton(enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCancelar && !enviando),
         onClick = { confirmar = true }) { Text(TextosDeTarjetas.CANCELAR_CUENTA) }
-    if (!enLinea) Text(TextosDeTarjetas.SIN_RED)
     if (!viewModel.puedeCancelar) Text("No tienes permiso para cancelar cuentas. Pídeselo a tu gerente.")
     if (confirmar) AvoqadoDialog(onDismiss = { if (!enviando) confirmar = false },
         title = TextosDeTarjetas.CANCELAR_CUENTA, dismissOnClickOutside = !enviando) {
@@ -289,7 +288,6 @@ fun RegresarSaldoDeCuenta(orderId: String, cobrosConSaldo: Int, pagada: Boolean,
     if (viewModel.ofreceRegresarSaldo(cobrosConSaldo, pagada)) TextButton(enabled = enLinea, onClick = { abierta = true }) {
         Text(TextosDeTarjetas.REGRESAR_SALDO_Y_CANCELAR)
     }
-    if (!enLinea && viewModel.ofreceRegresarSaldo(cobrosConSaldo, pagada)) Text(TextosDeTarjetas.SIN_RED)
     if (abierta) DialogoDeRegresoDeSaldo(orderId, cobrosConSaldo, pagada,
         onDismiss = { abierta = false }, onCancelada = { abierta = false; onCancelada() }, viewModel = viewModel)
 }

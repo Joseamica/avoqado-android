@@ -393,6 +393,27 @@ class PaymentFlowConSaldoTest {
         assertFalse(sujeto.ofreceRegresarSaldo(0, pagada = false))
         assertFalse(sujeto.ofreceRegresarSaldo(1, pagada = true))
     }
+    @Test fun alVolverLaRedElDialogoDeRegresoYaNoDiceSinConexion() = runTest {
+        for (senal in listOf(connected, reachable)) {
+            val sujeto = vm(orderId = "o")
+            assertTrue(sujeto.prepararRegresoDeSaldo("o", 1, false))
+            senal.value = false; runCurrent()
+            assertFalse(sujeto.regresarSaldoYCancelar())
+            assertEquals(TextosDeTarjetas.SIN_RED, sujeto.cancelFailure.value)
+            senal.value = true; runCurrent()
+            assertNull("Ya hay red: el aviso del intento anterior ya no es cierto", sujeto.cancelFailure.value)
+        }
+    }
+    @Test fun alVolverLaRedUnRechazoDelServidorSeQueda() = runTest {
+        val sujeto = vm(orderId = "o")
+        assertTrue(sujeto.prepararRegresoDeSaldo("o", 1, false))
+        server.enqueue(MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json")
+            .setBody("""{"success":false,"code":"ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE","message":"Ocupada"}"""))
+        assertFalse(sujeto.regresarSaldoYCancelar())
+        connected.value = false; runCurrent()
+        connected.value = true; runCurrent()
+        assertEquals("El motivo del servidor no depende de la red", "Ocupada", sujeto.cancelFailure.value)
+    }
     @Test fun regresarElSaldoUsaUnaLlavePorDialogoYNoDuplicaConOtraVenta() = runTest {
         val sujeto = vm(orderId = "o")
         assertTrue("Debe preparar el diálogo de la cuenta canónica", sujeto.prepararRegresoDeSaldo("o", 1, false))
