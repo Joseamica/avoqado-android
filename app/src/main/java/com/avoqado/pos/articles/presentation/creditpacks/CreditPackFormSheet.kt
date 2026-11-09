@@ -197,7 +197,7 @@ fun CreditPackFormSheet(
                 )
                 OutlinedTextField(
                     value = validityDays,
-                    onValueChange = { validityDays = it },
+                    onValueChange = { validityDays = soloDigitosDeLimite(it, validityDays) },
                     label = { Text("Días de validez") },
                     placeholder = { Text("Sin límite") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
