@@ -165,7 +165,7 @@ fun CobroDeCuentaScreen(
                     onNav = { onSalir(CierreDeCuenta.ABIERTA) }, showDivider = true)
                 Column(Modifier.padding(AvoqadoTheme.spacing.lg), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
                     (if (enLinea) avisoLocal ?: mensaje else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
-                        cuenta?.esCuentaDeTarjetas != false, cuenta?.cobrosConSaldo, sePuedeCobrar = true))?.let { Text(it) }
+                        cuenta?.esCuentaDeTarjetas != false, cuenta?.cobrosConSaldo, sePuedeCobrar = (cents ?: 0) > 0))?.let { Text(it) }
                     when {
                         cents == null && cuenta != null -> Text("No se pudo consultar lo que falta. Vuelve a abrir la cuenta.")
                         cents == 0 -> Text("Esta cuenta no tiene saldo pendiente.")
@@ -271,7 +271,8 @@ fun AccionesDeCuentaAbierta(
     if (detalle?.esCuentaDeTarjetas == true) CancelarCuenta(viewModel) { onCancelada(); onActualizar() }
     if (oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
     (if (enLinea) aviso ?: mensaje else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
-        order.esCuentaDeTarjetas, order.cobrosConSaldo, sePuedeCobrar = elegible))?.let { Text(it) }
+        order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
+        sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
     if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
         abierta = false
         if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
