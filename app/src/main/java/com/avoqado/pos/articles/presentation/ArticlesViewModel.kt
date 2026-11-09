@@ -798,7 +798,8 @@ class ArticlesViewModel @Inject constructor(
                     put("name", name)
                     if (description != null) put("description", description)
                     put("price", price)
-                    if (validityDays != null) put("validityDays", validityDays)
+                    // Vacío = sin vigencia: va `null` explícito; sin el campo, el servidor deja la que tenía. Lo ya vendido conserva su fecha.
+                    put("validityDays", validityDays)
                     // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
                     put("maxPerCustomer", maxPerCustomer)
                     put("active", active)

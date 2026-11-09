@@ -61,13 +61,14 @@ class ArticlesLimitesAlEditarTest {
 
     // MARK: - Paquete de créditos: límite por cliente
 
-    private fun TestScope.paqueteAlEditar(maxPerCustomer: Int?): JsonObject {
+    private fun TestScope.paqueteAlEditar(maxPerCustomer: Int? = null, validityDays: Int? = null): JsonObject {
         val payload = slot<String>()
         coEvery { repository.updateCreditPack("pack-1", capture(payload)) } returns true
         createViewModel().updateCreditPack(
             packId = "pack-1",
             name = "10 clases",
             price = 500.0,
+            validityDays = validityDays,
             maxPerCustomer = maxPerCustomer,
             active = true,
             items = emptyList(),
@@ -84,6 +85,32 @@ class ArticlesLimitesAlEditarTest {
     @Test
     fun `editar un paquete con numero en el limite por cliente lo manda`() = runTest {
         assertEquals("3", paqueteAlEditar(maxPerCustomer = 3)["maxPerCustomer"]?.toString())
+    }
+
+    @Test
+    fun `P1 editar un paquete con los dias de validez vacios manda null explicito`() = runTest {
+        assertEquals("null", paqueteAlEditar(validityDays = null)["validityDays"]?.toString())
+    }
+
+    @Test
+    fun `editar un paquete con dias de validez los manda`() = runTest {
+        assertEquals("30", paqueteAlEditar(validityDays = 30)["validityDays"]?.toString())
+    }
+
+    @Test
+    fun `crear un paquete con los dias de validez vacios no manda el campo`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.createCreditPack(capture(payload)) } returns true
+        createViewModel().createCreditPack(
+            name = "10 clases",
+            price = 500.0,
+            validityDays = null,
+            active = true,
+            items = emptyList(),
+        )
+        advanceUntilIdle()
+
+        assertFalse("validityDays" in Json.parseToJsonElement(payload.captured).jsonObject)
     }
 
     @Test
