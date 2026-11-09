@@ -104,7 +104,7 @@ fun ModifierDetailSheet(
                 name = name,
                 price = price.toDoubleOrNull() ?: 0.0,
                 active = active,
-                rawMaterialId = if (trackInventory) selectedMaterial?.id else null,
+                rawMaterialId = insumoAlGuardar(trackInventory, selectedMaterial?.id, modifier.rawMaterialId),
                 inventoryMode = if (trackInventory) inventoryMode.name else null,
                 quantityPerUnit = if (trackInventory) quantityPerUnit.toDoubleOrNull() else null,
                 unit = if (trackInventory) selectedUnit?.name else null,
@@ -439,3 +439,7 @@ private fun UnitDropdownSelector(
         }
     }
 }
+
+/** Sin elegir otro insumo se conserva el que ya tenía: reactivar o renombrar un extra no debe romper su inventario. */
+internal fun insumoAlGuardar(rastrea: Boolean, elegido: String?, actual: String?): String? =
+    if (rastrea) elegido ?: actual else null

@@ -433,6 +433,17 @@ class ArticlesViewModel @Inject constructor(
             val respaldo = "No se pudo guardar el grupo de modificadores. Intenta de nuevo."
             try {
                 repository.clearError()
+                // La caja exige ese mínimo y sólo ofrece las activas: quitar de más dejaría el producto imposible de agregar.
+                val minimo = if (required) minSelections ?: 1 else 0
+                val quedan = currentModifiers.count { !it.isDeleted }
+                val quitaAlguno = currentModifiers.any { it.isDeleted && it.id != null } ||
+                    originalModifiers.any { original -> currentModifiers.none { it.id == original.id } }
+                if (quitaAlguno && quedan < minimo) {
+                    val opciones = if (minimo == 1) "opción" else "opciones"
+                    repository.setError("Este grupo es obligatorio y pide al menos $minimo $opciones. Déjalas o baja el mínimo antes de quitar esta.")
+                    onResult(false)
+                    return@launch
+                }
                 // PATCH group metadata
                 val groupPayload = buildJsonObject {
                     put("name", name)

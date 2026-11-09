@@ -6,6 +6,7 @@ import com.avoqado.pos.articles.data.model.ArticleModifier
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.articles.presentation.ArticlesViewModel.InlineModifier
+import com.avoqado.pos.articles.presentation.modifiers.insumoAlGuardar
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coEvery
@@ -475,6 +476,78 @@ class ModificadoresFalloParcialTest {
 
         assertEquals(true, resultado)
         assertEquals(listOf("PATCH grupo", "PATCH m-uno"), peticiones)
+    }
+
+    private fun TestScope.guardarGrupoRequerido(
+        vm: ArticlesViewModel,
+        originales: List<ArticleModifier>,
+        hoja: List<InlineModifier>,
+        minimo: Int?,
+        multiple: Boolean,
+    ): Boolean? {
+        var resultado: Boolean? = null
+        vm.updateModifierGroup(
+            groupId = "g",
+            name = "G",
+            required = true,
+            allowMultiple = multiple,
+            minSelections = minimo,
+            originalModifiers = originales,
+            currentModifiers = hoja,
+            onResult = { resultado = it },
+        )
+        advanceUntilIdle()
+        return resultado
+    }
+
+    @Test
+    fun `D8, quitar dejando menos opciones que el minimo de un grupo requerido se rechaza sin tocar nada`() = runTest {
+        val originales = abreLaHojaCon(viejo, uno)
+        val hoja = listOf(
+            InlineModifier(id = "m-viejo", name = "Viejo", price = 1.0, isDeleted = true),
+            InlineModifier(id = "m-uno", name = "Uno", price = 1.0),
+        )
+
+        val resultado = guardarGrupoRequerido(viewModel(), originales, hoja, minimo = 2, multiple = true)
+
+        assertEquals(false, resultado)
+        assertTrue(repositoryError.value.orEmpty().contains("al menos 2"))
+        assertTrue(peticiones.isEmpty())
+    }
+
+    @Test
+    fun `D8, un grupo requerido sin minimo no se puede quedar sin opciones`() = runTest {
+        val originales = abreLaHojaCon(uno)
+        val hoja = listOf(InlineModifier(id = "m-uno", name = "Uno", price = 1.0, isDeleted = true))
+
+        assertEquals(false, guardarGrupoRequerido(viewModel(), originales, hoja, minimo = null, multiple = false))
+        assertTrue(peticiones.isEmpty())
+    }
+
+    @Test
+    fun `D8, quitar dejando las opciones que pide el minimo si se guarda`() = runTest {
+        val originales = abreLaHojaCon(viejo, uno)
+        val hoja = listOf(
+            InlineModifier(id = "m-viejo", name = "Viejo", price = 1.0, isDeleted = true),
+            InlineModifier(id = "m-uno", name = "Uno", price = 1.0),
+        )
+
+        assertEquals(true, guardarGrupoRequerido(viewModel(), originales, hoja, minimo = 1, multiple = true))
+    }
+
+    @Test
+    fun `D8, editar un grupo que ya no alcanza el minimo sin quitar nada no se bloquea`() = runTest {
+        val originales = abreLaHojaCon(uno)
+        val hoja = listOf(InlineModifier(id = "m-uno", name = "Uno renombrado", price = 1.0))
+
+        assertEquals(true, guardarGrupoRequerido(viewModel(), originales, hoja, minimo = 2, multiple = true))
+    }
+
+    @Test
+    fun `D8, reactivar o renombrar sin elegir otro insumo conserva el que tenia`() {
+        assertEquals("insumo-1", insumoAlGuardar(rastrea = true, elegido = null, actual = "insumo-1"))
+        assertEquals("insumo-2", insumoAlGuardar(rastrea = true, elegido = "insumo-2", actual = "insumo-1"))
+        assertNull(insumoAlGuardar(rastrea = false, elegido = "insumo-2", actual = "insumo-1"))
     }
 
     @Test
