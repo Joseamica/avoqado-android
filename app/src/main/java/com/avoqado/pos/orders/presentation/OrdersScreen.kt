@@ -253,8 +253,9 @@ internal fun estadoDelDetalle(
     errorMessage: String?,
 ): EstadoDelDetalle = when {
     selectedOrderId == null -> if (host == HostDelDetalle.TELEFONO) EstadoDelDetalle.Lista else EstadoDelDetalle.Vacio
-    isLoadingDetail -> EstadoDelDetalle.Cargando
+    // Al refrescar el MISMO pedido se deja lo que hay en pantalla: quitarlo borraba su aviso y cortaba sus peticiones.
     selectedOrder?.id == selectedOrderId -> EstadoDelDetalle.Detalle(selectedOrder)
+    isLoadingDetail -> EstadoDelDetalle.Cargando
     else -> EstadoDelDetalle.Fallo(errorMessage ?: "No se pudo cargar el pedido")
 }
 

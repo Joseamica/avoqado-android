@@ -65,7 +65,10 @@ class CobroDeCuentaViewModel @Inject constructor(
             else if (it.paymentStatus == "PAID" || it.status in listOf("CANCELLED", "DELETED"))
                 aviso.value = "Esta cuenta no tiene saldo pendiente."
             else foto.value = it
-        }, onFailure = { aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it) })
+        }, onFailure = {
+            if (it is kotlinx.coroutines.CancellationException) throw it // `getOrderDetail` la atrapa con runCatching.
+            aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it)
+        })
     }
     suspend fun ofertaParaCobrar(orderId: String, laTraeUnCarrito: Boolean = false): com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta {
         cargar(orderId)
