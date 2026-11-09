@@ -55,6 +55,18 @@ class BasculaEnWindowsTest {
         assertTrue(esperar { canal.escrito.isNotEmpty() }.let { canal.escrito.first().contentEquals(byteArrayOf('R'.code.toByte())) }, "consulta con «R» como Android")
     }
 
+    /** CREMERIA 1 de La Galeterie (9-nov): la Rhino brinca un paso de 2 g con el producto quieto y no debe apagar «Agregar». */
+    @Test fun `la Rhino sigue estable si su ultimo digito brinca un paso`() = runBlocking<Unit> {
+        manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII"), ScaleUsageContext.AREA_TICKET_LINE)
+        canal.llega("0.004 kg")
+        canal.llega("0.004 kg")
+        assertIs<ScaleConnectionState.Stable>(esperar { it is ScaleConnectionState.Stable }, "dos lecturas iguales dan estable")
+        canal.llega("0.002 kg")
+        val estado = esperar { it is ScaleConnectionState.Unstable || (it as? ScaleConnectionState.Stable)?.reading?.netKg == "0.002" }
+        assertIs<ScaleConnectionState.Stable>(estado, "un paso de 2 g no apaga «Agregar»: $estado")
+        assertEquals("0.002", estado.reading.netKg)
+    }
+
     @Test fun `una trama de sobrecarga se dice como en Android`() = runBlocking {
         manager.connect(perfil(), ScaleUsageContext.AREA_TICKET_LINE)
         canal.llega("OL,GS,+99.999kg\r\n")

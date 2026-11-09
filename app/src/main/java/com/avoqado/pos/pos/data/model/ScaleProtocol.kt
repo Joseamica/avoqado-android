@@ -14,6 +14,8 @@ enum class ScaleProtocol(
     val defaultBaudRate: Int,
     val pollIntervalMillis: Long = 250L,
     val requiresSyntheticStability: Boolean = false,
+    /** Cuánto puede variar el peso sin dejar de ser «estable»: un paso (división) de la báscula. */
+    val stabilityToleranceKg: Double = 0.001,
 ) {
     JUSTA_LP7516_ASCII(
         profileType = "JUSTA_LP7516_ASCII",
@@ -26,6 +28,9 @@ enum class ScaleProtocol(
         defaultBaudRate = 9_600,
         pollIntervalMillis = 500L,
         requiresSyntheticStability = true,
+        // BAR-8RS de 40 kg: pasos de 2 g y de 5 g en el rango alto. Su último dígito brinca un paso con el producto quieto
+        // (medido en La Galeterie, 9-nov): con 1 g de tolerancia la pantalla parpadeaba y apagaba «Agregar».
+        stabilityToleranceKg = 0.005,
     ),
     TORREY_PCR_ASCII(
         profileType = "TORREY_PCR_ASCII",
@@ -152,15 +157,16 @@ private fun decodeSimplePolledWeightFrame(
 }
 
 /**
- * Para protocolos sin indicador de estabilidad. Marca estable sólo después de recibir el mismo
- * peso [requiredMatches] veces dentro de [maxGapMillis].
+ * Para protocolos sin indicador de estabilidad. Marca estable sólo después de recibir [requiredMatches] lecturas
+ * seguidas, cada una dentro de [maxGapMillis] de la anterior y a no más de [toleranceKg] de la PRIMERA de la racha
+ * (no de la anterior: un producto que se va acomodando poco a poco no se queda «estable»).
  */
 class ScaleStabilityTracker(
     private val requiredMatches: Int = 2,
     private val toleranceKg: Double = 0.001,
     private val maxGapMillis: Long = 1_000L,
 ) {
-    private var previousWeightKg: Double? = null
+    private var anchorWeightKg: Double? = null
     private var previousObservedAt: Long? = null
     private var matches: Int = 0
 
@@ -176,26 +182,33 @@ class ScaleStabilityTracker(
             return reading
         }
         val weightKg = parseWeightKg(reading.netKg)
-        val previousWeight = previousWeightKg
+        val anchorWeight = anchorWeightKg
         val previousAt = previousObservedAt
         val consecutive = weightKg != null &&
-            previousWeight != null &&
+            anchorWeight != null &&
             previousAt != null &&
             reading.observedAtEpochMillis >= previousAt &&
             reading.observedAtEpochMillis - previousAt <= maxGapMillis &&
-            abs(weightKg - previousWeight) <= toleranceKg
-        matches = if (consecutive) matches + 1 else 1
-        previousWeightKg = weightKg
+            abs(weightKg - anchorWeight) <= toleranceKg + EPSILON_KG
+        if (consecutive) {
+            matches += 1
+        } else {
+            matches = 1
+            anchorWeightKg = weightKg
+        }
         previousObservedAt = reading.observedAtEpochMillis
         return reading.copy(stable = weightKg != null && matches >= requiredMatches)
     }
 
     fun reset() {
-        previousWeightKg = null
+        anchorWeightKg = null
         previousObservedAt = null
         matches = 0
     }
 }
+
+/** Margen de redondeo de Double: 0.435 - 0.430 da 0.0050000000000000044, que sigue siendo un paso de 5 g. */
+private const val EPSILON_KG = 1e-9
 
 private val LP7516_PATTERN = Regex(
     pattern = """^(ST|US|OL)\s*,?\s*(GS|NT)\s*,?\s*([+-])\s*([0-9]+(?:[.,][0-9]+)?)\s*(kg|lb)$""",

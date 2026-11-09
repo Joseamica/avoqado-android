@@ -181,6 +181,53 @@ class ScaleReadingTest {
         assertEquals(9_600, ScaleProtocol.RHINO_BAR8RS_ASCII.defaultBaudRate)
     }
 
+    private fun rhino(weight: String, at: Long) = decodeScaleFrame(
+        ScaleProtocol.RHINO_BAR8RS_ASCII,
+        "rhino-cremeria",
+        "$weight kg",
+        at,
+    ).reading!!
+
+    private fun rhinoTracker() = ScaleStabilityTracker(toleranceKg = ScaleProtocol.RHINO_BAR8RS_ASCII.stabilityToleranceKg)
+
+    /** Medido en CREMERIA 1 de La Galeterie (9-nov): el último dígito brinca un paso de 2 g y apagaba «Agregar». */
+    @Test
+    fun `Rhino stays stable when the last digit bounces one scale division`() {
+        val tracker = rhinoTracker()
+
+        assertFalse(tracker.observe(rhino("0.004", now)).stable)
+        assertTrue(tracker.observe(rhino("0.004", now + 500)).stable)
+        assertTrue(tracker.observe(rhino("0.002", now + 1_000)).stable)
+        assertTrue(tracker.observe(rhino("0.004", now + 1_500)).stable)
+    }
+
+    @Test
+    fun `Rhino becomes unstable when the weight really moves`() {
+        val tracker = rhinoTracker()
+
+        assertFalse(tracker.observe(rhino("0.004", now)).stable)
+        assertTrue(tracker.observe(rhino("0.004", now + 500)).stable)
+        assertFalse(tracker.observe(rhino("0.250", now + 1_000)).stable)
+        assertTrue(tracker.observe(rhino("0.250", now + 1_500)).stable)
+    }
+
+    @Test
+    fun `Rhino slow creep never stays stable beyond the tolerance from the first reading`() {
+        val tracker = rhinoTracker()
+
+        assertFalse(tracker.observe(rhino("0.430", now)).stable)
+        assertTrue(tracker.observe(rhino("0.434", now + 500)).stable)
+        assertFalse(tracker.observe(rhino("0.438", now + 1_000)).stable)
+        assertTrue(tracker.observe(rhino("0.442", now + 1_500)).stable)
+    }
+
+    @Test
+    fun `only Rhino widens the stability tolerance`() {
+        assertEquals(0.005, ScaleProtocol.RHINO_BAR8RS_ASCII.stabilityToleranceKg, 0.0)
+        assertEquals(0.001, ScaleProtocol.TORREY_PCR_ASCII.stabilityToleranceKg, 0.0)
+        assertEquals(0.001, ScaleProtocol.JUSTA_LP7516_ASCII.stabilityToleranceKg, 0.0)
+    }
+
     @Test
     fun `Rhino rejects negative weight and non kilogram units`() {
         val negative = decodeScaleFrame(

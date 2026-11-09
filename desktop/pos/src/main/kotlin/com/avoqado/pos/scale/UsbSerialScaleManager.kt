@@ -79,7 +79,7 @@ class UsbSerialScaleManager @Inject constructor() {
      */
     private inner class Conexion(val profile: ScaleProfile, val protocol: ScaleProtocol, val canal: CanalSerie) {
         val frameAssembler = ScaleFrameAssembler()
-        val stabilityTracker = ScaleStabilityTracker()
+        val stabilityTracker = ScaleStabilityTracker(toleranceKg = protocol.stabilityToleranceKg)
         @Volatile var consulta: Job? = null
     }
 

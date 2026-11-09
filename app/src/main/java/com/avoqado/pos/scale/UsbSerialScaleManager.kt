@@ -162,7 +162,7 @@ class UsbSerialScaleManager @Inject constructor(
                 profile.parity.toUsbParity(),
             )
             serialPort = port
-            stabilityTracker = ScaleStabilityTracker()
+            stabilityTracker = ScaleStabilityTracker(toleranceKg = protocol.stabilityToleranceKg)
             synchronized(frameAssembler) { frameAssembler.clear() }
             inputOutputManager = SerialInputOutputManager(port, this@UsbSerialScaleManager).also {
                 it.start()
