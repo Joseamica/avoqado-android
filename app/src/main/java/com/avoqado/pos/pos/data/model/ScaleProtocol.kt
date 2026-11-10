@@ -287,6 +287,22 @@ private val LP7516_EXTRACT_PATTERN = Regex(
     option = RegexOption.IGNORE_CASE,
 )
 
+/**
+ * ¿[rawFrame] es una trama de este protocolo, aunque no dé peso (plato vacío en cero, sobrecarga, otra unidad)? WINDOWS la
+ * usa para confirmar que un puerto escogido por descarte es la báscula: un lector o un visor con el mismo chip también
+ * manda bytes, pero no tramas de peso (D14, Codex r2).
+ */
+fun ScaleProtocol.reconoceTrama(rawFrame: String): Boolean {
+    val frame = rawFrame.trim()
+    return when (this) {
+        ScaleProtocol.JUSTA_LP7516_ASCII -> LP7516_PATTERN.matchEntire(frame) != null
+        ScaleProtocol.RHINO_BAR8RS_ASCII,
+        ScaleProtocol.TORREY_PCR_ASCII,
+        -> SIMPLE_WEIGHT_PATTERN.containsMatchIn(frame) ||
+            decodeSimplePolledWeightFrame("", frame, 0L).rejection == ScaleFrameRejection.OVERLOAD
+    }
+}
+
 /** La regla de «estable» con los números de [protocol]. */
 fun stabilityTrackerFor(protocol: ScaleProtocol) = ScaleStabilityTracker(
     requiredMatches = protocol.stabilityReadings,

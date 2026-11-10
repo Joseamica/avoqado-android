@@ -1,6 +1,8 @@
 package com.avoqado.pos.escritorio.bascula
 
 import com.avoqado.pos.areatickets.data.ScaleProfile
+import com.avoqado.pos.pos.data.model.ScaleProtocol
+import com.avoqado.pos.pos.data.model.reconoceTrama
 import com.avoqado.pos.scale.ScaleConnectionState
 import com.avoqado.pos.scale.ScaleUsageContext
 import com.avoqado.pos.scale.UsbSerialScaleManager
@@ -103,6 +105,26 @@ class BasculaEnWindowsTest {
         val escritos = canal.escrito.size
         Thread.sleep(700)
         assertEquals(escritos, canal.escrito.size, "ya no le manda la consulta")
+    }
+
+    /** Codex r2: un lector de códigos con el mismo chip SÍ manda bytes, pero no tramas de peso: no confirma nada. */
+    @Test fun `por descarte - un aparato que manda bytes que no son peso tampoco queda como bascula`() = runBlocking<Unit> {
+        manager.puertos = { listOf(tarjetaMadre, puerto) }
+        manager.esperaDeRespuestaMs = 200
+        manager.connect(perfil(tipo = "RHINO_BAR8RS_ASCII", conVidPid = false), ScaleUsageContext.AREA_TICKET_LINE)
+        canal.llega("7501234567890\r\n")
+        canal.llega("ACK\r\n")
+        val estado = esperar { it is ScaleConnectionState.Problem }
+        assertIs<ScaleConnectionState.Problem>(estado, "nunca dijo «Lista»: $estado")
+        assertTrue(esperar { canal.cerrado }.let { canal.cerrado }, "suelta el puerto")
+    }
+
+    @Test fun `una trama se reconoce por su forma aunque no de peso`() {
+        assertTrue(ScaleProtocol.RHINO_BAR8RS_ASCII.reconoceTrama("0.000 kg"))
+        assertTrue(ScaleProtocol.RHINO_BAR8RS_ASCII.reconoceTrama("OVERLOAD"))
+        assertTrue(ScaleProtocol.JUSTA_LP7516_ASCII.reconoceTrama("ST,GS,+  0.000kg"))
+        assertTrue(!ScaleProtocol.RHINO_BAR8RS_ASCII.reconoceTrama("7501234567890"))
+        assertTrue(!ScaleProtocol.JUSTA_LP7516_ASCII.reconoceTrama("ACK"))
     }
 
     @Test fun `con VID PID o un solo puerto no se espera respuesta - queda Lista como antes`() = runBlocking<Unit> {

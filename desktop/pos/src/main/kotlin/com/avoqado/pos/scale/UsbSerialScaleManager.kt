@@ -15,6 +15,7 @@ import com.avoqado.pos.pos.data.model.ScaleFrameRejection
 import com.avoqado.pos.pos.data.model.ScaleProtocol
 import com.avoqado.pos.pos.data.model.stabilityTrackerFor
 import com.avoqado.pos.pos.data.model.decodeScaleFrame
+import com.avoqado.pos.pos.data.model.reconoceTrama
 import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -88,6 +89,7 @@ class UsbSerialScaleManager @Inject constructor() {
         val frameAssembler = ScaleFrameAssembler()
         val stabilityTracker = stabilityTrackerFor(protocol)
         @Volatile var consulta: Job? = null
+        /** Ya llegó una trama de báscula (sólo cuenta para lo escogido por descarte). */
         @Volatile var contesto = false
     }
 
@@ -143,7 +145,7 @@ class UsbSerialScaleManager @Inject constructor() {
         // Abrir puede tardar: si mientras tanto se desconectó (el cajero cerró el panel), esta apertura ya no es de nadie. La
         // conexión y su «Lista» se publican JUNTAS: un disconnect no puede caer en medio.
         val c = Conexion(profile, protocol, abierto, eleccion.porDescarte)
-        // Por descarte, «Lista» espera a que el puerto conteste (onNewData): hasta entonces sigue «Conectando».
+        // Por descarte, «Lista» espera la primera trama de báscula (handleFrame): hasta entonces sigue «Conectando».
         val vigente = synchronized(candado) {
             (generacion == mia && isActive).also {
                 if (it) { actual = c; if (!c.porDescarte) _state.value = ScaleConnectionState.Ready(profile.name) }
@@ -202,11 +204,6 @@ class UsbSerialScaleManager @Inject constructor() {
     }
 
     private fun onNewData(c: Conexion, data: ByteArray) {
-        // La primera respuesta confirma el puerto escogido por descarte. Va ANTES de las tramas: su peso pisa este «Lista».
-        if (!c.contesto) {
-            c.contesto = true
-            if (c.porDescarte) publicar(c, ScaleConnectionState.Ready(c.profile.name))
-        }
         val text = data.toString(StandardCharsets.US_ASCII)
         val frames = synchronized(c.frameAssembler) {
             c.frameAssembler.append(c.protocol, text)
@@ -230,6 +227,12 @@ class UsbSerialScaleManager @Inject constructor() {
     }
 
     private fun handleFrame(c: Conexion, frame: String) {
+        // La primera trama DE BÁSCULA (un cero cuenta; cualquier otro byte no) confirma el puerto escogido por descarte. Va
+        // antes de publicar el peso: el peso pisa este «Lista».
+        if (!c.contesto && c.protocol.reconoceTrama(frame)) {
+            c.contesto = true
+            if (c.porDescarte) publicar(c, ScaleConnectionState.Ready(c.profile.name))
+        }
         val profile = c.profile
         val protocol = c.protocol
         val decoded = decodeScaleFrame(
