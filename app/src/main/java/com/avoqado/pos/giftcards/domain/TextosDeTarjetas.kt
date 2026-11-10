@@ -103,6 +103,7 @@ object TextosDeTarjetas {
     const val NO_SE_PUDO_PREPARAR_LA_CUENTA = "No se pudo preparar la cuenta. Intenta otra vez."
     const val NO_SE_PUDO_RECUPERAR = "No se pudo recuperar la venta. Intenta otra vez."
     const val REINTENTAR = "Reintentar"
+    const val CONSULTANDO = "Consultando…"
     const val CUENTA_NO_SE_CANCELO_SIN_RED = "Sin conexión: la cuenta no se canceló. Inténtalo cuando vuelva la conexión."
     const val COBRO_SIN_SINCRONIZAR = "Hay un cobro sin sincronizar de esta venta; espera a que se sincronice."
     const val POR_TERMINAR = "Por terminar"
