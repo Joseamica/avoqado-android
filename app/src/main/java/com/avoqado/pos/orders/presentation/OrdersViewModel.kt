@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.core.domain.refresh.Necesidad
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.orders.data.OrdersRepository
 import com.avoqado.pos.orders.data.model.OrderSummary
 import com.avoqado.pos.pos.data.ProductsRepository
@@ -13,6 +15,8 @@ import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.routing.RoutableItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +43,11 @@ class OrdersViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     /** Para resolver la CATEGORÍA de cada producto al reimprimir — ver [reimprimirComanda]. */
     private val productsRepository: ProductsRepository,
+    /**
+     * D22: para volver a pedir el pedido que no abrió al volver la conexión. Hilt (y Guice en WINDOWS) siempre lo pasan; es
+     * opcional sólo para las pruebas que no tratan de la red.
+     */
+    private val red: ConnectivityMonitor? = null,
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
@@ -282,6 +291,29 @@ class OrdersViewModel @Inject constructor(
     }
 
     // MARK: - Private
+
+    /**
+     * D22 (9-nov, SAMSUNG del Alien): sin red, el pedido que se tocó no abre y dice «Sin conexión…». Mientras «Pedidos» se ve
+     * (la pantalla corre esto y lo corta al cerrarse), si el pedido seleccionado no abrió por falta de red y el aparato tiene
+     * red, se vuelve a pedir: enseguida y luego a los 5, 10, 20 y cada 30 s mientras siga sin red. Es un ESTADO, no un aviso
+     * de «volvió»: ningún orden de eventos lo pierde (Codex r1 #2). Un 404 o un servidor que contestó mal no se repiten
+     * solos: dicen lo suyo y queda «Reintentar» (Codex r2 #2: sólo se promete reabrir lo que no abrió por falta de red).
+     */
+    suspend fun reabrirAlVolverLaRed() {
+        val red = red ?: return
+        combine(red.isConnected, _selectedOrderId, repository.detalleSinRed) { conRed, id, sinRed ->
+            id.takeIf { conRed && it == sinRed }
+        }.distinctUntilChanged().collectLatest { id ->
+            if (id == null) return@collectLatest
+            var intentos = 0
+            while (true) {
+                delay(Necesidad.esperaTras(intentos++))
+                // Dentro de este bloque: una sola consulta a la vez, y otra selección, irse la red o cerrar «Pedidos» la
+                // cortan con su llamada; como es un reintento, lo que se veía se queda (Codex r2 #3, r3 #2 y #3).
+                repository.loadOrderDetail(id, reintento = true)
+            }
+        }
+    }
 
     @OptIn(FlowPreview::class)
     private fun observeSearch() {
