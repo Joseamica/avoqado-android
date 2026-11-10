@@ -1,7 +1,5 @@
 package com.avoqado.pos.pos.data.model
 
-import kotlin.math.abs
-
 /**
  * Protocolos que Avoqado conoce de forma explícita.
  *
@@ -14,6 +12,10 @@ enum class ScaleProtocol(
     val defaultBaudRate: Int,
     val pollIntervalMillis: Long = 250L,
     val requiresSyntheticStability: Boolean = false,
+    /** Cuánto puede variar el peso sin dejar de ser «estable»: un paso (división) de la báscula. */
+    val stabilityToleranceKg: Double = 0.001,
+    /** Cuántas lecturas seguidas tienen que caber dentro de [stabilityToleranceKg] para llamarlo «estable». */
+    val stabilityReadings: Int = 2,
 ) {
     JUSTA_LP7516_ASCII(
         profileType = "JUSTA_LP7516_ASCII",
@@ -26,6 +28,12 @@ enum class ScaleProtocol(
         defaultBaudRate = 9_600,
         pollIntervalMillis = 500L,
         requiresSyntheticStability = true,
+        // BAR-8RS de 40 kg: pasos de 2 g y de 5 g en el rango alto. Su último dígito brinca un paso con el producto quieto
+        // (medido en La Galeterie, 9-nov): con 1 g de tolerancia la pantalla parpadeaba y apagaba «Agregar».
+        // 5 g + 0.1 g de margen de redondeo (0.435 - 0.430 da 0.0050000000000000044), y 3 lecturas (1 s): un brinco va y
+        // viene dentro de un paso; un producto que se sigue acomodando se sale de él en ese segundo.
+        stabilityToleranceKg = 0.0051,
+        stabilityReadings = 3,
     ),
     TORREY_PCR_ASCII(
         profileType = "TORREY_PCR_ASCII",
@@ -152,17 +160,17 @@ private fun decodeSimplePolledWeightFrame(
 }
 
 /**
- * Para protocolos sin indicador de estabilidad. Marca estable sólo después de recibir el mismo
- * peso [requiredMatches] veces dentro de [maxGapMillis].
+ * Para protocolos sin indicador de estabilidad. Marca estable cuando las últimas [requiredMatches] lecturas llegaron
+ * seguidas (cada una a no más de [maxGapMillis] de la anterior) y entre la mayor y la menor no hay más de [toleranceKg].
+ * Con 2 lecturas es lo de siempre (dos seguidas parecidas); con más, un producto que se sigue acomodando no cabe.
  */
 class ScaleStabilityTracker(
     private val requiredMatches: Int = 2,
     private val toleranceKg: Double = 0.001,
     private val maxGapMillis: Long = 1_000L,
 ) {
-    private var previousWeightKg: Double? = null
+    private val window = ArrayDeque<Double>()
     private var previousObservedAt: Long? = null
-    private var matches: Int = 0
 
     init {
         require(requiredMatches >= 2)
@@ -176,24 +184,30 @@ class ScaleStabilityTracker(
             return reading
         }
         val weightKg = parseWeightKg(reading.netKg)
-        val previousWeight = previousWeightKg
         val previousAt = previousObservedAt
-        val consecutive = weightKg != null &&
-            previousWeight != null &&
-            previousAt != null &&
+        val onTime = previousAt != null &&
             reading.observedAtEpochMillis >= previousAt &&
-            reading.observedAtEpochMillis - previousAt <= maxGapMillis &&
-            abs(weightKg - previousWeight) <= toleranceKg
-        matches = if (consecutive) matches + 1 else 1
-        previousWeightKg = weightKg
+            reading.observedAtEpochMillis - previousAt <= maxGapMillis
         previousObservedAt = reading.observedAtEpochMillis
-        return reading.copy(stable = weightKg != null && matches >= requiredMatches)
+        if (!onTime || weightKg == null) window.clear()
+        if (weightKg == null) return reading.copy(stable = false)
+        window.addLast(weightKg)
+        while (window.size > requiredMatches) window.removeFirst()
+        val stable = window.size == requiredMatches && window.maxOf { it } - window.minOf { it } <= toleranceKg
+        return reading.copy(stable = stable)
+    }
+
+    /**
+     * Una trama rechazada (cero, sobrecarga, basura). Con más de 2 lecturas la regla pide N SEGUIDAS, así que la corta:
+     * quitar el producto y volver a ponerlo no puede completar la racha (Codex r2). Con 2 se conserva lo de antes (Torrey).
+     */
+    fun rejected() {
+        if (requiredMatches > 2) reset()
     }
 
     fun reset() {
-        previousWeightKg = null
+        window.clear()
         previousObservedAt = null
-        matches = 0
     }
 }
 
@@ -271,4 +285,10 @@ private fun ScaleProtocol.completeFramePattern(): Regex = when (this) {
 private val LP7516_EXTRACT_PATTERN = Regex(
     pattern = """(?:ST|US|OL)\s*,?\s*(?:GS|NT)\s*,?\s*[+-]\s*[0-9]+(?:[.,][0-9]+)?\s*(?:kg|lb)""",
     option = RegexOption.IGNORE_CASE,
+)
+
+/** La regla de «estable» con los números de [protocol]. */
+fun stabilityTrackerFor(protocol: ScaleProtocol) = ScaleStabilityTracker(
+    requiredMatches = protocol.stabilityReadings,
+    toleranceKg = protocol.stabilityToleranceKg,
 )

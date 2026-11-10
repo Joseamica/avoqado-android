@@ -844,6 +844,18 @@ class PaymentFlowViewModel @Inject constructor(
     /** Quién abrió el cobro en curso (`startPaymentFlow`). Ver [esCobroDeVales]. */
     private var origenDelCobro: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL
 
+    /** A3: el texto del folio para el 400 de cuenta cancelada ([startPaymentFlow]); null = como siempre. */
+    private var siLaCuentaSeCancelo: (() -> String?)? = null
+
+    /** R100: el cobro salió de la bandeja «Pedidos en línea» ([startPaymentFlow]); viaja con la tarjeta. null = otro cobro. */
+    private var cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null
+
+    /**
+     * A3 (m3): el 400 de cuenta cancelada llegó pero su apartado NO se pudo borrar. La pantalla dice «No se pudo cancelar el cobro»
+     * (nunca «cóbralo como venta normal» con la reserva viva) y «Reintentar» borra primero; borrado, enseña este texto.
+     */
+    private var textoDeFolioPorBorrar: String? = null
+
     /** ¿Esta apertura ya arrancó el cobro que está en pantalla? Entonces la pantalla no reparte ni arranca otra vez. */
     fun esElCobroEnCurso(apertura: String): Boolean = apertura == aperturaEnCurso
 
@@ -1860,6 +1872,12 @@ class PaymentFlowViewModel @Inject constructor(
                 tarjetasRepository?.cambiosDeAjustes ?: MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())) { _, _, _ -> Unit }
                 .collect { actualizarFilaDeSaldo() }
         }
+        // El «Sin conexión» de un intento fallido deja de ser cierto al volver la red. Un rechazo del servidor se queda.
+        viewModelScope.launch {
+            combine(conexionDelSaldo, servidorDelSaldo) { conectado, servidor -> conectado && servidor }.collect { enLinea ->
+                if (enLinea && _cancelFailure.value == TextosDeTarjetas.SIN_RED) _cancelFailure.value = null
+            }
+        }
     }
     private fun ajustesParaSaldo(): EstadoDeAjustes = secureStorage.venueId?.let { secureStorage.leerAjustesDeTarjetas(it) }?.let {
         if (it == "null") EstadoDeAjustes.NoDisponible else runCatching { EstadoDeAjustes.Disponible(GiftCardsApi.parsearAjustes(it)) }.getOrNull()
@@ -2034,6 +2052,20 @@ class PaymentFlowViewModel @Inject constructor(
         onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
         onCreacionResuelta: (String) -> Unit = {},
         origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
+        /**
+         * Tienda híbrida (A3, decisión 16): el cobro es de un folio. Si el SERVIDOR rechaza el efectivo EN VIVO porque la cuenta ya
+         * se canceló (`ORDER_CANCELLED_NO_NEW_CHARGE`: el folio venció o lo cancelaron con esta pantalla abierta), nada se registró:
+         * el apartado se borra y la pantalla dice este texto. Si se soltara, la cola lo subiría como captura previa, reabriría el
+         * folio y la cajera ya lo cobró como venta normal: el dinero contaría dos veces. El texto se pide AL FALLAR (venció o lo
+         * canceló otra caja). null, o que devuelva null = como siempre.
+         */
+        textoSiLaCuentaSeCancelo: (() -> String?)? = null,
+        /**
+         * Tienda híbrida (R100): el cobro es de un pedido de la bandeja «Pedidos en línea» (folio o «Mi equipo») que debía esto. Viaja
+         * en el contexto durable de la tarjeta: cuando su positivo sale de la lista, `TerminalPaymentService` deja la marca «aquí ya se
+         * cobró» en el mismo commit, y la bandeja ya no ofrece efectivo encima con una lista vieja. null = otro cobro (como siempre).
+         */
+        cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -2049,6 +2081,9 @@ class PaymentFlowViewModel @Inject constructor(
         this.onCreacionResuelta = onCreacionResuelta
         this.cuentaDeTarjetas.value = cuentaDeTarjetas
         origenDelCobro = origen
+        siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
+        this.cobroDeLaBandeja = cobroDeLaBandeja
+        textoDeFolioPorBorrar = null
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
         flowSettings = tpvSettingsRepository.getCurrentSettings()
         paymentGeneration++
@@ -2989,6 +3024,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // nacía anónima aunque el cajero sí lo hubiera elegido. Espejo exacto
                     // del camino de EFECTIVO (`recordFastCashPayment`).
                     customerId = attachedCustomerId,
+                    // R100: un cobro de la bandeja lleva su saldo; su positivo deja la marca «aquí ya se cobró» al reconocerse.
+                    deLaBandeja = cobroDeLaBandeja,
                 )
                 recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
@@ -3881,8 +3918,34 @@ class PaymentFlowViewModel @Inject constructor(
                     autoPrintAfterPayment(PaymentMethod.CASH, cambio)
                 } else {
                     if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
+                    // A3 (decisión 16): un folio cuya cuenta ya se canceló. El 400 prueba que nada se registró (se decide bajo el
+                    // candado de la orden, después de la llave): sus apartados se borran ANTES de enseñar el error, así salir sin
+                    // «Cancelar» ya no los da por cobrados. Si el disco falla, siguen del flujo como hoy («Cancelar» reintenta).
+                    val delFolio = if (conApartado && error is OrderRepository.ServerException && error.code == 400 &&
+                        error.codigo == CODIGO_CUENTA_CANCELADA
+                    ) siLaCuentaSeCancelo?.invoke() else null
+                    if (delFolio != null) {
+                        val llaves = apartadosDeEstaVenta.toList()
+                        val borrados = descartar(llaves)
+                        if (borrados) {
+                            apartadosDeEstaVenta.removeAll(llaves.toSet())
+                            if (apartadoDelIntento in llaves) apartadoDelIntento = null
+                        }
+                        if (generacion != paymentGeneration) return@fold
+                        if (!borrados) {
+                            // m3: la reserva sigue viva (del flujo). Nada de «cóbralo como venta normal» todavía: «Reintentar» borra primero.
+                            textoDeFolioPorBorrar = delFolio
+                            cancelacionFallida = true
+                            _cancelFailure.value = com.avoqado.pos.payment.domain.CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO
+                            _state.value = PaymentFlowState.Error(
+                                message = com.avoqado.pos.payment.domain.CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO,
+                                source = PaymentErrorSource.SERVER,
+                            )
+                            return@fold
+                        }
+                    }
                     _state.value = PaymentFlowState.Error(
-                        message = mensajeDelCobroFallido(error),
+                        message = delFolio ?: mensajeDelCobroFallido(error),
                         source = PaymentErrorSource.SERVER,
                     )
                 }
@@ -3959,6 +4022,17 @@ class PaymentFlowViewModel @Inject constructor(
     fun retry() {
         // Ronda final (M-1, espejo de iOS): tras «No se pudo cancelar el cobro», «Reintentar» reintenta la CANCELACIÓN.
         if (cancelacionFallida) {
+            // A3 (m3): el folio vencido cuya reserva no se pudo borrar: se borra y ENTONCES se dice «cóbralo como venta normal».
+            textoDeFolioPorBorrar?.let { texto ->
+                viewModelScope.launch {
+                    if (descartarApartadosDeEstaVenta()) {
+                        textoDeFolioPorBorrar = null
+                        _cancelFailure.value = null
+                        _state.value = PaymentFlowState.Error(message = texto, source = PaymentErrorSource.SERVER)
+                    }
+                }
+                return
+            }
             cancelarVenta()
             return
         }
@@ -6186,6 +6260,9 @@ class PaymentFlowViewModel @Inject constructor(
 
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
+
+        /** El 400 del SERVIDOR a un cobro nuevo en vivo sobre una cuenta cancelada (regla del founder del 3-oct; A3). */
+        private const val CODIGO_CUENTA_CANCELADA = "ORDER_CANCELLED_NO_NEW_CHARGE"
 
         /** D1: los `splitType` de la parte elegida al dividir; su cobro manda la copia del papel ([papelDeLaParte]). */
         private val PARTES_DE_UNA_VENTA_DIVIDIDA = setOf("BYPRODUCT", "EQUALPARTS", "CUSTOMAMOUNT")

@@ -13,7 +13,7 @@ import com.avoqado.pos.pos.data.model.NormalizedScaleReading
 import com.avoqado.pos.pos.data.model.ScaleFrameAssembler
 import com.avoqado.pos.pos.data.model.ScaleFrameRejection
 import com.avoqado.pos.pos.data.model.ScaleProtocol
-import com.avoqado.pos.pos.data.model.ScaleStabilityTracker
+import com.avoqado.pos.pos.data.model.stabilityTrackerFor
 import com.avoqado.pos.pos.data.model.decodeScaleFrame
 import java.nio.charset.StandardCharsets
 import javax.inject.Inject
@@ -79,7 +79,7 @@ class UsbSerialScaleManager @Inject constructor() {
      */
     private inner class Conexion(val profile: ScaleProfile, val protocol: ScaleProtocol, val canal: CanalSerie) {
         val frameAssembler = ScaleFrameAssembler()
-        val stabilityTracker = ScaleStabilityTracker()
+        val stabilityTracker = stabilityTrackerFor(protocol)
         @Volatile var consulta: Job? = null
     }
 
@@ -224,6 +224,7 @@ class UsbSerialScaleManager @Inject constructor() {
             )
             return
         }
+        if (protocol.requiresSyntheticStability) c.stabilityTracker.rejected()
         when (decoded.rejection) {
             ScaleFrameRejection.OVERLOAD ->
                 fail(c, "La báscula reporta sobrecarga o peso fuera de rango.")

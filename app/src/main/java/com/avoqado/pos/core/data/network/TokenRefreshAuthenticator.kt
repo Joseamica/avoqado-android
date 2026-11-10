@@ -78,6 +78,15 @@ class TokenRefreshAuthenticator @Inject constructor(
     internal var refreshBaseUrl: String = ApiConstants.BASE_URL
 
     /**
+     * R105 (Codex r7 #2): plazo TOTAL de cada renovación (`callTimeout`: conectar, esperar y leer todo el cuerpo). Los de conexión y
+     * lectura valen por cada operación del socket: una respuesta a gotas no los vence nunca, y como la renovación corre DENTRO de la
+     * llamada que recibió el 401, cancelar esa llamada no la corta: se quedaba esperando sin fin (y con ella el candado de «Por pagar»).
+     * Al vencer falla como sin red (`NetworkFailure`): la sesión sigue viva, igual que hoy. Se aplica a cada llamada, así vale también
+     * para el cliente con guarda de WINDOWS. Las pruebas lo acortan.
+     */
+    internal var plazoTotalDelRefrescoMs: Long = 15_000L
+
+    /**
      * A dónde va el rastro de un refresco que no se pudo hacer (punto 3 del arreglo de Testarudo,
      * 15-oct): sin esto el fallo no quedaba en ningún lado y la causa sólo se podía adivinar.
      * Las pruebas lo sustituyen; Crashlytics no está inicializado en una prueba unitaria.
@@ -406,7 +415,8 @@ class TokenRefreshAuthenticator @Inject constructor(
                 .post(body)
                 .build()
 
-            refreshHttpClient.newCall(request).execute().use { httpResponse ->
+            refreshHttpClient.newBuilder().callTimeout(plazoTotalDelRefrescoMs, TimeUnit.MILLISECONDS).build()
+                .newCall(request).execute().use { httpResponse ->
                 if (httpResponse.isSuccessful) {
                     val tokens = httpResponse.body?.string()?.let {
                         json.decodeFromString<TokenRefreshResponse>(it)

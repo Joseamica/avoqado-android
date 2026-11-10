@@ -317,7 +317,7 @@ private fun ModifierGroupCard(
 
                     // Modifier count
                     Text(
-                        text = "${group.modifierCount} opciones",
+                        text = "${group.modifierCount} ${if (group.modifierCount == 1) "opción" else "opciones"}",
                         style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -450,9 +450,17 @@ private fun ModifierRow(
         Text(
             text = modifier.name,
             style = if (denseMode) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = if (modifier.active == false) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
+
+        if (modifier.active == false) {
+            Text(
+                text = "Inactivo",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         // Price (if any)
         val priceText = modifier.displayPrice

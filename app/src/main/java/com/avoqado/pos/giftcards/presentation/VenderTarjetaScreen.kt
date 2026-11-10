@@ -159,16 +159,31 @@ private fun VentaGuardada(solicitud: SolicitudDeTarjeta, enabled: Boolean, onCli
     val detalle by cuenta.detalle.collectAsState()
     val conectado by cuenta.conectado.collectAsState()
     val servidor by cuenta.servidor.collectAsState()
+    val consultasEnCurso by cuenta.consultasEnCurso.collectAsState()
+    val enLinea = com.avoqado.pos.payment.presentation.controlDeRedDeCuenta(conectado, servidor, true)
+    var consultaPedida by remember(solicitud.orderId) { mutableStateOf(false) }
     LaunchedEffect(solicitud.orderId) {
-        if (com.avoqado.pos.payment.presentation.controlDeRedDeCuenta(conectado, servidor, true))
-            solicitud.orderId?.let { cuenta.cargar(it) }
+        consultaPedida = true
+        if (enLinea) solicitud.orderId?.let { cuenta.cargar(it) }
     }
-    val cents = detalle?.let { com.avoqado.pos.tables.data.restanteCents(it) }
-    OutlinedButton(enabled = enabled, onClick = onClick) {
+    val (texto, tocable) = botonDeVentaGuardada(detalle, consultasEnCurso, enLinea, consultaPedida, enabled)
+    OutlinedButton(enabled = tocable, onClick = onClick) {
         Column {
             Text(TextosDeTarjetas.NOMBRE_EN_CUENTAS)
-            Text(if (cents != null && cents > 0) TextosDeTarjetas.cobrar(cents) else TextosDeTarjetas.REINTENTAR)
+            Text(texto)
         }
+    }
+}
+
+/** Texto y si se puede tocar la venta guardada: mientras su cuenta se consulta, «Consultando…» apagado; «Reintentar» sólo si ya falló o no hay red (D19). */
+internal fun botonDeVentaGuardada(
+    detalle: com.avoqado.pos.tables.data.OrderDetail?, consultasEnCurso: Int, enLinea: Boolean, consultaPedida: Boolean, disponible: Boolean,
+): Pair<String, Boolean> {
+    val cents = detalle?.let { com.avoqado.pos.tables.data.restanteCents(it) }
+    return when {
+        cents != null && cents > 0 -> TextosDeTarjetas.cobrar(cents) to disponible
+        detalle == null && com.avoqado.pos.payment.presentation.cuentaEnConsulta(consultasEnCurso, enLinea, consultaPedida) -> TextosDeTarjetas.CONSULTANDO to false
+        else -> TextosDeTarjetas.REINTENTAR to disponible
     }
 }
 

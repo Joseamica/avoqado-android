@@ -27,6 +27,7 @@ import com.avoqado.pos.tables.data.restanteCents
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -52,28 +53,45 @@ class CobroDeCuentaViewModel @Inject constructor(
     private var venueDeLaCuenta: String? = null
     private val ofertaActual = MutableStateFlow(com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA)
     val oferta = ofertaActual.asStateFlow()
-    suspend fun cargar(orderId: String) {
+    private val enVuelo = MutableStateFlow(0)
+    /** Consultas de la cuenta que aún no vuelven. Es contador y no booleano porque pueden correr dos a la vez. */
+    val consultasEnCurso = enVuelo.asStateFlow()
+    private val turnos = java.util.concurrent.atomic.AtomicInteger()
+    /** Devuelve su turno: si después salió otra consulta, la que manda es ésa. */
+    suspend fun cargar(orderId: String): Int {
+        enVuelo.update { it + 1 } // Antes de vaciar la foto: «sin foto y sin consulta» significa que ya falló.
+        val turno = turnos.incrementAndGet()
+        try { consultar(orderId, turno) } finally { enVuelo.update { it - 1 } }
+        return turno
+    }
+    private suspend fun consultar(orderId: String, turno: Int) {
         foto.value = null
         aviso.value = null
         val venue = storage.venueId
         venueDeLaCuenta = venue
         if (venue == null) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         val resultado = repo.getOrderDetail(venue, orderId)
+        // Si salió otra consulta después, manda ella: una respuesta atrasada no pisa su saldo ni su aviso (Codex D14 r1 P1).
+        if (turno != turnos.get() && resultado.exceptionOrNull() !is kotlinx.coroutines.CancellationException) return
         if (storage.venueId != venue) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         resultado.fold(onSuccess = {
             if (it.id != orderId) aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA
             else if (it.paymentStatus == "PAID" || it.status in listOf("CANCELLED", "DELETED"))
                 aviso.value = "Esta cuenta no tiene saldo pendiente."
             else foto.value = it
-        }, onFailure = { aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it) })
+        }, onFailure = {
+            if (it is kotlinx.coroutines.CancellationException) throw it // `getOrderDetail` la atrapa con runCatching.
+            aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it)
+        })
     }
     suspend fun ofertaParaCobrar(orderId: String, laTraeUnCarrito: Boolean = false): com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta {
-        cargar(orderId)
+        val turno = cargar(orderId)
         val cuenta = foto.value
         val venue = venueDeLaCuenta ?: return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
         val pendiente = try { cobrosLocales?.hayPendiente(venue, orderId) ?: true }
             catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true }
-        if (storage.venueId != venue || foto.value?.id != orderId) return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
+        // Una consulta superada no publica oferta: decidiría con la foto de otra (Codex D14 r2 P2).
+        if (turno != turnos.get() || storage.venueId != venue || foto.value?.id != orderId) return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
         val resultado = com.avoqado.pos.giftcards.domain.ofertaDeLaCuenta(cuenta?.let(::restanteCents),
             cuenta == null || cuenta.esDeMesa != false && !cuenta.esCuentaDeTarjetas, laTraeUnCarrito, pendiente)
         ofertaActual.value = resultado
@@ -164,7 +182,8 @@ fun CobroDeCuentaScreen(
                 AvoqadoFullscreenHeader(title = if (cuenta?.esCuentaDeTarjetas == true) TextosDeTarjetas.NOMBRE_EN_CUENTAS else "Cuenta abierta",
                     onNav = { onSalir(CierreDeCuenta.ABIERTA) }, showDivider = true)
                 Column(Modifier.padding(AvoqadoTheme.spacing.lg), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
-                    if (!enLinea) Text(TextosDeTarjetas.SIN_RED) else (avisoLocal ?: mensaje)?.let { Text(it) }
+                    (if (enLinea) avisoLocal ?: mensaje else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
+                        cuenta?.esCuentaDeTarjetas != false, cuenta?.cobrosConSaldo, sePuedeCobrar = (cents ?: 0) > 0))?.let { Text(it) }
                     when {
                         cents == null && cuenta != null -> Text("No se pudo consultar lo que falta. Vuelve a abrir la cuenta.")
                         cents == 0 -> Text("Esta cuenta no tiene saldo pendiente.")
@@ -196,7 +215,6 @@ private fun CancelarCuenta(viewModel: CobroDeCuentaViewModel, onCancelada: () ->
     var enviando by remember { mutableStateOf(false) }
     TextButton(enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCancelar && !enviando),
         onClick = { confirmar = true }) { Text(TextosDeTarjetas.CANCELAR_CUENTA) }
-    if (!enLinea) Text(TextosDeTarjetas.SIN_RED)
     if (!viewModel.puedeCancelar) Text("No tienes permiso para cancelar cuentas. Pídeselo a tu gerente.")
     if (confirmar) AvoqadoDialog(onDismiss = { if (!enviando) confirmar = false },
         title = TextosDeTarjetas.CANCELAR_CUENTA, dismissOnClickOutside = !enviando) {
@@ -230,11 +248,16 @@ internal fun alSalirDeCuentaAbierta(cierre: CierreDeCuenta, esCuentaDeTarjetas: 
     onActualizar()
 }
 
+/** «Reintentar» es para una consulta que ya falló; antes de que arranque la primera también se está consultando. */
+internal fun cuentaEnConsulta(consultasEnCurso: Int, enLinea: Boolean, consultaPedida: Boolean) =
+    consultasEnCurso > 0 || (enLinea && !consultaPedida)
+
 @Composable
 fun AccionesDeCuentaAbierta(
     order: com.avoqado.pos.orders.data.model.OrderDetail,
     onActualizar: () -> Unit,
     onCancelada: () -> Unit,
+    onSalioSinCobrar: () -> Unit,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-${order.id}"),
 ) {
     if (order.status in listOf("CANCELLED", "DELETED") || order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID ||
@@ -247,6 +270,7 @@ fun AccionesDeCuentaAbierta(
     val oferta by viewModel.oferta.collectAsState()
     val cuentaDelCarrito = LocalCuentaDelCarrito.current
     val detalle by viewModel.detalle.collectAsState()
+    val consultasEnCurso by viewModel.consultasEnCurso.collectAsState()
     val mensaje by viewModel.mensaje.collectAsState()
     val scope = rememberCoroutineScope()
     var abierta by rememberSaveable(order.id) { mutableStateOf(false) }
@@ -254,10 +278,15 @@ fun AccionesDeCuentaAbierta(
     val solicitudesPropias = solicitudesDeLaCuenta(solicitudes, viewModel.venueActual, order.id)
     val porTerminar = solicitudesPropias.any { it.porTerminar }
     val elegible = com.avoqado.pos.orders.data.model.puedeCobrarseDesdeLaLista(order.cobrosConSaldo, order, porTerminar)
-    LaunchedEffect(order, solicitudesPropias) { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
+    var consultaPedida by remember(order.id) { mutableStateOf(false) }
+    LaunchedEffect(order, solicitudesPropias) {
+        consultaPedida = true
+        if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id)
+    }
     val cents = detalle?.let(::restanteCents)
     if (elegible) {
-        if (detalle == null) TextButton(enabled = enLinea, onClick = {
+        if (detalle == null && cuentaEnConsulta(consultasEnCurso, enLinea, consultaPedida)) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
+        else if (detalle == null) TextButton(enabled = enLinea, onClick = {
             scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
         }) { Text(TextosDeTarjetas.REINTENTAR) }
         else if (cents == null && detalle != null) Text("No se pudo consultar lo que falta. Vuelve a abrir la cuenta.")
@@ -270,11 +299,14 @@ fun AccionesDeCuentaAbierta(
         onCancelada = { onCancelada(); onActualizar() })
     if (detalle?.esCuentaDeTarjetas == true) CancelarCuenta(viewModel) { onCancelada(); onActualizar() }
     if (oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
-    if (!enLinea) Text(TextosDeTarjetas.SIN_RED) else (aviso ?: mensaje)?.let { Text(it) }
+    (if (enLinea) mensaje ?: aviso else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
+        order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
+        sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
     if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
         abierta = false
         if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
-        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id, onActualizar, onCancelada, onResultadoDeTarjetas)
+        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id,
+            if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
         scope.launch { if (enLinea) viewModel.cargar(order.id) }
     }, viewModel = viewModel)
 }
@@ -289,7 +321,6 @@ fun RegresarSaldoDeCuenta(orderId: String, cobrosConSaldo: Int, pagada: Boolean,
     if (viewModel.ofreceRegresarSaldo(cobrosConSaldo, pagada)) TextButton(enabled = enLinea, onClick = { abierta = true }) {
         Text(TextosDeTarjetas.REGRESAR_SALDO_Y_CANCELAR)
     }
-    if (!enLinea && viewModel.ofreceRegresarSaldo(cobrosConSaldo, pagada)) Text(TextosDeTarjetas.SIN_RED)
     if (abierta) DialogoDeRegresoDeSaldo(orderId, cobrosConSaldo, pagada,
         onDismiss = { abierta = false }, onCancelada = { abierta = false; onCancelada() }, viewModel = viewModel)
 }

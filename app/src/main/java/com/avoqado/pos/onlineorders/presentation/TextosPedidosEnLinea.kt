@@ -110,4 +110,66 @@ object TextosPedidosEnLinea {
     const val REPARTO_SOLO_EFECTIVO = "Los pedidos de Rappi con tu repartidor se cobran en efectivo."
     const val REPARTO_VACIO = "No hay pedidos de Rappi por cobrar."
     fun mostrandoDe(n: Int, total: Int) = "Mostrando $n de $total"
+
+    // Tienda híbrida (etapa 1, A2) — textos de los mockups v2 §3 y de las reglas de UX: iOS debe copiarlos igual.
+    const val SECCION_POR_PAGAR = "Por pagar"
+    const val SECCION_POR_ENTREGAR = "Por entregar"
+    const val BUSCAR_FOLIO = "Buscar folio o nombre"
+    fun folio(folio: String) = "Folio $folio"
+    fun yaPago(pagado: String, total: String) = "Ya pagó $pagado de $total"
+    fun falta(monto: String) = "Falta $monto"
+    fun venceEn(minutos: Int) = "Vence en $minutos min"
+    fun venceALas(hora: String) = "Vence a las $hora"
+    fun yaVencio(hora: String) = "Venció a las $hora"
+    fun pagado(monto: String) = "Pagado $monto"
+    /** «W8M2C entregado a Leo»; sin nombre, «W8M2C entregado». */
+    fun folioEntregado(folio: String, nombre: String?) =
+        nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { "$folio entregado a $it" } ?: "$folio entregado"
+    /** El único aviso sin red de los folios (reemplaza al corto de la bandeja cuando hay folios). */
+    const val SIN_CONEXION_FOLIOS =
+        "Sin conexión: no llegan pedidos nuevos. El efectivo se guarda en el aparato y se sube solo. " +
+            "«Cancelar», «Listo» y «Entregado» vuelven con la conexión."
+    fun deHaceMin(minutos: Long) = if (minutos <= 0) "(de hace un momento)" else "(de hace $minutos min)"
+    const val FOLIOS_ERROR = "No se pudieron leer los folios"
+    const val FOLIOS_LEYENDO = "Leyendo folios…"
+    fun sinResultadosEntre(cargados: Int) = "Sin resultados entre los $cargados cargados"
+    const val SIN_RESULTADOS_ENTRE_AYUDA = "Puede haber más: toca «Cargar más» para seguir buscando."
+    const val REINTENTAR = "Reintentar"
+    const val LIMPIAR_BUSQUEDA = "Borrar búsqueda"
+    const val POR_PAGAR_VACIO = "No hay pedidos por pagar"
+    const val POR_PAGAR_VACIO_AYUDA = "Cuando alguien pida por el QR, aparece aquí con su folio y su nombre."
+    fun sinResultados(texto: String) = "No encontramos «$texto»"
+    // A3 (A2-m5): la clienta que llega tarde — la cajera sabe qué hacer, igual que en la TPV.
+    const val SIN_RESULTADOS_AYUDA = "Si ya venció o ya se pagó, revisa «Por entregar». Si venció, cóbralo en «Cobrar» como venta normal."
+
+    // Tienda híbrida (etapa 1, A3) — cobrar y cancelar un folio: iOS debe copiarlos igual.
+    const val COBRAR_EN_EFECTIVO = "Cobrar en efectivo"
+    /** Al tocar «Cobrar» (o al confirmar el efectivo) con red, el folio ya venció: no se cobra el folio. */
+    const val FOLIO_VENCIDO = "Este pedido ya venció: cóbralo como venta normal"
+    /** Igual, pero otra caja (o el panel) lo canceló antes de su hora. */
+    const val FOLIO_CANCELADO = "Este folio ya se canceló: cóbralo como venta normal"
+    /**
+     * Ya lo cobraron: «Este folio ya se pagó» + «Lo cobró otra caja a las HH:MM. Ya está en «Por entregar».». Si el cobro salió de
+     * ESTE aparato ([enEstaCaja]), no se culpa a otra caja: «Se cobró en esta caja a las HH:MM».
+     */
+    fun folioYaPagado(hora: String?, enEstaCaja: Boolean = false) =
+        "Este folio ya se pagó. ${if (enEstaCaja) "Se cobró en esta caja" else "Lo cobró otra caja"}" +
+            "${hora?.let { " a las $it" }.orEmpty()}. Ya está en «Por entregar»."
+    const val CANCELAR_FOLIO = "Cancelar folio"
+    fun cancelarFolioTitulo(folio: String) = "¿Cancelar el folio $folio?"
+    fun cancelarFolioCuerpo(nombre: String?) =
+        (nombre?.trim()?.takeIf { it.isNotEmpty() }?.let { "$it lo verá" } ?: "Lo verá") +
+            " cancelado en su celular. Úsalo para un pedido falso o si ya no lo quiere."
+    const val NO = "No"
+    const val SI_CANCELAR = "Sí, cancelar"
+    fun pagadoEnEfectivo(monto: String) = "Pagado en efectivo $monto"
+    fun pagadoALas(hora: String) = "Pagado a las $hora"
+    // A5 (Codex fase 3-4 r1 #1): un folio cobrado con la terminal ligada que la lista todavía no cuenta. iOS los copia igual.
+    const val FOLIO_COBRADO_CON_TARJETA = "Este folio ya se cobró con tarjeta en esta caja."
+    // R100: lo mismo para un pedido de «Mi equipo» (vocabulario: «pedido», nunca «folio»). iOS lo copia igual.
+    const val PEDIDO_COBRADO_CON_TARJETA = "Este pedido ya se cobró con tarjeta en esta caja."
+    // R104: sin red, el saldo de un folio sólo sale de la copia guardada; si no está ahí, no se cobra. iOS lo copia igual.
+    const val FOLIO_SIN_SALDO_GUARDADO = "Sin conexión: no se puede confirmar el saldo de este folio."
+    const val COBRO_CON_TARJETA_AQUI = "Se cobró con tarjeta en esta caja: se actualiza al volver la conexión"
+    fun pagadoConTarjeta(monto: String) = "$PAGADO_CON_TARJETA $monto"
 }

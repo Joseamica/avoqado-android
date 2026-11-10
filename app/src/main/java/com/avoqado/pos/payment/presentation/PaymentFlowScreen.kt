@@ -92,6 +92,10 @@ fun PaymentFlowScreen(
     desdeCuentasAbiertas: Boolean = false,
     pruebaPreseleccionada: TarjetaIdentificada? = null,
     onCuentaConSaldo: ((String) -> Unit)? = null,
+    /** Tienda híbrida (A3): un folio. Ver `PaymentFlowViewModel.startPaymentFlow`. null (o que devuelva null) = como siempre. */
+    textoSiLaCuentaSeCancelo: (() -> String?)? = null,
+    /** Tienda híbrida (R100): el cobro sale de la bandeja «Pedidos en línea». Ver `PaymentFlowViewModel.startPaymentFlow`. */
+    cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -189,6 +193,8 @@ fun PaymentFlowScreen(
             onCreacionIncierta = onCreacionIncierta,
             onCreacionResuelta = onCreacionResuelta,
             origen = origen,
+            textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
+            cobroDeLaBandeja = cobroDeLaBandeja,
         )
         aperturaIniciada = true
     }

@@ -931,6 +931,122 @@ class CobroRechazadoSinConfirmarTest {
         assertEquals(0, caja.darPorCobradasLasAbandonadas())
     }
 
+    // MARK: - Tienda híbrida (A3, decisión 16): el folio vence con la pantalla de cobro abierta
+
+    private val folioVencido = "Este pedido ya venció: cóbralo como venta normal"
+
+    /** El carrito que siembra la bandeja para un folio: un renglón de importe por lo que falta. */
+    private fun carritoDelFolio(cents: Int = 10_000) = CartState(
+        items = listOf(CartItem(id = "pedido-en-linea-folio-1", type = CartItemType.CustomAmount, name = "Folio W7K3P", unitPrice = cents)),
+        orderType = "PICKUP",
+    )
+
+    private fun cuentaCancelada() = Result.failure<OrderRepository.CashPayResult>(
+        OrderRepository.ServerException(400, "Esta cuenta está cancelada, abre una nueva.", codigo = "ORDER_CANCELLED_NO_NEW_CHARGE"),
+    )
+
+    private fun payResponde(r: Result<OrderRepository.CashPayResult>) {
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any())
+        } returns r
+    }
+
+    @Test
+    fun `P1 folio que vence con el cobro abierto - el 400 de cuenta cancelada borra la reserva y dice cobralo como venta normal`() = runTest {
+        // La cajera confirma el efectivo EN VIVO con red; el folio venció mientras contaba: el SERVIDOR responde el 400 de hoy
+        // (regla del founder del 3-oct: cobro nuevo sobre una cuenta cancelada). Nada se registró.
+        payResponde(cuentaCancelada())
+        vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "folio-1", apertura = "folio-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = { folioVencido })
+        vm.confirmCashPreset(10_000)
+        advanceUntilIdle()
+
+        assertEquals(folioVencido, (vm.state.value as PaymentFlowState.Error).message)
+        assertTrue("la reserva se descarta", enVuelo().isEmpty())
+        assertEquals(1, disco.borrados)
+        coVerify { orderRepository.recordCashPayment("folio-1", any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) }
+
+        // Salir sin «Cancelar» ya no da nada por cobrado: si se soltara, la cola lo subiría como captura previa, reabriría el folio
+        // y la cajera ya lo cobró como venta normal (dinero contado dos veces).
+        vm.startPaymentFlow(otroImporte(), apertura = "venta-normal")
+        assertEquals(0, caja.darPorCobradasLasAbandonadas())
+        assertTrue(disco.filas.isEmpty())
+    }
+
+    @Test
+    fun `P1 folio vencido cuyo apartado no se pudo borrar - no dice cobralo como venta normal y Reintentar borra primero`() = runTest {
+        // m3: con la reserva viva, decir «cóbralo como venta normal» invitaría a cobrar otra vez mientras la cola lo daría por cobrado.
+        payResponde(cuentaCancelada())
+        vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "folio-1", apertura = "folio-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = { folioVencido })
+        disco.fallaAlBorrar = true
+        vm.confirmCashPreset(10_000)
+        advanceUntilIdle()
+
+        assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, vm.cancelFailure.value)
+        val llave = enVuelo().single()
+        assertEquals("sigue del flujo: no se da por cobrada", 0, caja.darPorCobradasLasAbandonadas())
+
+        // «Reintentar» otra vez sin disco: sigue igual y no vuelve a cobrar.
+        vm.retry()
+        advanceUntilIdle()
+        assertEquals(listOf(llave), enVuelo())
+        assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, (vm.state.value as PaymentFlowState.Error).message)
+
+        // Con disco: borra primero y ENTONCES dice qué hacer, sin cerrar la pantalla ni cobrar otra vez.
+        disco.fallaAlBorrar = false
+        vm.retry()
+        advanceUntilIdle()
+        assertNull(disco.filas[llave])
+        assertEquals(folioVencido, (vm.state.value as PaymentFlowState.Error).message)
+        assertNull(vm.cancelFailure.value)
+        assertFalse(vm.debeSalir.value)
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any())
+        }
+        vm.startPaymentFlow(otroImporte(), apertura = "venta-normal")
+        assertEquals(0, caja.darPorCobradasLasAbandonadas())
+    }
+
+    @Test
+    fun `P1 un pedido de Mi equipo con el 400 de cuenta cancelada sigue como hoy`() = runTest {
+        // Sin el texto del folio (el cobro de «Mi equipo» no lo pasa) nada cambia: el mensaje del servidor y la reserva del flujo.
+        payResponde(cuentaCancelada())
+        vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "pedido-1", apertura = "pedido-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
+        vm.confirmCashPreset(10_000)
+        advanceUntilIdle()
+
+        assertEquals("Esta cuenta está cancelada, abre una nueva.", (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(1, enVuelo().size)
+        assertEquals(0, disco.borrados)
+    }
+
+    @Test
+    fun `P1 un folio con otro rechazo conserva la reserva del flujo`() = runTest {
+        // Sólo ORDER_CANCELLED_NO_NEW_CHARGE prueba que la cuenta se canceló y nada se registró; otro 400 sigue como hoy.
+        payResponde(rechazo400())
+        vm.startPaymentFlow(carritoDelFolio(), resumeOrderId = "folio-1", apertura = "folio-1",
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA, textoSiLaCuentaSeCancelo = { folioVencido })
+        vm.confirmCashPreset(10_000)
+        advanceUntilIdle()
+
+        assertEquals("Esta cuenta está cancelada, abre una nueva.", (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(1, enVuelo().size)
+        assertEquals(0, disco.borrados)
+    }
+
+    @Test
+    fun `el codigo del rechazo se lee del cuerpo del servidor`() {
+        assertEquals(
+            "ORDER_CANCELLED_NO_NEW_CHARGE",
+            OrderRepository.codigoDelRechazo("""{"message":"Esta cuenta está cancelada, abre una nueva.","code":"ORDER_CANCELLED_NO_NEW_CHARGE"}"""),
+        )
+        assertNull(OrderRepository.codigoDelRechazo("""{"message":"Order is already paid"}"""))
+        assertNull(OrderRepository.codigoDelRechazo("<html>502</html>"))
+    }
+
     // MARK: - Las salidas de la pantalla pasan por la cancelación esperada
 
     /**

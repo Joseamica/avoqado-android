@@ -51,7 +51,12 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
+import kotlinx.coroutines.flow.collectLatest
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -153,6 +158,14 @@ fun OrdersScreen(
     LifecycleResumeEffect(Unit) {
         viewModel.autoRefresh()
         onPauseOrDispose { }
+    }
+    // D22: mientras «Pedidos» se ve, el pedido que no abrió sin red se vuelve a pedir solo al volver la conexión.
+    val duenoDelCicloDeVida = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, duenoDelCicloDeVida) {
+        duenoDelCicloDeVida.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            // En WINDOWS el ciclo de vida sigue RESUMED con la ventana minimizada (Codex r4 #5).
+            VentanaALaVista.aLaVista.collectLatest { seVe -> if (seVe) viewModel.reabrirAlVolverLaRed() }
+        }
     }
 
     var cuentaCancelada by rememberSaveable { mutableStateOf(false) }
@@ -298,6 +311,7 @@ private fun PhoneOrdersLayout(
             } else OrderDetailView(
                 order = pedido,
                 onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                onSalioSinCobrar = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                 onCuentaCancelada = onCuentaCancelada,
                 onBack = { viewModel.clearSelection() },
                 modifier = Modifier.fillMaxSize(),
@@ -494,6 +508,7 @@ private fun OrderDetailPanel(
                 } else OrderDetailView(
                     order = pedido,
                     onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
+                    onSalioSinCobrar = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                     onCuentaCancelada = onCuentaCancelada,
                     onBack = null,
                     modifier = Modifier.fillMaxSize(),
@@ -535,6 +550,7 @@ fun OrderDetailView(
     order: OrderDetail,
     onBack: (() -> Unit)?,
     onCuentaActualizada: () -> Unit,
+    onSalioSinCobrar: () -> Unit,
     onCuentaCancelada: () -> Unit,
     modifier: Modifier = Modifier,
     // Reimpresión de comanda (mostrador, Task 6) — defaults para no romper otros
@@ -586,7 +602,7 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
-            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada)
+            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar)
 
             // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
             // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.

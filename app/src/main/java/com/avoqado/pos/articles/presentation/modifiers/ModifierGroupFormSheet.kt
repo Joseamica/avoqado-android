@@ -39,6 +39,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -72,7 +73,7 @@ fun ModifierGroupFormSheet(
     var maxSelections by remember { mutableStateOf(group?.maxSelections?.toString() ?: "") }
     val modifiers = remember {
         mutableStateListOf<InlineModifierState>().apply {
-            group?.modifiers?.forEach { m ->
+            group?.modificadoresEditables()?.forEach { m ->
                 add(
                     InlineModifierState(
                         id = m.id,
@@ -92,7 +93,7 @@ fun ModifierGroupFormSheet(
         AlertDialog(
             onDismissRequest = { showDeleteModifierDialog = null },
             title = { Text("Eliminar modificador") },
-            text = { Text("Esta acción no se puede deshacer") },
+            text = { Text("Ya no se ofrecerá al vender. Las ventas y los reportes anteriores no cambian. Puedes volver a activarlo desde la lista de modificadores.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -133,9 +134,10 @@ fun ModifierGroupFormSheet(
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
             val handle: (Boolean) -> Unit = { ok ->
-                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+                if (ok) onDismiss() else saveError = viewModel.errorMessage.value ?: "No se pudo guardar. Intenta de nuevo."
             }
             if (isEditing) {
+                val filas = modifiers.toList()
                 viewModel.updateModifierGroup(
                     groupId = group!!.id,
                     name = groupName,
@@ -143,14 +145,19 @@ fun ModifierGroupFormSheet(
                     allowMultiple = allowMultiple,
                     minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
                     maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
-                    originalModifiers = group.modifiers ?: emptyList(),
-                    currentModifiers = modifiers.map {
+                    originalModifiers = group.modificadoresEditables(),
+                    currentModifiers = filas.map {
                         ArticlesViewModel.InlineModifier(
                             id = it.id,
                             name = it.name,
                             price = it.price.toDoubleOrNull() ?: 0.0,
                             isDeleted = it.isDeleted,
                         )
+                    },
+                    onModificadorCreado = { indice, id ->
+                        // Por llave: mientras guarda, quitar una fila nueva recorre las posiciones de las demás.
+                        val fila = modifiers.indexOfFirst { it.key == filas[indice].key }
+                        if (fila >= 0) modifiers[fila] = modifiers[fila].copy(id = id)
                     },
                     onResult = handle,
                 )
@@ -185,7 +192,7 @@ fun ModifierGroupFormSheet(
             OutlinedTextField(
                 value = groupName,
                 onValueChange = { groupName = it },
-                label = { Text("Nombre del grupo (ej: Tamano)") },
+                label = { Text("Nombre del grupo (ej: Tamaño)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 isError = groupName.isBlank(),
@@ -198,7 +205,7 @@ fun ModifierGroupFormSheet(
                 onCheckedChange = { required = it },
             )
             SwitchRow(
-                label = "Permitir multiples",
+                label = "Permitir múltiples",
                 checked = allowMultiple,
                 onCheckedChange = { allowMultiple = it },
             )
@@ -211,7 +218,7 @@ fun ModifierGroupFormSheet(
                     OutlinedTextField(
                         value = minSelections,
                         onValueChange = { minSelections = it },
-                        label = { Text("Min") },
+                        label = { Text("Mín") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -219,8 +226,8 @@ fun ModifierGroupFormSheet(
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                     OutlinedTextField(
                         value = maxSelections,
-                        onValueChange = { maxSelections = it },
-                        label = { Text("Max") },
+                        onValueChange = { maxSelections = soloDigitosDeLimite(it, maxSelections) },
+                        label = { Text("Máx") },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

@@ -111,7 +111,7 @@ fun ProductDetailView(
     // MARK: - Save action
     fun onSave() {
         val handle: (Boolean) -> Unit = { ok ->
-            if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+            if (ok) onDismiss() else saveError = viewModel.errorMessage.value ?: "No se pudo guardar. Intenta de nuevo."
         }
         if (product == null) {
             viewModel.createProduct(
@@ -293,7 +293,7 @@ fun ProductDetailView(
 
             // MARK: 4. PRECIO Y CODIGOS
             item {
-                SectionCard(title = "PRECIO Y CODIGOS") {
+                SectionCard(title = "PRECIO Y CÓDIGOS") {
                     OutlinedTextField(
                         value = sku,
                         onValueChange = { sku = it },
@@ -413,7 +413,7 @@ fun ProductDetailView(
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                             Text(
-                                text = "${if (join.group?.required == true) "Requerido" else "Opcional"} · ${join.group?.modifierCount ?: 0} opciones",
+                                text = "${if (join.group?.required == true) "Requerido" else "Opcional"} · ${join.group?.modifierCount ?: 0} ${if (join.group?.modifierCount == 1) "opción" else "opciones"}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -465,7 +465,7 @@ fun ProductDetailView(
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("Eliminar artículo") },
-            text = { Text("Esta acción no se puede deshacer. El artículo sera eliminado permanentemente.") },
+            text = { Text("Esta acción no se puede deshacer. El artículo será eliminado permanentemente.") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.deleteProduct(product.id)

@@ -278,7 +278,7 @@ class ArticlesViewModel @Inject constructor(
         abiertaSinConexion: Boolean = false,
         onResult: (Boolean) -> Unit = {},
     ) {
-        if (abiertaSinConexion) { onResult(false); return } // r2 R2-14: la ficha trae datos viejos
+        if (abiertaSinConexion) { repository.clearError(); onResult(false); return } // r2 R2-14: la ficha trae datos viejos (sin motivo viejo: la hoja lee errorMessage)
         viewModelScope.launch {
             _isSaving.value = true
             try {
@@ -336,6 +336,7 @@ class ArticlesViewModel @Inject constructor(
                     if (description != null) put("description", description)
                     if (color != null) put("color", color)
                 }.toString()
+                repository.clearError()
                 val success = repository.createCategory(payload)
                 Log.d(TAG, if (success) "✅ Category created" else "❌ Category creation failed")
                 onResult(success)
@@ -360,6 +361,7 @@ class ArticlesViewModel @Inject constructor(
                     if (description != null) put("description", description)
                     if (color != null) put("color", color)
                 }.toString()
+                repository.clearError()
                 val success = repository.updateCategory(categoryId, payload)
                 Log.d(TAG, if (success) "✅ Category $categoryId updated" else "❌ Category update failed")
                 onResult(success)
@@ -404,6 +406,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.createModifierGroup(payload)
                 Log.d(TAG, if (success) "✅ Modifier group created" else "❌ Modifier group creation failed")
                 onResult(success)
@@ -422,59 +425,111 @@ class ArticlesViewModel @Inject constructor(
         maxSelections: Int? = null,
         originalModifiers: List<ArticleModifier>,
         currentModifiers: List<InlineModifier>,
+        onModificadorCreado: (indice: Int, id: String) -> Unit = { _, _ -> },
         onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
+            val respaldo = "No se pudo guardar el grupo de modificadores. Intenta de nuevo."
             try {
+                repository.clearError()
+                // La caja exige ese mínimo y sólo ofrece las activas: quitar de más dejaría el producto imposible de agregar.
+                // Vacío no borra el mínimo: el PATCH omite el campo y el servidor conserva el que tenía.
+                val minimoGuardado = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.minSelections
+                val minimo = if (required) minSelections ?: minimoGuardado ?: 1 else 0
+                val quedan = currentModifiers.count { !it.isDeleted }
+                val quitaAlguno = currentModifiers.any { it.isDeleted && it.id != null } ||
+                    originalModifiers.any { original -> currentModifiers.none { it.id == original.id } }
+                if (quitaAlguno && quedan < minimo) {
+                    repository.setError(textoFaltanOpciones(minimo))
+                    onResult(false)
+                    return@launch
+                }
                 // PATCH group metadata
                 val groupPayload = buildJsonObject {
                     put("name", name)
                     put("required", required)
                     put("allowMultiple", allowMultiple)
                     if (minSelections != null) put("minSelections", minSelections)
-                    if (maxSelections != null) put("maxSelections", maxSelections)
+                    // Con selección múltiple, vacío = sin máximo: va `null` explícito porque, sin el campo, el servidor deja
+                    // el máximo que tenía. Sin selección múltiple el campo ni se ve: ahí `null` no es «lo vació alguien».
+                    if (allowMultiple) put("maxSelections", maxSelections)
                 }.toString()
-                repository.updateModifierGroup(groupId, groupPayload)
-
-                // DELETE removed modifiers (exist in original but not in current)
-                val currentIds = currentModifiers.mapNotNull { it.id }.toSet()
-                val deletedModifiers = originalModifiers.filter { it.id !in currentIds }
-                for (deleted in deletedModifiers) {
-                    repository.deleteModifier(groupId, deleted.id)
+                // Se detiene en el primer paso rechazado: el repositorio ya dejó el motivo y la hoja se queda abierta.
+                val guardado = repository.updateModifierGroup(groupId, groupPayload) &&
+                    guardarModificadores(groupId, originalModifiers, currentModifiers, minimo, onModificadorCreado)
+                if (!guardado && repository.errorMessage.value.isNullOrBlank()) {
+                    repository.setError(respaldo)
                 }
-
-                // Process current modifiers
-                for (modifier in currentModifiers) {
-                    if (modifier.isDeleted) continue
-
-                    if (modifier.id != null) {
-                        // PATCH existing modifier
-                        val modPayload = buildJsonObject {
-                            put("name", modifier.name)
-                            put("price", modifier.price)
-                        }.toString()
-                        repository.updateModifier(groupId, modifier.id, modPayload)
-                    } else {
-                        // POST new modifier
-                        val newModPayload = buildJsonObject {
-                            put("name", modifier.name)
-                            put("price", modifier.price)
-                        }.toString()
-                        repository.addModifierToGroup(groupId, newModPayload)
-                    }
-                }
-
-                Log.d(TAG, "✅ Modifier group $groupId fully updated")
-                onResult(true)
+                Log.d(TAG, if (guardado) "✅ Modifier group $groupId fully updated" else "❌ Modifier group $groupId not fully updated")
+                onResult(guardado)
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Modifier group update failed: ${e.message}")
-                repository.setError("No se pudo guardar el grupo de modificadores. Intenta de nuevo.")
+                if (repository.errorMessage.value.isNullOrBlank()) {
+                    repository.setError(respaldo)
+                }
                 onResult(false)
             } finally {
                 _isSaving.value = false
             }
         }
+    }
+
+    /**
+     * Aplica la hoja a los modificadores del grupo, paso por paso, y devuelve false en el primero que se rechace.
+     *
+     * Cada alta le avisa a la hoja el id que recibió, con su índice en [currentModifiers], antes del siguiente paso: en un
+     * reintento esa fila ya trae `id` y va por PATCH.
+     *
+     * Eliminar un modificador lo ARCHIVA (`active: false`, founder 9-nov, igual que Toast y que los productos): así el reporte,
+     * las ligas de pago ya enviadas y una venta hecha sin red que lo traiga siguen valiendo. Se archiva lo que la hoja abrió y ya
+     * no conserva, y lo que ella misma creó y luego quitó; lo que sólo esté en la lista viva pudo agregarlo otro aparato, y no
+     * se toca. Lo ya archivado o inexistente se salta. Archivar va al final: si un alta falla, el grupo no se queda sin la
+     * opción que se iba a reemplazar.
+     */
+    private suspend fun guardarModificadores(
+        groupId: String,
+        originalModifiers: List<ArticleModifier>,
+        currentModifiers: List<InlineModifier>,
+        minimo: Int,
+        onModificadorCreado: (indice: Int, id: String) -> Unit,
+    ): Boolean {
+        for ((indice, modifier) in currentModifiers.withIndex()) {
+            if (modifier.isDeleted) continue
+
+            val payload = buildJsonObject {
+                put("name", modifier.name)
+                put("price", modifier.price)
+            }.toString()
+            if (modifier.id != null) {
+                if (!repository.updateModifier(groupId, modifier.id, payload)) return false
+            } else {
+                // Si el POST llegó y se perdió la respuesta, el reintento puede duplicar: esta ruta no tiene llave de idempotencia.
+                val idCreado = repository.addModifierToGroup(groupId, payload) ?: return false
+                onModificadorCreado(indice, idCreado)
+            }
+        }
+
+        val listaViva = repository.modifierGroups.value.firstOrNull { it.id == groupId }?.modifiers
+        val archivables = (listaViva ?: originalModifiers).filter { it.active != false }.map { it.id }.toSet()
+        val seQuedan = currentModifiers.filterNot { it.isDeleted }.mapNotNull { it.id }.toSet()
+        val quitados = (originalModifiers.map { it.id } + currentModifiers.filter { it.isDeleted }.mapNotNull { it.id }).distinct()
+        val aArchivar = quitados.filter { it !in seQuedan && it in archivables }
+        // Otro aparato pudo apagar opciones con la hoja abierta: el mínimo se revisa otra vez con lo que hay ahora.
+        if (aArchivar.isNotEmpty() && listaViva != null && listaViva.count { it.active != false && it.id !in aArchivar } < minimo) {
+            repository.setError(textoFaltanOpciones(minimo))
+            return false
+        }
+        val archivar = buildJsonObject { put("active", false) }.toString()
+        for (id in aArchivar) {
+            if (!repository.updateModifier(groupId, id, archivar)) return false
+        }
+        return true
+    }
+
+    private fun textoFaltanOpciones(minimo: Int): String {
+        val opciones = if (minimo == 1) "opción" else "opciones"
+        return "Este grupo es obligatorio y pide al menos $minimo $opciones. Déjalas o baja el mínimo antes de quitar esta."
     }
 
     fun deleteModifierGroup(groupId: String) {
@@ -577,6 +632,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.createDiscount(payload)
                 Log.d(TAG, if (success) "✅ Discount created" else "❌ Discount creation failed")
                 onResult(success)
@@ -625,6 +681,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.updateDiscount(discountId, payload)
                 Log.d(TAG, if (success) "✅ Discount $discountId updated" else "❌ Discount update failed")
                 onResult(success)
@@ -660,6 +717,7 @@ class ArticlesViewModel @Inject constructor(
                     if (maxUsesPerCustomer != null) put("maxUsesPerCustomer", maxUsesPerCustomer)
                     put("active", active)
                 }.toString()
+                repository.clearError()
                 val success = repository.createCoupon(payload)
                 Log.d(TAG, if (success) "✅ Coupon created" else "❌ Coupon creation failed")
                 onResult(success)
@@ -684,10 +742,12 @@ class ArticlesViewModel @Inject constructor(
                 val payload = buildJsonObject {
                     put("code", code.uppercase())
                     put("discountId", discountId)
-                    if (maxUses != null) put("maxUses", maxUses)
-                    if (maxUsesPerCustomer != null) put("maxUsesPerCustomer", maxUsesPerCustomer)
+                    // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
+                    put("maxUses", maxUses)
+                    put("maxUsesPerCustomer", maxUsesPerCustomer)
                     put("active", active)
                 }.toString()
+                repository.clearError()
                 val success = repository.updateCoupon(couponId, payload)
                 Log.d(TAG, if (success) "✅ Coupon $couponId updated" else "❌ Coupon update failed")
                 onResult(success)
@@ -735,6 +795,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.createCreditPack(payload)
                 Log.d(TAG, if (success) "✅ Credit pack created" else "❌ Credit pack creation failed")
                 onResult(success)
@@ -763,8 +824,10 @@ class ArticlesViewModel @Inject constructor(
                     put("name", name)
                     if (description != null) put("description", description)
                     put("price", price)
-                    if (validityDays != null) put("validityDays", validityDays)
-                    if (maxPerCustomer != null) put("maxPerCustomer", maxPerCustomer)
+                    // Vacío = sin vigencia: va `null` explícito; sin el campo, el servidor deja la que tenía. Lo ya vendido conserva su fecha.
+                    put("validityDays", validityDays)
+                    // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
+                    put("maxPerCustomer", maxPerCustomer)
                     put("active", active)
                     putJsonArray("items") {
                         filteredItems.forEach { item ->
@@ -775,6 +838,7 @@ class ArticlesViewModel @Inject constructor(
                         }
                     }
                 }.toString()
+                repository.clearError()
                 val success = repository.updateCreditPack(packId, payload)
                 Log.d(TAG, if (success) "✅ Credit pack $packId updated" else "❌ Credit pack update failed")
                 onResult(success)
