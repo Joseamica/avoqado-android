@@ -6,6 +6,7 @@ import com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta
 import com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta
 import com.avoqado.pos.giftcards.domain.TextosDeTarjetas
 import com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel
+import com.avoqado.pos.payment.presentation.cuentaEnConsulta
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.PreBillBalance
 import com.avoqado.pos.tables.data.TableServiceRepository
@@ -126,6 +127,48 @@ class CobroDeCuentaConsultasEnCursoTest {
         segunda.complete(Result.failure(IOException("sin red")))
         runCurrent()
         assertEquals(0, m.consultasEnCurso.value)
+    }
+
+    private fun dosConsultasRetenidas(): Pair<CompletableDeferred<Result<OrderDetail>>, CompletableDeferred<Result<OrderDetail>>> {
+        val vieja = CompletableDeferred<Result<OrderDetail>>()
+        val nueva = CompletableDeferred<Result<OrderDetail>>()
+        val respuestas = ArrayDeque(listOf(vieja, nueva))
+        coEvery { repo.getOrderDetail("a", "o") } coAnswers { respuestas.removeFirst().await() }
+        return vieja to nueva
+    }
+
+    @Test fun `una respuesta atrasada no pisa el saldo de la consulta mas nueva`() = runTest {
+        val (vieja, nueva) = dosConsultasRetenidas()
+        val saldoNuevo = cuenta.copy(preBillBalance = PreBillBalance(10000, 5000, 5000, 0))
+        launch { m.cargar("o") }
+        launch { m.cargar("o") }
+        runCurrent()
+        nueva.complete(Result.success(saldoNuevo))
+        runCurrent()
+        vieja.complete(Result.success(cuenta))
+        runCurrent()
+        assertEquals(saldoNuevo, m.detalle.value)
+        assertEquals(0, m.consultasEnCurso.value)
+    }
+
+    @Test fun `una falla atrasada no deja aviso sobre una consulta que ya salio bien`() = runTest {
+        val (vieja, nueva) = dosConsultasRetenidas()
+        launch { m.cargar("o") }
+        launch { m.cargar("o") }
+        runCurrent()
+        nueva.complete(Result.success(cuenta))
+        runCurrent()
+        vieja.complete(Result.failure(IOException("sin red")))
+        runCurrent()
+        assertEquals(cuenta, m.detalle.value)
+        assertNull(m.mensaje.value)
+    }
+
+    @Test fun `antes de arrancar la primera consulta tambien se dice Consultando`() {
+        assertEquals(true, cuentaEnConsulta(consultasEnCurso = 0, enLinea = true, consultaPedida = false))
+        assertEquals(true, cuentaEnConsulta(consultasEnCurso = 1, enLinea = true, consultaPedida = true))
+        assertEquals("Ya consulto y fallo", false, cuentaEnConsulta(consultasEnCurso = 0, enLinea = true, consultaPedida = true))
+        assertEquals("Sin red nadie va a consultar", false, cuentaEnConsulta(consultasEnCurso = 0, enLinea = false, consultaPedida = false))
     }
 
     @Test fun `ofertaParaCobrar sigue decidiendo con la foto fresca`() = runTest {

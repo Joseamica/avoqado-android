@@ -56,17 +56,21 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val enVuelo = MutableStateFlow(0)
     /** Consultas de la cuenta que aún no vuelven. Es contador y no booleano porque pueden correr dos a la vez. */
     val consultasEnCurso = enVuelo.asStateFlow()
+    private val turnos = java.util.concurrent.atomic.AtomicInteger()
     suspend fun cargar(orderId: String) {
         enVuelo.update { it + 1 } // Antes de vaciar la foto: «sin foto y sin consulta» significa que ya falló.
         try { consultar(orderId) } finally { enVuelo.update { it - 1 } }
     }
     private suspend fun consultar(orderId: String) {
+        val turno = turnos.incrementAndGet()
         foto.value = null
         aviso.value = null
         val venue = storage.venueId
         venueDeLaCuenta = venue
         if (venue == null) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         val resultado = repo.getOrderDetail(venue, orderId)
+        // Si salió otra consulta después, manda ella: una respuesta atrasada no pisa su saldo ni su aviso (Codex D14 r1 P1).
+        if (turno != turnos.get() && resultado.exceptionOrNull() !is kotlinx.coroutines.CancellationException) return
         if (storage.venueId != venue) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         resultado.fold(onSuccess = {
             if (it.id != orderId) aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA
@@ -241,6 +245,10 @@ internal fun alSalirDeCuentaAbierta(cierre: CierreDeCuenta, esCuentaDeTarjetas: 
     onActualizar()
 }
 
+/** «Reintentar» es para una consulta que ya falló; antes de que arranque la primera también se está consultando. */
+internal fun cuentaEnConsulta(consultasEnCurso: Int, enLinea: Boolean, consultaPedida: Boolean) =
+    consultasEnCurso > 0 || (enLinea && !consultaPedida)
+
 @Composable
 fun AccionesDeCuentaAbierta(
     order: com.avoqado.pos.orders.data.model.OrderDetail,
@@ -267,10 +275,14 @@ fun AccionesDeCuentaAbierta(
     val solicitudesPropias = solicitudesDeLaCuenta(solicitudes, viewModel.venueActual, order.id)
     val porTerminar = solicitudesPropias.any { it.porTerminar }
     val elegible = com.avoqado.pos.orders.data.model.puedeCobrarseDesdeLaLista(order.cobrosConSaldo, order, porTerminar)
-    LaunchedEffect(order, solicitudesPropias) { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
+    var consultaPedida by remember(order.id) { mutableStateOf(false) }
+    LaunchedEffect(order, solicitudesPropias) {
+        consultaPedida = true
+        if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id)
+    }
     val cents = detalle?.let(::restanteCents)
     if (elegible) {
-        if (detalle == null && consultasEnCurso > 0) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
+        if (detalle == null && cuentaEnConsulta(consultasEnCurso, enLinea, consultaPedida)) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
         else if (detalle == null) TextButton(enabled = enLinea, onClick = {
             scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
         }) { Text(TextosDeTarjetas.REINTENTAR) }
