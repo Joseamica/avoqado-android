@@ -88,7 +88,8 @@ class RecargaDeLaMismaCuentaR5Test {
         val limpio = requireNotNull(codigo).replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
             .replace(Regex("""//[^\n]*"""), "").replace(Regex("""\s+"""), "")
         assertTrue(limpio.contains("valsolicitudesPropias=solicitudesDeLaCuenta(solicitudes,viewModel.venueActual,order.id)"))
-        assertTrue(limpio.contains("LaunchedEffect(order,solicitudesPropias){if(enLinea)viewModel.ofertaParaCobrar(order.id,"))
+        // D14: el efecto primero anota que ya pidió la consulta (primer cuadro «Consultando…»), luego consulta.
+        assertTrue(limpio.contains("LaunchedEffect(order,solicitudesPropias){consultaPedida=trueif(enLinea)viewModel.ofertaParaCobrar(order.id,"))
         assertFalse(limpio.contains("LaunchedEffect(order,solicitudes)"))
     }
 }

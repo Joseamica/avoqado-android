@@ -164,6 +164,24 @@ class CobroDeCuentaConsultasEnCursoTest {
         assertNull(m.mensaje.value)
     }
 
+    @Test fun `una oferta superada no apaga Cobrar de la consulta mas nueva`() = runTest {
+        val (vieja, nueva) = dosConsultasRetenidas()
+        val pendienteDeLaVieja = CompletableDeferred<Boolean>()
+        var llamadas = 0
+        coEvery { locales.hayPendiente("a", "o") } coAnswers { if (llamadas++ == 0) pendienteDeLaVieja.await() else false }
+        val a = async { m.ofertaParaCobrar("o") }
+        val b = async { m.ofertaParaCobrar("o") }
+        runCurrent()
+        vieja.complete(Result.success(cuenta)) // A vuelve primero, ya superada, y se queda revisando pendientes.
+        runCurrent()
+        nueva.complete(Result.success(cuenta))
+        assertEquals(OfertaDeLaCuenta.OFRECER, b.await())
+        pendienteDeLaVieja.complete(false)
+        assertEquals(OfertaDeLaCuenta.NADA, a.await())
+        assertEquals(OfertaDeLaCuenta.OFRECER, m.oferta.value)
+        assertEquals(cuenta, m.detalle.value)
+    }
+
     @Test fun `antes de arrancar la primera consulta tambien se dice Consultando`() {
         assertEquals(true, cuentaEnConsulta(consultasEnCurso = 0, enLinea = true, consultaPedida = false))
         assertEquals(true, cuentaEnConsulta(consultasEnCurso = 1, enLinea = true, consultaPedida = true))

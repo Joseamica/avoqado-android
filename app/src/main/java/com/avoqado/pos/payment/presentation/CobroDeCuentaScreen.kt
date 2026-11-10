@@ -57,12 +57,14 @@ class CobroDeCuentaViewModel @Inject constructor(
     /** Consultas de la cuenta que aún no vuelven. Es contador y no booleano porque pueden correr dos a la vez. */
     val consultasEnCurso = enVuelo.asStateFlow()
     private val turnos = java.util.concurrent.atomic.AtomicInteger()
-    suspend fun cargar(orderId: String) {
+    /** Devuelve su turno: si después salió otra consulta, la que manda es ésa. */
+    suspend fun cargar(orderId: String): Int {
         enVuelo.update { it + 1 } // Antes de vaciar la foto: «sin foto y sin consulta» significa que ya falló.
-        try { consultar(orderId) } finally { enVuelo.update { it - 1 } }
-    }
-    private suspend fun consultar(orderId: String) {
         val turno = turnos.incrementAndGet()
+        try { consultar(orderId, turno) } finally { enVuelo.update { it - 1 } }
+        return turno
+    }
+    private suspend fun consultar(orderId: String, turno: Int) {
         foto.value = null
         aviso.value = null
         val venue = storage.venueId
@@ -83,12 +85,13 @@ class CobroDeCuentaViewModel @Inject constructor(
         })
     }
     suspend fun ofertaParaCobrar(orderId: String, laTraeUnCarrito: Boolean = false): com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta {
-        cargar(orderId)
+        val turno = cargar(orderId)
         val cuenta = foto.value
         val venue = venueDeLaCuenta ?: return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
         val pendiente = try { cobrosLocales?.hayPendiente(venue, orderId) ?: true }
             catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true }
-        if (storage.venueId != venue || foto.value?.id != orderId) return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
+        // Una consulta superada no publica oferta: decidiría con la foto de otra (Codex D14 r2 P2).
+        if (turno != turnos.get() || storage.venueId != venue || foto.value?.id != orderId) return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
         val resultado = com.avoqado.pos.giftcards.domain.ofertaDeLaCuenta(cuenta?.let(::restanteCents),
             cuenta == null || cuenta.esDeMesa != false && !cuenta.esCuentaDeTarjetas, laTraeUnCarrito, pendiente)
         ofertaActual.value = resultado
