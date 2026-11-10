@@ -42,10 +42,15 @@ class PesoQueCaducaEnLaVentanaTest {
         NormalizedScaleReading(deviceId = "rhino", netKg = kg, stable = true, observedAtEpochMillis = observedAt),
     )
 
-    /** Abre la ventana y espera a que se pinte: en la caja real se abre ANTES de que llegue la lectura siguiente. */
+    /**
+     * Abre la ventana y la pinta: en la caja real se abre ANTES de que llegue la lectura siguiente. El reloj de la prueba
+     * va a mano: con `autoAdvance`, esperar a que la pantalla quede quieta adelanta el reloj y dispara solos los 2 s de la
+     * caducidad.
+     */
     private fun ComposeUiTest.ventana(c: Caja) {
+        mainClock.autoAdvance = false
         pintar(c)
-        waitForIdle()
+        mainClock.advanceTimeByFrame()
     }
 
     private fun ComposeUiTest.pintar(c: Caja) = setContent {
@@ -63,6 +68,7 @@ class PesoQueCaducaEnLaVentanaTest {
     }
 
     private fun ComposeUiTest.sinPesoQueOfrecer(c: Caja) {
+        mainClock.advanceTimeByFrame()
         onNodeWithText("Agregar •", substring = true).assertDoesNotExist()
         onNodeWithText("Lectura estable", substring = true).assertDoesNotExist()
         onNodeWithText("Coloca el producto sobre la báscula.").assertExists()
@@ -87,6 +93,7 @@ class PesoQueCaducaEnLaVentanaTest {
         val c = Caja(queso, ScaleConnectionState.Ready("Rhino"))
         ventana(c)
         c.estado = estable(System.currentTimeMillis())
+        mainClock.advanceTimeByFrame()
         onNodeWithText("Agregar •", substring = true).assertExists()
         c.producto = crema   // la báscula ya no manda nada: el estado se queda igual
         sinPesoQueOfrecer(c)
@@ -96,12 +103,14 @@ class PesoQueCaducaEnLaVentanaTest {
         val c = Caja(queso, ScaleConnectionState.Ready("Rhino"))
         ventana(c)
         c.estado = estable(System.currentTimeMillis())
+        mainClock.advanceTimeByFrame()
         onNodeWithText("Lectura estable · Rhino").assertExists()
         onNodeWithText("Agregar • \$121.89").assertExists()
         mainClock.advanceTimeBy(2_100)
         sinPesoQueOfrecer(c)
         // Llega otra lectura: vuelve a ofrecerse y F12 la agrega una vez.
         c.estado = estable(System.currentTimeMillis(), kg = "0.500")
+        mainClock.advanceTimeByFrame()
         onNodeWithText("Agregar • \$140.10").assertExists()
         runOnIdle { assertTrue(AtajosDeTeclado.atender(Key.F12)) }
         runOnIdle { assertEquals(listOf(0.5), c.agregados) }
