@@ -57,6 +57,8 @@ import com.avoqado.pos.pos.data.model.formatWeightKg
 import com.avoqado.pos.pos.data.model.parseWeightKg
 import com.avoqado.pos.pos.data.model.weightTotalCents
 import com.avoqado.pos.scale.ScaleConnectionState
+import com.avoqado.pos.scale.lecturaAlAbrir
+import com.avoqado.pos.scale.pesoEstableVigente
 import com.avoqado.pos.scale.vigentePara
 import java.util.Locale
 
@@ -139,7 +141,8 @@ private fun WeightCaptureContent(
 
     // D15: sólo un peso de hace ≤ 2 s y llegado después de abrir ESTE producto. Se lee en la misma composición (no por un
     // efecto que copie el texto un cuadro después): cuando caduca, «Agregar» y F12 se apagan en ese mismo cuadro.
-    val bascula = scaleState.vigentePara(product.id)
+    val alAbrir = scaleState.lecturaAlAbrir(product.id)
+    val bascula = scaleState.vigentePara(alAbrir)
     val pesoTexto = if (manualMode) weightText else (bascula as? ScaleConnectionState.Stable)?.reading?.netKg.orEmpty()
 
     val weightKg = parseWeightKg(pesoTexto)
@@ -150,7 +153,9 @@ private fun WeightCaptureContent(
     var agregado by remember(product.id) { mutableStateOf(false) }
     fun submit() {
         if (agregado) return
-        val kg = parseWeightKg(pesoTexto) ?: return
+        // Se vuelve a preguntar AL TOCAR (Codex r1): F12 justo cuando el peso caduca, antes del siguiente cuadro, no agrega.
+        val texto = if (manualMode) weightText else scaleState.pesoEstableVigente(alAbrir)?.netKg.orEmpty()
+        val kg = parseWeightKg(texto) ?: return
         agregado = true
         onAdd(kg)
         onDismiss()

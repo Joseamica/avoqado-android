@@ -42,7 +42,13 @@ class PesoQueCaducaEnLaVentanaTest {
         NormalizedScaleReading(deviceId = "rhino", netKg = kg, stable = true, observedAtEpochMillis = observedAt),
     )
 
-    private fun ComposeUiTest.ventana(c: Caja) = setContent {
+    /** Abre la ventana y espera a que se pinte: en la caja real se abre ANTES de que llegue la lectura siguiente. */
+    private fun ComposeUiTest.ventana(c: Caja) {
+        pintar(c)
+        waitForIdle()
+    }
+
+    private fun ComposeUiTest.pintar(c: Caja) = setContent {
         CompositionLocalProvider(LocalEsEscritorio provides true) {
             MaterialTheme {
                 WeightCapturePanel(

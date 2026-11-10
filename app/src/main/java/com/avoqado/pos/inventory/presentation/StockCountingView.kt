@@ -73,6 +73,8 @@ import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.unitSuffixOf
 import com.avoqado.pos.scale.ScaleConnectionState
+import com.avoqado.pos.scale.lecturaAlAbrir
+import com.avoqado.pos.scale.pesoEstableVigente
 import com.avoqado.pos.scale.vigentePara
 import java.util.Locale
 
@@ -618,7 +620,9 @@ private fun InventoryScaleReading(
                 fontWeight = FontWeight.SemiBold,
             )
             // D15: el peso del artículo anterior, o uno de hace más de 2 s (báscula callada), no se ofrece para éste.
-            when (val state = state.vigentePara(item.id to item.productId)) {
+            val crudo = state
+            val alAbrir = crudo.lecturaAlAbrir(item.id to item.productId)
+            when (val state = crudo.vigentePara(alAbrir)) {
                 is ScaleConnectionState.Connecting ->
                     Text("Conectando ${state.profileName}…", style = MaterialTheme.typography.bodySmall)
                 is ScaleConnectionState.Ready ->
@@ -640,7 +644,8 @@ private fun InventoryScaleReading(
                     )
                     PrimaryButton(
                         text = "Usar este peso",
-                        onClick = { onUseWeight(formatScaleValue(converted)) },
+                        // Se vuelve a preguntar al tocar (Codex r1): justo al caducar ya no se usa.
+                        onClick = { if (crudo.pesoEstableVigente(alAbrir) != null) onUseWeight(formatScaleValue(converted)) },
                         enabled = puedeEditar,
                     )
                 }
