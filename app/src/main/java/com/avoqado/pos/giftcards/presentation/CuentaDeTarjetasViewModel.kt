@@ -119,7 +119,8 @@ class CuentaDeTarjetasViewModel @Inject constructor(
         avisoValor.value=TextosDeTarjetas.DEVUELVE_COMPLETO
         pagos.value=emptyList()
         if (!enLinea()) return
-        val detalle=ordenes.fetchOrderDetail(c.orden)
+        // D22: `fetchOrderDetail` lanza si no se pudo saber; aquí sigue contando como no tener los cobros.
+        val detalle=try { ordenes.fetchOrderDetail(c.orden) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
         if (!vigente(c)) return
         val lista=detalle?.takeIf { it.id == c.orden }?.payments
         if (lista == null) { avisoValor.value="No se pudieron consultar todos los cobros. Reintenta antes de devolver.";return }

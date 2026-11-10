@@ -51,7 +51,12 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
+import kotlinx.coroutines.flow.collectLatest
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -153,6 +158,14 @@ fun OrdersScreen(
     LifecycleResumeEffect(Unit) {
         viewModel.autoRefresh()
         onPauseOrDispose { }
+    }
+    // D22: mientras «Pedidos» se ve, el pedido que no abrió sin red se vuelve a pedir solo al volver la conexión.
+    val duenoDelCicloDeVida = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, duenoDelCicloDeVida) {
+        duenoDelCicloDeVida.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            // En WINDOWS el ciclo de vida sigue RESUMED con la ventana minimizada (Codex r4 #5).
+            VentanaALaVista.aLaVista.collectLatest { seVe -> if (seVe) viewModel.reabrirAlVolverLaRed() }
+        }
     }
 
     var cuentaCancelada by rememberSaveable { mutableStateOf(false) }

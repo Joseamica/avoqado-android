@@ -3,13 +3,17 @@ package com.avoqado.pos.orders.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.FalloDeLectura
+import com.avoqado.pos.core.data.network.LecturaFallida
 import com.avoqado.pos.orders.data.model.OrderDetail
 import com.avoqado.pos.orders.data.model.OrderPage
 import com.avoqado.pos.orders.data.model.OrderSummary
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -19,12 +23,19 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "🧾 OrdersRepo"
+
+/** D22: un pedido que no se pudo abrir porque nadie contestó. Con «Pedidos» a la vista, [com.avoqado.pos.orders.presentation.OrdersViewModel.reabrirAlVolverLaRed] lo vuelve a pedir. */
+internal const val TEXTO_PEDIDO_SIN_RED = "Sin conexión: para ver este pedido necesitas internet. Se abre solo al volver la conexión."
 
 @Singleton
 class OrdersRepository @Inject constructor(
@@ -53,6 +64,10 @@ class OrdersRepository @Inject constructor(
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    private val _detalleSinRed = MutableStateFlow<String?>(null)
+    /** D22: el pedido cuyo detalle no abrió porque nadie contestó, o `null`. Lo deja cada carga vigente al terminar. */
+    val detalleSinRed: StateFlow<String?> = _detalleSinRed.asStateFlow()
 
     private val _currentPage = MutableStateFlow(1)
     val currentPage: StateFlow<Int> = _currentPage.asStateFlow()
@@ -140,30 +155,47 @@ class OrdersRepository @Inject constructor(
 
     // MARK: - Fetch Order Detail
 
+    /**
+     * `null` sólo cuando el servidor dice que el pedido no existe (404). Si no se pudo saber (sin red, el servidor contestó
+     * mal, un 2xx sin `order` o un cuerpo que no se lee), lanza, y [FalloDeLectura.de] dice cuál fue. D22 (9-nov): antes todo
+     * era `null`, y sin red la pantalla decía «No se encontró la orden» de un pedido que sí existe.
+     */
     suspend fun fetchOrderDetail(orderId: String): OrderDetail? {
         val base = baseUrl() ?: return null
+        val request = Request.Builder()
+            .url("$base/orders/$orderId")
+            .get()
+            .build()
 
-        return try {
-            val request = Request.Builder()
-                .url("$base/orders/$orderId")
-                .get()
-                .build()
+        // Cancelable de verdad: cerrar «Pedidos» corta la consulta y no deja que su respuesta (un 403 con su aviso) salga encima
+        // de otra pantalla (Codex r2 #3). El cuerpo sólo se lee con un 2xx: un error ya contestó, y un corte al leer su cuerpo
+        // no lo vuelve «Sin conexión» (Codex r1 #1).
+        val (code, body) = suspendCancellableCoroutine<Pair<Int, String>> { cont ->
+            val call = client.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.failure(e))
+                }
 
-            val (code, body) = executeRequest(request)
-            if (code in 200..299 && body.isNotEmpty()) {
-                val root = json.parseToJsonElement(body).jsonObject
-                val orderObj = root["order"] ?: return null
-                val detail = json.decodeFromJsonElement<OrderDetail>(orderObj)
-                Log.d(TAG, "✅ Loaded order detail ${detail.id}")
-                detail
-            } else {
-                Log.e(TAG, "❌ fetchOrderDetail error: HTTP $code")
-                null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ fetchOrderDetail exception: ${e.message}", e)
-            null
+                override fun onResponse(call: Call, response: Response) {
+                    val leida = runCatching { response.use { it.code to if (it.isSuccessful) it.body?.string().orEmpty() else "" } }
+                    if (cont.isActive) cont.resumeWith(leida)
+                }
+            })
         }
+        if (code == 404) {
+            Log.e(TAG, "❌ fetchOrderDetail: el pedido $orderId no existe (404)")
+            return null
+        }
+        val orderObj = if (code in 200..299 && body.isNotEmpty()) json.parseToJsonElement(body).jsonObject["order"] else null
+        if (orderObj == null) {
+            Log.e(TAG, "❌ fetchOrderDetail error: HTTP $code sin pedido")
+            throw LecturaFallida(FalloDeLectura.SERVIDOR)
+        }
+        val detail = json.decodeFromJsonElement<OrderDetail>(orderObj)
+        Log.d(TAG, "✅ Loaded order detail ${detail.id}")
+        return detail
     }
 
     // MARK: - State-Mutating Methods
@@ -180,7 +212,8 @@ class OrdersRepository @Inject constructor(
             // Refresh de fondo silencioso: sin skeleton encima de datos buenos.
             _isLoading.value = _orders.value.isEmpty()
         }
-        _errorMessage.value = null
+        // D22 (Codex r4 #3): la lista ya no toca `_errorMessage`, que es el aviso del DETALLE. Nada lo pintaba en la lista y
+        // un refresco borraba el «Sin conexión…» del pedido seleccionado (quedaba «No se pudo cargar el pedido»).
 
         val result = fetchOrders(page = page, search = search, status = status)
         result.onSuccess { pageData ->
@@ -192,38 +225,50 @@ class OrdersRepository @Inject constructor(
             _currentPage.value = pageData.page
             _hasMore.value = pageData.hasMore
         }.onFailure { e ->
-            // Datos previos INTACTOS (spec §4.1); el error visible sólo cuando
-            // no hay nada que mostrar (spec §6).
+            // Datos previos INTACTOS (spec §4.1).
             Log.e(TAG, "❌ loadOrders: ${e.message}")
-            if (_orders.value.isEmpty()) {
-                _errorMessage.value = "Error al cargar órdenes"
-            }
         }
         _isLoading.value = false
         _isLoadingMore.value = false
         return result.map { }
     }
 
-    /** @param silencioso actualiza el pedido que ya se ve: sin círculo de carga, y si falla se queda lo que hay en pantalla. */
-    suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false) {
+    /**
+     * @param silencioso actualiza el pedido que ya se ve: sin círculo de carga, y si falla se queda lo que hay en pantalla.
+     * @param reintento D22: vuelve a pedir un pedido que no abrió por falta de red. Su «Sin conexión…» se queda a la vista
+     *   mientras consulta (sin círculo), y si la consulta se corta (otra selección, se fue la red, se cerró «Pedidos») no
+     *   cambia nada (Codex r3 #3). Al terminar dice lo que toque, igual que un toque.
+     */
+    suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false, reintento: Boolean = false) {
         val solicitud = orderId to Any()
         detalleSolicitado = solicitud
-        if (!silencioso) {
+        if (!silencioso && !reintento) {
             _isLoadingDetail.value = true
             _errorMessage.value = null
+            _detalleSinRed.value = null // un toque manda: corta la reapertura automática en curso (Codex r4 #1)
         }
 
         try {
             val detail = fetchOrderDetail(orderId)
             if (detalleSolicitado != solicitud || (silencioso && detail == null)) return
             _selectedOrder.value = detail
+            _detalleSinRed.value = null
             if (detail == null) {
                 _errorMessage.value = "No se encontró la orden"
+            } else if (reintento) {
+                _errorMessage.value = null // el «Sin conexión…» que se quedó a la vista mientras consultaba
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (detalleSolicitado != solicitud || silencioso) return
             Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar detalle de orden"
+            val sinRed = FalloDeLectura.de(e) == FalloDeLectura.SIN_RED
+            // Como antes de D22 (ahí el fallo llegaba como `null`): volver a pedir el pedido que se ve y fallar enseña el
+            // fallo, no la foto anterior sin aviso (Codex r5).
+            _selectedOrder.value = null
+            _errorMessage.value = if (sinRed) TEXTO_PEDIDO_SIN_RED else "Error al cargar detalle de orden"
+            _detalleSinRed.value = orderId.takeIf { sinRed }
         } finally {
             if (detalleSolicitado == solicitud) _isLoadingDetail.value = false
         }
@@ -231,6 +276,7 @@ class OrdersRepository @Inject constructor(
 
     fun clearSelectedOrder() {
         detalleSolicitado = null
+        _detalleSinRed.value = null
         _selectedOrder.value = null
         _isLoadingDetail.value = false
     }
