@@ -1746,7 +1746,9 @@ class TableOrderViewModel @Inject constructor(
                         RoutableItem(
                             orderItemId = item.id,
                             productId = item.productId,
-                            categoryId = null,
+                            // D18: la línea de la cuenta no trae la categoría; sale del catálogo guardado, como en la
+                            // primera impresión (el carrito la toma de `product.categoryId`).
+                            categoryId = item.productId?.let { productsRepository.getProduct(it)?.categoryId },
                             productName = item.productName ?: "Artículo",
                             quantity = item.quantity,
                             modifiers = item.modifiers.map { it.name },
@@ -1816,7 +1818,7 @@ class TableOrderViewModel @Inject constructor(
                 RoutableItem(
                     orderItemId = item.id,
                     productId = item.productId,
-                    categoryId = null,
+                    categoryId = item.productId?.let { productsRepository.getProduct(it)?.categoryId }, // D18, como reimprimir
                     productName = item.productName ?: "Artículo",
                     quantity = item.quantity,
                     modifiers = item.modifiers.map { it.name },
