@@ -32,7 +32,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +57,9 @@ import com.avoqado.pos.pos.data.model.formatWeightKg
 import com.avoqado.pos.pos.data.model.parseWeightKg
 import com.avoqado.pos.pos.data.model.weightTotalCents
 import com.avoqado.pos.scale.ScaleConnectionState
+import com.avoqado.pos.scale.lecturaAlAbrir
+import com.avoqado.pos.scale.pesoEstableVigente
+import com.avoqado.pos.scale.vigentePara
 import java.util.Locale
 
 private fun money(cents: Int): String = String.format(Locale.US, "$%.2f", cents / 100.0)
@@ -137,24 +139,23 @@ private fun WeightCaptureContent(
         mutableStateOf(!scaleConfigured)
     }
 
-    LaunchedEffect(scaleState, manualMode) {
-        if (!manualMode) {
-            weightText = when (scaleState) {
-                is ScaleConnectionState.Stable -> scaleState.reading.netKg
-                else -> ""
-            }
-        }
-    }
+    // D15: sólo un peso de hace ≤ 2 s y llegado después de abrir ESTE producto. Se lee en la misma composición (no por un
+    // efecto que copie el texto un cuadro después): cuando caduca, «Agregar» y F12 se apagan en ese mismo cuadro.
+    val alAbrir = scaleState.lecturaAlAbrir(product.id)
+    val bascula = scaleState.vigentePara(alAbrir)
+    val pesoTexto = if (manualMode) weightText else (bascula as? ScaleConnectionState.Stable)?.reading?.netKg.orEmpty()
 
-    val weightKg = parseWeightKg(weightText)
+    val weightKg = parseWeightKg(pesoTexto)
     val totalCents = weightKg?.let { weightTotalCents(it, product.priceInCents) }
-    val showError = weightText.isNotBlank() && weightKg == null
+    val showError = pesoTexto.isNotBlank() && weightKg == null
 
     // Un solo «Agregar» por hoja: dos F12 (o dos clics) antes de que la hoja se cierre no agregan dos líneas.
     var agregado by remember(product.id) { mutableStateOf(false) }
     fun submit() {
         if (agregado) return
-        val kg = parseWeightKg(weightText) ?: return
+        // Se vuelve a preguntar AL TOCAR (Codex r1): F12 justo cuando el peso caduca, antes del siguiente cuadro, no agrega.
+        val texto = if (manualMode) weightText else scaleState.pesoEstableVigente(alAbrir)?.netKg.orEmpty()
+        val kg = parseWeightKg(texto) ?: return
         agregado = true
         onAdd(kg)
         onDismiss()
@@ -219,7 +220,7 @@ private fun WeightCaptureContent(
 
             if (scaleConfigured && !manualMode) {
                 ScaleStatusCard(
-                    state = scaleState,
+                    state = bascula,
                     onRetry = onRetryScale,
                 )
                 TextButton(
