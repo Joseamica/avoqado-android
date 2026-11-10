@@ -20,7 +20,18 @@ object PrintRoutingMapper {
      * Unrouted items (no station, no default) collapse into a single plan with
      * stationId == null → the caller prints ONE marked "SIN ESTACIÓN" ticket.
      */
-    fun buildComandas(items: List<RoutableItem>, config: PrintConfig): List<TicketPlan> {
+    fun buildComandas(items: List<RoutableItem>, config: PrintConfig): List<TicketPlan> =
+        rutear(items, config, omitirSinComanda = false).plans
+
+    /** «No lleva comanda»: la estación existe, está activa y el negocio la creó sin comanda. */
+    fun esSinComanda(stationId: String?, config: PrintConfig): Boolean = false
+
+    /**
+     * [buildComandas] más el filtro de «No lleva comanda». SÓLO lo prenden los disparos de ventas del POS (mostrador, mesas,
+     * vales, reservas, Órdenes de una venta del POS); Uber/Rappi, pedidos en línea y el papel de la pantalla de cocina llaman
+     * con `false` y rutean exactamente como hoy. Lo que no tiene estación sigue en «SIN ESTACIÓN».
+     */
+    fun rutear(items: List<RoutableItem>, config: PrintConfig, omitirSinComanda: Boolean): Ruteo {
         val categoryMap = config.categoryRouting.associate { it.categoryId to it.printStationId }
         val productMap = config.productOverrides.associate { it.productId to it.printStationId }
 
@@ -37,7 +48,7 @@ object PrintRoutingMapper {
             )
         }
         val source = items.associateBy { it.orderItemId }
-        return PrintRoutingEngine.buildTicketPlans(routingItems, toRoutingConfig(config)).map { plan ->
+        val plans = PrintRoutingEngine.buildTicketPlans(routingItems, toRoutingConfig(config)).map { plan ->
             plan.copy(lines = plan.lines.flatMap { line ->
                 if (line.orderItemIds.none { source[it]?.serviceCourse?.preparationVersion == 1 }) listOf(line)
                 else line.orderItemIds.mapNotNull { id -> source[id]?.let { item ->
@@ -46,12 +57,16 @@ object PrintRoutingMapper {
                 } }
             })
         }
+        return Ruteo(plans, omitidasSinComanda = 0)
     }
 
     /** Resolve the station name for a plan (null for the unrouted "SIN ESTACIÓN" bucket). */
     fun stationName(stationId: String?, config: PrintConfig): String? =
         stationId?.let { id -> config.stations.firstOrNull { it.id == id }?.name }
 }
+
+/** Lo que sale del ruteo: los planes que sí van a cocina y cuántos se quitaron por ser de una estación «No lleva comanda». */
+data class Ruteo(val plans: List<TicketPlan>, val omitidasSinComanda: Int)
 
 /**
  * The minimal cart-line shape the router needs. The ViewModel maps its real cart
