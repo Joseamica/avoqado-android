@@ -138,6 +138,8 @@ class PayLaterQueue @Inject constructor(
     private val secureStorage: SecureStorage,
     private val savedCartsRepository: SavedCartsRepository,
     private val connectivityMonitor: ConnectivityMonitor,
+    /** D12: la marca «la abrió aquí» de cada cuenta que este aparato crea (o encuentra creada al cerrar su llave). */
+    private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
 ) {
     private val prefs = context.getSharedPreferences("pagar_despues_pendientes", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -246,6 +248,8 @@ class PayLaterQueue @Inject constructor(
             Log.w(TAG, "Pagar después sin respuesta: ${e.message}")
             return DesenlacePagarDespues.SinRespuesta
         }
+        // D12: la marca va ANTES de devolver: quien llama borra la evidencia local (`cerrarAceptada`) después, nunca antes.
+        if (desenlace is DesenlacePagarDespues.Creada) cuentasAbiertasAqui?.marcar(venueId, desenlace.orderId)
         // Una cuenta conocida sin prueba de cortesía no es un fallo de red ni un rechazo que diga que no existe.
         return if (desenlace is DesenlacePagarDespues.Creada && CortesiaPersistida.solicitada(cuerpo) &&
             !CortesiaPersistida.confirmada(cuerpo, respuesta.body)) {
@@ -398,6 +402,8 @@ class PayLaterQueue @Inject constructor(
     private suspend fun cerrarLlave(fila: PayLaterRow): CierreDeLlave = try {
         val r = orderRepository.cerrarLlaveDePagarDespues(fila.venueId, fila.id)
         OrderRepository.leerCierreDeLlave(r.code, r.contentType, r.ngrokError, r.body)
+            // D12: la cuenta existe y la abrió esta llave: se marca antes de que `trasElRechazo` borre la fila.
+            .also { if (it is CierreDeLlave.Existe) cuentasAbiertasAqui?.marcar(fila.venueId, it.orderId) }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {

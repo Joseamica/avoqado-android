@@ -77,5 +77,8 @@ class PayloadCache @Inject constructor(
 
         /** D12: copia de las cuentas abiertas de «Pedidos», para cobrarlas en efectivo sin red (`orders.data.CopiaDeCuentas`). */
         const val TYPE_COPIA_DE_PEDIDOS = "copia_de_pedidos"
+
+        /** D12: las cuentas que abrió ESTE aparato, por sucursal (`orders.data.CuentasAbiertasAqui`). */
+        const val TYPE_CUENTAS_ABIERTAS_AQUI = "cuentas_abiertas_aqui"
     }
 }

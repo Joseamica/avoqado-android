@@ -44,6 +44,8 @@ class OrderRepository @Inject constructor(
     private val salida: SalidaDelApartado? = null,
     /** D22: «el servidor ya confirmó un cobro de esta sucursal»; Ventas e Informes se recargan solos con esto. */
     private val avisosDeVentas: com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas = com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas(),
+    /** D12: la marca «la abrió aquí» de la orden que [createOrder] crea (venta dividida o con tarjeta). */
+    private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
 ) {
     /**
      * Cliente SOLO para la ruta del dinero (crear orden, cobrar efectivo, fast).
@@ -911,6 +913,8 @@ class OrderRepository @Inject constructor(
                 }
                 val orderResponse = parseCreateOrderResponse(responseBody)
                 Log.d("📦", "✅ Order created: ${orderResponse.data?.id}")
+                // D12: la abrió esta caja (con la sucursal de la PETICIÓN); la marca va antes de que nadie la cobre.
+                orderResponse.data?.id?.takeIf { it.isNotBlank() }?.let { cuentasAbiertasAqui?.marcar(venueId, it) }
                 Result.success(orderResponse)
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")

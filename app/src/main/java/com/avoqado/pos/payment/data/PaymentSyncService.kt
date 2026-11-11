@@ -73,6 +73,8 @@ class PaymentSyncService @Inject constructor(
     private val cashPaymentRepository: CashPaymentRepository,
     /** D22: «el servidor ya confirmó un cobro de esta sucursal»; Ventas e Informes se recargan solos con esto. */
     private val avisosDeVentas: com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas = com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas(),
+    /** D12: la marca «la abrió aquí» de la orden que la cola crea al volver la red (antes de su `/pay`). */
+    private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
 ) {
     // MARK: - Constants
 
@@ -1288,6 +1290,8 @@ class PaymentSyncService @Inject constructor(
                             return false
                         }
                         resolvedOrderId = result.orderId.also(alResolverOrden)
+                        // D12: la abrió esta caja; si el /pay no la salda (o no llega), queda marcada.
+                        cuentasAbiertasAqui?.marcar(venueId, result.orderId)
                     }
                     is OrderResolution.AuthExpired -> {
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
