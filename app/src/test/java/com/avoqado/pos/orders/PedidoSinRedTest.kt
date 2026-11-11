@@ -11,6 +11,7 @@ import com.avoqado.pos.orders.data.horaDeLaCopia
 import com.avoqado.pos.orders.data.lecturaDe
 import com.avoqado.pos.orders.data.razonParaNoCobrar
 import com.avoqado.pos.orders.data.model.puedeCobrarseDesdeLaLista
+import com.avoqado.pos.orders.presentation.copiaParaCobrar
 import com.avoqado.pos.orders.presentation.OPEN_ORDERS_STATUS_FILTER
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import io.mockk.coEvery
@@ -655,22 +656,59 @@ class PedidoSinRedTest {
         assertEquals(false, viendo.hasMore.value)
     }
 
-    /** Punto 4: con un cobro abierto, una recarga con 500 o 404 no deja la pantalla sin el detalle (ni el cobro). */
-    @Test fun `con un cobro abierto una recarga con 500 o 404 no quita el detalle de la pantalla`() = runTest {
-        for ((codigo, razon) in listOf(500 to "Error al cargar detalle de orden", 404 to "No se encontró la orden")) {
-            val (r, _) = listaYDetalleConRed()
-            val visto = r.selectedOrder.value!!
-            r.alPerderLaRed()
-            detalle = { http(it, codigo, """{"message":"x"}""") }
-            r.loadOrderDetail("A", reintento = true) // la reapertura al volver la red
-            assertNull("el repositorio no cambia", r.selectedOrder.value)
-            fun estado(cobrando: Boolean) = com.avoqado.pos.orders.presentation.estadoDelDetalle(
-                com.avoqado.pos.orders.presentation.HostDelDetalle.TABLETA, "A", r.isLoadingDetail.value, r.selectedOrder.value,
-                r.errorMessage.value, cobrando = cobrando, ultimo = visto)
-            assertEquals("$codigo con cobro", com.avoqado.pos.orders.presentation.EstadoDelDetalle.Detalle(visto), estado(true))
-            assertEquals("$codigo sin cobro, como hoy", com.avoqado.pos.orders.presentation.EstadoDelDetalle.Fallo(razon), estado(false))
-            assertEquals("el aviso dice la razón real", razon, r.errorMessage.value)
-        }
+    /**
+     * Punto 4 + final fix (F3, I-1): al volver la red, la reapertura del pedido que se VE recibe un 500: el pedido se queda a la vista con
+     * la razón real (nunca «Sin conexión»), deja de estar sin red (la copia ya no cobra) y no se repite solo; antes de D12 nada lo
+     * recargaba. Un 404 sí lo quita (ya no existe); con un cobro abierto se queda el último.
+     */
+    @Test fun `al volver la red una reapertura con 500 deja el pedido a la vista con la razon y un 404 lo quita`() = runTest {
+        val (r, t) = listaYDetalleConRed()
+        val visto = r.selectedOrder.value!!
+        r.alPerderLaRed()
+        assertEquals("A", copiaParaCobrar(r.detalleDeLaCopia.value, r.detalleSinRed.value)?.cuenta?.id)
+        detalle = { http(it, 500, """{"message":"x"}""") }
+        r.loadOrderDetail("A", reintento = true)
+        assertSame("se queda a la vista", visto, r.selectedOrder.value)
+        assertEquals(TextosDeCuentaSinRed.pedidoNoSeCargoDeLas(horaDeLaCopia(t, null)), r.errorMessage.value)
+        assertEquals(false, r.errorMessage.value!!.contains("Sin conexión"))
+        assertNull("ya no está sin red: no se repite solo", r.detalleSinRed.value)
+        assertNull("y la copia ya no cobra", copiaParaCobrar(r.detalleDeLaCopia.value, r.detalleSinRed.value))
+        fun estado(q: OrdersRepository, ultimo: com.avoqado.pos.orders.data.model.OrderDetail, cobrando: Boolean) =
+            com.avoqado.pos.orders.presentation.estadoDelDetalle(com.avoqado.pos.orders.presentation.HostDelDetalle.TABLETA, "A",
+                q.isLoadingDetail.value, q.selectedOrder.value, q.errorMessage.value, cobrando = cobrando, ultimo = ultimo)
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Detalle(visto), estado(r, visto, cobrando = false))
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Detalle(visto), estado(r, visto, cobrando = true))
+
+        val (q, _) = listaYDetalleConRed()
+        val otro = q.selectedOrder.value!!
+        q.alPerderLaRed()
+        detalle = { http(it, 404, """{"message":"x"}""") }
+        q.loadOrderDetail("A", reintento = true)
+        assertNull("404: el pedido ya no existe", q.selectedOrder.value)
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Fallo("No se encontró la orden"), estado(q, otro, cobrando = false))
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Detalle(otro), estado(q, otro, cobrando = true))
+    }
+
+    /** Final fix (F3): el pedido armado con la copia y una reapertura con 503: se queda con su hora y sin cobrar desde la copia; si luego
+     *  se va la red de verdad, vuelve a estar sin red. */
+    @Test fun `el pedido de la copia y una reapertura con 503 se queda con su hora y la copia no cobra hasta perder la red`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        val t = reloj
+        r.loadOrderDetail("A") // sin red: el de la copia
+        val deLaCopia = r.selectedOrder.value!!
+        assertEquals("A", copiaParaCobrar(r.detalleDeLaCopia.value, r.detalleSinRed.value)?.cuenta?.id)
+
+        detalle = { http(it, 503, """{"message":"x"}""") }
+        r.loadOrderDetail("A", reintento = true) // volvió el WiFi y el servidor contesta mal
+        assertSame(deLaCopia, r.selectedOrder.value)
+        assertEquals(TextosDeCuentaSinRed.pedidoNoSeCargoDeLas(horaDeLaCopia(t, null)), r.errorMessage.value)
+        assertNull(copiaParaCobrar(r.detalleDeLaCopia.value, r.detalleSinRed.value))
+
+        r.alPerderLaRed() // ahora sí se fue la red
+        assertEquals("A", copiaParaCobrar(r.detalleDeLaCopia.value, r.detalleSinRed.value)?.cuenta?.id)
+        assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(t, null)), r.errorMessage.value)
     }
 
     /** Punto 4: «Cargando» (un toque que vuelve a pedirla) tampoco desmonta el cobro; un último de OTRA cuenta no cuenta. */
@@ -714,9 +752,12 @@ class PedidoSeAbreAlVolverLaRedTest {
     private val repository = io.mockk.spyk(OrdersRepository(storage, OkHttpClient()))
     private val conectado = kotlinx.coroutines.flow.MutableStateFlow(true)
     private val alcanzable = kotlinx.coroutines.flow.MutableStateFlow(true)
+    /** Final fix (F3): lo que contesta la salud del servidor cuando la bandera se apaga con el aparato con red (true = nadie). */
+    private var nadie = true
     private val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> {
         every { isConnected } returns conectado
         every { isServerReachable } returns alcanzable
+        io.mockk.coEvery { nadieContesta() } answers { nadie }
     }
     private lateinit var vm: com.avoqado.pos.orders.presentation.OrdersViewModel
     private val sinRed = "Sin conexión: para ver este pedido necesitas internet. Se abre solo al volver la conexión."
@@ -927,5 +968,54 @@ class PedidoSeAbreAlVolverLaRedTest {
         vm.selectOrder("B"); runCurrent()
         assertEquals(true, cortada)
         assertEquals("B", vm.selectedOrder.value?.id)
+    }
+
+    // MARK: - Final fix (F3, Codex #4 = I-1): qué cuenta como «se fue la red»
+
+    /** Un 5xx apaga la bandera, pero el servidor contesta: «Pedidos» no pasa a la copia ni dice «Sin conexión». En los dos órdenes. */
+    @Test fun `un 5xx con el servidor contestando no pasa Pedidos a la copia en ningun orden`() = runTest {
+        nadie = false
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        responde("A") { com.avoqado.pos.orders.data.model.OrderDetail("A") }
+        vm.selectOrder("A"); runCurrent()
+        alcanzable.value = false; runCurrent() // la bandera (un 5xx de otra pantalla) con el pedido a la vista
+        assertEquals("A", vm.selectedOrder.value?.id)
+        assertNull(vm.errorMessage.value)
+        alcanzable.value = true; runCurrent()
+
+        responde("A") { throw com.avoqado.pos.core.data.network.LecturaFallida(com.avoqado.pos.core.data.network.FalloDeLectura.SERVIDOR) }
+        vm.selectOrder("A"); runCurrent() // la respuesta 5xx primero…
+        alcanzable.value = false; runCurrent() // …y la bandera después
+        io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
+        assertEquals("como develop", "Error al cargar detalle de orden", vm.errorMessage.value)
+        assertNull(vm.avisoDeLaLista.value)
+    }
+
+    @Test fun `sin red del aparato o sin nadie que conteste si se fue la red`() = runTest {
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        alcanzable.value = false; runCurrent() // nadie contesta la salud: WiFi sin datos
+        io.mockk.coVerify(exactly = 1) { repository.alPerderLaRed() }
+        conectado.value = false; runCurrent() // y luego se va el WiFi
+        io.mockk.coVerify(exactly = 2) { repository.alPerderLaRed() }
+        io.mockk.coVerify(exactly = 1) { red.nadieContesta() } // sin red del aparato no hace falta preguntar
+    }
+
+    @Test fun `tras un 5xx que no era sin red irse el WiFi si cuenta`() = runTest {
+        nadie = false
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        alcanzable.value = false; runCurrent()
+        io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
+        conectado.value = false; runCurrent()
+        io.mockk.coVerify(exactly = 1) { repository.alPerderLaRed() }
+    }
+
+    @Test fun `si la bandera vuelve mientras pregunta no pasa a la copia`() = runTest {
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        io.mockk.coEvery { red.nadieContesta() } coAnswers { respuesta.await() }
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        alcanzable.value = false; runCurrent()
+        alcanzable.value = true; runCurrent() // contestó otra petición mientras preguntaba
+        respuesta.complete(true); runCurrent()
+        io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
     }
 }

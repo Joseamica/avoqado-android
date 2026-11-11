@@ -139,8 +139,18 @@ class ConnectivityMonitor @Inject constructor(
      * hace `SELECT 1`), no la bandera. Cuenta sólo un 200 con JSON `"status":"ok"`: un portal cautivo, un proxy o el servidor sin su
      * base devuelven otra cosa. Lo usa el tope del cierre que espera a sus ventas (efectivo sin red en el turno correcto, 24-oct-2026).
      */
-    suspend fun elServidorContesta(): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
-        if (!_isConnected.value) return@withContext false
+    suspend fun elServidorContesta(): Boolean = consultarSalud() == true
+
+    /**
+     * D12 (final fix, F3): ¿se fue la red DE VERDAD? Sin red del aparato, o nadie contesta la salud (sin datos, DNS, tiempo agotado: un
+     * [java.io.IOException]). Si alguien contesta, aunque sea mal (un 5xx), NO es «sin red»: el mismo criterio que `FalloDeLectura`. La
+     * bandera [isServerReachable] no lo distingue: cualquier 5xx de cualquier pantalla la apaga.
+     */
+    suspend fun nadieContesta(): Boolean = consultarSalud() == null
+
+    /** La salud profunda: true = nuestra API contestó bien · false = alguien contestó, pero no eso · null = nadie contestó (o sin red). */
+    private suspend fun consultarSalud(): Boolean? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        if (!_isConnected.value) return@withContext null
         var connection: HttpURLConnection? = null
         try {
             val url = java.net.URI(ApiConstants.BASE_URL).resolve("/api/public/healthcheck").toURL()
@@ -159,6 +169,9 @@ class ConnectivityMonitor @Inject constructor(
             val ok = saludContesta(code, connection.contentType, cuerpo)
             if (ok) reportServerSuccess() else Log.d("📡", "Salud del servidor: $code (${connection.contentType}) — no cuenta")
             ok
+        } catch (e: java.io.IOException) {
+            Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
+            null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
             false

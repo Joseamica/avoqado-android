@@ -400,6 +400,14 @@ class OrdersRepository @Inject constructor(
             if (detalleSolicitado != solicitud || silencioso) return
             Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
             val sinRed = FalloDeLectura.de(e) == FalloDeLectura.SIN_RED
+            // Final fix (F3, I-1): la reapertura del pedido que se VE y el servidor contesta mal (5xx): se queda a la vista con la razón
+            // real, deja de estar sin red (la copia ya no cobra: `copiaParaCobrar`) y no se repite solo (D22). Antes de D12 nada lo recargaba.
+            val respaldo = _detalleDeLaCopia.value
+            if (reintento && !sinRed && respaldo != null && _selectedOrder.value?.id == orderId) {
+                _errorMessage.value = TextosDeCuentaSinRed.pedidoNoSeCargoDeLas(horaDeLaCopia(respaldo.vistaEn, secureStorage.venueTimezone))
+                _detalleSinRed.value = null
+                return
+            }
             // D12: sin red, la cuenta de la copia VIGENTE de la sucursal ACTUAL se enseña con su hora; la reapertura sigue.
             val actual = secureStorage.venueId
             val guardada = if (sinRed && copia != null && actual != null) copia.cuenta(actual, orderId) else null
@@ -463,7 +471,9 @@ class OrdersRepository @Inject constructor(
             }
         }
         val visto = _selectedOrder.value ?: return
-        if (copia == null || _detalleDeLaCopia.value != null) return
+        // Ya está sin red (lo dejó su lectura): nada que hacer. Un pedido respaldado que dejó de estarlo (final fix F3: el servidor
+        // contestó mal al volver) sí vuelve a estar sin red.
+        if (copia == null || _detalleSinRed.value == visto.id) return
         val solicitud = detalleSolicitado
         val guardada = copia.cuenta(actual, visto.id) ?: return
         if (detalleSolicitado !== solicitud || _selectedOrder.value !== visto || secureStorage.venueId != actual) return

@@ -64,4 +64,11 @@ class CableadoDelCobroAbiertoTest {
         assertEquals(0, pedidos.veces("if(pedido.esCuentaDeTarjetas"))
         assertEquals(2, pedidos.veces("avisoSinRed=errorMessage.takeIf{detalleDeLaCopia!=null||pedido!==selectedOrder}"))
     }
+
+    /** Final fix (F3): en los DOS anfitriones la copia sólo cobra mientras el pedido está sin red (con el servidor contestando, sólo se ve). */
+    @Test fun `teléfono y tableta sólo cobran con la copia mientras el pedido está sin red`() {
+        assertEquals(2, pedidos.veces("copia=copiaParaCobrar(detalleDeLaCopia,detalleSinRed),"))
+        assertEquals(0, pedidos.veces("copia=detalleDeLaCopia,"))
+        assertEquals(2, pedidos.veces("valdetalleSinRedbyviewModel.detalleSinRed.collectAsState()"))
+    }
 }

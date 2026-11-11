@@ -71,6 +71,9 @@ class OrdersViewModel @Inject constructor(
     val copiaVistaA = repository.copiaVistaA
     val detalleDeLaCopia = repository.detalleDeLaCopia
 
+    /** Final fix (F3): el pedido que está SIN RED (la copia sólo cobra mientras lo esté: `copiaParaCobrar`). */
+    val detalleSinRed = repository.detalleSinRed
+
     /** T12b: el aviso gris de la lista (la copia, la búsqueda sin red o el servidor que contestó mal); null = al día. */
     val avisoDeLaLista = repository.avisoDeLaLista
 
@@ -326,21 +329,28 @@ class OrdersViewModel @Inject constructor(
     }
 
     /**
-     * D12 (Codex r3 H4): mientras «Pedidos» se ve, al pasar `isConnected && isServerReachable` a falso se usa la copia vigente
-     * sin otra consulta ([OrdersRepository.alPerderLaRed]). El detalle se reabre al volver la red en [reabrirAlVolverLaRed].
+     * D12 (Codex r3 H4): mientras «Pedidos» se ve, al irse la red DE VERDAD se usa la copia vigente sin otra consulta
+     * ([OrdersRepository.alPerderLaRed]). El detalle se reabre al volver la red en [reabrirAlVolverLaRed].
+     * Final fix (F3, Codex #4 = I-1): de verdad = el aparato sin red, o nadie contesta la salud ([ConnectivityMonitor.nadieContesta]).
+     * `isServerReachable` solo no basta: cualquier 5xx de cualquier pantalla la apaga, y un servidor que contesta (aunque sea mal) no es
+     * «Sin conexión» ni habilita el cobro desde la copia. Se miran las DOS banderas por separado: tras un 5xx, irse el WiFi sí cuenta. Si
+     * la bandera vuelve mientras se pregunta, la pregunta se corta.
      * T12b: y la LISTA que se quedó sin red (la copia, «como estaba» o la búsqueda sin red) se vuelve a pedir al volver: su aviso se
      * va con la respuesta. El tiempo de espera tras fallos se reinicia (spec de refresco §4.3 inv. 4). Un servidor que contestó mal
      * no se repite solo (como el detalle, D22).
      */
     suspend fun copiaAlPerderLaRed() {
         val red = red ?: return
-        combine(red.isConnected, red.isServerReachable) { conectado, alcanzable -> conectado && alcanzable }
+        combine(red.isConnected, red.isServerReachable) { conectado, alcanzable -> conectado to alcanzable }
             .distinctUntilChanged()
-            .collect { conRed ->
-                if (!conRed) repository.alPerderLaRed()
-                else if (repository.listaEsperaLaRed) {
-                    gate.resetCooldown()
-                    invalidateAndRefresh()
+            .collectLatest { (conectado, alcanzable) ->
+                when {
+                    !conectado -> repository.alPerderLaRed()
+                    !alcanzable -> if (red.nadieContesta()) repository.alPerderLaRed()
+                    repository.listaEsperaLaRed -> {
+                        gate.resetCooldown()
+                        invalidateAndRefresh()
+                    }
                 }
             }
     }

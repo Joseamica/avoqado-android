@@ -303,6 +303,7 @@ class OrdersViewModelTest {
         val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> {
             every { isConnected } returns conectado
             every { isServerReachable } returns alcanzable
+            io.mockk.coEvery { nadieContesta() } returns true // final fix (F3): se fue la red de verdad, no un 5xx
         }
         val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
         every { refreshGateFactory.create(any(), any()) } returns

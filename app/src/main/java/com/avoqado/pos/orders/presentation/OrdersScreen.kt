@@ -286,6 +286,13 @@ internal fun estadoDelDetalle(
     else -> EstadoDelDetalle.Fallo(errorMessage ?: "No se pudo cargar el pedido")
 }
 
+/**
+ * Final fix (F3, Codex #4 = I-1): la copia que respalda el detalle sólo COBRA mientras ese pedido está sin red (`OrdersRepository.detalleSinRed`,
+ * que sólo deja una lectura que nadie contestó o una pérdida de red de verdad). Con el servidor contestando (aunque sea mal) sólo se ve.
+ */
+internal fun copiaParaCobrar(copia: com.avoqado.pos.orders.data.CuentaGuardada?, detalleSinRed: String?): com.avoqado.pos.orders.data.CuentaGuardada? =
+    copia?.takeIf { it.cuenta.id == detalleSinRed }
+
 /** O1: la cuenta de tarjetas PAGADA va a su pantalla de resultado, pero no a media cobranza (desmontaría el cobro y su cambio). */
 internal fun vaACuentaDeTarjetas(pedido: OrderDetail, cobrando: Boolean): Boolean =
     pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID && !cobrando
@@ -325,6 +332,7 @@ private fun PhoneOrdersLayout(
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
+    val detalleSinRed by viewModel.detalleSinRed.collectAsState()
     val cobrando by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
     val ultimo = ultimoDetalleVisto(selectedOrder)
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
@@ -349,7 +357,7 @@ private fun PhoneOrdersLayout(
                 mensajeDeReimpresion = mensajeDeReimpresion,
                 onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                 avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
-                copia = detalleDeLaCopia,
+                copia = copiaParaCobrar(detalleDeLaCopia, detalleSinRed),
             )
         }
         EstadoDelDetalle.Cargando -> {
@@ -528,6 +536,7 @@ private fun OrderDetailPanel(
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
+    val detalleSinRed by viewModel.detalleSinRed.collectAsState()
     val cobrando by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
     val ultimo = ultimoDetalleVisto(selectedOrder)
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
@@ -560,7 +569,7 @@ private fun OrderDetailPanel(
                     mensajeDeReimpresion = mensajeDeReimpresion,
                     onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                     avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
-                    copia = detalleDeLaCopia,
+                    copia = copiaParaCobrar(detalleDeLaCopia, detalleSinRed),
                 )
             }
             is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,

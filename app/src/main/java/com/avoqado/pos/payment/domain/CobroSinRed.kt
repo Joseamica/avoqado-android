@@ -19,6 +19,9 @@ object TextosDeCuentaSinRed {
     /** T12b: la lista se quedó como estaba porque el SERVIDOR contestó mal (5xx, 403…): no es «Sin conexión». */
     fun noSeCargaronDeLas(hora: String) = "$NO_SE_CARGARON · como estaba a las $hora"
 
+    /** Final fix (F3): al volver la red, el servidor contestó mal (5xx) al pedido que se ve: se queda como estaba, no es «Sin conexión». */
+    fun pedidoNoSeCargoDeLas(hora: String) = "No se pudo cargar el pedido · como estaba a las $hora"
+
     /** T12b (ronda 1, M1): sin red y la copia no trae cuentas: lo dice, nunca un «No hay pedidos» a secas. */
     const val SIN_CUENTAS_GUARDADAS = "Sin conexión: no hay cuentas abiertas guardadas en este aparato."
 
