@@ -227,6 +227,52 @@ class EfectivoTrasTarjetaTest {
     }
 
     @Test
+    fun `r5 reparto - si otra caja lo salda y la lista completa ya no lo trae, no abre con lo del toque`() = runTest(dispatcher) {
+        // Codex r5 #1: el pedido estaba en «Por cobrar» al tocar; durante la consulta otra caja lo salda, la lista completa sale vacía
+        // (el SERVIDOR sólo lista PENDING/PARTIAL) y la consulta falla por red. Nunca los $134 del toque.
+        val rappi = PedidoPorCobrar(orderId = "r1", orderNumber = "881655210", provider = "RAPPI", customerName = "Ana",
+            createdAt = Instant.parse("2026-11-06T18:00:00Z"), remainingBalanceCents = 13400, saleCents = 13400, tipCents = 0,
+            thirdPartyCents = 0, thirdPartyLabel = "Rappi")
+        reparto = Result.success(ListaPorCobrar(listOf(rappi), 1, truncated = false, nextCursor = null))
+        lateinit var vm: OnlineOrdersViewModel
+        coEvery { repo.saldoDelPedido("r1") } coAnswers {
+            reparto = Result.success(ListaPorCobrar(emptyList(), 0, truncated = false, nextCursor = null))
+            vm.refrescar(imprimirPendientes = false)
+            Result.failure(IOException("sin red"))
+        }
+        vm = armar(conReparto = true)
+        vm.refrescar(imprimirPendientes = false)
+
+        vm.cobrarDeReparto(rappi)
+        advanceUntilIdle()
+
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+    }
+
+    @Test
+    fun `r5 Mi equipo - igual si la bandeja completa ya no lo trae`() = runTest(dispatcher) {
+        val pedido = folio().copy(orderId = "p1", onlineOrderId = "oo-p1", status = OnlineOrderStatus.ACCEPTED, requiresAcceptance = true)
+        coEvery { repo.inbox(any(), any(), any()) } returns Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, 1, 0,
+            listOf(pedido), storeOff = false, truncated = false, nextCursor = null))
+        lateinit var vm: OnlineOrdersViewModel
+        coEvery { repo.saldoDelPedido("p1") } coAnswers {
+            coEvery { repo.inbox(any(), any(), any()) } returns Result.success(Inbox(Instant.parse("2026-11-06T18:11:00Z"), 0, 0, 0,
+                emptyList(), storeOff = false, truncated = false, nextCursor = null))
+            vm.refrescar(imprimirPendientes = false)
+            Result.failure(IOException("sin red"))
+        }
+        vm = armar()
+        vm.refrescar(imprimirPendientes = false)
+
+        vm.cobrar(pedido)
+        advanceUntilIdle()
+
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+    }
+
+    @Test
     fun `una tarjeta que sigue en duda no frena el efectivo, solo avisa - founder B`() = runTest(dispatcher) {
         cobros = listOf(enDuda)
         var consultasALaCola = 0

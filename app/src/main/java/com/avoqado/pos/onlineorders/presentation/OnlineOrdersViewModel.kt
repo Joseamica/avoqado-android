@@ -937,9 +937,9 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrar(pedido: OnlineOrder) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = {
+        saldoGuardado = saldoDeLaLista(pedido.remainingCents, completa = { !_hayMas.value }) {
             _secciones.value.let { it.porAceptar + it.enPreparacion + it.listos + it.hoy }
-                .firstOrNull { it.orderId == pedido.orderId }?.remainingCents ?: pedido.remainingCents
+                .firstOrNull { it.orderId == pedido.orderId }?.remainingCents
         },
         plataforma = null,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
@@ -975,21 +975,32 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrarDeReparto(pedido: PedidoPorCobrar) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = { _porCobrar.value?.pedidos?.firstOrNull { it.orderId == pedido.orderId }?.remainingBalanceCents ?: pedido.remainingBalanceCents },
+        saldoGuardado = saldoDeLaLista(
+            pedido.remainingBalanceCents,
+            completa = { _porCobrar.value?.let { it.disponible && it.nextCursor == null && !it.truncated } == true },
+        ) { _porCobrar.value?.pedidos?.firstOrNull { it.orderId == pedido.orderId }?.remainingBalanceCents },
         plataforma = pedido.thirdPartyLabel,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO,
         permitido = muestraReparto,
     )
 
+    /**
+     * «Mi equipo» y reparto, sin red: lo último que dijo la lista del pedido, leído al USARSE y no al tocar (Codex r4 #1): durante la
+     * consulta del saldo otra lectura pudo traer lo que falta tras un abono de otro aparato. Si estaba en la lista al tocar y la lista
+     * COMPLETA más nueva ya no lo trae (otra caja lo saldó o se canceló, Codex r5 #1), null: no se cobra. Si no estaba al tocar o la
+     * lista está incompleta, lo del toque, como antes.
+     */
+    private fun saldoDeLaLista(delToque: Long, completa: () -> Boolean, enLaLista: () -> Long?): () -> Long? {
+        val estabaAlTocar = enLaLista() != null
+        return { enLaLista() ?: delToque.takeUnless { estabaAlTocar && completa() } }
+    }
+
     private fun abrirCobro(
         orderId: String,
         orderNumber: String,
-        /**
-         * Sin red, lo último que dijo la lista de este pedido. Se lee al usarse, no al tocar (Codex r4 #1): durante la consulta del saldo
-         * otra lectura pudo traer lo que falta tras un abono de otro aparato. Si ya no está en la lista, lo del toque (como antes).
-         */
-        saldoGuardado: () -> Long,
+        /** Sin red, el saldo de «Mi equipo» y reparto ([saldoDeLaLista]); null = ya no está en la lista. El folio usa su copia. */
+        saldoGuardado: () -> Long?,
         plataforma: String?,
         origenConSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
         origenSinSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
@@ -1039,7 +1050,10 @@ class OnlineOrdersViewModel internal constructor(
                             return@launch
                         }
                         if (folio == null) {
-                            saldoGuardado()
+                            saldoGuardado() ?: run {
+                                _aviso.value = TextosPedidosEnLinea.YA_NO_DISPONIBLE
+                                return@launch
+                            }
                         } else {
                             // W-1: UNA foto de la copia decide la tarjeta, las marcas y el saldo que se cobra (`alinearConLaCopia`).
                             val copia = alinearConLaCopia()
