@@ -358,6 +358,7 @@ private fun PhoneOrdersLayout(
                 onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                 avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
                 copia = copiaParaCobrar(detalleDeLaCopia, detalleSinRed),
+                onReintentarDetalle = { viewModel.refrescarDetalle(pedido.id) },
             )
         }
         EstadoDelDetalle.Cargando -> {
@@ -570,6 +571,7 @@ private fun OrderDetailPanel(
                     onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                     avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
                     copia = copiaParaCobrar(detalleDeLaCopia, detalleSinRed),
+                    onReintentarDetalle = { viewModel.refrescarDetalle(pedido.id) },
                 )
             }
             is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
@@ -617,6 +619,8 @@ fun OrderDetailView(
     avisoSinRed: String? = null,
     /** D12: la cuenta de la copia que respalda este detalle sin red: con ella se ofrece (o no) el cobro en efectivo. */
     copia: com.avoqado.pos.orders.data.CuentaGuardada? = null,
+    /** Final fix ronda 2 (menor 1): «Reintentar» del pedido armado con la copia cuando ya hay red. */
+    onReintentarDetalle: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -663,7 +667,7 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
-            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar, copia)
+            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar, copia, onReintentarDetalle)
 
             // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
             // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.

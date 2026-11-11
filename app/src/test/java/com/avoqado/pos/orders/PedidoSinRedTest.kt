@@ -636,6 +636,30 @@ class PedidoSinRedTest {
         assertEquals(false, otra.hasMore.value)
     }
 
+    // MARK: - Final fix ronda 2 (menor 1): el pedido armado con la copia, con red, tiene su «Reintentar»
+
+    /** S2: tras una reapertura con 5xx el pedido de la copia se queda sin botón; con red ofrece «Reintentar» y éste lo recarga. */
+    @Test fun `el pedido de la copia con red ofrece Reintentar y al recargar se va el aviso`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        r.loadOrderDetail("A") // sin red: el de la copia
+        detalle = { http(it, 503, """{"message":"x"}""") }
+        r.loadOrderDetail("A", reintento = true) // volvió el WiFi y el servidor contestó mal: se queda con la razón
+        val deLaCopia = r.selectedOrder.value!!
+        assertEquals(true, com.avoqado.pos.payment.presentation.ofreceReintentarDetalle(deLaCopia, enLinea = true))
+        assertEquals("sin red, el cobro desde la copia (no «Reintentar»)", false,
+            com.avoqado.pos.payment.presentation.ofreceReintentarDetalle(deLaCopia, enLinea = false))
+
+        detalle = { http(it, 200, """{"success":true,"order":{"id":"A","status":"PENDING","paymentStatus":"PENDING","payments":[]}}""") }
+        r.loadOrderDetail("A", silencioso = true) // lo que hace «Reintentar» (`refrescarDetalle`)
+        val real = r.selectedOrder.value!!
+        assertEquals(false, real.deLaCopia)
+        assertNull(r.errorMessage.value)
+        assertNull(r.detalleDeLaCopia.value)
+        assertEquals(false, com.avoqado.pos.payment.presentation.ofreceReintentarDetalle(real, enLinea = true))
+    }
+
     // MARK: - Final fix ronda 2 (R2-3): una respuesta cuya consulta ya no es la vigente no pinta nada
 
     /** El caso de Codex r2: «Cargar más» en vuelo → búsqueda nueva que falla sin red (vacía, con su explicación) → falla la página vieja. */

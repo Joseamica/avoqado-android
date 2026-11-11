@@ -510,6 +510,12 @@ internal fun loQueSePinta(order: com.avoqado.pos.orders.data.model.OrderDetail, 
     cobroSinRed = cobroSinRed,
 )
 
+/**
+ * Final fix ronda 2 (menor 1): el pedido armado con la copia, ya con red, no ofrece cobrar (F2) ni el cobro desde la copia (F3): sin esto
+ * quedaba sin salida tras una reapertura con 5xx. «Reintentar» lo vuelve a pedir sin desmontar lo que se ve (`refrescarDetalle`).
+ */
+internal fun ofreceReintentarDetalle(order: com.avoqado.pos.orders.data.model.OrderDetail, enLinea: Boolean): Boolean = order.deLaCopia && enLinea
+
 /** I1: recargar la cuenta vuelve a pedir la oferta sólo con red y sin un cobro abierto (pedirla vacía la foto del cobro en línea). */
 internal fun pideOfertaAlRecargar(enLinea: Boolean, cobroAbierto: Boolean): Boolean = enLinea && !cobroAbierto
 
@@ -525,6 +531,8 @@ fun AccionesDeCuentaAbierta(
     onSalioSinCobrar: () -> Unit,
     /** D12: la cuenta de la copia que respalda este detalle sin red (`OrdersRepository.detalleDeLaCopia`), o null. */
     copia: CuentaGuardada? = null,
+    /** Final fix ronda 2 (menor 1): vuelve a pedir el pedido armado con la copia (`OrdersViewModel.refrescarDetalle`). */
+    onReintentar: () -> Unit = {},
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-${order.id}"),
 ) {
     val onResultadoDeTarjetas = LocalResultadoDeTarjetas.current
@@ -585,7 +593,7 @@ fun AccionesDeCuentaAbierta(
         else if (cents != null && cents > 0) PrimaryButton(text = TextosDeTarjetas.cobrar(cents), enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCobrar && oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER),
             onClick = { scope.launch { if (enLinea && viewModel.puedeCobrar && viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER) abierta = true } })
         if (!viewModel.puedeCobrar) Text("No tienes permiso para cobrar. Pídeselo a tu gerente.")
-    }
+    } else if (ofreceReintentarDetalle(order, enLinea)) TextButton(onClick = onReintentar) { Text(TextosDeTarjetas.REINTENTAR) }
     if (!order.esCuentaDeTarjetas) RegresarSaldoDeCuenta(order.id, order.cobrosConSaldo ?: 0,
         order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID || order.status in listOf("CANCELLED", "DELETED"),
         onCancelada = { onCancelada(); onActualizar() })

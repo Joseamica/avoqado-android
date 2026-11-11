@@ -48,6 +48,12 @@ class CableadoDelCobroAbiertoTest {
         assertTrue(cobro.contains("antesDeRecibirEfectivo={viewModel.revalidarCobroSinRed(orderId,cents)}"))
     }
 
+    /** Final fix ronda 2 (menor 1): el pedido de la copia con red tiene «Reintentar», y los DOS anfitriones lo cablean a `refrescarDetalle`. */
+    @Test fun `el pedido de la copia con red tiene Reintentar en teléfono y tableta`() {
+        assertEquals(2, pedidos.veces("onReintentarDetalle={viewModel.refrescarDetalle(pedido.id)},"))
+        assertTrue(cobro.contains("elseif(ofreceReintentarDetalle(order,enLinea))TextButton(onClick=onReintentar){Text(TextosDeTarjetas.REINTENTAR)}"))
+    }
+
     /**
      * Final fix (M-a): el cobro con la copia SIEMPRE vuelve ABIERTA (nunca «Pagada»); el anfitrión no lee el cierre: suelta el candado,
      * vuelve a decidir con la copia y recarga la cuenta (`alVolverDelCobroSinRed`).
