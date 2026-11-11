@@ -1010,6 +1010,8 @@ class OnlineOrdersViewModel internal constructor(
                 } catch (e: Exception) {
                     Result.failure(e)
                 }
+                // La foto de la copia con que se eligió el saldo sin red de un folio (su número de lectura); null = no salió de la copia.
+                var numeroDeLaFoto: Long? = null
                 val saldo = leido.map { it.saldoCents }.getOrElse { error ->
                     if (error is IOException) {
                         // Sin red es un estado normal: se cobra el último saldo que dijo la bandeja. Salvo que ESTE aparato ya
@@ -1048,6 +1050,7 @@ class OnlineOrdersViewModel internal constructor(
                                 _aviso.value = TextosPedidosEnLinea.FOLIO_SIN_SALDO_GUARDADO
                                 return@launch
                             }
+                            numeroDeLaFoto = copia?.numero
                             enLaCopia.remainingCents
                         }
                     } else {
@@ -1092,6 +1095,14 @@ class OnlineOrdersViewModel internal constructor(
                 val dineroAlAbrir = dineroSinConfirmar(venueActual(), orderId, esFolio = folio != null)
                 if (dineroAlAbrir.bloquea) {
                     _aviso.value = dineroAlAbrir.aviso
+                    return@launch
+                }
+                // Codex r1 #1: esa revisión espera (la cola en Room); si mientras tanto llegó a la pantalla una lista MÁS NUEVA que la foto con
+                // que se eligió el saldo sin red, ese saldo puede ser viejo (la tarjeta del folio ya dice otro): no se abre con él. De aquí a
+                // abrir ya no hay ninguna espera.
+                val foto = numeroDeLaFoto
+                if (foto != null && (_porPagar.value?.let { if (it.disponible) it.numero else null } ?: Long.MIN_VALUE) > foto) {
+                    _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
                 if (!permisoActualizar() || !permisoCobrar()) return@launch

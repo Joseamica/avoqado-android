@@ -13,6 +13,7 @@ import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
 import com.avoqado.pos.payment.data.ContextoDeCobro
+import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import io.mockk.coEvery
 import io.mockk.mockk
@@ -64,12 +65,15 @@ class EfectivoTrasTarjetaTest {
         totalCents = 13400, remainingCents = 13400, needsPrint = false, items = emptyList(), requiresAcceptance = false, channel = "QR",
     )
 
-    private val guardada = ListaPorPagar(true, true, 30, ConteosPorPagar(1, 0), listOf(folio()), emptyList(), CursoresPorPagar(null, null))
+    private val guardada = ListaPorPagar(true, true, 30, ConteosPorPagar(1, 0), listOf(folio()), emptyList(), CursoresPorPagar(null, null), numero = 1)
+
+    private var respuesta: Result<ListaPorPagar> = Result.failure(IOException("sin red"))
+    private var efectivo: suspend (String) -> EfectivoDelPedido = { EfectivoDelPedido.NINGUNO }
 
     private fun armar() = OnlineOrdersViewModel(
         repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true },
-        hayPedidosAbiertos = { true }, ventanaALaVista = MutableStateFlow(true),
-        leerPorPagar = { _, _, _ -> Result.failure(IOException("sin red")) }, foliosGuardados = { guardada },
+        hayPedidosAbiertos = { true }, ventanaALaVista = MutableStateFlow(true), efectivoDelPedido = { efectivo(it) },
+        leerPorPagar = { _, _, _ -> respuesta }, foliosGuardados = { guardada },
         ahoraMs = { Instant.parse("2026-11-06T18:10:00Z").toEpochMilli() },
         foliosConTarjeta = marcas, cobrosConTarjeta = { cobros }, venueActual = { "v1" },
     )
@@ -119,6 +123,26 @@ class EfectivoTrasTarjetaTest {
 
         assertNull(vm.cobroAbierto.value)
         assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, vm.aviso.value)
+    }
+
+    @Test
+    fun `si mientras se revisa el dinero llega una lista mas nueva, no abre con el saldo viejo de la copia`() = runTest(dispatcher) {
+        // Codex r1 #1: la segunda revisión espera a la cola (Room); mientras, la pantalla lee una lista más nueva ($54).
+        var llamadas = 0
+        val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        efectivo = { llamadas++; if (llamadas == 2) compuerta.await(); EfectivoDelPedido.NINGUNO }
+        coEvery { repo.saldoDelPedido("f1") } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+
+        vm.cobrarFolio(folio())
+        kotlinx.coroutines.test.runCurrent() // detenido en la segunda revisión, con el saldo de la copia ($134) ya elegido
+        respuesta = Result.success(guardada.copy(porPagar = listOf(folio().copy(remainingCents = 5400)), numero = 2))
+        vm.refrescar()
+        compuerta.complete(Unit)
+        advanceUntilIdle()
+
+        assertNull("nunca $134 con la tarjeta en $54", vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.SALDO_NO_LEIDO, vm.aviso.value)
     }
 
     @Test
