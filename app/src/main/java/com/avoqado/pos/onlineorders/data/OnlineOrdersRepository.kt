@@ -7,6 +7,8 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.onlineorders.domain.AccionResultado
+import com.avoqado.pos.onlineorders.domain.BeneficioDelFolio
+import com.avoqado.pos.onlineorders.domain.ClienteDelFolio
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
@@ -213,6 +215,21 @@ class OnlineOrdersRepository @Inject constructor(
             channel = o.textoONulo("channel"),
             // R67, opcional: una fecha rota no tumba el folio (se queda sin hora, como con un SERVIDOR viejo).
             paidAt = o.textoONulo("paidAt")?.let { runCatching { Instant.parse(it) }.getOrNull() },
+            // Parte 2 (S14), opcionales: un dato roto se salta, nunca tumba el folio (como con un SERVIDOR viejo).
+            cliente = o.optJSONObject("cliente")?.let { c ->
+                val id = c.textoONulo("id")
+                val nombre = c.textoONulo("nombre")
+                if (id != null && nombre != null) ClienteDelFolio(id, nombre) else null
+            },
+            beneficios = o.optJSONArray("beneficios")?.let { lista ->
+                (0 until lista.length()).mapNotNull { i ->
+                    runCatching {
+                        val b = lista.getJSONObject(i)
+                        BeneficioDelFolio(b.textoONulo("nombre")!!, pesosACentavos(b, "monto"))
+                    }.getOrNull()
+                }
+            }.orEmpty(),
+            beneficiosTotal = o.optInt("beneficiosTotal", 0),
         )
     }
 

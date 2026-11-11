@@ -58,6 +58,17 @@ fun muestraCancelarFolio(pedido: OnlineOrder, puedeCancelar: Boolean, sinConexio
 fun textoDeFolioCerrado(venceA: Instant?, ahora: Instant): String =
     if (venceA == null || !venceA.isAfter(ahora)) TextosPedidosEnLinea.FOLIO_VENCIDO else TextosPedidosEnLinea.FOLIO_CANCELADO
 
+/**
+ * Parte 2 (S14): «Con cuenta: Ana L.», y en «Por pagar» con los sellos prendidos «· suma su sello al pagar». null sin cuenta (o con un
+ * SERVIDOR viejo): la tarjeta queda como hoy. PURA.
+ */
+fun lineaDeCuenta(pedido: OnlineOrder, porEntregar: Boolean, sellosActivos: Boolean): String? = pedido.cliente?.let {
+    if (!porEntregar && sellosActivos) TextosPedidosEnLinea.conCuentaYSello(it.nombre) else TextosPedidosEnLinea.conCuenta(it.nombre)
+}
+
+/** Parte 2 (S14, R1): cuántos beneficios trae la cuenta además de los que llegaron («y N más»); nunca se esconden. PURA. */
+fun beneficiosDeMas(pedido: OnlineOrder): Int = (pedido.beneficiosTotal - pedido.beneficios.size).coerceAtLeast(0)
+
 /** R67: «Pagado a las HH:MM» en «Por entregar»; null si el SERVIDOR no manda `paidAt` (se queda como hoy). */
 fun textoDePago(pedido: OnlineOrder): String? = pedido.paidAt?.let { TextosPedidosEnLinea.pagadoALas(horaDelNegocio(it)) }
 
@@ -137,7 +148,8 @@ fun cobradosConTarjetaEnLaLista(
     lista: ListaPorPagar?,
 ): Map<String, Long> {
     val porPagar = lista?.porPagar.orEmpty().associateBy { it.orderId }
-    val deMarcas = marcas.filter { m -> porPagar[m.orderId]?.let { it.remainingCents > m.saldoAntesCents - m.montoCents } == true }
+    // A1: una marca de saldo frena «Cobrar» (`dineroSinConfirmar`) pero no mueve el folio: pudo ser parcial y todavía debe.
+    val deMarcas = marcas.filter { m -> !m.conSaldo && porPagar[m.orderId]?.let { it.remainingCents > m.saldoAntesCents - m.montoCents } == true }
         .groupBy { it.orderId }.mapValues { (_, m) -> m.sumOf { it.montoCents } }
     return (deMarcas.keys + positivos.keys.filter { it in porPagar }).associateWith { deMarcas[it] ?: positivos.getValue(it) }
 }

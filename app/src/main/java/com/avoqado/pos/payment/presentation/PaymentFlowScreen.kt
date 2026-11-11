@@ -340,8 +340,8 @@ fun PaymentFlowScreen(
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     // D15: con $0 no hay nada que dividir.
                     onSplitImporte = onSplitImporte.takeUnless { viewModel.ventaRapidaEnCero() },
-                    // La tarjeta de regalo sólo en el cobro de siempre: un pedido en línea o de plataforma no la ofrece.
-                    conductaDeSaldo = filaDeSaldo.takeIf { !origen.esPedidoEnLinea },
+                    // A1: el ViewModel decide (`conOrigen`): el cobro de siempre y un folio la ofrecen; plataforma y «Mi equipo», no.
+                    conductaDeSaldo = filaDeSaldo,
                     onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
                 )
             }

@@ -27,6 +27,11 @@ data class FolioCobradoConTarjeta(
     val venueId: String? = null,
     val requestId: String? = null,
     val esFolio: Boolean = true,
+    /**
+     * Tienda híbrida, parte 2 (A1): el cobro fue con SALDO o tarjeta de regalo (lo deja `CobroConSaldoCoordinator`, [requestId] = su
+     * llave). Frena otro «Cobrar» igual que la de tarjeta, pero no mueve el folio a «Por entregar»: pudo ser parcial y todavía debe.
+     */
+    val conSaldo: Boolean = false,
 )
 
 /**

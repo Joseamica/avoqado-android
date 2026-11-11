@@ -1888,15 +1888,21 @@ class PaymentFlowViewModel @Inject constructor(
         val venue = secureStorage.venueId
         val pendiente = if (venue != null && id != null) try { cobrosLocalesDeSaldo?.hayPendiente(venue,id) ?: true }
             catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true } else false
-        return estadoDeLaVenta(ajustesParaSaldo(),
+        // A1: un pedido de la bandeja ofrece saldo sólo si es folio; abierto sin el saldo del servidor, en gris (`conOrigen`).
+        return conOrigen(estadoDeLaVenta(ajustesParaSaldo(),
             connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value,
             rolesDeSaldo?.canRedeemGiftCards == true,cuentaDeTarjetas.value,
             cart.items.any { it.areaTicketId != null },cart.items.any { it.type is CartItemType.CreditPack },
             id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.isProvisional == true,
             cart.creacionIncierta != null,cart.vinoDeCarritoGuardado,cobroConSaldo?.cuentaTrabada(id) == true,
             mesaDelCobro != null,desdeCuentasDeSaldo,id != null,pendiente,
-            rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true)
+            rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true),
+            origenDelCobro, cobroDeLaBandeja?.esFolio == true)
     }
+
+    /** A1: el folio venció o lo canceló otra caja con la hoja abierta (400 de cuenta cancelada): el texto del folio, como el efectivo. */
+    private fun conTextoDelFolio(r: DesenlaceDeCobro): DesenlaceDeCobro =
+        if (r is DesenlaceDeCobro.Rechazado && r.codigo == CODIGO_CUENTA_CANCELADA) siLaCuentaSeCancelo?.invoke()?.let { r.copy(texto = it) } ?: r else r
     suspend fun abrirSaldoDesdeConsultar(tarjeta: TarjetaIdentificada, onAbrir: (TarjetaIdentificada) -> Unit): Boolean {
         val fila = conductaDeSaldo()
         filaDeSaldo.value = fila
@@ -1931,7 +1937,7 @@ class PaymentFlowViewModel @Inject constructor(
                 return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO).also {resultadoDeSaldo.value=it}
             val coordinator = cobroConSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
             val anteriores = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).map {it.llave}.toSet()
-            val resultado = if (fila.fila == FilaDeLaCaja.T1) {
+            val resultado = conTextoDelFolio(if (fila.fila == FilaDeLaCaja.T1) {
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val payload = Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(buildOrderRequest(snapshot),selectedStaffId(),attachedCustomerId,
@@ -1944,9 +1950,13 @@ class PaymentFlowViewModel @Inject constructor(
                 }
             } else {
                 val id = createdOrderId ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.CUENTA_NO_ENCONTRADA)
+                // A1: un folio también es T2 (su cuenta ya existe), pero no es venta de mostrador: no vacía nada ni deja «venta por
+                // terminar» (lo que falte sale en «Por pagar»), y al confirmarse deja la marca de la bandeja.
+                val deMostrador = fila.fila == FilaDeLaCaja.T2 && !origenDelCobro.esPedidoEnLinea
                 coordinator.cobrar(venue,id,identificada.prueba,montoCents,monto.propinaCents,
-                    vaciarCarrito=if(fila.fila==FilaDeLaCaja.T2) vaciarDeSaldo else null,deMostrador=fila.fila==FilaDeLaCaja.T2)
-            }
+                    vaciarCarrito=if(deMostrador) vaciarDeSaldo else null,deMostrador=deMostrador,
+                    deFolio=origenDelCobro.esPedidoEnLinea && cobroDeLaBandeja?.esFolio == true)
+            })
             if (venue == secureStorage.venueId && epoch == paymentGeneration) {
                 llaveDelSaldo = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).firstOrNull {
                     it.venueId==venue && it.tipo=="GIFT_CARD_REDEEM" && it.llave !in anteriores && it.mandado && !it.porRecuperar && !it.porTerminar
@@ -1982,10 +1992,10 @@ class PaymentFlowViewModel @Inject constructor(
         cobrandoSaldo=true;saldoEnVuelo.value=true
         try {
             var identidadEntregada: String? = null
-            val result=cobroConSaldo?.resolver(llave,
+            val result=conTextoDelFolio(cobroConSaldo?.resolver(llave,
                 destinoVigente = { viewModelScope.isActive && identidadEntregada != null && ventaVivaDeSaldo?.invoke()?.identidadDeVenta == identidadEntregada }) { photo ->
                 restaurarEnEsteCobro(photo, venue, epoch)?.also { identidadEntregada = it.identidadDeVenta } != null
-            } ?: DesenlaceDeCobro.Incierto
+            } ?: DesenlaceDeCobro.Incierto)
             if(venue==secureStorage.venueId && epoch==paymentGeneration) {
                 resultadoDeSaldo.value=result
                 if (result is DesenlaceDeCobro.Cobrado) mostrarCobroConSaldo(result.cobro)

@@ -34,6 +34,12 @@ enum class OrigenDelCobro {
     val permiteTarjeta: Boolean get() = this == NORMAL || this == PEDIDO_EN_LINEA
     val esDePlataforma: Boolean get() = this == PEDIDO_DE_PLATAFORMA_EFECTIVO || this == PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO
 
+    /**
+     * Tienda híbrida, parte 2 (A1): la fila «Tarjeta de regalo». El cobro de siempre, sí; de la bandeja, sólo un folio de «Por pagar»
+     * (diseño P2-4: «también al cobrar un folio»). Un pedido de plataforma o de «Mi equipo», no.
+     */
+    fun ofreceSaldo(esFolio: Boolean): Boolean = !esPedidoEnLinea || (esFolio && !esDePlataforma)
+
     /** La calificación y la propina del cliente: no en un pedido de plataforma (la propina ya viene en el pedido; sería otra). */
     val pideCalificacionYPropina: Boolean get() = !esDePlataforma
 

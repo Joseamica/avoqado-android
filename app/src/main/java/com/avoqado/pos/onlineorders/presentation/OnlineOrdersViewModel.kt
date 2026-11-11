@@ -141,6 +141,8 @@ class OnlineOrdersViewModel internal constructor(
     private val venueActual: () -> String? = { null },
     /** R101: lo escondido se guarda en la MISMA copia que la lista de folios (`OnlineOrdersRepository.guardarOcultos`). */
     private val guardarOcultos: suspend (Map<String, HuellaDeFolio>) -> Unit = {},
+    /** Parte 2 (A1): el último `stampsEnabled` que este aparato supo del negocio; sin saberlo, no se promete el sello. */
+    private val sellosActivos: () -> Boolean = { false },
 ) : ViewModel() {
 
     @Inject
@@ -181,6 +183,7 @@ class OnlineOrdersViewModel internal constructor(
         cobrosConTarjeta = terminalPaymentService::cobrosConTarjetaDelNegocio,
         venueActual = { secureStorage.venueId },
         guardarOcultos = { repositorio.guardarOcultos(it) },
+        sellosActivos = { secureStorage.venueId?.let(secureStorage::programaDeSellosActivo) == true },
     )
 
     private val _secciones = MutableStateFlow(SeccionesBandeja())
@@ -232,6 +235,9 @@ class OnlineOrdersViewModel internal constructor(
     val puedeActualizar: Boolean get() = permisoActualizar()
     val puedeCobrar: Boolean get() = permisoCobrar()
     val puedeCancelar: Boolean get() = permisoCancelar()
+
+    /** Parte 2: «Con cuenta: … · suma su sello al pagar» sólo si los sellos del negocio están prendidos. */
+    val sumaSello: Boolean get() = sellosActivos()
 
     private val _porCobrar = MutableStateFlow<ListaPorCobrar?>(null)
 
@@ -1044,6 +1050,7 @@ class OnlineOrdersViewModel internal constructor(
         val efectivo = efectivoDelPedido(orderId)
         val tarjetas = cobrosConTarjeta(venueId).filter { it.orderId == orderId }
         val yaConTarjeta = if (esFolio) TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA else TextosPedidosEnLinea.PEDIDO_COBRADO_CON_TARJETA
+        val marcas by lazy { foliosConTarjeta.marcasDe(venueId).filter { it.orderId == orderId } }
         when {
             // Los dos de efectivo bloquean; el texto dice la verdad de quién lo sube (Ruling 21 #2).
             efectivo == EfectivoDelPedido.EN_COLA ->
@@ -1051,7 +1058,9 @@ class OnlineOrdersViewModel internal constructor(
             efectivo == EfectivoDelPedido.POR_REVISAR ->
                 DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR)
             tarjetas.any { it.cobrado } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
-            foliosConTarjeta.marcasDe(venueId).any { it.orderId == orderId } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
+            // A1: la marca de un cobro con SALDO frena igual, con su texto (pudo ser parcial).
+            marcas.isNotEmpty() -> DineroSinConfirmar(bloquea = true,
+                aviso = if (marcas.all { it.conSaldo }) TextosPedidosEnLinea.FOLIO_COBRADO_CON_SALDO else yaConTarjeta)
             tarjetas.isNotEmpty() -> DineroSinConfirmar(bloquea = false, aviso = com.avoqado.pos.payment.domain.CardChargeDecision.UNDETERMINED_MESSAGE)
             else -> DineroSinConfirmar.NADA
         }

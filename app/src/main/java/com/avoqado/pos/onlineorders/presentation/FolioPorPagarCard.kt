@@ -39,7 +39,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.luminance
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.DiscountText
+import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
@@ -79,6 +82,8 @@ fun FolioPorPagarCard(
     onCancelar: () -> Unit = {},
     /** A5: lo cobrado con tarjeta en ESTE aparato que la lista del servidor todavía no cuenta; null = nada. */
     cobradoConTarjetaCents: Long? = null,
+    /** Parte 2: los sellos del negocio están prendidos («Con cuenta: … · suma su sello al pagar» en «Por pagar»). */
+    sellosActivos: Boolean = false,
 ) {
     val espacio = AvoqadoTheme.spacing
     Card(
@@ -120,6 +125,11 @@ fun FolioPorPagarCard(
                 }
             }
             pedido.customerName?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
+            // Parte 2 (mockup 2c·2): ya viene ligada a su cuenta; la cajera no tiene que buscarla.
+            lineaDeCuenta(pedido, porEntregar, sellosActivos)?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("folio-cuenta-${pedido.orderId}"))
+            }
             if (pedido.items.isNotEmpty()) {
                 Text(
                     pedido.items.joinToString(" · ") { "${it.quantity} × ${it.name}" },
@@ -128,6 +138,7 @@ fun FolioPorPagarCard(
                 )
             }
             pedido.note?.takeIf { it.isNotBlank() }?.let { Text(TextosPedidosEnLinea.notaDelPedido(it), style = MaterialTheme.typography.bodyMedium) }
+            BeneficiosDelFolio(pedido)
 
             if (porEntregar) {
                 Text(
@@ -220,6 +231,28 @@ fun FolioPorPagarCard(
 }
 
 /**
+ * Parte 2 (mockup 2c·2): lo que la cuenta ya trae rebajado, en verde con su monto («Café gratis (premio de Ana) −$65.00»), y «y N más»
+ * si el SERVIDOR trae más de los que manda (nunca se esconden). Así «pidió latte y shake, ¿por qué $69?» se ve aquí. Sin beneficios, nada.
+ * Verde del carrito en claro (`DiscountText`, 4.9:1); en oscuro `Success`, que sí se lee sobre la superficie oscura.
+ */
+@Composable
+private fun BeneficiosDelFolio(pedido: OnlineOrder) {
+    if (pedido.beneficios.isEmpty()) return
+    val verde = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) Success else DiscountText
+    Column(Modifier.fillMaxWidth().testTag("folio-beneficios-${pedido.orderId}"), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs)) {
+        pedido.beneficios.forEach { b ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                Text(b.nombre, style = MaterialTheme.typography.bodyMedium, color = verde, modifier = Modifier.weight(1f))
+                Text(TextosPedidosEnLinea.montoDeBeneficio(formatoPesos(b.montoCents)), style = MaterialTheme.typography.bodyMedium, color = verde)
+            }
+        }
+        beneficiosDeMas(pedido).takeIf { it > 0 }?.let {
+            Text(TextosPedidosEnLinea.beneficiosDeMas(it), style = MaterialTheme.typography.bodySmall, color = verde)
+        }
+    }
+}
+
+/**
  * Las filas de la pantalla para los folios: buscador, «Por pagar» y «Por entregar» (más sus estados: error con «Reintentar»,
  * vacío con su porqué, sin resultados, «de hace N min», «Cargar más»). El número de cada cabecera nunca contradice su lista.
  */
@@ -246,6 +279,7 @@ internal fun LazyListScope.seccionesDeFolios(
     puedeCancelar: Boolean = false,
     onCobrar: (OnlineOrder) -> Unit = {},
     onCancelar: (orderId: String) -> Unit = {},
+    sellosActivos: Boolean = false,
 ) {
     if (lista == null) {
         if (!error && leyendo) {
@@ -305,6 +339,7 @@ internal fun LazyListScope.seccionesDeFolios(
                 pedido, false, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados, {}, {},
                 puedeCobrar = puedeCobrar, puedeCancelar = puedeCancelar,
                 onCobrar = { onCobrar(pedido) }, onCancelar = { onCancelar(pedido.orderId) },
+                sellosActivos = sellosActivos,
             )
         }
         if (hayMasPorPagar) {

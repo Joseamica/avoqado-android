@@ -53,7 +53,19 @@ data class OnlineOrder(
     val channel: String? = null,
     /** R67: cuándo quedó pagado un folio de «Por entregar» («Pagado a las HH:MM»); null si el SERVIDOR no lo manda. */
     val paidAt: Instant? = null,
+    /** Parte 2 (S14): de qué clienta es la cuenta; null sin cuenta o con un SERVIDOR viejo. Nunca su contacto. */
+    val cliente: ClienteDelFolio? = null,
+    /** Parte 2 (S14): los beneficios ya aplicados a la cuenta (hasta 10, en el orden en que se aplicaron). */
+    val beneficios: List<BeneficioDelFolio> = emptyList(),
+    /** Parte 2 (S14): cuántos trae la cuenta en total; si pasa de [beneficios], la tarjeta dice «y N más». */
+    val beneficiosTotal: Int = 0,
 )
+
+/** Parte 2 (S14): la clienta de la cuenta, con su nombre corto del SERVIDOR («Ana L.»). */
+data class ClienteDelFolio(val id: String, val nombre: String)
+
+/** Parte 2 (S14): una fila de descuento de la cuenta (premio, cupón, puntos, automático), en centavos. */
+data class BeneficioDelFolio(val nombre: String, val montoCents: Long)
 
 /**
  * Lo que dice el servidor al tocar «Cobrar»: el saldo (lo único que mueve dinero) y el precio de cada producto del pedido, que
