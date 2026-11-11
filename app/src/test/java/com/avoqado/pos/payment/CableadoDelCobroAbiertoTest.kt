@@ -48,6 +48,20 @@ class CableadoDelCobroAbiertoTest {
         assertTrue(cobro.contains("antesDeRecibirEfectivo={viewModel.revalidarCobroSinRed(orderId,cents)}"))
     }
 
+    /**
+     * Final fix (M-a): el cobro con la copia SIEMPRE vuelve ABIERTA (nunca «Pagada»); el anfitrión no lee el cierre: suelta el candado,
+     * vuelve a decidir con la copia y recarga la cuenta (`alVolverDelCobroSinRed`).
+     */
+    @Test fun `el cobro con la copia vuelve siempre ABIERTA y el anfitrion vuelve a decidir`() {
+        val desdeLaCopia = cobro.substring(cobro.indexOf("privatefunCobroDesdeLaCopia("), cobro.indexOf("privatefunCobrarCuentaSinRed("))
+        assertFalse(desdeLaCopia.contains("CierreDeCuenta.PAGADA"))
+        assertFalse(cobro.contains("cierreDelCobroDesdeLaCopia"))
+        assertTrue(desdeLaCopia.contains("onSalir(CierreDeCuenta.ABIERTA)"))
+        assertTrue(desdeLaCopia.contains("onPaymentCommitted={}"))
+        val anfitrion = cobro.substring(cobro.indexOf("pinta.cobroSinRed?.let"), cobro.indexOf("if(!pinta.acciones)return"))
+        assertTrue(anfitrion.contains("viewModel.alVolverDelCobroSinRed(order.id)"))
+    }
+
     /** Puntos 1 y 2: la lista enseña el aviso del repositorio (copia, búsqueda sin red o servidor), y vacía no dice «No hay pedidos». */
     @Test fun `la lista ensena el aviso del repositorio`() {
         assertTrue(pedidos.contains("valavisoDeLaListabyviewModel.avisoDeLaLista.collectAsState()"))

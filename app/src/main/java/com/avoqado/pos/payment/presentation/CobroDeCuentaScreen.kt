@@ -288,13 +288,6 @@ class CobroDeCuentaViewModel @Inject constructor(
 
 enum class CierreDeCuenta { ABIERTA, PAGADA, CANCELADA }
 
-/**
- * D12 (Codex r2): cómo vuelve a la cuenta un cobro hecho con la copia. PAGADA sólo si el SERVIDOR confirmó que no falta nada; un
- * cobro encolado sale ABIERTA aunque la resta local diga 0 (`buildCompletion` da 0 sin saldo del servidor).
- */
-fun cierreDelCobroDesdeLaCopia(c: PaymentCompletion): CierreDeCuenta =
-    if (c.saldoDelServidor && c.remainingBalanceCents == 0) CierreDeCuenta.PAGADA else CierreDeCuenta.ABIERTA
-
 @Composable
 fun CobroDeCuentaScreen(
     orderId: String,
@@ -381,17 +374,18 @@ fun CobroDeCuentaScreen(
 /**
  * D12: el cobro en efectivo de una cuenta con la copia de «Pedidos». Sólo efectivo, contra SU orden y sin dividir (el saldo esperado
  * tras cobrar es 0); la revalidación corre justo antes de recibir el efectivo y, si dice que no, el flujo sale solo (`debeSalir` →
- * `onCancel`) y la cuenta enseña su gris. Un cobro encolado vuelve ABIERTA, nunca «Pagada».
+ * `onCancel`) y la cuenta enseña su gris. Final fix (M-a): SIEMPRE vuelve ABIERTA, nunca «Pagada». El anfitrión no lee un cierre: al
+ * volver decide otra vez con la copia y recarga la cuenta, y eso es lo que se ve (un cobro encolado sale «sin sincronizar»; uno que
+ * subió ya sacó la cuenta de la copia, final fix I-2, y la recarga con red la trae pagada).
  */
 @Composable
 private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCuenta) -> Unit, viewModel: CobroDeCuentaViewModel) {
-    var cierre by rememberSaveable(orderId) { mutableStateOf(CierreDeCuenta.ABIERTA) }
     var avisoLocal by rememberSaveable(orderId) { mutableStateOf<String?>(null) }
-    fun salir(c: CierreDeCuenta) {
+    fun salir() {
         viewModel.soltarCobroSinRed()
-        onSalir(c)
+        onSalir(CierreDeCuenta.ABIERTA)
     }
-    Dialog(onDismissRequest = { salir(CierreDeCuenta.ABIERTA) }, properties = DialogProperties(
+    Dialog(onDismissRequest = { salir() }, properties = DialogProperties(
         usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false)) {
         ImmersiveWindow()
         DisposableEffect(Unit) {
@@ -403,15 +397,15 @@ private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCue
         // Como el cobro en línea: si se resolvió un cobro anterior de OTRA venta, este cobro se cierra y su aviso se queda a la vista.
         avisoLocal?.let { texto ->
             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-                AvoqadoFullscreenHeader(title = "Cuenta abierta", onNav = { salir(CierreDeCuenta.ABIERTA) }, showDivider = true)
+                AvoqadoFullscreenHeader(title = "Cuenta abierta", onNav = { salir() }, showDivider = true)
                 Text(texto, Modifier.padding(AvoqadoTheme.spacing.lg))
             }
         } ?: PaymentFlowScreen(cartState = cart, resumeOrderId = orderId, desdeCuentasAbiertas = true,
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA,
             antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId, cents) },
-            onPaymentCommitted = { cierre = cierreDelCobroDesdeLaCopia(it) },
-            onDone = { salir(cierre) },
-            onCancel = { salir(CierreDeCuenta.ABIERTA) },
+            onPaymentCommitted = {},
+            onDone = { salir() },
+            onCancel = { salir() },
             onPreviousChargeResolved = { texto -> avisoLocal = texto },
         )
     }

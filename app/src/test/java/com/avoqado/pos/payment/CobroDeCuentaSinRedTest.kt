@@ -25,11 +25,8 @@ import com.avoqado.pos.payment.data.PayLaterRow
 import com.avoqado.pos.payment.domain.DecisionSinRed.Cobrar
 import com.avoqado.pos.payment.domain.DecisionSinRed.Gris
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
-import com.avoqado.pos.payment.presentation.CierreDeCuenta
 import com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel
-import com.avoqado.pos.payment.presentation.PaymentCompletion
 import com.avoqado.pos.payment.presentation.LoQueSePinta
-import com.avoqado.pos.payment.presentation.cierreDelCobroDesdeLaCopia
 import com.avoqado.pos.payment.presentation.loQueSePinta
 import com.avoqado.pos.payment.presentation.pideOfertaAlRecargar
 import com.avoqado.pos.tables.data.OrderDetail
@@ -261,14 +258,18 @@ class CobroDeCuentaSinRedTest {
         coVerify(exactly = 0) { hub.acquire(any(), any(), any()) }
     }
 
-    /** Codex r2: un cobro encolado nunca se da por pagado aunque el cálculo local diga 0. */
-    @Test fun `un cobro encolado sale ABIERTA aunque el calculo local diga cero`() {
-        val encolado = PaymentCompletion(splitType = "FULLPAYMENT", remainingBalanceCents = 0, saldoDelServidor = false, parteEnCola = "k1")
-        assertEquals(CierreDeCuenta.ABIERTA, cierreDelCobroDesdeLaCopia(encolado))
-        assertEquals(CierreDeCuenta.PAGADA, cierreDelCobroDesdeLaCopia(encolado.copy(saldoDelServidor = true, parteEnCola = null)))
-        // La cuenta creció a $300 en otra caja y se pagaron $100.
-        assertEquals(CierreDeCuenta.ABIERTA, cierreDelCobroDesdeLaCopia(
-            encolado.copy(saldoDelServidor = true, remainingBalanceCents = 20000, parteEnCola = null)))
+    /**
+     * Final fix (M-a): el cobro con la copia que quedó en la cola vuelve a la cuenta sin «Pagada» (el anfitrión no lee un cierre: vuelve
+     * a decidir con la copia y recarga). Lo que se ve es «sin sincronizar», nunca otro «Cobrar».
+     */
+    @Test fun `al volver de un cobro encolado con la copia la cuenta queda sin sincronizar`() = runTest {
+        enLaCopia(cuenta())
+        val m = vm()
+        assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
+        assertNull(m.revalidarCobroSinRed("o1", 6000))
+        coEvery { locales.hayPendiente("v1", "o1") } returns true // el efectivo quedó en la cola
+        assertEquals("se vuelve a decidir y se recarga", true, m.alVolverDelCobroSinRed("o1"))
+        assertEquals(Gris(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR), m.sinRed.value)
     }
 
     /** Codex r3 H1: la otra entrada del detalle también pone la copia al día. */
