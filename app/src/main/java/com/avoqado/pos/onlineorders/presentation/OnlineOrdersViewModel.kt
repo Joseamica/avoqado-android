@@ -937,7 +937,10 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrar(pedido: OnlineOrder) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = pedido.remainingCents,
+        saldoGuardado = saldoDeLaLista(pedido.remainingCents, completa = { !_hayMas.value }) {
+            _secciones.value.let { it.porAceptar + it.enPreparacion + it.listos + it.hoy }
+                .firstOrNull { it.orderId == pedido.orderId }?.remainingCents
+        },
         plataforma = null,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
@@ -955,7 +958,7 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrarFolio(pedido: OnlineOrder) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = pedido.remainingCents,
+        saldoGuardado = { pedido.remainingCents }, // no se usa: sin red, el folio cobra lo que dice la copia guardada (R104)
         plataforma = null,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
@@ -972,17 +975,32 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrarDeReparto(pedido: PedidoPorCobrar) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = pedido.remainingBalanceCents,
+        saldoGuardado = saldoDeLaLista(
+            pedido.remainingBalanceCents,
+            completa = { _porCobrar.value?.let { it.disponible && it.nextCursor == null && !it.truncated } == true },
+        ) { _porCobrar.value?.pedidos?.firstOrNull { it.orderId == pedido.orderId }?.remainingBalanceCents },
         plataforma = pedido.thirdPartyLabel,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO,
         permitido = muestraReparto,
     )
 
+    /**
+     * «Mi equipo» y reparto, sin red: lo último que dijo la lista del pedido, leído al USARSE y no al tocar (Codex r4 #1): durante la
+     * consulta del saldo otra lectura pudo traer lo que falta tras un abono de otro aparato. Si estaba en la lista al tocar y la lista
+     * COMPLETA más nueva ya no lo trae (otra caja lo saldó o se canceló, Codex r5 #1), null: no se cobra. Si no estaba al tocar o la
+     * lista está incompleta, lo del toque, como antes.
+     */
+    private fun saldoDeLaLista(delToque: Long, completa: () -> Boolean, enLaLista: () -> Long?): () -> Long? {
+        val estabaAlTocar = enLaLista() != null
+        return { enLaLista() ?: delToque.takeUnless { estabaAlTocar && completa() } }
+    }
+
     private fun abrirCobro(
         orderId: String,
         orderNumber: String,
-        saldoGuardado: Long,
+        /** Sin red, el saldo de «Mi equipo» y reparto ([saldoDeLaLista]); null = ya no está en la lista. El folio usa su copia. */
+        saldoGuardado: () -> Long?,
         plataforma: String?,
         origenConSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
         origenSinSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
@@ -997,8 +1015,12 @@ class OnlineOrdersViewModel internal constructor(
         _ocupados.value = _ocupados.value + orderId
         viewModelScope.launch {
             try {
-                // R100: UNA sola pregunta por todo el dinero de este aparato que el SERVIDOR todavía no confirma.
-                val dinero = dineroSinConfirmar(venueActual(), orderId, esFolio = folio != null)
+                // R100: UNA sola pregunta por todo el dinero de este aparato que el SERVIDOR todavía no confirma. El negocio se toma una vez:
+                // la revisión de antes de abrir pregunta por el mismo.
+                val venue = venueActual()
+                // Codex r3 #1: una marca «aquí ya se cobró» que nace y se suelta durante la espera no deja rastro; se cuenta antes.
+                val soltadasAlEmpezar = foliosConTarjeta.vecesSoltada(orderId)
+                val dinero = dineroSinConfirmar(venue, orderId, esFolio = folio != null)
                 if (dinero.bloquea) {
                     _aviso.value = dinero.aviso
                     return@launch
@@ -1009,6 +1031,14 @@ class OnlineOrdersViewModel internal constructor(
                     throw e
                 } catch (e: Exception) {
                     Result.failure(e)
+                }
+                // Codex r6 #1: mientras se esperaba el saldo, otra entrada del POS (cerrar la bandeja → Pedidos → detalle → efectivo) pudo
+                // guardar un efectivo de esta orden. Se revisa todo el dinero otra vez al terminar la espera y ANTES de elegir el saldo: de
+                // elegirlo a abrir no puede haber espera (r3 #2).
+                val dineroTrasEsperar = dineroSinConfirmar(venue, orderId, esFolio = folio != null)
+                if (dineroTrasEsperar.bloquea) {
+                    _aviso.value = dineroTrasEsperar.aviso
+                    return@launch
                 }
                 val saldo = leido.map { it.saldoCents }.getOrElse { error ->
                     if (error is IOException) {
@@ -1028,7 +1058,10 @@ class OnlineOrdersViewModel internal constructor(
                             return@launch
                         }
                         if (folio == null) {
-                            saldoGuardado
+                            saldoGuardado() ?: run {
+                                _aviso.value = TextosPedidosEnLinea.YA_NO_DISPONIBLE
+                                return@launch
+                            }
                         } else {
                             // W-1: UNA foto de la copia decide la tarjeta, las marcas y el saldo que se cobra (`alinearConLaCopia`).
                             val copia = alinearConLaCopia()
@@ -1085,12 +1118,28 @@ class OnlineOrdersViewModel internal constructor(
                     _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
+                // 🔴 P1 (Codex W-1 r6 #2): lo de arriba ESPERÓ (el saldo del servidor, la copia guardada) y mientras tanto la terminal pudo
+                // confirmar el cobro con tarjeta de esta orden; con la consulta fallando sin red (o con el servidor sin contarlo aún) se abría
+                // el efectivo de un folio ya pagado. Se vuelve a revisar la tarjeta justo antes de abrir, SIN NINGUNA ESPERA hasta abrir
+                // (Codex r3 #2: una espera aquí deja viejo el saldo ya elegido; el efectivo de la cola se revisó al terminar la espera):
+                // - un positivo, su marca o un saldo en duda frenan con su texto;
+                // - lo que ya no deja rastro tampoco se fía (r2 #1 y r3 #1): si las tarjetas en duda de esta orden no son las del principio,
+                //   o una marca suya se soltó mientras tanto (se confirmó, salió de la lista y una lectura nueva la soltó), no se abre.
+                val dineroAlAbrir = dineroConTarjeta(venue, orderId, esFolio = folio != null)
+                if (dineroAlAbrir.bloquea) {
+                    _aviso.value = dineroAlAbrir.aviso
+                    return@launch
+                }
+                if (dineroAlAbrir.tarjetasEnDuda != dinero.tarjetasEnDuda || foliosConTarjeta.vecesSoltada(orderId) != soltadasAlEmpezar) {
+                    _aviso.value = TextosPedidosEnLinea.TARJETA_CAMBIO
+                    return@launch
+                }
                 if (!permisoActualizar() || !permisoCobrar()) return@launch
                 // Dos toques rápidos en pedidos distintos pasan los dos la revisión del principio: el que tarda más no
                 // reemplaza a un cobro que ya está abierto (el cajero pudo haber recibido el efectivo del primero).
                 if (_cobroAbierto.value != null) return@launch
-                // (d) Una tarjeta en duda no frena el efectivo (founder, 2-nov «B»): sólo se avisa.
-                _aviso.value = dinero.aviso
+                // (d) Una tarjeta en duda no frena el efectivo (founder, 2-nov «B»): sólo se avisa (la de AHORA).
+                _aviso.value = dineroAlAbrir.aviso
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
                     origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
                     renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty(),
@@ -1113,28 +1162,36 @@ class OnlineOrdersViewModel internal constructor(
      * Si algo truena, falla CERRADO.
      */
     internal suspend fun dineroSinConfirmar(venueId: String?, orderId: String, esFolio: Boolean): DineroSinConfirmar = try {
-        val efectivo = efectivoDelPedido(orderId)
+        when (efectivoDelPedido(orderId)) {
+            // Los dos de efectivo bloquean; el texto dice la verdad de quién lo sube (Ruling 21 #2).
+            EfectivoDelPedido.EN_COLA -> DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO)
+            EfectivoDelPedido.POR_REVISAR -> DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR)
+            else -> dineroConTarjeta(venueId, orderId, esFolio)
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "No se pudo revisar el dinero sin confirmar de $orderId: ${e.message}")
+        DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.SALDO_NO_LEIDO)
+    }
+
+    /** R100 (b)–(e), lo de tarjeta y saldo: SIN ESPERAS (se lee en memoria y en `SecureStorage`), para revisar justo antes de abrir. */
+    private fun dineroConTarjeta(venueId: String?, orderId: String, esFolio: Boolean): DineroSinConfirmar = try {
         val tarjetas = cobrosConTarjeta(venueId).filter { it.orderId == orderId }
         val yaConTarjeta = if (esFolio) TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA else TextosPedidosEnLinea.PEDIDO_COBRADO_CON_TARJETA
         when {
-            // Los dos de efectivo bloquean; el texto dice la verdad de quién lo sube (Ruling 21 #2).
-            efectivo == EfectivoDelPedido.EN_COLA ->
-                DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO)
-            efectivo == EfectivoDelPedido.POR_REVISAR ->
-                DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.COBRO_EN_EFECTIVO_POR_REVISAR)
             // (e) A1, Codex r1 #1: un cobro con saldo de esta orden que el servidor todavía no confirma (respuesta perdida, app
             // reiniciada). No se abre otro cobro con un importe de antes: el resolutor lo confirma en segundos con red.
             saldoEnDuda(orderId) -> DineroSinConfirmar(bloquea = true, aviso = com.avoqado.pos.giftcards.domain.TextosDeTarjetas.COMPROBANDO_COBRO)
             tarjetas.any { it.cobrado } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
             // Una marca de saldo (A1) NO frena aquí: con red manda el saldo del servidor; sin red la revisa `abrirCobro` (Codex r1 #4).
             foliosConTarjeta.marcasDe(venueId).any { it.orderId == orderId && !it.conSaldo } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
-            tarjetas.isNotEmpty() -> DineroSinConfirmar(bloquea = false, aviso = com.avoqado.pos.payment.domain.CardChargeDecision.UNDETERMINED_MESSAGE)
+            tarjetas.isNotEmpty() -> DineroSinConfirmar(bloquea = false, aviso = com.avoqado.pos.payment.domain.CardChargeDecision.UNDETERMINED_MESSAGE,
+                tarjetasEnDuda = tarjetas.map { it.requestId }.toSet())
             else -> DineroSinConfirmar.NADA
         }
-    } catch (e: CancellationException) {
-        throw e
     } catch (e: Exception) {
-        Log.w(TAG, "No se pudo revisar el dinero sin confirmar de $orderId: ${e.message}")
+        Log.w(TAG, "No se pudo revisar el cobro con tarjeta de $orderId: ${e.message}")
         DineroSinConfirmar(bloquea = true, aviso = TextosPedidosEnLinea.SALDO_NO_LEIDO)
     }
 
@@ -1246,8 +1303,11 @@ class OnlineOrdersViewModel internal constructor(
     }
 }
 
-/** R100: lo que contesta `dineroSinConfirmar`. [bloquea] = «Cobrar» no abre; si no, [aviso] (si hay) se dice y se cobra igual. */
-data class DineroSinConfirmar(val bloquea: Boolean, val aviso: String?) {
+/**
+ * R100: lo que contesta `dineroSinConfirmar`. [bloquea] = «Cobrar» no abre; si no, [aviso] (si hay) se dice y se cobra igual.
+ * [tarjetasEnDuda] = las solicitudes con tarjeta de la orden que siguen en duda (no frenan, founder «B»).
+ */
+data class DineroSinConfirmar(val bloquea: Boolean, val aviso: String?, val tarjetasEnDuda: Set<String> = emptySet()) {
     companion object {
         val NADA = DineroSinConfirmar(bloquea = false, aviso = null)
     }
