@@ -176,14 +176,17 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
 
     private fun confirmar(s: SolicitudDeTarjeta, r: CobroConSaldo): DesenlaceDeCobro {
         // A1: la marca del folio va ANTES de soltar la llave (directo, «Reintentar» o el resolutor al volver): no hay instante en que
-        // el aparato no sepa de ese dinero. Idempotente por la llave. Si el disco no la acepta, la lista vieja queda sin freno: se dice.
+        // el aparato no sepa de ese dinero. Idempotente por la llave. Codex r1 #3: si el disco no la acepta, la llave NO se suelta: sigue
+        // frenando otro cobro de la cuenta (`cuentaTrabada`) y el resolutor vuelve a confirmar y a intentar la marca.
         if (s.deFolio && s.orderId != null) {
             val montoCents = (r.amount * 100).roundToInt().toLong()
             val restaCents = (r.orderRemaining * 100).roundToInt().toLong()
             if (!foliosCobrados.anotar(com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta(orderId = s.orderId,
                     montoCents = montoCents, saldoAntesCents = restaCents + montoCents, enMs = System.currentTimeMillis(),
-                    venueId = s.venueId, requestId = s.llave, esFolio = true, conSaldo = true)))
+                    venueId = s.venueId, requestId = s.llave, esFolio = true, conSaldo = true))) {
                 android.util.Log.e("🎁", "❌ No se pudo guardar en disco que un folio se cobró con saldo") // sin datos: guardia de secretos
+                return DesenlaceDeCobro.Cobrado(r)
+            }
         }
         if (s.deMostrador && r.orderRemaining > 0) {
             store.dejarPorTerminar(s.llave, r.orderId, r.orderNumber, (r.orderRemaining * 100).roundToInt())

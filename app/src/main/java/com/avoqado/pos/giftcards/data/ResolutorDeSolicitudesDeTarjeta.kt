@@ -134,7 +134,7 @@ import javax.inject.Singleton
             } else {
                 val r = cobroConSaldo?.resolver(fila.llave)
                 if (r is DesenlaceDeCobro.Cobrado && vigente(t)) cobrosRecuperados.value =
-                    (cobrosRecuperados.value + r.cobro).distinctBy { it.paymentId }
+                    (cobrosRecuperados.value + r.cobro.copy(deFolio = fila.deFolio)).distinctBy { it.paymentId }
             }
         }
         recuperables.value = store.delNegocio(venue).filter { it.porRecuperar }
