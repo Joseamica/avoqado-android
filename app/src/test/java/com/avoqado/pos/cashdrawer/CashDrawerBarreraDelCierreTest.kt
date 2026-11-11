@@ -124,7 +124,7 @@ class CashDrawerBarreraDelCierreTest {
         assertEquals("los dos retiros deben verse", 2, avisos.size)
         assertEquals("y con identidades distintas", 2, avisos.map { it.localKey }.toSet().size)
 
-        repo.descartarRechazada(avisos[0].localKey)
+        kotlinx.coroutines.runBlocking { repo.descartarRechazada(avisos[0].localKey) }
         assertEquals("descartar uno no puede llevarse el otro", 1, repo.operacionesRechazadas().size)
     }
 

@@ -33,6 +33,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -506,6 +507,64 @@ class CashDrawerRetiroFlujoTest {
         assertEquals("sólo el del retiro que sí se hizo", 1, papeles.size)
         assertTrue(papeles[0].contains("Proveedor"))
         runBlocking { assertTrue(real.pendientes(VENUE_ID).isEmpty()) }
+    }
+
+    /**
+     * Re-revisión (Importante 1), de punta a punta con el repositorio de verdad: el papel quedó pendiente, el replay recibe un 403,
+     * el cajero toca «Ya lo vi» y vuelve a Caja con una impresora que sí funciona ⇒ no sale ningún papel.
+     */
+    @Test
+    fun `un retiro rechazado por el replay y descartado no imprime su papel al volver a Caja`() {
+        val real = almacenReal()
+        val dao = com.avoqado.pos.cashdrawer.FakeCashDrawerDao().apply {
+            runBlocking { insertSession(com.avoqado.pos.cashdrawer.sesionLocal("srv-1", openedAt = com.avoqado.pos.cashdrawer.haceMinutos(60))) }
+        }
+        var payOut: Pair<Int, String>? = null // null = sin red
+        val cliente = mockk<okhttp3.OkHttpClient> {
+            every { newCall(any()) } answers {
+                val peticion = firstArg<okhttp3.Request>()
+                mockk<okhttp3.Call> {
+                    every { execute() } answers {
+                        val r = payOut?.takeIf { peticion.url.encodedPath.endsWith("/pay-out") } ?: throw IOException("sin red")
+                        okhttp3.Response.Builder().request(peticion).protocol(okhttp3.Protocol.HTTP_1_1).code(r.first).message("x")
+                            .body(r.second.toResponseBody()).build()
+                    }
+                }
+            }
+        }
+        val cajon = CashDrawerRepository(
+            dao, com.avoqado.pos.cashdrawer.cashDrawerSecureStorageConCola(), cliente, com.avoqado.pos.cashdrawer.sinCobrosEnCola(),
+            com.avoqado.pos.cashdrawer.conectividadDePrueba(), database = null, comprobantes = real,
+        )
+        runBlocking {
+            cajon.addPayOut(120_000, "Bajada", "loc-1", "tok-1", comprobante(VENUE_ID, "loc-1", hizo = "Ana Ruiz", concepto = "Bajada"))
+            payOut = 403 to """{"message":"La autorización ya no es válida."}"""
+            cajon.reproducirPendientes()
+            cajon.descartarRechazada(cajon.operacionesRechazadas().single().localKey)
+        }
+
+        val vm = CashDrawerViewModel(cajon, printer, roles, ajustes, red, override, real, storage).also { pantallas += it }
+        vm.esperarSuTrabajo()
+
+        assertTrue("salió el papel de un retiro rechazado: $papeles", papeles.isEmpty())
+        runBlocking { assertTrue(real.pendientes(VENUE_ID).isEmpty()) }
+    }
+
+    /** Re-revisión (Menor 2): con la impresora fallando, la recuperación para en el primer papel; los demás esperan a la siguiente entrada. */
+    @Test
+    fun `si el primer papel pendiente no sale, no se intentan los demas`() {
+        val real = almacenReal()
+        runBlocking {
+            listOf("loc-a", "loc-b", "loc-c").forEach { real.anotar(comprobante(VENUE_ID, it, hizo = "Beatriz Luna", concepto = "Bajada")) }
+        }
+        impresoraFalla = true
+
+        val vm = vm(real)
+        vm.esperarSuTrabajo()
+
+        coVerify(exactly = 1) { printer.sendPrintData(any(), any()) }
+        assertEquals("El retiro quedó registrado, pero no se imprimió el comprobante.", vm.avisoDelRetiro.value)
+        runBlocking { assertEquals("los tres se quedan", 3, real.pendientes(VENUE_ID).size) }
     }
 
     /** H11: un retiro ya registrado nunca vuelve a una hoja editable, aunque algo truene después (aquí, la impresora). */

@@ -533,16 +533,17 @@ class CashDrawerViewModel @Inject constructor(
         candadoDelPapel.withLock {
             val pendientes = runCatching { comprobantes.pendientes(venueId) }.getOrDefault(emptyList())
             val rechazados = runCatching { repository.retirosRechazados(venueId) }.getOrDefault(emptySet())
-            pendientes.filter { it.localId !in retirosEnCurso }
-                .mapNotNull { c ->
-                    if (c.localId in rechazados) {
-                        runCatching { comprobantes.quitar(c.venueId, c.localId) }.onFailure { Log.e(TAG, "❌ No se pudo quitar el comprobante: ${it.message}") }
-                        null
-                    } else {
-                        imprimirYQuitar(c, reimpresion = true)
-                    }
-                }
-                .firstOrNull()?.let { _avisoDelRetiro.value = it }
+            val porImprimir = pendientes.filter { it.localId !in retirosEnCurso }
+            porImprimir.filter { it.localId in rechazados }.forEach { c ->
+                runCatching { comprobantes.quitar(c.venueId, c.localId) }.onFailure { Log.e(TAG, "❌ No se pudo quitar el comprobante: ${it.message}") }
+            }
+            // Para en el primer papel que no sale: cada intento espera su tiempo bajo este candado (y el papel de un retiro nuevo, detrás).
+            // Los demás se quedan para la siguiente entrada a Caja.
+            for (c in porImprimir.filter { it.localId !in rechazados }) {
+                val fallo = imprimirYQuitar(c, reimpresion = true) ?: continue
+                _avisoDelRetiro.value = fallo
+                break
+            }
         }
     }
 

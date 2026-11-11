@@ -2424,8 +2424,17 @@ class CashDrawerRepository @Inject constructor(
      * queda bloqueado, y al desaparecer la fila desaparece también la barrera de entrada. Para una
      * apertura el único camino es [reintentarApertura].
      */
-    fun descartarRechazada(localKey: String) = synchronized(candadoDeLaCola) {
-        guardarPendientes(pendientes().filter { it.kind == "OPEN" || it.rechazadaEn == null || llaveDe(it) != localKey })
+    suspend fun descartarRechazada(localKey: String) {
+        // 🔴 Un retiro rechazado se lleva su papel PRIMERO: mientras exista la marca, la recuperación de Caja no lo imprime; sin la
+        // marca, ya nada lo protegería. Si no se puede quitar, el aviso se queda (se vuelve a tocar «Ya lo vi»).
+        val retiro = pendientes().firstOrNull { it.kind == "PAY_OUT" && it.rechazadaEn != null && llaveDe(it) == localKey }
+        retiro?.localId?.let { id ->
+            runCatching { comprobantes?.quitar(venueId, id) }
+                .onFailure { Log.e(TAG, "❌ No se pudo quitar el papel del retiro rechazado: ${it.message}"); return }
+        }
+        synchronized(candadoDeLaCola) {
+            guardarPendientes(pendientes().filter { it.kind == "OPEN" || it.rechazadaEn == null || llaveDe(it) != localKey })
+        }
     }
 
     /**
@@ -3057,7 +3066,17 @@ class CashDrawerRepository @Inject constructor(
             // milisegundos y marcarlo como rechazo definitivo perdería el movimiento.
             when (clasificarRespuestaDelServer(op.kind, code, codigoDeNegocio(resp))) {
                 DestinoDeLaOperacion.CONFIRMADA -> { promoteEvent(localId, parseEventId(resp), resp); Log.d(TAG, "✅ ${op.kind} reproducido ($localId)"); DestinoDeLaOperacion.CONFIRMADA }
-                DestinoDeLaOperacion.RECHAZADA -> { Log.e(TAG, "🛑 ${op.kind} RECHAZADO por el server ($code): se marca para avisarle al cajero — $resp"); marcarRechazada(op, mensajeDeRechazo(code, resp)); DestinoDeLaOperacion.RECHAZADA }
+                DestinoDeLaOperacion.RECHAZADA -> {
+                    Log.e(TAG, "🛑 ${op.kind} RECHAZADO por el server ($code): se marca para avisarle al cajero — $resp")
+                    marcarRechazada(op, mensajeDeRechazo(code, resp))
+                    // Mismo orden que H9 (marca → papel): el comprobante que se quedó porque la impresora falló (H10) no puede salir
+                    // después como REIMPRESIÓN de un retiro que el servidor rechazó.
+                    if (op.kind == "PAY_OUT") {
+                        runCatching { comprobantes?.quitar(venueId, localId) }
+                            .onFailure { Log.e(TAG, "❌ No se pudo quitar el papel del retiro rechazado (la marca lo protege): ${it.message}") }
+                    }
+                    DestinoDeLaOperacion.RECHAZADA
+                }
                 // Cualquier otra cosa se reintenta, que es el lado conservador — quedarse
                 // atorado es ruidoso, perderlo no.
                 else -> { Log.w(TAG, "🔁 ${op.kind} de la caja ${op.sessionId} sin confirmar ($code); sigue en cola — $resp"); DestinoDeLaOperacion.REINTENTAR }

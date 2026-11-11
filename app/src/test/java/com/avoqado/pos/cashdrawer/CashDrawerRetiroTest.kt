@@ -425,6 +425,27 @@ class CashDrawerRetiroTest {
         assertEquals(listOf(Triple("srv-ev-1", 8_000, "Bajada")), retiros().map { Triple(it.id, it.amountCents, it.note) })
     }
 
+    /**
+     * Re-revisión (Importante 1): el papel que se quedó porque la impresora falló (H10) no sobrevive a un rechazo del REPLAY. El replay
+     * marca el rechazo y quita el papel (mismo orden que H9); «Ya lo vi» también lo quita.
+     */
+    @Test fun `un rechazo del replay quita el comprobante pendiente, y Ya lo vi tambien`() = runBlocking {
+        repo(servidor { null }).addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+        assertEquals("el papel sigue pendiente (no se pudo imprimir)", listOf("loc-1"), store.pendientes(VENUE_ID).map { it.localId })
+
+        val r = repo(servidor { 403 to """{"message":"La autorización ya no es válida."}""" })
+        r.reproducirPendientes()
+
+        assertNotNull("el rechazo se marca", cola().single().rechazadaEn)
+        assertTrue("quedó el papel de un retiro rechazado", store.pendientes(VENUE_ID).isEmpty())
+
+        // Un papel que sobrevivió (otra versión, o un fallo al quitarlo) tampoco sobrevive a «Ya lo vi».
+        store.anotar(comprobante())
+        r.descartarRechazada(r.operacionesRechazadas().single().localKey)
+        assertTrue(cola().isEmpty())
+        assertTrue("«Ya lo vi» dejó el papel", store.pendientes(VENUE_ID).isEmpty())
+    }
+
     /** H6: la sucursal y su URL se fijan al empezar. Si a media operación cambia la sucursal, el retiro sigue siendo de la de antes. */
     @Test fun `el POST y la cola son de la sucursal donde empezo el retiro aunque cambie a mitad`() = runBlocking {
         var sucursal = VENUE_ID
