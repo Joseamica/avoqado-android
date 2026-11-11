@@ -166,6 +166,9 @@ class CopiaGuardadaDeFoliosTest {
 
         // Se cobran $243 con saldo y ~1 s después OTRO lector del mismo repositorio (el vigilante) lee «Por pagar»: faltan $54, y esa
         // lectura queda como la copia guardada.
+        // El cobro con saldo deja su marca «aquí ya se cobró con saldo» (Codex r1 #3: sin red frena «Cobrar» hasta que la copia lo cuente).
+        marcas.anotar(FolioCobradoConTarjeta("f1", montoCents = 24300, saldoAntesCents = 29700, enMs = 1, venueId = "v1",
+            requestId = "llave-saldo", conSaldo = true))
         toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
         repo.porPagar(conLatido = false).getOrThrow()
 
@@ -180,6 +183,7 @@ class CopiaGuardadaDeFoliosTest {
         val cobro = vm.cobroAbierto.value
         org.junit.Assert.assertNotNull("abre el cobro sin red (aviso: ${vm.aviso.value})", cobro)
         assertEquals("«Cobrar» sin red cobra lo mismo que dice la tarjeta", tarjeta.remainingCents.toInt(), cobro!!.saldoCents)
+        assertTrue("la copia que ya cuenta el saldo suelta su marca", marcas.marcas().isEmpty())
     }
 
     @Test
@@ -196,7 +200,31 @@ class CopiaGuardadaDeFoliosTest {
 
         server.shutdown()
         vm.refrescar()
-        assertEquals("la copia vieja ($297) no regresa", 5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+        val tarjeta = vm.porPagar.value!!.porPagar.single()
+        assertEquals("la copia vieja ($297) no regresa", 5400L, tarjeta.remainingCents)
+
+        // Codex r1 #1: «Cobrar» sin red tampoco cobra con la copia vieja: $54, lo que dice la tarjeta.
+        vm.cobrarFolio(tarjeta)
+        esperarQueTermine(vm, "f1")
+        val cobro = vm.cobroAbierto.value
+        org.junit.Assert.assertNotNull("abre el cobro sin red (aviso: ${vm.aviso.value})", cobro)
+        assertEquals(5400, cobro!!.saldoCents)
+    }
+
+    @Test
+    fun `W-1 un no disponible del servidor no lo revive una copia de antes`() = runBlocking {
+        // Codex r1 #2: una lectura buena deja la copia; luego el servidor dice 403 (sin la sección) y después se cae la red.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        toPay = MockResponse().setResponseCode(403).setBody("""{"success":false,"error":"Forbidden"}""")
+        vm.refrescar()
+        assertFalse(vm.porPagar.value!!.disponible)
+
+        server.shutdown()
+        vm.refrescar()
+        assertFalse("la sección sigue fuera", vm.porPagar.value!!.disponible)
+        assertTrue(vm.porPagar.value!!.porPagar.isEmpty())
     }
 
     // MARK: - (2) lo escondido sobrevive al reinicio

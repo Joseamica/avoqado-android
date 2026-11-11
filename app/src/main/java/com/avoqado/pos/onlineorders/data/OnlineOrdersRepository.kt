@@ -415,7 +415,7 @@ class OnlineOrdersRepository @Inject constructor(
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
             val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }
-            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false, masViejaQueLaCopia = vieja))
+            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false, masViejaQueLaCopia = vieja, numero = numero))
         }
         val lista = leido.mapCatching { parsePorPagar(it) }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
         if (seccion != null || cursor != null) return lista

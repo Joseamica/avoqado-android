@@ -446,6 +446,8 @@ class OnlineOrdersViewModel internal constructor(
      */
     private suspend fun tomarLaCopiaSiEsMasNueva() {
         val actual = _porPagar.value ?: return
+        // Codex r1 #2: un «no disponible» del SERVIDOR no lo revive una copia de antes (la misma regla que `descubrirPorPagar`).
+        if (!actual.disponible) return
         val copia = try {
             foliosGuardados()
         } catch (e: CancellationException) {
@@ -458,10 +460,25 @@ class OnlineOrdersViewModel internal constructor(
         for (seccion in SECCIONES) {
             if ((paginasExtraFolios[seccion] ?: 0) > 0 && cursorDe(copia, seccion) != null) nueva = conservarLoQueSeVeia(nueva, actual, seccion)
         }
-        _porPagar.value = nueva
+        // Sin el candado de la pantalla (también lo llama «Cobrar»): si una lectura publicó mientras tanto, gana ella.
+        if (!_porPagar.compareAndSet(actual, nueva)) return
         // La edad es la de la copia: «(de hace N min)» sigue diciendo la verdad.
         leidoEnMs = ahoraMs() - (copia.guardadoHaceMin ?: 0L) * 60_000
         _ocultos.value = ocultosQueSiguen(_ocultos.value, nueva)
+        // Codex r1 #3: la copia más nueva es justo contra la que se sueltan las marcas (R104): un saldo parcial que ya cuenta deja cobrar
+        // el resto, y la tarjeta y «Cobrar» dicen lo mismo.
+        soltarMarcasDeFoliosConLaCopia()
+    }
+
+    /**
+     * W-1: la lista con la que se cobra un folio sin red: la copia guardada (R104) o, si la pantalla tiene una lectura MÁS NUEVA que el
+     * disco no aceptó (`copiaGuardada = false`, Codex r1 #1), ésa: nunca un saldo más viejo que el que enseña la tarjeta. Con números
+     * iguales, la copia (lo de las páginas extra no está en ella: R104).
+     */
+    private suspend fun listaParaCobrarSinRed(): ListaPorPagar? {
+        val copia = foliosGuardados() ?: return null // sin copia, nada (R104: no se inventa con la memoria)
+        val memoria = _porPagar.value
+        return if (memoria != null && memoria.disponible && memoria.numero > copia.numero) memoria else copia
     }
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =
@@ -1003,16 +1020,21 @@ class OnlineOrdersViewModel internal constructor(
                         }
                         if (folio == null) {
                             saldoGuardado
-                        } else if (cobradoConSaldoAqui(orderId)) {
-                            // A1: esta caja ya cobró con saldo este folio y la copia guardada todavía no lo cuenta: su saldo es de
-                            // antes del cobro. Se espera a la red (la marca la suelta la copia que ya lo cuenta).
-                            _aviso.value = TextosPedidosEnLinea.FOLIO_COBRADO_CON_SALDO
-                            return@launch
                         } else {
-                            // R104: el saldo de un folio sin red sale SÓLO de la copia guardada, la misma contra la que se sueltan las
-                            // marcas de tarjeta. Si no está ahí (p. ej. vino de una página extra), no se inventa ni se reusa uno.
+                            // W-1: primero la copia más nueva pasa a la tarjeta y suelta las marcas que ya cuenta (R104): la tarjeta, la
+                            // marca y el saldo que se cobra salen de la MISMA lista.
+                            tomarLaCopiaSiEsMasNueva()
+                            if (cobradoConSaldoAqui(orderId)) {
+                                // A1: esta caja ya cobró con saldo este folio y la copia guardada todavía no lo cuenta: su saldo es de
+                                // antes del cobro. Se espera a la red (la marca la suelta la copia que ya lo cuenta).
+                                _aviso.value = TextosPedidosEnLinea.FOLIO_COBRADO_CON_SALDO
+                                return@launch
+                            }
+                            // R104: el saldo de un folio sin red sale de la copia guardada, la misma contra la que se sueltan las marcas.
+                            // Si no está ahí (p. ej. vino de una página extra), no se inventa ni se reusa uno. W-1: salvo que la pantalla
+                            // tenga una lectura MÁS NUEVA que el disco no aceptó (`listaParaCobrarSinRed`).
                             val enLaCopia = try {
-                                foliosGuardados()?.porPagar?.firstOrNull { it.orderId == orderId }
+                                listaParaCobrarSinRed()?.porPagar?.firstOrNull { it.orderId == orderId }
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
