@@ -203,12 +203,29 @@ class CopiaGuardadaDeFoliosTest {
         val tarjeta = vm.porPagar.value!!.porPagar.single()
         assertEquals("la copia vieja ($297) no regresa", 5400L, tarjeta.remainingCents)
 
-        // Codex r1 #1: «Cobrar» sin red tampoco cobra con la copia vieja: $54, lo que dice la tarjeta.
+        // Codex r1 #1 (rediseño r2): «Cobrar» sin red NO cobra con la copia vieja ($297) ni con la memoria: espera a la red.
         vm.cobrarFolio(tarjeta)
         esperarQueTermine(vm, "f1")
+        org.junit.Assert.assertNull("nunca $297 con la tarjeta en $54", vm.cobroAbierto.value)
+        assertEquals("Sin conexión: no se puede confirmar el saldo de este folio.", vm.aviso.value)
+    }
+
+    @Test
+    fun `W-1 una marca de saldo que llega despues de la lectura se suelta con la misma copia al cobrar sin red`() = runBlocking {
+        // Codex r2 #3: la pantalla ya leyó y guardó $54 (mismo número que la copia) y la respuesta del saldo llega DESPUÉS con su marca.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        marcas.anotar(FolioCobradoConTarjeta("f1", montoCents = 24300, saldoAntesCents = 29700, enMs = 1, venueId = "v1",
+            requestId = "llave-saldo", conSaldo = true))
+
+        server.shutdown()
+        vm.cobrarFolio(vm.porPagar.value!!.porPagar.single())
+        esperarQueTermine(vm, "f1")
         val cobro = vm.cobroAbierto.value
-        org.junit.Assert.assertNotNull("abre el cobro sin red (aviso: ${vm.aviso.value})", cobro)
+        org.junit.Assert.assertNotNull("la copia ya cuenta el saldo: deja cobrar el resto (aviso: ${vm.aviso.value})", cobro)
         assertEquals(5400, cobro!!.saldoCents)
+        assertTrue(marcas.marcas().isEmpty())
     }
 
     @Test
