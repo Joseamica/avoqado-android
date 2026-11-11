@@ -110,13 +110,19 @@ class OrdersViewModel @Inject constructor(
         invalidateAndRefresh()
     }
 
+    /** Final fix ronda 2 (R2-3): el «Cargar más» en vuelo; una lectura nueva de la página 1 lo corta. */
+    private var cargandoMas: kotlinx.coroutines.Job? = null
+
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
-    suspend fun refreshNow(): Result<Unit> = repository.loadOrders(
-        page = 1,
-        search = _searchText.value.takeIf { it.isNotBlank() },
-        status = _statusFilter.value,
-        append = false,
-    )
+    suspend fun refreshNow(): Result<Unit> {
+        cargandoMas?.cancel() // R2-3: otra búsqueda, filtro o recarga: la página vieja ya no es de lo que se ve
+        return repository.loadOrders(
+            page = 1,
+            search = _searchText.value.takeIf { it.isNotBlank() },
+            status = _statusFilter.value,
+            append = false,
+        )
+    }
 
     // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
     fun autoRefresh() {
@@ -149,7 +155,7 @@ class OrdersViewModel @Inject constructor(
         val hasMore = repository.hasMore.value
         if (!hasMore || repository.isLoadingMore.value) return
 
-        viewModelScope.launch {
+        cargandoMas = viewModelScope.launch {
             repository.loadOrders(
                 page = currentPage + 1,
                 search = _searchText.value.takeIf { it.isNotBlank() },

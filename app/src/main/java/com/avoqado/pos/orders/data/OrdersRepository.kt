@@ -116,6 +116,13 @@ class OrdersRepository @Inject constructor(
     private var listaConBusqueda = false
 
     /**
+     * Final fix ronda 2 (R2-3): cada lectura de la página 1 (otra búsqueda, otro filtro o una recarga) abre una consulta nueva; «Cargar
+     * más» sigue la que estaba. Una respuesta cuya consulta ya no es la vigente sólo pone la copia al día: no pinta filas, ni aviso, ni
+     * «Cargar más» (un «Cargar más» viejo ya no pisa una búsqueda nueva con toda la copia).
+     */
+    private var consultaVigente = 0L
+
+    /**
      * T12b: la lista es de [vistaA] (null = al día, o no hay nada guardado). Su aviso dice la razón real: nadie contestó, o el servidor
      * contestó mal. Ronda 1 (M1): sin red y sin nada guardado, también lo dice.
      */
@@ -272,9 +279,11 @@ class OrdersRepository @Inject constructor(
         status: String?,
         append: Boolean = false,
     ): Result<Unit> {
+        val consulta = if (append) consultaVigente else ++consultaVigente
         if (append) {
             _isLoadingMore.value = true
         } else {
+            _isLoadingMore.value = false // R2-3: un «Cargar más» de la consulta anterior ya no cuenta
             // Refresh de fondo silencioso: sin skeleton encima de datos buenos.
             _isLoading.value = _orders.value.isEmpty()
         }
@@ -292,6 +301,7 @@ class OrdersRepository @Inject constructor(
             if (copia != null && venueId != null && turno != null) {
                 copia.alLeer(venueId, pageData.orders, lecturaDe(page, append, search, status, pageData.hasMore), turno)
             }
+            if (consulta != consultaVigente) return result.map { } // R2-3: otra consulta manda; la copia ya se puso al día
             if (secureStorage.venueId == venueId) {
                 if (append) {
                     _orders.value = _orders.value + pageData.orders
@@ -309,6 +319,7 @@ class OrdersRepository @Inject constructor(
             // Datos previos INTACTOS (spec §4.1), salvo que no haya nada o sean de otra sucursal (D12).
             val error = result.exceptionOrNull()
             Log.e(TAG, "❌ loadOrders: ${error?.message}")
+            if (consulta != consultaVigente) return result.map { } // R2-3: el fallo de una consulta que ya no está a la vista no pinta nada
             val actual = secureStorage.venueId
             val sinRed = error != null && FalloDeLectura.de(error) == FalloDeLectura.SIN_RED
             if (actual != null && sinRed && !conBusqueda && copia != null) {

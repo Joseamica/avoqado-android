@@ -636,6 +636,54 @@ class PedidoSinRedTest {
         assertEquals(false, otra.hasMore.value)
     }
 
+    // MARK: - Final fix ronda 2 (R2-3): una respuesta cuya consulta ya no es la vigente no pinta nada
+
+    /** El caso de Codex r2: «Cargar más» en vuelo → búsqueda nueva que falla sin red (vacía, con su explicación) → falla la página vieja. */
+    @Test fun `un Cargar mas viejo que falla despues de una busqueda nueva no la pisa`() = runTest {
+        val r = dosPaginasYSoloLaPrimeraEnMemoria()
+        val entro = CompletableDeferred<Unit>()
+        val suelta = CompletableDeferred<Unit>()
+        lista = { chain ->
+            if (chain.request().url.queryParameter("page") == "2") {
+                entro.complete(Unit)
+                runBlocking { suelta.await() }
+            }
+            throw UnknownHostException("sin red")
+        }
+        val vieja = launch { r.loadOrders(2, null, null, append = true) }
+        entro.await()
+        r.loadOrders(1, "Z", null) // la búsqueda nueva, sin red
+        assertEquals(emptyList<String>(), ids(r))
+        assertEquals(TextosDeCuentaSinRed.BUSQUEDA_SIN_RED, r.avisoDeLaLista.value)
+        suelta.complete(Unit)
+        vieja.join() // ahora falla la página vieja
+        assertEquals("la búsqueda sigue intacta", emptyList<String>(), ids(r))
+        assertEquals(TextosDeCuentaSinRed.BUSQUEDA_SIN_RED, r.avisoDeLaLista.value)
+        assertEquals(false, r.hasMore.value)
+    }
+
+    /** Y si la página vieja SÍ llega, tampoco se pega a los resultados de la búsqueda nueva (la copia sí se pone al día). */
+    @Test fun `un Cargar mas viejo que llega despues de una busqueda nueva no se pega a sus resultados`() = runTest {
+        val r = dosPaginasYSoloLaPrimeraEnMemoria()
+        val entro = CompletableDeferred<Unit>()
+        val suelta = CompletableDeferred<Unit>()
+        lista = { chain ->
+            if (chain.request().url.queryParameter("page") == "2") {
+                entro.complete(Unit)
+                runBlocking { suelta.await() }
+                http(chain, 200, paginaDe(2, 2, fila("Z", creada = "2026-11-10T10:00:00Z")))
+            } else http(chain, 200, paginaDe(1, 1, fila("Q", creada = "2026-11-10T19:30:00Z")))
+        }
+        val vieja = launch { r.loadOrders(2, null, null, append = true) }
+        entro.await()
+        r.loadOrders(1, "Q", null)
+        assertEquals(listOf("Q"), ids(r))
+        suelta.complete(Unit)
+        vieja.join()
+        assertEquals("Z no es de la búsqueda «Q»", listOf("Q"), ids(r))
+        assertEquals("la copia sí lo sabe", "Z", copia.cuenta("v1", "Z")?.cuenta?.id)
+    }
+
     @Test fun `sin red Cargar mas de una busqueda no promete mas y lo dice`() = runTest {
         lista = { http(it, 200, paginaDe(1, 2, fila("A"))) }
         val r = repoConRutas()
@@ -1041,5 +1089,22 @@ class PedidoSeAbreAlVolverLaRedTest {
         alcanzable.value = false; runCurrent()
         repeat(5) { sinPing.value = false; advanceTimeBy(10_000); runCurrent() }
         io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
+    }
+
+    // MARK: - Final fix ronda 2 (R2-3): una búsqueda o recarga nueva corta el «Cargar más» en vuelo
+
+    @Test fun `una busqueda nueva corta el Cargar mas en vuelo`() = runTest {
+        var cortada = false
+        io.mockk.coEvery { repository.fetchOrders(1, any(), any(), any()) } returns Result.success(
+            com.avoqado.pos.orders.data.model.OrderPage(orders = listOf(com.avoqado.pos.orders.data.model.OrderSummary("A")), total = 2, page = 1, pageCount = 2))
+        io.mockk.coEvery { repository.fetchOrders(2, any(), any(), any()) } coAnswers {
+            try { kotlinx.coroutines.awaitCancellation() } finally { cortada = true }
+        }
+        vm.refreshNow(); runCurrent()
+        assertEquals(true, vm.hasMore.value)
+        vm.loadMore(); runCurrent()
+        assertEquals(false, cortada)
+        vm.updateSearch("Z"); advanceTimeBy(500); runCurrent()
+        assertEquals("la búsqueda nueva cortó la página vieja", true, cortada)
     }
 }
