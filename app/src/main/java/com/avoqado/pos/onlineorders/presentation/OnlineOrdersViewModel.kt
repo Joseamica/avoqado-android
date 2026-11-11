@@ -452,7 +452,8 @@ class OnlineOrdersViewModel internal constructor(
      */
     private suspend fun alinearConLaCopia(): ListaPorPagar? {
         // Codex r3 #1: la foto lleva la sucursal con que se leyó; si cambió mientras se leía, no publica, no suelta marcas ni cobra.
-        val sucursal = venueActual() ?: return null
+        // Sin sucursal conocida (pruebas sin sesión) no hay cambio que vigilar; las marcas, como siempre, sólo se sueltan con sucursal.
+        val sucursal = venueActual()
         val copia = try {
             foliosGuardados()
         } catch (e: CancellationException) {
