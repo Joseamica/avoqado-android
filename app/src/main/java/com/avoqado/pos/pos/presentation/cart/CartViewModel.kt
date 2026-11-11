@@ -198,6 +198,14 @@ data class CartState(
     /** El cupón de la venta (D5). Es online a propósito, como el premio: una venta con cupón no entra a ninguna cola sin red. */
     val couponCode: String? get() = orderDiscount?.couponCode?.takeIf { it.isNotBlank() }
 
+    /**
+     * hz:e0b12f00:D2: el «Descuento de la cuenta» deja en $0 lo que queda de los productos (la MISMA base del SERVIDOR: lo que queda tras
+     * los descuentos de línea y las cortesías). Es una cortesía: pide `orders:comp` o el PIN de un gerente ANTES de mandar la venta. La
+     * propina no cuenta, y un cupón tampoco (lo calcula el servidor). El servidor vuelve a decidirlo con su importe.
+     */
+    val descuentoDeCuentaRegala: Boolean
+        get() = couponCode == null && orderDiscountCents > 0 && baseDelCuponCents > 0 && orderDiscountCents >= baseDelCuponCents
+
     val taxableSubtotalCents: Int get() = items.filter { it.type is CartItemType.ProductItem }.sumOf { it.totalPrice }
 
     /**
@@ -345,6 +353,9 @@ const val GUARDANDO_LA_CUENTA = "Guardando la cuenta…"
 const val PAGAR_DESPUES_CUPON_SIN_RED = "Sin conexión: el cupón necesita internet. Quita el cupón o espera la conexión para dejar esta cuenta abierta."
 const val PAGAR_DESPUES_PREMIO_SIN_RED = "Sin conexión: el premio de sellos necesita internet. Quita el premio o espera la red."
 const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no se pueden dejar para pagar después."
+/** hz:e0b12f00:D2: el «Descuento de la cuenta» deja los productos en $0 y quien cobra no puede dar cortesías. */
+const val CORTESIA_NO_PAGAR_DESPUES =
+    "Este descuento deja la cuenta en \$0: es una cortesía. Cóbrala para que un gerente la autorice con su PIN, o quita el descuento."
 fun pagarDespuesGuardadaSinRed(cliente: String) = "Sin conexión: la cuenta de $cliente quedó guardada en el aparato y se sube sola."
 fun pagarDespuesOtroImporte(cliente: String, registradoCents: Int, esperadoCents: Int) =
     "La cuenta de $cliente quedó por ${com.avoqado.pos.core.util.formatMoneyFromCents(registradoCents)}, " +
@@ -2801,6 +2812,9 @@ class CartViewModel @Inject constructor(
         venta.items.any { it.areaTicketLineId != null } -> VALES_NO_PAGAR_DESPUES
         // Codex r2 (ajeno incluido): el cuerpo pierde el `packId` y el paquete nunca se entregaba al saldar.
         venta.items.any { it.type is CartItemType.CreditPack } -> PAQUETES_NO_PAGAR_DESPUES
+        // hz:e0b12f00:D2: una cuenta que queda en $0 es una cortesía; sin permiso la autoriza un gerente con su PIN al COBRAR (una deuda
+        // de $0 no tiene nada que diferir, y su reenvío sin red se registraría sin PIN).
+        venta.descuentoDeCuentaRegala && !com.avoqado.pos.core.domain.RoleManager(secureStorage).canCompOrders -> CORTESIA_NO_PAGAR_DESPUES
         customerId.isBlank() -> "Selecciona un cliente para diferir el pago"
         // Lo mismo que pedía `createOrder` antes de mandar nada.
         venta.selectedStaffId.isBlank() -> "No staff"

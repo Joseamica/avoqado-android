@@ -385,6 +385,13 @@ class RoleManager @Inject constructor(
         }
     }
 
+    /**
+     * hz:e0b12f00:D2: dar una cortesía (`orders:comp`; de fábrica gerente, admin y dueño). Lo pide un «Descuento de la cuenta» que deja
+     * los productos en $0. Sin él la app pide el PIN de un gerente ANTES de mandar la venta; el juez sigue siendo el SERVIDOR.
+     */
+    val canCompOrders: Boolean
+        get() = hasVenuePermission("orders:comp", fallbackRoles = MANAGER_UP)
+
     /** Membership tiles are optional and must not trigger a forbidden request. */
     val canReadCreditPacks: Boolean
         get() = hasVenuePermission("creditPacks:read")
