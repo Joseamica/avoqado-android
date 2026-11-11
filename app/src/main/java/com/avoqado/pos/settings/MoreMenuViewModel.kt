@@ -258,7 +258,10 @@ class MoreMenuViewModel @Inject constructor(
                     com.avoqado.pos.reservations.data.ReservationRepository.MAX_ATTEMPTS,
                 ) +
                 // D4: un paquete cobrado sólo se entrega con SU sucursal activa.
-                (pendingGrantQueue?.bloqueantes(currentVenueId) ?: 0)
+                (pendingGrantQueue?.bloqueantes(currentVenueId) ?: 0) +
+                // Retiro con gerente (H6): la cola del cajón sólo se manda con SU sucursal activa; cambiar dejaría el retiro atrás y,
+                // tras un cambio de persona, saldría a nombre de otra.
+                (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."

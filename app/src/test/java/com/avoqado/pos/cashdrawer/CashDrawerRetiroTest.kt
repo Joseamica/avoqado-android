@@ -17,11 +17,14 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.builtins.ListSerializer
@@ -61,12 +64,14 @@ class CashDrawerRetiroTest {
     private var fallarAlEscribirLaCola = false
     /** La escritura de la cola «sale bien» pero no queda nada: `encolar` lo detecta al releer. */
     private var ignorarEscriturasDeLaCola = false
+    /** Se llama con cada escritura de la cola, ANTES de guardarla: para ver qué había en disco en ese instante. */
+    private var alEscribirLaCola: (String?) -> Unit = {}
     private val dao = FakeCashDrawerDao().apply { runBlocking { insertSession(sesionLocal("srv-1", openedAt = haceMinutos(60))) } }
     private val storage = almacenConCola()
     private val store by lazy {
         ComprobantesDeRetiroPorImprimir(PreferenceDataStoreFactory.create(scope = scope, produceFile = { temporal.root.resolve("retiro_comprobantes.preferences_pb") }))
     }
-    private val enElCable = mutableListOf<Request>()
+    private val enElCable: MutableList<Request> = java.util.Collections.synchronizedList(mutableListOf())
 
     @After fun cerrar() { scope.cancel() }
 
@@ -81,6 +86,7 @@ class CashDrawerRetiroTest {
         every { st.userLastName } returns "Ruiz"
         every { st.pendingDrawerOpsJson(any()) } answers { cola }
         every { st.setPendingDrawerOpsJson(any(), any()) } answers {
+            alEscribirLaCola(secondArg())
             if (fallarAlEscribirLaCola) throw IllegalStateException("no se pudo escribir la cola")
             if (!ignorarEscriturasDeLaCola) cola = secondArg()
         }
@@ -259,7 +265,7 @@ class CashDrawerRetiroTest {
 
     // MARK: - El comprobante (Codex r3 #7)
 
-    @Test fun `el comprobante se anota despues de la fila y la cola y antes del POST`() = runBlocking {
+    @Test fun `al llegar el POST ya estan la fila, la cola y el comprobante`() = runBlocking {
         var alLlegar: Triple<Boolean, Boolean, Boolean>? = null
         repo(servidor { peticion ->
             if (pagoAlRetiro(peticion)) {
@@ -314,6 +320,138 @@ class CashDrawerRetiroTest {
         assertEquals(listOf("loc-2"), store.pendientes(VENUE_ID).map { it.localId })
         store.quitar(VENUE_ID, "loc-2")
         assertTrue(store.pendientes(VENUE_ID).isEmpty())
+    }
+
+    // MARK: - Auditoría final (H6–H11)
+
+    /** H7: el papel va ANTES de publicar la operación. Si anotarlo falla, la operación nunca llegó a la cola: el replay no pudo verla. */
+    @Test fun `si falla anotar el comprobante, la operacion nunca llega a la cola`() = runBlocking {
+        var colaAlAnotar: List<PendingDrawerOp>? = null
+        val roto = mockk<ComprobantesDeRetiroPorImprimir> {
+            coEvery { anotar(any()) } answers { colaAlAnotar = cola(); throw IOException("disco lleno") }
+            coEvery { quitar(any(), any()) } just Runs
+        }
+        val r = repo(servidor { 201 to retiroDelServidor() }, comprobantes = roto)
+            .addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertEquals(ResultadoDelRetiro.Rechazado("No se pudo guardar el retiro en el aparato. Intenta de nuevo."), r)
+        assertEquals("al anotar el papel la operación ya estaba publicada", emptyList<PendingDrawerOp>(), colaAlAnotar)
+        assertTrue(cola().isEmpty())
+        assertTrue(retiros().isEmpty())
+        assertTrue(enElCable.none(::pagoAlRetiro))
+    }
+
+    /** H7: si la app muere justo después de publicar la operación (antes del POST), su comprobante ya está en disco. */
+    @Test fun `cuando la operacion llega a la cola su comprobante ya esta guardado`() = runBlocking {
+        var papelAlPublicar: Boolean? = null
+        alEscribirLaCola = { json ->
+            if (papelAlPublicar == null && json?.contains("loc-1") == true) {
+                papelAlPublicar = runBlocking { store.pendientes(VENUE_ID) }.any { it.localId == "loc-1" }
+            }
+        }
+        repo(servidor { null }).addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertEquals("al publicar la operación, ¿ya estaba el papel?", true, papelAlPublicar)
+        assertEquals("loc-1", cola().single().localId)
+    }
+
+    /** H8: el primer envío toma el candado del replay: el replay no manda (ni confirma) un retiro que addPayOut todavía puede deshacer. */
+    @Test fun `el replay no manda el retiro mientras addPayOut lo esta registrando`() = runBlocking {
+        val enElPost = CompletableDeferred<Unit>()
+        val soltar = java.util.concurrent.CountDownLatch(1)
+        val r = repo(servidor { peticion ->
+            if (pagoAlRetiro(peticion)) { enElPost.complete(Unit); soltar.await(10, java.util.concurrent.TimeUnit.SECONDS) }
+            201 to retiroDelServidor()
+        })
+
+        val retiro = async(Dispatchers.IO) { r.addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1") }
+        enElPost.await()
+        val replay = async(Dispatchers.IO) { r.reproducirPendientes() }
+        delay(300) // le da tiempo al replay de colarse, si pudiera
+        soltar.countDown()
+        retiro.await()
+        replay.await()
+
+        assertEquals("el retiro salió dos veces", 1, synchronized(enElCable) { enElCable.count(::pagoAlRetiro) })
+        assertTrue(cola().isEmpty())
+        assertEquals(1, retiros().size)
+    }
+
+    /** H9: el rechazo deja PRIMERO su marca durable; si después no se puede quitar el papel, sigue `Rechazado` y la cola lo dice. */
+    @Test fun `si quitar el comprobante falla al deshacer un rechazo, sigue Rechazado y la cola lo marca`() = runBlocking {
+        val roto = mockk<ComprobantesDeRetiroPorImprimir> {
+            coEvery { anotar(any()) } just Runs
+            coEvery { quitar(any(), any()) } throws IOException("disco lleno")
+        }
+        val r = repo(servidor { 403 to """{"message":"Ese código no autoriza este retiro"}""" }, comprobantes = roto)
+
+        val resultado = r.addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertEquals(ResultadoDelRetiro.Rechazado("Ese código no autoriza este retiro"), resultado)
+        assertNotNull("sin la marca del rechazo: ${cola()}", cola().single().rechazadaEn)
+        assertEquals(setOf("loc-1"), r.retirosRechazados(VENUE_ID))
+    }
+
+    /** H11: tras un 2xx, un error al limpiar la cola no cambia el resultado: el retiro ya está registrado. */
+    @Test fun `si quitar la operacion falla tras el 2xx, sigue Hecho y confirmado`() = runBlocking {
+        val r = repo(servidor { fallarAlEscribirLaCola = true; 201 to retiroDelServidor("""{"id":"sv-9","name":"Daniel"}""") })
+            .addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1")
+
+        val hecho = r as? ResultadoDelRetiro.Hecho ?: throw AssertionError("esperaba Hecho: $r")
+        assertTrue(hecho.confirmado)
+        assertEquals("srv-ev-1", hecho.evento.id)
+        assertEquals("Daniel", hecho.autorizadoPor)
+    }
+
+    /** H11: con la misma llave el servidor devuelve el retiro que YA tiene; el aparato se queda con lo que el servidor registró. */
+    @Test fun `si el servidor devuelve otro importe para la misma llave, la fila guarda el del servidor`() = runBlocking {
+        val yaRegistrado = """{"success":true,"data":${eventoJson("srv-ev-1", "PAY_OUT", "80.00", note = "Bajada", localId = "loc-1")},"authorizedBy":null}"""
+
+        val r = repo(servidor { 200 to yaRegistrado }).addPayOut(5_000, "Proveedor", localId = "loc-1")
+
+        val fila = retiros().single()
+        assertEquals("srv-ev-1", fila.id)
+        assertEquals(8_000, fila.amountCents)
+        assertEquals("Bajada", fila.note)
+        assertEquals(fila, (r as ResultadoDelRetiro.Hecho).evento)
+    }
+
+    @Test fun `el replay tambien adopta lo que registro el servidor`() = runBlocking {
+        repo(servidor { null }).addPayOut(5_000, "Proveedor", localId = "loc-1")
+        val yaRegistrado = """{"success":true,"data":${eventoJson("srv-ev-1", "PAY_OUT", "80.00", note = "Bajada", localId = "loc-1")},"authorizedBy":null}"""
+
+        repo(servidor { 200 to yaRegistrado }).reproducirPendientes()
+
+        assertEquals(listOf(Triple("srv-ev-1", 8_000, "Bajada")), retiros().map { Triple(it.id, it.amountCents, it.note) })
+    }
+
+    /** H6: la sucursal y su URL se fijan al empezar. Si a media operación cambia la sucursal, el retiro sigue siendo de la de antes. */
+    @Test fun `el POST y la cola son de la sucursal donde empezo el retiro aunque cambie a mitad`() = runBlocking {
+        var sucursal = VENUE_ID
+        val colas = mutableMapOf<String, String?>()
+        val st = mockk<SecureStorage>(relaxed = true).also { s ->
+            every { s.venueId } answers { sucursal }
+            every { s.userId } returns "staff-1"
+            every { s.userFirstName } returns "Ana"
+            every { s.userLastName } returns "Ruiz"
+            every { s.pendingDrawerOpsJson(any()) } answers { colas[firstArg()] }
+            every { s.setPendingDrawerOpsJson(any(), any()) } answers { colas[firstArg()] = secondArg() }
+        }
+        // La persona cambia de sucursal mientras el retiro se guarda (el primer punto en que addPayOut suspende).
+        val cambiaDeSucursal = mockk<ComprobantesDeRetiroPorImprimir> {
+            coEvery { anotar(any()) } answers { sucursal = "venue-2" }
+            coEvery { quitar(any(), any()) } just Runs
+        }
+        val r = CashDrawerRepository(
+            dao, st, servidor { 201 to retiroDelServidor() }, sinCobrosEnCola(), conectividadDePrueba(), database = null, comprobantes = cambiaDeSucursal,
+        ).addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertTrue("esperaba Hecho confirmado: $r", (r as? ResultadoDelRetiro.Hecho)?.confirmado == true)
+        val post = enElCable.single(::pagoAlRetiro).url.encodedPath
+        assertTrue("el POST salió a otra sucursal: $post", post.contains("/venues/$VENUE_ID/"))
+        assertTrue("quedó en la cola de la sucursal de origen: ${colas[VENUE_ID]}", colas[VENUE_ID].isNullOrEmpty() || colas[VENUE_ID] == "[]")
+        assertNull("tocó la cola de la otra sucursal", colas["venue-2"])
+        assertEquals(VENUE_ID, retiros().single().venueId)
     }
 
     // MARK: - Lo que cuentan las guardas

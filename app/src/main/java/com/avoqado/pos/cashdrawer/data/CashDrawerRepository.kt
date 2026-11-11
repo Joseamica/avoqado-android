@@ -422,7 +422,10 @@ sealed interface ResultadoDelRetiro {
      */
     data class Hecho(val evento: CashDrawerEventEntity, val autorizadoPor: String?, val confirmado: Boolean) : ResultadoDelRetiro
 
-    /** El servidor lo rechazó al momento (o no se pudo guardar): no quedó nada (ni fila, ni cola, ni comprobante). */
+    /**
+     * El servidor lo rechazó al momento (o no se pudo guardar): el retiro no se hizo. Se deshace (fila, cola y comprobante); si el
+     * aparato no alcanza a deshacerlo todo, la operación queda MARCADA como rechazada en la cola (se ve en Caja y su papel no sale).
+     */
     data class Rechazado(val mensaje: String) : ResultadoDelRetiro
 }
 
@@ -979,7 +982,9 @@ class CashDrawerRepository @Inject constructor(
         get() = "${Build.MANUFACTURER} ${Build.MODEL}"
 
     private val baseUrl: String
-        get() = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/cash-drawer"
+        get() = baseUrlDe(venueId)
+
+    private fun baseUrlDe(sucursal: String) = "${ApiConstants.BASE_URL}/mobile/venues/$sucursal/cash-drawer"
 
     // MARK: - Session Queries
 
@@ -1628,13 +1633,32 @@ class CashDrawerRepository @Inject constructor(
      * no hace nada y el comportamiento es idéntico al de antes. La llave mejora la
      * fusión; no es requisito para funcionar.
      */
-    private suspend fun promoteEvent(localId: String?, serverId: String?): CashDrawerEventEntity? {
+    private suspend fun promoteEvent(localId: String?, serverId: String?, cuerpo: String? = null): CashDrawerEventEntity? {
         if (localId.isNullOrBlank() || serverId.isNullOrBlank() || serverId == localId) return null
         val local = dao.getEvent(localId) ?: return null
-        val promoted = local.copy(id = serverId)
+        val promoted = local.copy(id = serverId).let { if (cuerpo == null) it else it.comoLoRegistro(cuerpo) }
         dao.promoverEvento(localId, promoted) // una transacción: nunca dos filas del mismo movimiento
         Log.d(TAG, "⬆️ Movimiento confirmado $localId → $serverId")
         return promoted
+    }
+
+    /**
+     * 🔴 La fila confirmada lleva el importe y el concepto que el SERVIDOR registró, no los del aparato (H11): con la misma llave el
+     * servidor devuelve el movimiento que YA tiene, aunque el aparato le mande otro importe. Contar y reimprimir otro número sería
+     * mentir. Sin `data` (o sin esos campos) se queda lo del aparato, como antes.
+     */
+    private fun CashDrawerEventEntity.comoLoRegistro(cuerpo: String): CashDrawerEventEntity = try {
+        val data = json.decodeFromString<JsonObject>(cuerpo)["data"] as? JsonObject
+        if (data == null) {
+            this
+        } else {
+            copy(
+                amountCents = data["amount"]?.jsonPrimitive?.doubleOrNull?.let { (it * 100).roundToInt() }?.takeIf { it > 0 } ?: amountCents,
+                note = if (data.containsKey("note")) data["note"]?.jsonPrimitive?.contentOrNull else note,
+            )
+        }
+    } catch (_: Exception) {
+        this
     }
 
     /** El id que el server le puso al evento que acabamos de registrar, si lo mandó. */
@@ -1967,7 +1991,7 @@ class CashDrawerRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d(TAG, "✅ API pay-in success")
-                return promoteEvent(localEventId, parseEventId(body))
+                return promoteEvent(localEventId, parseEventId(body), body)
             } else {
                 Log.e(TAG, "❌ API pay-in failed: $code - $body")
             }
@@ -1980,14 +2004,23 @@ class CashDrawerRepository @Inject constructor(
     /**
      * Un retiro de efectivo, con o sin la autorización de un gerente, por el camino de siempre.
      *
-     * 🔴 El orden es el contrato: fila en Room → operación en la cola (con su [autorizacion]) → [comprobante] en disco → POST.
-     * Si la app muere en cualquier punto después de la cola, el retiro sube solo y su papel sigue pendiente (Codex r3 #7). Si la cola
-     * o el comprobante no se pueden guardar, se deshace y no se manda nada: nunca un `Hecho` sin una operación durable que lo suba.
+     * 🔴 El orden es el contrato: fila en Room → [comprobante] en disco → operación en la cola (con su [autorizacion]) → POST (H7).
+     * El papel existe ANTES de publicar la operación: si la app muere después de la cola, el retiro sube solo y su papel sale al volver
+     * a Caja como REIMPRESIÓN. Si muere entre el papel y la cola, queda la ventana ya aceptada de r3 #5 (fila sin cola) y el papel
+     * sale igual como REIMPRESIÓN. Si el papel o la cola no se pueden guardar, se deshace y no se manda nada: nunca un `Hecho` sin una
+     * operación durable que lo suba.
      *
-     * La respuesta inmediata se clasifica con [clasificarRespuestaDelServer], igual que en el replay: confirmada → sale de la cola;
-     * rechazo definitivo (403/400/422 y el 409 genérico) → se deshace todo, porque el cajero está ahí y el retiro no se hizo; lo
-     * demás (sin red, 5xx, 404, el 409 de cierre en proceso) → se queda en la cola y el replay lo manda con el mismo token. El
-     * servidor contesta 200 a un retiro que ya tiene, así que reenviarlo nunca lo duplica.
+     * 🔴 La sucursal (y con ella la URL y la cola) se fija al EMPEZAR y es la de toda la operación (H6): si la persona cambia de
+     * sucursal a media operación, el retiro sigue siendo de donde se hizo.
+     *
+     * 🔴 Todo corre bajo [candadoDelReplay], el mismo del replay (H8): el replay nunca toma esta operación mientras aquí todavía se
+     * puede deshacer, ni la manda dos veces.
+     *
+     * La respuesta inmediata se clasifica con [clasificarRespuestaDelServer], igual que en el replay: confirmada → sale de la cola (si
+     * eso falla, sigue confirmada: el servidor ya lo tiene, H11); rechazo definitivo (403/400/422 y el 409 genérico) → se deshace,
+     * porque el cajero está ahí y el retiro no se hizo ([deshacerRechazo], H9); lo demás (sin red, 5xx, 404, el 409 de cierre en
+     * proceso) → se queda en la cola y el replay lo manda con el mismo token. El servidor contesta 200 a un retiro que ya tiene, así
+     * que reenviarlo nunca lo duplica.
      *
      * 🔴 Todo corre `NonCancellable`: si se cierra la pantalla (se cancela la corrutina) con la respuesta en camino, el rechazo
      * igual se deshace y la confirmación igual sale de la cola. El POST ya salió; cortarlo a la mitad sólo dejaría las piezas sueltas.
@@ -2001,86 +2034,105 @@ class CashDrawerRepository @Inject constructor(
         autorizacion: String? = null,
         comprobante: ComprobanteDeRetiro? = null,
     ): ResultadoDelRetiro = withContext(NonCancellable) {
-        val session = getOpenSession() ?: return@withContext ResultadoDelRetiro.Rechazado("No hay una caja abierta.")
-        val event = CashDrawerEventEntity(
-            id = localId,
-            sessionId = session.id,
-            venueId = venueId,
-            type = CashDrawerEventType.PAY_OUT.name,
-            amountCents = amountCents,
-            note = note,
-            staffId = staffId,
-            staffName = staffName,
-            createdAt = System.currentTimeMillis(),
-        )
-        dao.insertEvent(event)
-        Log.d(TAG, "✅ Pay-out recorded locally: $amountCents")
+        // Quién y dónde, leídos UNA vez, antes de cualquier espera (H6).
+        val sucursal = venueId
+        val quien = staffId
+        val nombre = staffName
+        candadoDelReplay.withLock {
+            val session = dao.getOpenSession(sucursal) ?: return@withLock ResultadoDelRetiro.Rechazado("No hay una caja abierta.")
+            val event = CashDrawerEventEntity(
+                id = localId,
+                sessionId = session.id,
+                venueId = sucursal,
+                type = CashDrawerEventType.PAY_OUT.name,
+                amountCents = amountCents,
+                note = note,
+                staffId = quien,
+                staffName = nombre,
+                createdAt = System.currentTimeMillis(),
+            )
+            dao.insertEvent(event)
+            Log.d(TAG, "✅ Pay-out recorded locally: $amountCents")
 
-        // La fila local nace provisional y adopta el id del server si éste confirma.
-        val op = PendingDrawerOp("PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis(), autorizacion = autorizacion)
-        if (!encolar(op)) {
-            Log.e(TAG, "❌ El retiro no quedó en la cola del aparato: se deshace y no se manda")
-            deshacerRetiro(op, comprobante = null)
-            return@withContext ResultadoDelRetiro.Rechazado(NO_SE_GUARDO_EL_RETIRO)
-        }
-        if (comprobante != null && comprobantes != null) {
-            try {
-                comprobantes.anotar(comprobante)
-            } catch (e: Exception) {
-                // Sin la marca, un retiro que se cayera a media red se quedaría sin papel. No se mandó nada: se deshace.
-                Log.e(TAG, "❌ No se pudo anotar el comprobante del retiro: ${e.message}")
-                deshacerRetiro(op, comprobante = null)
-                return@withContext ResultadoDelRetiro.Rechazado(NO_SE_GUARDO_EL_RETIRO)
-            }
-        }
-
-        val (code, body) = try {
-            withContext(Dispatchers.IO) {
-                val response = client.newCall(peticionDelMovimiento(op, event.id)).execute()
-                response.code to (response.body?.string() ?: "")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ API pay-out error: ${e.message}")
-            return@withContext ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
-        }
-        when (clasificarRespuestaDelServer("PAY_OUT", code, codigoDeNegocio(body))) {
-            DestinoDeLaOperacion.CONFIRMADA -> {
-                val evento = try {
-                    promoteEvent(event.id, parseEventId(body)) ?: event
+            // 1. El papel, ANTES de publicar la operación (H7). Sin él, un retiro que se cayera a media red se quedaría sin papel.
+            if (comprobante != null && comprobantes != null) {
+                try {
+                    comprobantes.anotar(comprobante)
                 } catch (e: Exception) {
-                    // El servidor ya lo tiene; la operación se queda y el replay recibe el 200 de lo ya registrado.
-                    Log.e(TAG, "❌ Pay-out confirmado, pero no se pudo adoptar su id: ${e.message}")
-                    return@withContext ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+                    Log.e(TAG, "❌ No se pudo anotar el comprobante del retiro: ${e.message}")
+                    runCatching { dao.deleteEvent(event.id) }.onFailure { Log.e(TAG, "❌ No se pudo borrar la fila del retiro: ${it.message}") }
+                    return@withLock ResultadoDelRetiro.Rechazado(NO_SE_GUARDO_EL_RETIRO)
                 }
-                quitar(op)
-                Log.d(TAG, "✅ API pay-out success")
-                ResultadoDelRetiro.Hecho(evento, autorizadoPor(body), confirmado = true)
             }
-            DestinoDeLaOperacion.RECHAZADA -> {
-                Log.e(TAG, "🛑 Pay-out rechazado al momento ($code): se deshace — $body")
-                deshacerRetiro(op, comprobante)
-                ResultadoDelRetiro.Rechazado(mensajeDeRechazo(code, body))
+
+            // 2. La operación. La fila local nace provisional y adopta el id del server si éste confirma.
+            val op = PendingDrawerOp("PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis(), autorizacion = autorizacion)
+            if (!runCatching { encolar(op, sucursal) }.getOrDefault(false)) {
+                Log.e(TAG, "❌ El retiro no quedó en la cola del aparato: se deshace y no se manda")
+                if (comprobante != null) runCatching { comprobantes?.quitar(comprobante.venueId, comprobante.localId) }
+                    .onFailure { Log.e(TAG, "❌ No se pudo quitar el comprobante: ${it.message}") }
+                runCatching { dao.deleteEvent(event.id) }.onFailure { Log.e(TAG, "❌ No se pudo borrar la fila del retiro: ${it.message}") }
+                runCatching { quitar(op, sucursal) }
+                return@withLock ResultadoDelRetiro.Rechazado(NO_SE_GUARDO_EL_RETIRO)
             }
-            DestinoDeLaOperacion.REINTENTAR -> {
-                Log.w(TAG, "🔁 Pay-out sin confirmar ($code); sigue en cola — $body")
-                ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+
+            // 3. El POST, a la sucursal de este retiro.
+            val (code, body) = try {
+                withContext(Dispatchers.IO) {
+                    val response = client.newCall(peticionDelMovimiento(op, event.id, sucursal)).execute()
+                    response.code to (response.body?.string() ?: "")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ API pay-out error: ${e.message}")
+                return@withLock ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+            }
+            when (clasificarRespuestaDelServer("PAY_OUT", code, codigoDeNegocio(body))) {
+                DestinoDeLaOperacion.CONFIRMADA -> {
+                    val evento = try {
+                        promoteEvent(event.id, parseEventId(body), body) ?: event
+                    } catch (e: Exception) {
+                        // El servidor ya lo tiene; la operación se queda y el replay recibe el 200 de lo ya registrado.
+                        Log.e(TAG, "❌ Pay-out confirmado, pero no se pudo adoptar su id: ${e.message}")
+                        return@withLock ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+                    }
+                    // Tras el 2xx el retiro ESTÁ registrado: limpiar la cola es mantenimiento y su error nunca cambia el resultado
+                    // (H11). Si la operación se queda, el replay recibe el 200 de lo ya registrado y la quita.
+                    runCatching { quitar(op, sucursal) }.onFailure { Log.e(TAG, "❌ Pay-out confirmado, pero no salió de la cola: ${it.message}") }
+                    Log.d(TAG, "✅ API pay-out success")
+                    ResultadoDelRetiro.Hecho(evento, autorizadoPor(body), confirmado = true)
+                }
+                DestinoDeLaOperacion.RECHAZADA -> {
+                    Log.e(TAG, "🛑 Pay-out rechazado al momento ($code): se deshace — $body")
+                    val mensaje = mensajeDeRechazo(code, body)
+                    deshacerRechazo(op, comprobante, mensaje, sucursal)
+                    ResultadoDelRetiro.Rechazado(mensaje)
+                }
+                DestinoDeLaOperacion.REINTENTAR -> {
+                    Log.w(TAG, "🔁 Pay-out sin confirmar ($code); sigue en cola — $body")
+                    ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+                }
             }
         }
     }
 
     /**
-     * Deshace un retiro que no se hizo. 🔴 El orden es a propósito: primero el papel, luego la fila y al final la cola.
-     *  - El papel va primero porque la recuperación de Caja imprime TODO comprobante pendiente sin buscar su fila: uno que
-     *    sobreviviera saldría como reimpresión de un retiro que el servidor rechazó.
-     *  - La fila antes que la cola: si la app muere a la mitad queda, a lo más, la operación sola; su replay recibe el mismo rechazo,
-     *    la MARCA y el cajero la ve. Nunca una fila contada que nadie va a mandar.
-     * Si quitar el papel falla, no se sigue (la excepción sube): fila, cola y papel quedan de acuerdo, y el replay marca el rechazo.
-     * La cola vive fuera de Room: no hay transacción que abarque las tres. Corre bajo el `NonCancellable` de [addPayOut].
+     * Deshace un retiro que el servidor rechazó al momento (H9). Nunca lanza: el retiro termina en `Rechazado` pase lo que pase.
+     *  1. PRIMERO la marca del rechazo en la cola (durable): mientras exista, la recuperación de Caja NO imprime su papel
+     *     ([retirosRechazados]). Si no se puede escribir, se sigue igual: el papel se quita en el paso 2 y el replay, que recibirá el
+     *     mismo rechazo, la marca después.
+     *  2. El papel, 3. la fila, 4. la operación. Si uno falla, se para ahí: lo que queda (fila y operación MARCADA) es el mismo estado
+     *     de un rechazo del replay, que el cajero ve en Caja. Nunca una fila contada sin su aviso, ni un papel sin su marca.
+     * La cola vive fuera de Room: no hay transacción que abarque las cuatro. Corre bajo el `NonCancellable` de [addPayOut].
      */
-    private suspend fun deshacerRetiro(op: PendingDrawerOp, comprobante: ComprobanteDeRetiro?) {
-        if (comprobante != null) comprobantes?.quitar(comprobante.venueId, comprobante.localId)
-        op.localId?.let { dao.deleteEvent(it) }
-        quitar(op)
+    private suspend fun deshacerRechazo(op: PendingDrawerOp, comprobante: ComprobanteDeRetiro?, motivo: String, sucursal: String) {
+        runCatching { marcarRechazada(op, motivo, sucursal) }.onFailure { Log.e(TAG, "❌ No se pudo marcar el retiro rechazado: ${it.message}") }
+        if (comprobante != null) {
+            runCatching { comprobantes?.quitar(comprobante.venueId, comprobante.localId) }
+                .onFailure { Log.e(TAG, "❌ No se pudo quitar el papel del retiro rechazado (la marca lo protege): ${it.message}"); return }
+        }
+        runCatching { op.localId?.let { dao.deleteEvent(it) } }
+            .onFailure { Log.e(TAG, "❌ No se pudo borrar la fila del retiro rechazado: ${it.message}"); return }
+        runCatching { quitar(op, sucursal) }.onFailure { Log.e(TAG, "❌ No se pudo sacar de la cola el retiro rechazado: ${it.message}") }
     }
 
     /** Quién autorizó, según el servidor (`authorizedBy.name`, hermano de `data`). null si no vino o no hubo autorizador. */
@@ -2100,14 +2152,14 @@ class CashDrawerRepository @Inject constructor(
      * la pantalla del retiro ([ResultadoDelRetiro.Rechazado]) o el aviso de Caja (el replay lo marca). Sólo el que trae
      * [PendingDrawerOp.autorizacion] lleva el token del gerente. El PAY_IN sale como siempre.
      */
-    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String): Request {
+    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, sucursal: String = venueId): Request {
         val dollars = op.amountCents / 100.0
         val (path, body) = if (op.kind == "PAY_IN") {
             "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
         } else {
             "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
         }
-        return Request.Builder().url("$baseUrl/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
+        return Request.Builder().url("${baseUrlDe(sucursal)}/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
             if (op.kind == "PAY_OUT") {
                 header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "true")
                 op.autorizacion?.let { header(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER, it) }
@@ -2122,6 +2174,13 @@ class CashDrawerRepository @Inject constructor(
      * lo resuelva en Caja («Ya lo vi» / «Reintentar»), y contarlo bloquearía cerrar sesión para siempre. Lo que espera a una
      * apertura sólo pendiente sí cuenta.
      */
+    /**
+     * Los retiros de [venueId] que el servidor rechazó (su operación sigue MARCADA en la cola). La recuperación del papel al entrar a
+     * Caja no imprime el comprobante de uno de éstos: el retiro no se hizo (H9).
+     */
+    fun retirosRechazados(venueId: String): Set<String> =
+        pendientesDe(venueId).filter { it.kind == "PAY_OUT" && it.rechazadaEn != null }.mapNotNull { it.localId }.toSet()
+
     fun movimientosSinSubir(venueId: String): Int {
         val cola = pendientesDe(venueId)
         val aperturasRechazadas = cola.filter { it.kind == "OPEN" && it.rechazadaEn != null }.map { it.sessionId }.toSet()
@@ -2268,8 +2327,8 @@ class CashDrawerRepository @Inject constructor(
         mutableListOf()
     }
 
-    private fun guardarPendientes(lista: List<PendingDrawerOp>) {
-        secureStorage.setPendingDrawerOpsJson(venueId, if (lista.isEmpty()) null else json.encodeToString(ListSerializer(PendingDrawerOp.serializer()), lista))
+    private fun guardarPendientes(lista: List<PendingDrawerOp>, sucursal: String = venueId) {
+        secureStorage.setPendingDrawerOpsJson(sucursal, if (lista.isEmpty()) null else json.encodeToString(ListSerializer(PendingDrawerOp.serializer()), lista))
     }
 
     /**
@@ -2282,14 +2341,14 @@ class CashDrawerRepository @Inject constructor(
      * la puerta de al lado. Ahora el respaldo `ademas` se usa SÓLO cuando el disco falló de
      * verdad, que es el único caso para el que se escribió.
      */
-    private fun encolar(op: PendingDrawerOp): Boolean = synchronized(candadoDeLaCola) {
-        val lista = pendientes().filter { !mismaOperacion(it, op) } + op
-        guardarPendientes(lista)
-        pendientes().any { mismaOperacion(it, op) }
+    private fun encolar(op: PendingDrawerOp, sucursal: String = venueId): Boolean = synchronized(candadoDeLaCola) {
+        val lista = pendientesDe(sucursal).filter { !mismaOperacion(it, op) } + op
+        guardarPendientes(lista, sucursal)
+        pendientesDe(sucursal).any { mismaOperacion(it, op) }
     }
 
-    private fun quitar(op: PendingDrawerOp) = synchronized(candadoDeLaCola) {
-        guardarPendientes(pendientes().filter { !mismaOperacion(it, op) })
+    private fun quitar(op: PendingDrawerOp, sucursal: String = venueId) = synchronized(candadoDeLaCola) {
+        guardarPendientes(pendientesDe(sucursal).filter { !mismaOperacion(it, op) }, sucursal)
     }
 
 
@@ -2453,11 +2512,11 @@ class CashDrawerRepository @Inject constructor(
         guardarAvisos(avisosDeAdopcion().filter { it.sessionId != sessionId })
     }
 
-    private fun marcarRechazada(op: PendingDrawerOp, motivo: String) = synchronized(candadoDeLaCola) {
-        val lista = pendientes().map {
+    private fun marcarRechazada(op: PendingDrawerOp, motivo: String, sucursal: String = venueId) = synchronized(candadoDeLaCola) {
+        val lista = pendientesDe(sucursal).map {
             if (mismaOperacion(it, op)) it.copy(rechazadaEn = System.currentTimeMillis(), motivoDelRechazo = motivo) else it
         }
-        guardarPendientes(lista)
+        guardarPendientes(lista, sucursal)
     }
 
     /** El mensaje del servidor si lo trae; si no, uno que el cajero pueda leer. */
@@ -2532,6 +2591,9 @@ class CashDrawerRepository @Inject constructor(
      * bloquear un hilo mientras se espera la red sería peor que el defecto. No es reentrante y no
      * hace falta que lo sea: ningún camino de dentro (`enviarApertura`, `fireApiClose`,
      * `reproducirMovimiento`, `adoptServerSession`) vuelve a llamar aquí — verificado.
+     *
+     * 🔴 [addPayOut] también lo toma, de la fila al POST y su deshacer (H8): el replay nunca manda un retiro que todavía se puede
+     * deshacer. Tampoco vuelve a llamar aquí.
      */
     private val candadoDelReplay = Mutex()
 
@@ -2994,7 +3056,7 @@ class CashDrawerRepository @Inject constructor(
             // El `code` del cuerpo también aquí: un 409 `SHIFT_CLOSE_IN_PROGRESS` dura
             // milisegundos y marcarlo como rechazo definitivo perdería el movimiento.
             when (clasificarRespuestaDelServer(op.kind, code, codigoDeNegocio(resp))) {
-                DestinoDeLaOperacion.CONFIRMADA -> { promoteEvent(localId, parseEventId(resp)); Log.d(TAG, "✅ ${op.kind} reproducido ($localId)"); DestinoDeLaOperacion.CONFIRMADA }
+                DestinoDeLaOperacion.CONFIRMADA -> { promoteEvent(localId, parseEventId(resp), resp); Log.d(TAG, "✅ ${op.kind} reproducido ($localId)"); DestinoDeLaOperacion.CONFIRMADA }
                 DestinoDeLaOperacion.RECHAZADA -> { Log.e(TAG, "🛑 ${op.kind} RECHAZADO por el server ($code): se marca para avisarle al cajero — $resp"); marcarRechazada(op, mensajeDeRechazo(code, resp)); DestinoDeLaOperacion.RECHAZADA }
                 // Cualquier otra cosa se reintenta, que es el lado conservador — quedarse
                 // atorado es ruidoso, perderlo no.

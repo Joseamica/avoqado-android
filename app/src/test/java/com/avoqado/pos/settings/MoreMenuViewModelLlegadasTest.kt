@@ -67,6 +67,21 @@ class MoreMenuViewModelLlegadasTest {
         assertTrue("esperaba el aviso de pendientes, llegó $resultado", (resultado as? SwitchUserResult.Error)?.message.orEmpty().contains("Hay 1 operación sin enviar"))
     }
 
+    /** H6: un retiro sin subir se manda sólo con SU sucursal activa; cambiar de sucursal lo dejaría atrás (y luego a nombre de otro). */
+    @Test
+    fun `con un retiro sin subir no se cambia de sucursal`() = runTest {
+        val storage = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "v1" }
+        val auth = mockk<AuthRepository>(relaxed = true)
+        val cajon = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository> { every { movimientosSinSubir("v1") } returns 1 }
+        val vm = construir(storage, auth, cajon = cajon)
+
+        vm.switchVenue(StoredVenue(id = "v2", name = "Sucursal Centro"))
+
+        coVerify(exactly = 0) { auth.switchVenue(any()) }
+        val aviso = vm.sessionGuardMessage.value.orEmpty()
+        assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
     private fun construir(
         storage: SecureStorage,
         auth: AuthRepository,

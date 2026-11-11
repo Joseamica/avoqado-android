@@ -380,6 +380,8 @@ private fun RetiroDeCaja(viewModel: CashDrawerViewModel) {
             prompt = ManagerOverrideCoordinator.Prompt(id = p.hashCode().toLong(), permission = PERMISO_RETIRAR, actionLabel = p.etiqueta),
             onSubmit = { pin -> viewModel.teclearPinDelRetiro(pin) },
             onDismiss = { viewModel.cancelarPin() },
+            title = "Autorizar retiro",
+            description = "${p.etiqueta}. Pide a un encargado su código.",
         )
     }
 

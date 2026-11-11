@@ -88,8 +88,11 @@ class CashDrawerRetiroFlujoTest {
     private val papeles: MutableList<String> = Collections.synchronizedList(mutableListOf())
     private var impresora: SavedPrinter? = SavedPrinter(name = "Recibos", connectionType = "wifi", address = "10.0.0.9", port = 9100)
     private var impresoraFalla = false
+    /** Sin impresora de recibos configurada, pero con la integrada del aparato (H10, caso B). */
+    private var soloIntegrada = false
     private val printer = mockk<PrinterService>(relaxed = true).also {
-        every { it.getDefaultPrinter(PrinterRole.RECEIPT) } answers { impresora }
+        every { it.getDefaultPrinter(PrinterRole.RECEIPT) } answers { if (soloIntegrada) null else impresora }
+        coEvery { it.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } answers { impresora }
         coEvery { it.sendPrintData(any(), any()) } coAnswers {
             if (impresoraFalla) throw IOException("sin papel")
             papeles += String(firstArg<ByteArray>(), Charsets.ISO_8859_1)
@@ -100,6 +103,7 @@ class CashDrawerRetiroFlujoTest {
     private val comprobanteEnviado = slot<ComprobanteDeRetiro>()
     private val repo = mockk<CashDrawerRepository>(relaxed = true).also {
         every { it.venueName } returns "Testarudo Cafe"
+        every { it.retirosRechazados(any()) } returns emptySet()
         coEvery { it.addPayOut(any(), any(), any(), any(), capture(comprobanteEnviado)) } coAnswers { resultado }
     }
 
@@ -127,6 +131,10 @@ class CashDrawerRetiroFlujoTest {
         }
         fail(que)
     }
+
+    private fun almacenReal() = ComprobantesDeRetiroPorImprimir(
+        PreferenceDataStoreFactory.create(scope = scope, produceFile = { temporal.root.resolve("retiro_comprobantes.preferences_pb") }),
+    )
 
     private fun comprobante(venueId: String, localId: String, hizo: String, concepto: String) = ComprobanteDeRetiro(
         venueId = venueId, localId = localId, venueName = "Testarudo Cafe", nombreDelAparato = "Caja 2",
@@ -402,8 +410,9 @@ class CashDrawerRetiroFlujoTest {
         assertFalse(papeles[0].contains("Beatriz"))
     }
 
+    /** H10: el comprobante sólo se quita cuando el papel salió. Sin impresora o con error, se queda para la siguiente entrada a Caja. */
     @Test
-    fun `se quita el comprobante después de imprimir, también si la impresora falla`() {
+    fun `se quita el comprobante sólo si salió el papel`() {
         gerente()
         val vm = vm()
         vm.tocarRetiro()
@@ -419,7 +428,7 @@ class CashDrawerRetiroFlujoTest {
         vm.tocarRetiro()
         val falla = hoja(vm).localId
         vm.confirmarRetiro(500_000, "Bajada")
-        coVerify { store.quitar(VENUE_ID, falla) }
+        coVerify(exactly = 0) { store.quitar(VENUE_ID, falla) }
         assertEquals("El retiro quedó registrado, pero no se imprimió el comprobante.", vm.avisoDelRetiro.value)
         vm.descartarAvisoDelRetiro()
 
@@ -427,15 +436,126 @@ class CashDrawerRetiroFlujoTest {
         vm.tocarRetiro()
         val sinImpresora = hoja(vm).localId
         vm.confirmarRetiro(500_000, "Bajada")
-        coVerify { store.quitar(VENUE_ID, sinImpresora) }
+        coVerify(exactly = 0) { store.quitar(VENUE_ID, sinImpresora) }
         assertEquals("El retiro quedó registrado, pero no hay impresora de recibos en esta caja.", vm.avisoDelRetiro.value)
+    }
+
+    /** H10: el papel que no salió (impresora apagada) sale al volver a Caja con la impresora buena, como REIMPRESIÓN, y entonces se quita. */
+    @Test
+    fun `si la impresora falla el comprobante se queda y al volver a Caja sale como REIMPRESION`() {
+        val real = almacenReal()
+        coEvery { repo.addPayOut(any(), any(), any(), any(), capture(comprobanteEnviado)) } coAnswers {
+            real.anotar(comprobanteEnviado.captured) // el repositorio de verdad lo anota antes de mandar
+            resultado
+        }
+        gerente()
+        impresoraFalla = true
+        val vm = vm(real)
+        vm.tocarRetiro()
+        val id = hoja(vm).localId
+        vm.confirmarRetiro(500_000, "Bajada")
+        vm.esperarSuTrabajo()
+
+        assertEquals("El retiro quedó registrado, pero no se imprimió el comprobante.", vm.avisoDelRetiro.value)
+        assertTrue(papeles.isEmpty())
+        runBlocking { assertEquals("el comprobante se perdió", listOf(id), real.pendientes(VENUE_ID).map { it.localId }) }
+
+        impresoraFalla = false
+        vm.descartarAvisoDelRetiro()
+        vm.alEntrar()
+        esperar("no salió el papel pendiente") { papeles.isNotEmpty() }
+        vm.esperarSuTrabajo()
+
+        assertEquals(1, papeles.size)
+        assertTrue(papeles[0].contains("REIMPRESI"))
+        assertTrue(papeles[0].contains("Daniel Ruiz"))
+        runBlocking { assertTrue(real.pendientes(VENUE_ID).isEmpty()) }
+        assertNull(vm.avisoDelRetiro.value)
+    }
+
+    /** H10 (caso B): sin impresora de recibos configurada, sale por la integrada del aparato, como los demás recibos. */
+    @Test
+    fun `sin impresora de recibos configurada usa la integrada del aparato`() {
+        gerente()
+        soloIntegrada = true
+        val vm = vm()
+        vm.tocarRetiro()
+        val id = hoja(vm).localId
+
+        vm.confirmarRetiro(500_000, "Bajada")
+
+        assertEquals(1, papeles.size)
+        assertNull(vm.avisoDelRetiro.value)
+        coVerify { store.quitar(VENUE_ID, id) }
+    }
+
+    /** H9: un comprobante cuyo retiro quedó RECHAZADO en la cola no se imprime al entrar a Caja: se quita. */
+    @Test
+    fun `al abrir Caja no imprime el comprobante de un retiro rechazado y lo quita`() {
+        val real = almacenReal()
+        runBlocking {
+            real.anotar(comprobante(VENUE_ID, "loc-rechazado", hizo = "Beatriz Luna", concepto = "Bajada"))
+            real.anotar(comprobante(VENUE_ID, "loc-bueno", hizo = "Beatriz Luna", concepto = "Proveedor"))
+        }
+        every { repo.retirosRechazados(VENUE_ID) } returns setOf("loc-rechazado")
+
+        val vm = vm(real)
+        esperar("no salió el papel del retiro bueno") { papeles.isNotEmpty() }
+        vm.esperarSuTrabajo()
+
+        assertEquals("sólo el del retiro que sí se hizo", 1, papeles.size)
+        assertTrue(papeles[0].contains("Proveedor"))
+        runBlocking { assertTrue(real.pendientes(VENUE_ID).isEmpty()) }
+    }
+
+    /** H11: un retiro ya registrado nunca vuelve a una hoja editable, aunque algo truene después (aquí, la impresora). */
+    @Test
+    fun `si algo truena después de Hecho, la hoja no vuelve`() {
+        gerente()
+        every { printer.getDefaultPrinter(PrinterRole.RECEIPT) } throws IllegalStateException("servicio de impresión caído")
+        coEvery { printer.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } throws IllegalStateException("servicio de impresión caído")
+        val vm = vm()
+        vm.tocarRetiro()
+
+        vm.confirmarRetiro(500_000, "Bajada")
+
+        assertEquals(RetiroUi.Cerrado, vm.retiro.value)
+        assertEquals("El retiro quedó registrado, pero no se imprimió el comprobante.", vm.avisoDelRetiro.value)
+        coVerify(exactly = 1) { repo.addPayOut(any(), any(), any(), any(), any()) }
+    }
+
+    /** H3 (B): la hoja se abrió con el permiso y, mientras estaba abierta, llegó la lista vigente que se lo quita. */
+    @Test
+    fun `si le quitan el permiso con la hoja abierta, confirmar ya no va directo`() {
+        gerente()
+        for (conRed in listOf(true, false)) {
+            conPermiso = true
+            hayRed = true
+            val vm = vm()
+            vm.tocarRetiro()
+            assertFalse(hoja(vm).conPin)
+
+            conPermiso = false // llegó la lista vigente
+            hayRed = conRed
+            vm.confirmarRetiro(500_000, "Bajada")
+
+            if (conRed) {
+                val p = vm.retiro.value as? RetiroUi.PidiendoPin ?: throw AssertionError("esperaba el teclado del gerente: ${vm.retiro.value}")
+                assertEquals("Retiro de $5,000.00 · Bajada", p.etiqueta)
+                assertTrue(p.hoja.conPin)
+            } else {
+                assertEquals(
+                    RetiroUi.Aviso("Sin conexión. Para retirar necesitas el PIN de un gerente, y eso requiere internet. El efectivo se queda en la caja."),
+                    vm.retiro.value,
+                )
+            }
+        }
+        coVerify(exactly = 0) { repo.addPayOut(any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `al abrir Caja imprime lo que quedó pendiente con SUS datos y la leyenda REIMPRESIÓN, y nunca el de otro venue`() {
-        val real = ComprobantesDeRetiroPorImprimir(
-            PreferenceDataStoreFactory.create(scope = scope, produceFile = { temporal.root.resolve("retiro_comprobantes.preferences_pb") }),
-        )
+        val real = almacenReal()
         runBlocking {
             real.anotar(comprobante(VENUE_ID, "loc-viejo", hizo = "Beatriz Luna", concepto = "Bajada vieja"))
             real.anotar(comprobante("venue-otro", "loc-ajeno", hizo = "Otro Negocio", concepto = "Ajeno"))
