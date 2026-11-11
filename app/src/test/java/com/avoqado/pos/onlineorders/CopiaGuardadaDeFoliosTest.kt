@@ -319,6 +319,18 @@ class CopiaGuardadaDeFoliosTest {
         assertEquals("lo escondido sigue en la copia", ocultos, repo.porPagarGuardado()!!.ocultos)
     }
 
+    @Test
+    fun `W-1 si la pantalla no tenia lista y el vigilante ya guardo una, sin red la ensena`() = runBlocking {
+        // Codex r6 #1: al abrir no había copia; el vigilante guarda la primera; la lectura de la pantalla falla.
+        val vm = pantalla()
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        repo.porPagar(conLatido = false).getOrThrow()
+
+        server.shutdown()
+        vm.refrescar()
+        assertEquals(5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+    }
+
     // MARK: - (2) lo escondido sobrevive al reinicio
 
     @Test

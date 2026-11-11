@@ -462,7 +462,14 @@ class OnlineOrdersViewModel internal constructor(
         } ?: return null
         if (venueActual() != sucursal) return null
         val actual = _porPagar.value
-        if (actual != null && actual.disponible && copia.disponible && copia.numero > actual.numero) {
+        if (actual == null && copia.disponible) {
+            // Codex r6 #1: la pantalla todavía no enseña nada (al abrir no había copia) y el vigilante ya guardó una: se hidrata con ella,
+            // como `descubrirPorPagar` (con lo escondido que trae). Una respuesta del servidor que llegue mientras, gana.
+            if (_porPagar.compareAndSet(null, copia)) {
+                _ocultos.value = copia.ocultos + _ocultos.value
+                leidoEnMs = ahoraMs() - (copia.guardadoHaceMin ?: 0L) * 60_000
+            }
+        } else if (actual != null && actual.disponible && copia.disponible && copia.numero > actual.numero) {
             var nueva = copia
             for (seccion in SECCIONES) {
                 if ((paginasExtraFolios[seccion] ?: 0) > 0 && cursorDe(copia, seccion) != null) nueva = conservarLoQueSeVeia(nueva, actual, seccion)
