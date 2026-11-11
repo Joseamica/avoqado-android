@@ -244,6 +244,28 @@ class CopiaGuardadaDeFoliosTest {
         assertTrue(vm.porPagar.value!!.porPagar.isEmpty())
     }
 
+    @Test
+    fun `W-1 una copia leida antes de cambiar de sucursal no suelta las marcas de la otra`() = runBlocking {
+        // Codex r3 #1: la copia de A se lee, la sucursal cambia a B durante la lectura y la copia de A (con «Por pagar» completo y sin
+        // los folios de B) soltaba las marcas de B por ausencia: B podía volver a cobrar sin red un folio ya cobrado con tarjeta.
+        toPay = cuerpo(porPagar = folio("f0", "PENDING_ACCEPTANCE", "100", "PENDING"))
+        repo.porPagar(conLatido = false).getOrThrow()
+        val marcaDeB = FolioCobradoConTarjeta("fB", 13400, 13400, enMs = 1, venueId = "vB", requestId = "r-b")
+        marcas.anotar(marcaDeB)
+        var sucursal = "v1"
+        val vm = OnlineOrdersViewModel(
+            repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true },
+            hayPedidosAbiertos = { true }, ventanaALaVista = MutableStateFlow(true),
+            leerPorPagar = { latido, seccion, cursor -> repo.porPagar(latido, seccion, cursor) },
+            foliosGuardados = { repo.porPagarGuardado().also { sucursal = "vB" } }, // se cambia de sucursal mientras se lee
+            foliosConTarjeta = marcas, venueActual = { sucursal },
+        )
+        server.shutdown()
+        vm.refrescar()
+
+        assertEquals("la marca de B sigue", listOf(marcaDeB), marcas.marcas())
+    }
+
     // MARK: - (2) lo escondido sobrevive al reinicio
 
     @Test

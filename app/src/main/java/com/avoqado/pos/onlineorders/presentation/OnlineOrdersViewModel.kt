@@ -451,6 +451,8 @@ class OnlineOrdersViewModel internal constructor(
      * red «Cobrar» cobra el saldo del servidor, no el de la lista.
      */
     private suspend fun alinearConLaCopia(): ListaPorPagar? {
+        // Codex r3 #1: la foto lleva la sucursal con que se leyó; si cambió mientras se leía, no publica, no suelta marcas ni cobra.
+        val sucursal = venueActual() ?: return null
         val copia = try {
             foliosGuardados()
         } catch (e: CancellationException) {
@@ -458,6 +460,7 @@ class OnlineOrdersViewModel internal constructor(
         } catch (e: Exception) {
             null
         } ?: return null
+        if (venueActual() != sucursal) return null
         val actual = _porPagar.value
         if (actual != null && actual.disponible && copia.disponible && copia.numero > actual.numero) {
             var nueva = copia
@@ -474,7 +477,7 @@ class OnlineOrdersViewModel internal constructor(
                 _ocultos.value = ocultosQueSiguen(_ocultos.value, nueva)
             }
         }
-        soltarMarcasDeFoliosConLaCopia(copia)
+        soltarMarcasDeFoliosConLaCopia(copia, sucursal)
         return copia
     }
 
@@ -534,8 +537,9 @@ class OnlineOrdersViewModel internal constructor(
      * sin red) ya cuenta el pago ([tarjetasConfirmadasPorLaCopia]). Corre tras guardar una copia y al abrir la pantalla. Nada en
      * memoria, ninguna página extra y ninguna Bandeja suelta la marca de un folio.
      */
-    private suspend fun soltarMarcasDeFoliosConLaCopia(dada: ListaPorPagar? = null) {
-        val venue = venueActual() ?: return
+    private suspend fun soltarMarcasDeFoliosConLaCopia(dada: ListaPorPagar? = null, sucursalDeLaCopia: String? = null) {
+        // La sucursal se toma ANTES de leer la copia (o es la con que se leyó la foto [dada]) y se vuelve a mirar después.
+        val venue = (if (dada != null) sucursalDeLaCopia else venueActual()) ?: return
         try {
             val copia = dada ?: foliosGuardados() ?: return
             if (venueActual() != venue) return
