@@ -126,11 +126,14 @@ fun tarjetasConfirmadasPorLaCopia(marcas: List<FolioCobradoConTarjeta>, venueId:
     val porPagar = copia.porPagar.associateBy { it.orderId }
     val porEntregar = copia.porEntregar.map { it.orderId }.toSet()
     return marcas.filter { marca ->
-        if (!marca.esFolio || (marca.venueId != null && marca.venueId != venueId)) return@filter false
+        // D14: la de fuera de la bandeja también, si la copia trae su orden (pudo ser un folio cobrado desde «Pedidos → detalle»).
+        if ((!marca.esFolio && !marca.fueraDeLaBandeja) || (marca.venueId != null && marca.venueId != venueId)) return@filter false
         val debe = porPagar[marca.orderId]
         when {
             debe != null -> debe.remainingCents <= marca.saldoAntesCents - marca.montoCents
-            marca.venueId == null -> marca.orderId in porEntregar
+            // Sin la orden en «Por pagar», la de fuera sólo se suelta si está en «Por entregar»: no estar no prueba que sea un folio
+            // pagado (pudo ser de «Mi equipo»); si nadie la ve, se cae sola a las 24 h.
+            marca.venueId == null || marca.fueraDeLaBandeja -> marca.orderId in porEntregar
             else -> copia.nextCursors.toPay == null
         }
     }

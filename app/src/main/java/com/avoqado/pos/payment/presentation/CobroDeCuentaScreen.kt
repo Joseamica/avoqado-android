@@ -84,7 +84,16 @@ class CobroDeCuentaViewModel @Inject constructor(
             aviso.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(it)
         })
     }
+    /** 🔴 D13: la foto de la puerta del efectivo de la última oferta ([ofertaParaCobrar]); viaja al cobro que abre «Cobrar». */
+    var dineroConocido: com.avoqado.pos.payment.domain.DineroConocido = com.avoqado.pos.payment.domain.DineroConocido.NADA
+        private set
+
     suspend fun ofertaParaCobrar(orderId: String, laTraeUnCarrito: Boolean = false): com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta {
+        // D13: ANTES de leer la cuenta: lo subido después pudo no contarse. Si no se puede leer, vacía (frena de más, nunca de menos).
+        val fotoVenue = storage.venueId
+        val fotoDelDinero = try {
+            fotoVenue?.let { cobrosLocales?.dineroConocido(it, orderId) } ?: com.avoqado.pos.payment.domain.DineroConocido.NADA
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { com.avoqado.pos.payment.domain.DineroConocido.NADA }
         val turno = cargar(orderId)
         val cuenta = foto.value
         val venue = venueDeLaCuenta ?: return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
@@ -95,6 +104,7 @@ class CobroDeCuentaViewModel @Inject constructor(
         val resultado = com.avoqado.pos.giftcards.domain.ofertaDeLaCuenta(cuenta?.let(::restanteCents),
             cuenta == null || cuenta.esDeMesa != false && !cuenta.esCuentaDeTarjetas, laTraeUnCarrito, pendiente)
         ofertaActual.value = resultado
+        dineroConocido = fotoDelDinero
         return resultado
     }
     suspend fun cancelar(reason: String): Boolean {
@@ -164,6 +174,9 @@ fun CobroDeCuentaScreen(
                 type = CartItemType.CustomAmount, name = if (cuenta.esCuentaDeTarjetas) TextosDeTarjetas.NOMBRE_EN_CUENTAS else "Saldo pendiente", unitPrice = cents))) }
             PaymentFlowScreen(cartState = cart, resumeOrderId = cuenta.id,
                 cuentaDeTarjetas = cuenta.esCuentaDeTarjetas, desdeCuentasAbiertas = true,
+                // D13: la foto de antes de leer esta cuenta, con los pagos que trajo ESTA misma cuenta (de donde sale el saldo que se cobra);
+                // lo que llegue después lo frena la puerta del efectivo.
+                dineroConocido = viewModel.dineroConocido.copy(pagosContados = cuenta.payments.filter { it.status == "COMPLETED" }.map { it.id }.toSet()),
                 onCuentaConSaldo = { cobrar = false; scope.launch { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) } },
                 onPaymentCommitted = { restanteTrasCobrar = it.remainingBalanceCents },
                 onDone = {
