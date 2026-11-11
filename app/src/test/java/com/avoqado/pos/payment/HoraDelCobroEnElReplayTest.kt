@@ -2,6 +2,8 @@ package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
+import com.avoqado.pos.payment.data.CapturaDelCobro
+import com.avoqado.pos.payment.data.ConciliacionDelCobro
 import com.avoqado.pos.payment.data.PaymentSyncService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -41,6 +43,24 @@ class HoraDelCobroEnElReplayTest {
         assertFalse("número, no texto: el SERVIDOR no lee un ISO", hora.isString)
         assertEquals(cobradoA, hora.long)
         assertEquals(true, (cuerpo["isOfflineReplay"] as JsonPrimitive).content.toBoolean())
+    }
+
+    @Test fun `tras reintentar con la misma llave manda la hora de la PRIMERA captura, no la del ultimo intento`() {
+        // Codex r1: se cobró a las T1 (antes de vencer); el «Reintentar» con la misma llave reescribe el `createdAt` de la fila (T2,
+        // después de vencer) y la captura Q15 conserva la primera. Con T2 el SERVIDOR revivía el folio sin comanda.
+        val ultimoIntento = cobradoA + 45 * 60_000L
+        val captura = ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(venueId = "venue-1", key = "llave-1", orderId = "folio-1",
+            amountCents = 13400, tipCents = 0, method = "CASH", primeraCapturaEn = cobradoA))
+        val fila = fila("ORDER").copy(createdAt = ultimoIntento, q15CaptureJson = captura)
+
+        val cuerpo = Json.parseToJsonElement(PaymentSyncService.buildReplayBody(fila, "venue-1", esCobroDeOrden = true)).jsonObject
+        assertEquals(cobradoA, (cuerpo["createdAtLocal"] as JsonPrimitive).long)
+
+        // Una captura que no es de esta fila (otra llave) no cuenta: la del `createdAt`, como una fila heredada sin captura.
+        val ajena = fila.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(venueId = "venue-1", key = "otra",
+            amountCents = 13400, tipCents = 0, primeraCapturaEn = cobradoA)))
+        assertEquals(ultimoIntento, (Json.parseToJsonElement(PaymentSyncService.buildReplayBody(ajena, "venue-1", true))
+            .jsonObject["createdAtLocal"] as JsonPrimitive).long)
     }
 
     @Test fun `la venta rapida no la manda`() {
