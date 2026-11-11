@@ -166,6 +166,12 @@ data class ListaPorPagar(
      * arrastra lo escondido y no reemplaza ninguna lista más nueva en memoria.
      */
     val masViejaQueLaCopia: Boolean = false,
+    /**
+     * W-1: el número de la lectura de la página 1 (R102, tomado antes de la red en el repositorio único); en la copia guardada, el de la
+     * lectura que la dejó (0 tras reiniciar). Más alto = más nuevo. La pantalla lo compara con la copia: sin red se queda con la más
+     * nueva de las dos, que es la que usa «Cobrar».
+     */
+    val numero: Long = 0L,
 )
 
 /** R100/R101 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección (`toPay`/`toDeliver`), su estado y lo que falta. */

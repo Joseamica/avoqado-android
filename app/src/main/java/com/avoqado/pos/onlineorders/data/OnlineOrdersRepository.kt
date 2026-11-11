@@ -28,6 +28,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -415,15 +416,15 @@ class OnlineOrdersRepository @Inject constructor(
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
             val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }
-            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false, masViejaQueLaCopia = vieja))
+            return Result.success(parsePorPagar("{\"data\":{}}").copy(disponible = false, showTile = false, masViejaQueLaCopia = vieja, numero = numero))
         }
         val lista = leido.mapCatching { parsePorPagar(it) }.onFailure { Log.d(TAG, "«Por pagar» no leído: ${it.message}") }
         if (seccion != null || cursor != null) return lista
         return lista.map {
             when (guardarCopia(venueId, leido.getOrThrow(), it, numero)) {
-                Guardado.GUARDADA -> it
-                Guardado.FALLO -> it.copy(copiaGuardada = false)
-                Guardado.VIEJA -> it.copy(copiaGuardada = false, masViejaQueLaCopia = true)
+                Guardado.GUARDADA -> it.copy(numero = numero)
+                Guardado.FALLO -> it.copy(copiaGuardada = false, numero = numero)
+                Guardado.VIEJA -> it.copy(copiaGuardada = false, masViejaQueLaCopia = true, numero = numero)
             }
         }
     }
@@ -452,8 +453,15 @@ class OnlineOrdersRepository @Inject constructor(
         }
         try {
             val previos = cache.load(CACHE_POR_PAGAR, venueId)?.let { ocultosDe(JSONObject(it.json)) }.orEmpty()
-            cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
-            secuenciaDeLaCopia[venueId] = numero
+            // Codex r5: `PayloadCache.load` se traga la cancelación y devuelve null: una lectura cancelada aquí NO escribe (R103: una
+            // lectura cancelada nunca se aplica), en vez de guardar la copia sin lo escondido. Ya empezada la escritura, termina entera.
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            // W-1 (Codex r4): la copia y su número de lectura van juntos: una cancelación (app a segundo plano) entre los dos dejaba la
+            // copia nueva con el número viejo y la pantalla ya no la reconocía como más nueva.
+            withContext(kotlinx.coroutines.NonCancellable) {
+                cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
+                secuenciaDeLaCopia[venueId] = numero
+            }
             Guardado.GUARDADA
         } catch (e: CancellationException) {
             throw e
@@ -487,12 +495,14 @@ class OnlineOrdersRepository @Inject constructor(
     /** La última página 1 que llegó del servidor, con su edad y lo escondido; `null` si nunca se leyó. */
     suspend fun porPagarGuardado(): ListaPorPagar? {
         val venueId = secureStorage.venueId ?: return null
-        val c = cache.load(CACHE_POR_PAGAR, venueId) ?: return null
+        // W-1: la copia y el número de la lectura que la dejó, juntos (bajo el mismo candado con que se escriben).
+        val (c, numero) = copiaDeFolios.withLock { cache.load(CACHE_POR_PAGAR, venueId) to (secuenciaDeLaCopia[venueId] ?: 0L) }
+        c ?: return null
         return runCatching {
             val raiz = JSONObject(c.json)
             // La edad es la de la LISTA: guardar lo escondido no la rejuvenece.
             val edad = if (raiz.has(GUARDADA_EN)) ((System.currentTimeMillis() - raiz.getLong(GUARDADA_EN)) / 60_000).coerceAtLeast(0) else c.ageMinutes
-            parsePorPagar(c.json).copy(guardadoHaceMin = edad, ocultos = ocultosDe(raiz))
+            parsePorPagar(c.json).copy(guardadoHaceMin = edad, ocultos = ocultosDe(raiz), numero = numero)
         }.getOrNull()
     }
 

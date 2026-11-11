@@ -384,6 +384,7 @@ class OnlineOrdersViewModel internal constructor(
         // R102: una respuesta más vieja que la copia guardada (otra lectura pedida después ya la dejó) no mueve nada en memoria.
         if (primera.getOrNull()?.masViejaQueLaCopia == true) {
             Log.d(TAG, "«Por pagar»: respuesta más vieja que la copia guardada; se queda la lista de ahora")
+            alinearConLaCopia()
             releerCobradosEnElAparato()
             _leyendoFolios.value = false
             return
@@ -413,6 +414,8 @@ class OnlineOrdersViewModel internal constructor(
             if (conExtras) trabajoDeExtras = viewModelScope.launch { recorrerExtras(lista, previa, generacion) }
         }.onFailure {
             Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
+            // W-1: la última palabra que se enseña es la más nueva entre esta lista y la copia guardada (la que usa «Cobrar» sin red).
+            alinearConLaCopia()
             val actual = _porPagar.value
             if (it is IOException) {
                 _sinConexion.value = true
@@ -430,6 +433,60 @@ class OnlineOrdersViewModel internal constructor(
         }
         releerCobradosEnElAparato()
         _leyendoFolios.value = false
+    }
+
+    /**
+     * 🔴 W-1 (full-testing, 10-nov, caso WSD8D): la pantalla y el vigilante leen «Por pagar» del MISMO repositorio, pero sólo las lecturas
+     * de la pantalla cambian esta lista; las del vigilante dejan la copia guardada, que es la que «Cobrar» usa sin red (R104). Tras un saldo
+     * parcial el vigilante leyó «faltan $54», se cayó la red y la tarjeta seguía diciendo «$297» mientras «Cobrar» pedía $54.
+     *
+     * Rediseño tras Codex r2 (regla de parada): UNA sola foto de la copia guardada decide, juntas, la tarjeta, las marcas y el saldo que
+     * cobra «Cobrar» sin red. [alinearConLaCopia] la lee una vez y devuelve esa misma foto:
+     * - si es MÁS NUEVA (número de lectura R102) que la lista de la pantalla, la pantalla pasa a ella, como una lectura buena (conserva lo
+     *   visto de las páginas extra, poda lo escondido, conserva su edad) y el recorrido de extras de una lectura anterior ya no publica
+     *   (r2 #2). Un «no disponible» del SERVIDOR no lo revive (r1 #2). Si una lectura publicó mientras tanto, gana ella (`compareAndSet`);
+     * - SIEMPRE suelta contra ella las marcas que ya cuenta (R104), aunque no sea más nueva: una marca que nació después de la lectura
+     *   (r2 #3) también se suelta.
+     * ponytail: con red, una lectura del vigilante más nueva se ve hasta la siguiente lectura de aquí (≤ 10 s y al cerrar cada cobro); con
+     * red «Cobrar» cobra el saldo del servidor, no el de la lista.
+     */
+    private suspend fun alinearConLaCopia(): ListaPorPagar? {
+        // Codex r3 #1: la foto lleva la sucursal con que se leyó; si cambió mientras se leía, no publica, no suelta marcas ni cobra.
+        // Sin sucursal conocida (pruebas sin sesión) no hay cambio que vigilar; las marcas, como siempre, sólo se sueltan con sucursal.
+        val sucursal = venueActual()
+        val copia = try {
+            foliosGuardados()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        if (venueActual() != sucursal) return null
+        val actual = _porPagar.value
+        if (actual == null && copia.disponible) {
+            // Codex r6 #1: la pantalla todavía no enseña nada (al abrir no había copia) y el vigilante ya guardó una: se hidrata con ella,
+            // como `descubrirPorPagar` (con lo escondido que trae). Una respuesta del servidor que llegue mientras, gana.
+            if (_porPagar.compareAndSet(null, copia)) {
+                _ocultos.value = copia.ocultos + _ocultos.value
+                leidoEnMs = ahoraMs() - (copia.guardadoHaceMin ?: 0L) * 60_000
+            }
+        } else if (actual != null && actual.disponible && copia.disponible && copia.numero > actual.numero) {
+            var nueva = copia
+            for (seccion in SECCIONES) {
+                if ((paginasExtraFolios[seccion] ?: 0) > 0 && cursorDe(copia, seccion) != null) nueva = conservarLoQueSeVeia(nueva, actual, seccion)
+            }
+            // Sin el candado de la pantalla (también lo llama «Cobrar»): si una lectura publicó mientras tanto, gana ella.
+            if (_porPagar.compareAndSet(actual, nueva)) {
+                generacionDeFolios++
+                trabajoDeExtras?.cancel()
+                trabajoDeExtras = null
+                // La edad es la de la copia: «(de hace N min)» sigue diciendo la verdad.
+                leidoEnMs = ahoraMs() - (copia.guardadoHaceMin ?: 0L) * 60_000
+                _ocultos.value = ocultosQueSiguen(_ocultos.value, nueva)
+            }
+        }
+        soltarMarcasDeFoliosConLaCopia(copia, sucursal)
+        return copia
     }
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =
@@ -488,10 +545,11 @@ class OnlineOrdersViewModel internal constructor(
      * sin red) ya cuenta el pago ([tarjetasConfirmadasPorLaCopia]). Corre tras guardar una copia y al abrir la pantalla. Nada en
      * memoria, ninguna página extra y ninguna Bandeja suelta la marca de un folio.
      */
-    private suspend fun soltarMarcasDeFoliosConLaCopia() {
-        val venue = venueActual() ?: return
+    private suspend fun soltarMarcasDeFoliosConLaCopia(dada: ListaPorPagar? = null, sucursalDeLaCopia: String? = null) {
+        // La sucursal se toma ANTES de leer la copia (o es la con que se leyó la foto [dada]) y se vuelve a mirar después.
+        val venue = (if (dada != null) sucursalDeLaCopia else venueActual()) ?: return
         try {
-            val copia = foliosGuardados() ?: return
+            val copia = dada ?: foliosGuardados() ?: return
             if (venueActual() != venue) return
             foliosConTarjeta.olvidar(tarjetasConfirmadasPorLaCopia(foliosConTarjeta.marcas(), venue, copia))
         } catch (e: CancellationException) {
@@ -971,21 +1029,21 @@ class OnlineOrdersViewModel internal constructor(
                         }
                         if (folio == null) {
                             saldoGuardado
-                        } else if (cobradoConSaldoAqui(orderId)) {
-                            // A1: esta caja ya cobró con saldo este folio y la copia guardada todavía no lo cuenta: su saldo es de
-                            // antes del cobro. Se espera a la red (la marca la suelta la copia que ya lo cuenta).
-                            _aviso.value = TextosPedidosEnLinea.FOLIO_COBRADO_CON_SALDO
-                            return@launch
                         } else {
-                            // R104: el saldo de un folio sin red sale SÓLO de la copia guardada, la misma contra la que se sueltan las
-                            // marcas de tarjeta. Si no está ahí (p. ej. vino de una página extra), no se inventa ni se reusa uno.
-                            val enLaCopia = try {
-                                foliosGuardados()?.porPagar?.firstOrNull { it.orderId == orderId }
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                null
+                            // W-1: UNA foto de la copia decide la tarjeta, las marcas y el saldo que se cobra (`alinearConLaCopia`).
+                            val copia = alinearConLaCopia()
+                            if (cobradoConSaldoAqui(orderId)) {
+                                // A1: esta caja ya cobró con saldo este folio y la copia guardada todavía no lo cuenta: su saldo es de
+                                // antes del cobro. Se espera a la red (la marca la suelta la copia que ya lo cuenta).
+                                _aviso.value = TextosPedidosEnLinea.FOLIO_COBRADO_CON_SALDO
+                                return@launch
                             }
+                            // R104: el saldo de un folio sin red sale SÓLO de esa copia. Si no está ahí (p. ej. vino de una página
+                            // extra), no se inventa ni se reusa uno. W-1 (Codex r1 #1): tampoco si la pantalla tiene una lectura MÁS NUEVA
+                            // que el disco no aceptó: la copia es vieja y la tarjeta dice otra cosa; se espera a la red.
+                            val memoria = _porPagar.value
+                            val copiaVieja = copia != null && memoria != null && memoria.disponible && memoria.numero > copia.numero
+                            val enLaCopia = if (copiaVieja) null else copia?.porPagar?.firstOrNull { it.orderId == orderId }
                             if (enLaCopia == null) {
                                 _aviso.value = TextosPedidosEnLinea.FOLIO_SIN_SALDO_GUARDADO
                                 return@launch

@@ -23,6 +23,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -153,6 +154,182 @@ class CopiaGuardadaDeFoliosTest {
 
     private suspend fun esperarQueTermine(vm: OnlineOrdersViewModel, orderId: String) =
         withTimeout(5_000) { vm.ocupados.first { orderId !in it } }
+
+    // MARK: - W-1 (full-testing de la tienda híbrida, 10-nov): sin red, la tarjeta dice lo mismo que «Cobrar» va a cobrar
+
+    @Test
+    fun `W-1 WSD8D tras un saldo parcial y sin red la tarjeta del folio dice lo que falta, igual que Cobrar`() = runBlocking {
+        // La pantalla lee el folio: $297 por pagar.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        assertEquals(29700L, vm.porPagar.value!!.porPagar.single().remainingCents)
+
+        // Se cobran $243 con saldo y ~1 s después OTRO lector del mismo repositorio (el vigilante) lee «Por pagar»: faltan $54, y esa
+        // lectura queda como la copia guardada.
+        // El cobro con saldo deja su marca «aquí ya se cobró con saldo» (Codex r1 #3: sin red frena «Cobrar» hasta que la copia lo cuente).
+        marcas.anotar(FolioCobradoConTarjeta("f1", montoCents = 24300, saldoAntesCents = 29700, enMs = 1, venueId = "v1",
+            requestId = "llave-saldo", conSaldo = true))
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        repo.porPagar(conLatido = false).getOrThrow()
+
+        // Se cae la red: la pantalla ya no puede releer (ni la bandeja, ni «Por pagar», ni el saldo del folio): conexión rechazada.
+        server.shutdown()
+        vm.refrescar()
+
+        val tarjeta = vm.porPagar.value!!.porPagar.single()
+        assertEquals("la tarjeta dice lo que falta ($54), no el total viejo ($297)", 5400L, tarjeta.remainingCents)
+        vm.cobrarFolio(tarjeta)
+        esperarQueTermine(vm, "f1")
+        val cobro = vm.cobroAbierto.value
+        org.junit.Assert.assertNotNull("abre el cobro sin red (aviso: ${vm.aviso.value})", cobro)
+        assertEquals("«Cobrar» sin red cobra lo mismo que dice la tarjeta", tarjeta.remainingCents.toInt(), cobro!!.saldoCents)
+        assertTrue("la copia que ya cuenta el saldo suelta su marca", marcas.marcas().isEmpty())
+    }
+
+    @Test
+    fun `W-1 una copia mas vieja que la lista de la pantalla no la pisa sin red`() = runBlocking {
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar() // la copia queda en $297
+
+        // La pantalla lee $54 pero el disco no acepta la copia: la lista es MÁS NUEVA que la copia.
+        falloAlGuardar = true
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        vm.refrescar()
+        assertEquals(5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+
+        server.shutdown()
+        vm.refrescar()
+        val tarjeta = vm.porPagar.value!!.porPagar.single()
+        assertEquals("la copia vieja ($297) no regresa", 5400L, tarjeta.remainingCents)
+
+        // Codex r1 #1 (rediseño r2): «Cobrar» sin red NO cobra con la copia vieja ($297) ni con la memoria: espera a la red.
+        vm.cobrarFolio(tarjeta)
+        esperarQueTermine(vm, "f1")
+        org.junit.Assert.assertNull("nunca $297 con la tarjeta en $54", vm.cobroAbierto.value)
+        assertEquals("Sin conexión: no se puede confirmar el saldo de este folio.", vm.aviso.value)
+    }
+
+    @Test
+    fun `W-1 una marca de saldo que llega despues de la lectura se suelta con la misma copia al cobrar sin red`() = runBlocking {
+        // Codex r2 #3: la pantalla ya leyó y guardó $54 (mismo número que la copia) y la respuesta del saldo llega DESPUÉS con su marca.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        marcas.anotar(FolioCobradoConTarjeta("f1", montoCents = 24300, saldoAntesCents = 29700, enMs = 1, venueId = "v1",
+            requestId = "llave-saldo", conSaldo = true))
+
+        server.shutdown()
+        vm.cobrarFolio(vm.porPagar.value!!.porPagar.single())
+        esperarQueTermine(vm, "f1")
+        val cobro = vm.cobroAbierto.value
+        org.junit.Assert.assertNotNull("la copia ya cuenta el saldo: deja cobrar el resto (aviso: ${vm.aviso.value})", cobro)
+        assertEquals(5400, cobro!!.saldoCents)
+        assertTrue(marcas.marcas().isEmpty())
+    }
+
+    @Test
+    fun `W-1 un no disponible del servidor no lo revive una copia de antes`() = runBlocking {
+        // Codex r1 #2: una lectura buena deja la copia; luego el servidor dice 403 (sin la sección) y después se cae la red.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        toPay = MockResponse().setResponseCode(403).setBody("""{"success":false,"error":"Forbidden"}""")
+        vm.refrescar()
+        assertFalse(vm.porPagar.value!!.disponible)
+
+        server.shutdown()
+        vm.refrescar()
+        assertFalse("la sección sigue fuera", vm.porPagar.value!!.disponible)
+        assertTrue(vm.porPagar.value!!.porPagar.isEmpty())
+    }
+
+    @Test
+    fun `W-1 una copia leida antes de cambiar de sucursal no suelta las marcas de la otra`() = runBlocking {
+        // Codex r3 #1: la copia de A se lee, la sucursal cambia a B durante la lectura y la copia de A (con «Por pagar» completo y sin
+        // los folios de B) soltaba las marcas de B por ausencia: B podía volver a cobrar sin red un folio ya cobrado con tarjeta.
+        toPay = cuerpo(porPagar = folio("f0", "PENDING_ACCEPTANCE", "100", "PENDING"))
+        repo.porPagar(conLatido = false).getOrThrow()
+        val marcaDeB = FolioCobradoConTarjeta("fB", 13400, 13400, enMs = 1, venueId = "vB", requestId = "r-b")
+        marcas.anotar(marcaDeB)
+        var sucursal = "v1"
+        val vm = OnlineOrdersViewModel(
+            repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true },
+            hayPedidosAbiertos = { true }, ventanaALaVista = MutableStateFlow(true),
+            leerPorPagar = { latido, seccion, cursor -> repo.porPagar(latido, seccion, cursor) },
+            foliosGuardados = { repo.porPagarGuardado().also { sucursal = "vB" } }, // se cambia de sucursal mientras se lee
+            foliosConTarjeta = marcas, venueActual = { sucursal },
+        )
+        server.shutdown()
+        vm.refrescar()
+
+        assertEquals("la marca de B sigue", listOf(marcaDeB), marcas.marcas())
+    }
+
+    @Test
+    fun `W-1 cancelar la lectura justo despues de guardar la copia no le deja el numero viejo`() = runBlocking {
+        // Codex r4: el vigilante guarda $54 y se cancela (la app pasa a segundo plano) antes de anotar el número de esa copia: quedaban
+        // $54 en disco con el número de la de $297, y sin red la tarjeta seguía en $297 mientras «Cobrar» abría $54.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        val escribio = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { cache.saveDurable(any(), any(), any()) } coAnswers {
+            disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), System.currentTimeMillis())
+            escribio.complete(Unit)
+            delay(300) // el disco ya escribió; la llamada todavía no regresa
+        }
+        val vigilante = launch(Dispatchers.Default) { repo.porPagar(conLatido = false) }
+        escribio.await()
+        vigilante.cancel()
+        vigilante.join()
+
+        server.shutdown()
+        vm.refrescar()
+        assertEquals("la tarjeta toma la copia de $54", 5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+    }
+
+    @Test
+    fun `W-1 cancelar la lectura mientras lee lo escondido no guarda la copia sin lo escondido`() = runBlocking {
+        // Codex r5: `PayloadCache.load` se traga la cancelación (devuelve null) y la escritura protegida guardaba la copia SIN lo escondido.
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        repo.porPagar(conLatido = false).getOrThrow()
+        val ocultos = mapOf("f1" to HuellaDeFolio("toDeliver", OnlineOrderStatus.ACCEPTED, 0))
+        assertTrue(repo.guardarOcultos(ocultos))
+
+        val leyendo = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { cache.load(any(), any()) } coAnswers {
+            try {
+                leyendo.complete(Unit)
+                delay(300)
+                disco["${firstArg<String>()}|${secondArg<String>()}"]
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                null // como el `runCatching` de `PayloadCache.load`
+            }
+        }
+        val vigilante = launch(Dispatchers.Default) { repo.porPagar(conLatido = false) }
+        leyendo.await()
+        vigilante.cancel()
+        vigilante.join()
+        coEvery { cache.load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+
+        assertEquals("lo escondido sigue en la copia", ocultos, repo.porPagarGuardado()!!.ocultos)
+    }
+
+    @Test
+    fun `W-1 si la pantalla no tenia lista y el vigilante ya guardo una, sin red la ensena`() = runBlocking {
+        // Codex r6 #1: al abrir no había copia; el vigilante guarda la primera; la lectura de la pantalla falla.
+        val vm = pantalla()
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        repo.porPagar(conLatido = false).getOrThrow()
+
+        server.shutdown()
+        vm.refrescar()
+        assertEquals(5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+    }
 
     // MARK: - (2) lo escondido sobrevive al reinicio
 
