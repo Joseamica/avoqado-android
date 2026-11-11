@@ -20,7 +20,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 fun puedeCobrarseDesdeLaLista(cobrosConSaldo: Int?, detalle: OrderDetail, porTerminarAqui: Boolean = false): Boolean =
-    (cobrosConSaldo ?: 0) >= 1 || porTerminarAqui || detalle.payments.orEmpty().none { it.status == "COMPLETED" }
+    // Final fix (F2, Codex #3): el detalle armado con la copia (`payments = null`) no dice «sin abonos»: nunca abre la compuerta en línea.
+    !detalle.deLaCopia && ((cobrosConSaldo ?: 0) >= 1 || porTerminarAqui || detalle.payments.orEmpty().none { it.status == "COMPLETED" })
 
 // MARK: - Enums
 
@@ -192,7 +193,7 @@ fun OrderSummary.comoDetalle(): OrderDetail = OrderDetail(
     orderNumber = orderNumber, status = status, paymentStatus = paymentStatus, type = type, source = source,
     subtotal = subtotal, taxAmount = taxAmount, discountAmount = discountAmount, total = total, itemCount = itemCount,
     staffName = staffName, customerName = customerName, createdAt = createdAt, items = null, payments = null,
-    refundState = refundState, refundedAmount = refundedAmount,
+    refundState = refundState, refundedAmount = refundedAmount, deLaCopia = true,
 )
 
 /** D12 (Codex r3 H1): lo que este detalle bueno sabe de la cuenta, para poner la copia al día. */
@@ -254,6 +255,11 @@ data class OrderDetail(
     val addedTaxAmount: Double? = null,
     /** D12: el saldo que el servidor ya manda en este detalle (el mismo que lee Mesas). Null = no vino o vino raro. */
     @Serializable(with = SaldoTolerante::class) val preBillBalance: PreBillBalance? = null,
+    /**
+     * Final fix (F2, Codex #3): este detalle lo armó la copia sin red ([comoDetalle]), no el servidor. Nunca viaja en el JSON. Mientras
+     * no llegue el detalle real, la compuerta EN LÍNEA ([puedeCobrarseDesdeLaLista]) no lo juzga: sus `payments` no son los de verdad.
+     */
+    @Transient val deLaCopia: Boolean = false,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {

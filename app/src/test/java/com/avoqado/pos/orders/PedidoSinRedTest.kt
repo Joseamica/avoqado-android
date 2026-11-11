@@ -10,6 +10,7 @@ import com.avoqado.pos.orders.data.TEXTO_PEDIDO_SIN_RED
 import com.avoqado.pos.orders.data.horaDeLaCopia
 import com.avoqado.pos.orders.data.lecturaDe
 import com.avoqado.pos.orders.data.razonParaNoCobrar
+import com.avoqado.pos.orders.data.model.puedeCobrarseDesdeLaLista
 import com.avoqado.pos.orders.presentation.OPEN_ORDERS_STATUS_FILTER
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import io.mockk.coEvery
@@ -553,6 +554,41 @@ class PedidoSinRedTest {
         r.alPerderLaRed()
         assertEquals(listOf("A"), ids(r))
         assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(t, null)), r.avisoDeLaLista.value)
+    }
+
+    // MARK: - Final fix (F2, Codex #3): la compuerta EN LÍNEA nunca se juzga con el detalle armado con la copia
+
+    /** Sin red se ve el de la copia (`payments = null`); vuelve la red y, hasta que llega el detalle real, no se ofrece «Cobrar $60». */
+    @Test fun `el detalle de la copia no es elegible en linea hasta que llega el real`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        r.loadOrderDetail("A") // sin red: el de la copia
+        val deLaCopia = r.selectedOrder.value!!
+        assertEquals("A", r.detalleDeLaCopia.value?.cuenta?.id)
+        assertEquals(false, puedeCobrarseDesdeLaLista(deLaCopia.cobrosConSaldo, deLaCopia))
+
+        detalle = { http(it, 200, """{"success":true,"order":{"id":"A","status":"PENDING","paymentStatus":"PARTIAL",""" +
+            """"payments":[{"id":"p1","status":"COMPLETED","method":"CASH","amount":40.0}]}}""") }
+        r.loadOrderDetail("A", reintento = true) // volvió la red
+        val conAbono = r.selectedOrder.value!!
+        assertEquals("real con abono: como develop", false, puedeCobrarseDesdeLaLista(conAbono.cobrosConSaldo, conAbono))
+        detalle = { http(it, 200, """{"success":true,"order":{"id":"A","status":"PENDING","paymentStatus":"PENDING","payments":[]}}""") }
+        r.loadOrderDetail("A", reintento = true)
+        val sinAbono = r.selectedOrder.value!!
+        assertEquals("real sin abono: como develop", true, puedeCobrarseDesdeLaLista(sinAbono.cobrosConSaldo, sinAbono))
+    }
+
+    /** Con un detalle real la compuerta en línea es exactamente la de `develop`; el de la copia nunca abre, ni con saldo de regalo. */
+    @Test fun `con un detalle real la compuerta en linea sigue como develop`() {
+        val real = com.avoqado.pos.orders.data.model.OrderDetail("A")
+        assertEquals("sin pagos en el JSON, como hoy", true, puedeCobrarseDesdeLaLista(null, real))
+        assertEquals(true, puedeCobrarseDesdeLaLista(null, real.copy(payments = emptyList())))
+        val conAbono = real.copy(payments = listOf(com.avoqado.pos.orders.data.model.OrderPaymentInfo("p1", status = "COMPLETED")))
+        assertEquals(false, puedeCobrarseDesdeLaLista(null, conAbono))
+        assertEquals(true, puedeCobrarseDesdeLaLista(1, conAbono))
+        assertEquals(true, puedeCobrarseDesdeLaLista(null, conAbono, porTerminarAqui = true))
+        assertEquals("el de la copia: nunca", false, puedeCobrarseDesdeLaLista(1, real.copy(deLaCopia = true), porTerminarAqui = true))
     }
 
     // MARK: - Final fix (F1, Codex #5): sin red, la lista es la copia entera, no sólo la página que había en memoria
