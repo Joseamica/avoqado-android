@@ -23,6 +23,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -264,6 +265,31 @@ class CopiaGuardadaDeFoliosTest {
         vm.refrescar()
 
         assertEquals("la marca de B sigue", listOf(marcaDeB), marcas.marcas())
+    }
+
+    @Test
+    fun `W-1 cancelar la lectura justo despues de guardar la copia no le deja el numero viejo`() = runBlocking {
+        // Codex r4: el vigilante guarda $54 y se cancela (la app pasa a segundo plano) antes de anotar el número de esa copia: quedaban
+        // $54 en disco con el número de la de $297, y sin red la tarjeta seguía en $297 mientras «Cobrar» abría $54.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        val escribio = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { cache.saveDurable(any(), any(), any()) } coAnswers {
+            disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), System.currentTimeMillis())
+            escribio.complete(Unit)
+            delay(300) // el disco ya escribió; la llamada todavía no regresa
+        }
+        val vigilante = launch(Dispatchers.Default) { repo.porPagar(conLatido = false) }
+        escribio.await()
+        vigilante.cancel()
+        vigilante.join()
+
+        server.shutdown()
+        vm.refrescar()
+        assertEquals("la tarjeta toma la copia de $54", 5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
     }
 
     // MARK: - (2) lo escondido sobrevive al reinicio

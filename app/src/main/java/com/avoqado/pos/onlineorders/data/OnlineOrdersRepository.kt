@@ -452,8 +452,12 @@ class OnlineOrdersRepository @Inject constructor(
         }
         try {
             val previos = cache.load(CACHE_POR_PAGAR, venueId)?.let { ocultosDe(JSONObject(it.json)) }.orEmpty()
-            cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
-            secuenciaDeLaCopia[venueId] = numero
+            // W-1 (Codex r4): la copia y su número de lectura van juntos: una cancelación (app a segundo plano) entre los dos dejaba la
+            // copia nueva con el número viejo y la pantalla ya no la reconocía como más nueva.
+            withContext(kotlinx.coroutines.NonCancellable) {
+                cache.saveDurable(CACHE_POR_PAGAR, venueId, conOcultos(cuerpo, ocultosQueSiguen(previos, lista), System.currentTimeMillis()))
+                secuenciaDeLaCopia[venueId] = numero
+            }
             Guardado.GUARDADA
         } catch (e: CancellationException) {
             throw e
