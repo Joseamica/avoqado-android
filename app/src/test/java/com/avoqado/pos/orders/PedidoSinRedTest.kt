@@ -434,6 +434,124 @@ class PedidoSinRedTest {
         }
     }
 
+    // MARK: - T12b: lo que la Tarea 5 dejó para después y el cobro abierto que una recarga no desmonta
+
+    /** Punto 1: la copia con A y B a la vista sin red; una búsqueda o un filtro nunca la enseña entera como su resultado. */
+    @Test fun `sin red una busqueda con la copia a la vista nunca ensena las cuentas que no coinciden`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"), fila("B"))) }
+        repoConRutas().loadOrders(1, null, null)
+        lista = sinRed()
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals(listOf("A", "B"), ids(r).sorted())
+
+        r.loadOrders(1, "A", null)
+        assertEquals("nunca se ve B (ni la copia entera)", emptyList<String>(), ids(r))
+        assertNull(r.copiaVistaA.value)
+        assertEquals(TextosDeCuentaSinRed.BUSQUEDA_SIN_RED, r.avisoDeLaLista.value)
+        assertEquals(true, r.listaEsperaLaRed)
+
+        r.loadOrders(1, null, null) // borró la búsqueda: vuelve la copia con su hora
+        assertEquals(listOf("A", "B"), ids(r).sorted())
+        r.loadOrders(1, null, "COMPLETED")
+        assertEquals("un filtro tampoco", emptyList<String>(), ids(r))
+        assertEquals(TextosDeCuentaSinRed.BUSQUEDA_SIN_RED, r.avisoDeLaLista.value)
+
+        lista = { http(it, 500, """{"message":"boom"}""") } // el servidor sí contestó: el «Sin conexión» de antes no se queda
+        r.loadOrders(1, null, null)
+        assertNull(r.avisoDeLaLista.value)
+        assertEquals(false, r.listaEsperaLaRed)
+    }
+
+    /** Punto 1: también sobre la lista del servidor que quedó «como estaba» al irse la red. */
+    @Test fun `sin red una busqueda sobre la lista que ya se veia tampoco ensena lo que no coincide`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"), fila("B"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        r.alPerderLaRed()
+        lista = sinRed()
+        r.loadOrders(1, "A", null)
+        assertEquals(emptyList<String>(), ids(r))
+        assertEquals(TextosDeCuentaSinRed.BUSQUEDA_SIN_RED, r.avisoDeLaLista.value)
+    }
+
+    /** Punto 2: con la copia a la vista, el servidor SÍ contestó (500, 403): la lista se queda, el aviso dice la razón real. */
+    @Test fun `un 500 o un 403 tras la copia no dicen Sin conexion`() = runTest {
+        for (codigo in listOf(500, 403)) {
+            disco.clear()
+            val r = copiaConAyListaQue(sinRed())
+            r.loadOrders(1, null, null)
+            val vistaEn = r.copiaVistaA.value!!
+            assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(vistaEn, null)), r.avisoDeLaLista.value)
+
+            lista = { http(it, codigo, """{"message":"boom"}""") }
+            r.loadOrders(1, null, null)
+            assertEquals("$codigo: la lista se queda", listOf("A"), ids(r))
+            assertEquals(TextosDeCuentaSinRed.noSeCargaronDeLas(horaDeLaCopia(vistaEn, null)), r.avisoDeLaLista.value)
+            assertEquals(false, r.avisoDeLaLista.value!!.contains("Sin conexión"))
+            assertEquals("un servidor que contestó mal no se repite solo", false, r.listaEsperaLaRed)
+
+            lista = sinRed() // se fue la red de verdad: vuelve a decir «Sin conexión»
+            r.loadOrders(1, null, null)
+            assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(vistaEn, null)), r.avisoDeLaLista.value)
+        }
+    }
+
+    /** Punto 2: el 5xx apaga la bandera del servidor y `alPerderLaRed` llega DESPUÉS de la lectura: no lo vuelve «Sin conexión». */
+    @Test fun `un 500 sobre la lista en vivo y luego la bandera caida no dice Sin conexion`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        val t = reloj
+        lista = { http(it, 500, """{"message":"boom"}""") }
+        r.loadOrders(1, null, null)
+        assertNull("en vivo, un 500 no pinta nada (como hoy)", r.avisoDeLaLista.value)
+        r.alPerderLaRed()
+        assertEquals(TextosDeCuentaSinRed.noSeCargaronDeLas(horaDeLaCopia(t, null)), r.avisoDeLaLista.value)
+        lista = { http(it, 500, """{"message":"boom"}""") }
+        r.loadOrders(1, null, null)
+        r.alPerderLaRed() // en el otro orden también: el que ya hay no se pisa
+        assertEquals(TextosDeCuentaSinRed.noSeCargaronDeLas(horaDeLaCopia(t, null)), r.avisoDeLaLista.value)
+    }
+
+    /** Punto 4: con un cobro abierto, una recarga con 500 o 404 no deja la pantalla sin el detalle (ni el cobro). */
+    @Test fun `con un cobro abierto una recarga con 500 o 404 no quita el detalle de la pantalla`() = runTest {
+        for ((codigo, razon) in listOf(500 to "Error al cargar detalle de orden", 404 to "No se encontró la orden")) {
+            val (r, _) = listaYDetalleConRed()
+            val visto = r.selectedOrder.value!!
+            r.alPerderLaRed()
+            detalle = { http(it, codigo, """{"message":"x"}""") }
+            r.loadOrderDetail("A", reintento = true) // la reapertura al volver la red
+            assertNull("el repositorio no cambia", r.selectedOrder.value)
+            fun estado(cobrando: Boolean) = com.avoqado.pos.orders.presentation.estadoDelDetalle(
+                com.avoqado.pos.orders.presentation.HostDelDetalle.TABLETA, "A", r.isLoadingDetail.value, r.selectedOrder.value,
+                r.errorMessage.value, cobrando = cobrando, ultimo = visto)
+            assertEquals("$codigo con cobro", com.avoqado.pos.orders.presentation.EstadoDelDetalle.Detalle(visto), estado(true))
+            assertEquals("$codigo sin cobro, como hoy", com.avoqado.pos.orders.presentation.EstadoDelDetalle.Fallo(razon), estado(false))
+            assertEquals("el aviso dice la razón real", razon, r.errorMessage.value)
+        }
+    }
+
+    /** Punto 4: «Cargando» (un toque que vuelve a pedirla) tampoco desmonta el cobro; un último de OTRA cuenta no cuenta. */
+    @Test fun `con un cobro abierto Cargando deja el ultimo detalle y otra cuenta no`() {
+        val a = com.avoqado.pos.orders.data.model.OrderDetail("A")
+        val tableta = com.avoqado.pos.orders.presentation.HostDelDetalle.TABLETA
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Detalle(a),
+            com.avoqado.pos.orders.presentation.estadoDelDetalle(tableta, "A", true, null, null, cobrando = true, ultimo = a))
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Cargando,
+            com.avoqado.pos.orders.presentation.estadoDelDetalle(tableta, "B", true, null, null, cobrando = true, ultimo = a))
+        assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Cargando,
+            com.avoqado.pos.orders.presentation.estadoDelDetalle(tableta, "A", true, null, null, cobrando = false, ultimo = a))
+    }
+
+    /** O1: la cuenta de tarjetas que la recarga trae PAGADA no cambia a su pantalla de resultado a media cobranza. */
+    @Test fun `la cuenta de tarjetas PAGADA espera a que cierre el cobro para ir a su resultado`() {
+        val pagada = com.avoqado.pos.orders.data.model.OrderDetail("A", esCuentaDeTarjetas = true, paymentStatus = "PAID")
+        assertEquals(false, com.avoqado.pos.orders.presentation.vaACuentaDeTarjetas(pagada, cobrando = true))
+        assertEquals("sin cobro abierto, como hoy", true, com.avoqado.pos.orders.presentation.vaACuentaDeTarjetas(pagada, cobrando = false))
+        assertEquals(false, com.avoqado.pos.orders.presentation.vaACuentaDeTarjetas(pagada.copy(paymentStatus = "PENDING"), cobrando = false))
+    }
+
     /** Con red: la lista con `A` (lectura buena a la hora `t`) y el detalle de `A` del servidor. */
     private suspend fun listaYDetalleConRed(): Pair<OrdersRepository, Long> {
         lista = { http(it, 200, pagina(fila("A"))) }
@@ -454,7 +572,11 @@ class PedidoSeAbreAlVolverLaRedTest {
     private val storage = mockk<SecureStorage>(relaxed = true)
     private val repository = io.mockk.spyk(OrdersRepository(storage, OkHttpClient()))
     private val conectado = kotlinx.coroutines.flow.MutableStateFlow(true)
-    private val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> { every { isConnected } returns conectado }
+    private val alcanzable = kotlinx.coroutines.flow.MutableStateFlow(true)
+    private val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> {
+        every { isConnected } returns conectado
+        every { isServerReachable } returns alcanzable
+    }
     private lateinit var vm: com.avoqado.pos.orders.presentation.OrdersViewModel
     private val sinRed = "Sin conexión: para ver este pedido necesitas internet. Se abre solo al volver la conexión."
     private var consultas = 0
@@ -626,6 +748,28 @@ class PedidoSeAbreAlVolverLaRedTest {
         assertEquals(com.avoqado.pos.orders.presentation.EstadoDelDetalle.Fallo("Error al cargar detalle de orden"),
             com.avoqado.pos.orders.presentation.estadoDelDetalle(com.avoqado.pos.orders.presentation.HostDelDetalle.TABLETA,
                 vm.selectedOrderId.value, vm.isLoadingDetail.value, vm.selectedOrder.value, vm.errorMessage.value))
+    }
+
+    /** T12b punto 3: con la lista «como estaba» sin red, al volver la red se pide sola y el aviso se va. Sin parpadeo, nada nuevo. */
+    @Test fun `al volver la red la lista se pide sola y se quita el aviso`() = runTest {
+        var pedidas = 0
+        fun pagina(id: String) = Result.success(com.avoqado.pos.orders.data.model.OrderPage(
+            orders = listOf(com.avoqado.pos.orders.data.model.OrderSummary(id)), total = 1, page = 1, pageCount = 1))
+        io.mockk.coEvery { repository.fetchOrders(any(), any(), any(), any()) } answers { pedidas++; pagina("A") }
+        vm.refreshNow(); runCurrent()
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        assertEquals("sin parpadeo no vuelve a pedir", 1, pedidas)
+
+        alcanzable.value = false; runCurrent() // se fue la red: la lista dice de qué hora es
+        org.junit.Assert.assertNotNull(vm.copiaVistaA.value)
+        org.junit.Assert.assertNotNull(vm.avisoDeLaLista.value)
+
+        io.mockk.coEvery { repository.fetchOrders(any(), any(), any(), any()) } answers { pedidas++; pagina("B") }
+        alcanzable.value = true; runCurrent()
+        assertEquals("al volver la red se pide sola", 2, pedidas)
+        assertNull(vm.copiaVistaA.value)
+        assertNull(vm.avisoDeLaLista.value)
+        assertEquals(listOf("B"), vm.orders.value.map { it.id })
     }
 
     @Test fun `tocar otro pedido corta la reapertura del anterior`() = runTest {

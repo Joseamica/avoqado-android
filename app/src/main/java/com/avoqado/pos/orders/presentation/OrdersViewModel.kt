@@ -71,9 +71,8 @@ class OrdersViewModel @Inject constructor(
     val copiaVistaA = repository.copiaVistaA
     val detalleDeLaCopia = repository.detalleDeLaCopia
 
-    /** D12: `HH:mm` de la copia en la zona del negocio (la vive `orders.data`). */
-    fun horaDeLaCopia(vistaEn: Long, zona: String? = secureStorage.venueTimezone): String =
-        com.avoqado.pos.orders.data.horaDeLaCopia(vistaEn, zona)
+    /** T12b: el aviso gris de la lista (la copia, la búsqueda sin red o el servidor que contestó mal); null = al día. */
+    val avisoDeLaLista = repository.avisoDeLaLista
 
     fun lecturaDe(page: Int, append: Boolean, search: String?, status: String?, hasMore: Boolean) =
         com.avoqado.pos.orders.data.lecturaDe(page, append, search, status, hasMore)
@@ -328,13 +327,22 @@ class OrdersViewModel @Inject constructor(
 
     /**
      * D12 (Codex r3 H4): mientras «Pedidos» se ve, al pasar `isConnected && isServerReachable` a falso se usa la copia vigente
-     * sin otra consulta ([OrdersRepository.alPerderLaRed]). Volver la red no la llama: eso lo hace [reabrirAlVolverLaRed].
+     * sin otra consulta ([OrdersRepository.alPerderLaRed]). El detalle se reabre al volver la red en [reabrirAlVolverLaRed].
+     * T12b: y la LISTA que se quedó sin red (la copia, «como estaba» o la búsqueda sin red) se vuelve a pedir al volver: su aviso se
+     * va con la respuesta. El tiempo de espera tras fallos se reinicia (spec de refresco §4.3 inv. 4). Un servidor que contestó mal
+     * no se repite solo (como el detalle, D22).
      */
     suspend fun copiaAlPerderLaRed() {
         val red = red ?: return
         combine(red.isConnected, red.isServerReachable) { conectado, alcanzable -> conectado && alcanzable }
             .distinctUntilChanged()
-            .collect { conRed -> if (!conRed) repository.alPerderLaRed() }
+            .collect { conRed ->
+                if (!conRed) repository.alPerderLaRed()
+                else if (repository.listaEsperaLaRed) {
+                    gate.resetCooldown()
+                    invalidateAndRefresh()
+                }
+            }
     }
 
     @OptIn(FlowPreview::class)

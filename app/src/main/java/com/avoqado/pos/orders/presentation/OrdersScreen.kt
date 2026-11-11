@@ -51,6 +51,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -271,11 +272,30 @@ internal fun estadoDelDetalle(
     isLoadingDetail: Boolean,
     selectedOrder: OrderDetail?,
     errorMessage: String?,
+    /** T12b: hay un cobro abierto encima (`PaymentOverlayState.isPaying`) y el último detalle visto ([ultimoDetalleVisto]). */
+    cobrando: Boolean = false,
+    ultimo: OrderDetail? = null,
 ): EstadoDelDetalle = when {
     selectedOrderId == null -> if (host == HostDelDetalle.TELEFONO) EstadoDelDetalle.Lista else EstadoDelDetalle.Vacio
+    // T12b (punto 4): con un cobro abierto, una recarga que vuelve a cargar o falla (5xx, 404) no desmonta el detalle ni el cobro:
+    // se queda el último de ESA cuenta (el aviso dice la razón). Al cerrar el cobro se pinta lo que diga la cuenta.
+    cobrando && ultimo != null && ultimo.id == selectedOrderId && (isLoadingDetail || selectedOrder?.id != selectedOrderId) ->
+        EstadoDelDetalle.Detalle(ultimo)
     isLoadingDetail -> EstadoDelDetalle.Cargando
     selectedOrder?.id == selectedOrderId -> EstadoDelDetalle.Detalle(selectedOrder)
     else -> EstadoDelDetalle.Fallo(errorMessage ?: "No se pudo cargar el pedido")
+}
+
+/** O1: la cuenta de tarjetas PAGADA va a su pantalla de resultado, pero no a media cobranza (desmontaría el cobro y su cambio). */
+internal fun vaACuentaDeTarjetas(pedido: OrderDetail, cobrando: Boolean): Boolean =
+    pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID && !cobrando
+
+/** T12b: el último detalle visto. Una recarga que falla lo deja en null en el repositorio, y un cobro abierto lo sigue necesitando. */
+@Composable
+private fun ultimoDetalleVisto(selectedOrder: OrderDetail?): OrderDetail? {
+    val ultimo = remember { mutableStateOf(selectedOrder) }
+    SideEffect { if (selectedOrder != null) ultimo.value = selectedOrder }
+    return selectedOrder ?: ultimo.value
 }
 
 @Composable
@@ -305,14 +325,16 @@ private fun PhoneOrdersLayout(
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
+    val cobrando by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
+    val ultimo = ultimoDetalleVisto(selectedOrder)
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
-    when (val estado = estadoDelDetalle(HostDelDetalle.TELEFONO, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage)) {
+    when (val estado = estadoDelDetalle(HostDelDetalle.TELEFONO, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage, cobrando, ultimo)) {
         is EstadoDelDetalle.Detalle -> {
             val pedido = estado.pedido
             // Show detail full screen on phone
-            if (pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID) {
+            if (vaACuentaDeTarjetas(pedido, cobrando)) {
                 com.avoqado.pos.giftcards.presentation.CuentaDeTarjetasScreen(pedido.id,onSalir={
                     viewModel.clearSelection();viewModel.invalidateAndRefresh()
                 })
@@ -326,7 +348,7 @@ private fun PhoneOrdersLayout(
                 isReimprimiendoComanda = isReimprimiendoComanda,
                 mensajeDeReimpresion = mensajeDeReimpresion,
                 onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
-                avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null },
+                avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
                 copia = detalleDeLaCopia,
             )
         }
@@ -365,6 +387,7 @@ private fun OrderListView(
     val searchText by viewModel.searchText.collectAsState()
     val statusFilter by viewModel.statusFilter.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
+    val avisoDeLaLista by viewModel.avisoDeLaLista.collectAsState()
 
     val grouped = remember(orders) { viewModel.groupOrdersByDate(orders) }
 
@@ -408,11 +431,11 @@ private fun OrderListView(
             onFilterSelected = { viewModel.setStatusFilter(it) },
         )
 
-        // D12: sin red, la lista dice de qué hora es lo que enseña (estado normal, nunca en rojo).
-        val copiaVistaA by viewModel.copiaVistaA.collectAsState()
-        copiaVistaA?.let { vistaEn ->
+        // D12: sin red, la lista dice de qué hora es lo que enseña (estado normal, nunca en rojo). T12b: o que buscar necesita
+        // internet, o que el servidor contestó mal (no es «Sin conexión»).
+        avisoDeLaLista?.let { texto ->
             com.avoqado.pos.customers.presentation.AvisoSinRedDeClientes(
-                texto = com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.copiaDeLas(viewModel.horaDeLaCopia(vistaEn)),
+                texto = texto,
                 modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.xs),
             )
         }
@@ -434,9 +457,8 @@ private fun OrderListView(
                     AvoqadoBrandLoader(size = 72.dp)
                 }
             }
-            orders.isEmpty() -> {
-                OrdersEmptyState()
-            }
+            // T12b: vacía por una búsqueda sin red, el aviso de arriba lo dice; «No se encontraron pedidos» mentiría.
+            orders.isEmpty() -> if (avisoDeLaLista == null) OrdersEmptyState()
             else -> {
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
@@ -506,13 +528,15 @@ private fun OrderDetailPanel(
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
+    val cobrando by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
+    val ultimo = ultimoDetalleVisto(selectedOrder)
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
     Box(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
     ) {
-        when (val estado = estadoDelDetalle(HostDelDetalle.TABLETA, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage)) {
+        when (val estado = estadoDelDetalle(HostDelDetalle.TABLETA, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage, cobrando, ultimo)) {
             EstadoDelDetalle.Cargando -> {
                 AvoqadoBrandLoader(
                     modifier = Modifier.align(Alignment.Center),
@@ -521,7 +545,7 @@ private fun OrderDetailPanel(
             }
             is EstadoDelDetalle.Detalle -> {
                 val pedido = estado.pedido
-                if (pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID) {
+                if (vaACuentaDeTarjetas(pedido, cobrando)) {
                     com.avoqado.pos.giftcards.presentation.CuentaDeTarjetasScreen(pedido.id,onSalir={
                         viewModel.clearSelection();viewModel.invalidateAndRefresh()
                     })
@@ -535,7 +559,7 @@ private fun OrderDetailPanel(
                     isReimprimiendoComanda = isReimprimiendoComanda,
                     mensajeDeReimpresion = mensajeDeReimpresion,
                     onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
-                    avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null },
+                    avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
                     copia = detalleDeLaCopia,
                 )
             }

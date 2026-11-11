@@ -294,14 +294,14 @@ class CobroDeCuentaSinRedTest {
         coEvery { hub.candadoVigente("cuenta:o1") } returns false
         val m = vm()
         assertEquals(Cobrar(6000, true), m.pedirCobroSinRed("o1"))
-        assertEquals(TextosDeCuentaSinRed.CANDADO_PERDIDO, m.revalidarCobroSinRed("o1"))
+        assertEquals(TextosDeCuentaSinRed.CANDADO_PERDIDO, m.revalidarCobroSinRed("o1", 6000))
         assertEquals(Gris(TextosDeCuentaSinRed.CANDADO_PERDIDO), m.sinRed.value)
         coVerify { hub.release("cuenta:o1") }
 
         coEvery { hub.candadoVigente("cuenta:o1") } returns true
         val otra = vm()
         assertEquals(Cobrar(6000, true), otra.pedirCobroSinRed("o1"))
-        assertNull(otra.revalidarCobroSinRed("o1"))
+        assertNull(otra.revalidarCobroSinRed("o1", 6000))
     }
 
     /** Ruling 5: tras el rechazo de la revalidación, volver a la cuenta deja su gris (no se vuelve a ofrecer en el acto). */
@@ -312,14 +312,14 @@ class CobroDeCuentaSinRedTest {
         coEvery { hub.candadoVigente("cuenta:o1") } returns false
         val m = vm()
         m.pedirCobroSinRed("o1")
-        m.revalidarCobroSinRed("o1")
+        m.revalidarCobroSinRed("o1", 6000)
         assertEquals("no se refresca la cuenta", false, m.alVolverDelCobroSinRed("o1"))
         assertEquals(Gris(TextosDeCuentaSinRed.CANDADO_PERDIDO), m.sinRed.value)
 
         // Un cobro que sí siguió: se vuelve a decidir y se refresca.
         coEvery { hub.candadoVigente("cuenta:o1") } returns true
         m.pedirCobroSinRed("o1")
-        assertNull(m.revalidarCobroSinRed("o1"))
+        assertNull(m.revalidarCobroSinRed("o1", 6000))
         assertEquals(true, m.alVolverDelCobroSinRed("o1"))
         assertEquals(Cobrar(6000, true), m.sinRed.value)
     }
@@ -331,7 +331,7 @@ class CobroDeCuentaSinRedTest {
         coEvery { hub.candadoVigente(any()) } throws IllegalStateException("no se pregunta")
         val m = vm()
         assertEquals(Cobrar(6000, true), m.pedirCobroSinRed("o1"))
-        assertNull(m.revalidarCobroSinRed("o1"))
+        assertNull(m.revalidarCobroSinRed("o1", 6000))
         coVerify(exactly = 0) { hub.candadoVigente(any()) }
     }
 
@@ -340,7 +340,7 @@ class CobroDeCuentaSinRedTest {
         val m = vm()
         assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
         reloj += 24 * 60 * 60 * 1000L + 1
-        assertEquals(TextosDeTarjetas.COBRAR_CUENTA_SIN_RED, m.revalidarCobroSinRed("o1"))
+        assertEquals(TextosDeTarjetas.COBRAR_CUENTA_SIN_RED, m.revalidarCobroSinRed("o1", 6000))
     }
 
     /** Codex r3 H4. */
@@ -404,6 +404,20 @@ class CobroDeCuentaSinRedTest {
         assertTrue("sin cobro abierto, como siempre", pideOfertaAlRecargar(enLinea = true, cobroAbierto = false))
         assertFalse(pideOfertaAlRecargar(enLinea = true, cobroAbierto = true))
         assertFalse("sin red nunca se pide", pideOfertaAlRecargar(enLinea = false, cobroAbierto = false))
+    }
+
+    /** T12b (O3): vuelve la red a medio cobro y la recarga sube el saldo; el carrito trae el de antes: no se cobra, gris con el nuevo. */
+    @Test fun `si la copia ya dice otro saldo que el del carrito no se cobra`() = runTest {
+        enLaCopia(cuenta(saldo = 6000))
+        val m = vm()
+        assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
+        assertNull("mismo saldo: sigue", m.revalidarCobroSinRed("o1", 6000))
+        enLaCopia(cuenta(saldo = 8000))
+        assertEquals(TextosDeCuentaSinRed.saldoCambio(8000), m.revalidarCobroSinRed("o1", 6000))
+        assertEquals(Gris(TextosDeCuentaSinRed.saldoCambio(8000)), m.sinRed.value)
+        assertEquals("al volver se queda el gris", false, m.alVolverDelCobroSinRed("o1"))
+        m.consultarSinRed("o1") // vuelve a abrir la cuenta: el botón trae el monto nuevo
+        assertEquals(Cobrar(8000, false), m.sinRed.value)
     }
 
     /** M7 (Codex r3 H1): una respuesta de detalle superada por una consulta posterior no escribe en la copia. */

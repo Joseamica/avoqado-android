@@ -104,6 +104,27 @@ class OrdersRepository @Inject constructor(
     /** Hora de lo que se ve en la lista cuando NO hay red (la de la copia, o la de la última lectura buena); null = con red. */
     val copiaVistaA: StateFlow<Long?> = _copiaVistaA.asStateFlow()
 
+    private val _avisoDeLaLista = MutableStateFlow<String?>(null)
+    /** T12b: el aviso gris de la lista cuando no es la respuesta del servidor a lo que se pidió (null = sí lo es). */
+    val avisoDeLaLista: StateFlow<String?> = _avisoDeLaLista.asStateFlow()
+
+    /** T12b: la lista enseña algo SIN RED (la copia, la última lectura o «buscar necesita internet»): al volver la red se pide otra vez. */
+    var listaEsperaLaRed = false
+        private set
+
+    /** T12b: cómo terminó la última lectura de la lista (null = bien). Un 5xx también apaga la bandera de red ([alPerderLaRed]). */
+    private var falloDeLaUltimaLectura: FalloDeLectura? = null
+
+    /** T12b: la lista es de [vistaA] (null = al día). Su aviso dice la razón real: nadie contestó, o el servidor contestó mal. */
+    private fun listaDeLas(vistaA: Long?, sinRed: Boolean) {
+        _copiaVistaA.value = vistaA
+        _avisoDeLaLista.value = vistaA?.let {
+            val hora = horaDeLaCopia(it, secureStorage.venueTimezone)
+            if (sinRed) TextosDeCuentaSinRed.copiaDeLas(hora) else TextosDeCuentaSinRed.noSeCargaronDeLas(hora)
+        }
+        listaEsperaLaRed = sinRed
+    }
+
     private val _detalleDeLaCopia = MutableStateFlow<CuentaGuardada?>(null)
     /** La cuenta de la copia que respalda el detalle a la vista sin red, o null. */
     val detalleDeLaCopia: StateFlow<CuentaGuardada?> = _detalleDeLaCopia.asStateFlow()
@@ -276,27 +297,46 @@ class OrdersRepository @Inject constructor(
                 venueDeLaLista = venueId
                 _currentPage.value = pageData.page
                 _hasMore.value = pageData.hasMore
-                _copiaVistaA.value = null
+                falloDeLaUltimaLectura = null
+                listaDeLas(null, sinRed = false)
             }
         } else {
             // Datos previos INTACTOS (spec §4.1), salvo que no haya nada o sean de otra sucursal (D12).
             val error = result.exceptionOrNull()
             Log.e(TAG, "❌ loadOrders: ${error?.message}")
             val actual = secureStorage.venueId
-            if (actual != null && (_orders.value.isEmpty() || venueDeLaLista != actual)) {
-                // Revisión r1: la copia sólo SIN RED (un 5xx o un 403 no es «sin conexión», y un 403 niega esas cuentas) y sólo sin
-                // búsqueda ni otro filtro (no es el resultado de lo que se buscó). Si no, las filas de otra sucursal se quitan.
-                val ensenarCopia = copia != null && error != null && FalloDeLectura.de(error) == FalloDeLectura.SIN_RED &&
-                    lecturaDe(page, append, search, status, hasMore = false) != Lectura.SUELTA
+            val sinRed = error != null && FalloDeLectura.de(error) == FalloDeLectura.SIN_RED
+            // Revisión r1: la copia sólo sin búsqueda ni otro filtro (no es el resultado de lo que se buscó).
+            val suelta = lecturaDe(page, append, search, status, hasMore = false) == Lectura.SUELTA
+            if (!append) falloDeLaUltimaLectura = if (sinRed) FalloDeLectura.SIN_RED else FalloDeLectura.SERVIDOR
+            if (actual != null && sinRed && suelta && !append) {
+                // T12b: sin red, una búsqueda o un filtro no se contesta. Nunca la copia entera ni la lista de otra consulta como su
+                // resultado: la lista se vacía y lo dice.
+                _orders.value = emptyList()
+                venueDeLaLista = actual
+                listaVistaA = null
+                _currentPage.value = 1
+                _hasMore.value = false
+                listaDeLas(null, sinRed = true)
+                _avisoDeLaLista.value = TextosDeCuentaSinRed.BUSQUEDA_SIN_RED
+            } else if (actual != null && (_orders.value.isEmpty() || venueDeLaLista != actual)) {
+                // Revisión r1: la copia sólo SIN RED (un 5xx o un 403 no es «sin conexión», y un 403 niega esas cuentas). Si no, las
+                // filas de otra sucursal se quitan.
+                val ensenarCopia = copia != null && sinRed && !suelta
                 val guardadas = if (ensenarCopia) copia?.cuentas(actual).orEmpty() else emptyList()
                 if (secureStorage.venueId == actual && (ensenarCopia || venueDeLaLista != actual)) {
                     _orders.value = guardadas.map { it.cuenta }
                     venueDeLaLista = actual
                     listaVistaA = guardadas.minOfOrNull { it.vistaEn }
-                    _copiaVistaA.value = listaVistaA
+                    listaDeLas(listaVistaA, sinRed = ensenarCopia)
                     _currentPage.value = 1
                     _hasMore.value = false // la copia es todo lo que hay: nada que pedir «más» encima
+                } else if (secureStorage.venueId == actual) {
+                    listaDeLas(null, sinRed) // T12b: un aviso de antes (la búsqueda sin red) no se queda con otra razón
                 }
+            } else if (!append && _copiaVistaA.value != null) {
+                // T12b (punto 2): lo que se ve ya era «como estaba»; el aviso dice la razón de ESTA lectura (un 5xx no es «Sin conexión»).
+                listaDeLas(_copiaVistaA.value, sinRed)
             }
         }
         _isLoading.value = false
@@ -380,7 +420,11 @@ class OrdersRepository @Inject constructor(
      */
     suspend fun alPerderLaRed() {
         val actual = secureStorage.venueId ?: return
-        if (venueDeLaLista == actual && _orders.value.isNotEmpty()) _copiaVistaA.value = listaVistaA
+        // T12b: un 5xx también apaga la bandera: si la última lectura fue del servidor que contestó mal, no es «Sin conexión». Y un
+        // aviso que ya está (lo dejó la lectura) no se pisa, llegue esto antes o después de ella.
+        if (venueDeLaLista == actual && _orders.value.isNotEmpty() && _avisoDeLaLista.value == null) {
+            listaDeLas(listaVistaA, sinRed = falloDeLaUltimaLectura != FalloDeLectura.SERVIDOR)
+        }
         val visto = _selectedOrder.value ?: return
         if (copia == null || _detalleDeLaCopia.value != null) return
         val solicitud = detalleSolicitado

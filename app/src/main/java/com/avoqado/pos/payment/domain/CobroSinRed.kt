@@ -13,6 +13,15 @@ object TextosDeCuentaSinRed {
     /** La lista o el detalle vienen de la copia guardada; [hora] en la zona del negocio (`horaDeLaCopia`). */
     fun copiaDeLas(hora: String) = "Sin conexión · como estaba a las $hora"
 
+    /** T12b: la lista se quedó como estaba porque el SERVIDOR contestó mal (5xx, 403…): no es «Sin conexión». */
+    fun noSeCargaronDeLas(hora: String) = "No se pudieron cargar los pedidos · como estaba a las $hora"
+
+    /** T12b: sin red, una búsqueda o un filtro no se puede contestar: la lista se vacía y lo dice (nunca la copia entera como resultado). */
+    const val BUSQUEDA_SIN_RED = "Sin conexión: para buscar o filtrar necesitas internet. En «Todos» o «Abiertas», sin búsqueda, ves las cuentas guardadas."
+
+    /** T12b (O3): justo antes del efectivo, la copia ya dice otro saldo que el del carrito: no se cobra. */
+    fun saldoCambio(cents: Int) = "El saldo de esta cuenta cambió a ${formatMoneyFromCents(cents)} y no se cobró. Vuelve a abrir la cuenta para cobrarlo."
+
     /**
      * El cobro hecho con la copia subió, pero la cuenta había crecido en otra caja: [cents] = saldo del servidor − saldo esperado.
      * El texto supone saldo esperado 0 (la compuerta de abonos está cerrada y la Tarea 9 manda 0): ahí la diferencia ES lo que se

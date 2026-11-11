@@ -220,12 +220,15 @@ class CobroDeCuentaViewModel @Inject constructor(
     /**
      * Codex r3 H3: JUSTO antes de recibir el efectivo. null = sigue; un texto = no se cobra (y la cuenta lo enseña). La caja ajena
      * necesita su candado de `acquireCoordinado` vigente en vivo; la que abrió la cuenta no pasa por el hub.
+     * T12b (O3): [saldoCents] es lo que cobra el carrito; si la copia ya dice otro saldo (volvió la red y la recarga lo cambió), no
+     * se cobra: «Cobrar $X» ya no sería todo lo que se debe.
      */
-    suspend fun revalidarCobroSinRed(orderId: String): String? {
+    suspend fun revalidarCobroSinRed(orderId: String, saldoCents: Int): String? {
         val datos = datosSinRed(orderId)
         val decision = decidirCobroSinRed(datos, candado = null)
         val texto = when {
             decision is DecisionSinRed.Gris -> decision.texto
+            decision is DecisionSinRed.Cobrar && decision.saldoCents != saldoCents -> TextosDeCuentaSinRed.saldoCambio(decision.saldoCents)
             datos.abiertaAqui -> null
             else -> {
                 val k = llaveDeCuenta(orderId)
@@ -404,7 +407,7 @@ private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCue
             }
         } ?: PaymentFlowScreen(cartState = cart, resumeOrderId = orderId, desdeCuentasAbiertas = true,
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA,
-            antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId) },
+            antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId, cents) },
             onPaymentCommitted = { cierre = cierreDelCobroDesdeLaCopia(it) },
             onDone = { salir(cierre) },
             onCancel = { salir(CierreDeCuenta.ABIERTA) },
@@ -530,8 +533,9 @@ fun AccionesDeCuentaAbierta(
     var abierta by rememberSaveable(order.id) { mutableStateOf(false) }
     var aviso by rememberSaveable(order.id) { mutableStateOf<String?>(null) }
     // D12: el saldo YA decidido del cobro sin red abierto con la copia (null = ninguno). No depende de `conCopia`: sigue abierto
-    // aunque vuelva la red a medio cobro.
-    var cobroSinRed by remember(order.id) { mutableStateOf<Int?>(null) }
+    // aunque vuelva la red a medio cobro. T12b (O2): sobrevive a reconstruir la Activity, como `abierta`.
+    var cobroSinRed by rememberSaveable(order.id) { mutableStateOf<Int?>(null) }
+    val cuentaDelCarrito = LocalCuentaDelCarrito.current
     DisposableEffect(viewModel) { onDispose { viewModel.soltarCobroSinRed() } }
     // I1: los cobros abiertos van ANTES de la salida temprana (ver `loQueSePinta`).
     val pinta = loQueSePinta(order, abierta, cobroSinRed)
@@ -540,7 +544,8 @@ fun AccionesDeCuentaAbierta(
         if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
         alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id,
             if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
-        scope.launch { if (enLinea) viewModel.cargar(order.id) }
+        // T12b (M-n2): la oferta también (recarga la cuenta): si la recarga trae la misma cuenta, el efecto de abajo no corre.
+        scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
     }, viewModel = viewModel)
     // Al volver, sin «La venta quedó en Cuentas abiertas» (un cobro guardado no es salir sin cobrar). Si la revalidación dijo que no,
     // la cuenta se queda con ese gris; si no, se vuelve a decidir y se refresca (un cobro encolado se ve «sin sincronizar»).
@@ -553,7 +558,6 @@ fun AccionesDeCuentaAbierta(
     if (!pinta.acciones) return
     val solicitudes by viewModel.solicitudes.collectAsState()
     val oferta by viewModel.oferta.collectAsState()
-    val cuentaDelCarrito = LocalCuentaDelCarrito.current
     val detalle by viewModel.detalle.collectAsState()
     val consultasEnCurso by viewModel.consultasEnCurso.collectAsState()
     val mensaje by viewModel.mensaje.collectAsState()
