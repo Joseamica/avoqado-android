@@ -261,6 +261,21 @@ class Q15ConciliacionDelCobroTest {
         assertTrue(result.camposNoComprobados.contains("saldoDeLaCuenta"))
         assertNull(result.motivo)
     }
+    // Ronda 1 (Minor #1): el SERVIDOR da por PAGADA una cuenta con 1¢ pendiente (`orderBalance.ts:56`) y aun así responde ese
+    // centavo. Eso cuadra: no es deuda. Sin PAID, el mismo centavo sigue siendo diferencia.
+    @Test fun `D12 PAID con un centavo pendiente cuadra y no dice debiendo`() {
+        val result = evaluate(pagoDeCuenta(""","remainingBalanceCents":1,"orderPaymentStatus":"PAID","orderTotalCents":10001,"totalPaidCents":10000"""),
+            original = cuenta)
+        assertNull(result.motivo); assertFalse(result.camposDiferentes.contains("saldoDeLaCuenta"))
+        assertNull(com.avoqado.pos.sync.presentation.lineaQuedoDebiendo(
+            kotlinx.serialization.json.Json.parseToJsonElement(result.resultadoJson!!) as kotlinx.serialization.json.JsonObject))
+    }
+    @Test fun `D12 sin PAID un centavo pendiente sigue siendo diferencia`() {
+        val result = evaluate(pagoDeCuenta(""","remainingBalanceCents":1,"orderPaymentStatus":"PARTIAL","orderTotalCents":10001,"totalPaidCents":10000"""),
+            original = cuenta)
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, result.motivo); assertTrue(result.camposDiferentes.contains("saldoDeLaCuenta"))
+        assertEquals(Triple(0, 1, -1), saldos(result))
+    }
     @Test fun `D12 el saldo de la cuenta no se mira en la mesa ni en la venta rapida`() {
         // Una mesa de la cola (lleva su número local) sigue con su regla de siempre: por ORDER no se compara el saldo.
         val mesa = evaluate(pagoDeCuenta(""","remainingBalanceCents":20000,"orderTotalCents":30000,"totalPaidCents":10000"""),

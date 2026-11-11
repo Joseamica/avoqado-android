@@ -113,6 +113,18 @@ class Q15RecoveryNoticeTest {
         }
     }
 
+    // Ronda 1 (Important #1): una MESA cobrada por partes espera un saldo > 0; la diferencia NO es lo que debe. Sin línea «debiendo».
+    @Test fun `D12 una mesa con saldo distinto no dice debiendo`() = runBlocking {
+        SalesNoticeSqlTest.Fixture().use { f ->
+            val row=seed(f)
+            val mesa=row.copy(result=JSONObject(row.result!!).put("camposDiferentes",org.json.JSONArray().put("saldoDeLaMesa"))
+                .put("saldoEsperadoCents",20000).put("saldoEnElServidorCents",25000).toString())
+            assertTrue(mesa.eligible())
+            val avisos=com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(mesa)
+            assertEquals(listOf("Campos distintos: saldo de la mesa"),avisos)
+        }
+    }
+
     @Test fun acknowledged_recovered_payment_message_says_data_kept_and_does_not_call_it_pending() = runTest {
         SalesNoticeSqlTest.Fixture().use { f ->
             seed(f)

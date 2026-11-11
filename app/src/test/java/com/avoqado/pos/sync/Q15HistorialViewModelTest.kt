@@ -108,6 +108,14 @@ class Q15HistorialViewModelTest {
         assertTrue(detail.toString(),detail.contains("Saldo esperado $0.00 · saldo en el servidor $200.00"))
         assertTrue(detail.toString(),detail.contains("La cuenta quedó debiendo $200.00"))
     }
+    // Ronda 1 (Important #1): la MESA cobrada por partes espera un saldo > 0; el detalle da los dos saldos y no dice «debiendo».
+    @Test fun `D12 detalle de una mesa con saldo distinto no dice debiendo`() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro("FULLTEST-A","p1",null,10000,0,localOrderId="L",restanteEsperadoCents=20000))
+        val resultado="""{"paymentId":"sp1","orderId":"o1","amountCents":10000,"tipCents":0,"camposDiferentes":["saldoDeLaMesa"],"camposNoComprobados":[],"saldoEsperadoCents":20000,"saldoEnElServidorCents":25000}"""
+        val detail=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15InitialResultJson=resultado,q15ResultJson=resultado))
+        assertTrue(detail.toString(),detail.contains("Saldo esperado $200.00 · saldo en el servidor $250.00"))
+        assertFalse(detail.toString(),detail.any { it.contains("debiendo") })
+    }
     @Test fun detalle_legacy_o_campo_ausente_nunca_muestra_cero_como_prueba() {
         val r=row("p1").copy(q15CaptureJson=null,q15ResultJson="""{"paymentId":"sp1"}""")
         val detail=vm().detalle(r)

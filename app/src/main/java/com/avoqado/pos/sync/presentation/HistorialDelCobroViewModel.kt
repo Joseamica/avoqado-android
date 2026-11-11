@@ -165,8 +165,7 @@ class HistorialDelCobroViewModel @Inject constructor(
                 val saldoEsperado=cents("saldoEsperadoCents");val saldoServidor=cents("saldoEnElServidorCents")
                 if(saldoEsperado!=null && saldoServidor!=null) lines.add("Saldo esperado ${money(saldoEsperado)} · saldo en el servidor ${money(saldoServidor)}")
                 // D12: la cuenta cobrada con la copia que creció en otra caja (mismo texto en el aviso de Inicio y en iOS).
-                if(saldoEsperado!=null && saldoServidor!=null && saldoServidor>saldoEsperado)
-                    lines.add(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.quedoDebiendo(saldoServidor-saldoEsperado))
+                lineaQuedoDebiendo(obj)?.let(lines::add)
                 cents("cobradoDeMasCents")?.let { lines.add("Se cobró de más: ${money(it)}") }
             }
         }

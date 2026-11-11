@@ -195,14 +195,19 @@ internal fun salesNoticeResultWarnings(row:SalesNoticeSnapshot):List<String> {
     return listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar").mapNotNull { (key,title) ->
         val fields=(result[key] as? JsonArray)?.map { labels[it.jsonPrimitive.content] ?: "otros datos" }.orEmpty()
         if(fields.isEmpty()) null else "$title: ${fields.joinToString()}"
-    } + listOfNotNull(salesNoticeDebe(result)?.let(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed::quedoDebiendo))
+    } + listOfNotNull(lineaQuedoDebiendo(result))
 }
-/** D12: lo que la cuenta quedó debiendo de más tras el cobro (el saldo del servidor pasa del esperado); null = nada. */
-private fun salesNoticeDebe(result:JsonObject):Int? {
+/**
+ * D12: la línea «La cuenta quedó debiendo $X» del resultado de un cobro, o null. La usan el aviso de Inicio y el Historial
+ * (`HistorialDelCobroViewModel.detalle`). Sólo la CUENTA (`saldoDeLaCuenta`): una mesa cobrada por partes espera un saldo > 0 y
+ * la diferencia no es lo que debe (Ronda 1, Important #1).
+ */
+internal fun lineaQuedoDebiendo(result:JsonObject):String? {
+    if((result["camposDiferentes"] as? JsonArray)?.any { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content=="saldoDeLaCuenta" }!=true) return null
     fun cents(key:String)=(result[key] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it>=0 }
     val esperado=cents("saldoEsperadoCents") ?: return null
     val enServidor=cents("saldoEnElServidorCents") ?: return null
-    return (enServidor-esperado).takeIf { it>0 }
+    return (enServidor-esperado).takeIf { it>0 }?.let(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed::quedoDebiendo)
 }
 private fun salesNoticeMoney(cents:Int?)=cents?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it) } ?: "Sin confirmar"
 private fun salesNoticeDate(epoch:Long)=com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epoch))

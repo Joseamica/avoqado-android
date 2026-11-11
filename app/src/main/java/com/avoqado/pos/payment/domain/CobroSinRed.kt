@@ -5,6 +5,10 @@ object TextosDeCuentaSinRed {
     /** La lista o el detalle vienen de la copia guardada; [hora] en la zona del negocio (`horaDeLaCopia`). */
     fun copiaDeLas(hora: String) = "Sin conexión · como estaba a las $hora"
 
-    /** El cobro hecho con la copia subió, pero la cuenta había crecido en otra caja: [cents] es lo que quedó debiendo de más. */
+    /**
+     * El cobro hecho con la copia subió, pero la cuenta había crecido en otra caja: [cents] = saldo del servidor − saldo esperado.
+     * El texto supone saldo esperado 0 (la compuerta de abonos está cerrada y la Tarea 9 manda 0): ahí la diferencia ES lo que se
+     * debe. Con un esperado > 0 diría sólo lo de más, no el total.
+     */
     fun quedoDebiendo(cents: Int) = "La cuenta quedó debiendo ${com.avoqado.pos.core.util.formatMoneyFromCents(cents)}"
 }
