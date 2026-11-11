@@ -334,19 +334,23 @@ class OrdersViewModel @Inject constructor(
      * Final fix (F3, Codex #4 = I-1): de verdad = el aparato sin red, o nadie contesta la salud ([ConnectivityMonitor.nadieContesta]).
      * `isServerReachable` solo no basta: cualquier 5xx de cualquier pantalla la apaga, y un servidor que contesta (aunque sea mal) no es
      * «Sin conexión» ni habilita el cobro desde la copia. Se miran las DOS banderas por separado: tras un 5xx, irse el WiFi sí cuenta. Si
-     * la bandera vuelve mientras se pregunta, la pregunta se corta.
+     * la bandera vuelve mientras se pregunta, la pregunta se corta. Ronda 2 (R2-2): «nadie contesta» es también un estado del monitor
+     * ([ConnectivityMonitor.sinRespuesta]) que cada ping vuelve a decidir: tras un 5xx, si el módem pierde internet sin que se caiga el
+     * WiFi, ninguna bandera cambia, pero el ping que se queda sin respuesta sí, y basta.
      * T12b: y la LISTA que se quedó sin red (la copia, «como estaba» o la búsqueda sin red) se vuelve a pedir al volver: su aviso se
      * va con la respuesta. El tiempo de espera tras fallos se reinicia (spec de refresco §4.3 inv. 4). Un servidor que contestó mal
      * no se repite solo (como el detalle, D22).
      */
     suspend fun copiaAlPerderLaRed() {
         val red = red ?: return
-        combine(red.isConnected, red.isServerReachable) { conectado, alcanzable -> conectado to alcanzable }
+        combine(red.isConnected, red.isServerReachable, red.sinRespuesta) { conectado, alcanzable, sinRespuesta ->
+            Triple(conectado, alcanzable, sinRespuesta)
+        }
             .distinctUntilChanged()
-            .collectLatest { (conectado, alcanzable) ->
+            .collectLatest { (conectado, alcanzable, sinRespuesta) ->
                 when {
                     !conectado -> repository.alPerderLaRed()
-                    !alcanzable -> if (red.nadieContesta()) repository.alPerderLaRed()
+                    !alcanzable -> if (sinRespuesta || red.nadieContesta()) repository.alPerderLaRed()
                     repository.listaEsperaLaRed -> {
                         gate.resetCooldown()
                         invalidateAndRefresh()

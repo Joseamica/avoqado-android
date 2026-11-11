@@ -754,9 +754,12 @@ class PedidoSeAbreAlVolverLaRedTest {
     private val alcanzable = kotlinx.coroutines.flow.MutableStateFlow(true)
     /** Final fix (F3): lo que contesta la salud del servidor cuando la bandera se apaga con el aparato con red (true = nadie). */
     private var nadie = true
+    /** Final fix ronda 2 (R2-2): lo que dijo el último ping (true = nadie contestó). */
+    private val sinPing = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> {
         every { isConnected } returns conectado
         every { isServerReachable } returns alcanzable
+        every { sinRespuesta } returns sinPing
         io.mockk.coEvery { nadieContesta() } answers { nadie }
     }
     private lateinit var vm: com.avoqado.pos.orders.presentation.OrdersViewModel
@@ -1016,6 +1019,27 @@ class PedidoSeAbreAlVolverLaRedTest {
         alcanzable.value = false; runCurrent()
         alcanzable.value = true; runCurrent() // contestó otra petición mientras preguntaba
         respuesta.complete(true); runCurrent()
+        io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
+    }
+
+    // MARK: - Final fix ronda 2 (R2-2): «nadie contesta» es un estado que cada ping vuelve a decidir
+
+    /** Tras un 5xx (con red de verdad), el módem pierde internet sin que se caiga el WiFi: el ping deja de tener respuesta y basta. */
+    @Test fun `tras un 5xx si los pings dejan de tener respuesta con el WiFi bien pasa a la copia sola`() = runTest {
+        nadie = false
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        alcanzable.value = false; runCurrent() // el 5xx: la salud contesta HTTP
+        sinPing.value = false; runCurrent() // el ping de los 10 s contesta HTTP
+        io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
+        sinPing.value = true; runCurrent() // el siguiente ping ya no tiene respuesta; nadie tocó nada
+        io.mockk.coVerify(exactly = 1) { repository.alPerderLaRed() }
+    }
+
+    @Test fun `si los pings siguen contestando HTTP nunca pasa a la copia`() = runTest {
+        nadie = false
+        backgroundScope.launch { vm.copiaAlPerderLaRed() }; runCurrent()
+        alcanzable.value = false; runCurrent()
+        repeat(5) { sinPing.value = false; advanceTimeBy(10_000); runCurrent() }
         io.mockk.coVerify(exactly = 0) { repository.alPerderLaRed() }
     }
 }

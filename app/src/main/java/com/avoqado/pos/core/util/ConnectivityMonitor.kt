@@ -64,6 +64,21 @@ class ConnectivityMonitor @Inject constructor(
     private val _isServerReachable = MutableStateFlow(true)
     val isServerReachable: StateFlow<Boolean> = _isServerReachable.asStateFlow()
 
+    /**
+     * D12 (final fix ronda 2, R2-2): ¿el último ping o la última consulta de la salud se quedó SIN respuesta (una
+     * [java.io.IOException]: conexión rechazada, tiempo agotado, DNS)? Cualquier respuesta HTTP, también un 5xx, lo apaga, y una
+     * respuesta buena también. Mientras [isServerReachable] siga en falso, el reintento lo vuelve a decidir cada 10 s: así el WiFi
+     * conectado con el módem sin internet sí se nota. Menor 2: la frontera real es «contestó en [PING_TIMEOUT_MS]» (para conectar y otro
+     * tanto para leer; la resolución de DNS no la limita), no «el WiFi está bien»: un servidor colgado que no contesta en ese plazo
+     * también cuenta como «nadie contesta».
+     */
+    private val _sinRespuesta = MutableStateFlow(false)
+    val sinRespuesta: StateFlow<Boolean> = _sinRespuesta.asStateFlow()
+
+    /** Seam de pruebas: la URL del servidor para el ping y la salud. En producción, [ApiConstants.BASE_URL]. */
+    @androidx.annotation.VisibleForTesting
+    internal var urlBase: String = ApiConstants.BASE_URL
+
     // Combined connectivity: device has network AND server is reachable
     val isFullyConnected: Boolean get() = _isConnected.value && _isServerReachable.value
 
@@ -110,6 +125,7 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     fun reportServerSuccess() {
+        _sinRespuesta.value = false
         if (!_isServerReachable.value) {
             _isServerReachable.value = true
             Log.d("📡", "Server marked reachable")
@@ -144,7 +160,8 @@ class ConnectivityMonitor @Inject constructor(
     /**
      * D12 (final fix, F3): ¿se fue la red DE VERDAD? Sin red del aparato, o nadie contesta la salud (sin datos, DNS, tiempo agotado: un
      * [java.io.IOException]). Si alguien contesta, aunque sea mal (un 5xx), NO es «sin red»: el mismo criterio que `FalloDeLectura`. La
-     * bandera [isServerReachable] no lo distingue: cualquier 5xx de cualquier pantalla la apaga.
+     * bandera [isServerReachable] no lo distingue: cualquier 5xx de cualquier pantalla la apaga. Pone al día [sinRespuesta] (ronda 2);
+     * la frontera es «contestó en [PING_TIMEOUT_MS]», no «WiFi bueno» (menor 2).
      */
     suspend fun nadieContesta(): Boolean = consultarSalud() == null
 
@@ -153,7 +170,7 @@ class ConnectivityMonitor @Inject constructor(
         if (!_isConnected.value) return@withContext null
         var connection: HttpURLConnection? = null
         try {
-            val url = java.net.URI(ApiConstants.BASE_URL).resolve("/api/public/healthcheck").toURL()
+            val url = java.net.URI(urlBase).resolve("/api/public/healthcheck").toURL()
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = PING_TIMEOUT_MS
@@ -165,12 +182,14 @@ class ConnectivityMonitor @Inject constructor(
                 setRequestProperty("Pragma", "no-cache")
             }
             val code = connection.responseCode
+            _sinRespuesta.value = false // alguien contestó, aunque sea mal
             val cuerpo = if (code == 200) connection.inputStream.bufferedReader().use { it.readText() } else null
             val ok = saludContesta(code, connection.contentType, cuerpo)
             if (ok) reportServerSuccess() else Log.d("📡", "Salud del servidor: $code (${connection.contentType}) — no cuenta")
             ok
         } catch (e: java.io.IOException) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
+            _sinRespuesta.value = true
             null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
@@ -180,11 +199,11 @@ class ConnectivityMonitor @Inject constructor(
         }
     }
 
-    private fun pingServer() {
+    internal fun pingServer() {
         if (!_isConnected.value) return
         var connection: HttpURLConnection? = null
         try {
-            val url = URL(ApiConstants.BASE_URL)
+            val url = URL(urlBase)
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "HEAD"
                 connectTimeout = PING_TIMEOUT_MS
@@ -192,6 +211,7 @@ class ConnectivityMonitor @Inject constructor(
                 instanceFollowRedirects = true
             }
             val code = connection.responseCode
+            _sinRespuesta.value = false // R2-2: alguien contestó (también un 5xx)
             val ngrokError = connection.getHeaderField("ngrok-error-code")
             // Matches iOS: any 200–499 means the server (or its proxy) is answering.
             // 5xx and ngrok edge errors (tunnel offline) are still treated as down.
@@ -200,6 +220,9 @@ class ConnectivityMonitor @Inject constructor(
             } else {
                 Log.d("📡", "Ping got $code (ngrok=$ngrokError) — server still down")
             }
+        } catch (e: java.io.IOException) {
+            Log.d("📡", "Ping sin respuesta: ${e.message}")
+            _sinRespuesta.value = true // R2-2: nadie contestó
         } catch (e: Exception) {
             Log.d("📡", "Ping failed: ${e.message}")
         } finally {
