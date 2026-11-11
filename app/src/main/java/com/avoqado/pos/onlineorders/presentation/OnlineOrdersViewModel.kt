@@ -384,6 +384,7 @@ class OnlineOrdersViewModel internal constructor(
         // R102: una respuesta más vieja que la copia guardada (otra lectura pedida después ya la dejó) no mueve nada en memoria.
         if (primera.getOrNull()?.masViejaQueLaCopia == true) {
             Log.d(TAG, "«Por pagar»: respuesta más vieja que la copia guardada; se queda la lista de ahora")
+            tomarLaCopiaSiEsMasNueva()
             releerCobradosEnElAparato()
             _leyendoFolios.value = false
             return
@@ -413,6 +414,8 @@ class OnlineOrdersViewModel internal constructor(
             if (conExtras) trabajoDeExtras = viewModelScope.launch { recorrerExtras(lista, previa, generacion) }
         }.onFailure {
             Log.d(TAG, "«Por pagar» sin respuesta: ${it.message}")
+            // W-1: la última palabra que se enseña es la más nueva entre esta lista y la copia guardada (la que usa «Cobrar» sin red).
+            tomarLaCopiaSiEsMasNueva()
             val actual = _porPagar.value
             if (it is IOException) {
                 _sinConexion.value = true
@@ -430,6 +433,35 @@ class OnlineOrdersViewModel internal constructor(
         }
         releerCobradosEnElAparato()
         _leyendoFolios.value = false
+    }
+
+    /**
+     * 🔴 W-1 (full-testing, 10-nov, caso WSD8D): la pantalla y el vigilante leen «Por pagar» del MISMO repositorio, pero sólo las lecturas
+     * de la pantalla cambian esta lista; las del vigilante dejan la copia guardada, que es la que «Cobrar» usa sin red (R104). Tras un saldo
+     * parcial el vigilante leyó «faltan $54», se cayó la red y la tarjeta seguía diciendo «$297» mientras «Cobrar» pedía $54. Cuando una
+     * lectura de aquí no llega, se toma la copia si es MÁS NUEVA (su número de lectura, R102) que la lista de ahora: la tarjeta dice lo
+     * mismo que «Cobrar». Como una lectura buena: conserva lo visto de las páginas extra y poda lo escondido. Si no se lee, nada cambia.
+     * ponytail: con red, una lectura del vigilante más nueva que la de la pantalla se ve hasta la siguiente lectura de aquí (≤ 10 s, y
+     * al cerrar cada cobro); «Cobrar» con red cobra el saldo del servidor, no el de la lista.
+     */
+    private suspend fun tomarLaCopiaSiEsMasNueva() {
+        val actual = _porPagar.value ?: return
+        val copia = try {
+            foliosGuardados()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } ?: return
+        if (!copia.disponible || copia.numero <= actual.numero) return
+        var nueva = copia
+        for (seccion in SECCIONES) {
+            if ((paginasExtraFolios[seccion] ?: 0) > 0 && cursorDe(copia, seccion) != null) nueva = conservarLoQueSeVeia(nueva, actual, seccion)
+        }
+        _porPagar.value = nueva
+        // La edad es la de la copia: «(de hace N min)» sigue diciendo la verdad.
+        leidoEnMs = ahoraMs() - (copia.guardadoHaceMin ?: 0L) * 60_000
+        _ocultos.value = ocultosQueSiguen(_ocultos.value, nueva)
     }
 
     private fun cursorDe(lista: ListaPorPagar, seccion: String) =

@@ -421,9 +421,9 @@ class OnlineOrdersRepository @Inject constructor(
         if (seccion != null || cursor != null) return lista
         return lista.map {
             when (guardarCopia(venueId, leido.getOrThrow(), it, numero)) {
-                Guardado.GUARDADA -> it
-                Guardado.FALLO -> it.copy(copiaGuardada = false)
-                Guardado.VIEJA -> it.copy(copiaGuardada = false, masViejaQueLaCopia = true)
+                Guardado.GUARDADA -> it.copy(numero = numero)
+                Guardado.FALLO -> it.copy(copiaGuardada = false, numero = numero)
+                Guardado.VIEJA -> it.copy(copiaGuardada = false, masViejaQueLaCopia = true, numero = numero)
             }
         }
     }
@@ -487,12 +487,14 @@ class OnlineOrdersRepository @Inject constructor(
     /** La última página 1 que llegó del servidor, con su edad y lo escondido; `null` si nunca se leyó. */
     suspend fun porPagarGuardado(): ListaPorPagar? {
         val venueId = secureStorage.venueId ?: return null
-        val c = cache.load(CACHE_POR_PAGAR, venueId) ?: return null
+        // W-1: la copia y el número de la lectura que la dejó, juntos (bajo el mismo candado con que se escriben).
+        val (c, numero) = copiaDeFolios.withLock { cache.load(CACHE_POR_PAGAR, venueId) to (secuenciaDeLaCopia[venueId] ?: 0L) }
+        c ?: return null
         return runCatching {
             val raiz = JSONObject(c.json)
             // La edad es la de la LISTA: guardar lo escondido no la rejuvenece.
             val edad = if (raiz.has(GUARDADA_EN)) ((System.currentTimeMillis() - raiz.getLong(GUARDADA_EN)) / 60_000).coerceAtLeast(0) else c.ageMinutes
-            parsePorPagar(c.json).copy(guardadoHaceMin = edad, ocultos = ocultosDe(raiz))
+            parsePorPagar(c.json).copy(guardadoHaceMin = edad, ocultos = ocultosDe(raiz), numero = numero)
         }.getOrNull()
     }
 

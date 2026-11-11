@@ -154,6 +154,51 @@ class CopiaGuardadaDeFoliosTest {
     private suspend fun esperarQueTermine(vm: OnlineOrdersViewModel, orderId: String) =
         withTimeout(5_000) { vm.ocupados.first { orderId !in it } }
 
+    // MARK: - W-1 (full-testing de la tienda híbrida, 10-nov): sin red, la tarjeta dice lo mismo que «Cobrar» va a cobrar
+
+    @Test
+    fun `W-1 WSD8D tras un saldo parcial y sin red la tarjeta del folio dice lo que falta, igual que Cobrar`() = runBlocking {
+        // La pantalla lee el folio: $297 por pagar.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar()
+        assertEquals(29700L, vm.porPagar.value!!.porPagar.single().remainingCents)
+
+        // Se cobran $243 con saldo y ~1 s después OTRO lector del mismo repositorio (el vigilante) lee «Por pagar»: faltan $54, y esa
+        // lectura queda como la copia guardada.
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        repo.porPagar(conLatido = false).getOrThrow()
+
+        // Se cae la red: la pantalla ya no puede releer (ni la bandeja, ni «Por pagar», ni el saldo del folio): conexión rechazada.
+        server.shutdown()
+        vm.refrescar()
+
+        val tarjeta = vm.porPagar.value!!.porPagar.single()
+        assertEquals("la tarjeta dice lo que falta ($54), no el total viejo ($297)", 5400L, tarjeta.remainingCents)
+        vm.cobrarFolio(tarjeta)
+        esperarQueTermine(vm, "f1")
+        val cobro = vm.cobroAbierto.value
+        org.junit.Assert.assertNotNull("abre el cobro sin red (aviso: ${vm.aviso.value})", cobro)
+        assertEquals("«Cobrar» sin red cobra lo mismo que dice la tarjeta", tarjeta.remainingCents.toInt(), cobro!!.saldoCents)
+    }
+
+    @Test
+    fun `W-1 una copia mas vieja que la lista de la pantalla no la pisa sin red`() = runBlocking {
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "297", "PENDING"))
+        val vm = pantalla()
+        vm.descubrirPorPagar() // la copia queda en $297
+
+        // La pantalla lee $54 pero el disco no acepta la copia: la lista es MÁS NUEVA que la copia.
+        falloAlGuardar = true
+        toPay = cuerpo(porPagar = folio("f1", "PENDING_ACCEPTANCE", "54", "PARTIAL"))
+        vm.refrescar()
+        assertEquals(5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+
+        server.shutdown()
+        vm.refrescar()
+        assertEquals("la copia vieja ($297) no regresa", 5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
+    }
+
     // MARK: - (2) lo escondido sobrevive al reinicio
 
     @Test
