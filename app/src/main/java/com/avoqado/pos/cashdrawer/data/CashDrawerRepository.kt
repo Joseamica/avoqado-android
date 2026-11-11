@@ -10,6 +10,7 @@ import com.avoqado.pos.cashdrawer.data.model.CashDrawerStatus
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -400,6 +401,24 @@ internal fun textoDeAdopcion(quien: String, hora: String, fondoServidorCents: In
     }
 
 /**
+ * La llave a la que se ata la autorización de un retiro. 🔴 IDÉNTICA a `llaveDelRetiro` del SERVIDOR (`src/lib/llaveDelRetiro.ts`,
+ * `Math.round(amount * 100)` centavos): si no coinciden, el servidor rechaza un retiro que un gerente sí autorizó.
+ */
+fun llaveDelRetiro(localId: String, amountCents: Int): String = "pay-out:$localId:$amountCents"
+
+/** Cómo terminó [CashDrawerRepository.addPayOut]. */
+sealed interface ResultadoDelRetiro {
+    /**
+     * El retiro quedó guardado en el aparato. [confirmado] = el servidor ya lo tiene; si no, está en la cola (con su
+     * autorización) y sube solo. [autorizadoPor] es el nombre que devolvió el servidor, sólo si confirmó.
+     */
+    data class Hecho(val evento: CashDrawerEventEntity, val autorizadoPor: String?, val confirmado: Boolean) : ResultadoDelRetiro
+
+    /** El servidor lo rechazó al momento (o no se pudo guardar): no quedó nada (ni fila, ni cola, ni comprobante). */
+    data class Rechazado(val mensaje: String) : ResultadoDelRetiro
+}
+
+/**
  * Una operación del cajón que este aparato YA hizo en local y que el server aún no confirmó.
  * `kind` = OPEN | CLOSE | PAY_IN | PAY_OUT. `localId` es la llave idempotente del evento (PAY_*)
  * y, en `OPEN`, el id del evento de apertura local — que desde N1 (5-sep-2026) viaja al servidor como
@@ -471,6 +490,14 @@ internal data class PendingDrawerOp(
      * default: una cola guardada por una versión anterior se lee igual.
      */
     val pasesConServidor: Int = 0,
+    /**
+     * 🔴 Sólo un `PAY_OUT`: la autorización del gerente atada a ESTE retiro ([llaveDelRetiro]; el servidor la acepta 7 días y
+     * sólo para esa llave). Viaja con la operación para que el replay la presente igual que el primer POST: si se cae la red
+     * justo después del PIN, el retiro sube después sin pedir otro. Nula = sin autorización (el retiro de siempre). Vive en las
+     * preferencias cifradas, como el resto de la cola, y nunca se registra en el log. Campo con default: una cola guardada por
+     * una versión anterior se lee igual (hay prueba).
+     */
+    val autorizacion: String? = null,
 )
 
 /**
@@ -915,6 +942,8 @@ class CashDrawerRepository @Inject constructor(
     private val conectividad: ConnectivityMonitor,
     /** null sólo en pruebas con DAOs falsos (sin transacción). Hilt, y Guice en Windows, inyectan siempre la base real. */
     private val database: com.avoqado.pos.core.data.local.database.AvoqadoDatabase? = null,
+    /** El papel pendiente de cada retiro. null sólo en pruebas que no lo miran; Hilt y Guice inyectan siempre el real. */
+    private val comprobantes: ComprobantesDeRetiroPorImprimir? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
@@ -1944,10 +1973,29 @@ class CashDrawerRepository @Inject constructor(
         return null
     }
 
-    suspend fun addPayOut(amountCents: Int, note: String?): CashDrawerEventEntity? {
-        val session = getOpenSession() ?: return null
+    /**
+     * Un retiro de efectivo, con o sin la autorización de un gerente, por el camino de siempre.
+     *
+     * 🔴 El orden es el contrato: fila en Room → operación en la cola (con su [autorizacion]) → [comprobante] en disco → POST.
+     * Si la app muere en cualquier punto después de la cola, el retiro sube solo y su papel sigue pendiente (Codex r3 #7).
+     *
+     * La respuesta inmediata se clasifica con [clasificarRespuestaDelServer], igual que en el replay: confirmada → sale de la cola;
+     * rechazo definitivo (403/400/422 y el 409 genérico) → se deshace todo, porque el cajero está ahí y el retiro no se hizo; lo
+     * demás (sin red, 5xx, 404, el 409 de cierre en proceso) → se queda en la cola y el replay lo manda con el mismo token. El
+     * servidor contesta 200 a un retiro que ya tiene, así que reenviarlo nunca lo duplica.
+     *
+     * [localId] lo genera quien pide el PIN: la autorización se ata a `llaveDelRetiro(localId, amountCents)`.
+     */
+    suspend fun addPayOut(
+        amountCents: Int,
+        note: String?,
+        localId: String = UUID.randomUUID().toString(),
+        autorizacion: String? = null,
+        comprobante: ComprobanteDeRetiro? = null,
+    ): ResultadoDelRetiro {
+        val session = getOpenSession() ?: return ResultadoDelRetiro.Rechazado("No hay una caja abierta.")
         val event = CashDrawerEventEntity(
-            id = UUID.randomUUID().toString(),
+            id = localId,
             sessionId = session.id,
             venueId = venueId,
             type = CashDrawerEventType.PAY_OUT.name,
@@ -1961,43 +2009,111 @@ class CashDrawerRepository @Inject constructor(
         Log.d(TAG, "✅ Pay-out recorded locally: $amountCents")
 
         // La fila local nace provisional y adopta el id del server si éste confirma.
-        val op = PendingDrawerOp("PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis())
+        val op = PendingDrawerOp("PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis(), autorizacion = autorizacion)
         encolar(op)
-        val confirmado = fireApiPayOut(amountCents, note, event.id, session.id)
-        if (confirmado != null) quitar(op)
-        return confirmado ?: event
-    }
-
-    private suspend fun fireApiPayOut(amountCents: Int, note: String?, localEventId: String, sessionId: String): CashDrawerEventEntity? {
-        try {
-            val dollars = amountCents / 100.0
-            val requestBody = json.encodeToString(
-                PayOutRequest.serializer(),
-                // La llave es el id con el que la fila YA quedó en Room, no uno nuevo.
-                PayOutRequest(amount = dollars, note = note, localId = localEventId, sessionId = sessionId),
-            ).toRequestBody("application/json".toMediaType())
-
-            val request = Request.Builder()
-                .url("$baseUrl/pay-out")
-                .post(requestBody)
-                .build()
-
-            val (code, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+        if (comprobante != null && comprobantes != null) {
+            try {
+                comprobantes.anotar(comprobante)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Sin la marca, un retiro que se cayera a media red se quedaría sin papel. No se mandó nada: se deshace.
+                Log.e(TAG, "❌ No se pudo anotar el comprobante del retiro: ${e.message}")
+                deshacerRetiro(op, comprobante)
+                return ResultadoDelRetiro.Rechazado("No se pudo guardar el retiro en el aparato. Intenta de nuevo.")
             }
+        }
 
-            if (code in 200..299) {
-                Log.d(TAG, "✅ API pay-out success")
-                return promoteEvent(localEventId, parseEventId(body))
-            } else {
-                Log.e(TAG, "❌ API pay-out failed: $code - $body")
+        val (code, body) = try {
+            withContext(Dispatchers.IO) {
+                val response = client.newCall(peticionDelMovimiento(op, event.id, alMomento = true)).execute()
+                response.code to (response.body?.string() ?: "")
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ API pay-out error: ${e.message}")
+            return ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
         }
-        return null
+        return when (clasificarRespuestaDelServer("PAY_OUT", code, codigoDeNegocio(body))) {
+            DestinoDeLaOperacion.CONFIRMADA -> {
+                val evento = try {
+                    promoteEvent(event.id, parseEventId(body)) ?: event
+                } catch (e: Exception) {
+                    // El servidor ya lo tiene; la operación se queda y el replay recibe el 200 de lo ya registrado.
+                    Log.e(TAG, "❌ Pay-out confirmado, pero no se pudo adoptar su id: ${e.message}")
+                    return ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+                }
+                quitar(op)
+                Log.d(TAG, "✅ API pay-out success")
+                ResultadoDelRetiro.Hecho(evento, autorizadoPor(body), confirmado = true)
+            }
+            DestinoDeLaOperacion.RECHAZADA -> {
+                Log.e(TAG, "🛑 Pay-out rechazado al momento ($code): se deshace — $body")
+                deshacerRetiro(op, comprobante)
+                ResultadoDelRetiro.Rechazado(mensajeDeRechazo(code, body))
+            }
+            DestinoDeLaOperacion.REINTENTAR -> {
+                Log.w(TAG, "🔁 Pay-out sin confirmar ($code); sigue en cola — $body")
+                ResultadoDelRetiro.Hecho(event, autorizadoPor = null, confirmado = false)
+            }
+        }
     }
+
+    /**
+     * Deshace un retiro que no se hizo. 🔴 El orden es a propósito: primero la fila, luego la cola y al final el papel. Si la app
+     * muere a la mitad queda, a lo más, una operación sin fila: el replay recibe el mismo rechazo, la MARCA y el cajero la ve.
+     * Nunca una fila contada que nadie va a mandar. (La cola vive fuera de Room: no hay transacción que abarque las dos.)
+     */
+    private suspend fun deshacerRetiro(op: PendingDrawerOp, comprobante: ComprobanteDeRetiro?) {
+        op.localId?.let { dao.deleteEvent(it) }
+        quitar(op)
+        if (comprobante != null) {
+            try {
+                comprobantes?.quitar(comprobante.venueId, comprobante.localId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Sin la fila, un comprobante que sobra no se imprime (la recuperación exige que el retiro exista).
+                Log.w(TAG, "⚠️ No se pudo quitar el comprobante de un retiro deshecho: ${e.message}")
+            }
+        }
+    }
+
+    /** Quién autorizó, según el servidor (`authorizedBy.name`, hermano de `data`). null si no vino o no hubo autorizador. */
+    private fun autorizadoPor(body: String): String? = try {
+        (json.decodeFromString<JsonObject>(body)["authorizedBy"] as? JsonObject)
+            ?.get("name")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * La petición de un ingreso o retiro, la misma para el primer POST y para el replay.
+     *
+     * 🔴 Sólo un `PAY_OUT` con [PendingDrawerOp.autorizacion] lleva el token del gerente, y con él la marca de error local: sin
+     * ella, un 403 abriría el teclado o el aviso globales de [ForbiddenInterceptor], y un token suelto nunca encaja en `/pay-out`
+     * (el servidor siempre pide la llave del retiro). [alMomento]: el primer POST de un retiro lleva la marca aunque no traiga
+     * token, porque su rechazo lo enseña la pantalla del retiro ([ResultadoDelRetiro.Rechazado]). El PAY_IN sale como siempre.
+     */
+    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, alMomento: Boolean = false): Request {
+        val dollars = op.amountCents / 100.0
+        val (path, body) = if (op.kind == "PAY_IN") {
+            "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+        } else {
+            "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+        }
+        val retiro = op.kind == "PAY_OUT"
+        return Request.Builder().url("$baseUrl/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
+            if (retiro) op.autorizacion?.let { header(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER, it) }
+            if (retiro && (op.autorizacion != null || alMomento)) header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "true")
+        }.build()
+    }
+
+    /**
+     * Ingresos, retiros, aperturas y cierres de [venueId] que el servidor todavía no tiene (los rechazados no: ésos sólo esperan
+     * a que el cajero los vea). Lo cuentan las guardas de cerrar sesión y de cambiar de usuario (Codex r3 #12): el replay usa la
+     * sesión vigente, así que relevar encima mandaría el retiro de una persona a nombre de otra.
+     */
+    fun movimientosSinSubir(venueId: String): Int = pendientesDe(venueId).count { it.rechazadaEn == null }
 
     /**
      * La venta en efectivo que el cajero acaba de cobrar, PROVISIONAL en Room.
@@ -2857,13 +2973,7 @@ class CashDrawerRepository @Inject constructor(
         // migrada por `completarLlavesLegadas`; esto cubre la entrada que llega por `ademas`.
         val localId = op.localId?.takeIf { it.isNotBlank() } ?: localIdLegado(op)
         return try {
-            val dollars = op.amountCents / 100.0
-            val (path, body) = if (op.kind == "PAY_IN") {
-                "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
-            } else {
-                "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
-            }
-            val request = Request.Builder().url("$baseUrl/$path").post(body.toRequestBody("application/json".toMediaType())).build()
+            val request = peticionDelMovimiento(op, localId)
             val (code, resp) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
