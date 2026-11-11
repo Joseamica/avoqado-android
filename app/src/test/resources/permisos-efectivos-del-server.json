@@ -2,7 +2,7 @@
   "generatedFrom": {
     "repo": "avoqado-server",
     "fn": "getEffectiveRolePermissions(role, null)",
-    "digest": "970833f4754c57f3"
+    "digest": "0eec0629697e2b4e"
   },
   "roles": {
     "SUPERADMIN": {
@@ -39,6 +39,7 @@
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:*",
         "catalog-venue:read",
@@ -176,6 +177,7 @@
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:*",
         "catalog-venue:read",
@@ -367,6 +369,7 @@
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:manage",
         "cash-out:read",
@@ -493,6 +496,7 @@
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:manage",
         "cash-out:read",
@@ -671,6 +675,7 @@
         "attendance:read",
         "calendar:connect_self",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:read",
         "cash-out:report",
@@ -819,6 +824,7 @@
         "attendance:read",
         "calendar:connect_self",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:read",
         "cash-out:report",
@@ -1347,6 +1353,7 @@
       "area-tickets:confirm-external",
       "area-tickets:deliver",
       "area-tickets:issue",
+      "cash-drawer:pay-out",
       "class-sessions:read-assigned",
       "coupons:create",
       "coupons:delete",

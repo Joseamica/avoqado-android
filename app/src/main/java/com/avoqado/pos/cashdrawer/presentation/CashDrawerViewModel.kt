@@ -532,3 +532,7 @@ class CashDrawerViewModel @Inject constructor(
 /** Espejo EXACTO del permiso del server que gobierna el back-office de turnos. */
 const val PERMISO_VER_ESPERADO = "cash-drawer:view-expected"
 val ROLES_VER_ESPERADO = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+/** Espejo EXACTO del permiso del server que deja retirar efectivo de la caja (retiro con gerente). */
+const val PERMISO_RETIRAR = "cash-drawer:pay-out"
+val ROLES_RETIRAR = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")

@@ -382,6 +382,29 @@ class SecureStorage @Inject constructor(
             prefs.edit().putString(KEY_VENUE_PERMISSIONS, json.encodeToString(value)).apply()
         }
 
+    /**
+     * `true` sólo cuando [venuePermissions] vino de `permisosDeLaSesion` (la lista vigente que calcula el SERVIDOR). Un login,
+     * un cambio de usuario o de sucursal y cerrar sesión la apagan: esas listas pueden ser de antes de que existiera un permiso
+     * (retiro con gerente, r3 #4). Ver `puedeRetirar`.
+     */
+    var listaDePermisosVigente: Boolean
+        get() = prefs.getBoolean(KEY_LISTA_DE_PERMISOS_VIGENTE, false)
+        set(value) { prefs.edit().putBoolean(KEY_LISTA_DE_PERMISOS_VIGENTE, value).apply() }
+
+    /**
+     * Guarda la lista vigente y su marca en UNA escritura, sólo si sigue siendo la sesión ([sello]) y la sucursal
+     * ([venueId]) que mandaron la petición: una respuesta tardía no pisa los permisos de quien entró después (patrón D4).
+     */
+    @Synchronized
+    fun guardarPermisosDeLaSesionSi(sello: Long, venueId: String, permisos: List<String>): Boolean {
+        if (generacion != sello || this.venueId != venueId) return false
+        prefs.edit()
+            .putString(KEY_VENUE_PERMISSIONS, json.encodeToString(permisos))
+            .putBoolean(KEY_LISTA_DE_PERMISOS_VIGENTE, true)
+            .apply()
+        return true
+    }
+
     /** Ajustes sin secretos por negocio; "null" distingue un 404 de una caché que nunca existió. */
     fun leerAjustesDeTarjetas(venueId: String): String? = plainPrefs.getString("giftCardSettings.$venueId", null)
 
@@ -692,6 +715,7 @@ class SecureStorage @Inject constructor(
         this.accessToken = accessToken
         this.refreshToken = refreshToken
         this.venuePermissions = venuePermissions
+        this.listaDePermisosVigente = false
         generacion++
     }
 
@@ -780,6 +804,7 @@ class SecureStorage @Inject constructor(
         this.venueTimezone = venue.timezone
         this.userRole = venue.role
         this.venuePermissions = venue.permissions
+        this.listaDePermisosVigente = false
         // Plan is per-venue: clear stale plan from the previous venue so we
         // fail OPEN until the new venue's settings (with plan) are fetched.
         this.planTier = null
@@ -863,6 +888,7 @@ class SecureStorage @Inject constructor(
             .remove(KEY_STORE_CREDIT_ONLY)
             .remove(KEY_STORE_CREDIT_AVAILABLE)
             .remove(KEY_VENUE_PERMISSIONS)
+            .remove(KEY_LISTA_DE_PERMISOS_VIGENTE)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_TERMINAL_ID)
@@ -942,6 +968,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_STORE_CREDIT_ONLY = "storeCreditOnly"
         private const val KEY_STORE_CREDIT_AVAILABLE = "storeCreditAvailable"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
+        private const val KEY_LISTA_DE_PERMISOS_VIGENTE = "listaDePermisosVigente"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"
         // Biometric
