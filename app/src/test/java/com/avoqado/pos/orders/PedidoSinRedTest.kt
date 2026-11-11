@@ -1,9 +1,22 @@
 package com.avoqado.pos.orders
 
+import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.orders.data.CopiaDeCuentas
+import com.avoqado.pos.orders.data.Lectura
 import com.avoqado.pos.orders.data.OrdersRepository
+import com.avoqado.pos.orders.data.RazonSinRed
+import com.avoqado.pos.orders.data.TEXTO_PEDIDO_SIN_RED
+import com.avoqado.pos.orders.data.horaDeLaCopia
+import com.avoqado.pos.orders.data.lecturaDe
+import com.avoqado.pos.orders.data.razonParaNoCobrar
+import com.avoqado.pos.orders.presentation.OPEN_ORDERS_STATUS_FILTER
+import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -18,19 +31,50 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 import java.net.UnknownHostException
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * D22 (9-nov-2026, SAMSUNG del Alien): sin red, abrir otra venta en «Pedidos» decía «No se encontró la orden». La venta
  * existe; lo que falta es red. Sólo un 404 dice que no existe.
  */
 class PedidoSinRedTest {
-    private fun repo(respuesta: (Interceptor.Chain) -> Response): OrdersRepository {
-        val storage = mockk<SecureStorage>(relaxed = true)
-        every { storage.venueId } returns "v1"
-        return OrdersRepository(storage, OkHttpClient.Builder().addInterceptor(Interceptor { respuesta(it) }).build())
+    // D12 (Tarea 5): el repo lleva la copia sobre el «disco» de memoria de la Tarea 4 (CopiaDeCuentasTest). Vacía, todo sigue como D22.
+    private val disco = mutableMapOf<String, PayloadCache.Cached>()
+    private val cache = mockk<PayloadCache> {
+        coEvery { load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { saveDurable(any(), any(), any()) } answers {
+            disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
+        }
     }
+    private var reloj = 1_000_000_000L
+    private var copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+    private var venue = "v1"
+    private val storage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } answers { venue } }
+
+    private fun repo(respuesta: (Interceptor.Chain) -> Response): OrdersRepository =
+        OrdersRepository(storage, OkHttpClient.Builder().addInterceptor(Interceptor { respuesta(it) }).build(), copia)
+
+    /** La lista (`…/orders?…`) contesta [lista]; el detalle (`…/orders/<id>`), [detalle]. */
+    private var lista: (Interceptor.Chain) -> Response = { throw UnknownHostException("sin red") }
+    private var detalle: (Interceptor.Chain) -> Response = { throw UnknownHostException("sin red") }
+    private val peticiones = AtomicInteger()
+    private fun repoConRutas() = repo { chain ->
+        peticiones.incrementAndGet()
+        if (chain.request().url.encodedPath.endsWith("/orders")) lista(chain) else detalle(chain)
+    }
+
+    private fun fila(id: String, saldo: String? = "6000", creada: String = "2026-11-10T18:00:00Z", extra: String = "") =
+        """{"id":"$id","status":"PENDING","paymentStatus":"PENDING","source":"AVOQADO_ANDROID","esDeMesa":false,""" +
+            """"createdAt":"$creada","pagosCompletados":0${saldo?.let { ",\"saldoPendienteCents\":$it" }.orEmpty()}$extra}"""
+    private fun pagina(vararg filas: String) =
+        """{"data":[${filas.joinToString(",")}],"meta":{"total":${filas.size},"page":1,"pageCount":1}}"""
+    private fun ids(r: OrdersRepository) = r.orders.value.map { it.id }
+    private fun sinRed(): (Interceptor.Chain) -> Response = { throw UnknownHostException("sin red") }
 
     private fun http(chain: Interceptor.Chain, codigo: Int, cuerpo: String) = Response.Builder()
         .request(chain.request()).protocol(Protocol.HTTP_1_1).code(codigo).message("x")
@@ -112,6 +156,223 @@ class PedidoSinRedTest {
         r.loadOrderDetail("B")
         assertEquals("B", r.selectedOrder.value?.id)
         assertNull(r.errorMessage.value)
+    }
+
+    // MARK: - D12 (Tarea 5): «Pedidos» alimenta la copia y la enseña sin red
+
+    @Test fun `lecturaDe decide que tanto prueba una lectura`() {
+        assertEquals(Lectura.LISTA_COMPLETA, lecturaDe(1, false, null, null, false))
+        assertEquals(Lectura.PRIMERA_PAGINA, lecturaDe(1, false, null, null, true))
+        assertEquals(Lectura.SUELTA, lecturaDe(1, false, "7", null, false))
+        assertEquals(Lectura.SUELTA, lecturaDe(1, false, null, "PENDING", false))
+        assertEquals(Lectura.SUELTA, lecturaDe(1, true, null, null, false))
+        assertEquals(Lectura.SUELTA, lecturaDe(2, false, null, null, false))
+        assertEquals(Lectura.LISTA_COMPLETA, lecturaDe(1, false, null, OPEN_ORDERS_STATUS_FILTER, false))
+        assertEquals(Lectura.PRIMERA_PAGINA, lecturaDe(1, false, null, OPEN_ORDERS_STATUS_FILTER, true))
+    }
+
+    /** Codex r2 #5: del JSON real al disco y, tras reiniciar sin red, de vuelta a la lista con la razón de cada gris. */
+    @Test fun `recorrido real JSON a disco a reinicio conserva las cobrables y las grises con su razon`() = runTest {
+        lista = { http(it, 200, pagina(
+            fila("A", creada = "2026-11-10T18:02:00Z"),
+            fila("R", creada = "2026-11-10T18:01:00Z", extra = ",\"cobrosConSaldo\":1"),
+            fila("V", saldo = null, creada = "2026-11-10T18:00:00Z"),
+        )) }
+        assertEquals(true, repoConRutas().loadOrders(1, null, null).isSuccess)
+
+        copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } } // el proceso se reinició: misma copia en disco
+        lista = sinRed()
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals(listOf("A", "R", "V"), ids(r))
+        val porId = r.orders.value.associateBy { it.id }
+        assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(porId.getValue("R")))
+        assertEquals(RazonSinRed.SIN_SALDO_DEL_SERVIDOR, razonParaNoCobrar(porId.getValue("V")))
+        assertNull(razonParaNoCobrar(porId.getValue("A")))
+    }
+
+    /** Review Focus 3. */
+    @Test fun `una fila con saldo raro no tumba la pagina`() = runTest {
+        lista = { http(it, 200, pagina(fila("A", saldo = "60.5"), fila("B"))) }
+        val r = repoConRutas()
+        assertEquals(true, r.loadOrders(1, null, null).isSuccess)
+        assertEquals(listOf("A", "B"), ids(r))
+        assertNull(r.orders.value.first().saldoPendienteCents)
+    }
+
+    /** Codex r2 #4. */
+    @Test fun `una lista completa vacia saca de la copia la cuenta que ya se cobro`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals("A", copia.cuenta("v1", "A")?.cuenta?.id)
+        lista = { http(it, 200, """{"data":[],"meta":{"total":0,"page":1,"pageCount":1}}""") }
+        r.loadOrders(1, null, null)
+        assertNull(copia.cuenta("v1", "A"))
+    }
+
+    @Test fun `sin red el detalle de una cuenta de la copia se ve con su hora y sigue la reapertura`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        val vistaEn = reloj
+        reloj += 60_000
+        r.loadOrderDetail("A") // el detalle no contesta: sin red
+        assertEquals("A", r.selectedOrder.value?.id)
+        assertEquals("A", r.detalleDeLaCopia.value?.cuenta?.id)
+        assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(vistaEn, null)), r.errorMessage.value)
+        assertEquals("A", r.detalleSinRed.value)
+    }
+
+    @Test fun `sin red y sin copia todo sigue como D22`() = runTest {
+        val r = repoConRutas()
+        r.loadOrderDetail("B")
+        assertNull(r.selectedOrder.value)
+        assertNull(r.detalleDeLaCopia.value)
+        assertEquals(TEXTO_PEDIDO_SIN_RED, r.errorMessage.value)
+        assertEquals("B", r.detalleSinRed.value)
+    }
+
+    @Test fun `tras reiniciar sin red la lista se llena con la copia y dice su hora`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        repoConRutas().loadOrders(1, null, null)
+        val vistaEn = reloj
+        reloj += 3_600_000
+
+        lista = sinRed()
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals(listOf("A"), ids(r))
+        assertEquals(vistaEn, r.copiaVistaA.value)
+
+        lista = { http(it, 200, pagina(fila("A"))) }
+        r.loadOrders(1, null, null)
+        assertNull(r.copiaVistaA.value)
+    }
+
+    /** Codex r2: la petición salió en v1 y la sesión ya es v2 cuando contesta. */
+    @Test fun `una respuesta atrasada de otra sucursal no entra a la lista ni a la copia de la nueva`() = runTest {
+        var url = ""
+        lista = { url = it.request().url.toString(); venue = "v2"; http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals(true, url.contains("/venues/v1/"))
+        assertEquals(listOf("A"), copia.cuentas("v1").map { it.cuenta.id })
+        assertEquals(emptyList<String>(), copia.cuentas("v2").map { it.cuenta.id })
+        assertEquals(emptyList<String>(), ids(r))
+    }
+
+    @Test fun `salir y entrar a otra sucursal con la lista poblada no deja ver la de antes sin red`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals(listOf("A"), ids(r))
+
+        venue = "v2"
+        lista = sinRed()
+        r.loadOrders(1, null, null)
+        assertEquals(emptyList<String>(), ids(r))
+        r.loadOrderDetail("A")
+        assertNull(r.detalleDeLaCopia.value)
+        assertNull(r.selectedOrder.value)
+    }
+
+    /** Review Focus 1: la del negocio, no la del aparato. */
+    @Test fun `la hora de la copia es la del negocio`() {
+        val vistaEn = Instant.parse("2026-11-10T18:05:00Z").toEpochMilli()
+        assertEquals("12:05", horaDeLaCopia(vistaEn, "America/Mexico_City"))
+        assertEquals("10:05", horaDeLaCopia(vistaEn, "America/Tijuana"))
+    }
+
+    /** Codex r3 H1: lo que un detalle bueno (o su 404) sabe también pone la copia al día. */
+    @Test fun `un detalle bueno con abono, regalo, cierre o 404 deja la copia al dia y sin red no reaparece cobrable`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"), fila("B"), fila("C"), fila("D"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertNull(razonParaNoCobrar(copia.cuenta("v1", "A")!!.cuenta))
+
+        val saldo = ""","preBillBalance":{"orderTotalCents":10000,"totalPaidCents":4000,"remainingBalanceCents":6000}"""
+        detalle = { chain ->
+            when (chain.request().url.pathSegments.last()) {
+                "A" -> http(chain, 200, """{"success":true,"order":{"id":"A","status":"PENDING","paymentStatus":"PARTIAL",""" +
+                    """"payments":[{"id":"p1","status":"COMPLETED","method":"CASH","amount":40.0}]$saldo}}""")
+                "B" -> http(chain, 200, """{"success":true,"order":{"id":"B","status":"PENDING","paymentStatus":"PENDING","cobrosConSaldo":1$saldo}}""")
+                "C" -> http(chain, 200, """{"success":true,"order":{"id":"C","status":"PENDING","paymentStatus":"PAID"$saldo}}""")
+                else -> http(chain, 404, """{"success":false,"message":"Order not found"}""")
+            }
+        }
+        for (id in listOf("A", "B", "C", "D")) r.loadOrderDetail(id)
+
+        detalle = sinRed()
+        r.loadOrderDetail("A")
+        assertEquals(RazonSinRed.CON_ABONO, razonParaNoCobrar(r.detalleDeLaCopia.value!!.cuenta))
+        r.loadOrderDetail("B")
+        assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(r.detalleDeLaCopia.value!!.cuenta))
+        assertNull("pagada: fuera de la copia", copia.cuenta("v1", "C"))
+        assertNull("404: fuera de la copia", copia.cuenta("v1", "D"))
+        r.loadOrderDetail("C")
+        assertNull(r.detalleDeLaCopia.value)
+        assertEquals(TEXTO_PEDIDO_SIN_RED, r.errorMessage.value)
+    }
+
+    /** Codex r3 H1: la primera respuesta se retiene; la segunda (lista completa vacía) llega antes. */
+    @Test fun `una lista vieja retenida no resucita la cuenta que una lista nueva vacia retiro`() = runTest {
+        val llamadas = AtomicInteger()
+        val entro = CompletableDeferred<Unit>()
+        val suelta = CompletableDeferred<Unit>()
+        lista = { chain ->
+            if (llamadas.incrementAndGet() == 1) {
+                entro.complete(Unit)
+                runBlocking { suelta.await() }
+                http(chain, 200, pagina(fila("A")))
+            } else http(chain, 200, """{"data":[],"meta":{"total":0,"page":1,"pageCount":1}}""")
+        }
+        val r = repoConRutas()
+        val vieja = launch { r.loadOrders(1, null, null) }
+        entro.await()
+        r.loadOrders(1, null, null)
+        suelta.complete(Unit)
+        vieja.join()
+        assertNull(copia.cuenta("v1", "A"))
+    }
+
+    /** Codex r3 H4: al perder la red con «Pedidos» a la vista, la copia vigente sin otra consulta y sin desmontar nada. */
+    @Test fun `cortar la red con la lista y el detalle ya en pantalla activa la copia sin otra consulta`() = runTest {
+        val (r, t) = listaYDetalleConRed()
+        val visto = r.selectedOrder.value
+        reloj += 60_000
+        val antes = peticiones.get()
+        r.alPerderLaRed()
+        assertEquals("A", r.detalleDeLaCopia.value?.cuenta?.id)
+        assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(t, null)), r.errorMessage.value)
+        assertEquals(t, r.copiaVistaA.value)
+        assertSame("sin desmontar el detalle", visto, r.selectedOrder.value)
+        assertEquals("ninguna petición nueva", antes, peticiones.get())
+    }
+
+    @Test fun `al cortar la red una copia vencida o de otra sucursal no se reutiliza`() = runTest {
+        val (vencida, t) = listaYDetalleConRed()
+        reloj = t + 24 * 60 * 60 * 1000L + 1
+        vencida.alPerderLaRed()
+        assertNull(vencida.detalleDeLaCopia.value)
+
+        reloj = t
+        val (deOtra, _) = listaYDetalleConRed()
+        venue = "v2"
+        deOtra.alPerderLaRed()
+        assertNull(deOtra.detalleDeLaCopia.value)
+    }
+
+    /** Con red: la lista con `A` (lectura buena a la hora `t`) y el detalle de `A` del servidor. */
+    private suspend fun listaYDetalleConRed(): Pair<OrdersRepository, Long> {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        detalle = { http(it, 200, """{"success":true,"order":{"id":"A","status":"PENDING","paymentStatus":"PENDING","items":[]}}""") }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        r.loadOrderDetail("A")
+        assertEquals("A", r.selectedOrder.value?.id)
+        assertNull(r.detalleDeLaCopia.value)
+        return r to reloj
     }
 }
 

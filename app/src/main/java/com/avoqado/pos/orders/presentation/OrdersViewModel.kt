@@ -67,6 +67,17 @@ class OrdersViewModel @Inject constructor(
     val errorMessage = repository.errorMessage
     val hasMore = repository.hasMore
 
+    /** D12: hora de lo que se ve en la lista sin red (null = con red) y la cuenta de la copia que respalda el detalle. */
+    val copiaVistaA = repository.copiaVistaA
+    val detalleDeLaCopia = repository.detalleDeLaCopia
+
+    /** D12: `HH:mm` de la copia en la zona del negocio (la vive `orders.data`). */
+    fun horaDeLaCopia(vistaEn: Long, zona: String? = secureStorage.venueTimezone): String =
+        com.avoqado.pos.orders.data.horaDeLaCopia(vistaEn, zona)
+
+    fun lecturaDe(page: Int, append: Boolean, search: String?, status: String?, hasMore: Boolean) =
+        com.avoqado.pos.orders.data.lecturaDe(page, append, search, status, hasMore)
+
     // MARK: - Local State
 
     private val _searchText = MutableStateFlow("")
@@ -313,6 +324,17 @@ class OrdersViewModel @Inject constructor(
                 repository.loadOrderDetail(id, reintento = true)
             }
         }
+    }
+
+    /**
+     * D12 (Codex r3 H4): mientras «Pedidos» se ve, al pasar `isConnected && isServerReachable` a falso se usa la copia vigente
+     * sin otra consulta ([OrdersRepository.alPerderLaRed]). Volver la red no la llama: eso lo hace [reabrirAlVolverLaRed].
+     */
+    suspend fun copiaAlPerderLaRed() {
+        val red = red ?: return
+        combine(red.isConnected, red.isServerReachable) { conectado, alcanzable -> conectado && alcanzable }
+            .distinctUntilChanged()
+            .collect { conRed -> if (!conRed) repository.alPerderLaRed() }
     }
 
     @OptIn(FlowPreview::class)

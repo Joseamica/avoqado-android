@@ -297,6 +297,7 @@ private fun PhoneOrdersLayout(
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
@@ -318,6 +319,7 @@ private fun PhoneOrdersLayout(
                 isReimprimiendoComanda = isReimprimiendoComanda,
                 mensajeDeReimpresion = mensajeDeReimpresion,
                 onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
+                avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null },
             )
         }
         EstadoDelDetalle.Cargando -> {
@@ -397,6 +399,15 @@ private fun OrderListView(
             currentFilter = statusFilter,
             onFilterSelected = { viewModel.setStatusFilter(it) },
         )
+
+        // D12: sin red, la lista dice de qué hora es lo que enseña (estado normal, nunca en rojo).
+        val copiaVistaA by viewModel.copiaVistaA.collectAsState()
+        copiaVistaA?.let { vistaEn ->
+            com.avoqado.pos.customers.presentation.AvisoSinRedDeClientes(
+                texto = com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.copiaDeLas(viewModel.horaDeLaCopia(vistaEn)),
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.xs),
+            )
+        }
 
         // Content — envuelto con el gesto de refresco (spec §4.7):
         // isRefreshing = SOLO el gesto manual, nunca la carga inicial.
@@ -486,6 +497,7 @@ private fun OrderDetailPanel(
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
@@ -515,6 +527,7 @@ private fun OrderDetailPanel(
                     isReimprimiendoComanda = isReimprimiendoComanda,
                     mensajeDeReimpresion = mensajeDeReimpresion,
                     onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
+                    avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null },
                 )
             }
             is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
@@ -558,6 +571,8 @@ fun OrderDetailView(
     isReimprimiendoComanda: Boolean = false,
     mensajeDeReimpresion: String? = null,
     onReimprimirComanda: (() -> Unit)? = null,
+    /** D12: «Sin conexión · como estaba a las HH:MM» cuando lo que se ve sale de la copia. */
+    avisoSinRed: String? = null,
 ) {
     Column(
         modifier = modifier
@@ -592,6 +607,8 @@ fun OrderDetailView(
             modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
+            avisoSinRed?.let { com.avoqado.pos.customers.presentation.AvisoSinRedDeClientes(texto = it) }
+
             // Status section
             OrderStatusSection(order = order)
 

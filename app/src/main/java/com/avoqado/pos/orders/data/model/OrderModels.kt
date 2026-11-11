@@ -193,6 +193,16 @@ fun OrderSummary.comoDetalle(): OrderDetail = OrderDetail(
     refundState = refundState, refundedAmount = refundedAmount,
 )
 
+/** D12 (Codex r3 H1): lo que este detalle bueno sabe de la cuenta, para poner la copia al día. */
+fun OrderDetail.comoEvidencia(): com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente =
+    com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente(
+        abierta = estaAbierta(status, paymentStatus, refundState),
+        saldoCents = preBillBalance?.remainingBalanceCents,
+        pagosCompletados = payments.orEmpty().count { it.status == "COMPLETED" },
+        cobrosConSaldo = cobrosConSaldo ?: 0,
+        esCuentaDeTarjetas = esCuentaDeTarjetas,
+    )
+
 // MARK: - Detail Model
 
 @Serializable
@@ -223,6 +233,8 @@ data class OrderDetail(
     val refundedAmount: Double = 0.0,
     /** IVA que la orden SUMA aparte (servidor, aditivo, plan 7, r2 R2-13). Null = servidor anterior. */
     val addedTaxAmount: Double? = null,
+    /** D12: el saldo que el servidor ya manda en este detalle (el mismo que lee Mesas). Null = no vino. */
+    val preBillBalance: com.avoqado.pos.tables.data.PreBillBalance? = null,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {

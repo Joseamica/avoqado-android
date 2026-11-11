@@ -13,6 +13,8 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -289,5 +291,31 @@ class OrdersViewModelTest {
         coVerify(atLeast = 1) {
             repository.loadOrders(page = 1, search = "taco", status = "PENDING", append = false)
         }
+    }
+
+    // MARK: - D12 (Tarea 5)
+
+    /** Codex r3 H4: al perder la red con «Pedidos» a la vista, la copia se activa una vez; volver la red no la llama. */
+    @Test
+    fun `D12 al perder la red con Pedidos a la vista se llama alPerderLaRed una vez`() = runTest {
+        val conectado = MutableStateFlow(true)
+        val alcanzable = MutableStateFlow(true)
+        val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> {
+            every { isConnected } returns conectado
+            every { isServerReachable } returns alcanzable
+        }
+        val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
+        every { refreshGateFactory.create(any(), any()) } returns
+            com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
+        val viewModel = OrdersViewModel(repository, refreshGateFactory, mockk(relaxed = true), mockk(relaxed = true),
+            mockk(relaxed = true), red)
+
+        backgroundScope.launch { viewModel.copiaAlPerderLaRed() }
+        runCurrent()
+        coVerify(exactly = 0) { repository.alPerderLaRed() }
+        alcanzable.value = false; runCurrent()
+        coVerify(exactly = 1) { repository.alPerderLaRed() }
+        alcanzable.value = true; runCurrent()
+        coVerify(exactly = 1) { repository.alPerderLaRed() }
     }
 }

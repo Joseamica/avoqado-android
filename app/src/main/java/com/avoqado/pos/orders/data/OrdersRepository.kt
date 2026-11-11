@@ -8,6 +8,13 @@ import com.avoqado.pos.core.data.network.LecturaFallida
 import com.avoqado.pos.orders.data.model.OrderDetail
 import com.avoqado.pos.orders.data.model.OrderPage
 import com.avoqado.pos.orders.data.model.OrderSummary
+import com.avoqado.pos.orders.data.model.comoDetalle
+import com.avoqado.pos.orders.data.model.comoEvidencia
+import com.avoqado.pos.core.util.VenueTimeZone
+import com.avoqado.pos.orders.presentation.OPEN_ORDERS_STATUS_FILTER
+import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,10 +44,26 @@ private const val TAG = "🧾 OrdersRepo"
 /** D22: un pedido que no se pudo abrir porque nadie contestó. Con «Pedidos» a la vista, [com.avoqado.pos.orders.presentation.OrdersViewModel.reabrirAlVolverLaRed] lo vuelve a pedir. */
 internal const val TEXTO_PEDIDO_SIN_RED = "Sin conexión: para ver este pedido necesitas internet. Se abre solo al volver la conexión."
 
+/**
+ * D12: cuánto prueba una lectura de la lista. Sólo la página 1 SIN búsqueda y con «Todos» o «Abiertas» puede retirar ausentes
+ * de la copia; cualquier otra (búsqueda, otro filtro, página siguiente) sólo pone al día lo que trae.
+ */
+fun lecturaDe(page: Int, append: Boolean, search: String?, status: String?, hasMore: Boolean): Lectura = when {
+    page != 1 || append || !search.isNullOrBlank() || (status != null && status != OPEN_ORDERS_STATUS_FILTER) -> Lectura.SUELTA
+    hasMore -> Lectura.PRIMERA_PAGINA
+    else -> Lectura.LISTA_COMPLETA
+}
+
+/** D12 (Review Focus 1): `HH:mm` en la zona del NEGOCIO (`zona` null = la de la sesión), nunca la del aparato. */
+fun horaDeLaCopia(vistaEn: Long, zona: String?): String =
+    VenueTimeZone.at(Instant.ofEpochMilli(vistaEn), zona).format(DateTimeFormatter.ofPattern("HH:mm"))
+
 @Singleton
 class OrdersRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    /** D12: la copia en disco de las cuentas abiertas. Hilt (y Guice) siempre la pasan; null sólo en pruebas viejas. */
+    private val copia: CopiaDeCuentas? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -74,6 +97,25 @@ class OrdersRepository @Inject constructor(
 
     private val _hasMore = MutableStateFlow(false)
     val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    // MARK: - D12: la copia sin red
+
+    private val _copiaVistaA = MutableStateFlow<Long?>(null)
+    /** Hora de lo que se ve en la lista cuando NO hay red (la de la copia, o la de la última lectura buena); null = con red. */
+    val copiaVistaA: StateFlow<Long?> = _copiaVistaA.asStateFlow()
+
+    private val _detalleDeLaCopia = MutableStateFlow<CuentaGuardada?>(null)
+    /** La cuenta de la copia que respalda el detalle a la vista sin red, o null. */
+    val detalleDeLaCopia: StateFlow<CuentaGuardada?> = _detalleDeLaCopia.asStateFlow()
+
+    /** De qué sucursal es lo que hay en [orders], y a qué hora se leyó (o la de la copia que se enseña). */
+    private var venueDeLaLista: String? = null
+    private var listaVistaA: Long? = null
+
+    private fun ahora(): Long = copia?.ahora?.invoke() ?: System.currentTimeMillis()
+
+    private fun avisoDeLaCopia(g: CuentaGuardada) =
+        TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(g.vistaEn, secureStorage.venueTimezone))
 
     // MARK: - Helpers
 
@@ -215,18 +257,42 @@ class OrdersRepository @Inject constructor(
         // D22 (Codex r4 #3): la lista ya no toca `_errorMessage`, que es el aviso del DETALLE. Nada lo pintaba en la lista y
         // un refresco borraba el «Sin conexión…» del pedido seleccionado (quedaba «No se pudo cargar el pedido»).
 
+        // D12: la sucursal y el turno se toman cuando la petición SALE (una respuesta atrasada no se mete en otra sucursal).
+        val venueId = secureStorage.venueId
+        val turno = copia?.abrirLectura()
         val result = fetchOrders(page = page, search = search, status = status)
-        result.onSuccess { pageData ->
-            if (append) {
-                _orders.value = _orders.value + pageData.orders
-            } else {
-                _orders.value = pageData.orders
+        val pageData = result.getOrNull()
+        if (pageData != null) {
+            if (copia != null && venueId != null && turno != null) {
+                copia.alLeer(venueId, pageData.orders, lecturaDe(page, append, search, status, pageData.hasMore), turno)
             }
-            _currentPage.value = pageData.page
-            _hasMore.value = pageData.hasMore
-        }.onFailure { e ->
-            // Datos previos INTACTOS (spec §4.1).
-            Log.e(TAG, "❌ loadOrders: ${e.message}")
+            if (secureStorage.venueId == venueId) {
+                if (append) {
+                    _orders.value = _orders.value + pageData.orders
+                } else {
+                    _orders.value = pageData.orders
+                    listaVistaA = ahora()
+                }
+                venueDeLaLista = venueId
+                _currentPage.value = pageData.page
+                _hasMore.value = pageData.hasMore
+                _copiaVistaA.value = null
+            }
+        } else {
+            // Datos previos INTACTOS (spec §4.1), salvo que no haya nada o sean de otra sucursal: ahí se enseña la copia (D12).
+            Log.e(TAG, "❌ loadOrders: ${result.exceptionOrNull()?.message}")
+            val actual = secureStorage.venueId
+            if (!append && copia != null && actual != null && (_orders.value.isEmpty() || venueDeLaLista != actual)) {
+                val guardadas = copia.cuentas(actual)
+                if (secureStorage.venueId == actual) {
+                    _orders.value = guardadas.map { it.cuenta }
+                    venueDeLaLista = actual
+                    listaVistaA = guardadas.minOfOrNull { it.vistaEn }
+                    _copiaVistaA.value = listaVistaA
+                    _currentPage.value = 1
+                    _hasMore.value = false // la copia es todo lo que hay: nada que pedir «más» encima
+                }
+            }
         }
         _isLoading.value = false
         _isLoadingMore.value = false
@@ -242,6 +308,8 @@ class OrdersRepository @Inject constructor(
     suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false, reintento: Boolean = false) {
         val solicitud = orderId to Any()
         detalleSolicitado = solicitud
+        val venueId = secureStorage.venueId
+        val turno = copia?.abrirLectura() // D12 (Codex r3 H1): lo que diga este detalle pone la copia al día
         if (!silencioso && !reintento) {
             _isLoadingDetail.value = true
             _errorMessage.value = null
@@ -250,7 +318,12 @@ class OrdersRepository @Inject constructor(
 
         try {
             val detail = fetchOrderDetail(orderId)
+            if (copia != null && venueId != null && turno != null) {
+                copia.alLeerDetalle(venueId, orderId, detail?.comoEvidencia() ?: EvidenciaDelDetalle.NoExiste, turno)
+            }
             if (detalleSolicitado != solicitud || (silencioso && detail == null)) return
+            if (_detalleDeLaCopia.value != null) _errorMessage.value = null // su «Sin conexión · como estaba…»
+            _detalleDeLaCopia.value = null
             _selectedOrder.value = detail
             _detalleSinRed.value = null
             if (detail == null) {
@@ -264,6 +337,19 @@ class OrdersRepository @Inject constructor(
             if (detalleSolicitado != solicitud || silencioso) return
             Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
             val sinRed = FalloDeLectura.de(e) == FalloDeLectura.SIN_RED
+            // D12: sin red, la cuenta de la copia VIGENTE de la sucursal ACTUAL se enseña con su hora; la reapertura sigue.
+            val actual = secureStorage.venueId
+            val guardada = if (sinRed && copia != null && actual != null) copia.cuenta(actual, orderId) else null
+            if (detalleSolicitado != solicitud) return
+            if (guardada != null) {
+                // Una reapertura que falla no desmonta lo que ya se ve de esa cuenta (Codex r3 #3).
+                if (!reintento || _selectedOrder.value?.id != orderId) _selectedOrder.value = guardada.cuenta.comoDetalle()
+                _detalleDeLaCopia.value = guardada
+                _errorMessage.value = avisoDeLaCopia(guardada)
+                _detalleSinRed.value = orderId
+                return
+            }
+            _detalleDeLaCopia.value = null
             // Como antes de D22 (ahí el fallo llegaba como `null`): volver a pedir el pedido que se ve y fallar enseña el
             // fallo, no la foto anterior sin aviso (Codex r5).
             _selectedOrder.value = null
@@ -277,7 +363,26 @@ class OrdersRepository @Inject constructor(
     fun clearSelectedOrder() {
         detalleSolicitado = null
         _detalleSinRed.value = null
+        _detalleDeLaCopia.value = null
         _selectedOrder.value = null
         _isLoadingDetail.value = false
+    }
+
+    /**
+     * D12 (Codex r3 H4): se fue la red con «Pedidos» a la vista. Sin otra consulta ni desmontar nada: la lista dice de qué
+     * hora es, y si el detalle a la vista vino del servidor, se respalda con su cuenta de la copia VIGENTE de la sucursal
+     * ACTUAL (con su hora en el aviso). Copia vencida, ausente o de otra sucursal: no cambia nada.
+     */
+    suspend fun alPerderLaRed() {
+        val actual = secureStorage.venueId ?: return
+        if (venueDeLaLista == actual && _orders.value.isNotEmpty()) _copiaVistaA.value = listaVistaA
+        val visto = _selectedOrder.value ?: return
+        if (copia == null || _detalleDeLaCopia.value != null) return
+        val solicitud = detalleSolicitado
+        val guardada = copia.cuenta(actual, visto.id) ?: return
+        if (detalleSolicitado !== solicitud || _selectedOrder.value !== visto || secureStorage.venueId != actual) return
+        _detalleDeLaCopia.value = guardada
+        _errorMessage.value = avisoDeLaCopia(guardada)
+        _detalleSinRed.value = visto.id // al volver la red, la reapertura de D22 lo pide y quita el aviso
     }
 }
