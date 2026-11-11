@@ -279,7 +279,7 @@ class GuardaDeLaVentaTest {
         coEvery { printerService.autoPrintReceipt(any()) } coAnswers { ticket.await() }
         val ordenDeLaComanda = slot<String?>()
         coEvery {
-            comandaDispatcher.dispatch(any(), any(), any(), any(), any(), any(), any(), captureNullable(ordenDeLaComanda), any(), any(), any(), any(), any(), any(), any())
+            comandaDispatcher.dispatch(any(), any(), any(), any(), any(), any(), any(), captureNullable(ordenDeLaComanda), any(), any(), any(), any(), any(), any(), any(), omitirSinComanda = any())
         } returns null
 
         vm.startPaymentFlow(dosCafes)

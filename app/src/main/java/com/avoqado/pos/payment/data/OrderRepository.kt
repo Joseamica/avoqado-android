@@ -179,6 +179,8 @@ class OrderRepository @Inject constructor(
         val cambiosDePrecio: List<CambioDePrecio> = emptyList(),
         /** El `code` del cuerpo de NUESTRA API (p. ej. `ORDER_CANCELLED_NO_NEW_CHARGE`); null si no vino. Hoy sólo lo llena el `/pay`. */
         val codigo: String? = null,
+        /** hz:e0b12f00:D2: el permiso que pidió un 403 de NUESTRA API (`required`), p. ej. `orders:comp`. Lo llena crear la venta. */
+        val requerido: String? = null,
     ) : Exception(message)
 
     /**
@@ -738,7 +740,12 @@ class OrderRepository @Inject constructor(
                 put("subtotal", request.subtotal)
                 put("tip", request.tip)
                 put("total", request.total)
-                if (request.discount > 0) put("discount", request.discount)
+                if (request.discount > 0) {
+                    put("discount", request.discount)
+                    // hz:e0b12f00:D2: «esta app pide el PIN de gerente antes de mandar un descuento de cuenta que regala». Sólo a ella le
+                    // exige el SERVIDOR `orders:comp` en línea (una app vieja, no). ADITIVO: sin descuento de cuenta el cuerpo no cambia.
+                    put("cortesiaDeCuentaConPin", true)
+                }
                 // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
                 request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
@@ -771,6 +778,11 @@ class OrderRepository @Inject constructor(
          * abre una nueva.»), igual que en iOS; si el cuerpo no lo trae (un proxy), el texto de siempre.
          */
         fun mensajeDelRechazo(code: Int, body: String): String = extractErrorMessage(body) ?: "Error al registrar pago ($code)"
+
+        /** hz:e0b12f00:D2: el `required` de un 403 de permisos de nuestra API; null en cualquier otro caso. PURA. */
+        fun permisoRequerido(code: Int, body: String): String? = if (code != 403) null else runCatching {
+            errorParserJson.parseToJsonElement(body).jsonObject["required"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        }.getOrNull()
 
         /** El `code` de un rechazo de nuestra API (`{"message":…,"code":…}`); null sin él o si el cuerpo no es JSON. PURA. */
         fun codigoDelRechazo(body: String): String? = runCatching {
@@ -870,6 +882,11 @@ class OrderRepository @Inject constructor(
         stampRewardId: String? = null,
         stampRewardExpectedDiscount: Int? = null,
         capturedVenueId: String? = null,
+        /**
+         * hz:e0b12f00:D2: el token del PIN de gerente para un descuento de cuenta que regala. Esta llamada es `FAIL_FAST` (el interceptor
+         * no abre el teclado ni toma el token aquí), así que viaja a mano en `X-Permission-Override`. null = no se manda nada.
+         */
+        permisoDeGerente: String? = null,
     ): Result<CreateOrderResponse> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
@@ -897,6 +914,7 @@ class OrderRepository @Inject constructor(
             val httpRequest = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/orders")
                 .header("Authorization", "Bearer $token")
+                .apply { permisoDeGerente?.let { header(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER, it) } }
                 .post(body)
                 .build()
 
@@ -915,7 +933,9 @@ class OrderRepository @Inject constructor(
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")
                 val message = extractErrorMessage(responseBody) ?: "Error al crear orden ($responseCode)"
-                Result.failure(ServerException(responseCode, message, leerCambiosDePrecio(responseBody)))
+                Result.failure(
+                    ServerException(responseCode, message, leerCambiosDePrecio(responseBody), requerido = permisoRequerido(responseCode, responseBody)),
+                )
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Order creation error: ${e.message}")

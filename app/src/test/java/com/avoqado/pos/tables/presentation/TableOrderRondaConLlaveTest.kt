@@ -513,7 +513,9 @@ class TableOrderRondaConLlaveTest {
                 venueId = "venue-1", orderNumber = "ORD-1",
                 pedidos = match { pedidos ->
                     pedidos.map { it.orderType } == listOf("Mesa 5") && pedidos.map { it.etiquetaPantalla } == listOf("Mesa 5") &&
-                        pedidos.map { it.curso } == listOf(null)
+                        pedidos.map { it.curso } == listOf(null) &&
+                        // «No lleva comanda»: la ronda es una venta del POS.
+                        pedidos.all { it.omitirSinComanda }
                 },
                 orderId = "o1", servidorLaTiene = true, origenDelFolio = "round:$llave", alCambiarEstado = any(),
             )

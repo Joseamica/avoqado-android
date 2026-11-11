@@ -238,8 +238,9 @@ class ReservationDetailViewModel @Inject constructor(
                 )
             }
 
-            val plans = PrintRoutingMapper.buildComandas(items, cfg)
-            comandaPrinter.printComandas(
+            // «No lleva comanda»: el check-in es una venta del POS.
+            val plans = PrintRoutingMapper.rutear(items, cfg, omitirSinComanda = true).plans
+            if (plans.isNotEmpty()) comandaPrinter.printComandas(
                 plans = plans,
                 config = cfg,
                 orderNumber = reservation.confirmationCode.takeLast(4).ifBlank { "RES" },
