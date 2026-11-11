@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -24,6 +27,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta
 import com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
+import com.avoqado.pos.onlineorders.domain.BeneficioDelFolio
+import com.avoqado.pos.onlineorders.domain.ClienteDelFolio
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.presentation.FolioPorPagarCard
@@ -109,6 +114,49 @@ class FolioPorPagarEnLaEscenaTest {
         onNodeWithTag("vence-f1").assertDoesNotExist()
         onNodeWithText("Ya pagó $100.00 de $185.00").assertExists()
         onNodeWithText("Falta $85.00").assertExists()
+    }
+
+    /** Parte 2 (mockup 2c·2): la clienta y lo que ya trae rebajado, en claro y en oscuro; un folio sin cuenta queda como hoy. */
+    @Test fun `a folio with an account shows its customer and its benefits in light and dark`() = runComposeUiTest {
+        val conCuenta = folio(OnlineOrderStatus.PENDING_ACCEPTANCE, total = 6900, falta = 6900).copy(
+            cliente = ClienteDelFolio("c1", "Ana L."),
+            beneficios = listOf(BeneficioDelFolio("Café gratis (premio de Ana)", 6500)),
+            beneficiosTotal = 3,
+        )
+        var oscuro by mutableStateOf(false)
+        setContent {
+            CompositionLocalProvider(
+                LocalContext provides context, LocalConfiguration provides configuracionDeAndroid(1280.dp, 800.dp, 1f),
+                LocalView provides View(context), LocalEsEscritorio provides true,
+            ) {
+                AvoqadoTheme(darkTheme = oscuro) {
+                    Box(Modifier.width(480.dp)) {
+                        FolioPorPagarCard(conCuenta, porEntregar = false, ahora = ahora, sinConexion = false, puedeActualizar = true,
+                            ocupado = false, onListo = {}, onEntregado = {}, puedeCobrar = true)
+                    }
+                }
+            }
+        }
+        for (tema in listOf(false, true)) {
+            oscuro = tema
+            waitForIdle()
+            onNodeWithText("Con cuenta: Ana L.").assertExists()
+            onNodeWithText("Café gratis (premio de Ana)").assertExists()
+            onNodeWithText("−$65.00").assertExists()
+            onNodeWithText("y 2 más").assertExists()
+            onNodeWithText("Total a cobrar $69.00").assertExists()
+        }
+    }
+
+    @Test fun `a folio without an account looks like today`() = runComposeUiTest {
+        setContent {
+            escena {
+                FolioPorPagarCard(folio(OnlineOrderStatus.PENDING_ACCEPTANCE, falta = 13400), porEntregar = false, ahora = ahora,
+                    sinConexion = false, puedeActualizar = true, ocupado = false, onListo = {}, onEntregado = {})
+            }
+        }
+        onNodeWithTag("folio-cuenta-f1").assertDoesNotExist()
+        onNodeWithTag("folio-beneficios-f1").assertDoesNotExist()
     }
 
     @Test fun `the card marker survives reopening the app`() {

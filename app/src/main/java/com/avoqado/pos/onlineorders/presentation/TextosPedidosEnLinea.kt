@@ -172,4 +172,12 @@ object TextosPedidosEnLinea {
     const val FOLIO_SIN_SALDO_GUARDADO = "Sin conexión: no se puede confirmar el saldo de este folio."
     const val COBRO_CON_TARJETA_AQUI = "Se cobró con tarjeta en esta caja: se actualiza al volver la conexión"
     fun pagadoConTarjeta(monto: String) = "$PAGADO_CON_TARJETA $monto"
+
+    // Tienda híbrida, parte 2 (A1): el folio con su clienta y sus beneficios, y el cobro con saldo. iOS los copia igual.
+    /** La misma frase que el DASHBOARD («Con cuenta: {{name}}»); el nombre es el corto del SERVIDOR («Ana L.»). */
+    fun conCuenta(nombre: String) = "Con cuenta: $nombre"
+    fun montoDeBeneficio(monto: String) = "−$monto"
+    fun beneficiosDeMas(n: Int) = "y $n más"
+    /** Un cobro con saldo de esta caja que la lista guardada todavía no cuenta: «Cobrar» no abre otro (pudo ser parcial). */
+    const val FOLIO_COBRADO_CON_SALDO = "Este folio ya tiene un cobro con saldo en esta caja: lo que falte se cobra al volver la conexión."
 }

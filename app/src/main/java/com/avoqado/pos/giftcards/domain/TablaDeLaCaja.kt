@@ -37,3 +37,17 @@ fun estadoDeLaVenta(ajustes: EstadoDeAjustes, enLinea: Boolean, puedeCobrar: Boo
     val fila = when { enMesa -> FilaDeLaCaja.T8; desdeCuentasAbiertas -> FilaDeLaCaja.T7; cuentaPorPagoPrevio -> FilaDeLaCaja.T2; else -> FilaDeLaCaja.T1 }
     return ConductaDeTarjeta(fila, true, true, null)
 }
+
+/**
+ * Tienda híbrida, parte 2 (A1): el cobro que abre la bandeja «Pedidos en línea». Sólo un folio ofrece saldo (sobre su cuenta, T2); un
+ * pedido de plataforma o de «Mi equipo», no. Abierto sin el saldo del servidor (`PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO`), en gris T0
+ * aunque la red vuelva con la pantalla abierta: lo que cobraría salió de la lista guardada, como la tarjeta de la terminal. Lo demás
+ * (permisos, ajustes, un cobro en duda) queda como en la venta de siempre. PURA.
+ */
+fun conOrigen(c: ConductaDeTarjeta, origen: com.avoqado.pos.payment.domain.OrigenDelCobro, esFolio: Boolean): ConductaDeTarjeta = when {
+    !origen.esPedidoEnLinea -> c
+    !origen.ofreceSaldo(esFolio) -> ConductaDeTarjeta(FilaDeLaCaja.T12, false, false, null)
+    origen == com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO && c.habilitada ->
+        ConductaDeTarjeta(FilaDeLaCaja.T0, true, false, TextosDeTarjetas.SIN_RED)
+    else -> c
+}
