@@ -410,6 +410,10 @@ internal fun textoDeAdopcion(quien: String, hora: String, fondoServidorCents: In
  */
 fun llaveDelRetiro(localId: String, amountCents: Int): String = "pay-out:$localId:$amountCents"
 
+/** Quién tiene la sesión, como firma los movimientos de la caja (y el comprobante del retiro). */
+fun nombreDeLaSesion(s: com.avoqado.pos.core.data.local.SecureStorage): String =
+    "${s.userFirstName ?: ""} ${s.userLastName ?: ""}".trim().ifEmpty { s.userEmail ?: "Staff" }
+
 /** Cómo terminó [CashDrawerRepository.addPayOut]. */
 sealed interface ResultadoDelRetiro {
     /**
@@ -969,11 +973,7 @@ class CashDrawerRepository @Inject constructor(
         get() = secureStorage.userId ?: ""
 
     private val staffName: String
-        get() {
-            val first = secureStorage.userFirstName ?: ""
-            val last = secureStorage.userLastName ?: ""
-            return "$first $last".trim().ifEmpty { secureStorage.userEmail ?: "Staff" }
-        }
+        get() = nombreDeLaSesion(secureStorage)
 
     private val deviceName: String
         get() = "${Build.MANUFACTURER} ${Build.MODEL}"

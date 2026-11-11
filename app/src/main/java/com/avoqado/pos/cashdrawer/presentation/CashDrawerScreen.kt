@@ -52,6 +52,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.ManagerOverrideSheet
+import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -109,10 +111,6 @@ private fun TabletCashDrawerLayout(
 
     var showOpenSheet by remember { mutableStateOf(false) }
     var showPayInSheet by remember { mutableStateOf(false) }
-    var showPayOutSheet by remember { mutableStateOf(false) }
-    // Egreso que dejaría la caja en negativo, a la espera de confirmación.
-    var pendingPayOut by remember { mutableStateOf<Pair<Int, String?>?>(null) }
-    val expectedAmountCents by viewModel.expectedAmountCents.collectAsState()
     var showCloseSheet by remember { mutableStateOf(false) }
     var showDailyReport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -226,7 +224,7 @@ private fun TabletCashDrawerLayout(
                 viewModel = viewModel,
                 onOpenDrawer = { showOpenSheet = true },
                 onPayIn = { showPayInSheet = true },
-                onPayOut = { showPayOutSheet = true },
+                onPayOut = { viewModel.tocarRetiro() },
                 // Antes de contar se vuelve a preguntar al servidor: el esperado tiene que incluir
                 // lo que él escribió mientras la pantalla estaba abierta.
                 onCloseDrawer = { viewModel.alEntrar(); showCloseSheet = true },
@@ -264,55 +262,7 @@ private fun TabletCashDrawerLayout(
         )
     }
 
-    if (showPayOutSheet) {
-        PayInOutSheet(
-            isPayIn = false,
-            onConfirm = { amountCents, note ->
-                // 🔴 Sacar más efectivo del que hay deja la caja en NEGATIVO.
-                //
-                // Medido en la tablet: con $600 en caja se registró un egreso de
-                // $10,000 y el efectivo esperado quedó en -$9,400, sin un solo
-                // aviso. Un cero de más al teclear descuadra el corte del día y
-                // nadie se entera hasta contar el dinero.
-                //
-                // Se AVISA en vez de bloquear: el esperado puede ir corto si hay
-                // ventas en efectivo sin sincronizar, y un guard duro dejaría al
-                // cajero sin poder registrar un egreso legítimo.
-                if (viewModel.puedeVerEsperado && amountCents > expectedAmountCents) { // sin permiso no hay aviso: sería un oráculo del esperado (Codex 3ª)
-                    pendingPayOut = amountCents to note
-                } else {
-                    viewModel.addPayOut(amountCents, note)
-                }
-                showPayOutSheet = false
-            },
-            onDismiss = { showPayOutSheet = false },
-        )
-    }
-
-    pendingPayOut?.let { (amountCents, note) ->
-        AvoqadoDialog(
-            title = "Más de lo que hay en caja",
-            description = (if (viewModel.puedeVerEsperado)
-                "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
-                    "${formatCurrency(amountCents)}. La caja quedaría en " +
-                    "${formatCurrency(expectedAmountCents - amountCents)}.\n\n"
-            else
-                "Vas a sacar ${formatCurrency(amountCents)}, más de lo que debería haber en caja.\n\n") +
-                "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
-                "con lo que muestra la caja, revisa los movimientos antes de continuar.",
-            onDismiss = { pendingPayOut = null },
-            actionButton = {
-                PrimaryButton(
-                    text = "Sacar de todos modos",
-                    onClick = {
-                        viewModel.addPayOut(amountCents, note)
-                        pendingPayOut = null
-                    },
-                )
-            },
-            content = {},
-        )
-    }
+    RetiroDeCaja(viewModel)
 
     // Resultado de imprimir el corte. Va aquí, al nivel de la pantalla, porque el
     // corte parcial se lanza desde la caja en curso — dentro del reporte no se
@@ -359,6 +309,101 @@ private fun TabletCashDrawerLayout(
     }
 }
 
+// MARK: - Retiro de efectivo
+
+/**
+ * El retiro, igual en los dos layouts: la hoja, el aviso de «más de lo que hay», el teclado del gerente y los avisos. Sólo pinta
+ * `viewModel.retiro` / `avisoDelRetiro` y llama al ViewModel; el camino (directo, con PIN, sin red, sólo gerente) lo decide él.
+ */
+@Composable
+private fun RetiroDeCaja(viewModel: CashDrawerViewModel) {
+    val retiro by viewModel.retiro.collectAsState()
+    val aviso by viewModel.avisoDelRetiro.collectAsState()
+    val expectedAmountCents by viewModel.expectedAmountCents.collectAsState()
+    // Retiro que dejaría la caja en negativo, a la espera de confirmación (camino directo).
+    var masDeLoQueHay by remember { mutableStateOf<Pair<Int, String>?>(null) }
+
+    val hoja = (retiro as? RetiroUi.Hoja) ?: (retiro as? RetiroUi.PidiendoPin)?.hoja
+    // La hoja sigue debajo del teclado del gerente: al cancelar vuelve con lo escrito.
+    if (hoja != null) {
+        PayInOutSheet(
+            isPayIn = false,
+            ocupado = hoja.ocupado,
+            error = hoja.error,
+            conPin = hoja.conPin,
+            onConfirm = { amountCents, concepto ->
+                // 🔴 Sacar más efectivo del que hay deja la caja en NEGATIVO.
+                //
+                // Medido en la tablet: con $600 en caja se registró un egreso de
+                // $10,000 y el efectivo esperado quedó en -$9,400, sin un solo
+                // aviso. Un cero de más al teclear descuadra el corte del día y
+                // nadie se entera hasta contar el dinero.
+                //
+                // Se AVISA en vez de bloquear: el esperado puede ir corto si hay
+                // ventas en efectivo sin sincronizar, y un guard duro dejaría al
+                // cajero sin poder registrar un egreso legítimo.
+                if (!hoja.conPin && viewModel.puedeVerEsperado && amountCents > expectedAmountCents) { // sin permiso no hay aviso: sería un oráculo del esperado (Codex 3ª)
+                    masDeLoQueHay = amountCents to concepto.orEmpty()
+                } else {
+                    viewModel.confirmarRetiro(amountCents, concepto.orEmpty())
+                }
+            },
+            onDismiss = { viewModel.cerrarRetiro() },
+        )
+    }
+
+    masDeLoQueHay?.let { (amountCents, concepto) ->
+        AvoqadoDialog(
+            title = "Más de lo que hay en caja",
+            description = "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
+                "${formatCurrency(amountCents)}. La caja quedaría en " +
+                "${formatCurrency(expectedAmountCents - amountCents)}.\n\n" +
+                "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
+                "con lo que muestra la caja, revisa los movimientos antes de continuar.",
+            onDismiss = { masDeLoQueHay = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Sacar de todos modos",
+                    onClick = {
+                        viewModel.confirmarRetiro(amountCents, concepto)
+                        masDeLoQueHay = null
+                    },
+                )
+            },
+            content = {},
+        )
+    }
+
+    (retiro as? RetiroUi.PidiendoPin)?.let { p ->
+        ManagerOverrideSheet(
+            // El gerente ve QUÉ autoriza («Retiro de $5,000.00 · Bajada»): no firma en blanco.
+            prompt = ManagerOverrideCoordinator.Prompt(id = p.hashCode().toLong(), permission = PERMISO_RETIRAR, actionLabel = p.etiqueta),
+            onSubmit = { pin -> viewModel.teclearPinDelRetiro(pin) },
+            onDismiss = { viewModel.cancelarPin() },
+        )
+    }
+
+    (retiro as? RetiroUi.Aviso)?.let { a ->
+        AvoqadoDialog(
+            title = "Retiro de efectivo",
+            description = a.texto,
+            onDismiss = { viewModel.cerrarRetiro() },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { viewModel.cerrarRetiro() }) },
+            content = {},
+        )
+    }
+
+    aviso?.let { texto ->
+        AvoqadoDialog(
+            title = "Retiro de efectivo",
+            description = texto,
+            onDismiss = { viewModel.descartarAvisoDelRetiro() },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { viewModel.descartarAvisoDelRetiro() }) },
+            content = {},
+        )
+    }
+}
+
 // MARK: - Phone Layout
 
 @Composable
@@ -369,10 +414,6 @@ private fun PhoneCashDrawerLayout(
     var showingSection by remember { mutableStateOf<CashDrawerSection?>(null) }
     var showOpenSheet by remember { mutableStateOf(false) }
     var showPayInSheet by remember { mutableStateOf(false) }
-    var showPayOutSheet by remember { mutableStateOf(false) }
-    // Egreso que dejaría la caja en negativo, a la espera de confirmación.
-    var pendingPayOut by remember { mutableStateOf<Pair<Int, String?>?>(null) }
-    val expectedAmountCents by viewModel.expectedAmountCents.collectAsState()
     var showCloseSheet by remember { mutableStateOf(false) }
     var showDailyReport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -460,7 +501,7 @@ private fun PhoneCashDrawerLayout(
                     viewModel = viewModel,
                     onOpenDrawer = { showOpenSheet = true },
                     onPayIn = { showPayInSheet = true },
-                    onPayOut = { showPayOutSheet = true },
+                    onPayOut = { viewModel.tocarRetiro() },
                     // Antes de contar se vuelve a preguntar al servidor: el esperado tiene que incluir
                     // lo que él escribió mientras la pantalla estaba abierta.
                     onCloseDrawer = { viewModel.alEntrar(); showCloseSheet = true },
@@ -541,47 +582,7 @@ private fun PhoneCashDrawerLayout(
         )
     }
 
-    if (showPayOutSheet) {
-        PayInOutSheet(
-            isPayIn = false,
-            onConfirm = { amountCents, note ->
-                // Mismo aviso que en el layout de tablet: sacar más de lo que hay
-                // deja la caja en negativo, y casi siempre es un cero de más.
-                if (viewModel.puedeVerEsperado && amountCents > expectedAmountCents) { // sin permiso no hay aviso: sería un oráculo del esperado (Codex 3ª)
-                    pendingPayOut = amountCents to note
-                } else {
-                    viewModel.addPayOut(amountCents, note)
-                }
-                showPayOutSheet = false
-            },
-            onDismiss = { showPayOutSheet = false },
-        )
-    }
-
-    pendingPayOut?.let { (amountCents, note) ->
-        AvoqadoDialog(
-            title = "Más de lo que hay en caja",
-            description = (if (viewModel.puedeVerEsperado)
-                "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
-                    "${formatCurrency(amountCents)}. La caja quedaría en " +
-                    "${formatCurrency(expectedAmountCents - amountCents)}.\n\n"
-            else
-                "Vas a sacar ${formatCurrency(amountCents)}, más de lo que debería haber en caja.\n\n") +
-                "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
-                "con lo que muestra la caja, revisa los movimientos antes de continuar.",
-            onDismiss = { pendingPayOut = null },
-            actionButton = {
-                PrimaryButton(
-                    text = "Sacar de todos modos",
-                    onClick = {
-                        viewModel.addPayOut(amountCents, note)
-                        pendingPayOut = null
-                    },
-                )
-            },
-            content = {},
-        )
-    }
+    RetiroDeCaja(viewModel)
 
     // Resultado de imprimir el corte. Va aquí, al nivel de la pantalla, porque el
     // corte parcial se lanza desde la caja en curso — dentro del reporte no se

@@ -13,6 +13,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -20,11 +21,13 @@ import kotlin.math.roundToInt
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
@@ -35,20 +38,34 @@ fun PayInOutSheet(
     isPayIn: Boolean,
     onConfirm: (amountCents: Int, note: String?) -> Unit,
     onDismiss: () -> Unit,
+    /** Retiro: se está registrando. El botón queda ocupado y la hoja no se cierra hasta tener la respuesta. */
+    ocupado: Boolean = false,
+    /** Retiro: por qué no se registró. Va dentro de la hoja, con lo escrito intacto. */
+    error: String? = null,
+    /** Retiro: al confirmar, un gerente teclea su PIN. */
+    conPin: Boolean = false,
 ) {
     var amountText by remember { mutableStateOf("") }
     var noteText by remember { mutableStateOf("") }
+    val ocupadoAhora by rememberUpdatedState(ocupado)
 
     val title = if (isPayIn) "Registrar ingreso" else "Registrar egreso"
-    val subtitle = if (isPayIn) {
-        "Ingresa el monto y una nota opcional para el ingreso de efectivo."
-    } else {
-        "Ingresa el monto y una nota opcional para el retiro de efectivo."
+    val subtitle = when {
+        isPayIn -> "Ingresa el monto y una nota opcional para el ingreso de efectivo."
+        conPin -> "Ingresa el monto y el concepto. Al confirmar, un gerente lo autoriza con su PIN."
+        else -> "Ingresa el monto y el concepto del retiro de efectivo."
     }
+    val montoValido = amountText.isNotBlank() && (amountText.toDoubleOrNull() ?: 0.0) > 0
 
     AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // Mientras se registra no se esconde (arrastrar o tocar fuera): un rechazo quedaría en una hoja oculta.
+        sheetState = rememberModalBottomSheetState(
+            skipPartiallyExpanded = true,
+            confirmValueChange = { it != SheetValue.Hidden || !ocupadoAhora },
+        ),
+        // En Windows la X baja la hoja sin preguntar: mientras se registra, sin X.
+        conXPropia = ocupado,
     ) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
@@ -88,6 +105,7 @@ fun PayInOutSheet(
                 label = { Text("Monto ($)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true,
+                readOnly = ocupado,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
             )
@@ -97,11 +115,24 @@ fun PayInOutSheet(
             OutlinedTextField(
                 value = noteText,
                 onValueChange = { noteText = it },
-                label = { Text("Nota (opcional)") },
+                // En el retiro el concepto es obligatorio: sale en el comprobante que firman los dos.
+                label = { Text(if (isPayIn) "Nota (opcional)" else "Concepto") },
                 singleLine = true,
+                readOnly = ocupado,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
             )
+
+            error?.let {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
@@ -112,7 +143,7 @@ fun PayInOutSheet(
                     val note = noteText.ifBlank { null }
                     onConfirm(cents, note)
                 },
-                enabled = amountText.isNotBlank() && (amountText.toDoubleOrNull() ?: 0.0) > 0,
+                enabled = montoValido && (isPayIn || noteText.isNotBlank()) && !ocupado,
                 shape = RoundedCornerShape(50),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -123,7 +154,7 @@ fun PayInOutSheet(
                     .height(48.dp),
             ) {
                 Text(
-                    text = "Confirmar",
+                    text = if (ocupado) "Registrando…" else "Confirmar",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
