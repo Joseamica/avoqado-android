@@ -83,6 +83,11 @@ class CopiaDeCuentas @Inject constructor(
     private val cache: PayloadCache,
     /** Final fix ronda 2 (R2-1): los cobros no efectivo de este aparato que aún no se aplican. Hilt (y Guice) siempre la pasan. */
     private val cuentasCobradas: CuentasCobradasAqui? = null,
+    /**
+     * D12 · Opción D: la caja DUEÑA anota CERRADA lo que el servidor cerró y lo que esta caja cobró con tarjeta, ANTES de que se suelten
+     * las marcas (`Provider`: el dueño lee «abierta aquí», que lee esta copia).
+     */
+    private val dueno: javax.inject.Provider<com.avoqado.pos.core.data.lan.DuenoDeCuentas>? = null,
 ) {
     internal var ahora: () -> Long = System::currentTimeMillis
 
@@ -268,8 +273,14 @@ class CopiaDeCuentas @Inject constructor(
             } else {
                 true
             }
+            // Opción D: lo que se fue de la copia (el servidor la dio pagada, cerrada o ya no la trae) y lo cobrado aquí con tarjeta, al
+            // registro de la dueña. Si no lo pudo guardar, las marcas se quedan para la siguiente lectura.
+            val cerradas = antes.keys - filas.keys
+            val avisada = (cerradas.isEmpty() && marcas.isEmpty()) || runCatching {
+                dueno?.get()?.alSaberCerradas(venueId, cerradas, marcas.map { it.orderId })
+            }.onFailure { Log.w(TAG, "⚠️ el registro de la dueña no anotó las cerradas de $venueId: ${it.message}") }.isSuccess
             // R2-1: las marcas se sueltan sólo cuando lo que dicen ya está en el disco de la copia (si no, se vuelven a aplicar).
-            if (enDisco && marcas.isNotEmpty()) runCatching { cuentasCobradas?.olvidar(marcas) }
+            if (enDisco && avisada && marcas.isNotEmpty()) runCatching { cuentasCobradas?.olvidar(marcas) }
         }
         return orden
     }

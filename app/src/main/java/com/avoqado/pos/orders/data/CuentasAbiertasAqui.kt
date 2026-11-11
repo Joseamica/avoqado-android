@@ -54,6 +54,9 @@ class CuentasAbiertasAqui @Inject constructor(private val cache: PayloadCache, p
         false
     }
 
+    /** D12 · Opción D: todas las que abrió esta caja en [venueId]. LANZA si el disco falla (quien pregunta no contesta por ninguna). */
+    suspend fun todas(venueId: String): Set<String> = leerDelDisco(venueId).keys
+
     /** LANZA si el disco falla; un JSON ilegible cuenta como «sin marcas» (no hay nada que conservar). */
     private suspend fun leerDelDisco(venueId: String): Map<String, Long> {
         val guardado = cache.loadDurable(PayloadCache.TYPE_CUENTAS_ABIERTAS_AQUI, venueId) ?: return emptyMap()
