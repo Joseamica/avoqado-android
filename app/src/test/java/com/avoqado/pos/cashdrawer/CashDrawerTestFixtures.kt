@@ -88,7 +88,7 @@ internal fun isoDe(millis: Long): String = java.time.Instant.ofEpochMilli(millis
  * Así, un test que pase aquí no puede estar apoyándose en que Room "casualmente"
  * devuelva la fila buena.
  */
-internal class FakeCashDrawerDao : CashDrawerDao {
+internal open class FakeCashDrawerDao : CashDrawerDao {
     val sessions = LinkedHashMap<String, CashDrawerSessionEntity>()
     val events = LinkedHashMap<String, CashDrawerEventEntity>()
 
@@ -146,6 +146,19 @@ internal class FakeCashDrawerDao : CashDrawerDao {
 
     override suspend fun deleteEvent(eventId: String) {
         events.remove(eventId)
+    }
+
+    /** Imita el `@Transaction` de Room: si algo falla a la mitad, no queda nada de lo escrito. */
+    override suspend fun promoverEvento(localId: String, copiaConIdDelServidor: CashDrawerEventEntity) {
+        val antes = LinkedHashMap(events)
+        try {
+            insertEvent(copiaConIdDelServidor)
+            deleteEvent(localId)
+        } catch (e: Throwable) {
+            events.clear()
+            events.putAll(antes)
+            throw e
+        }
     }
 
     override suspend fun repointEventsFrom(fromSessionId: String, toSessionId: String, sinceMillis: Long) {

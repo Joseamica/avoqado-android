@@ -242,6 +242,26 @@ class CashDrawerSessionPromotionTest {
         )
     }
 
+    /** Retiro con red cuyo borrado de la copia local falla a media promoción (la app muere en medio): nunca dos filas. */
+    @Test
+    fun `si falla el borrado de la copia local, no quedan dos retiros contados`() = runTest {
+        val dao = object : FakeCashDrawerDao() {
+            var falla = false
+            override suspend fun deleteEvent(eventId: String) {
+                if (falla) { falla = false; throw IllegalStateException("la app murio") }
+                super.deleteEvent(eventId)
+            }
+        }
+        cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer))).openSession(FONDO_CENTS)
+
+        dao.falla = true
+        val resp = "{\"success\":true,\"data\":" + eventoJson("srv-ev-retiro", "PAY_OUT", "50.00", note = "Propinas") + "}"
+        val retirar = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/pay-out" to resp))
+        try { retirar.addPayOut(5_000, "Propinas") } catch (_: Exception) {}
+
+        assertEquals("quedaron dos PAY_OUT del mismo retiro", 1, dao.events.values.count { it.type == "PAY_OUT" })
+    }
+
     /**
      * El contrapeso del test anterior: la limpieza NO puede borrar un movimiento que
      * el server todavía no conoce. Un retiro hecho sin red tiene que seguir

@@ -1599,8 +1599,7 @@ class CashDrawerRepository @Inject constructor(
         if (localId.isNullOrBlank() || serverId.isNullOrBlank() || serverId == localId) return null
         val local = dao.getEvent(localId) ?: return null
         val promoted = local.copy(id = serverId)
-        dao.insertEvent(promoted)
-        dao.deleteEvent(localId)
+        dao.promoverEvento(localId, promoted) // una transacción: nunca dos filas del mismo movimiento
         Log.d(TAG, "⬆️ Movimiento confirmado $localId → $serverId")
         return promoted
     }
