@@ -279,12 +279,17 @@ class OrdersRepository @Inject constructor(
                 _copiaVistaA.value = null
             }
         } else {
-            // Datos previos INTACTOS (spec §4.1), salvo que no haya nada o sean de otra sucursal: ahí se enseña la copia (D12).
-            Log.e(TAG, "❌ loadOrders: ${result.exceptionOrNull()?.message}")
+            // Datos previos INTACTOS (spec §4.1), salvo que no haya nada o sean de otra sucursal (D12).
+            val error = result.exceptionOrNull()
+            Log.e(TAG, "❌ loadOrders: ${error?.message}")
             val actual = secureStorage.venueId
-            if (!append && copia != null && actual != null && (_orders.value.isEmpty() || venueDeLaLista != actual)) {
-                val guardadas = copia.cuentas(actual)
-                if (secureStorage.venueId == actual) {
+            if (actual != null && (_orders.value.isEmpty() || venueDeLaLista != actual)) {
+                // Revisión r1: la copia sólo SIN RED (un 5xx o un 403 no es «sin conexión», y un 403 niega esas cuentas) y sólo sin
+                // búsqueda ni otro filtro (no es el resultado de lo que se buscó). Si no, las filas de otra sucursal se quitan.
+                val ensenarCopia = copia != null && error != null && FalloDeLectura.de(error) == FalloDeLectura.SIN_RED &&
+                    lecturaDe(page, append, search, status, hasMore = false) != Lectura.SUELTA
+                val guardadas = if (ensenarCopia) copia?.cuentas(actual).orEmpty() else emptyList()
+                if (secureStorage.venueId == actual && (ensenarCopia || venueDeLaLista != actual)) {
                     _orders.value = guardadas.map { it.cuenta }
                     venueDeLaLista = actual
                     listaVistaA = guardadas.minOfOrNull { it.vistaEn }

@@ -363,6 +363,77 @@ class PedidoSinRedTest {
         assertNull(deOtra.detalleDeLaCopia.value)
     }
 
+    // MARK: - D12 (Tarea 5, revisión r1): la copia sólo se enseña cuando de verdad es «sin red» y sin búsqueda ni filtro
+
+    /** Siembra la copia de `v1` con `A` desde una lectura buena y regresa un repo NUEVO (lista vacía) con la lista caída. */
+    private suspend fun copiaConAyListaQue(contesta: (Interceptor.Chain) -> Response): OrdersRepository {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        repoConRutas().loadOrders(1, null, null)
+        lista = contesta
+        return repoConRutas()
+    }
+
+    /** Revisión r1 #1: un 5xx no es «sin conexión»: la UI no lo dice ni enseña la copia. */
+    @Test fun `un 500 con la lista vacia no ensena la copia ni dice Sin conexion`() = runTest {
+        val r = copiaConAyListaQue { http(it, 500, """{"message":"boom"}""") }
+        r.loadOrders(1, null, null)
+        assertEquals(emptyList<String>(), ids(r))
+        assertNull(r.copiaVistaA.value)
+    }
+
+    /** Revisión r1 #1: un 403 no enseña cuentas que el servidor acaba de negar. */
+    @Test fun `un 403 con la lista vacia no ensena la copia`() = runTest {
+        val r = copiaConAyListaQue { http(it, 403, """{"message":"sin permiso"}""") }
+        r.loadOrders(1, null, null)
+        assertEquals(emptyList<String>(), ids(r))
+        assertNull(r.copiaVistaA.value)
+    }
+
+    /** Revisión r1 #1: con otro fallo y otra sucursal, no se quedan a la vista las filas de la anterior. */
+    @Test fun `un error del servidor tras cambiar de sucursal vacia la lista de la anterior`() = runTest {
+        lista = { http(it, 200, pagina(fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        assertEquals(listOf("A"), ids(r))
+        venue = "v2"
+        lista = { http(it, 500, """{"message":"boom"}""") }
+        r.loadOrders(1, null, null)
+        assertEquals(emptyList<String>(), ids(r))
+        assertNull(r.copiaVistaA.value)
+    }
+
+    /** Revisión r1 #2: la copia completa no se hace pasar por el resultado de una búsqueda o un filtro. */
+    @Test fun `con busqueda o filtro sin red la lista no se llena con toda la copia`() = runTest {
+        val r = copiaConAyListaQue(sinRed())
+        r.loadOrders(1, "7", null)
+        assertEquals(emptyList<String>(), ids(r))
+        assertNull(r.copiaVistaA.value)
+        r.loadOrders(1, null, "PENDING")
+        assertEquals(emptyList<String>(), ids(r))
+        assertNull(r.copiaVistaA.value)
+        r.loadOrders(1, null, OPEN_ORDERS_STATUS_FILTER) // «Abiertas» sí: la copia es justo eso
+        assertEquals(listOf("A"), ids(r))
+    }
+
+    /** Revisión r1 menor #1: un saldo raro en el detalle no lo tumba (con red abre) y sin red queda gris, nunca cobrable. */
+    @Test fun `un saldo raro en el detalle no lo tumba y la copia queda sin saldo`() = runTest {
+        for ((i, raro) in listOf("60.5", "-5", "\"6000x\"").withIndex()) {
+            venue = "v$i"
+            lista = { http(it, 200, pagina(fila("A"))) }
+            detalle = { http(it, 200, """{"success":true,"order":{"id":"A","status":"PENDING","paymentStatus":"PENDING",""" +
+                """"preBillBalance":{"orderTotalCents":10000,"totalPaidCents":0,"remainingBalanceCents":$raro}}}""") }
+            val r = repoConRutas()
+            r.loadOrders(1, null, null)
+            r.loadOrderDetail("A")
+            assertEquals("con red el detalle abre ($raro)", "A", r.selectedOrder.value?.id)
+            assertNull(r.errorMessage.value)
+
+            detalle = sinRed()
+            r.loadOrderDetail("A")
+            assertEquals("sin red, gris ($raro)", RazonSinRed.SIN_SALDO_DEL_SERVIDOR, razonParaNoCobrar(r.detalleDeLaCopia.value!!.cuenta))
+        }
+    }
+
     /** Con red: la lista con `A` (lectura buena a la hora `t`) y el detalle de `A` del servidor. */
     private suspend fun listaYDetalleConRed(): Pair<OrdersRepository, Long> {
         lista = { http(it, 200, pagina(fila("A"))) }

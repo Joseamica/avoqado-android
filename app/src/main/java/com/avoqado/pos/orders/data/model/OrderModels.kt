@@ -12,7 +12,9 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import com.avoqado.pos.tables.data.PreBillBalance
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -197,11 +199,28 @@ fun OrderSummary.comoDetalle(): OrderDetail = OrderDetail(
 fun OrderDetail.comoEvidencia(): com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente =
     com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente(
         abierta = estaAbierta(status, paymentStatus, refundState),
-        saldoCents = preBillBalance?.remainingBalanceCents,
+        saldoCents = preBillBalance?.remainingBalanceCents?.takeIf { it >= 0 }, // negativo = raro ⇒ «sin saldo», como la lista
         pagosCompletados = payments.orEmpty().count { it.status == "COMPLETED" },
         cobrosConSaldo = cobrosConSaldo ?: 0,
         esCuentaDeTarjetas = esCuentaDeTarjetas,
     )
+
+/**
+ * D12 (revisión r1): el saldo del detalle, tolerante como [CentavosTolerantes]. Si viene raro (fraccionario, texto, sin un
+ * campo), es `null` («sin saldo»: gris sin red, nunca cobrable) y el detalle abre igual; antes de D12 este campo se ignoraba.
+ */
+object SaldoTolerante : KSerializer<PreBillBalance?> {
+    override val descriptor: SerialDescriptor = PreBillBalance.serializer().nullable.descriptor
+    override fun deserialize(decoder: Decoder): PreBillBalance? {
+        val json = decoder as JsonDecoder
+        val elemento = json.decodeJsonElement()
+        return runCatching { json.json.decodeFromJsonElement(PreBillBalance.serializer(), elemento) }.getOrNull()
+    }
+    override fun serialize(encoder: Encoder, value: PreBillBalance?) {
+        val json = encoder as JsonEncoder
+        json.encodeJsonElement(value?.let { json.json.encodeToJsonElement(PreBillBalance.serializer(), it) } ?: JsonNull)
+    }
+}
 
 // MARK: - Detail Model
 
@@ -233,8 +252,8 @@ data class OrderDetail(
     val refundedAmount: Double = 0.0,
     /** IVA que la orden SUMA aparte (servidor, aditivo, plan 7, r2 R2-13). Null = servidor anterior. */
     val addedTaxAmount: Double? = null,
-    /** D12: el saldo que el servidor ya manda en este detalle (el mismo que lee Mesas). Null = no vino. */
-    val preBillBalance: com.avoqado.pos.tables.data.PreBillBalance? = null,
+    /** D12: el saldo que el servidor ya manda en este detalle (el mismo que lee Mesas). Null = no vino o vino raro. */
+    @Serializable(with = SaldoTolerante::class) val preBillBalance: PreBillBalance? = null,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {
