@@ -57,6 +57,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -164,7 +165,13 @@ fun OrdersScreen(
     LaunchedEffect(viewModel, duenoDelCicloDeVida) {
         duenoDelCicloDeVida.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             // En WINDOWS el ciclo de vida sigue RESUMED con la ventana minimizada (Codex r4 #5).
-            VentanaALaVista.aLaVista.collectLatest { seVe -> if (seVe) viewModel.reabrirAlVolverLaRed() }
+            VentanaALaVista.aLaVista.collectLatest { seVe ->
+                // D12 (Codex r3 H4): y al irse la red, el pedido a la vista se respalda con la copia sin otra consulta.
+                if (seVe) kotlinx.coroutines.coroutineScope {
+                    launch { viewModel.copiaAlPerderLaRed() }
+                    viewModel.reabrirAlVolverLaRed()
+                }
+            }
         }
     }
 
@@ -320,6 +327,7 @@ private fun PhoneOrdersLayout(
                 mensajeDeReimpresion = mensajeDeReimpresion,
                 onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                 avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null },
+                copia = detalleDeLaCopia,
             )
         }
         EstadoDelDetalle.Cargando -> {
@@ -528,6 +536,7 @@ private fun OrderDetailPanel(
                     mensajeDeReimpresion = mensajeDeReimpresion,
                     onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
                     avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null },
+                    copia = detalleDeLaCopia,
                 )
             }
             is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
@@ -573,6 +582,8 @@ fun OrderDetailView(
     onReimprimirComanda: (() -> Unit)? = null,
     /** D12: «Sin conexión · como estaba a las HH:MM» cuando lo que se ve sale de la copia. */
     avisoSinRed: String? = null,
+    /** D12: la cuenta de la copia que respalda este detalle sin red: con ella se ofrece (o no) el cobro en efectivo. */
+    copia: com.avoqado.pos.orders.data.CuentaGuardada? = null,
 ) {
     Column(
         modifier = modifier
@@ -619,7 +630,7 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
-            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar)
+            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar, copia)
 
             // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
             // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.
