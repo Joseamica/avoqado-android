@@ -115,13 +115,16 @@ class OrdersRepository @Inject constructor(
     /** T12b: cómo terminó la última lectura de la lista (null = bien). Un 5xx también apaga la bandera de red ([alPerderLaRed]). */
     private var falloDeLaUltimaLectura: FalloDeLectura? = null
 
-    /** T12b: la lista es de [vistaA] (null = al día). Su aviso dice la razón real: nadie contestó, o el servidor contestó mal. */
+    /**
+     * T12b: la lista es de [vistaA] (null = al día, o no hay nada guardado). Su aviso dice la razón real: nadie contestó, o el servidor
+     * contestó mal. Ronda 1 (M1): sin red y sin nada guardado, también lo dice.
+     */
     private fun listaDeLas(vistaA: Long?, sinRed: Boolean) {
         _copiaVistaA.value = vistaA
         _avisoDeLaLista.value = vistaA?.let {
             val hora = horaDeLaCopia(it, secureStorage.venueTimezone)
             if (sinRed) TextosDeCuentaSinRed.copiaDeLas(hora) else TextosDeCuentaSinRed.noSeCargaronDeLas(hora)
-        }
+        } ?: TextosDeCuentaSinRed.SIN_CUENTAS_GUARDADAS.takeIf { sinRed }
         listaEsperaLaRed = sinRed
     }
 
@@ -337,6 +340,11 @@ class OrdersRepository @Inject constructor(
             } else if (!append && _copiaVistaA.value != null) {
                 // T12b (punto 2): lo que se ve ya era «como estaba»; el aviso dice la razón de ESTA lectura (un 5xx no es «Sin conexión»).
                 listaDeLas(_copiaVistaA.value, sinRed)
+            }
+            // T12b ronda 1 (I1): el servidor contestó mal y no hay nada que enseñar: la razón, nunca «No hay pedidos». No se repite solo.
+            if (actual != null && !append && !sinRed && _orders.value.isEmpty() && _avisoDeLaLista.value == null &&
+                secureStorage.venueId == actual) {
+                _avisoDeLaLista.value = TextosDeCuentaSinRed.NO_SE_CARGARON
             }
         }
         _isLoading.value = false

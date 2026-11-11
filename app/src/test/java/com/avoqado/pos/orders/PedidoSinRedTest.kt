@@ -379,6 +379,7 @@ class PedidoSinRedTest {
         r.loadOrders(1, null, null)
         assertEquals(emptyList<String>(), ids(r))
         assertNull(r.copiaVistaA.value)
+        assertEquals("T12b ronda 1 (I1): dice la razón", TextosDeCuentaSinRed.NO_SE_CARGARON, r.avisoDeLaLista.value)
     }
 
     /** Revisión r1 #1: un 403 no enseña cuentas que el servidor acaba de negar. */
@@ -459,8 +460,47 @@ class PedidoSinRedTest {
 
         lista = { http(it, 500, """{"message":"boom"}""") } // el servidor sí contestó: el «Sin conexión» de antes no se queda
         r.loadOrders(1, null, null)
-        assertNull(r.avisoDeLaLista.value)
+        assertEquals("ronda 1 (I1): la razón, nunca «No hay pedidos»", TextosDeCuentaSinRed.NO_SE_CARGARON, r.avisoDeLaLista.value)
         assertEquals(false, r.listaEsperaLaRed)
+    }
+
+    /** Ronda 1 (I1): buscar sin red ⇒ vuelve la red con la búsqueda puesta ⇒ el servidor da 500: el aviso dice la razón, nunca null. */
+    @Test fun `buscar sin red y al volver la red un 500 dice la razon y no No hay pedidos`() = runTest {
+        for (codigo in listOf(500, 403)) {
+            disco.clear()
+            val r = copiaConAyListaQue(sinRed())
+            r.loadOrders(1, null, null)
+            r.loadOrders(1, "A", null)
+            assertEquals(TextosDeCuentaSinRed.BUSQUEDA_SIN_RED, r.avisoDeLaLista.value)
+
+            lista = { http(it, codigo, """{"message":"boom"}""") }
+            r.loadOrders(1, "A", null) // la recarga sola al volver la red, con la búsqueda puesta
+            assertEquals(emptyList<String>(), ids(r))
+            assertEquals("$codigo", TextosDeCuentaSinRed.NO_SE_CARGARON, r.avisoDeLaLista.value)
+            assertEquals("un servidor que contestó mal no se repite solo", false, r.listaEsperaLaRed)
+        }
+    }
+
+    /** Ronda 1 (M1): sin red y con la copia vacía, la lista tiene su aviso; también tras buscar y borrar la búsqueda. */
+    @Test fun `sin red con la copia vacia la lista dice que no hay cuentas guardadas`() = runTest {
+        val r = repoConRutas() // nunca se leyó nada: la copia está vacía
+        r.loadOrders(1, null, null)
+        assertEquals(emptyList<String>(), ids(r))
+        assertEquals(TextosDeCuentaSinRed.SIN_CUENTAS_GUARDADAS, r.avisoDeLaLista.value)
+        assertEquals("al volver la red se pide sola", true, r.listaEsperaLaRed)
+
+        // Mostrador: «Todos» con sólo ventas cobradas (la copia no las guarda); sin red se busca y se borra la búsqueda.
+        val cobrada = """{"id":"C","status":"COMPLETED","paymentStatus":"PAID","source":"AVOQADO_ANDROID","esDeMesa":false,""" +
+            """"createdAt":"2026-11-10T18:00:00Z","pagosCompletados":1}"""
+        lista = { http(it, 200, pagina(cobrada)) }
+        val llena = repoConRutas()
+        llena.loadOrders(1, null, null)
+        assertEquals(listOf("C"), ids(llena))
+        lista = sinRed()
+        llena.loadOrders(1, "7", null)
+        llena.loadOrders(1, null, null)
+        assertEquals(emptyList<String>(), ids(llena))
+        assertEquals(TextosDeCuentaSinRed.SIN_CUENTAS_GUARDADAS, llena.avisoDeLaLista.value)
     }
 
     /** Punto 1: también sobre la lista del servidor que quedó «como estaba» al irse la red. */

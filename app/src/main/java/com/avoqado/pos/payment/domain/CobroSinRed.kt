@@ -13,8 +13,14 @@ object TextosDeCuentaSinRed {
     /** La lista o el detalle vienen de la copia guardada; [hora] en la zona del negocio (`horaDeLaCopia`). */
     fun copiaDeLas(hora: String) = "Sin conexión · como estaba a las $hora"
 
+    /** T12b (ronda 1, I1): el SERVIDOR contestó mal (5xx, 403…) y no hay nada que enseñar: la razón, nunca «No hay pedidos». */
+    const val NO_SE_CARGARON = "No se pudieron cargar los pedidos"
+
     /** T12b: la lista se quedó como estaba porque el SERVIDOR contestó mal (5xx, 403…): no es «Sin conexión». */
-    fun noSeCargaronDeLas(hora: String) = "No se pudieron cargar los pedidos · como estaba a las $hora"
+    fun noSeCargaronDeLas(hora: String) = "$NO_SE_CARGARON · como estaba a las $hora"
+
+    /** T12b (ronda 1, M1): sin red y la copia no trae cuentas: lo dice, nunca un «No hay pedidos» a secas. */
+    const val SIN_CUENTAS_GUARDADAS = "Sin conexión: no hay cuentas abiertas guardadas en este aparato."
 
     /** T12b: sin red, una búsqueda o un filtro no se puede contestar: la lista se vacía y lo dice (nunca la copia entera como resultado). */
     const val BUSQUEDA_SIN_RED = "Sin conexión: para buscar o filtrar necesitas internet. En «Todos» o «Abiertas», sin búsqueda, ves las cuentas guardadas."
