@@ -377,6 +377,24 @@ const val MENSAJE_PREMIO_SIN_RED =
 const val MENSAJE_CUPON_SIN_RED =
     "Sin conexión: el cupón necesita internet. Reintenta cuando vuelva la conexión, o quita el cupón para cobrar sin él."
 
+/**
+ * hz:e0b12f00:D2: un «Descuento de la cuenta» que deja los productos en $0 es una cortesía. Sin permiso, la autoriza un gerente con su PIN,
+ * que necesita internet: sin red NO se guarda para mandar después (como la TPV).
+ */
+const val CORTESIA_DE_CUENTA_SIN_RED =
+    "Sin conexión: el PIN del gerente necesita internet. Quita el descuento o cobra cuando vuelva la red."
+
+/** hz:e0b12f00:D2: el negocio tiene apagado el PIN de gerente; la cortesía sólo la da alguien con permiso, con su propia sesión. */
+const val CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE =
+    "Este descuento deja la cuenta en \$0: es una cortesía. Esta cortesía la da un gerente con su sesión."
+
+/**
+ * hz:e0b12f00:D2 (Codex r1 #1): el SERVIDOR dijo que el descuento deja la cuenta en $0 aunque la app no lo esperaba (sus importes difieren
+ * por centavos, o los permisos guardados ya no son los de hoy). No se creó nada; el siguiente toque pide el PIN.
+ */
+const val CORTESIA_DE_CUENTA_PIDE_PIN =
+    "Este descuento deja la cuenta en \$0: es una cortesía. Vuelve a cobrar para pedir el PIN de un gerente, o quita el descuento."
+
 /** El SERVIDOR calculó otro total que el de la pantalla (el cupón cambió de valor mientras tanto) y el efectivo ya no alcanza. */
 fun avisoDeEfectivoCortoPorCupon(totalRealCents: Int, recibidoCents: Int): String {
     val falta = (totalRealCents - recibidoCents).coerceAtLeast(0)

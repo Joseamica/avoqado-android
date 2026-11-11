@@ -65,6 +65,8 @@ object NetworkModule {
     ): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
             redactHeader("Authorization")
+            // hz:e0b12f00:D2: el token del PIN de gerente vale una autorización (60 s, un uso): tampoco va al log.
+            redactHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
             level = if (BuildConfig.DEBUG) {
                 HttpLoggingInterceptor.Level.BODY
             } else {
