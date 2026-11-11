@@ -59,12 +59,11 @@ fun textoDeFolioCerrado(venceA: Instant?, ahora: Instant): String =
     if (venceA == null || !venceA.isAfter(ahora)) TextosPedidosEnLinea.FOLIO_VENCIDO else TextosPedidosEnLinea.FOLIO_CANCELADO
 
 /**
- * Parte 2 (S14): «Con cuenta: Ana L.», y en «Por pagar» con los sellos prendidos «· suma su sello al pagar». null sin cuenta (o con un
- * SERVIDOR viejo): la tarjeta queda como hoy. PURA.
+ * Parte 2 (S14): «Con cuenta: Ana L.», como el DASHBOARD. null sin cuenta (o con un SERVIDOR viejo): la tarjeta queda como hoy. Sin
+ * «suma su sello al pagar» (Codex A1 r2 #2): la lista no dice si los sellos siguen prendidos y el aparato sólo guarda el último que vio
+ * al ligar un cliente; prometerlo con eso puede mentir. PURA.
  */
-fun lineaDeCuenta(pedido: OnlineOrder, porEntregar: Boolean, sellosActivos: Boolean): String? = pedido.cliente?.let {
-    if (!porEntregar && sellosActivos) TextosPedidosEnLinea.conCuentaYSello(it.nombre) else TextosPedidosEnLinea.conCuenta(it.nombre)
-}
+fun lineaDeCuenta(pedido: OnlineOrder): String? = pedido.cliente?.let { TextosPedidosEnLinea.conCuenta(it.nombre) }
 
 /** Parte 2 (S14, R1): cuántos beneficios trae la cuenta además de los que llegaron («y N más»); nunca se esconden. PURA. */
 fun beneficiosDeMas(pedido: OnlineOrder): Int = (pedido.beneficiosTotal - pedido.beneficios.size).coerceAtLeast(0)

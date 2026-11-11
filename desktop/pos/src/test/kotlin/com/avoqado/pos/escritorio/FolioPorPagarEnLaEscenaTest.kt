@@ -132,7 +132,7 @@ class FolioPorPagarEnLaEscenaTest {
                 AvoqadoTheme(darkTheme = oscuro) {
                     Box(Modifier.width(480.dp)) {
                         FolioPorPagarCard(conCuenta, porEntregar = false, ahora = ahora, sinConexion = false, puedeActualizar = true,
-                            ocupado = false, onListo = {}, onEntregado = {}, puedeCobrar = true, sellosActivos = true)
+                            ocupado = false, onListo = {}, onEntregado = {}, puedeCobrar = true)
                     }
                 }
             }
@@ -140,7 +140,7 @@ class FolioPorPagarEnLaEscenaTest {
         for (tema in listOf(false, true)) {
             oscuro = tema
             waitForIdle()
-            onNodeWithText("Con cuenta: Ana L. · suma su sello al pagar").assertExists()
+            onNodeWithText("Con cuenta: Ana L.").assertExists()
             onNodeWithText("Café gratis (premio de Ana)").assertExists()
             onNodeWithText("−$65.00").assertExists()
             onNodeWithText("y 2 más").assertExists()
@@ -152,7 +152,7 @@ class FolioPorPagarEnLaEscenaTest {
         setContent {
             escena {
                 FolioPorPagarCard(folio(OnlineOrderStatus.PENDING_ACCEPTANCE, falta = 13400), porEntregar = false, ahora = ahora,
-                    sinConexion = false, puedeActualizar = true, ocupado = false, onListo = {}, onEntregado = {}, sellosActivos = true)
+                    sinConexion = false, puedeActualizar = true, ocupado = false, onListo = {}, onEntregado = {})
             }
         }
         onNodeWithTag("folio-cuenta-f1").assertDoesNotExist()

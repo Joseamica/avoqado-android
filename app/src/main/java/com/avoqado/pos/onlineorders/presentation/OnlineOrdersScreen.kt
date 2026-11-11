@@ -249,7 +249,6 @@ fun OnlineOrdersScreen(
                                         puedeCancelar = puedeCancelar,
                                         onCobrar = viewModel::cobrarFolio,
                                         onCancelar = { dialogo.abrir(it, TipoDeDialogo.CANCELAR_FOLIO) },
-                                        sellosActivos = viewModel.sumaSello,
                                     )
                                 }
                             },

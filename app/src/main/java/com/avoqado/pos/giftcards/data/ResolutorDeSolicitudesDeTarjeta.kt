@@ -110,6 +110,9 @@ import javax.inject.Singleton
                 if (actual.mandado || actual.porTerminar || actual.porRecuperar) continue
                 if (actual.orderId == null) store.quitar(actual.llave)
                 else if (arranque && actual.deMostrador) store.dejarPorTerminar(actual.llave, actual.orderId, actual.orderNumber, null)
+                // Codex A1 r2 #1: la de una cuenta que no es de mostrador (folio, mesa, cuentas abiertas) que nunca se mandó no cobró
+                // nada y nadie la iba a mandar: se suelta al arrancar (ningún envío vivo la tiene: `enVueloDeEsteProceso`, arriba).
+                else if (arranque) store.quitar(actual.llave)
             } finally { store.enVueloDeEsteProceso.remove(fila.llave) }
         }
         recuperables.value = store.delNegocio(venue).filter { it.porRecuperar }

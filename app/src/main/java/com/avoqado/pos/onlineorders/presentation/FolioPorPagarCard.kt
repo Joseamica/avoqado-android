@@ -82,8 +82,6 @@ fun FolioPorPagarCard(
     onCancelar: () -> Unit = {},
     /** A5: lo cobrado con tarjeta en ESTE aparato que la lista del servidor todavía no cuenta; null = nada. */
     cobradoConTarjetaCents: Long? = null,
-    /** Parte 2: los sellos del negocio están prendidos («Con cuenta: … · suma su sello al pagar» en «Por pagar»). */
-    sellosActivos: Boolean = false,
 ) {
     val espacio = AvoqadoTheme.spacing
     Card(
@@ -126,7 +124,7 @@ fun FolioPorPagarCard(
             }
             pedido.customerName?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
             // Parte 2 (mockup 2c·2): ya viene ligada a su cuenta; la cajera no tiene que buscarla.
-            lineaDeCuenta(pedido, porEntregar, sellosActivos)?.let {
+            lineaDeCuenta(pedido)?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.testTag("folio-cuenta-${pedido.orderId}"))
             }
@@ -279,7 +277,6 @@ internal fun LazyListScope.seccionesDeFolios(
     puedeCancelar: Boolean = false,
     onCobrar: (OnlineOrder) -> Unit = {},
     onCancelar: (orderId: String) -> Unit = {},
-    sellosActivos: Boolean = false,
 ) {
     if (lista == null) {
         if (!error && leyendo) {
@@ -339,7 +336,6 @@ internal fun LazyListScope.seccionesDeFolios(
                 pedido, false, ahora, sinConexion, puedeActualizar, pedido.orderId in ocupados, {}, {},
                 puedeCobrar = puedeCobrar, puedeCancelar = puedeCancelar,
                 onCobrar = { onCobrar(pedido) }, onCancelar = { onCancelar(pedido.orderId) },
-                sellosActivos = sellosActivos,
             )
         }
         if (hayMasPorPagar) {

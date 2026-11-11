@@ -141,8 +141,6 @@ class OnlineOrdersViewModel internal constructor(
     private val venueActual: () -> String? = { null },
     /** R101: lo escondido se guarda en la MISMA copia que la lista de folios (`OnlineOrdersRepository.guardarOcultos`). */
     private val guardarOcultos: suspend (Map<String, HuellaDeFolio>) -> Unit = {},
-    /** Parte 2 (A1): el último `stampsEnabled` que este aparato supo del negocio; sin saberlo, no se promete el sello. */
-    private val sellosActivos: () -> Boolean = { false },
     /** A1 (e): un cobro con saldo de esta orden mandado y sin confirmar (`SolicitudesDeTarjeta.cuentaTrabada`). */
     private val saldoEnDuda: (orderId: String) -> Boolean = { false },
 ) : ViewModel() {
@@ -185,7 +183,6 @@ class OnlineOrdersViewModel internal constructor(
         cobrosConTarjeta = terminalPaymentService::cobrosConTarjetaDelNegocio,
         venueActual = { secureStorage.venueId },
         guardarOcultos = { repositorio.guardarOcultos(it) },
-        sellosActivos = { secureStorage.venueId?.let(secureStorage::programaDeSellosActivo) == true },
         saldoEnDuda = { orderId ->
             secureStorage.venueId?.let {
                 com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.cuentaTrabada(secureStorage.giftCardRequestsJson, it, orderId)
@@ -242,9 +239,6 @@ class OnlineOrdersViewModel internal constructor(
     val puedeActualizar: Boolean get() = permisoActualizar()
     val puedeCobrar: Boolean get() = permisoCobrar()
     val puedeCancelar: Boolean get() = permisoCancelar()
-
-    /** Parte 2: «Con cuenta: … · suma su sello al pagar» sólo si los sellos del negocio están prendidos. */
-    val sumaSello: Boolean get() = sellosActivos()
 
     private val _porCobrar = MutableStateFlow<ListaPorCobrar?>(null)
 

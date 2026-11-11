@@ -12,6 +12,7 @@ import com.avoqado.pos.giftcards.data.GiftCardsRepository
 import com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
 import com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore
 import com.avoqado.pos.giftcards.domain.FilaDeLaCaja
+import com.avoqado.pos.giftcards.domain.SolicitudDeTarjeta
 import com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta
 import com.avoqado.pos.giftcards.domain.TextosDeTarjetas
 import com.avoqado.pos.onlineorders.data.CobroDeLaBandeja
@@ -266,6 +267,25 @@ class CobroDeFolioConSaldoTest {
     }
 
     @Test
+    fun `una solicitud de folio que nunca se mando se suelta al arrancar`() = runTest {
+        // Codex r2 #1: la app murió entre guardarla y marcarla mandada: no cobró nada y nadie la iba a mandar (ocupaba el tope de 50).
+        val store = SolicitudesDeTarjetaStore(f.storage)
+        assertTrue(store.guardar(SolicitudDeTarjeta(tipo = "GIFT_CARD_REDEEM", llave = "nunca-salio", venueId = "a", creadaEn = 1,
+            orderId = "f1", cuerpo = "{}", deFolio = true)))
+        val red = mockk<ConnectivityMonitor> {
+            every { isConnected } returns MutableStateFlow(false)
+            every { isServerReachable } returns MutableStateFlow(false)
+        }
+        val resolutor = ResolutorDeSolicitudesDeTarjeta(GiftCardsRepository(OkHttpClient(), f.storage), store, f.storage, red)
+
+        resolutor.resolverAhora()
+        assertEquals("fuera del arranque no se toca: puede ser un envío vivo de otra pantalla", 1, solicitudes().size)
+        resolutor.resolverAhora(arranque = true)
+        assertTrue(solicitudes().isEmpty())
+        assertEquals("no salió nada", 0, server.requestCount)
+    }
+
+    @Test
     fun `si el disco no acepta la marca la llave se queda y sigue frenando otro cobro`() = runTest {
         // Codex r1 #3: confirmado el saldo, si la marca no se guarda, soltar la llave dejaría el dinero sin protección.
         val store = SolicitudesDeTarjetaStore(f.storage)
@@ -305,15 +325,14 @@ class CobroDeFolioConSaldoTest {
             beneficios = listOf(BeneficioDelFolio("Café gratis (premio de Ana)", 6500)),
             beneficiosTotal = 3,
         )
-        assertEquals("Con cuenta: Ana L. · suma su sello al pagar", lineaDeCuenta(conCuenta, porEntregar = false, sellosActivos = true))
-        assertEquals("sin sellos prendidos no se promete el sello", "Con cuenta: Ana L.", lineaDeCuenta(conCuenta, porEntregar = false, sellosActivos = false))
-        assertEquals("ya pagado no se promete nada", "Con cuenta: Ana L.", lineaDeCuenta(conCuenta, porEntregar = true, sellosActivos = true))
+        // Codex r2 #2: sin «suma su sello al pagar»: la lista no dice si los sellos siguen prendidos.
+        assertEquals("Con cuenta: Ana L.", lineaDeCuenta(conCuenta))
         assertEquals("−$65.00", TextosPedidosEnLinea.montoDeBeneficio("$65.00"))
         assertEquals(2, beneficiosDeMas(conCuenta))
         assertEquals("y 2 más", TextosPedidosEnLinea.beneficiosDeMas(2))
 
         val deHoy = folio()
-        assertNull(lineaDeCuenta(deHoy, porEntregar = false, sellosActivos = true))
+        assertNull(lineaDeCuenta(deHoy))
         assertTrue(deHoy.beneficios.isEmpty())
         assertEquals(0, beneficiosDeMas(deHoy))
     }

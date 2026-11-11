@@ -176,9 +176,6 @@ object TextosPedidosEnLinea {
     // Tienda híbrida, parte 2 (A1): el folio con su clienta y sus beneficios, y el cobro con saldo. iOS los copia igual.
     /** La misma frase que el DASHBOARD («Con cuenta: {{name}}»); el nombre es el corto del SERVIDOR («Ana L.»). */
     fun conCuenta(nombre: String) = "Con cuenta: $nombre"
-    /** Sólo en «Por pagar» y con los sellos prendidos (mockup 2c·2, «Con cuenta: suma su sello al pagar»). */
-    const val SUMA_SU_SELLO = "suma su sello al pagar"
-    fun conCuentaYSello(nombre: String) = "${conCuenta(nombre)} · $SUMA_SU_SELLO"
     fun montoDeBeneficio(monto: String) = "−$monto"
     fun beneficiosDeMas(n: Int) = "y $n más"
     /** Un cobro con saldo de esta caja que la lista guardada todavía no cuenta: «Cobrar» no abre otro (pudo ser parcial). */
