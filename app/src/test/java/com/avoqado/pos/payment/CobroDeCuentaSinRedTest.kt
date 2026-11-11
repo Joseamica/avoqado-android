@@ -28,7 +28,10 @@ import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import com.avoqado.pos.payment.presentation.CierreDeCuenta
 import com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel
 import com.avoqado.pos.payment.presentation.PaymentCompletion
+import com.avoqado.pos.payment.presentation.LoQueSePinta
 import com.avoqado.pos.payment.presentation.cierreDelCobroDesdeLaCopia
+import com.avoqado.pos.payment.presentation.loQueSePinta
+import com.avoqado.pos.payment.presentation.pideOfertaAlRecargar
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.OrderDetailPayment
 import com.avoqado.pos.tables.data.PreBillBalance
@@ -41,6 +44,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.Interceptor
@@ -49,6 +53,8 @@ import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.net.UnknownHostException
@@ -360,5 +366,61 @@ class CobroDeCuentaSinRedTest {
         premium = false
         m.consultarSinRed("A")
         assertEquals(Gris(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA), m.sinRed.value)
+    }
+
+    // MARK: - Ronda 1 de la revisión
+
+    /** I2: la cajera sale durante «Revisando…» (o vuelve la red y el botón sale de pantalla): el candado concedido tarde se suelta. */
+    @Test fun `salir durante Revisando suelta el candado concedido y no lo guarda`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        val respuesta = CompletableDeferred<LeaseOutcome>()
+        coEvery { hub.acquireCoordinado("cuenta:o1", any(), any()) } coAnswers { respuesta.await() }
+        val m = vm()
+        val toque = launch { m.pedirCobroSinRed("o1") }
+        runCurrent()
+        toque.cancel()
+        respuesta.complete(concedido)
+        toque.join()
+        coVerify(exactly = 1) { hub.release("cuenta:o1") }
+        m.soltarCobroSinRed() // no quedó guardada: no hay nada más que soltar
+        coVerify(exactly = 1) { hub.release("cuenta:o1") }
+    }
+
+    /** I1: una recarga PAGADA o CANCELADA a medio cobro no desmonta el cobro abierto (la cajera ve su resultado y su cambio). */
+    @Test fun `la cuenta pasa a PAGADA a medio cobro y el cobro sigue montado`() {
+        val abierta = com.avoqado.pos.orders.data.model.OrderDetail(id = "o1", status = "PENDING", paymentStatus = "PENDING", esDeMesa = false)
+        assertEquals(LoQueSePinta(acciones = true, cobroEnLinea = false, cobroSinRed = null), loQueSePinta(abierta, false, null))
+        val pagada = abierta.copy(paymentStatus = "PAID")
+        assertEquals(LoQueSePinta(acciones = false, cobroEnLinea = true, cobroSinRed = null), loQueSePinta(pagada, true, null))
+        assertEquals(LoQueSePinta(acciones = false, cobroEnLinea = false, cobroSinRed = 6000), loQueSePinta(pagada, false, 6000))
+        val cancelada = abierta.copy(status = "CANCELLED")
+        assertEquals(LoQueSePinta(acciones = false, cobroEnLinea = false, cobroSinRed = 6000), loQueSePinta(cancelada, false, 6000))
+        assertEquals("Mesas sigue sin acciones aquí", false, loQueSePinta(abierta.copy(esDeMesa = true), false, null).acciones)
+    }
+
+    /** I1: con un cobro abierto, recargar la cuenta no vuelve a pedir la oferta (vaciaría la foto del cobro en línea a medio cobro). */
+    @Test fun `con un cobro en linea abierto una recarga no vuelve a pedir la oferta`() {
+        assertTrue("sin cobro abierto, como siempre", pideOfertaAlRecargar(enLinea = true, cobroAbierto = false))
+        assertFalse(pideOfertaAlRecargar(enLinea = true, cobroAbierto = true))
+        assertFalse("sin red nunca se pide", pideOfertaAlRecargar(enLinea = false, cobroAbierto = false))
+    }
+
+    /** M7 (Codex r3 H1): una respuesta de detalle superada por una consulta posterior no escribe en la copia. */
+    @Test fun `una respuesta de detalle superada por su turno no escribe en la copia`() = runTest {
+        enLaCopia(cuenta("A", saldo = 10000))
+        val vieja = CompletableDeferred<Result<OrderDetail>>()
+        val respuestas = ArrayDeque(listOf(vieja, CompletableDeferred(Result.failure<OrderDetail>(java.io.IOException("sin red")))))
+        coEvery { repo.getOrderDetail("v1", "A") } coAnswers { respuestas.removeFirst().await() }
+        val m = vm()
+        val primera = launch { m.cargar("A") }
+        runCurrent()
+        m.cargar("A") // la que manda: no trae evidencia
+        vieja.complete(Result.success(OrderDetail("A", esDeMesa = false, status = "PENDING", paymentStatus = "PARTIAL",
+            payments = listOf(OrderDetailPayment("p1", 40.0, status = "COMPLETED")), preBillBalance = PreBillBalance(10000, 4000, 6000))))
+        primera.join()
+        val fila = copia.cuenta("v1", "A")!!.cuenta
+        assertEquals(10000, fila.saldoPendienteCents)
+        assertNull(razonParaNoCobrar(fila))
     }
 }

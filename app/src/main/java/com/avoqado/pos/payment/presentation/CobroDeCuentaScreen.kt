@@ -39,6 +39,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -199,7 +201,7 @@ class CobroDeCuentaViewModel @Inject constructor(
                 } catch (_: Exception) { LeaseOutcome.NoHub }
                 if (r is LeaseOutcome.Granted) llave = k to !datos.abiertaAqui
                 r
-            }
+            }.also { currentCoroutineContext().ensureActive() } // `withContext(NonCancellable)` no lanza al salir: aquí se ve la cancelación
         } catch (e: CancellationException) {
             soltarCobroSinRed()
             throw e
@@ -212,7 +214,7 @@ class CobroDeCuentaViewModel @Inject constructor(
         val (k, _) = llave ?: return
         llave = null
         val hub = lanHub ?: return
-        alcanceDeSoltar.launch { hub.release(k) }
+        alcanceDeSoltar.launch { runCatching { hub.release(k) } } // soltar nunca tumba la app; si falla, el candado vence a los 30 s
     }
 
     /**
@@ -294,10 +296,13 @@ fun CobroDeCuentaScreen(
     orderId: String,
     onSalir: (CierreDeCuenta) -> Unit,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-$orderId"),
-    /** D12: sin red, el cobro en efectivo de la cuenta de la copia de «Pedidos» (no consulta la red). null = como siempre. */
-    copia: CuentaGuardada? = null,
+    /**
+     * D12: sin red, el cobro en efectivo de la cuenta de la copia de «Pedidos» por el saldo YA decidido (`DecisionSinRed.Cobrar.saldoCents`,
+     * el mismo número del botón). No consulta la red. null = como siempre.
+     */
+    saldoSinRed: Int? = null,
 ) {
-    if (copia != null) { CobroDesdeLaCopia(orderId, copia, onSalir, viewModel); return }
+    if (saldoSinRed != null) { CobroDesdeLaCopia(orderId, saldoSinRed, onSalir, viewModel); return }
     val conectado by viewModel.conectado.collectAsState()
     val servidor by viewModel.servidor.collectAsState()
     val enLinea = controlDeRedDeCuenta(conectado, servidor, true)
@@ -375,9 +380,9 @@ fun CobroDeCuentaScreen(
  * `onCancel`) y la cuenta enseña su gris. Un cobro encolado vuelve ABIERTA, nunca «Pagada».
  */
 @Composable
-private fun CobroDesdeLaCopia(orderId: String, copia: CuentaGuardada, onSalir: (CierreDeCuenta) -> Unit, viewModel: CobroDeCuentaViewModel) {
-    val cents = copia.cuenta.saldoPendienteCents ?: 0
+private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCuenta) -> Unit, viewModel: CobroDeCuentaViewModel) {
     var cierre by rememberSaveable(orderId) { mutableStateOf(CierreDeCuenta.ABIERTA) }
+    var avisoLocal by rememberSaveable(orderId) { mutableStateOf<String?>(null) }
     fun salir(c: CierreDeCuenta) {
         viewModel.soltarCobroSinRed()
         onSalir(c)
@@ -391,25 +396,31 @@ private fun CobroDesdeLaCopia(orderId: String, copia: CuentaGuardada, onSalir: (
         }
         val cart = remember(orderId, cents) { CartState(items = listOf(CartItem(
             type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = cents))) }
-        PaymentFlowScreen(cartState = cart, resumeOrderId = orderId, desdeCuentasAbiertas = true,
+        // Como el cobro en línea: si se resolvió un cobro anterior de OTRA venta, este cobro se cierra y su aviso se queda a la vista.
+        avisoLocal?.let { texto ->
+            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+                AvoqadoFullscreenHeader(title = "Cuenta abierta", onNav = { salir(CierreDeCuenta.ABIERTA) }, showDivider = true)
+                Text(texto, Modifier.padding(AvoqadoTheme.spacing.lg))
+            }
+        } ?: PaymentFlowScreen(cartState = cart, resumeOrderId = orderId, desdeCuentasAbiertas = true,
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA,
             antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId) },
             onPaymentCommitted = { cierre = cierreDelCobroDesdeLaCopia(it) },
             onDone = { salir(cierre) },
             onCancel = { salir(CierreDeCuenta.ABIERTA) },
-            // ponytail: sin red no hay cobro anterior que resolver con el servidor; si pasa, se vuelve a la cuenta sin su aviso.
-            onPreviousChargeResolved = { salir(CierreDeCuenta.ABIERTA) },
+            onPreviousChargeResolved = { texto -> avisoLocal = texto },
         )
     }
 }
 
 /** D12: el botón sin red de la cuenta de la copia: «Cobrar $X en efectivo», «Revisando…» mientras pide el candado, o el gris con su razón. */
 @Composable
-private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel: CobroDeCuentaViewModel, onCobrar: () -> Unit) {
+private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel: CobroDeCuentaViewModel, onCobrar: (saldoCents: Int) -> Unit) {
     val decision by viewModel.sinRed.collectAsState()
+    // Si este botón sale de la pantalla (atrás, o volvió la red) a media consulta, su alcance se cancela y el VM suelta lo concedido.
     val scope = rememberCoroutineScope()
     var revisando by remember(orderId) { mutableStateOf(false) }
-    var confirmar by remember(orderId) { mutableStateOf<String?>(null) }
+    var confirmar by remember(orderId) { mutableStateOf<DecisionSinRed.Cobrar?>(null) }
     LaunchedEffect(copia) { viewModel.consultarSinRed(orderId) }
     when (val d = decision) {
         is DecisionSinRed.Cobrar -> PrimaryButton(
@@ -420,17 +431,17 @@ private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel
                 scope.launch {
                     try {
                         val r = viewModel.pedirCobroSinRed(orderId)
-                        if (r is DecisionSinRed.Cobrar) { if (r.confirmar != null) confirmar = r.confirmar else onCobrar() }
+                        if (r is DecisionSinRed.Cobrar) { if (r.confirmar != null) confirmar = r else onCobrar(r.saldoCents) }
                     } finally { revisando = false }
                 }
             })
         is DecisionSinRed.Gris -> Text(d.texto)
         null -> PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
     }
-    confirmar?.let { texto ->
+    confirmar?.let { c ->
         val volver = { confirmar = null; viewModel.soltarCobroSinRed() }
-        AvoqadoDialog(title = texto, onDismiss = volver) {
-            PrimaryButton(text = TextosDeCuentaSinRed.COBRAR_AQUI, onClick = { confirmar = null; onCobrar() })
+        AvoqadoDialog(title = c.confirmar.orEmpty(), onDismiss = volver) {
+            PrimaryButton(text = TextosDeCuentaSinRed.COBRAR_AQUI, onClick = { confirmar = null; onCobrar(c.saldoCents) })
             TextButton(onClick = volver) { Text(TextosDeCuentaSinRed.VOLVER) }
         }
     }
@@ -480,6 +491,23 @@ internal fun alSalirDeCuentaAbierta(cierre: CierreDeCuenta, esCuentaDeTarjetas: 
     onActualizar()
 }
 
+/**
+ * I1: qué pinta [AccionesDeCuentaAbierta]. Un cobro abierto (en línea, o sin red con su saldo ya decidido) se pinta SIEMPRE, aunque la
+ * cuenta, recargada a medio cobro, ya salga PAGADA o CANCELADA: el cobro termina y la cajera ve su resultado y su cambio. Las acciones
+ * (botón, avisos) sólo con una cuenta abierta de Mostrador o de tarjetas.
+ */
+internal data class LoQueSePinta(val acciones: Boolean, val cobroEnLinea: Boolean, val cobroSinRed: Int?)
+
+internal fun loQueSePinta(order: com.avoqado.pos.orders.data.model.OrderDetail, abierta: Boolean, cobroSinRed: Int?) = LoQueSePinta(
+    acciones = order.status !in listOf("CANCELLED", "DELETED") &&
+        order.orderPaymentStatus != com.avoqado.pos.orders.data.model.PaymentStatus.PAID && (order.esDeMesa == false || order.esCuentaDeTarjetas),
+    cobroEnLinea = abierta,
+    cobroSinRed = cobroSinRed,
+)
+
+/** I1: recargar la cuenta vuelve a pedir la oferta sólo con red y sin un cobro abierto (pedirla vacía la foto del cobro en línea). */
+internal fun pideOfertaAlRecargar(enLinea: Boolean, cobroAbierto: Boolean): Boolean = enLinea && !cobroAbierto
+
 /** «Reintentar» es para una consulta que ya falló; antes de que arranque la primera también se está consultando. */
 internal fun cuentaEnConsulta(consultasEnCurso: Int, enLinea: Boolean, consultaPedida: Boolean) =
     consultasEnCurso > 0 || (enLinea && !consultaPedida)
@@ -494,37 +522,54 @@ fun AccionesDeCuentaAbierta(
     copia: CuentaGuardada? = null,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-${order.id}"),
 ) {
-    if (order.status in listOf("CANCELLED", "DELETED") || order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID ||
-        (order.esDeMesa != false && !order.esCuentaDeTarjetas)) return
     val onResultadoDeTarjetas = LocalResultadoDeTarjetas.current
     val conectado by viewModel.conectado.collectAsState()
     val servidor by viewModel.servidor.collectAsState()
     val enLinea = controlDeRedDeCuenta(conectado, servidor, true)
+    val scope = rememberCoroutineScope()
+    var abierta by rememberSaveable(order.id) { mutableStateOf(false) }
+    var aviso by rememberSaveable(order.id) { mutableStateOf<String?>(null) }
+    // D12: el saldo YA decidido del cobro sin red abierto con la copia (null = ninguno). No depende de `conCopia`: sigue abierto
+    // aunque vuelva la red a medio cobro.
+    var cobroSinRed by remember(order.id) { mutableStateOf<Int?>(null) }
+    DisposableEffect(viewModel) { onDispose { viewModel.soltarCobroSinRed() } }
+    // I1: los cobros abiertos van ANTES de la salida temprana (ver `loQueSePinta`).
+    val pinta = loQueSePinta(order, abierta, cobroSinRed)
+    if (pinta.cobroEnLinea) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
+        abierta = false
+        if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
+        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id,
+            if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
+        scope.launch { if (enLinea) viewModel.cargar(order.id) }
+    }, viewModel = viewModel)
+    // Al volver, sin «La venta quedó en Cuentas abiertas» (un cobro guardado no es salir sin cobrar). Si la revalidación dijo que no,
+    // la cuenta se queda con ese gris; si no, se vuelve a decidir y se refresca (un cobro encolado se ve «sin sincronizar»).
+    pinta.cobroSinRed?.let { saldo ->
+        CobroDeCuentaScreen(order.id, onSalir = {
+            cobroSinRed = null
+            scope.launch { if (viewModel.alVolverDelCobroSinRed(order.id)) onActualizar() }
+        }, viewModel = viewModel, saldoSinRed = saldo)
+    }
+    if (!pinta.acciones) return
     val solicitudes by viewModel.solicitudes.collectAsState()
     val oferta by viewModel.oferta.collectAsState()
     val cuentaDelCarrito = LocalCuentaDelCarrito.current
     val detalle by viewModel.detalle.collectAsState()
     val consultasEnCurso by viewModel.consultasEnCurso.collectAsState()
     val mensaje by viewModel.mensaje.collectAsState()
-    val scope = rememberCoroutineScope()
-    var abierta by rememberSaveable(order.id) { mutableStateOf(false) }
-    var aviso by rememberSaveable(order.id) { mutableStateOf<String?>(null) }
     val solicitudesPropias = solicitudesDeLaCuenta(solicitudes, viewModel.venueActual, order.id)
     val porTerminar = solicitudesPropias.any { it.porTerminar }
     val elegible = com.avoqado.pos.orders.data.model.puedeCobrarseDesdeLaLista(order.cobrosConSaldo, order, porTerminar)
     var consultaPedida by remember(order.id) { mutableStateOf(false) }
     LaunchedEffect(order, solicitudesPropias) {
         consultaPedida = true
-        if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id)
+        if (pideOfertaAlRecargar(enLinea, cobroAbierto = abierta || cobroSinRed != null)) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id)
     }
     val cents = detalle?.let(::restanteCents)
     // D12: sin red, la cuenta que respalda la copia se decide con la FILA de la copia, no con este detalle reconstruido (`payments`
     // null abriría la compuerta de abonos por accidente). Con red, todo como siempre.
     val conCopia = !enLinea && copia != null && copia.cuenta.id == order.id
-    // El cobro abierto con la copia sigue abierto aunque vuelva la red a medio cobro (no se desmonta con `conCopia`).
-    var cobroConCopia by remember(order.id) { mutableStateOf<CuentaGuardada?>(null) }
-    DisposableEffect(viewModel) { onDispose { viewModel.soltarCobroSinRed() } }
-    if (conCopia) CobrarCuentaSinRed(order.id, copia!!, viewModel) { cobroConCopia = copia }
+    if (conCopia) CobrarCuentaSinRed(order.id, copia!!, viewModel) { saldo -> cobroSinRed = saldo }
     else if (elegible) {
         if (detalle == null && cuentaEnConsulta(consultasEnCurso, enLinea, consultaPedida)) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
         else if (detalle == null) TextButton(enabled = enLinea, onClick = {
@@ -543,21 +588,6 @@ fun AccionesDeCuentaAbierta(
     if (!conCopia) (if (enLinea) mensaje ?: aviso else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
         order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
         sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
-    if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
-        abierta = false
-        if (cierre == CierreDeCuenta.ABIERTA) aviso = "La venta quedó en Cuentas abiertas."
-        alSalirDeCuentaAbierta(cierre, order.esCuentaDeTarjetas, order.id,
-            if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
-        scope.launch { if (enLinea) viewModel.cargar(order.id) }
-    }, viewModel = viewModel)
-    // Al volver, sin «La venta quedó en Cuentas abiertas» (un cobro guardado no es salir sin cobrar). Si la revalidación dijo que no,
-    // la cuenta se queda con ese gris; si no, se vuelve a decidir y se refresca (un cobro encolado se ve «sin sincronizar»).
-    cobroConCopia?.let { guardada ->
-        CobroDeCuentaScreen(order.id, onSalir = {
-            cobroConCopia = null
-            scope.launch { if (viewModel.alVolverDelCobroSinRed(order.id)) onActualizar() }
-        }, viewModel = viewModel, copia = guardada)
-    }
 }
 
 @Composable
