@@ -1032,6 +1032,14 @@ class OnlineOrdersViewModel internal constructor(
                 } catch (e: Exception) {
                     Result.failure(e)
                 }
+                // Codex r6 #1: mientras se esperaba el saldo, otra entrada del POS (cerrar la bandeja → Pedidos → detalle → efectivo) pudo
+                // guardar un efectivo de esta orden. Se revisa todo el dinero otra vez al terminar la espera y ANTES de elegir el saldo: de
+                // elegirlo a abrir no puede haber espera (r3 #2).
+                val dineroTrasEsperar = dineroSinConfirmar(venue, orderId, esFolio = folio != null)
+                if (dineroTrasEsperar.bloquea) {
+                    _aviso.value = dineroTrasEsperar.aviso
+                    return@launch
+                }
                 val saldo = leido.map { it.saldoCents }.getOrElse { error ->
                     if (error is IOException) {
                         // Sin red es un estado normal: se cobra el último saldo que dijo la bandeja. Salvo que ESTE aparato ya
@@ -1113,7 +1121,7 @@ class OnlineOrdersViewModel internal constructor(
                 // 🔴 P1 (Codex W-1 r6 #2): lo de arriba ESPERÓ (el saldo del servidor, la copia guardada) y mientras tanto la terminal pudo
                 // confirmar el cobro con tarjeta de esta orden; con la consulta fallando sin red (o con el servidor sin contarlo aún) se abría
                 // el efectivo de un folio ya pagado. Se vuelve a revisar la tarjeta justo antes de abrir, SIN NINGUNA ESPERA hasta abrir
-                // (Codex r3 #2: una espera aquí deja viejo el saldo ya elegido; el efectivo de la cola no cambia sin un cobro abierto):
+                // (Codex r3 #2: una espera aquí deja viejo el saldo ya elegido; el efectivo de la cola se revisó al terminar la espera):
                 // - un positivo, su marca o un saldo en duda frenan con su texto;
                 // - lo que ya no deja rastro tampoco se fía (r2 #1 y r3 #1): si las tarjetas en duda de esta orden no son las del principio,
                 //   o una marca suya se soltó mientras tanto (se confirmó, salió de la lista y una lectura nueva la soltó), no se abre.

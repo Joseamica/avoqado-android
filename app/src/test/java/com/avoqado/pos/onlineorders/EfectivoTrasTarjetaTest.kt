@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -273,6 +274,45 @@ class EfectivoTrasTarjetaTest {
     }
 
     @Test
+    fun `r6 un efectivo de la orden guardado desde otra entrada durante la espera frena`() = runTest(dispatcher) {
+        // Codex r6 #1: «Cobrar» espera el saldo; la cajera cierra la bandeja y cobra la orden en efectivo desde Pedidos → detalle (queda
+        // en la cola antes del envío); la consulta termina sin red. No se abre otro cobro.
+        coEvery { repo.saldoDelPedido("f1") } coAnswers {
+            efectivo = { EfectivoDelPedido.EN_COLA }
+            Result.failure(IOException("sin red"))
+        }
+        val vm = armar()
+
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.COBRO_EN_EFECTIVO_GUARDADO, vm.aviso.value)
+    }
+
+    @Test
+    fun `r6 la revision del efectivo va ANTES de elegir el saldo - lo que trae la lista durante ella se cobra`() = runTest(dispatcher) {
+        // r3 #2: entre elegir el saldo y abrir no hay espera. La revisión de r6 espera a la cola; si mientras tanto la lista trae $54, el
+        // saldo se elige DESPUÉS y es $54.
+        val pedido = folio().copy(orderId = "p1", onlineOrderId = "oo-p1", status = OnlineOrderStatus.ACCEPTED, requiresAcceptance = true)
+        var llamadas = 0
+        val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        efectivo = { llamadas++; if (llamadas == 2) compuerta.await(); EfectivoDelPedido.NINGUNO }
+        coEvery { repo.saldoDelPedido("p1") } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+
+        vm.cobrar(pedido)
+        runCurrent() // detenido en la revisión del efectivo de después de la espera
+        coEvery { repo.inbox(any(), any(), any()) } returns Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, 1, 0,
+            listOf(pedido.copy(remainingCents = 5400)), storeOff = false, truncated = false, nextCursor = null))
+        vm.refrescar(imprimirPendientes = false)
+        compuerta.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(5400, vm.cobroAbierto.value?.saldoCents)
+    }
+
+    @Test
     fun `una tarjeta que sigue en duda no frena el efectivo, solo avisa - founder B`() = runTest(dispatcher) {
         cobros = listOf(enDuda)
         var consultasALaCola = 0
@@ -286,7 +326,7 @@ class EfectivoTrasTarjetaTest {
         assertNotNull(vm.cobroAbierto.value)
         assertEquals(13400, vm.cobroAbierto.value!!.saldoCents)
         assertEquals(CardChargeDecision.UNDETERMINED_MESSAGE, vm.aviso.value)
-        // Codex r3 #2: entre elegir el saldo y abrir no hay otra espera (una consulta a la cola, la del principio).
-        assertEquals(1, consultasALaCola)
+        // Una consulta a la cola al empezar y otra al terminar la espera (r6), ninguna después de elegir el saldo (r3 #2).
+        assertEquals(2, consultasALaCola)
     }
 }
