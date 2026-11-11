@@ -61,8 +61,12 @@ sealed class CardChargeOutcome {
      *
      * 🔴 Sólo nace de un estado terminal que lo AFIRME (`FAILED`, `CANCELLED`). Nunca de una
      * ausencia (404) ni de una ignorancia (no se pudo preguntar) — ésas son `Undetermined`.
+     *
+     * @param motivoDeAdmision hz:5bda0b30:D2: [message] es el motivo con el que el SERVIDOR no admitió el cobro (lápida
+     *   `REJECTED_*`, p. ej. «falta $X»). Sólo cambia la pantalla de la consulta tardía: lo dice en vez de saltar callada a
+     *   elegir terminal. No toca el dinero ni la llave.
      */
-    data class NotCharged(val message: String) : CardChargeOutcome()
+    data class NotCharged(val message: String, val motivoDeAdmision: Boolean = false) : CardChargeOutcome()
 
     /** No se pudo determinar. Ni éxito ni fracaso: jamás ofrecer un reintento a ciegas. */
     data class Undetermined(val message: String) : CardChargeOutcome()
@@ -337,7 +341,7 @@ object CardChargeDecision {
             // hz:5bda0b30:D2 (11-nov): lápida de admisión `REJECTED_*` recuperada por GET (se perdió la respuesta del POST). El
             // SERVIDOR dice POR QUÉ no la admitió («La cuenta ya tiene un abono: falta $X…»); el genérico de abajo suena al banco.
             probe.status == "FAILED" && probe.failureCode.orEmpty().startsWith("REJECTED_") && !probe.errorMessage.isNullOrBlank() ->
-                CardChargeOutcome.NotCharged(probe.errorMessage)
+                CardChargeOutcome.NotCharged(probe.errorMessage, motivoDeAdmision = true)
             probe.status == "FAILED" ->CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
             probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.

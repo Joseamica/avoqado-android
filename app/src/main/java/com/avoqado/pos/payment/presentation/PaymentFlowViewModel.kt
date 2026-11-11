@@ -4418,6 +4418,10 @@ class PaymentFlowViewModel @Inject constructor(
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
                         resolverCobroAnterior("El cobro anterior no se realizó")
+                    } else if (outcome.motivoDeAdmision) {
+                        // hz:5bda0b30:D2: el SERVIDOR no lo admitió y dijo por qué («falta $X»): se dice, como cuando el POST
+                        // sí llega. «Reintentar» lleva a elegir terminal.
+                        _state.value = PaymentFlowState.Error(message = outcome.message, source = PaymentErrorSource.TERMINAL)
                     } else {
                         ofrecerTerminales(total)
                     }
