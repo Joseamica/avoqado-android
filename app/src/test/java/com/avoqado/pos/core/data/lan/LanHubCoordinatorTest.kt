@@ -321,6 +321,117 @@ class LanHubCoordinatorTest {
         assertTrue("también se libera en mi registro de árbitro", server.activeLeases().isEmpty())
     }
 
+    // MARK: - D12 ronda 1 (revisión T10): la renovación no revive lo soltado, y la hora cuenta desde el ENVÍO
+
+    @Test
+    fun `D12 soltada en local y GRANTED tardio no revive`() = runTest {
+        val c = concedidoPorB()
+        var llamadas = 0
+        coEvery { client.renew(arbitroB, llave, me, 1) } coAnswers {
+            llamadas++
+            // Mientras la renovación de fondo va en camino, la UI revisa el candado, falla y lo suelta en local.
+            if (llamadas == 1) { assertFalse(c.candadoVigente(llave)); concedida() } else null
+        }
+        c.renovarUnaVez()
+        assertTrue(c.myTables.value.isEmpty())
+
+        c.renovarUnaVez() // si hubiera revivido en heldLeases, esta vuelta la volvería a renovar
+        coVerify(exactly = 2) { client.renew(any(), any(), any(), any()) }
+        assertFalse("tampoco revive en las coordinadas", c.candadoVigente(llave))
+        coVerify(exactly = 2) { client.renew(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D12 STALE de la copia vieja no borra la concesion nueva`() = runTest {
+        val c = concedidoPorB() // época 1
+        coEvery { client.acquire(arbitroB, llave, me, any(), any()) } returns concedida(epoch = 2)
+        coEvery { client.renew(arbitroB, llave, me, 1) } coAnswers {
+            // Mientras la renovación de la época 1 va en camino, la llave se vuelve a pedir y se concede con la época 2.
+            assertTrue(c.acquireCoordinado(llave, "s1", "Juan") is LeaseOutcome.Granted)
+            LeaseResponse(status = LeaseProtocol.STATUS_STALE, currentEpoch = 2)
+        }
+        c.renovarUnaVez()
+        assertEquals(setOf(llave), c.myTables.value)
+        coEvery { client.renew(arbitroB, llave, me, 2) } returns concedida(epoch = 2)
+        assertTrue(c.candadoVigente(llave))
+    }
+
+    @Test
+    fun `D12 GRANTED del mismo arbitro si refresca la hora de confirmacion`() = runTest {
+        val inicio = clock
+        val c = concedidoPorB()
+        coEvery { client.renew(arbitroB, llave, me, 1) } returns concedida()
+        clock = inicio + LeaseRegistry.DEFAULT_TTL_MILLIS - 1_000
+        c.renovarUnaVez()
+        clock = inicio + LeaseRegistry.DEFAULT_TTL_MILLIS + 1_000 // sin el refresco ya habría vencido
+        assertTrue(c.candadoVigente(llave))
+    }
+
+    @Test
+    fun `D12 la confirmacion cuenta desde el envio, no desde la respuesta`() = runTest {
+        val latencia = 5_000L
+        // acquireCoordinado: el árbitro tarda 5 s en contestar la concesión.
+        val inicio = clock
+        coEvery { client.acquire(arbitroB, llave, me, any(), any()) } coAnswers { clock += latencia; concedida() }
+        val a = hub(yo, arbitroB)
+        assertTrue(a.acquireCoordinado(llave, "s1", "Juan") is LeaseOutcome.Granted)
+        coEvery { client.renew(arbitroB, llave, me, 1) } returns concedida()
+        clock = inicio + LeaseRegistry.DEFAULT_TTL_MILLIS
+        assertFalse("concesión", a.candadoVigente(llave))
+
+        // renovarUnaVez: la renovación de fondo tarda 5 s.
+        val b = concedidoPorB()
+        val envio = clock
+        coEvery { client.renew(arbitroB, llave, me, 1) } coAnswers { clock += latencia; concedida() }
+        b.renovarUnaVez()
+        coEvery { client.renew(arbitroB, llave, me, 1) } returns concedida()
+        clock = envio + LeaseRegistry.DEFAULT_TTL_MILLIS
+        assertFalse("renovación de fondo", b.candadoVigente(llave))
+
+        // candadoVigente: su comprobación en vivo tarda 5 s.
+        val d = concedidoPorB()
+        val revision = clock
+        coEvery { client.renew(arbitroB, llave, me, 1) } coAnswers { clock += latencia; concedida() }
+        assertTrue(d.candadoVigente(llave))
+        coEvery { client.renew(arbitroB, llave, me, 1) } returns concedida()
+        clock = revision + LeaseRegistry.DEFAULT_TTL_MILLIS
+        assertFalse("comprobación en vivo", d.candadoVigente(llave))
+    }
+
+    @Test
+    fun `D12 el arbitro cambia durante la comprobacion en vivo`() = runTest {
+        val c = concedidoPorB()
+        coEvery { client.renew(arbitroB, llave, me, 1) } coAnswers {
+            red.peers.value = listOf(yo, arbitroB, arbitroC) // C gana mientras B contestaba la renovación
+            concedida()
+        }
+        assertFalse(c.candadoVigente(llave))
+        assertTrue(c.myTables.value.isEmpty())
+    }
+
+    @Test
+    fun `D12 siendo arbitro, si el arbitro cambia durante la llamada no queda nada tomado`() = runTest {
+        val server = LeaseServer(nowMillis = { clock })
+        coEvery { client.list(cajaB) } coAnswers {
+            red.peers.value = listOf(yo, cajaB, arbitroC) // C gana mientras B contestaba el list
+            sinOcupar
+        }
+        val c = hub(yo, cajaB, server = server)
+        assertEquals(LeaseOutcome.NoHub, c.acquireCoordinado(llave, "s1", "Juan"))
+        assertTrue(c.myTables.value.isEmpty())
+        assertTrue("tampoco en mi registro", server.activeLeases().isEmpty())
+    }
+
+    @Test
+    fun `D12 candadoVigente con una llave del acquire normal es false y no la suelta`() = runTest {
+        val server = LeaseServer(nowMillis = { clock })
+        val c = hub(yo, cajaB, server = server)
+        assertTrue(c.acquire(llave, "s1", "Juan") is LeaseOutcome.Granted)
+        assertFalse(c.candadoVigente(llave))
+        assertEquals(setOf(llave), c.myTables.value)
+        assertEquals(listOf(llave), server.activeLeases().map { it.tableId })
+    }
+
     @Test
     fun `la caja que abrio la cuenta conserva su salida`() = runTest {
         // B inalcanzable: el acquire de siempre (Mesas y la caja que abrió la cuenta) no pregunta a nadie más.

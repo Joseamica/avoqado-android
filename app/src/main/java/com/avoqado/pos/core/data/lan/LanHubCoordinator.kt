@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LanHubCoordinator"
 
@@ -43,11 +44,14 @@ class LanHubCoordinator(
     /** ¿Hay con quién coordinarse? Si es false, el POS trabaja como isla. */
     val hubAvailable: StateFlow<Boolean> = _hubAvailable.asStateFlow()
 
-    /** Leases que ESTE dispositivo sostiene ahora: tableId → lease. */
-    private val heldLeases = mutableMapOf<String, TableLease>()
+    /**
+     * Leases que ESTE dispositivo sostiene ahora: tableId → lease. Concurrente: lo tocan la UI (Main) y [renewLoop] (IO);
+     * con un mapa simple, recorrerlo mientras el otro hilo escribe tumbaba la app (revisión D12 T10).
+     */
+    private val heldLeases = ConcurrentHashMap<String, TableLease>()
 
     /** D12: el árbitro que concedió cada llave de [acquireCoordinado] y su última confirmación (reloj LOCAL). Sólo esas llaves. */
-    private val coordinados = mutableMapOf<String, ArbitroQueConcedio>()
+    private val coordinados = ConcurrentHashMap<String, ArbitroQueConcedio>()
 
     private val _myTables = MutableStateFlow<Set<String>>(emptySet())
     val myTables: StateFlow<Set<String>> = _myTables.asStateFlow()
@@ -150,6 +154,7 @@ class LanHubCoordinator(
     suspend fun acquireCoordinado(key: String, staffId: String, staffName: String): LeaseOutcome {
         if (otrasCajas().isEmpty()) return LeaseOutcome.NoHub
         val arbitro = currentArbiter() ?: return LeaseOutcome.NoHub
+        val enviadoEn = nowMillis() // la confirmación cuenta desde el ENVÍO: la latencia no alarga la ventana
         val outcome = if (arbitro.deviceId != deviceId) {
             if (!arbitro.venueExplicito) return LeaseOutcome.NoHub
             // Su respuesta ES la prueba de vida: un anuncio viejo con el WiFi caído no contesta.
@@ -160,7 +165,7 @@ class LanHubCoordinator(
             interpret(key, local(LeaseProtocol.OP_ACQUIRE, key, staffId = staffId, staffName = staffName))
         }
         if (outcome !is LeaseOutcome.Granted) return outcome
-        val concedio = ArbitroQueConcedio(arbitro.deviceId, arbitro.bootedAtMillis, nowMillis())
+        val concedio = ArbitroQueConcedio(arbitro.deviceId, arbitro.bootedAtMillis, enviadoEn)
         if (currentArbiter()?.esElMismo(concedio) != true) {
             // El árbitro cambió mientras contestaba: lo concedido ya no lo respalda nadie.
             soltar(key, arbitro)
@@ -188,6 +193,7 @@ class LanHubCoordinator(
     }
 
     private suspend fun confirmarEnVivo(key: String, lease: TableLease, arbitro: LanPeer): Boolean {
+        val enviadoEn = nowMillis()
         val renovada = if (arbitro.deviceId == deviceId) {
             local(LeaseProtocol.OP_RENEW, key, epoch = lease.epoch)
         } else {
@@ -199,8 +205,9 @@ class LanHubCoordinator(
             val lista = listaDeOtraCaja() ?: return false
             if (lista.ocupadaPorOtro(key) != null) return false
         }
-        heldLeases[key] = nueva
-        coordinados[key]?.let { coordinados[key] = it.copy(confirmadoEnMillis = nowMillis()) }
+        // Sólo sobre lo que sigue tomado: nada de esto revive una llave que otro camino soltó mientras tanto.
+        heldLeases.computeIfPresent(key) { _, _ -> nueva } ?: return false
+        coordinados.computeIfPresent(key) { _, c -> c.copy(confirmadoEnMillis = enviadoEn) }
         return true
     }
 
@@ -253,35 +260,43 @@ class LanHubCoordinator(
     private suspend fun renewLoop() {
         while (scope.isActive) {
             delay(LeaseRegistry.RENEW_INTERVAL_MILLIS)
-            if (heldLeases.isEmpty()) continue
-            val arbiter = currentArbiter() ?: continue
+            renovarUnaVez()
+        }
+    }
 
-            for ((tableId, lease) in heldLeases.toMap()) {
-                val response = if (arbiter.deviceId == deviceId) {
-                    server.respondTo(
-                        LeaseProtocol.encode(
-                            LeaseRequest(op = LeaseProtocol.OP_RENEW, tableId = tableId, deviceId = deviceId, epoch = lease.epoch),
-                        ),
-                    )
-                } else {
-                    client.renew(arbiter, tableId, deviceId, lease.epoch) ?: continue // sin respuesta: NO soltar aún
-                }
+    /** Una vuelta de [renewLoop], sin el `delay`: es lo que se prueba. */
+    internal suspend fun renovarUnaVez() {
+        if (heldLeases.isEmpty()) return
+        val arbiter = currentArbiter() ?: return
 
-                when (response.status) {
-                    LeaseProtocol.STATUS_GRANTED -> response.lease?.toDomain()?.let {
-                        heldLeases[tableId] = it
-                        coordinados[tableId]?.takeIf { c -> arbiter.esElMismo(c) }?.let { c ->
-                            coordinados[tableId] = c.copy(confirmadoEnMillis = nowMillis())
+        for ((tableId, lease) in heldLeases.toMap()) {
+            val enviadoEn = nowMillis()
+            val response = if (arbiter.deviceId == deviceId) {
+                server.respondTo(
+                    LeaseProtocol.encode(
+                        LeaseRequest(op = LeaseProtocol.OP_RENEW, tableId = tableId, deviceId = deviceId, epoch = lease.epoch),
+                    ),
+                )
+            } else {
+                client.renew(arbiter, tableId, deviceId, lease.epoch) ?: continue // sin respuesta: NO soltar aún
+            }
+
+            when (response.status) {
+                // Sólo si la llave sigue siendo la MISMA que se mandó: una respuesta tardía no revive lo soltado (p. ej. por
+                // `candadoVigente`, que suelta sin red) ni un STALE de la copia vieja borra una concesión nueva.
+                LeaseProtocol.STATUS_GRANTED -> response.lease?.toDomain()?.let {
+                    if (heldLeases.replace(tableId, lease, it)) {
+                        coordinados.computeIfPresent(tableId) { _, c ->
+                            if (arbiter.esElMismo(c)) c.copy(confirmadoEnMillis = enviadoEn) else c
                         }
                     }
-                    LeaseProtocol.STATUS_DENIED, LeaseProtocol.STATUS_STALE -> {
-                        Log.w(TAG, "🧟 Perdí la mesa $tableId (época vieja) — la suelto en la UI")
-                        heldLeases.remove(tableId)
-                        coordinados.remove(tableId)
-                        _myTables.value = heldLeases.keys.toSet()
-                    }
-                    else -> Unit
                 }
+                LeaseProtocol.STATUS_DENIED, LeaseProtocol.STATUS_STALE -> if (heldLeases.remove(tableId, lease)) {
+                    Log.w(TAG, "🧟 Perdí la mesa $tableId (época vieja) — la suelto en la UI")
+                    coordinados.remove(tableId)
+                    _myTables.value = heldLeases.keys.toSet()
+                }
+                else -> Unit
             }
         }
     }
