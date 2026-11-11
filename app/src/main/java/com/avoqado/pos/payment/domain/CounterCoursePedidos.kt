@@ -22,6 +22,7 @@ fun buildCounterCoursePedidos(items: List<CartItem>): List<ComandaDispatcher.Ped
             ) },
             orderType = "En tienda" + (course?.let { " · $it" } ?: ""),
             curso = course, etiquetaPantalla = "En tienda",
+            omitirSinComanda = true, // «No lleva comanda»: venta del POS.
         )
     }
 }

@@ -98,7 +98,7 @@ class RefundCashDrawerOwnershipTest {
             reason = "Producto defectuoso",
         )
 
-        coVerify(exactly = 0) { cashDrawerRepository.addPayOut(any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addPayOut(any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { cashDrawerRepository.getOpenSession() }
     }
 
@@ -116,7 +116,7 @@ class RefundCashDrawerOwnershipTest {
             reason = "Producto defectuoso",
         )
 
-        coVerify(exactly = 0) { cashDrawerRepository.addPayOut(any(), any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addPayOut(any(), any(), any(), any(), any()) }
     }
 
     /**

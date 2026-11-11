@@ -26,7 +26,7 @@ package com.avoqado.pos.core.domain
  * venue con Permission Sets (`VenueRolePermission`) manda otra cosa; aquí sale la
  * matriz por default (`customPermissions = null`), que es la de la mayoría.
  *
- * Derivado de avoqado-server · huella 970833f4754c57f3.
+ * Derivado de avoqado-server · huella 0eec0629697e2b4e.
  */
 object PermisosRealesDelServer {
 
@@ -207,7 +207,7 @@ object PermisosRealesDelServer {
         "upsells:read",
     )
 
-    /** MANAGER — 160 permisos efectivos (146 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
+    /** MANAGER — 161 permisos efectivos (147 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
     val MANAGER = listOf(
         "accounting:read",
         "analytics:export",
@@ -222,6 +222,7 @@ object PermisosRealesDelServer {
         "attendance:read",
         "calendar:connect_self",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:read",
         "cash-out:report",
@@ -371,7 +372,7 @@ object PermisosRealesDelServer {
         "upsells:*",
     )
 
-    /** ADMIN — 150 permisos efectivos (123 declarados + 27 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, reservations:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** ADMIN — 151 permisos efectivos (124 declarados + 27 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, reservations:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val ADMIN = listOf(
         "accounting:manage",
         "accounting:read",
@@ -391,6 +392,7 @@ object PermisosRealesDelServer {
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:manage",
         "cash-out:read",
@@ -525,7 +527,7 @@ object PermisosRealesDelServer {
         "venues:read",
     )
 
-    /** OWNER — 161 permisos efectivos (134 declarados + 27 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, reservations:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** OWNER — 162 permisos efectivos (135 declarados + 27 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, reservations:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val OWNER = listOf(
         "accounting:manage",
         "accounting:read",
@@ -547,6 +549,7 @@ object PermisosRealesDelServer {
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:pay-out",
         "cash-drawer:view-expected",
         "cash-out:*",
         "catalog-venue:read",

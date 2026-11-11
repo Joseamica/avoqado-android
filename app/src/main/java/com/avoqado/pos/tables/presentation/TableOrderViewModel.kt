@@ -1159,6 +1159,7 @@ class TableOrderViewModel @Inject constructor(
                 curso = course,
                 etiquetaPantalla = "Mesa ${session.tableNumber}",
                 configCongelada = draftRouting[roundKey],
+                omitirSinComanda = true, // «No lleva comanda»: la ronda es una venta del POS.
             )
         }
         if (pedidos.isEmpty()) return
@@ -1740,22 +1741,27 @@ class TableOrderViewModel @Inject constructor(
             var impresas = 0
             var sinImpresora = 0
             var ultimoError: String? = null
+            var sinComanda = 0
             try {
                 sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
                     val routable = courseItems.map { item ->
                         RoutableItem(
                             orderItemId = item.id,
                             productId = item.productId,
-                            categoryId = null,
+                            // D18: la línea de la cuenta no trae la categoría; sale del catálogo guardado, como en la
+                            // primera impresión (el carrito la toma de `product.categoryId`).
+                            categoryId = item.productId?.let { productsRepository.getProduct(it)?.categoryId },
                             productName = item.productName ?: "Artículo",
                             quantity = item.quantity,
                             modifiers = item.modifiers.map { it.name },
                             notes = item.notes,
                         )
                     }
-                    val plans = PrintRoutingMapper.buildComandas(routable, config)
+                    val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
+                    sinComanda += ruteo.omitidasSinComanda
+                    if (ruteo.plans.isEmpty()) return@forEach
                     val r = comandaPrinter.printComandas(
-                        plans = plans,
+                        plans = ruteo.plans,
                         config = config,
                         orderNumber = session.orderNumber,
                         orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
@@ -1770,6 +1776,9 @@ class TableOrderViewModel @Inject constructor(
             }
 
             when {
+                // «No lleva comanda»: todo lo enviado es de estaciones sin comanda. No es un error.
+                intentadas == 0 && sinImpresora == 0 && sinComanda > 0 ->
+                    showMessage(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE)
                 impresas > 0 && impresas == intentadas ->
                     showMessage(if (impresas == 1) "Comanda reimpresa" else "$impresas comandas reimpresas")
                 impresas > 0 ->
@@ -1816,16 +1825,22 @@ class TableOrderViewModel @Inject constructor(
                 RoutableItem(
                     orderItemId = item.id,
                     productId = item.productId,
-                    categoryId = null,
+                    categoryId = item.productId?.let { productsRepository.getProduct(it)?.categoryId }, // D18, como reimprimir
                     productName = item.productName ?: "Artículo",
                     quantity = item.quantity,
                     modifiers = item.modifiers.map { it.name },
                     notes = item.notes,
                 )
             }
-            val plans = PrintRoutingMapper.buildComandas(routable, config)
-            comandaPrinter.printComandas(
-                plans = plans,
+            // «No lleva comanda»: lo de estaciones sin comanda no se marcha. Si era TODO el tiempo, no salió nada: «¡Marchando!»
+            // mandaría al mesero a buscar un papel que no existe (Codex código r1 #3). Marchar sólo imprime; no toca el servidor.
+            val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
+            if (ruteo.plans.isEmpty() && ruteo.omitidasSinComanda > 0) {
+                showMessage(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE)
+                return@launch
+            }
+            if (ruteo.plans.isNotEmpty()) comandaPrinter.printComandas(
+                plans = ruteo.plans,
                 config = config,
                 orderNumber = session.orderNumber,
                 orderType = "Mesa ${session.tableNumber} · ¡MARCHAR ${course ?: "Inmediato"}!",

@@ -4,6 +4,29 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.ComprobanteDeRetiro
+import com.avoqado.pos.cashdrawer.data.ComprobantesDeRetiroPorImprimir
+import com.avoqado.pos.cashdrawer.data.ResultadoDelRetiro
+import com.avoqado.pos.cashdrawer.data.RetiroTicketBuilder
+import com.avoqado.pos.cashdrawer.data.llaveDelRetiro
+import com.avoqado.pos.cashdrawer.data.nombreDeLaSesion
+import com.avoqado.pos.cashdrawer.domain.AccesoAlRetiro
+import com.avoqado.pos.cashdrawer.domain.accesoAlRetiro
+import com.avoqado.pos.cashdrawer.domain.puedeRetirar
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.OverrideResult
+import com.avoqado.pos.core.data.network.PermissionOverrideRepository
+import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.util.VenueTimeZone
+import com.avoqado.pos.core.util.formatMoneyFromCents
+import com.avoqado.pos.printing.data.model.PrinterConnectionType
+import com.avoqado.pos.printing.data.model.TablaDeAcentos
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import java.time.format.DateTimeFormatter
+import java.util.UUID
 import com.avoqado.pos.cashdrawer.data.EstadoDeLaApertura
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
@@ -37,6 +60,11 @@ class CashDrawerViewModel @Inject constructor(
     private val repository: CashDrawerRepository,
     private val printerService: PrinterService,
     private val roleManager: RoleManager,
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    private val conectividad: ConnectivityMonitor,
+    private val permissionOverrideRepository: PermissionOverrideRepository,
+    private val comprobantes: ComprobantesDeRetiroPorImprimir,
+    private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
     /**
@@ -136,6 +164,23 @@ class CashDrawerViewModel @Inject constructor(
     /** Dos entradas seguidas no mandan dos syncs encimados: el segundo espera al primero. */
     private val candadoDelSync = Mutex()
 
+    /** El retiro en pantalla: hoja, teclado del gerente o aviso. Ver [tocarRetiro]. */
+    private val _retiro = MutableStateFlow<RetiroUi>(RetiroUi.Cerrado)
+    val retiro: StateFlow<RetiroUi> = _retiro.asStateFlow()
+
+    /** Lo que quedó del retiro ya registrado: sin confirmar con el servidor, o sin papel. Tono normal, no de error. */
+    private val _avisoDelRetiro = MutableStateFlow<String?>(null)
+    val avisoDelRetiro: StateFlow<String?> = _avisoDelRetiro.asStateFlow()
+
+    /**
+     * Un papel por retiro: la reimpresión al entrar ([reimprimirPendientes]) y la del retiro recién hecho van por el mismo
+     * candado, y la primera se salta los retiros que esta pantalla está registrando. Entrar dos veces seguidas (el `init` y la
+     * pantalla) no saca dos copias. ponytail: por ViewModel; si se recrea a media impresión sale, a lo más, una copia
+     * marcada REIMPRESIÓN (lo que ya acepta el ruling r3 #10).
+     */
+    private val candadoDelPapel = Mutex()
+    private val retirosEnCurso = mutableSetOf<String>()
+
     init {
         alEntrar()
     }
@@ -156,6 +201,7 @@ class CashDrawerViewModel @Inject constructor(
      */
     fun alEntrar() {
         loadCurrentSession()
+        viewModelScope.launch { reimprimirPendientes() }
         viewModelScope.launch {
             sincronizar()
             loadCurrentSession()
@@ -313,15 +359,190 @@ class CashDrawerViewModel @Inject constructor(
         }
     }
 
-    fun addPayOut(amountCents: Int, note: String?) {
+    // MARK: - Retiro de efectivo (con o sin el PIN de un gerente)
+
+    /**
+     * Retiro con gerente (Task 11): quien tiene `cash-drawer:pay-out` retira directo, con o sin red; el cajero, con el PIN de un
+     * gerente tecleado al CONFIRMAR, con el importe y el concepto a la vista. La pantalla sólo pinta este estado y llama aquí.
+     */
+    fun tocarRetiro() {
+        if (_retiro.value != RetiroUi.Cerrado) return
+        _retiro.value = when (accesoAhora()) {
+            // El id local nace AQUÍ y es el de todo este retiro: la autorización del gerente se ata a él (`llaveDelRetiro`).
+            AccesoAlRetiro.DIRECTO -> RetiroUi.Hoja(conPin = false, localId = UUID.randomUUID().toString())
+            AccesoAlRetiro.CON_PIN -> RetiroUi.Hoja(conPin = true, localId = UUID.randomUUID().toString())
+            AccesoAlRetiro.SIN_RED -> RetiroUi.Aviso(RETIRO_SIN_RED)
+            AccesoAlRetiro.SOLO_GERENTE -> RetiroUi.Aviso(RETIRO_SOLO_GERENTE)
+        }
+    }
+
+    /** Cómo puede retirar quien está en la sesión, AHORA: con la lista y el rol de este momento, el interruptor del PIN y la red. */
+    private fun accesoAhora(): AccesoAlRetiro = accesoAlRetiro(
+        puedeRetirar(
+            listaVigente = secureStorage.listaDePermisosVigente,
+            tieneElPermiso = roleManager.hasVenuePermission(PERMISO_RETIRAR),
+            rol = roleManager.role,
+        ),
+        tpvSettingsRepository.managerPinOverrideEnabled.value,
+        conectividad.isOnline(),
+    )
+
+    /** «Confirmar» de la hoja. Con PIN abre el teclado; directo, registra. Un segundo toque no hace nada. */
+    fun confirmarRetiro(amountCents: Int, concepto: String) {
+        val hoja = _retiro.value as? RetiroUi.Hoja ?: return
+        val texto = concepto.trim()
+        if (hoja.ocupado || amountCents <= 0 || texto.isEmpty()) return
+        // 🔴 El camino directo se vuelve a decidir al confirmar (H3): si con la hoja abierta llegó la lista vigente que quita el
+        // permiso, este retiro sigue como si se hubiera abierto así (PIN, o el aviso). Lo ya autorizado por PIN no se re-evalúa.
+        val acceso = if (hoja.conPin) AccesoAlRetiro.CON_PIN else accesoAhora()
+        when (acceso) {
+            AccesoAlRetiro.DIRECTO -> enviar(hoja, amountCents, texto, autorizacion = null, autorizadoPor = null)
+            // Cada «Confirmar» vuelve a pedir el PIN: si cambió el importe, la llave también (el importe es parte de ella).
+            AccesoAlRetiro.CON_PIN -> _retiro.value = RetiroUi.PidiendoPin(
+                hoja.copy(conPin = true, error = null), amountCents, texto, "Retiro de ${formatMoneyFromCents(amountCents)} · $texto",
+            )
+            AccesoAlRetiro.SIN_RED -> _retiro.value = RetiroUi.Aviso(RETIRO_SIN_RED)
+            AccesoAlRetiro.SOLO_GERENTE -> _retiro.value = RetiroUi.Aviso(RETIRO_SOLO_GERENTE)
+        }
+    }
+
+    /** El gerente teclea su PIN. Lo que no sea `Granted` se queda en el teclado, que ya sabe pintarlo. */
+    suspend fun teclearPinDelRetiro(pin: String): OverrideResult {
+        val p = _retiro.value as? RetiroUi.PidiendoPin ?: return OverrideResult.Failed("Este retiro ya no espera autorización.")
+        val r = permissionOverrideRepository.requestToken(
+            secureStorage.venueId.orEmpty(), pin, PERMISO_RETIRAR, llaveDelRetiro(p.hoja.localId, p.amountCents),
+        )
+        // Sólo si sigue abierto ESTE teclado: si lo cancelaron con el PIN en camino, no se manda nada.
+        if (r is OverrideResult.Granted && _retiro.value === p) {
+            enviar(p.hoja, p.amountCents, p.concepto, r.token, autorizadoPor = r.authorizedByName.ifBlank { "Gerente" })
+        }
+        return r
+    }
+
+    /** El gerente cerró el teclado: vuelve la hoja con lo escrito, sin mandar nada. */
+    fun cancelarPin() {
+        (_retiro.value as? RetiroUi.PidiendoPin)?.let { _retiro.value = it.hoja }
+    }
+
+    /** Cierra la hoja o el aviso. Con el retiro registrándose no se cierra: la respuesta tiene que verse. */
+    fun cerrarRetiro() {
+        if ((_retiro.value as? RetiroUi.Hoja)?.ocupado == true) return
+        _retiro.value = RetiroUi.Cerrado
+    }
+
+    fun descartarAvisoDelRetiro() {
+        _avisoDelRetiro.value = null
+    }
+
+    private fun enviar(hoja: RetiroUi.Hoja, amountCents: Int, concepto: String, autorizacion: String?, autorizadoPor: String?) {
+        // 🔴 El papel se arma ANTES de enviar (r3 #9): si otra persona entra mientras viaja el retiro, sigue siendo de quien lo hizo.
+        val c = comprobanteDelRetiro(hoja.localId, amountCents, concepto, autorizadoPor)
+        _retiro.value = hoja.copy(ocupado = true, error = null)
+        retirosEnCurso += hoja.localId
         viewModelScope.launch {
-            try {
-                repository.addPayOut(amountCents, note)
-                loadCurrentSession()
-                Log.d(TAG, "✅ Pay-out added: $amountCents")
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error adding pay-out: ${e.message}")
-                errorMessage.value = "No se pudo registrar la salida de efectivo."
+            // Salir de Caja con el retiro ya guardado no puede dejarlo sin papel.
+            withContext(NonCancellable) {
+                try {
+                    // 🔴 Sólo el registro puede devolver la hoja (H11). Después de `Hecho` el retiro ya existe: nada que truene después
+                    // (la impresora, la recarga) la reabre para editar un retiro con la misma llave.
+                    val r = try {
+                        repository.addPayOut(amountCents, concepto, hoja.localId, autorizacion, c)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error adding pay-out: ${e.message}")
+                        _retiro.value = hoja.copy(error = "No se pudo registrar la salida de efectivo.")
+                        loadCurrentSession()
+                        return@withContext
+                    }
+                    when (r) {
+                        is ResultadoDelRetiro.Hecho -> {
+                            _retiro.value = RetiroUi.Cerrado
+                            loadCurrentSession()
+                            val fallo = candadoDelPapel.withLock { imprimirYQuitar(c, reimpresion = false) }
+                            _avisoDelRetiro.value = listOfNotNull(RETIRO_SIN_CONFIRMAR.takeUnless { r.confirmado }, fallo)
+                                .joinToString("\n\n").ifEmpty { null }
+                        }
+                        // El repositorio ya lo deshizo (o dejó su rechazo marcado): nada que imprimir.
+                        is ResultadoDelRetiro.Rechazado ->
+                            _retiro.value = hoja.copy(error = "No se registró el retiro: ${ServerErrorText.humanize(r.mensaje)}")
+                    }
+                } finally {
+                    retirosEnCurso -= hoja.localId
+                }
+            }
+        }
+    }
+
+    private fun comprobanteDelRetiro(localId: String, amountCents: Int, concepto: String, autorizadoPor: String?): ComprobanteDeRetiro {
+        val ahora = VenueTimeZone.now()
+        val hizo = nombreDeLaSesion(secureStorage)
+        return ComprobanteDeRetiro(
+            venueId = secureStorage.venueId.orEmpty(),
+            localId = localId,
+            venueName = repository.venueName,
+            nombreDelAparato = tpvSettingsRepository.terminalNavigation.value.terminalName,
+            fechaTexto = ahora.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+            horaTexto = ahora.format(DateTimeFormatter.ofPattern("HH:mm")),
+            concepto = concepto,
+            amountCents = amountCents,
+            hizo = hizo,
+            rolDeQuienHizo = secureStorage.userRole?.uppercase(),
+            autorizadoPor = autorizadoPor ?: hizo, // sin PIN lo autorizó quien lo hizo
+        )
+    }
+
+    /**
+     * Imprime el comprobante y lo quita SÓLO si el papel salió (H10). Sin impresora o con error, se queda: sale en la siguiente entrada
+     * a Caja como REIMPRESIÓN. Devuelve el aviso si no salió. Va bajo [candadoDelPapel]. La impresora es la de recibos o, si no hay,
+     * la integrada del aparato, como los demás recibos.
+     */
+    private suspend fun imprimirYQuitar(c: ComprobanteDeRetiro, reimpresion: Boolean): String? {
+        val fallo = try {
+            val printer = printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
+            if (printer == null) {
+                RETIRO_SIN_IMPRESORA
+            } else {
+                printerService.sendPrintData(
+                    RetiroTicketBuilder.build(
+                        c,
+                        reimpresion = reimpresion,
+                        paperWidth = printer.paperWidth,
+                        switchToSingleByteFirst = printer.connectionTypeEnum == PrinterConnectionType.INTERNAL,
+                        tablaDeAcentos = TablaDeAcentos.deGuardada(printer.tablaDeAcentos),
+                    ),
+                    printer,
+                )
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ No se pudo imprimir el comprobante del retiro: ${e.message}", e)
+            RETIRO_NO_SE_IMPRIMIO
+        }
+        if (fallo == null) {
+            runCatching { comprobantes.quitar(c.venueId, c.localId) }.onFailure { Log.e(TAG, "❌ No se pudo quitar el comprobante: ${it.message}") }
+        }
+        return fallo
+    }
+
+    /**
+     * 🔴 Lo que quedó sin imprimir (la app murió entre guardar el retiro y el papel, r3 #8/#10, o la impresora falló, H10): sale con
+     * SUS datos y la leyenda REIMPRESIÓN, y se quita al salir. Sólo los de ESTE negocio; nunca uno que esta pantalla está imprimiendo
+     * ahora mismo, ni el de un retiro que el servidor RECHAZÓ (su operación sigue marcada en la cola, H9): ése se quita sin imprimir.
+     */
+    private suspend fun reimprimirPendientes() = withContext(NonCancellable) {
+        val venueId = secureStorage.venueId ?: return@withContext
+        candadoDelPapel.withLock {
+            val pendientes = runCatching { comprobantes.pendientes(venueId) }.getOrDefault(emptyList())
+            val rechazados = runCatching { repository.retirosRechazados(venueId) }.getOrDefault(emptySet())
+            val porImprimir = pendientes.filter { it.localId !in retirosEnCurso }
+            porImprimir.filter { it.localId in rechazados }.forEach { c ->
+                runCatching { comprobantes.quitar(c.venueId, c.localId) }.onFailure { Log.e(TAG, "❌ No se pudo quitar el comprobante: ${it.message}") }
+            }
+            // Para en el primer papel que no sale: cada intento espera su tiempo bajo este candado (y el papel de un retiro nuevo, detrás).
+            // Los demás se quedan para la siguiente entrada a Caja.
+            for (c in porImprimir.filter { it.localId !in rechazados }) {
+                val fallo = imprimirYQuitar(c, reimpresion = true) ?: continue
+                _avisoDelRetiro.value = fallo
+                break
             }
         }
     }
@@ -532,3 +753,26 @@ class CashDrawerViewModel @Inject constructor(
 /** Espejo EXACTO del permiso del server que gobierna el back-office de turnos. */
 const val PERMISO_VER_ESPERADO = "cash-drawer:view-expected"
 val ROLES_VER_ESPERADO = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+/** Espejo EXACTO del permiso del server que deja retirar efectivo de la caja (retiro con gerente). */
+const val PERMISO_RETIRAR = "cash-drawer:pay-out"
+val ROLES_RETIRAR = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+/** Lo que la pantalla de Caja pinta del retiro (retiro con gerente). */
+sealed interface RetiroUi {
+    data object Cerrado : RetiroUi
+    /** La hoja. [localId] es el de ESTE retiro: la autorización del gerente se ata a él. */
+    data class Hoja(val conPin: Boolean, val localId: String, val ocupado: Boolean = false, val error: String? = null) : RetiroUi
+    /** El teclado del gerente sobre la hoja, con lo que va a autorizar ([etiqueta]). */
+    data class PidiendoPin(val hoja: Hoja, val amountCents: Int, val concepto: String, val etiqueta: String) : RetiroUi
+    /** No se puede retirar desde aquí (sin red, o sólo un gerente): se dice y no se abre nada. */
+    data class Aviso(val texto: String) : RetiroUi
+}
+
+private const val RETIRO_SIN_RED =
+    "Sin conexión. Para retirar necesitas el PIN de un gerente, y eso requiere internet. El efectivo se queda en la caja."
+private const val RETIRO_SOLO_GERENTE =
+    "Sólo un gerente puede retirar efectivo. Pídele que lo haga con su usuario, o que el dueño active el PIN de gerente en el panel."
+private const val RETIRO_SIN_CONFIRMAR = "Retiro registrado. Se subirá al servidor cuando vuelva la conexión."
+private const val RETIRO_NO_SE_IMPRIMIO = "El retiro quedó registrado, pero no se imprimió el comprobante."
+private const val RETIRO_SIN_IMPRESORA = "El retiro quedó registrado, pero no hay impresora de recibos en esta caja."

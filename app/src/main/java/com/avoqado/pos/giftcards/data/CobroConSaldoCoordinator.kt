@@ -16,7 +16,8 @@ import kotlin.math.roundToInt
 sealed interface DesenlaceDeCobro {
     data class Cobrado(val cobro: CobroConSaldo) : DesenlaceDeCobro
     data class SaldoInsuficiente(val saldoDisponible: Double, val texto: String) : DesenlaceDeCobro
-    data class Rechazado(val texto: String, val volverAIdentificar: Boolean = false) : DesenlaceDeCobro
+    /** [codigo] = el `code` del servidor (p. ej. `ORDER_CANCELLED_NO_NEW_CHARGE`: el folio venció con la hoja abierta). */
+    data class Rechazado(val texto: String, val volverAIdentificar: Boolean = false, val codigo: String? = null) : DesenlaceDeCobro
     data class Reintentable(val texto: String, val retryAfterSeg: Int?) : DesenlaceDeCobro
     data class NoSalio(val texto: String) : DesenlaceDeCobro
     data object Incierto : DesenlaceDeCobro
@@ -28,6 +29,9 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
     private val store: SolicitudesDeTarjetaStore,
     private val secureStorage: SecureStorage,
     private val cobrosLocales: CobrosLocalesDeLaCuenta,
+    /** Tienda híbrida (A1): la marca «aquí ya se cobró con saldo» de un folio, en el mismo disco que las de tarjeta. */
+    private val foliosCobrados: com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta =
+        com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta(secureStorage),
 ) {
     private val mutex = Mutex()
     private val entregasPendientes = kotlinx.coroutines.flow.MutableStateFlow<Map<String, String>>(emptyMap())
@@ -57,7 +61,7 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
 
     suspend fun cobrar(venueId: String, orderId: String, prueba: PruebaDeTarjeta, montoCents: Int,
         propinaCents: Int, foto: FotoDeLaVenta? = null, vaciarCarrito: (() -> Unit)? = null,
-        deMostrador: Boolean = foto != null): DesenlaceDeCobro = exclusivo {
+        deMostrador: Boolean = foto != null, deFolio: Boolean = false): DesenlaceDeCobro = exclusivo {
         if (secureStorage.venueId != venueId || montoCents <= 0 || propinaCents < 0) return@exclusivo DesenlaceDeCobro.NoSalio(TextosDeTarjetas.SIN_RED)
         if (cuentaTrabada(orderId)) return@exclusivo DesenlaceDeCobro.NoSalio(TextosDeTarjetas.COMPROBANDO_COBRO)
         if (cobrosLocales.hayPendiente(venueId, orderId)) return@exclusivo DesenlaceDeCobro.NoSalio(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
@@ -66,7 +70,7 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
         val s = SolicitudDeTarjeta(tipo = "GIFT_CARD_REDEEM", llave = llave, venueId = venueId,
             creadaEn = System.currentTimeMillis(), orderId = orderId, cuerpo = cuerpo,
             foto = foto?.let { json.encodeToString(FotoDeLaVenta.serializer(), it) }, deMostrador = deMostrador,
-            iniciadoPor = secureStorage.userId, iniciadoPorNombre = nombreDelAutor())
+            iniciadoPor = secureStorage.userId, iniciadoPorNombre = nombreDelAutor(), deFolio = deFolio)
         preparar(s, vaciarCarrito, null)
     }
 
@@ -156,7 +160,7 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
                     if (esReintentable(f.http, f.code) && f.code != "ORDER_PAYMENT_CONFLICT")
                         return DesenlaceDeCobro.Reintentable(texto(f), f.retryAfterSeg)
                     val rechazo = if (f.code == "GIFT_CARD_INSUFFICIENT_BALANCE") DesenlaceDeCobro.SaldoInsuficiente(f.saldoDisponible ?: 0.0, texto(f))
-                        else DesenlaceDeCobro.Rechazado(texto(f), f.code in setOf("GIFT_CARD_PHONE_PROOF_INVALID", "GIFT_CARD_PROOF_EXPIRED", "GIFT_CARD_PROOF_INVALID"))
+                        else DesenlaceDeCobro.Rechazado(texto(f), f.code in setOf("GIFT_CARD_PHONE_PROOF_INVALID", "GIFT_CARD_PROOF_EXPIRED", "GIFT_CARD_PROOF_INVALID"), f.code)
                     if (s.nuevaCuenta && s.orderId == null) {
                         if (entregar == null || secureStorage.venueId != s.venueId) store.dejarPorRecuperar(s.llave)
                         else if (soltarYEntregar(s, { true }, entregar, destinoVigente) in setOf(Recuperacion.NO_SE_PUDO_SOLTAR, Recuperacion.PENDIENTE_DE_CONFIRMAR))
@@ -171,6 +175,19 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
     }
 
     private fun confirmar(s: SolicitudDeTarjeta, r: CobroConSaldo): DesenlaceDeCobro {
+        // A1: la marca del folio va ANTES de soltar la llave (directo, «Reintentar» o el resolutor al volver): no hay instante en que
+        // el aparato no sepa de ese dinero. Idempotente por la llave. Codex r1 #3: si el disco no la acepta, la llave NO se suelta: sigue
+        // frenando otro cobro de la cuenta (`cuentaTrabada`) y el resolutor vuelve a confirmar y a intentar la marca.
+        if (s.deFolio && s.orderId != null) {
+            val montoCents = (r.amount * 100).roundToInt().toLong()
+            val restaCents = (r.orderRemaining * 100).roundToInt().toLong()
+            if (!foliosCobrados.anotar(com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta(orderId = s.orderId,
+                    montoCents = montoCents, saldoAntesCents = restaCents + montoCents, enMs = System.currentTimeMillis(),
+                    venueId = s.venueId, requestId = s.llave, esFolio = true, conSaldo = true))) {
+                android.util.Log.e("🎁", "❌ No se pudo guardar en disco que un folio se cobró con saldo") // sin datos: guardia de secretos
+                return DesenlaceDeCobro.Cobrado(r)
+            }
+        }
         if (s.deMostrador && r.orderRemaining > 0) {
             store.dejarPorTerminar(s.llave, r.orderId, r.orderNumber, (r.orderRemaining * 100).roundToInt())
         } else store.quitar(s.llave)

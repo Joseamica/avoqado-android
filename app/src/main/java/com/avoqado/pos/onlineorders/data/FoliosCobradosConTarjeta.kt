@@ -27,6 +27,11 @@ data class FolioCobradoConTarjeta(
     val venueId: String? = null,
     val requestId: String? = null,
     val esFolio: Boolean = true,
+    /**
+     * Tienda híbrida, parte 2 (A1): el cobro fue con SALDO o tarjeta de regalo (lo deja `CobroConSaldoCoordinator`, [requestId] = su
+     * llave). Frena otro «Cobrar» igual que la de tarjeta, pero no mueve el folio a «Por entregar»: pudo ser parcial y todavía debe.
+     */
+    val conSaldo: Boolean = false,
 )
 
 /**
@@ -62,8 +67,19 @@ class FoliosCobradosConTarjeta internal constructor(
     /** Suelta las marcas que el SERVIDOR ya cuenta. Sólo las IGUALES: una que cambió mientras tanto se queda. */
     fun olvidar(confirmadas: Collection<FolioCobradoConTarjeta>) {
         if (confirmadas.isEmpty()) return
+        // ANTES de soltarla: quien vea la marca ya fuera ve también la cuenta subida. Sólo las de TARJETA (Codex r4 #2): la de un
+        // cobro con saldo se suelta con la misma copia de la que «Cobrar» toma el saldo (W-1, A1) y no es evidencia que se pierda.
+        confirmadas.filterNot { it.conSaldo }.forEach { soltadas.merge(it.orderId, 1L, Long::plus) }
         escribirCrudo { crudo -> encode(leer(crudo).filterNot { it in confirmadas }) }
     }
+
+    /**
+     * Codex r3 #1: cuántas veces se soltó una marca de TARJETA de [orderId] en este proceso (ésta es la ÚNICA puerta). «Cobrar» lo compara antes
+     * y después de esperar: una marca que nació y se soltó mientras tanto no deja otro rastro.
+     */
+    fun vecesSoltada(orderId: String): Long = soltadas[orderId] ?: 0L
+
+    private val soltadas = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     companion object {
         private val json = Json { ignoreUnknownKeys = true }

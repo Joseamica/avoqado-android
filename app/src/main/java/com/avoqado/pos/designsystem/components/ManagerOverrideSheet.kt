@@ -43,6 +43,8 @@ fun ManagerOverrideSheet(
      * `CancelacionDeCobro.PIN_DE_GERENTE_TITULO`. El teclado, los textos de error y el cuerpo no cambian.
      */
     title: String = "Se necesita autorización",
+    /** El texto bajo el título. Por omisión, «Para <acción>…»; el retiro pasa el suyo («Retiro de $X · concepto…»). */
+    description: String = "Para ${prompt.actionLabel}. Pide a un encargado su código.",
 ) {
     // 🔴 Keyed por el teclado, no por el slot de composición.
     //
@@ -59,7 +61,7 @@ fun ManagerOverrideSheet(
 
     AvoqadoDialog(
         title = title,
-        description = "Para ${prompt.actionLabel}. Pide a un encargado su código.",
+        description = description,
         onDismiss = onDismiss,
         // Tocar fuera NO cancela: hay una acción esperando del otro lado y el
         // encargado suele estar tecleando sobre una tablet compartida.
@@ -68,8 +70,11 @@ fun ManagerOverrideSheet(
             PrimaryButton(
                 text = "Autorizar",
                 onClick = {
+                    // 🔴 Se marca ANTES del `launch`: dos toques en el mismo cuadro (antes de que el botón se pinte deshabilitado)
+                    // pedían dos autorizaciones con el mismo PIN.
+                    if (isLoading) return@PrimaryButton
+                    isLoading = true
                     scope.launch {
-                        isLoading = true
                         error = null
                         val result = onSubmit(pin)
                         isLoading = false

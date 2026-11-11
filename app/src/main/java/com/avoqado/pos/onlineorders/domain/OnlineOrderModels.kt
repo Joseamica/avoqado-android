@@ -53,7 +53,19 @@ data class OnlineOrder(
     val channel: String? = null,
     /** R67: cuándo quedó pagado un folio de «Por entregar» («Pagado a las HH:MM»); null si el SERVIDOR no lo manda. */
     val paidAt: Instant? = null,
+    /** Parte 2 (S14): de qué clienta es la cuenta; null sin cuenta o con un SERVIDOR viejo. Nunca su contacto. */
+    val cliente: ClienteDelFolio? = null,
+    /** Parte 2 (S14): los beneficios ya aplicados a la cuenta (hasta 10, en el orden en que se aplicaron). */
+    val beneficios: List<BeneficioDelFolio> = emptyList(),
+    /** Parte 2 (S14): cuántos trae la cuenta en total; si pasa de [beneficios], la tarjeta dice «y N más». */
+    val beneficiosTotal: Int = 0,
 )
+
+/** Parte 2 (S14): la clienta de la cuenta, con su nombre corto del SERVIDOR («Ana L.»). */
+data class ClienteDelFolio(val id: String, val nombre: String)
+
+/** Parte 2 (S14): una fila de descuento de la cuenta (premio, cupón, puntos, automático), en centavos. */
+data class BeneficioDelFolio(val nombre: String, val montoCents: Long)
 
 /**
  * Lo que dice el servidor al tocar «Cobrar»: el saldo (lo único que mueve dinero) y el precio de cada producto del pedido, que
@@ -154,6 +166,12 @@ data class ListaPorPagar(
      * arrastra lo escondido y no reemplaza ninguna lista más nueva en memoria.
      */
     val masViejaQueLaCopia: Boolean = false,
+    /**
+     * W-1: el número de la lectura de la página 1 (R102, tomado antes de la red en el repositorio único); en la copia guardada, el de la
+     * lectura que la dejó (0 tras reiniciar). Más alto = más nuevo. La pantalla lo compara con la copia: sin red se queda con la más
+     * nueva de las dos, que es la que usa «Cobrar».
+     */
+    val numero: Long = 0L,
 )
 
 /** R100/R101 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección (`toPay`/`toDeliver`), su estado y lo que falta. */

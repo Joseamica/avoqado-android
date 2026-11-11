@@ -35,6 +35,12 @@ import javax.inject.Inject
  */
 internal const val MENSAJE_COMANDA_REIMPRESA = "Comanda reimpresa"
 
+/**
+ * «No lleva comanda» (10-nov): las fuentes (`Order.source`) de una venta hecha en el POS. Sólo éstas se reimprimen sin lo de
+ * estaciones sin comanda; cualquier otra (Uber/Rappi, web, QR, SoftRestaurant, kiosco) o una que no se conozca, como hoy.
+ */
+internal val FUENTES_DEL_POS = setOf("AVOQADO_ANDROID", "AVOQADO_IOS", "TPV")
+
 @HiltViewModel
 class OrdersViewModel @Inject constructor(
     private val repository: OrdersRepository,
@@ -251,6 +257,8 @@ class OrdersViewModel @Inject constructor(
                     orderNumber = order.orderNumber,
                     orderType = "REIMPRESIÓN",
                     orderId = order.id,
+                    // «No lleva comanda»: SÓLO una venta del POS. Uber/Rappi, la web o una fuente desconocida, como hoy.
+                    omitirSinComanda = order.source?.let { it in FUENTES_DEL_POS } == true,
                 )
                 _mensajeDeReimpresion.value = MensajeDeReimpresion(orderId, mensajeDeEstado(estado))
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -276,6 +284,7 @@ class OrdersViewModel @Inject constructor(
         is EstadoDeComanda.NoSalio ->
             "No salió la comanda de: ${estado.estaciones.joinToString(", ")} · " +
                 (estado.causa ?: "La impresora no respondió.")
+        is EstadoDeComanda.SinComanda -> EstadoDeComanda.SinComanda.MENSAJE
         else -> MENSAJE_COMANDA_REIMPRESA
     }
 

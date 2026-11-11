@@ -41,12 +41,16 @@ private class DispatcherFalso {
 
     private val lineasSlot = slot<List<RoutableItem>>()
     private val orderTypeSlot = slot<String>()
+    private val omitirSlot = slot<Boolean>()
 
     val mock: ComandaDispatcher = mockk {
         coEvery {
-            dispatch(any(), capture(lineasSlot), any(), capture(orderTypeSlot), any(), any(), any(), any(), any())
+            dispatch(any(), capture(lineasSlot), any(), capture(orderTypeSlot), any(), any(), any(), any(), any(), omitirSinComanda = capture(omitirSlot))
         } coAnswers { lanza?.let { throw it }; resultado }
     }
+
+    /** «No lleva comanda»: si la reimpresión pidió el filtro de las ventas del POS. */
+    val ultimoOmitir: Boolean? get() = if (omitirSlot.isCaptured) omitirSlot.captured else null
 
     val ultimoOrderType: String? get() = if (orderTypeSlot.isCaptured) orderTypeSlot.captured else null
     val ultimasLineas: List<RoutableItem> get() = if (lineasSlot.isCaptured) lineasSlot.captured else emptyList()
@@ -115,6 +119,33 @@ class OrdersReimprimirComandaTest {
         viewModel.reimprimirComanda("orden-1")
         assertEquals("REIMPRESIÓN", dispatcherFalso.ultimoOrderType)
         assertEquals(3, dispatcherFalso.ultimasLineas.size)
+    }
+
+    // MARK: - «No lleva comanda» (10-nov-2026): sólo una venta del POS se filtra, por su `source`
+
+    @Test
+    fun reimprimir_orden_pos_omite() = runTest {
+        for (fuente in listOf("AVOQADO_ANDROID", "AVOQADO_IOS", "TPV")) {
+            every { repository.selectedOrder } returns MutableStateFlow(ordenDePrueba.copy(source = fuente))
+            dispatcherFalso.resultado = EstadoDeComanda.SinComanda
+            val viewModel = createViewModel()
+            viewModel.selectOrder("orden-1")
+            viewModel.reimprimirComanda("orden-1")
+            assertEquals(fuente, true, dispatcherFalso.ultimoOmitir)
+            assertEquals(fuente, EstadoDeComanda.SinComanda.MENSAJE, viewModel.mensajeDeReimpresion.value)
+        }
+    }
+
+    /** Review Focus 2: un pedido de Uber/Rappi, de la web o de origen desconocido se reimprime EXACTAMENTE como hoy. */
+    @Test
+    fun reimprimir_orden_uber_o_web_como_hoy() = runTest {
+        for (fuente in listOf("UBER_EATS", "RAPPI", "WEB", "QR", "POS", "KIOSK", null)) {
+            every { repository.selectedOrder } returns MutableStateFlow(ordenDePrueba.copy(source = fuente))
+            val viewModel = createViewModel()
+            viewModel.selectOrder("orden-1")
+            viewModel.reimprimirComanda("orden-1")
+            assertEquals("$fuente", false, dispatcherFalso.ultimoOmitir)
+        }
     }
 
     @Test

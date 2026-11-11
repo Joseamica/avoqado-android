@@ -131,6 +131,11 @@ class CashDrawerAvisoAlAbrirTest {
             roleManager = mockk<RoleManager>(relaxed = true).also {
                 every { it.hasVenuePermission(any(), any()) } returns true
             },
+            tpvSettingsRepository = mockk(relaxed = true),
+            conectividad = mockk(relaxed = true),
+            permissionOverrideRepository = mockk(relaxed = true),
+            comprobantes = mockk(relaxed = true),
+            secureStorage = mockk(relaxed = true),
         ).also { pantallas += it }
     }
 

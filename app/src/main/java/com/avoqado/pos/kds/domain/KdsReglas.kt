@@ -62,8 +62,9 @@ fun puedeApagar(estado: EstadoDeCasilla, prendida: Boolean): Boolean =
 
 // MARK: - Estaciones
 
+/** Las que una tablet de cocina puede elegir. «No lleva comanda» no entra: nunca tiene pantalla. */
 fun estacionesParaElegir(estaciones: List<StationInfo>): List<StationInfo> =
-    estaciones.filter { it.active }.sortedWith(compareBy<StationInfo>({ it.displayOrder }, { it.name }))
+    estaciones.filter { it.active && it.sendsComanda }.sortedWith(compareBy<StationInfo>({ it.displayOrder }, { it.name }))
 
 /** La estación guardada en ESTE aparato, si todavía existe y está activa. Si no, la tablet vuelve a preguntar. */
 fun estacionElegida(guardada: String?, estaciones: List<StationInfo>): StationInfo? =

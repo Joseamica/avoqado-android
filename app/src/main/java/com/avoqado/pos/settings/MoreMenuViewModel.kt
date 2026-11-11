@@ -59,6 +59,8 @@ class MoreMenuViewModel @Inject constructor(
     private val pendingReservationDao: com.avoqado.pos.reservations.data.PendingReservationActionDao,
     /** D4: paquetes cobrados por entregar. Default para las pruebas que construyen este ViewModel a mano. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** Retiro con gerente: la cola del cajón también bloquea el cambio de usuario. Default para las pruebas que lo construyen a mano. */
+    private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository? = null,
 ) : ViewModel() {
 
     // MARK: - Pedidos en línea (A3)
@@ -256,7 +258,10 @@ class MoreMenuViewModel @Inject constructor(
                     com.avoqado.pos.reservations.data.ReservationRepository.MAX_ATTEMPTS,
                 ) +
                 // D4: un paquete cobrado sólo se entrega con SU sucursal activa.
-                (pendingGrantQueue?.bloqueantes(currentVenueId) ?: 0)
+                (pendingGrantQueue?.bloqueantes(currentVenueId) ?: 0) +
+                // Retiro con gerente (H6): la cola del cajón sólo se manda con SU sucursal activa; cambiar dejaría el retiro atrás y,
+                // tras un cambio de persona, saldría a nombre de otra.
+                (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."
@@ -309,7 +314,9 @@ class MoreMenuViewModel @Inject constructor(
         val currentVenueId = secureStorage.venueId
         val blocking = paymentSyncService.blockingWorkCount() +
             (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
-            secureStorage.areaTicketRecoveryCount(currentVenueId)
+            secureStorage.areaTicketRecoveryCount(currentVenueId) +
+            // Codex r3 #12: el replay del cajón usa la sesión vigente; con un retiro sin subir, saldría a nombre de quien entra.
+            (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
         if (blocking > 0) {
             return SwitchUserResult.Error(
                 if (blocking == 1) {

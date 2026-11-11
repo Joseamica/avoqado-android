@@ -166,6 +166,32 @@ class PagarDespuesCarritoTest {
     }
 
     @Test
+    fun `D2 una cuenta que el descuento deja en 0, sin permiso de cortesia - no se deja para despues ni se guarda`() = runTest {
+        every { secureStorage.venuePermissions } returns listOf("orders:create", "discounts:apply")
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        vm.applyOrderDiscount(Discount(id = "d", name = "Descuento", value = 100.0))
+        responde(201, creada(0.0))
+
+        assertEquals(ResultadoPagarDespues.Error(CORTESIA_NO_PAGAR_DESPUES), vm.createPayLaterOrder("cli-1"))
+        assertTrue("no sale nada", enviados.isEmpty())
+        assertTrue("no se guarda nada", fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `D2 con permiso de cortesia la cuenta en 0 sigue como hoy`() = runTest {
+        every { secureStorage.venuePermissions } returns listOf("orders:create", "discounts:apply", "orders:comp")
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        vm.applyOrderDiscount(Discount(id = "d", name = "Descuento", value = 100.0))
+        responde(201, creada(0.0))
+
+        assertEquals(ResultadoPagarDespues.Creada, vm.createPayLaterOrder("cli-1"))
+    }
+
+    @Test
     fun `D9 la fila nace con su venta - el id de su copia, el cliente elegido, su llave y su sucursal`() = runTest {
         val vm = createViewModel()
         vm.addProduct(cafe)

@@ -321,6 +321,25 @@ class AppStateVenueRecoveryTest {
      * Modo Autoservicio 0.e: las llegadas del kiosco guardadas sin red sólo se mandan con SU sucursal activa. Cerrar
      * sesión y entrar a otra las dejaría varadas, igual que los cobros sin red.
      */
+    /** Retiro con gerente (Task 9, Codex r3 #12): un retiro o ingreso sin subir se manda con la sesión de quien esté; no se cierra encima. */
+    @Test
+    fun `con un retiro sin subir no se cierra sesion`() = runTest {
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = { every { clearSession() } answers { cerro = true } },
+            movimientosDeCaja = 1,
+        )
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertFalse(cerro)
+        val aviso = appState.sessionGuardMessage.value.orEmpty()
+        org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("Hay 1 operación offline"))
+    }
+
     @Test
     fun `cerrar sesion se bloquea con llegadas del kiosco pendientes`() = runTest {
         var cerro = false
@@ -426,6 +445,7 @@ class AppStateVenueRecoveryTest {
         storageReal: SecureStorage? = null,
         resolverReal: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta? = null,
         llegadasDelKiosco: Int = 0,
+        movimientosDeCaja: Int = 0,
         savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
         modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
         planManager: PlanManager = mockk(relaxed = true),
@@ -499,6 +519,7 @@ class AppStateVenueRecoveryTest {
                     com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros.LIBRES,
                 )
                 every { cierreEsperaVentas } returns MutableStateFlow(0)
+                every { movimientosSinSubir(any()) } returns movimientosDeCaja
             },
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,

@@ -86,7 +86,7 @@ class CashDrawerEventKeyMergeTest {
         val dao = FakeCashDrawerDao()
         dao.insertSession(sesionLocal("srv-1", openedAt = haceMinutos(60)))
         val enElCable = mutableListOf<LlamadaCapturada>()
-        val repo = cashDrawerRepo(dao, cashDrawerClient(capturadas = enElCable))
+        val repo = cashDrawerRepo(dao, cashDrawerClient(capturadas = enElCable), secureStorage = cashDrawerSecureStorageConCola())
 
         repo.addPayOut(8_000, "Compra de hielo")
 

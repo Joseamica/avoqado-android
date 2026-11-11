@@ -56,6 +56,8 @@ data class CobroConSaldo(
     val redeemed: List<Redimido>, val orderRemaining: Double, val orderPaymentStatus: String,
     val receiptAccessKey: String?, val receiptUrl: String?, val replay: Boolean = false,
     val priceChanges: List<CambioDePrecio>? = null,
+    /** Tienda híbrida (A1, Codex r1 #2): lo recuperó el resolutor de un cobro de folio; lo que falte se cobra en «Por pagar». No viene del servidor. */
+    val deFolio: Boolean = false,
 )
 @Serializable data class Cancelacion(val allowed: Boolean, val reason: String? = null, val message: String? = null)
 @Serializable data class SobreDeLaCuenta(

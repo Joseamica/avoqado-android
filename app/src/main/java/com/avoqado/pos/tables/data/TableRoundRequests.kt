@@ -92,7 +92,8 @@ fun seedTableRoundPreparation(
             line.item.name, line.item.quantity, line.item.selectedModifiers.map { it.modifierName }, line.item.itemNote,
             line.item.promotionName, line.item.serviceCourse, line.externalId, line.item.promotionInstanceId)
     }
-    return com.avoqado.pos.printing.routing.PrintRoutingMapper.buildComandas(inputs, config).flatMap { plan ->
+    // «No lleva comanda»: lo de estaciones sin comanda nunca se siembra (ni en «Servicio y entregas» ni en papel).
+    return com.avoqado.pos.printing.routing.PrintRoutingMapper.rutear(inputs, config, omitirSinComanda = true).plans.flatMap { plan ->
         if (plan.lines.none { it.serviceCourse?.preparationVersion == 1 }) emptyList() else
             plan.lines.flatMap { it.orderItemIds }.map { id ->
                 val line = source.getValue(id)

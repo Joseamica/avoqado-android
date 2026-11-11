@@ -20,7 +20,8 @@ internal fun impresorasDeRecibos(guardadas: List<SavedPrinter>): List<SavedPrint
  * cocina); por eso «Impresoras y cajón» lo dice aquí, donde un restaurante que nunca la configuró se entera.
  */
 internal fun sinImpresoraDeCocina(guardadas: List<SavedPrinter>, config: com.avoqado.pos.printing.routing.PrintConfig): Boolean =
-    config.stations.none { it.active } && guardadas.none { it.isEnabled && PrinterRole.KITCHEN in it.roleEnums }
+    // «No lleva comanda»: una estación sin comanda no es cocina.
+    config.stations.none { it.active && it.sendsComanda } && guardadas.none { it.isEnabled && PrinterRole.KITCHEN in it.roleEnums }
 
 /** Las demás guardadas en esta caja (comandas o etiquetas por USB, Bluetooth o red). */
 internal fun otrasDeEstaCaja(guardadas: List<SavedPrinter>): List<SavedPrinter> =
