@@ -1159,6 +1159,7 @@ class TableOrderViewModel @Inject constructor(
                 curso = course,
                 etiquetaPantalla = "Mesa ${session.tableNumber}",
                 configCongelada = draftRouting[roundKey],
+                omitirSinComanda = true, // «No lleva comanda»: la ronda es una venta del POS.
             )
         }
         if (pedidos.isEmpty()) return
@@ -1740,6 +1741,7 @@ class TableOrderViewModel @Inject constructor(
             var impresas = 0
             var sinImpresora = 0
             var ultimoError: String? = null
+            var sinComanda = 0
             try {
                 sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
                     val routable = courseItems.map { item ->
@@ -1755,9 +1757,11 @@ class TableOrderViewModel @Inject constructor(
                             notes = item.notes,
                         )
                     }
-                    val plans = PrintRoutingMapper.buildComandas(routable, config)
+                    val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
+                    sinComanda += ruteo.omitidasSinComanda
+                    if (ruteo.plans.isEmpty()) return@forEach
                     val r = comandaPrinter.printComandas(
-                        plans = plans,
+                        plans = ruteo.plans,
                         config = config,
                         orderNumber = session.orderNumber,
                         orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
@@ -1772,6 +1776,9 @@ class TableOrderViewModel @Inject constructor(
             }
 
             when {
+                // «No lleva comanda»: todo lo enviado es de estaciones sin comanda. No es un error.
+                intentadas == 0 && sinImpresora == 0 && sinComanda > 0 ->
+                    showMessage(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE)
                 impresas > 0 && impresas == intentadas ->
                     showMessage(if (impresas == 1) "Comanda reimpresa" else "$impresas comandas reimpresas")
                 impresas > 0 ->
@@ -1825,8 +1832,9 @@ class TableOrderViewModel @Inject constructor(
                     notes = item.notes,
                 )
             }
-            val plans = PrintRoutingMapper.buildComandas(routable, config)
-            comandaPrinter.printComandas(
+            // «No lleva comanda»: lo de estaciones sin comanda no se marcha (y no se avisa).
+            val plans = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true).plans
+            if (plans.isNotEmpty()) comandaPrinter.printComandas(
                 plans = plans,
                 config = config,
                 orderNumber = session.orderNumber,

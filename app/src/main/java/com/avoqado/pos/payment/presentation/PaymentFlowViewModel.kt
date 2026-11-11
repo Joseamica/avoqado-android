@@ -5328,6 +5328,8 @@ class PaymentFlowViewModel @Inject constructor(
                 servidorLaTiene = servidorLaTiene,
                 origenDelFolio = origenDelFolio,
                 alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
+                // «No lleva comanda»: el cobro de mostrador es una venta del POS.
+                omitirSinComanda = true,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -5391,6 +5393,8 @@ class PaymentFlowViewModel @Inject constructor(
         /** La venta de la comanda (Codex r10 #3). null = no es de una venta en particular. */
         venta: Int? = null,
     ) {
+        // «No lleva comanda» (10-nov): no hacía falta papel. No pinta, no borra el aviso de otra venta, no guarda nada.
+        if (estado is EstadoDeComanda.SinComanda) return
         // D2 (founder, 28-oct): un negocio sin ninguna impresora de cocina (una tienda) no tiene comanda que avisar. Una
         // impresora de cocina que FALLA sí se sigue avisando (no trae la marca).
         if (estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina) return
@@ -5404,7 +5408,7 @@ class PaymentFlowViewModel @Inject constructor(
             // anterior no puede borrar el aviso —todavía sin resolver— de la venta de ahora.
             val avisoActual = comandaWarning.value
             val esDeEstaVenta = when (avisoActual) {
-                null, EstadoDeComanda.Salio -> true
+                null, EstadoDeComanda.Salio, EstadoDeComanda.SinComanda -> true
                 is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
                 is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
             }

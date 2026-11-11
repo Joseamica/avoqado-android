@@ -16,6 +16,16 @@ import javax.inject.Singleton
  */
 sealed interface EstadoDeComanda {
     data object Salio : EstadoDeComanda
+
+    /**
+     * «No lleva comanda» (10-nov-2026): todo lo de esta venta es de estaciones que el negocio creó sin comanda (tienda,
+     * abarrotes). No hacía falta papel: no es [Salio] (nada se imprimió) ni [NoSalio] (no falló nada). No se avisa ni se
+     * reporta; donde alguien pidió la comanda a mano se le dice [MENSAJE], en color neutro.
+     */
+    data object SinComanda : EstadoDeComanda {
+        const val MENSAJE = "Estos productos no llevan comanda"
+    }
+
     data class Insistiendo(val intento: Int, val de: Int, val estaciones: List<String>, val orderNumber: String) : EstadoDeComanda
 
     /**

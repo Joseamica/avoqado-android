@@ -1768,6 +1768,42 @@ class PaymentFlowViewModelTest {
     }
 
     /**
+     * «No lleva comanda» (10-nov, La Galeterie): cobrar un Takis de una categoría asignada a la estación «Tienda» (creada
+     * sin comanda) no imprime nada ni avisa. Hoy salía por la impresora de cocina de la caja, o avisaba «No salió».
+     */
+    @Test
+    fun cobrar_solo_tienda_sin_aviso() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-tienda")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-tienda", receiptAccessKey = null))
+        val config = PrintConfig(
+            stations = listOf(StationInfo(id = "st_tienda", name = "Tienda", active = true, sendsComanda = false)),
+            categoryRouting = listOf(com.avoqado.pos.printing.routing.CategoryRoute("cat_tienda", "st_tienda")),
+        )
+        every { printConfigRepository.getCurrentConfig() } returns config
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 0, printed = 0, skippedNoPrinter = 1, lastError = null, skippedStations = listOf("Tienda"))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-takis"), name = "Takis", unitPrice = 2500, categoryId = "cat_tienda"),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(2500)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
+        assertNull("lo de una estación sin comanda no avisa", viewModel.comandaWarning.value)
+    }
+
+    /**
      * D2 (founder, 28-oct): una tienda sin cocina (sin estaciones y sin ninguna impresora de cocina) veía «No salió la
      * comanda de: Cocina» después de CADA venta (demo de Healthy Boutique en la D3). Sin cocina no hay comanda que avisar.
      */

@@ -24,7 +24,8 @@ object PrintRoutingMapper {
         rutear(items, config, omitirSinComanda = false).plans
 
     /** «No lleva comanda»: la estación existe, está activa y el negocio la creó sin comanda. */
-    fun esSinComanda(stationId: String?, config: PrintConfig): Boolean = false
+    fun esSinComanda(stationId: String?, config: PrintConfig): Boolean =
+        stationId != null && config.stations.any { it.id == stationId && it.active && !it.sendsComanda }
 
     /**
      * [buildComandas] más el filtro de «No lleva comanda». SÓLO lo prenden los disparos de ventas del POS (mostrador, mesas,
@@ -57,7 +58,9 @@ object PrintRoutingMapper {
                 } }
             })
         }
-        return Ruteo(plans, omitidasSinComanda = 0)
+        if (!omitirSinComanda) return Ruteo(plans, omitidasSinComanda = 0)
+        val (sinComanda, conComanda) = plans.partition { esSinComanda(it.stationId, config) }
+        return Ruteo(conComanda, omitidasSinComanda = sinComanda.size)
     }
 
     /** Resolve the station name for a plan (null for the unrouted "SIN ESTACIÓN" bucket). */

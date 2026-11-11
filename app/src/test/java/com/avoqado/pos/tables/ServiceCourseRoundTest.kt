@@ -60,6 +60,25 @@ class ServiceCourseRoundTest {
         assertEquals("round:r:none", row.sourceKey)
         assertEquals(1, row.preparation.HELD)
     }
+    /**
+     * Review Focus 3 (Codex r3 #6): un producto de la ronda que va a una estación «No lleva comanda» no se siembra en la
+     * preparación local (sin red): nunca saldría en «Servicio y entregas» ni en papel de liberación. El café sí.
+     */
+    @Test fun semilla_no_siembra_sin_comanda() {
+        val cafe = line("g1", dessert.copy(preparationVersion = 1))
+        val takis = line("g2", dessert.copy(preparationVersion = 1)).copy(type = CartItemType.ProductItem("takis"), name = "Takis")
+        val source = listOf(cafe, takis).map { com.avoqado.pos.tables.presentation.TableOrderViewModel.PendingLine(it, null) }
+        val config = com.avoqado.pos.printing.routing.PrintConfig(
+            stations = listOf(
+                com.avoqado.pos.printing.routing.StationInfo("barra", "Barra"),
+                com.avoqado.pos.printing.routing.StationInfo("tienda", "Tienda", sendsComanda = false),
+            ),
+            productOverrides = listOf(com.avoqado.pos.printing.routing.ProductOverride("takis", "tienda")),
+            defaultStationId = "barra")
+        val rows = com.avoqado.pos.tables.data.seedTableRoundPreparation(source, "round", "order", "Mesa 8", config)
+        assertEquals(listOf("barra"), rows.map { it.stationId })
+        assertEquals(listOf("Café"), rows.map { it.productName })
+    }
     private val immediate = ServiceCourseSnapshot("immediate", "Al momento", "IMMEDIATE")
     private val dessert = ServiceCourseSnapshot("desserts", "Dulces", "STANDARD")
     private fun line(group: String, course: ServiceCourseSnapshot) = CartItem(
@@ -123,6 +142,7 @@ class ServiceCourseRoundTest {
         assertEquals(listOf("Al momento", "Dulces"), courses.map { it.curso })
         assertEquals(listOf("En tienda · Al momento", "En tienda · Dulces"), courses.map { it.orderType })
         assertTrue(courses.all { it.lines.single().comboName == "Dos cafés" && it.etiquetaPantalla == "En tienda" })
+        assertTrue("el mostrador por tiempos es una venta del POS", courses.all { it.omitirSinComanda })
         assertNull(com.avoqado.pos.payment.domain.buildCounterCoursePedidos(items.map { it.copy(serviceCourse = null) }))
     }
 

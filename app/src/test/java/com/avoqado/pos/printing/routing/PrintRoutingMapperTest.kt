@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.routing
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -58,5 +59,61 @@ class PrintRoutingMapperTest {
     fun `stationName resolves an id and is null for the unrouted bucket`() {
         assertEquals("Cocina", PrintRoutingMapper.stationName("st_cocina", config))
         assertNull(PrintRoutingMapper.stationName(null, config))
+    }
+
+    // MARK: - «No lleva comanda» (10-nov-2026)
+
+    private val tienda = StationInfo(id = "st_tienda", name = "Tienda", active = true, sendsComanda = false)
+    private val conTienda = config.copy(
+        stations = listOf(cocina, barra, tienda),
+        categoryRouting = config.categoryRouting + CategoryRoute("cat_tienda", "st_tienda"),
+    )
+    private val takis = RoutableItem("oi_t", "p_takis", "cat_tienda", "Takis", 1)
+    private val cafe = RoutableItem("oi_c", "p_cafe", "cat_drinks", "Café", 1)
+
+    @Test
+    fun omite_sin_comanda_si_se_pide() {
+        val ruteo = PrintRoutingMapper.rutear(listOf(takis), conTienda, omitirSinComanda = true)
+        assertTrue(ruteo.plans.isEmpty())
+        assertEquals(1, ruteo.omitidasSinComanda)
+        assertTrue(PrintRoutingMapper.esSinComanda("st_tienda", conTienda))
+    }
+
+    @Test
+    fun sin_omitir_es_como_hoy() {
+        val ruteo = PrintRoutingMapper.rutear(listOf(takis), conTienda, omitirSinComanda = false)
+        assertEquals(listOf("st_tienda"), ruteo.plans.map { it.stationId })
+        assertEquals(0, ruteo.omitidasSinComanda)
+        assertEquals(ruteo.plans, PrintRoutingMapper.buildComandas(listOf(takis), conTienda))
+    }
+
+    /** Review Focus 1: venta mixta café + Takis — el café sale en Barra y sólo Barra cuenta. */
+    @Test
+    fun mezcla_cafe_y_tienda() {
+        val ruteo = PrintRoutingMapper.rutear(listOf(cafe, takis), conTienda, omitirSinComanda = true)
+        assertEquals(listOf("st_barra"), ruteo.plans.map { it.stationId })
+        assertEquals(listOf("Café"), ruteo.plans.single().lines.map { it.productName })
+        assertEquals(1, ruteo.omitidasSinComanda)
+    }
+
+    /** Una estación desactivada no es estación: lo suyo sigue la cascada y, sin default, cae en «SIN ESTACIÓN» y avisa. */
+    @Test
+    fun sin_comanda_inactiva_no_cuenta() {
+        val inactiva = conTienda.copy(stations = listOf(cocina, barra, tienda.copy(active = false)))
+        val ruteo = PrintRoutingMapper.rutear(listOf(takis), inactiva, omitirSinComanda = true)
+        assertTrue(ruteo.plans.single().unrouted)
+        assertEquals(0, ruteo.omitidasSinComanda)
+        assertFalse(PrintRoutingMapper.esSinComanda("st_tienda", inactiva))
+        assertFalse(PrintRoutingMapper.esSinComanda(null, conTienda))
+        assertFalse(PrintRoutingMapper.esSinComanda("st_cocina", conTienda))
+    }
+
+    /** Servidor anterior (sin el campo) o config guardada de antes ⇒ la estación SÍ lleva comanda. */
+    @Test
+    fun config_sin_campo_es_true() {
+        val json = """{"stations":[{"id":"st_cocina","name":"Cocina","active":true}],"version":"v1"}"""
+        val leida = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(PrintConfig.serializer(), json)
+        assertTrue(leida.stations.single().sendsComanda)
+        assertFalse(PrintRoutingMapper.esSinComanda("st_cocina", leida))
     }
 }

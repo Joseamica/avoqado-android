@@ -435,6 +435,37 @@ class TableOrderReprintComandasTest {
         assertEquals("marchar sale a Barra", listOf("st-barra"), planes[1].map { it.stationId })
     }
 
+    // MARK: - «No lleva comanda» (10-nov-2026)
+
+    /**
+     * Reimprimir una mesa de puros productos de tienda (su categoría va a una estación creada sin comanda) no manda papel y
+     * lo dice en neutro: no es un error. Marchar ese tiempo tampoco imprime, y no avisa nada nuevo.
+     */
+    @Test
+    fun reimprimir_solo_tienda_dice_no_llevan() = runTest {
+        val config = PrintConfig(
+            printers = listOf(PrinterInfo(id = "pr1", name = "Cocina", connectionType = "NETWORK", address = "192.168.1.50:9100")),
+            stations = listOf(
+                StationInfo(id = "st-cocina", name = "Cocina", printerId = "pr1", isDefault = true, active = true),
+                StationInfo(id = "st-tienda", name = "Tienda", active = true, sendsComanda = false),
+            ),
+            defaultStationId = "st-cocina",
+            categoryRouting = listOf(CategoryRoute(categoryId = "cat-tienda", printStationId = "st-tienda")),
+        )
+        val vm = buildVm(
+            items = listOf(linea("i1", "Takis")),
+            config = config,
+            catalogo = listOf(Product(id = "prod-i1", name = "Takis", categoryId = "cat-tienda")),
+        )
+
+        vm.reprintComandas()
+        assertEquals(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE, vm.actionMessage.value)
+        assertFalse("no es un error", vm.actionIsError.value)
+
+        vm.marcharCourse(null)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
+
     // MARK: - Nada que reimprimir
 
     @Test
