@@ -83,6 +83,12 @@ data class StationInfo(
      * `TrabajoPendiente.config`, así que un reintento no lo olvida.
      */
     val respaldoLocal: Boolean = false,
+    /**
+     * «No lleva comanda» (10-nov-2026): `false` = estación de productos que no van a cocina (tienda, abarrotes). Se elige al
+     * crearla y nunca cambia; el servidor la manda sin impresora ni pantalla. En las ventas del POS lo suyo no se imprime ni
+     * se avisa ([PrintRoutingMapper.rutear]). Servidor anterior (sin el campo) o config guardada de antes ⇒ `true`.
+     */
+    val sendsComanda: Boolean = true,
 )
 
 @Serializable

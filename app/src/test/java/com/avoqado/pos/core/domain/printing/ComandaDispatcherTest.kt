@@ -1362,4 +1362,85 @@ class ComandaDispatcherTest {
 
         assertEquals(listOf(listOf("st_a"), listOf("st_a")), planes.map { p -> p.map { it.stationId } })
     }
+
+    // MARK: - «No lleva comanda» (10-nov-2026): las ventas del POS no mandan ni avisan lo de una estación sin comanda
+
+    private val tiendaSinComanda = StationInfo(id = "st_tienda", name = "Tienda", printerId = null, active = true, sendsComanda = false)
+    private val conTienda = PrintConfig(
+        stations = listOf(StationInfo(id = "st_barra", name = "Barra", printerId = "pr_1", active = true), tiendaSinComanda),
+        productOverrides = listOf(
+            ProductOverride(productId = "prod_takis", printStationId = "st_tienda"),
+            ProductOverride(productId = "prod_cafe", printStationId = "st_barra"),
+        ),
+    )
+    private val takis = RoutableItem(orderItemId = "oi_t", productId = "prod_takis", categoryId = null, productName = "Takis", quantity = 1)
+
+    @Test
+    fun solo_tienda_devuelve_SinComanda_sin_libreta() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conTienda
+        val reporte = mockk<ReporteDeComandas>(relaxed = true)
+        val despachador = ComandaDispatcher(printConfigRepository, ReintentoDeComanda(comandaPrinter, reporteDeComandas = reporte), printerService, cola, entrega)
+        val estados = mutableListOf<EstadoDeComanda>()
+
+        val estado = despachador.dispatch(
+            venueId = "venue-1", lines = listOf(takis), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1", alCambiarEstado = { estados += it },
+            omitirSinComanda = true,
+        )
+
+        assertEquals(EstadoDeComanda.SinComanda, estado)
+        assertEquals(listOf<EstadoDeComanda>(EstadoDeComanda.SinComanda), estados)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { reporte.reportar(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { entrega.guardar(any(), any()) }
+        coVerify(exactly = 0) { entrega.entregar(any(), any()) }
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+
+        // La ronda de mesa / el mostrador por tiempos: el mismo filtro viaja en cada `Pedido`.
+        val enFondo = java.util.concurrent.CopyOnWriteArrayList<EstadoDeComanda>()
+        despachador.despacharEnFondo(
+            venueId = "venue-1", orderNumber = "1234",
+            pedidos = listOf(ComandaDispatcher.Pedido(listOf(takis), "Mesa 5", omitirSinComanda = true)),
+            alCambiarEstado = { enFondo += it },
+        ).join()
+        assertEquals(listOf<EstadoDeComanda>(EstadoDeComanda.SinComanda), enFondo.toList())
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
+
+    /** Review Focus 1: café + Takis — sale el café en Barra; si Barra truena, el aviso habla SÓLO de Barra. */
+    @Test
+    fun mezcla_avisa_solo_lo_que_fallo() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conTienda
+        val planes = mutableListOf<List<TicketPlan>>()
+        coEvery { comandaPrinter.printComandas(capture(planes), any(), any(), any(), any()) } answers {
+            ComandaPrinter.Result(attempted = 1, printed = 0, skippedNoPrinter = 0, lastError = "printer offline",
+                failedStations = listOf("Barra"), failedPlans = firstArg())
+        }
+
+        val estado = dispatcher.dispatch(
+            venueId = "venue-1", lines = listOf(cafe, takis), orderNumber = "1234", orderType = "En tienda",
+            maxIntentos = 1, omitirSinComanda = true,
+        )
+
+        assertEquals(listOf(listOf("st_barra")), planes.map { p -> p.map { it.stationId } })
+        assertEquals(listOf("Barra"), (estado as EstadoDeComanda.NoSalio).estaciones)
+        assertEquals(listOf("st_barra"), estado.trabajo!!.planes.map { it.stationId })
+    }
+
+    /** Uber/Rappi, pedidos en línea y el KDS llaman sin el filtro: la estación sin comanda se rutea EXACTAMENTE como hoy. */
+    @Test
+    fun fuera_del_pos_no_cambia() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conTienda
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+
+        val estado = dispatcher.dispatch(venueId = "venue-1", lines = listOf(cafe, takis), orderNumber = "1234", orderType = "Uber Eats")
+        dispatcher.dispatchAreaComanda(
+            venueId = "venue-1", lines = listOf(takis), areaTicketCode = "9470000015", areaName = "Tienda",
+            mode = FulfillmentMode.IMMEDIATE, moment = ComandaMoment.AREA_TICKET_ISSUED,
+        )
+
+        assertEquals(EstadoDeComanda.Salio, estado)
+        assertEquals(listOf(listOf("st_barra", "st_tienda"), listOf("st_tienda")), planes.map { p -> p.map { it.stationId } })
+    }
 }

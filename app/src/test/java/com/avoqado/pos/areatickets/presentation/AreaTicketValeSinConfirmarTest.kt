@@ -125,7 +125,7 @@ class AreaTicketValeSinConfirmarTest {
         coEvery { repository.recordPrint(any(), any(), any(), any(), any(), any()) } returns Unit
         coEvery { printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } returns mockk<SavedPrinter>(relaxed = true)
         coEvery { printerService.printAreaTicket(any(), any(), any()) } returns Unit
-        coEvery { comandaDispatcher.dispatchAreaComanda(any(), capture(comanda), any(), any(), any(), any(), any(), any()) } returns true
+        coEvery { comandaDispatcher.dispatchAreaComanda(any(), capture(comanda), any(), any(), any(), any(), any(), any(), any()) } returns true
         coEvery { repository.issue(any(), any()) } coAnswers {
             pedidos++
             if (!hayRed) throw sinConexion()
@@ -341,7 +341,7 @@ class AreaTicketValeSinConfirmarTest {
         vm.recuperarValeSinConfirmar()
 
         coVerify(exactly = 0) { printerService.printAreaTicket(any(), any(), any()) }
-        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         assertEquals("Queda su reimpresión", "V1", vm.state.value.pendingReprintCode)
         assertNull(LlaveDeEmisionDeVales.valeSinConfirmar(prefs, "venue-1"))
     }

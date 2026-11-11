@@ -11,10 +11,14 @@ import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.SavedPrinter
+import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.printing.routing.CategoryRoute
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
+import com.avoqado.pos.printing.routing.TicketPlan
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.OrderDetailItem
 import com.avoqado.pos.tables.data.OrderDetailModifier
@@ -124,7 +128,11 @@ class TableOrderReprintComandasTest {
         initialTotalCents: Int = 12000,
         order: OrderDetail? = null,
         readOrder: (suspend () -> Result<OrderDetail>)? = null,
+        catalogo: List<Product> = emptyList(),
     ): TableOrderViewModel {
+        val productsRepository = mockk<ProductsRepository>(relaxed = true)
+        every { productsRepository.products } returns MutableStateFlow(catalogo)
+        every { productsRepository.getProduct(any()) } answers { catalogo.firstOrNull { it.id == firstArg<String>() } }
         val repository = mockk<TableServiceRepository>(relaxed = true)
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
@@ -167,7 +175,7 @@ class TableOrderReprintComandasTest {
             printerService = printerService,
             secureStorage = secureStorage,
             syncOutbox = syncOutbox,
-            productsRepository = mockk(relaxed = true),
+            productsRepository = productsRepository,
             connectivityMonitor = connectivityMonitor,
             timeEntryRepository = mockk(relaxed = true),
             comandaDispatcher = mockk(relaxed = true),
@@ -391,6 +399,94 @@ class TableOrderReprintComandasTest {
         coVerify(exactly = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
         assertFalse(vm.actionIsError.value)
         assertEquals("Comanda reimpresa", vm.actionMessage.value)
+    }
+
+    // MARK: - D18: reimprimir y marchar rutean por la CATEGORÍA, igual que la primera impresión
+
+    /**
+     * La línea de la cuenta no trae `categoryId`: antes se mandaba `null` y un producto ruteado sólo por su
+     * categoría (Bebidas → Barra) se reimprimía o se marchaba en la estación por omisión (Cocina). Se lee del
+     * catálogo guardado, que es de donde la saca el carrito en la primera impresión (`printRoundComandas`).
+     */
+    @Test
+    fun reimprimir_y_marchar_respetan_la_estacion_de_la_categoria() = runTest {
+        val config = PrintConfig(
+            printers = listOf(PrinterInfo(id = "pr1", name = "Cocina", connectionType = "NETWORK", address = "192.168.1.50:9100")),
+            stations = listOf(
+                StationInfo(id = "st-cocina", name = "Cocina", printerId = "pr1", isDefault = true, active = true),
+                StationInfo(id = "st-barra", name = "Barra", printerId = "pr1", active = true),
+            ),
+            defaultStationId = "st-cocina",
+            categoryRouting = listOf(CategoryRoute(categoryId = "cat-bebidas", printStationId = "st-barra")),
+        )
+        val planes = mutableListOf<List<TicketPlan>>()
+        coEvery { comandaPrinter.printComandas(capture(planes), any(), any(), any(), any()) } returns ok(attempted = 1, printed = 1)
+
+        val vm = buildVm(
+            items = listOf(linea("i1", "Limonada")), // productId = "prod-i1", sin estación propia
+            config = config,
+            catalogo = listOf(Product(id = "prod-i1", name = "Limonada", categoryId = "cat-bebidas")),
+        )
+        vm.reprintComandas()
+        vm.marcharCourse(null)
+
+        assertEquals("una llamada por reimprimir y otra por marchar", 2, planes.size)
+        assertEquals("reimprimir sale a Barra", listOf("st-barra"), planes[0].map { it.stationId })
+        assertEquals("marchar sale a Barra", listOf("st-barra"), planes[1].map { it.stationId })
+    }
+
+    // MARK: - «No lleva comanda» (10-nov-2026)
+
+    /**
+     * Reimprimir una mesa de puros productos de tienda (su categoría va a una estación creada sin comanda) no manda papel y
+     * lo dice en neutro: no es un error. Marchar ese tiempo tampoco imprime.
+     */
+    @Test
+    fun reimprimir_solo_tienda_dice_no_llevan() = runTest {
+        val config = PrintConfig(
+            printers = listOf(PrinterInfo(id = "pr1", name = "Cocina", connectionType = "NETWORK", address = "192.168.1.50:9100")),
+            stations = listOf(
+                StationInfo(id = "st-cocina", name = "Cocina", printerId = "pr1", isDefault = true, active = true),
+                StationInfo(id = "st-tienda", name = "Tienda", active = true, sendsComanda = false),
+            ),
+            defaultStationId = "st-cocina",
+            categoryRouting = listOf(CategoryRoute(categoryId = "cat-tienda", printStationId = "st-tienda")),
+        )
+        val vm = buildVm(
+            items = listOf(linea("i1", "Takis")),
+            config = config,
+            catalogo = listOf(Product(id = "prod-i1", name = "Takis", categoryId = "cat-tienda")),
+        )
+
+        vm.reprintComandas()
+        assertEquals(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE, vm.actionMessage.value)
+        assertFalse("no es un error", vm.actionIsError.value)
+
+        vm.marcharCourse(null)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * Codex código r1 #3: marchar un tiempo de puros productos «Sin comanda» no manda nada; el mesero no puede leer
+     * «¡Marchando!» (iría a la cocina a buscar un papel que no salió). Lee lo mismo que al reimprimir, en neutro.
+     */
+    @Test
+    fun marchar_solo_sin_comanda_dice_no_llevan() = runTest {
+        val config = PrintConfig(
+            stations = listOf(StationInfo(id = "st-tienda", name = "Tienda", active = true, sendsComanda = false)),
+            categoryRouting = listOf(CategoryRoute(categoryId = "cat-tienda", printStationId = "st-tienda")),
+        )
+        val vm = buildVm(
+            items = listOf(linea("i1", "Takis")),
+            config = config,
+            catalogo = listOf(Product(id = "prod-i1", name = "Takis", categoryId = "cat-tienda")),
+        )
+
+        vm.marcharCourse(null)
+
+        assertEquals(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE, vm.actionMessage.value)
+        assertFalse("no es un error", vm.actionIsError.value)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
     }
 
     // MARK: - Nada que reimprimir
