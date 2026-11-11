@@ -1085,12 +1085,21 @@ class OnlineOrdersViewModel internal constructor(
                     _aviso.value = TextosPedidosEnLinea.SALDO_NO_LEIDO
                     return@launch
                 }
+                // 🔴 P1 (Codex W-1 r6 #2): lo de arriba ESPERÓ (el saldo del servidor, la copia guardada) y mientras tanto la terminal pudo
+                // confirmar el cobro con tarjeta de esta orden; con la consulta fallando sin red (o con el servidor sin contarlo aún) se abría
+                // el efectivo de un folio ya pagado. Se vuelve a revisar el dinero de este aparato justo antes de abrir, sin otra espera de
+                // por medio: lo confirmado (tarjeta, su marca, efectivo, saldo en duda) frena con su texto.
+                val dineroAlAbrir = dineroSinConfirmar(venueActual(), orderId, esFolio = folio != null)
+                if (dineroAlAbrir.bloquea) {
+                    _aviso.value = dineroAlAbrir.aviso
+                    return@launch
+                }
                 if (!permisoActualizar() || !permisoCobrar()) return@launch
                 // Dos toques rápidos en pedidos distintos pasan los dos la revisión del principio: el que tarda más no
                 // reemplaza a un cobro que ya está abierto (el cajero pudo haber recibido el efectivo del primero).
                 if (_cobroAbierto.value != null) return@launch
-                // (d) Una tarjeta en duda no frena el efectivo (founder, 2-nov «B»): sólo se avisa.
-                _aviso.value = dinero.aviso
+                // (d) Una tarjeta en duda no frena el efectivo (founder, 2-nov «B»): sólo se avisa (la de AHORA).
+                _aviso.value = dineroAlAbrir.aviso
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
                     origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
                     renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty(),
