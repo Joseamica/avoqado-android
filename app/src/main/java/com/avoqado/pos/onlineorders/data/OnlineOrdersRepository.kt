@@ -28,6 +28,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -452,6 +453,9 @@ class OnlineOrdersRepository @Inject constructor(
         }
         try {
             val previos = cache.load(CACHE_POR_PAGAR, venueId)?.let { ocultosDe(JSONObject(it.json)) }.orEmpty()
+            // Codex r5: `PayloadCache.load` se traga la cancelación y devuelve null: una lectura cancelada aquí NO escribe (R103: una
+            // lectura cancelada nunca se aplica), en vez de guardar la copia sin lo escondido. Ya empezada la escritura, termina entera.
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             // W-1 (Codex r4): la copia y su número de lectura van juntos: una cancelación (app a segundo plano) entre los dos dejaba la
             // copia nueva con el número viejo y la pantalla ya no la reconocía como más nueva.
             withContext(kotlinx.coroutines.NonCancellable) {

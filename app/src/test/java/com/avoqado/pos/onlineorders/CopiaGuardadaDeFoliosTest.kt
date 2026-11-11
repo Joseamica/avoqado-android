@@ -292,6 +292,33 @@ class CopiaGuardadaDeFoliosTest {
         assertEquals("la tarjeta toma la copia de $54", 5400L, vm.porPagar.value!!.porPagar.single().remainingCents)
     }
 
+    @Test
+    fun `W-1 cancelar la lectura mientras lee lo escondido no guarda la copia sin lo escondido`() = runBlocking {
+        // Codex r5: `PayloadCache.load` se traga la cancelación (devuelve null) y la escritura protegida guardaba la copia SIN lo escondido.
+        toPay = cuerpo(porEntregar = folio("f1", "ACCEPTED", "0", "PAID"))
+        repo.porPagar(conLatido = false).getOrThrow()
+        val ocultos = mapOf("f1" to HuellaDeFolio("toDeliver", OnlineOrderStatus.ACCEPTED, 0))
+        assertTrue(repo.guardarOcultos(ocultos))
+
+        val leyendo = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { cache.load(any(), any()) } coAnswers {
+            try {
+                leyendo.complete(Unit)
+                delay(300)
+                disco["${firstArg<String>()}|${secondArg<String>()}"]
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                null // como el `runCatching` de `PayloadCache.load`
+            }
+        }
+        val vigilante = launch(Dispatchers.Default) { repo.porPagar(conLatido = false) }
+        leyendo.await()
+        vigilante.cancel()
+        vigilante.join()
+        coEvery { cache.load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+
+        assertEquals("lo escondido sigue en la copia", ocultos, repo.porPagarGuardado()!!.ocultos)
+    }
+
     // MARK: - (2) lo escondido sobrevive al reinicio
 
     @Test
