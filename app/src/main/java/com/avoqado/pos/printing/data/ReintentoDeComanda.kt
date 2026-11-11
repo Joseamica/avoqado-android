@@ -164,6 +164,13 @@ class ReintentoDeComanda @Inject constructor(
         saltadasPrevias: List<String> = emptyList(),
         /** Líneas extra del ticket (pedido en línea). Antes de [alCambiarEstado] para no robarle el lambda final. */
         encabezado: List<String>? = null,
+        /**
+         * D2 con «No lleva comanda» (Codex código r1 #2 y r2): `true` = el negocio no tiene cocina (ver
+         * [com.avoqado.pos.printing.presentation.sinImpresoraDeCocina]). Se pregunta SÓLO si nada TRONÓ y lo que faltó fue
+         * saltado: ese `NoSalio` sale marcado, y ni se avisa al cajero ni se reporta a la libreta (que le avisaría al
+         * gerente), igual que el camino legado. Una falla real de impresora se avisa y se reporta siempre.
+         */
+        negocioSinCocina: () -> Boolean = { false },
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
@@ -225,10 +232,12 @@ class ReintentoDeComanda @Inject constructor(
                         encabezado = encabezado,
                     )
                 },
-            )
+            ).let { if (it.trabajo == null && negocioSinCocina()) it.copy(sinImpresoraDeCocina = true) else it }
         }
         alCambiarEstado(estado)
-        reportar(estado, ultimo, orderNumber, intentos, venueId, orderId)
+        if (!(estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina)) {
+            reportar(estado, ultimo, orderNumber, intentos, venueId, orderId)
+        }
         return estado
     }
 

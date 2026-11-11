@@ -393,14 +393,6 @@ class ComandaDispatcher @Inject constructor(
             alCambiarEstado(EstadoDeComanda.SinComanda)
             return EstadoDeComanda.SinComanda
         }
-        // D2 con «No lleva comanda» (Codex código r1 #2): la tienda sin cocina que crea sólo «Sin comanda» ya no entra al
-        // legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el mismo negocio sin
-        // cocina de D2: el `NoSalio` lleva su marca y el cobro no avisa. Con una estación con comanda (restaurante), no.
-        val conMarcaD2: (EstadoDeComanda) -> EstadoDeComanda = { e ->
-            if (omitirSinComanda && e is EstadoDeComanda.NoSalio && e.trabajo == null &&
-                sinImpresoraDeCocina(printerService.savedPrinters.value, config)
-            ) e.copy(sinImpresoraDeCocina = true) else e
-        }
         val paperPlans = plans.map { it.copy(lines = it.lines.filterNot { line ->
             line.serviceCourse?.preparationVersion == 1 && line.serviceCourse.kind == "STANDARD"
         }) }.filter { it.lines.isNotEmpty() }
@@ -444,7 +436,11 @@ class ComandaDispatcher @Inject constructor(
                 // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
                 venueId = venueId,
                 orderId = orderId,
-                alCambiarEstado = { alCambiarEstado(conMarcaD2(it)) },
+                // D2 con «No lleva comanda» (Codex código r1 #2 y r2): la tienda sin cocina que crea sólo «Sin comanda» ya no
+                // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
+                // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
+                negocioSinCocina = { omitirSinComanda && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
+                alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
         } catch (e: CancellationException) {
@@ -458,7 +454,7 @@ class ComandaDispatcher @Inject constructor(
             marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber, noMarcar)
         }
         cerrarLasDecididas(entregas, acusadas, estado)
-        return conMarcaD2(estado)
+        return estado
     }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
