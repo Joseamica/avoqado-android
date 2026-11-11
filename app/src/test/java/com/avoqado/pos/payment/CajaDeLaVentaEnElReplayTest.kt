@@ -101,15 +101,36 @@ class CajaDeLaVentaEnElReplayTest {
      * D12 (Codex r1 #4): el cobro de una cuenta abierta hecho con la copia viaja en el PRIMER envío como captura previa y con la caja
      * del servidor, igual que el replay. Un cobro que no es captura previa no la manda (su cuerpo queda como hoy).
      */
-    @Test fun `D12 el primer envio de una captura previa lleva la caja del servidor`() = runTest {
-        val cuerpos = mutableListOf<org.json.JSONObject>()
+    /** El repositorio real con un cliente que guarda cada cuerpo del `/pay` (y contesta 500: nada se escribe en disco). */
+    private fun repoQueGuarda(cuerpos: MutableList<org.json.JSONObject>): com.avoqado.pos.payment.data.OrderRepository {
         val cliente = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
             val buffer = okio.Buffer().also { chain.request().body!!.writeTo(it) }
             cuerpos += org.json.JSONObject(buffer.readUtf8())
             okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(500).message("x")
                 .body("{}".toResponseBody()).build()
         }.build()
-        val repo = com.avoqado.pos.payment.data.OrderRepository(io.mockk.mockk(relaxed = true), cliente)
+        return com.avoqado.pos.payment.data.OrderRepository(io.mockk.mockk(relaxed = true), cliente)
+    }
+
+    /** Ronda 1 (Minor 3b): una caja en blanco o de más de 64 caracteres sería un 400 permanente: no viaja, el cobro sí. */
+    @Test fun `D12 una caja en blanco o demasiado larga no viaja en el primer envio`() = runTest {
+        val cuerpos = mutableListOf<org.json.JSONObject>()
+        val repo = repoQueGuarda(cuerpos)
+        for (caja in listOf("", "   ", "c".repeat(65))) {
+            repo.recordCashPayment(orderId = "o1", amount = 10000, staffId = "s", capturaPrevia = true,
+                cashDrawerSessionId = caja, capturedVenueId = "v1")
+        }
+        repo.recordCashPayment(orderId = "o1", amount = 10000, staffId = "s", capturaPrevia = true,
+            cashDrawerSessionId = "c".repeat(64), capturedVenueId = "v1")
+
+        assertEquals(4, cuerpos.size)
+        cuerpos.take(3).forEach { assertFalse(it.has("cashDrawerSessionId")); assertTrue(it.getBoolean("isOfflineReplay")) }
+        assertEquals("64 sí cabe", "c".repeat(64), cuerpos.last().getString("cashDrawerSessionId"))
+    }
+
+    @Test fun `D12 el primer envio de una captura previa lleva la caja del servidor`() = runTest {
+        val cuerpos = mutableListOf<org.json.JSONObject>()
+        val repo = repoQueGuarda(cuerpos)
 
         repo.recordCashPayment(orderId = "o1", amount = 10000, staffId = "s", capturaPrevia = true,
             cashDrawerSessionId = "caja-servidor", capturedVenueId = "v1")

@@ -5838,6 +5838,97 @@ class PaymentFlowViewModelTest {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         }
         assertTrue("el flujo se cierra y la cuenta enseña su gris", viewModel.debeSalir.value)
+        assertTrue("sale del flujo, no se queda «Procesando»", viewModel.state.value is PaymentFlowState.Loading)
+    }
+
+    /** Ronda 1 (Important 1): la revalidación que truena es un «no se cobra»: nada se aparta ni se manda y no hay error rojo. */
+    private fun TestScope.revalidacionQueTruena(truena: suspend () -> String?) {
+        conLaCajaDeLaCopia()
+        var preguntas = 0
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { preguntas++; truena() })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertTrue("sale del flujo sin error ni «Procesando»", viewModel.state.value is PaymentFlowState.Loading)
+        assertTrue(viewModel.debeSalir.value)
+        // Sin el candado de «procesando» puesto: otro toque vuelve a intentarlo (y vuelve a preguntar).
+        viewModel.consumirSalida()
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertEquals(2, preguntas)
+    }
+
+    @Test
+    fun `D12 si la revalidacion previa truena no se cobra y se sale sin error`() = runTest {
+        revalidacionQueTruena { throw IllegalStateException("la red local no contestó") }
+    }
+
+    @Test
+    fun `D12 si la revalidacion previa vence por tiempo no se cobra y se sale sin error`() = runTest {
+        revalidacionQueTruena { kotlinx.coroutines.withTimeout(1) { kotlinx.coroutines.awaitCancellation() } }
+    }
+
+    /** Ronda 1 (Minor 1a): la copia sólo cobra la cuenta que vio; sin su orden no se aparta ni se manda nada. */
+    @Test
+    fun `D12 desde la copia sin orden no se cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        viewModel.startPaymentFlow(carritoDeLaCopia(), origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any())
+        }
+        assertTrue(viewModel.debeSalir.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.Loading)
+    }
+
+    /** Ronda 1 (Minor 3a): con propina, lo esperado sigue en 0 y la propina viaja aparte del importe. */
+    @Test
+    fun `D12 desde la copia con propina el saldo esperado sigue en cero`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.submitTip(1000)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 1000, any(), any(), null, null, capturedVenueId = any(),
+                importeAceptadoCents = any(), capturaPrevia = true, lineasDelTicket = any(), cashDrawerSessionId = "caja-servidor")
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = 6000, tipCents = 1000, splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                enLugarDe = any(), lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = 6000, tipCents = 1000, splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
     }
 
     @Test

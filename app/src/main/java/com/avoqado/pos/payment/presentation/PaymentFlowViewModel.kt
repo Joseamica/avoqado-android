@@ -85,6 +85,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
@@ -3211,6 +3213,12 @@ class PaymentFlowViewModel @Inject constructor(
         if (bloquearCuentaSinRed()) return
         if (primeroDescartarLosPendientes { processCashPayment(cashReceivedCents) }) return
         if (detenerSiHayValesSinApartado(cartState)) return
+        // D12 (ronda 1): la copia sólo cobra la cuenta que vio. Sin su orden no hay saldo que conciliar (la reserva diría 0 y la cola
+        // nada): no se aparta ni se manda nada, y el flujo se cierra.
+        if (origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA && createdOrderId.isNullOrBlank()) {
+            salirDelFlujo()
+            return
+        }
         isProcessingPayment = true
         // N2: un cobro nuevo deja atrás el «Cancelar» que falló; si no, tras dos fallos de disco «Reintentar» cancelaría la venta
         // y borraría el apartado nuevo.
@@ -3308,11 +3316,19 @@ class PaymentFlowViewModel @Inject constructor(
                         return@launch
                     }
                     // D12 (Codex r3 H3): la otra caja se revalida en vivo JUSTO ANTES de recibir el efectivo. Con efectivo de esta venta ya
-                    // apartado no se vuelve a preguntar: el dinero ya se recibió y se concilia como siempre.
-                    if (revalidarCapturado != null && anterioresDeEstaVenta.isEmpty() && revalidarCapturado() != null) {
+                    // apartado no se vuelve a preguntar: el dinero ya se recibió y se concilia como siempre. Ronda 1: si la revalidación
+                    // truena (también un `withTimeout` suyo, que no es la cancelación de este cobro) es un «no se cobra», nunca un error.
+                    val negado = revalidarCapturado != null && anterioresDeEstaVenta.isEmpty() && try {
+                        revalidarCapturado() != null
+                    } catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        Log.w("💵", "La revalidación previa falló; no se cobra: ${e.message}")
+                        true
+                    }
+                    if (negado) {
                         if (generacion == paymentGeneration) {
                             isProcessingPayment = false
-                            _debeSalir.value = true
+                            salirDelFlujo()
                         }
                         return@launch
                     }
