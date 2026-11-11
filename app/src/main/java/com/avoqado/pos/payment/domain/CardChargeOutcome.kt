@@ -29,7 +29,8 @@ sealed class ChargeStatusProbe {
         val failureCode: String? = null,
         val reconciliationRequired: Boolean? = null,
         /**
-         * 🔴 El texto que ESCRIBIÓ EL SERVIDOR, cuando lo manda. Hoy sólo viene con `PROCESSOR_DECLINED`:
+         * 🔴 El texto que ESCRIBIÓ EL SERVIDOR, cuando lo manda. Viene con `PROCESSOR_DECLINED` y con la lápida
+         * `REJECTED_ORDER_AMOUNT_OVER_BALANCE` (hz:5bda0b30:D2). Con el rechazo del banco:
          * el servidor traduce el código del banco a nuestras palabras («51 FONDOS INSUFICIENTES» → «No tiene
          * fondos suficientes»), y ese motivo es lo único accionable para el cajero. Opcional a propósito: un
          * servidor que no lo mande deja que el POS use su texto de siempre.
@@ -270,7 +271,7 @@ object CardChargeDecision {
      * antes de esa, las respuestas ambiguas sólo piden volver a preguntar.
      *
      * @param mensajeDeLaTerminal H8: el motivo que dio la terminal al NO iniciar el cobro. Viaja en la respuesta del POST;
-     *   el GET del estado no lo trae (el servidor sólo expone el mensaje de un rechazo del banco).
+     *   el GET del estado no lo trae (el servidor sólo expone el mensaje de un rechazo del banco o de una lápida de admisión).
      */
     fun decide(probe: ChargeStatusProbe, isFinalAttempt: Boolean, mensajeDeLaTerminal: String? = null): ProbeDecision = when (probe) {
         // 🔴 Un 404 NO prueba que no se haya cobrado, aunque lo parezca. El server crea la
@@ -333,7 +334,11 @@ object CardChargeDecision {
             // en el terminal»), recortado; si no lo dio, el respaldo.
             probe.status == "FAILED" && probe.outcomeEvidence == EVIDENCIA_SIN_AUTORIZACION ->
                 CardChargeOutcome.NotCharged(mensajeDeLaTerminal?.trim()?.takeIf { it.isNotEmpty() } ?: NO_INICIADO_RESPALDO)
-            probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
+            // hz:5bda0b30:D2 (11-nov): lápida de admisión `REJECTED_*` recuperada por GET (se perdió la respuesta del POST). El
+            // SERVIDOR dice POR QUÉ no la admitió («La cuenta ya tiene un abono: falta $X…»); el genérico de abajo suena al banco.
+            probe.status == "FAILED" && probe.failureCode.orEmpty().startsWith("REJECTED_") && !probe.errorMessage.isNullOrBlank() ->
+                CardChargeOutcome.NotCharged(probe.errorMessage)
+            probe.status == "FAILED" ->CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
             probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.
             // Adivinar aquí es exactamente el bug: se dice que no se sabe.
