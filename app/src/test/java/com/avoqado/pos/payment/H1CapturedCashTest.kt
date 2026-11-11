@@ -293,7 +293,7 @@ class H1CapturedCashTest {
         assertEquals(10000, row.amountCents) // A legacy amount is preserved, not reconstructed from cash/change.
         assertEquals(500, row.tipCents)
         assertEquals("FULLPAYMENT", row.splitType)
-        val expected = Json.parseToJsonElement("""{"venueId":"venue-1","amount":10000,"tip":500,"status":"COMPLETED","method":"CASH","splitType":"FULLPAYMENT","staffId":"staff","source":"AVOQADO_ANDROID","idempotencyKey":"legacy-id","isOfflineReplay":true}""")
+        val expected = Json.parseToJsonElement("""{"venueId":"venue-1","amount":10000,"tip":500,"status":"COMPLETED","method":"CASH","splitType":"FULLPAYMENT","staffId":"staff","source":"AVOQADO_ANDROID","idempotencyKey":"legacy-id","isOfflineReplay":true,"createdAtLocal":${row.createdAt}}""")
         assertEquals(expected, Json.parseToJsonElement(PaymentSyncService.buildReplayBody(row, row.venueId, true)))
     }
 

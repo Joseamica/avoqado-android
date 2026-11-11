@@ -219,6 +219,11 @@ class PaymentSyncService @Inject constructor(
             // D1 «fotocopia del ticket»: la copia del papel de esta parte, sólo en `/pay` (el contrato no la lleva a `/fast`). Una
             // columna ilegible no viaja: es texto del ticket y nunca puede frenar el cobro. Sin copia, el cuerpo es el de hoy.
             if (esCobroDeOrden) {
+                // Regla C del folio revivido (founder, 10-nov): la hora en que se COBRÓ (la primera captura de la fila, no la del
+                // reenvío), en epoch ms y como NÚMERO: el SERVIDOR la lee con `horaDeLaVenta` (un ISO sería ilegible) y la guarda en
+                // `Order.loyaltySaleAt` si este cobro salda la cuenta: un folio cobrado antes de vencer revive con su comanda, y el
+                // sello cae en el día de la venta. Como la TPV. Producción la acepta y la ignora (`/pay` no tiene esquema).
+                put("createdAtLocal", payment.createdAt)
                 payment.lineasDelTicketJson
                     ?.let { runCatching { RESPONSE_JSON.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull() }
                     ?.let { put("lineasDelTicket", it) }
