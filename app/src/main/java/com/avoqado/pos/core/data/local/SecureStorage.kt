@@ -714,8 +714,8 @@ class SecureStorage @Inject constructor(
         this.userRole = role
         this.accessToken = accessToken
         this.refreshToken = refreshToken
-        this.venuePermissions = venuePermissions
         this.listaDePermisosVigente = false
+        this.venuePermissions = venuePermissions
         generacion++
     }
 
@@ -803,8 +803,9 @@ class SecureStorage @Inject constructor(
         this.venueSlug = venue.slug
         this.venueTimezone = venue.timezone
         this.userRole = venue.role
-        this.venuePermissions = venue.permissions
+        // La marca se apaga ANTES de escribir la lista nueva: nunca conviven una lista nueva y un `true` viejo.
         this.listaDePermisosVigente = false
+        this.venuePermissions = venue.permissions
         // Plan is per-venue: clear stale plan from the previous venue so we
         // fail OPEN until the new venue's settings (with plan) are fetched.
         this.planTier = null
