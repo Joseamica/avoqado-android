@@ -10,8 +10,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -50,7 +48,7 @@ data class CuentaGuardada(val cuenta: OrderSummary, val vistaEn: Long)
 /** Cuánto prueba una lectura de la lista (la decide `OrdersRepository`). */
 enum class Lectura { SUELTA, PRIMERA_PAGINA, LISTA_COMPLETA }
 
-/** Lo que un DETALLE bueno (o su 404) sabe de la cuenta (Codex r3 H1). */
+/** Lo que este aparato sabe de UNA cuenta: un DETALLE bueno o su 404 (Codex r3 H1), o un cobro suyo que el servidor ya registró. */
 sealed interface EvidenciaDelDetalle {
     data object NoExiste : EvidenciaDelDetalle
     data class Vigente(
@@ -60,6 +58,12 @@ sealed interface EvidenciaDelDetalle {
         val cobrosConSaldo: Int,
         val esCuentaDeTarjetas: Boolean,
     ) : EvidenciaDelDetalle
+
+    /**
+     * Final fix (I-2): este aparato cobró CON RED parte de la cuenta (tarjeta, saldo de regalo, efectivo…). Queda «con abono» (o «de
+     * regalo» si [conSaldo]) y con el saldo que dijo el servidor (null = no lo dijo ⇒ «sin saldo»): gris sin red, nunca cobrable.
+     */
+    data class Abono(val saldoCents: Int?, val conSaldo: Boolean) : EvidenciaDelDetalle
 }
 
 /**
@@ -69,7 +73,10 @@ sealed interface EvidenciaDelDetalle {
  *   retiro); una evidencia de turno menor o igual se descarta. Así una respuesta vieja que llega tarde no resucita ni pisa a
  *   una más nueva; y una lectura más vieja que la última lista de la sucursal no mete cuentas nuevas. Tras reiniciar el
  *   proceso no hay respuestas viejas en vuelo: lo de disco cede ante cualquier turno nuevo.
- * - Nunca lanza (salvo la cancelación de quien llama): si no puede leer o escribir el disco, deja la copia anterior.
+ * - Final fix (F1, Codex #2): la copia nunca sabe menos que el aparato. Lo que llega se anota en memoria ANTES de tocar el disco
+ *   (anotarlo no falla, ni con la cancelación de quien llama) y toda lectura lo aplica primero: si el disco no se deja leer, no hay
+ *   nada que enseñar ni que cobrar; si no se deja escribir, lo nuevo manda desde la memoria hasta que se pueda guardar.
+ * - Nunca lanza (salvo la cancelación de quien llama).
  */
 @Singleton
 class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
@@ -81,22 +88,35 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
     // ponytail: un renglón por cuenta vista en la vida del proceso (KB por miles); podar si algún día pesa.
     private val turnos = HashMap<String, Long>()
 
-    /** Por sucursal, el turno de la última lista que retira ausentes (PRIMERA_PAGINA o LISTA_COMPLETA) que llegó al disco. */
+    /** Por sucursal, el turno de la última lista que retira ausentes (PRIMERA_PAGINA o LISTA_COMPLETA) ya aplicada. */
     private val ultimaLista = HashMap<String, Long>()
+
+    /** Lo que llegó y todavía no se aplica (el disco no se dejó leer), por sucursal y en orden de llegada. */
+    private val pendientes = HashMap<String, MutableList<Anotada>>()
+
+    /** La copia más nueva de una sucursal que no llegó al disco: manda sobre él hasta que se guarde. */
+    private val sinGuardar = HashMap<String, List<CuentaGuardada>>()
+
+    private class Anotada(
+        val turno: Long,
+        val esLista: Boolean,
+        val aplicar: (filas: MutableMap<String, CuentaGuardada>, ultimaLista: Long, gana: (orderId: String) -> Boolean) -> Unit,
+    )
 
     /** Turno MONÓTONO del proceso: se toma cuando la petición SALE. */
     fun abrirLectura(): Long = ultimoTurno.incrementAndGet()
 
-    suspend fun alLeer(venueId: String, cuentas: List<OrderSummary>, lectura: Lectura, turno: Long = abrirLectura()) =
-        editar(venueId, turno, esLista = lectura != Lectura.SUELTA) { filas, gana ->
+    suspend fun alLeer(venueId: String, cuentas: List<OrderSummary>, lectura: Lectura, turno: Long = abrirLectura()) {
+        val vista = ahora()
+        anotar(venueId, Anotada(turno, esLista = lectura != Lectura.SUELTA) { filas, ultimaLista, gana ->
             // Revisión T4 #1: una lista más nueva ya se aplicó y no trajo esta cuenta (quizá ya se cobró). Una respuesta más vieja
             // no mete cuentas NUEVAS a la copia: lo peor es que falte hasta la siguiente lectura, nunca que se cobre de más.
             // ponytail: también frena las que la lista nueva no podía ver (más viejas que su página); bastaría con su ventana.
-            val metenNuevas = turno > (ultimaLista[venueId] ?: Long.MIN_VALUE)
+            val metenNuevas = turno > ultimaLista
             for (c in cuentas) if (gana(c.id)) {
                 when {
                     !estaAbierta(c.status, c.paymentStatus, c.refundState) -> filas.remove(c.id)
-                    c.id in filas || metenNuevas -> filas[c.id] = CuentaGuardada(c, ahora())
+                    c.id in filas || metenNuevas -> filas[c.id] = CuentaGuardada(c, vista)
                 }
             }
             val vinieron = cuentas.mapTo(HashSet()) { it.id }
@@ -110,36 +130,42 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
                 }
             }
             for (g in ausentes) if (gana(g.cuenta.id)) filas.remove(g.cuenta.id)
-        }
+        })
+    }
 
-    /** Un detalle bueno actualiza o retira la fila que ya está; nunca agrega una (la lista trae origen y fecha). */
-    suspend fun alLeerDetalle(venueId: String, orderId: String, evidencia: EvidenciaDelDetalle, turno: Long = abrirLectura()) =
-        editar(venueId, turno) { filas, gana ->
-            if (!gana(orderId)) return@editar
-            val fila = filas[orderId]
-            if (evidencia !is EvidenciaDelDetalle.Vigente || !evidencia.abierta) {
-                filas.remove(orderId)
-            } else if (fila != null) {
-                filas[orderId] = CuentaGuardada(
-                    fila.cuenta.copy(
-                        saldoPendienteCents = evidencia.saldoCents,
-                        pagosCompletados = evidencia.pagosCompletados,
-                        cobrosConSaldo = evidencia.cobrosConSaldo,
-                        esCuentaDeTarjetas = evidencia.esCuentaDeTarjetas,
-                    ),
-                    ahora(),
-                )
+    /** Un detalle bueno (o un cobro de este aparato) actualiza o retira la fila que ya está; nunca agrega una (la lista trae origen y fecha). */
+    suspend fun alLeerDetalle(venueId: String, orderId: String, evidencia: EvidenciaDelDetalle, turno: Long = abrirLectura()) {
+        val vista = ahora()
+        anotar(venueId, Anotada(turno, esLista = false) { filas, _, gana ->
+            if (!gana(orderId)) return@Anotada
+            val fila = filas[orderId]?.cuenta
+            when {
+                evidencia is EvidenciaDelDetalle.NoExiste ||
+                    evidencia is EvidenciaDelDetalle.Vigente && !evidencia.abierta -> filas.remove(orderId)
+                fila == null -> Unit
+                evidencia is EvidenciaDelDetalle.Vigente -> filas[orderId] = CuentaGuardada(fila.copy(
+                    saldoPendienteCents = evidencia.saldoCents,
+                    pagosCompletados = evidencia.pagosCompletados,
+                    cobrosConSaldo = evidencia.cobrosConSaldo,
+                    esCuentaDeTarjetas = evidencia.esCuentaDeTarjetas,
+                ), vista)
+                evidencia is EvidenciaDelDetalle.Abono -> filas[orderId] = CuentaGuardada(fila.copy(
+                    saldoPendienteCents = evidencia.saldoCents,
+                    pagosCompletados = (fila.pagosCompletados ?: 0) + 1,
+                    cobrosConSaldo = if (evidencia.conSaldo) (fila.cobrosConSaldo ?: 0) + 1 else fila.cobrosConSaldo,
+                ), vista)
             }
-        }
+        })
+    }
 
     /** Las vigentes de esa sucursal (más nueva primero, como el servidor). */
     suspend fun cuentas(venueId: String): List<CuentaGuardada> = leer(venueId)
 
     suspend fun cuenta(venueId: String, orderId: String): CuentaGuardada? = leer(venueId).firstOrNull { it.cuenta.id == orderId }
 
-    /** Para enseñar: si el disco falla, no hay copia que ofrecer. */
+    /** Para enseñar (y cobrar): con todo lo que ya llegó aplicado; si el disco no se deja leer, no hay copia que ofrecer. */
     private suspend fun leer(venueId: String): List<CuentaGuardada> = try {
-        leerDelDisco(venueId)
+        aplicar(venueId)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
@@ -147,54 +173,76 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
         emptyList()
     }
 
-    /**
-     * LANZA si el disco falla (revisión T4 #2): para escribir, «no se pudo leer» no es «no hay copia». Una copia ilegible sí
-     * cuenta como vacía: no hay nada que conservar, y sin reemplazarla la copia de esa sucursal no volvería a servir.
-     */
-    private suspend fun leerDelDisco(venueId: String): List<CuentaGuardada> {
-        val guardado = cache.loadDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId) ?: return emptyList()
-        val desde = ahora() - VIGENCIA_MS
-        return runCatching { json.decodeFromString<List<CuentaGuardada>>(guardado.json) }
-            .getOrElse { Log.w(TAG, "⚠️ copia ilegible de $venueId: ${it.message}"); emptyList() }
-            .filter { it.vistaEn >= desde }
-    }
-
-    private suspend fun editar(
-        venueId: String,
-        turno: Long,
-        esLista: Boolean = false,
-        cambiar: (filas: MutableMap<String, CuentaGuardada>, gana: (orderId: String) -> Boolean) -> Unit,
-    ): Unit = mutex.withLock {
-        val ganados = HashMap<String, Long>()
-        val gana = { orderId: String ->
-            val llave = "$venueId|$orderId"
-            (turno > (ganados[llave] ?: turnos[llave] ?: Long.MIN_VALUE)).also { if (it) ganados[llave] = turno }
+    /** Anota lo que llegó (sin poder fallar ni cortarse) y trata de aplicarlo; si el disco no se deja leer, se aplica en la siguiente lectura. */
+    private suspend fun anotar(venueId: String, a: Anotada) {
+        withContext(NonCancellable) {
+            mutex.withLock {
+                val cola = pendientes.getOrPut(venueId, ::mutableListOf)
+                // ponytail: tope de lo anotado con el disco ilegible. Al pasarlo la copia de la sucursal vuelve a empezar vacía (se
+                // ofrece de menos, nunca de más) en vez de crecer sin fin.
+                if (cola.size >= MAX_PENDIENTES) {
+                    Log.w(TAG, "⚠️ el disco lleva $MAX_PENDIENTES lecturas sin leerse: la copia de $venueId vuelve a empezar")
+                    cola.clear()
+                    sinGuardar[venueId] = emptyList()
+                }
+                cola += a
+            }
         }
-        val filas = try {
-            leerDelDisco(venueId).associateByTo(LinkedHashMap()) { it.cuenta.id }
+        try {
+            aplicar(venueId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "⚠️ no se pudo leer la copia de $venueId; no se toca: ${e.message}")
-            return@withLock
+            Log.w(TAG, "⚠️ no se pudo leer la copia de $venueId; se aplica en la siguiente lectura: ${e.message}")
         }
-        currentCoroutineContext().ensureActive() // Cancelada mientras leía: nada se escribe encima.
-        cambiar(filas, gana)
-        try {
-            // Disco y turnos van juntos: un turno sólo cuenta como aplicado si su evidencia llegó al disco.
-            withContext(NonCancellable) {
-                val orden = filas.values.sortedByDescending { VenueDateTimeFormatter.parseIso(it.cuenta.createdAt) }
-                cache.saveDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId, json.encodeToString(orden))
-                turnos.putAll(ganados)
-                if (esLista) ultimaLista[venueId] = maxOf(ultimaLista[venueId] ?: Long.MIN_VALUE, turno)
+    }
+
+    /**
+     * Aplica lo anotado sobre la copia (la de memoria si no se pudo guardar, o la del disco) y regresa las vigentes. LANZA si el
+     * disco no se deja leer (revisión T4 #2: «no se pudo leer» no es «no hay copia»): lo anotado se queda para la siguiente. Una
+     * copia ilegible sí cuenta como vacía: no hay nada que conservar, y sin reemplazarla la copia de esa sucursal no volvería a servir.
+     */
+    private suspend fun aplicar(venueId: String): List<CuentaGuardada> = mutex.withLock {
+        val base = sinGuardar[venueId] ?: leerDelDisco(venueId)
+        val cola = pendientes.remove(venueId).orEmpty()
+        val filas = base.filter { it.vistaEn >= ahora() - VIGENCIA_MS }.associateByTo(LinkedHashMap()) { it.cuenta.id }
+        val antes = HashMap(filas)
+        val ganados = HashMap<String, Long>()
+        var lista = ultimaLista[venueId] ?: Long.MIN_VALUE
+        for (a in cola) {
+            a.aplicar(filas, lista) { orderId ->
+                val llave = "$venueId|$orderId"
+                (a.turno > (ganados[llave] ?: turnos[llave] ?: Long.MIN_VALUE)).also { if (it) ganados[llave] = a.turno }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "⚠️ no se pudo guardar la copia de $venueId; se queda la anterior: ${e.message}")
+            if (a.esLista) lista = maxOf(lista, a.turno)
         }
+        val orden = filas.values.sortedByDescending { VenueDateTimeFormatter.parseIso(it.cuenta.createdAt) }
+        // Lo aplicado ya cuenta (en el disco o en la memoria): sus turnos también. Lo que no cambió nada no reescribe el disco.
+        withContext(NonCancellable) {
+            turnos.putAll(ganados)
+            if (lista != Long.MIN_VALUE) ultimaLista[venueId] = lista
+            if (filas != antes || venueId in sinGuardar) {
+                try {
+                    cache.saveDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId, json.encodeToString(orden))
+                    sinGuardar.remove(venueId)
+                } catch (e: Exception) {
+                    Log.w(TAG, "⚠️ no se pudo guardar la copia de $venueId; manda la de memoria: ${e.message}")
+                    sinGuardar[venueId] = orden
+                }
+            }
+        }
+        orden
+    }
+
+    private suspend fun leerDelDisco(venueId: String): List<CuentaGuardada> {
+        val guardado = cache.loadDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId) ?: return emptyList()
+        return runCatching { json.decodeFromString<List<CuentaGuardada>>(guardado.json) }
+            .getOrElse { Log.w(TAG, "⚠️ copia ilegible de $venueId: ${it.message}"); emptyList() }
     }
 
     private companion object {
         const val TAG = "CopiaDeCuentas"
         const val VIGENCIA_MS = 24 * 60 * 60 * 1000L
+        const val MAX_PENDIENTES = 200
     }
 }

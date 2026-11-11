@@ -97,14 +97,15 @@ class CobroDeCuentaViewModel @Inject constructor(
         if (venue == null) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         val turnoCopia = copiaDeCuentas?.abrirLectura()
         val resultado = repo.getOrderDetail(venue, orderId)
-        // Si salió otra consulta después, manda ella: una respuesta atrasada no pisa su saldo ni su aviso (Codex D14 r1 P1).
-        if (turno != turnos.get() && resultado.exceptionOrNull() !is kotlinx.coroutines.CancellationException) return
-        // D12 (Codex r3 H1): lo que dice este detalle (o su 404) también pone al día la copia de «Pedidos».
+        // D12 (Codex r3 H1): lo que dice este detalle (o su 404) también pone al día la copia de «Pedidos». Final fix (F1): también si
+        // otra consulta ya lo superó en pantalla: la copia ordena con sus propios turnos, y si la nueva no trae nada, ésta es lo más nuevo.
         val evidencia = resultado.fold(
             onSuccess = { d -> d.takeIf { it.id == orderId }?.comoEvidencia() },
             onFailure = { e -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.NoExiste.takeIf { e is retrofit2.HttpException && e.code() == 404 } },
         )
         if (evidencia != null && turnoCopia != null) copiaDeCuentas?.alLeerDetalle(venue, orderId, evidencia, turnoCopia)
+        // Si salió otra consulta después, manda ella: una respuesta atrasada no pisa su saldo ni su aviso (Codex D14 r1 P1).
+        if (turno != turnos.get() && resultado.exceptionOrNull() !is kotlinx.coroutines.CancellationException) return
         if (storage.venueId != venue) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         resultado.fold(onSuccess = {
             if (it.id != orderId) aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA

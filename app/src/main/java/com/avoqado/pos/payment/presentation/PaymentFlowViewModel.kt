@@ -162,6 +162,17 @@ internal fun cobraLosValesDeLaSesion(items: List<CartItem>, checkout: AreaTicket
  *
  * @param yaCobrado consta que ese cobro SÍ pasó: se ofrece «Entendido» en vez de «Revisar».
  */
+/**
+ * D12 (final fix, I-2): lo que la copia de «Pedidos» debe saber de un cobro de ESTE aparato. Uno encolado no la toca: su marca local
+ * (cobro sin sincronizar, luego «esta caja ya subió un cobro») ya la deja en gris. Uno que el servidor registró: pagada ⇒ sale de la
+ * copia; con saldo ⇒ «ya tiene un abono» con el saldo del servidor (sin él, «sin saldo»). Sin orden (venta rápida) no hay cuenta.
+ */
+internal fun evidenciaDelCobro(c: PaymentCompletion, encolado: Boolean): com.avoqado.pos.orders.data.EvidenciaDelDetalle? = when {
+    encolado || c.orderId == null -> null
+    c.remainingBalanceCents <= 0 -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.NoExiste
+    else -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(c.remainingBalanceCents.takeIf { c.saldoDelServidor }, c.conSaldo)
+}
+
 data class AvisoDeOtroCobro(val requestId: String, val texto: String, val yaCobrado: Boolean)
 
 @HiltViewModel
@@ -223,6 +234,8 @@ class PaymentFlowViewModel @Inject constructor(
     val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository? = null,
     /** D4 (5-nov): lo que depende de este cobro. Cada intento se anota ANTES de salir. Default por el mismo patrón que [refrescoDelCatalogo]. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** D12 (final fix, I-2): la copia de «Pedidos», que cada cobro con red pone al día. Default por el mismo patrón que [refrescoDelCatalogo]. */
+    private val copiaDeCuentas: com.avoqado.pos.orders.data.CopiaDeCuentas? = null,
 ) : ViewModel() {
     private val cuentaDeTarjetas = MutableStateFlow(false)
     val metodosHabilitados: StateFlow<Boolean> by lazy {
@@ -667,6 +680,24 @@ class PaymentFlowViewModel @Inject constructor(
      * cobrado); los de intentos anteriores de esta venta sobran y se borran. Si ese borrado falla, se reintenta antes del
      * siguiente cobro ([primeroDescartarLosPendientes]).
      */
+    /**
+     * D12 (final fix, I-2): un cobro de este aparato (tarjeta, saldo de regalo, efectivo, «Ya pagó de otra forma»; desde «Pedidos», el
+     * carrito, Mesas o la bandeja) pone al día la copia de «Pedidos»: si no, al irse la red se volvía a ofrecer «Cobrar $X en efectivo»
+     * de una cuenta recién pagada. Todos los cobros terminan en este `Success`; sólo toca filas que ya están en la copia.
+     */
+    private fun ponerAlDiaLaCopia(st: PaymentFlowState.Success) {
+        val copia = copiaDeCuentas ?: return
+        val c = buildCompletion()
+        val evidencia = evidenciaDelCobro(c, encolado = st.isQueued) ?: return
+        val orderId = c.orderId ?: return
+        val venue = secureStorage.venueId ?: return
+        val turno = copia.abrirLectura() // el de AHORA: una lectura que salió antes del cobro ya no la regresa a cobrable
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching { copia.alLeerDetalle(venue, orderId, evidencia, turno) }
+                .onFailure { Log.w("💵", "No se pudo poner al día la copia de «Pedidos» con el cobro de $orderId: ${it.message}") }
+        }
+    }
+
     private fun alCobrarLaVenta(st: PaymentFlowState.Success) {
         val cobrado = apartadoDelIntento?.takeIf { st.method == PaymentMethod.CASH }
         val anteriores = apartadosDeEstaVenta.filter { it != cobrado }
@@ -968,6 +999,7 @@ class PaymentFlowViewModel @Inject constructor(
                     // 🔴 D2 v7: sólo el COBRO termina los apartados de la venta. Un rechazo, un error o un 409 ya no los sueltan:
                     // siguen del flujo hasta que la cajera vuelve a cobrar o toca «Cancelar».
                     alCobrarLaVenta(st)
+                    ponerAlDiaLaCopia(st)
                 } else if (st !is PaymentFlowState.Processing) {
                     // A5: un «Ya pagó de otra forma» que no se cobró sigue como hoy (se suelta, queda «sin confirmar»).
                     soltarLaReservaNoEfectivo()

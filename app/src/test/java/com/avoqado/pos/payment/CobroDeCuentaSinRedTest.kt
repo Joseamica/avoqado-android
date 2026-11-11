@@ -67,10 +67,12 @@ import java.net.UnknownHostException
 class CobroDeCuentaSinRedTest {
     // El «disco» de memoria de la Tarea 4 (CopiaDeCuentasTest / PedidoSinRedTest).
     private val disco = mutableMapOf<String, PayloadCache.Cached>()
+    private var falloAlGuardar = false
     private val cache = mockk<PayloadCache> {
         coEvery { load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
         coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
         coEvery { saveDurable(any(), any(), any()) } answers {
+            if (falloAlGuardar) throw IllegalStateException("disco lleno")
             disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
         }
     }
@@ -420,8 +422,12 @@ class CobroDeCuentaSinRedTest {
         assertEquals(Cobrar(8000, false), m.sinRed.value)
     }
 
-    /** M7 (Codex r3 H1): una respuesta de detalle superada por una consulta posterior no escribe en la copia. */
-    @Test fun `una respuesta de detalle superada por su turno no escribe en la copia`() = runTest {
+    /**
+     * Final fix (F1): una respuesta de detalle superada por una consulta posterior que NO trajo evidencia (sin red) igual pone la copia
+     * al día: es lo más nuevo que este aparato sabe de la cuenta. La copia ordena por sus propios turnos (antes M7 la tiraba y la copia
+     * vieja de $100 sin abono seguía ofreciendo «Cobrar»).
+     */
+    @Test fun `una respuesta de detalle superada igual deja la copia al dia si es lo mas nuevo`() = runTest {
         enLaCopia(cuenta("A", saldo = 10000))
         val vieja = CompletableDeferred<Result<OrderDetail>>()
         val respuestas = ArrayDeque(listOf(vieja, CompletableDeferred(Result.failure<OrderDetail>(java.io.IOException("sin red")))))
@@ -429,12 +435,26 @@ class CobroDeCuentaSinRedTest {
         val m = vm()
         val primera = launch { m.cargar("A") }
         runCurrent()
-        m.cargar("A") // la que manda: no trae evidencia
+        m.cargar("A") // la que manda en pantalla: no trae evidencia
         vieja.complete(Result.success(OrderDetail("A", esDeMesa = false, status = "PENDING", paymentStatus = "PARTIAL",
             payments = listOf(OrderDetailPayment("p1", 40.0, status = "COMPLETED")), preBillBalance = PreBillBalance(10000, 4000, 6000))))
         primera.join()
-        val fila = copia.cuenta("v1", "A")!!.cuenta
-        assertEquals(10000, fila.saldoPendienteCents)
-        assertNull(razonParaNoCobrar(fila))
+        assertEquals(RazonSinRed.CON_ABONO, razonParaNoCobrar(copia.cuenta("v1", "A")!!.cuenta))
+        m.consultarSinRed("A")
+        assertEquals(Gris(TextosDeCuentaSinRed.CON_ABONO), m.sinRed.value)
+        assertNull("la foto de la pantalla sigue siendo la de la consulta que manda", m.detalle.value)
+    }
+
+    /** Final fix (F1, Codex #2): el detalle trae el saldo de regalo que cobró otra caja y el disco no lo pudo guardar: igual, gris. */
+    @Test fun `el detalle nuevo que no se pudo guardar igual deja la cuenta en gris`() = runTest {
+        enLaCopia(cuenta("A", saldo = 10000))
+        falloAlGuardar = true
+        coEvery { repo.getOrderDetail("v1", "A") } returns Result.success(OrderDetail("A", esDeMesa = false, status = "PENDING",
+            paymentStatus = "PARTIAL", cobrosConSaldo = 1, preBillBalance = PreBillBalance(10000, 4000, 6000)))
+        val m = vm()
+        m.cargar("A")
+        m.consultarSinRed("A") // se fue la red: decide con la copia
+        assertEquals(Gris(TextosDeTarjetas.SIN_RED), m.sinRed.value)
+        assertEquals(TextosDeTarjetas.SIN_RED, m.revalidarCobroSinRed("A", 10000))
     }
 }

@@ -45,6 +45,8 @@ import com.avoqado.pos.customerdisplay.CustomerContent
 import com.avoqado.pos.payment.presentation.AVISO_SALDO_SIN_CONFIRMAR
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.payment.presentation.cobraLosValesDeLaSesion
+import com.avoqado.pos.payment.presentation.evidenciaDelCobro
+import com.avoqado.pos.payment.presentation.PaymentCompletion
 import com.avoqado.pos.payment.presentation.tipCentsForPercent
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -144,6 +146,15 @@ class PaymentFlowViewModelTest {
     }
 
     private lateinit var viewModel: PaymentFlowViewModel
+
+    /** Final fix (F1, I-2): la copia de «Pedidos», REAL sobre un disco de memoria. Sin filas, ninguna venta la reescribe. */
+    private val discoDeLaCopia = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
+    private val copiaDeCuentas = com.avoqado.pos.orders.data.CopiaDeCuentas(mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+        coEvery { loadDurable(any(), any()) } answers { discoDeLaCopia["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { saveDurable(any(), any(), any()) } answers {
+            discoDeLaCopia["${firstArg<String>()}|${secondArg<String>()}"] = com.avoqado.pos.core.data.local.PayloadCache.Cached(thirdArg(), 0)
+        }
+    })
 
     /** La sesión de mesa REAL que ve el ViewModel (A5: una mesa en PAYING no puede capturar el cobro de un pedido web). */
     private val sesionDeMesa = com.avoqado.pos.tables.data.TableSession()
@@ -277,6 +288,7 @@ class PaymentFlowViewModelTest {
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = cancelacionDeCobro,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
+            copiaDeCuentas = copiaDeCuentas,
         )
     }
 
@@ -6049,5 +6061,89 @@ class PaymentFlowViewModelTest {
         }
         verify(exactly = 0) { cashDrawerRepository.idDeCajaParaElServidor(any(), any()) }
     }
-}
 
+    // MARK: - Final fix (F1, I-2): el cobro CON RED de este aparato pone al día la copia de «Pedidos»
+
+    private fun cuentaGuardada(id: String) = com.avoqado.pos.orders.data.model.OrderSummary(id = id, esDeMesa = false,
+        source = "AVOQADO_ANDROID", status = "PENDING", paymentStatus = "PENDING", createdAt = "2026-11-10T18:00:00Z",
+        saldoPendienteCents = 6000, pagosCompletados = 0)
+
+    private suspend fun guardadaEnLaCopia(id: String) =
+        copiaDeCuentas.alLeer("venue-1", listOf(cuentaGuardada(id)), com.avoqado.pos.orders.data.Lectura.SUELTA)
+
+    private suspend fun razonEnLaCopia(id: String) =
+        copiaDeCuentas.cuenta("venue-1", id)?.cuenta?.let { com.avoqado.pos.orders.data.razonParaNoCobrar(it) }
+
+    @Test
+    fun `I-2 un cobro con tarjeta de una cuenta guardada la saca de la copia`() = runTest {
+        guardadaEnLaCopia("o1")
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-1", requestId = "req-1")
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNull("sin red ya no se ofrece cobrarla otra vez en efectivo", copiaDeCuentas.cuenta("venue-1", "o1"))
+    }
+
+    @Test
+    fun `I-2 un cobro con red que deja saldo marca el abono en la copia`() = runTest {
+        guardadaEnLaCopia("o1")
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(
+            Result.success(
+                OrderRepository.CashPayResult(
+                    paymentId = "pay-1", receiptAccessKey = null, recordedAmountCents = 4000, recordedTipCents = 0,
+                    authoritativeChangeCents = 0, remainingBalanceCents = 2000, orderPaymentStatus = "PARTIAL", cashRetainedCents = 4000,
+                ),
+            ),
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals(com.avoqado.pos.orders.data.RazonSinRed.CON_ABONO, razonEnLaCopia("o1"))
+    }
+
+    @Test
+    fun `I-2 un cobro en efectivo con red que la pago la saca de la copia`() = runTest {
+        guardadaEnLaCopia("o1")
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNull(copiaDeCuentas.cuenta("venue-1", "o1"))
+    }
+
+    @Test
+    fun `I-2 un cobro encolado no toca la copia porque su marca local ya la deja en gris`() = runTest {
+        guardadaEnLaCopia("o1")
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+        assertNotNull("sigue en la copia (gris por «sin sincronizar», no por la copia)", copiaDeCuentas.cuenta("venue-1", "o1"))
+    }
+
+    @Test
+    fun `I-2 que sabe la copia de cada cobro`() {
+        val c = PaymentCompletion(splitType = "FULLPAYMENT", remainingBalanceCents = 0, orderId = "o1")
+        assertNull("encolado: lo dice su marca local", evidenciaDelCobro(c, encolado = true))
+        assertNull("sin orden no hay cuenta", evidenciaDelCobro(c.copy(orderId = null), encolado = false))
+        assertEquals(com.avoqado.pos.orders.data.EvidenciaDelDetalle.NoExiste, evidenciaDelCobro(c, encolado = false))
+        assertEquals(com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(2000, conSaldo = false),
+            evidenciaDelCobro(c.copy(remainingBalanceCents = 2000, saldoDelServidor = true), encolado = false))
+        assertEquals("sin el saldo del servidor no se inventa uno", com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(null, conSaldo = true),
+            evidenciaDelCobro(c.copy(remainingBalanceCents = 2000, conSaldo = true), encolado = false))
+    }
+}

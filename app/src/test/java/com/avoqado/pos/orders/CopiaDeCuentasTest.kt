@@ -29,11 +29,13 @@ class CopiaDeCuentasTest {
     /** Lo que lanza la lectura del disco (`loadDurable`); `load`, como el real, se lo traga y da null. */
     private var falloAlLeer: Exception? = null
     private var falloAlGuardar = false
+    private var guardados = 0
     private val cache = mockk<PayloadCache> {
         coEvery { load(any(), any()) } answers { if (falloAlLeer != null) null else disco["${firstArg<String>()}|${secondArg<String>()}"] }
         coEvery { loadDurable(any(), any()) } answers { falloAlLeer?.let { throw it }; disco["${firstArg<String>()}|${secondArg<String>()}"] }
         coEvery { saveDurable(any(), any(), any()) } answers {
             if (falloAlGuardar) throw IllegalStateException("disco lleno")
+            guardados++
             disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
         }
     }
@@ -95,30 +97,77 @@ class CopiaDeCuentasTest {
         assertNull(copia.cuenta("v1", "Y"))
         assertNotNull(copia.cuenta("v1", "B"))
     }
-    @Test fun `si falla la lectura del disco la copia anterior se queda`() = runTest {
-        // Revisión T4 #2: un error de E/S o una cancelación al leer no es «no hay copia»: no se escribe una copia nueva encima.
-        copia.alLeer("v1", listOf(c("A")), Lectura.SUELTA)
+    /**
+     * Final fix (F1, Codex #2): lo que este aparato ya supo no se pierde porque el disco no se deje leer o cancelen a quien llamó.
+     * Mientras no se lee, no hay nada que ofrecer; al poder leer, se aplica encima de la copia anterior (sin pisarla: revisión T4 #2).
+     */
+    @Test fun `si falla la lectura del disco no se ofrece nada y lo que llego se aplica sin perder la copia anterior`() = runTest {
         listOf(java.io.IOException("disco"), kotlinx.coroutines.CancellationException("cancelada")).forEach { falla ->
+            disco.clear()
+            copia.alLeer("v1", listOf(c("A"), c("C")), Lectura.SUELTA)
             falloAlLeer = falla
-            runCatching { copia.alLeer("v1", listOf(c("B")), Lectura.LISTA_COMPLETA) }
-            runCatching { copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.NoExiste) }
+            runCatching { copia.alLeer("v1", listOf(c("B")), Lectura.SUELTA) }
+            runCatching { copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.Vigente(true, 6000, 1, cobrosConSaldo = 0, esCuentaDeTarjetas = false)) }
+            runCatching { copia.alLeerDetalle("v1", "C", EvidenciaDelDetalle.NoExiste) }
+            assertNull("sin poder leer no se ofrece nada ($falla)", runCatching { copia.cuenta("v1", "A") }.getOrNull())
             falloAlLeer = null
-            assertEquals(falla.toString(), setOf("A"), ids())
+            assertEquals(falla.toString(), setOf("A", "B"), ids())
+            assertEquals(falla.toString(), RazonSinRed.CON_ABONO, razonParaNoCobrar(copia.cuenta("v1", "A")!!.cuenta))
+            assertEquals("y ya llegó al disco", true, disco.values.single().json.contains("\"B\""))
         }
     }
-    @Test fun `si falla el guardado la copia anterior se queda y no se anota ningun turno`() = runTest {
-        copia.alLeer("v1", listOf(c("A")), Lectura.SUELTA)
+
+    /**
+     * Final fix (F1, Codex #2): A ve la cuenta de $100; otra caja cobra con saldo de regalo; A lee ese detalle y el disco está lleno.
+     * La copia vieja NO vuelve a autorizar: lo que A ya sabe manda en memoria (también contra lo más viejo) hasta que se pueda guardar.
+     */
+    @Test fun `si falla el guardado lo nuevo manda en memoria y se guarda en la siguiente escritura`() = runTest {
+        copia.alLeer("v1", listOf(c("A"), c("B")), Lectura.SUELTA)
         val entre = copia.abrirLectura(); val fallida = copia.abrirLectura()
         falloAlGuardar = true
-        copia.alLeer("v1", emptyList(), Lectura.LISTA_COMPLETA, fallida) // no lanza
-        falloAlGuardar = false
-        assertEquals(setOf("A"), ids())
-        // Si `fallida` hubiera quedado anotada (por cuenta o por sucursal), estas dos evidencias más viejas se descartarían.
-        copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.Vigente(true, 6000, 0, cobrosConSaldo = 1, esCuentaDeTarjetas = false), entre)
-        copia.alLeer("v1", listOf(c("N")), Lectura.SUELTA, entre)
+        copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.Vigente(true, 6000, 0, cobrosConSaldo = 1, esCuentaDeTarjetas = false), fallida)
+        copia.alLeerDetalle("v1", "B", EvidenciaDelDetalle.NoExiste) // no lanza
         assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(copia.cuenta("v1", "A")!!.cuenta))
-        assertNotNull(copia.cuenta("v1", "N"))
+        assertNull(copia.cuenta("v1", "B"))
+        copia.alLeer("v1", listOf(c("A"), c("B")), Lectura.SUELTA, entre) // más vieja que lo que ya se sabe: no las regresa a cobrables
+        assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(copia.cuenta("v1", "A")!!.cuenta))
+        assertNull(copia.cuenta("v1", "B"))
+
+        falloAlGuardar = false
+        copia.alLeer("v1", listOf(c("N")), Lectura.SUELTA)
+        val trasReiniciar = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+        assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(trasReiniciar.cuenta("v1", "A")!!.cuenta))
+        assertNull(trasReiniciar.cuenta("v1", "B"))
+        assertNotNull(trasReiniciar.cuenta("v1", "N"))
     }
+
+    /** Final fix (F1, I-2): un cobro de ESTE aparato con red. Con saldo ⇒ «ya tiene un abono» (o de regalo); pagada ⇒ sale. */
+    @Test fun `un cobro de este aparato con saldo deja abono y uno que la pago la retira`() = runTest {
+        copia.alLeer("v1", listOf(c("parcial"), c("regalo"), c("pagada")), Lectura.SUELTA)
+        copia.alLeerDetalle("v1", "parcial", EvidenciaDelDetalle.Abono(saldoCents = 2000, conSaldo = false))
+        copia.alLeerDetalle("v1", "regalo", EvidenciaDelDetalle.Abono(saldoCents = null, conSaldo = true))
+        copia.alLeerDetalle("v1", "pagada", EvidenciaDelDetalle.NoExiste)
+        copia.alLeerDetalle("v1", "ajena", EvidenciaDelDetalle.Abono(saldoCents = 1000, conSaldo = false))
+        val parcial = copia.cuenta("v1", "parcial")!!.cuenta
+        assertEquals(RazonSinRed.CON_ABONO, razonParaNoCobrar(parcial))
+        assertEquals(2000, parcial.saldoPendienteCents)
+        assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(copia.cuenta("v1", "regalo")!!.cuenta))
+        assertNull(copia.cuenta("v1", "pagada"))
+        assertNull("nunca agrega una cuenta", copia.cuenta("v1", "ajena"))
+    }
+
+    /** Final fix (F1, I-2): cada venta nueva avisa a la copia; si no cambia nada, no se reescribe el disco (pero su turno sí cuenta). */
+    @Test fun `una evidencia que no cambia nada no reescribe el disco y su turno igual cuenta`() = runTest {
+        copia.alLeer("v1", listOf(c("A")), Lectura.SUELTA)
+        val vieja = copia.abrirLectura()
+        val antes = guardados
+        copia.alLeerDetalle("v1", "Y", EvidenciaDelDetalle.NoExiste)
+        copia.alLeerDetalle("v1", "Z", EvidenciaDelDetalle.Abono(saldoCents = 0, conSaldo = false))
+        assertEquals(antes, guardados)
+        copia.alLeer("v1", listOf(c("Y")), Lectura.PRIMERA_PAGINA, vieja)
+        assertNull("una lista más vieja no la mete", copia.cuenta("v1", "Y"))
+    }
+
     @Test fun `los turnos de una sucursal no frenan a otra`() = runTest {
         val vieja = copia.abrirLectura(); val nueva = copia.abrirLectura()
         copia.alLeer("v1", listOf(c("A")), Lectura.LISTA_COMPLETA, nueva)

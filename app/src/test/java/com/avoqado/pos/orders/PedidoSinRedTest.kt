@@ -537,8 +537,11 @@ class PedidoSinRedTest {
         }
     }
 
-    /** Punto 2: el 5xx apaga la bandera del servidor y `alPerderLaRed` llega DESPUÉS de la lectura: no lo vuelve «Sin conexión». */
-    @Test fun `un 500 sobre la lista en vivo y luego la bandera caida no dice Sin conexion`() = runTest {
+    /**
+     * Punto 2: un 500 sobre la lista en vivo no pinta nada. Final fix (F3): `alPerderLaRed` sólo llega cuando de verdad se fue la red
+     * (nadie contesta: `OrdersViewModel.copiaAlPerderLaRed`), así que AHÍ sí es «Sin conexión» y la lista es la copia.
+     */
+    @Test fun `un 500 sobre la lista en vivo no pinta nada y al irse la red de verdad la lista es la copia`() = runTest {
         lista = { http(it, 200, pagina(fila("A"))) }
         val r = repoConRutas()
         r.loadOrders(1, null, null)
@@ -546,12 +549,74 @@ class PedidoSinRedTest {
         lista = { http(it, 500, """{"message":"boom"}""") }
         r.loadOrders(1, null, null)
         assertNull("en vivo, un 500 no pinta nada (como hoy)", r.avisoDeLaLista.value)
+        reloj += 60_000
         r.alPerderLaRed()
-        assertEquals(TextosDeCuentaSinRed.noSeCargaronDeLas(horaDeLaCopia(t, null)), r.avisoDeLaLista.value)
-        lista = { http(it, 500, """{"message":"boom"}""") }
+        assertEquals(listOf("A"), ids(r))
+        assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(t, null)), r.avisoDeLaLista.value)
+    }
+
+    // MARK: - Final fix (F1, Codex #5): sin red, la lista es la copia entera, no sólo la página que había en memoria
+
+    private fun paginaDe(numero: Int, de: Int, vararg filas: String) =
+        """{"data":[${filas.joinToString(",")}],"meta":{"total":${filas.size * de},"page":$numero,"pageCount":$de}}"""
+
+    /** A (página 1) y Z (página 2) están guardadas; tras refrescar, en memoria sólo queda la página 1. */
+    private suspend fun dosPaginasYSoloLaPrimeraEnMemoria(): OrdersRepository {
+        val p1 = paginaDe(1, 2, fila("A", creada = "2026-11-10T19:00:00Z"))
+        val p2 = paginaDe(2, 2, fila("Z", creada = "2026-11-10T10:00:00Z"))
+        lista = { http(it, 200, if (it.request().url.queryParameter("page") == "2") p2 else p1) }
+        val r = repoConRutas()
         r.loadOrders(1, null, null)
-        r.alPerderLaRed() // en el otro orden también: el que ya hay no se pisa
-        assertEquals(TextosDeCuentaSinRed.noSeCargaronDeLas(horaDeLaCopia(t, null)), r.avisoDeLaLista.value)
+        r.loadOrders(2, null, null, append = true)
+        r.loadOrders(1, null, null)
+        assertEquals(listOf("A"), ids(r))
+        assertEquals(true, r.hasMore.value)
+        return r
+    }
+
+    @Test fun `al irse la red la cuenta guardada de la pagina 2 se ve aunque en memoria solo este la 1`() = runTest {
+        val r = dosPaginasYSoloLaPrimeraEnMemoria()
+        val antes = peticiones.get()
+        r.alPerderLaRed()
+        assertEquals(listOf("A", "Z"), ids(r))
+        assertEquals("«Cargar más» no promete lo que no puede", false, r.hasMore.value)
+        assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(r.copiaVistaA.value!!, null)), r.avisoDeLaLista.value)
+        assertEquals("sin otra consulta", antes, peticiones.get())
+    }
+
+    @Test fun `sin red Cargar mas o recargar con filas a la vista ensenan la copia entera`() = runTest {
+        val r = dosPaginasYSoloLaPrimeraEnMemoria()
+        lista = sinRed()
+        r.loadOrders(2, null, null, append = true) // «Cargar más» sin red
+        assertEquals(listOf("A", "Z"), ids(r))
+        assertEquals(false, r.hasMore.value)
+        assertEquals(true, r.listaEsperaLaRed)
+
+        val otra = dosPaginasYSoloLaPrimeraEnMemoria()
+        lista = sinRed()
+        otra.loadOrders(1, null, null) // la recarga de la página 1 con filas a la vista
+        assertEquals(listOf("A", "Z"), ids(otra))
+        assertEquals(false, otra.hasMore.value)
+    }
+
+    @Test fun `sin red Cargar mas de una busqueda no promete mas y lo dice`() = runTest {
+        lista = { http(it, 200, paginaDe(1, 2, fila("A"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, "A", null)
+        assertEquals(true, r.hasMore.value)
+        lista = sinRed()
+        r.loadOrders(2, "A", null, append = true)
+        assertEquals("la búsqueda se queda como estaba", listOf("A"), ids(r))
+        assertEquals(false, r.hasMore.value)
+        assertEquals(TextosDeCuentaSinRed.copiaDeLas(horaDeLaCopia(r.copiaVistaA.value!!, null)), r.avisoDeLaLista.value)
+        assertEquals(true, r.listaEsperaLaRed)
+
+        val viendo = repoConRutas()
+        lista = { http(it, 200, paginaDe(1, 2, fila("A"))) }
+        viendo.loadOrders(1, "A", null)
+        viendo.alPerderLaRed() // se fue la red con la búsqueda a la vista: nunca la copia entera, pero tampoco «Cargar más»
+        assertEquals(listOf("A"), ids(viendo))
+        assertEquals(false, viendo.hasMore.value)
     }
 
     /** Punto 4: con un cobro abierto, una recarga con 500 o 404 no deja la pantalla sin el detalle (ni el cobro). */

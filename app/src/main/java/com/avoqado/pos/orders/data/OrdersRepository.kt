@@ -112,8 +112,8 @@ class OrdersRepository @Inject constructor(
     var listaEsperaLaRed = false
         private set
 
-    /** T12b: cómo terminó la última lectura de la lista (null = bien). Un 5xx también apaga la bandera de red ([alPerderLaRed]). */
-    private var falloDeLaUltimaLectura: FalloDeLectura? = null
+    /** Final fix (F1): la lista a la vista contesta una búsqueda o un filtro (no «Todos»/«Abiertas»): sin red nunca se cambia por la copia. */
+    private var listaConBusqueda = false
 
     /**
      * T12b: la lista es de [vistaA] (null = al día, o no hay nada guardado). Su aviso dice la razón real: nadie contestó, o el servidor
@@ -284,6 +284,8 @@ class OrdersRepository @Inject constructor(
         // D12: la sucursal y el turno se toman cuando la petición SALE (una respuesta atrasada no se mete en otra sucursal).
         val venueId = secureStorage.venueId
         val turno = copia?.abrirLectura()
+        // Revisión r1: la copia sólo sin búsqueda ni otro filtro (no es el resultado de lo que se buscó).
+        val conBusqueda = lecturaDe(1, false, search, status, hasMore = false) == Lectura.SUELTA
         val result = fetchOrders(page = page, search = search, status = status)
         val pageData = result.getOrNull()
         if (pageData != null) {
@@ -296,11 +298,11 @@ class OrdersRepository @Inject constructor(
                 } else {
                     _orders.value = pageData.orders
                     listaVistaA = ahora()
+                    listaConBusqueda = conBusqueda
                 }
                 venueDeLaLista = venueId
                 _currentPage.value = pageData.page
                 _hasMore.value = pageData.hasMore
-                falloDeLaUltimaLectura = null
                 listaDeLas(null, sinRed = false)
             }
         } else {
@@ -309,32 +311,40 @@ class OrdersRepository @Inject constructor(
             Log.e(TAG, "❌ loadOrders: ${error?.message}")
             val actual = secureStorage.venueId
             val sinRed = error != null && FalloDeLectura.de(error) == FalloDeLectura.SIN_RED
-            // Revisión r1: la copia sólo sin búsqueda ni otro filtro (no es el resultado de lo que se buscó).
-            val suelta = lecturaDe(page, append, search, status, hasMore = false) == Lectura.SUELTA
-            if (!append) falloDeLaUltimaLectura = if (sinRed) FalloDeLectura.SIN_RED else FalloDeLectura.SERVIDOR
-            if (actual != null && sinRed && suelta && !append) {
+            if (actual != null && sinRed && !conBusqueda && copia != null) {
+                // Final fix (F1, Codex #5): sin red, la lista ES la copia vigente entera, también con filas a la vista o al pedir «más»:
+                // una cuenta guardada de la página 2 no se queda fuera porque en memoria sólo estaba la página 1.
+                ensenarLaCopia(actual)
+            } else if (actual != null && sinRed && conBusqueda && !append) {
                 // T12b: sin red, una búsqueda o un filtro no se contesta. Nunca la copia entera ni la lista de otra consulta como su
                 // resultado: la lista se vacía y lo dice.
                 _orders.value = emptyList()
                 venueDeLaLista = actual
                 listaVistaA = null
+                listaConBusqueda = true
                 _currentPage.value = 1
                 _hasMore.value = false
                 listaDeLas(null, sinRed = true)
                 _avisoDeLaLista.value = TextosDeCuentaSinRed.BUSQUEDA_SIN_RED
+            } else if (actual != null && sinRed && append) {
+                // Final fix (F1): «Cargar más» de una búsqueda sin red no se puede contestar: lo que se ve se queda «como estaba» y el
+                // botón se va hasta que vuelva la red (nunca un toque que no hace nada).
+                if (secureStorage.venueId == actual) {
+                    _hasMore.value = false
+                    listaDeLas(listaVistaA, sinRed = true)
+                }
             } else if (actual != null && (_orders.value.isEmpty() || venueDeLaLista != actual)) {
-                // Revisión r1: la copia sólo SIN RED (un 5xx o un 403 no es «sin conexión», y un 403 niega esas cuentas). Si no, las
-                // filas de otra sucursal se quitan.
-                val ensenarCopia = copia != null && sinRed && !suelta
-                val guardadas = if (ensenarCopia) copia?.cuentas(actual).orEmpty() else emptyList()
-                if (secureStorage.venueId == actual && (ensenarCopia || venueDeLaLista != actual)) {
-                    _orders.value = guardadas.map { it.cuenta }
+                // Revisión r1: un 5xx o un 403 no es «sin conexión» (y un 403 niega esas cuentas): sin la copia. Las filas de otra
+                // sucursal se quitan.
+                if (venueDeLaLista != actual) {
+                    _orders.value = emptyList()
                     venueDeLaLista = actual
-                    listaVistaA = guardadas.minOfOrNull { it.vistaEn }
-                    listaDeLas(listaVistaA, sinRed = ensenarCopia)
+                    listaVistaA = null
+                    listaConBusqueda = conBusqueda
+                    listaDeLas(null, sinRed = false)
                     _currentPage.value = 1
-                    _hasMore.value = false // la copia es todo lo que hay: nada que pedir «más» encima
-                } else if (secureStorage.venueId == actual) {
+                    _hasMore.value = false
+                } else {
                     listaDeLas(null, sinRed) // T12b: un aviso de antes (la búsqueda sin red) no se queda con otra razón
                 }
             } else if (!append && _copiaVistaA.value != null) {
@@ -413,6 +423,19 @@ class OrdersRepository @Inject constructor(
         }
     }
 
+    /** Final fix (F1, Codex #5): sin red y sin búsqueda ni filtro, la lista es la copia VIGENTE de la sucursal, con su hora. */
+    private suspend fun ensenarLaCopia(venueId: String) {
+        val guardadas = copia?.cuentas(venueId).orEmpty()
+        if (secureStorage.venueId != venueId) return
+        _orders.value = guardadas.map { it.cuenta }
+        venueDeLaLista = venueId
+        listaConBusqueda = false
+        listaVistaA = guardadas.minOfOrNull { it.vistaEn }
+        listaDeLas(listaVistaA, sinRed = true)
+        _currentPage.value = 1
+        _hasMore.value = false // la copia es todo lo que hay: nada que pedir «más» encima
+    }
+
     fun clearSelectedOrder() {
         detalleSolicitado = null
         _detalleSinRed.value = null
@@ -422,16 +445,22 @@ class OrdersRepository @Inject constructor(
     }
 
     /**
-     * D12 (Codex r3 H4): se fue la red con «Pedidos» a la vista. Sin otra consulta ni desmontar nada: la lista dice de qué
-     * hora es, y si el detalle a la vista vino del servidor, se respalda con su cuenta de la copia VIGENTE de la sucursal
-     * ACTUAL (con su hora en el aviso). Copia vencida, ausente o de otra sucursal: no cambia nada.
+     * D12 (Codex r3 H4): se fue la red DE VERDAD con «Pedidos» a la vista (nadie contesta: lo decide
+     * [com.avoqado.pos.orders.presentation.OrdersViewModel.copiaAlPerderLaRed], final fix F3). Sin otra consulta ni desmontar nada: la
+     * lista es la copia (final fix F1, Codex #5: también las cuentas de páginas que ya no estaban en memoria) o, si contesta una búsqueda,
+     * se queda «como estaba» sin «Cargar más»; y si el detalle a la vista vino del servidor, se respalda con su cuenta de la copia
+     * VIGENTE de la sucursal ACTUAL (con su hora en el aviso). Copia vencida, ausente o de otra sucursal: el detalle no cambia.
      */
     suspend fun alPerderLaRed() {
         val actual = secureStorage.venueId ?: return
-        // T12b: un 5xx también apaga la bandera: si la última lectura fue del servidor que contestó mal, no es «Sin conexión». Y un
-        // aviso que ya está (lo dejó la lectura) no se pisa, llegue esto antes o después de ella.
-        if (venueDeLaLista == actual && _orders.value.isNotEmpty() && _avisoDeLaLista.value == null) {
-            listaDeLas(listaVistaA, sinRed = falloDeLaUltimaLectura != FalloDeLectura.SERVIDOR)
+        if (venueDeLaLista == actual) {
+            if (!listaConBusqueda && copia != null) {
+                ensenarLaCopia(actual)
+            } else if (_orders.value.isNotEmpty() && _avisoDeLaLista.value == null) {
+                // T12b: un aviso que ya está (la búsqueda sin red) no se pisa, llegue esto antes o después de la lectura.
+                _hasMore.value = false
+                listaDeLas(listaVistaA, sinRed = true)
+            }
         }
         val visto = _selectedOrder.value ?: return
         if (copia == null || _detalleDeLaCopia.value != null) return
