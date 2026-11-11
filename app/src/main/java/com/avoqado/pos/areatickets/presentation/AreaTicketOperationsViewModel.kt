@@ -803,6 +803,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     mode = FulfillmentMode.fromServer(ticket.fulfillmentArea.fulfillmentMode),
                     moment = ComandaMoment.AREA_TICKET_ISSUED,
                     alCambiarEstado = { estado -> if (estado is EstadoDeComanda.NoSalio) avisar(estado.causa, estado.estaciones) },
+                    omitirSinComanda = true, // «No lleva comanda»: el vale es una venta del POS.
                 )
             } catch (e: CancellationException) {
                 throw e

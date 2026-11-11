@@ -91,6 +91,11 @@ class KdsReglasTest {
     fun `se eligen sólo estaciones activas, en su orden`() =
         assertEquals(listOf("st-cocina", "st-barra"), estacionesParaElegir(listOf(barra, vieja, cocina)).map { it.id })
 
+    /** «No lleva comanda»: nunca tiene pantalla, así que una tablet de cocina no la puede elegir. */
+    @Test
+    fun estacionesParaElegir_excluye() =
+        assertEquals(listOf("st-cocina", "st-barra"), estacionesParaElegir(listOf(barra, cocina, barra.copy(id = "st-tienda", name = "Tienda", sendsComanda = false))).map { it.id })
+
     @Test
     fun `P1 la estacion guardada que se borro o se desactivo ya no cuenta como elegida`() {
         assertEquals("st-barra", estacionElegida("st-barra", listOf(barra, cocina))?.id)

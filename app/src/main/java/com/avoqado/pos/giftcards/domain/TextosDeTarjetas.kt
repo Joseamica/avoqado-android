@@ -128,6 +128,8 @@ object TextosDeTarjetas {
     const val ENTENDIDO = "Entendido"
     const val VOLVER_A_CONSULTAR_TARJETAS = "Volver a consultar las tarjetas"
     const val VOLVER_A_CONSULTAR_CUENTA = "Volver a consultar la cuenta"
+    /** Tienda híbrida (A1): el resto de un folio no se cobra desde este aviso. iOS lo copia igual. */
+    const val FOLIO_FALTA_EN_POR_PAGAR = "Cobra lo que falta en «Pedidos en línea», en «Por pagar»."
     fun cobroRecuperado(montoCents: Int, ultimos4: String, folio: String) =
         "Se terminó un cobro con saldo que había quedado pendiente: se cobraron ${formatMoneyFromCents(montoCents)} con la tarjeta •••• $ultimos4 en la venta #$folio."
     fun cobrar(totalCents: Int) = "Cobrar ${formatMoneyFromCents(totalCents)}"

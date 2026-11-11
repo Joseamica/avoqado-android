@@ -75,6 +75,8 @@ class ReporteDeComandas @Inject constructor(
                 // ReintentoDeComanda sólo llama a reportar() AL TERMINAR (Salio/NoSalio) — nunca
                 // a media insistencia. Cubierto por exhaustividad del `when`, no por un caso real.
                 is EstadoDeComanda.Insistiendo -> return@runCatching
+                // «No lleva comanda»: no hubo papel que pedir, no hay nada que reportar a la libreta.
+                is EstadoDeComanda.SinComanda -> return@runCatching
             }
 
             val terminalId = syncOutbox.deviceId

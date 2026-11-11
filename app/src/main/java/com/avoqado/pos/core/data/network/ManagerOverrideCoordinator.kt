@@ -386,6 +386,12 @@ open class ManagerOverrideCoordinator @Inject constructor(
         return vivo.token
     }
 
+    /**
+     * hz:e0b12f00:D2: el token adelantado de [permission], para la llamada que lo pone ELLA en su header. La ruta del dinero es
+     * `FAIL_FAST`: ahí el interceptor no abre el teclado ni toma el token, así que la venta lo lleva a mano. Un solo uso.
+     */
+    open fun tomarPreautorizado(permission: String): String? = takePreauthorized(permission)
+
     @Synchronized
     open fun discardPreauthorized(permission: String) {
         if (preauthorized?.permission == permission) preauthorized = null

@@ -44,6 +44,9 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
+import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
+import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_PIDE_PIN
+import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_SIN_RED
 import com.avoqado.pos.payment.data.model.MENSAJE_CUPON_SIN_RED
 import com.avoqado.pos.payment.data.model.MENSAJE_PREMIO_SIN_RED
 import com.avoqado.pos.payment.data.model.avisoDeEfectivoCortoPorCupon
@@ -221,6 +224,11 @@ class PaymentFlowViewModel @Inject constructor(
     val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository? = null,
     /** D4 (5-nov): lo que depende de este cobro. Cada intento se anota ANTES de salir. Default por el mismo patrón que [refrescoDelCatalogo]. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /**
+     * hz:e0b12f00:D2: el PIN de gerente (el teclado de siempre) para un «Descuento de la cuenta» que deja los productos en $0, pedido
+     * ANTES de crear la venta. Default por el mismo patrón que [refrescoDelCatalogo]: Hilt y Guice inyectan siempre el singleton.
+     */
+    private val managerOverrideCoordinator: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator? = null,
 ) : ViewModel() {
     private val cuentaDeTarjetas = MutableStateFlow(false)
     val metodosHabilitados: StateFlow<Boolean> by lazy {
@@ -793,6 +801,89 @@ class PaymentFlowViewModel @Inject constructor(
         refrescoDelCatalogo?.refrescarAhora()
         isProcessingPayment = false
         _state.value = PaymentFlowState.SelectingPaymentMethod(nuevo)
+    }
+
+    /** hz:e0b12f00:D2: el token del PIN de gerente de ESTE intento (un uso; vale 60 s en el servidor). Nunca se guarda en disco. */
+    private var permisoDeCortesiaDeCuenta: String? = null
+    private var pidiendoPinDeCortesia = false
+
+    /** hz:e0b12f00:D2 (Codex r1 #1): el SERVIDOR dijo que el descuento de esta venta regala aunque la app no lo esperaba. */
+    private var pideCortesiaPorElServidor = false
+
+    /**
+     * hz:e0b12f00:D2 (igual que la TPV, D1): un «Descuento de la cuenta» que deja en $0 lo que queda de los productos, de alguien sin
+     * `orders:comp`, pide el PIN de un gerente ANTES de crear la venta y de apartar el efectivo. El cobro es `FAIL_FAST`: ahí el teclado
+     * no se abre solo con el 403. true = este toque se detiene aquí: se dijo por qué (PIN apagado, sin red), o espera el PIN y [seguir]
+     * reanuda el cobro con el token ya guardado. Cancelar el teclado no manda ni guarda nada.
+     */
+    private fun primeroElPinDeCortesia(seguir: () -> Unit): Boolean {
+        if (pidiendoPinDeCortesia) return true
+        if (permisoDeCortesiaDeCuenta != null) return false
+        val cart = cartState ?: return false
+        // Con la orden ya creada (mesa, parte siguiente de una venta dividida) su descuento ya lo decidió el servidor al crearla.
+        if (!createdOrderId.isNullOrBlank()) return false
+        // Codex r2 #3: sólo si este cobro CREA la venta con su descuento. La venta rápida de puros importes libres (`/fast`) y los
+        // vales no lo mandan al servidor (fuera de la promesa, como en la TPV).
+        if (valesDelCobro() != null || !(hasProductItems(cart) || esVentaRapidaDividida(cart, _splitType.value))) return false
+        if (!cart.descuentoDeCuentaRegala && !pideCortesiaPorElServidor) return false
+        // Sin quien sepa los permisos (pruebas viejas) decide el servidor, como hoy.
+        val roles = rolesDeSaldo ?: return false
+        // Codex r2 #2: si el SERVIDOR ya dijo que no (permisos guardados viejos), manda él, no la lista del aparato.
+        if (roles.canCompOrders && !pideCortesiaPorElServidor) return false
+        val sinRed = connectivityMonitor?.let { !(it.isConnected.value && it.isServerReachable.value) } == true
+        val coordinador = managerOverrideCoordinator
+        val motivo = when {
+            !tpvSettingsRepository.managerPinOverrideEnabled.value || coordinador == null -> CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
+            sinRed -> CORTESIA_DE_CUENTA_SIN_RED
+            else -> null
+        }
+        if (motivo != null || coordinador == null) {
+            _state.value = PaymentFlowState.Error(
+                motivo ?: CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE,
+                if (sinRed) PaymentErrorSource.NETWORK else PaymentErrorSource.SERVER,
+            )
+            return true
+        }
+        pidiendoPinDeCortesia = true
+        val venta = ventaEnCurso
+        viewModelScope.launch {
+            val token = try {
+                if (coordinador.preauthorize(PERMISO_DE_CORTESIA)) coordinador.tomarPreautorizado(PERMISO_DE_CORTESIA) else null
+            } finally {
+                pidiendoPinDeCortesia = false
+            }
+            // Canceló, venció o ya es otra venta: no sale nada.
+            if (token == null || otraVenta(venta)) return@launch
+            permisoDeCortesiaDeCuenta = token
+            seguir()
+        }
+        return true
+    }
+
+    /** El token de este intento: lo toma la venta que sale ahora y nadie más. */
+    private fun tomarPermisoDeCortesia(): String? = permisoDeCortesiaDeCuenta.also { permisoDeCortesiaDeCuenta = null }
+
+    /** hz:e0b12f00:D2: el 403 de `orders:comp` al crear la venta (la app no esperaba que regalara, o su PIN no alcanzó). */
+    private fun esCortesiaQuePideGerente(error: Throwable): Boolean =
+        error is OrderRepository.ServerException && error.code == 403 && error.requerido == PERMISO_DE_CORTESIA
+
+    /**
+     * hz:e0b12f00:D2 (Codex r1 #1): el rechazo es definitivo y la venta NO se creó. Sus apartados de efectivo se borran ANTES de
+     * enseñar el error (como el folio cancelado, A3): si no, salir sin «Cancelar» los daría por cobrados y la cola los subiría sin PIN.
+     * El siguiente toque pide el PIN. Si el disco falla, siguen del flujo como hoy («Cancelar» los borra).
+     *
+     * Codex r3/r4: la reserva de «Ya pagó de otra forma» NO se borra (A5: puede ser dinero que entró por otro lado y lo decide una
+     * persona; el disco tampoco la deja borrar). Por eso la LLAVE NO se estrena tras este 403: el reintento con el PIN reusa esa misma
+     * reserva y esa misma orden, y un «Sí, se cobró» posterior no puede subir una segunda venta (el servidor deduplica por la llave).
+     */
+    private suspend fun alPedirCortesiaElServidor() {
+        pideCortesiaPorElServidor = true
+        val llaves = apartadosDeEstaVenta.toList()
+        if (llaves.isNotEmpty() && descartar(llaves)) {
+            apartadosDeEstaVenta.removeAll(llaves.toSet())
+            if (apartadoDelIntento in llaves) apartadoDelIntento = null
+        }
+        _state.value = PaymentFlowState.Error(CORTESIA_DE_CUENTA_PIDE_PIN, PaymentErrorSource.SERVER)
     }
 
     /**
@@ -1888,15 +1979,21 @@ class PaymentFlowViewModel @Inject constructor(
         val venue = secureStorage.venueId
         val pendiente = if (venue != null && id != null) try { cobrosLocalesDeSaldo?.hayPendiente(venue,id) ?: true }
             catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true } else false
-        return estadoDeLaVenta(ajustesParaSaldo(),
+        // A1: un pedido de la bandeja ofrece saldo sólo si es folio; abierto sin el saldo del servidor, en gris (`conOrigen`).
+        return conOrigen(estadoDeLaVenta(ajustesParaSaldo(),
             connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value,
             rolesDeSaldo?.canRedeemGiftCards == true,cuentaDeTarjetas.value,
             cart.items.any { it.areaTicketId != null },cart.items.any { it.type is CartItemType.CreditPack },
             id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.isProvisional == true,
             cart.creacionIncierta != null,cart.vinoDeCarritoGuardado,cobroConSaldo?.cuentaTrabada(id) == true,
             mesaDelCobro != null,desdeCuentasDeSaldo,id != null,pendiente,
-            rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true)
+            rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true),
+            origenDelCobro, cobroDeLaBandeja?.esFolio == true)
     }
+
+    /** A1: el folio venció o lo canceló otra caja con la hoja abierta (400 de cuenta cancelada): el texto del folio, como el efectivo. */
+    private fun conTextoDelFolio(r: DesenlaceDeCobro): DesenlaceDeCobro =
+        if (r is DesenlaceDeCobro.Rechazado && r.codigo == CODIGO_CUENTA_CANCELADA) siLaCuentaSeCancelo?.invoke()?.let { r.copy(texto = it) } ?: r else r
     suspend fun abrirSaldoDesdeConsultar(tarjeta: TarjetaIdentificada, onAbrir: (TarjetaIdentificada) -> Unit): Boolean {
         val fila = conductaDeSaldo()
         filaDeSaldo.value = fila
@@ -1931,7 +2028,7 @@ class PaymentFlowViewModel @Inject constructor(
                 return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO).also {resultadoDeSaldo.value=it}
             val coordinator = cobroConSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
             val anteriores = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).map {it.llave}.toSet()
-            val resultado = if (fila.fila == FilaDeLaCaja.T1) {
+            val resultado = conTextoDelFolio(if (fila.fila == FilaDeLaCaja.T1) {
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val payload = Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(buildOrderRequest(snapshot),selectedStaffId(),attachedCustomerId,
@@ -1944,9 +2041,13 @@ class PaymentFlowViewModel @Inject constructor(
                 }
             } else {
                 val id = createdOrderId ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.CUENTA_NO_ENCONTRADA)
+                // A1: un folio también es T2 (su cuenta ya existe), pero no es venta de mostrador: no vacía nada ni deja «venta por
+                // terminar» (lo que falte sale en «Por pagar»), y al confirmarse deja la marca de la bandeja.
+                val deMostrador = fila.fila == FilaDeLaCaja.T2 && !origenDelCobro.esPedidoEnLinea
                 coordinator.cobrar(venue,id,identificada.prueba,montoCents,monto.propinaCents,
-                    vaciarCarrito=if(fila.fila==FilaDeLaCaja.T2) vaciarDeSaldo else null,deMostrador=fila.fila==FilaDeLaCaja.T2)
-            }
+                    vaciarCarrito=if(deMostrador) vaciarDeSaldo else null,deMostrador=deMostrador,
+                    deFolio=origenDelCobro.esPedidoEnLinea && cobroDeLaBandeja?.esFolio == true)
+            })
             if (venue == secureStorage.venueId && epoch == paymentGeneration) {
                 llaveDelSaldo = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).firstOrNull {
                     it.venueId==venue && it.tipo=="GIFT_CARD_REDEEM" && it.llave !in anteriores && it.mandado && !it.porRecuperar && !it.porTerminar
@@ -1982,10 +2083,10 @@ class PaymentFlowViewModel @Inject constructor(
         cobrandoSaldo=true;saldoEnVuelo.value=true
         try {
             var identidadEntregada: String? = null
-            val result=cobroConSaldo?.resolver(llave,
+            val result=conTextoDelFolio(cobroConSaldo?.resolver(llave,
                 destinoVigente = { viewModelScope.isActive && identidadEntregada != null && ventaVivaDeSaldo?.invoke()?.identidadDeVenta == identidadEntregada }) { photo ->
                 restaurarEnEsteCobro(photo, venue, epoch)?.also { identidadEntregada = it.identidadDeVenta } != null
-            } ?: DesenlaceDeCobro.Incierto
+            } ?: DesenlaceDeCobro.Incierto)
             if(venue==secureStorage.venueId && epoch==paymentGeneration) {
                 resultadoDeSaldo.value=result
                 if (result is DesenlaceDeCobro.Cobrado) mostrarCobroConSaldo(result.cobro)
@@ -2082,6 +2183,9 @@ class PaymentFlowViewModel @Inject constructor(
         this.cuentaDeTarjetas.value = cuentaDeTarjetas
         origenDelCobro = origen
         siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
+        // hz:e0b12f00:D2: el PIN y la marca del servidor son de UNA venta.
+        permisoDeCortesiaDeCuenta = null
+        pideCortesiaPorElServidor = false
         this.cobroDeLaBandeja = cobroDeLaBandeja
         textoDeFolioPorBorrar = null
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
@@ -2653,6 +2757,7 @@ class PaymentFlowViewModel @Inject constructor(
         if (descartandoApartados) return
         if (bloquearCuentaSinRed()) return
         if (primeroDescartarLosPendientes { confirmPayment() }) return
+        if (primeroElPinDeCortesia { confirmPayment() }) return
         // 🔴 Ronda 1 (I3): mandar ESTA venta a la tarjeta es volver a cobrarla por otro método. Antes de la terminal se borran, y se
         // espera, sus apartados de efectivo; si no se pudo, la tarjeta no sale («No se pudo cancelar el cobro…») y la venta sigue
         // con su propiedad. Sin esto, «Salir (queda pendiente)» soltaba el efectivo y se daba por cobrado: venta doble.
@@ -2670,6 +2775,7 @@ class PaymentFlowViewModel @Inject constructor(
         val cart = cartState ?: return
         if (detenerSiHayValesSinApartado(cart)) return
         isProcessingPayment = true
+        val permisoCapturado = tomarPermisoDeCortesia()
         // N2: un cobro nuevo deja atrás el «Cancelar» que falló; si no, «Reintentar» de SU error cancelaría la venta.
         cancelacionFallida = false
         apartadoDelIntento = null // este intento no aparta efectivo
@@ -2752,6 +2858,7 @@ class PaymentFlowViewModel @Inject constructor(
                             stampRewardId = cart.pendingStampRewardId?.takeIf { cart.premioAplica },
                             stampRewardExpectedDiscount = cart.stampRewardCents.takeIf { it > 0 },
                             capturedVenueId = venueCapturado,
+                            permisoDeGerente = permisoCapturado,
                         )
 
                         orderResult.fold(
@@ -2815,6 +2922,11 @@ class PaymentFlowViewModel @Inject constructor(
                                 val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
                                 if (cambios.isNotEmpty()) {
                                     if (!otra) volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
+                                    return@fold
+                                }
+                                // hz:e0b12f00:D2: nada se creó; la siguiente vez se pide el PIN, con la MISMA llave.
+                                if (!otra && esCortesiaQuePideGerente(error)) {
+                                    alPedirCortesiaElServidor()
                                     return@fold
                                 }
                                 // For CASH payments: queue offline if network/server error
@@ -3193,7 +3305,9 @@ class PaymentFlowViewModel @Inject constructor(
         if (bloquearCuentaSinRed()) return
         if (primeroDescartarLosPendientes { processCashPayment(cashReceivedCents) }) return
         if (detenerSiHayValesSinApartado(cartState)) return
+        if (primeroElPinDeCortesia { processCashPayment(cashReceivedCents) }) return
         isProcessingPayment = true
+        val permisoCapturado = tomarPermisoDeCortesia()
         // N2: un cobro nuevo deja atrás el «Cancelar» que falló; si no, tras dos fallos de disco «Reintentar» cancelaría la venta
         // y borraría el apartado nuevo.
         cancelacionFallida = false
@@ -3348,6 +3462,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 stampRewardId = cart.pendingStampRewardId?.takeIf { cart.premioAplica },
                                 stampRewardExpectedDiscount = cart.stampRewardCents.takeIf { it > 0 },
                                 capturedVenueId = venueCapturado,
+                                permisoDeGerente = permisoCapturado,
                             )
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
@@ -3517,6 +3632,11 @@ class PaymentFlowViewModel @Inject constructor(
                                     val cambios = (error as? OrderRepository.ServerException)?.cambiosDePrecio.orEmpty()
                                     if (cambios.isNotEmpty()) {
                                         volverAElegirTrasCambioDePrecio(error, cambios, totalAntes = total, tipCapturado = tipCapturado)
+                                        return@fold
+                                    }
+                                    // hz:e0b12f00:D2: nada se creó; su apartado se borra y la siguiente vez se pide el PIN, con la MISMA llave.
+                                    if (esCortesiaQuePideGerente(error)) {
+                                        alPedirCortesiaElServidor()
                                         return@fold
                                     }
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
@@ -5328,6 +5448,8 @@ class PaymentFlowViewModel @Inject constructor(
                 servidorLaTiene = servidorLaTiene,
                 origenDelFolio = origenDelFolio,
                 alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
+                // «No lleva comanda»: el cobro de mostrador es una venta del POS.
+                omitirSinComanda = true,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -5391,6 +5513,8 @@ class PaymentFlowViewModel @Inject constructor(
         /** La venta de la comanda (Codex r10 #3). null = no es de una venta en particular. */
         venta: Int? = null,
     ) {
+        // «No lleva comanda» (10-nov): no hacía falta papel. No pinta, no borra el aviso de otra venta, no guarda nada.
+        if (estado is EstadoDeComanda.SinComanda) return
         // D2 (founder, 28-oct): un negocio sin ninguna impresora de cocina (una tienda) no tiene comanda que avisar. Una
         // impresora de cocina que FALLA sí se sigue avisando (no trae la marca).
         if (estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina) return
@@ -5404,7 +5528,7 @@ class PaymentFlowViewModel @Inject constructor(
             // anterior no puede borrar el aviso —todavía sin resolver— de la venta de ahora.
             val avisoActual = comandaWarning.value
             val esDeEstaVenta = when (avisoActual) {
-                null, EstadoDeComanda.Salio -> true
+                null, EstadoDeComanda.Salio, EstadoDeComanda.SinComanda -> true
                 is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
                 is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
             }
@@ -6255,6 +6379,9 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     companion object {
+        /** hz:e0b12f00:D2: el permiso de cortesía, el mismo que pide el SERVIDOR (`orders:comp`). */
+        private const val PERMISO_DE_CORTESIA = "orders:comp"
+
         /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
         const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."
 

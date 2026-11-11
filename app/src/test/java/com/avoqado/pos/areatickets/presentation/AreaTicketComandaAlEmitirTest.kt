@@ -62,7 +62,7 @@ class AreaTicketComandaAlEmitirTest {
             mockk<SavedPrinter>(relaxed = true)
         coEvery { printerService.printAreaTicket(any(), any(), any()) } returns Unit
         coEvery {
-            comandaDispatcher.dispatchAreaComanda(any(), capture(lineas), any(), any(), any(), any(), any(), any())
+            comandaDispatcher.dispatchAreaComanda(any(), capture(lineas), any(), any(), any(), any(), any(), any(), any())
         } returns true
         return AreaTicketOperationsViewModel(
             repository = repository,
@@ -89,6 +89,8 @@ class AreaTicketComandaAlEmitirTest {
                 moment = ComandaMoment.AREA_TICKET_ISSUED,
                 serverName = any(),
                 alCambiarEstado = any(),
+                // «No lleva comanda»: el vale es una venta del POS.
+                omitirSinComanda = true,
             )
         }
         assertEquals(
@@ -114,6 +116,24 @@ class AreaTicketComandaAlEmitirTest {
         )
     }
 
+    /** «No lleva comanda» (10-nov): un vale de puros productos de tienda no avisa nada; el vale pide el filtro del POS. */
+    @Test
+    fun vale_solo_tienda_sin_aviso() = runTest {
+        val vm = viewModel()
+        val omitir = slot<Boolean>()
+        coEvery {
+            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), capture(omitir))
+        } answers {
+            arg<(EstadoDeComanda) -> Unit>(7)(EstadoDeComanda.SinComanda)
+            true
+        }
+
+        vm.issue(CartState(items = listOf(capuccino()))) {}
+
+        assertEquals(true, omitir.captured)
+        assertEquals(null, vm.state.value.error)
+    }
+
     @Test
     fun `D2 un area con la comanda apagada saca solo el vale, sin comanda ni aviso`() = runTest {
         val vm = viewModel()
@@ -122,7 +142,7 @@ class AreaTicketComandaAlEmitirTest {
         vm.issue(CartState(items = listOf(capuccino()))) {}
 
         coVerify(exactly = 1) { printerService.printAreaTicket(any(), any(), any()) }
-        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         assertEquals(null, vm.state.value.error)
     }
 
@@ -133,7 +153,7 @@ class AreaTicketComandaAlEmitirTest {
 
         vm.issue(CartState(items = listOf(capuccino()))) {}
 
-        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -141,7 +161,7 @@ class AreaTicketComandaAlEmitirTest {
         val vm = viewModel()
         val aviso = slot<(EstadoDeComanda) -> Unit>()
         coEvery {
-            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso))
+            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso), any())
         } answers {
             aviso.captured(EstadoDeComanda.NoSalio(listOf("SIN ESTACIÓN"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "9340048086"))
             true
@@ -161,7 +181,7 @@ class AreaTicketComandaAlEmitirTest {
 
         vm.issue(CartState(items = listOf(capuccino()))) {}
 
-        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -172,7 +192,7 @@ class AreaTicketComandaAlEmitirTest {
 
         vm.issue(CartState(items = listOf(capuccino()))) {}
 
-        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -187,7 +207,7 @@ class AreaTicketComandaAlEmitirTest {
 
         vm.reprintPending()
 
-        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -195,7 +215,7 @@ class AreaTicketComandaAlEmitirTest {
         val vm = viewModel()
         val aviso = slot<(EstadoDeComanda) -> Unit>()
         coEvery {
-            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso))
+            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso), any())
         } answers {
             aviso.captured(EstadoDeComanda.NoSalio(listOf("Cocina"), "No hay ninguna impresora de cocina configurada.", "9340048086"))
             true
@@ -214,7 +234,7 @@ class AreaTicketComandaAlEmitirTest {
         val vm = viewModel()
         val aviso = slot<(EstadoDeComanda) -> Unit>()
         coEvery {
-            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso))
+            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), capture(aviso), any())
         } answers {
             aviso.captured(EstadoDeComanda.NoSalio(listOf("Bebidas"), "La impresora no respondió.", "9340048086"))
             true
@@ -233,7 +253,7 @@ class AreaTicketComandaAlEmitirTest {
         val salida = kotlinx.coroutines.CompletableDeferred<Unit>()
         var termino = false
         coEvery {
-            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any())
+            comandaDispatcher.dispatchAreaComanda(any(), any(), any(), any(), any(), any(), any(), any(), any())
         } coAnswers {
             salida.await()
             termino = true

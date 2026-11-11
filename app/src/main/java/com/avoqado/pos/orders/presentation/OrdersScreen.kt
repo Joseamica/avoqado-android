@@ -888,12 +888,18 @@ private fun ReprintComandaSection(
         )
         // 🔴 El mensaje se DICE, nunca se calla — es lo que evita el bug de la T3 (cantar
         // éxito sin haber impreso nada). Verde sólo cuando el texto es EXACTAMENTE el de
-        // éxito; cualquier otra cosa (no salió, no se encontró el pedido…) sale en rojo.
+        // éxito; «no llevan comanda» en neutro; cualquier otra cosa (no salió, no se encontró el
+        // pedido…) sale en rojo.
         mensajeDeReimpresion?.let { mensaje ->
             Text(
                 text = mensaje,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (mensaje == MENSAJE_COMANDA_REIMPRESA) Success else Error,
+                color = when (mensaje) {
+                    MENSAJE_COMANDA_REIMPRESA -> Success
+                    // «No lleva comanda»: no es un error, va en neutro.
+                    com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE -> MaterialTheme.colorScheme.onSurfaceVariant
+                    else -> Error
+                },
             )
         }
     }
