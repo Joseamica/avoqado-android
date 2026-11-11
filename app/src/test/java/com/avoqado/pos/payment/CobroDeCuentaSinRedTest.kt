@@ -74,7 +74,7 @@ class CobroDeCuentaSinRedTest {
         }
     }
     private var reloj = 1_000_000_000L
-    private var copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+    private var copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined }
     private var venue: String? = "v1"
     private val storage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } answers { venue } }
 
@@ -135,7 +135,7 @@ class CobroDeCuentaSinRedTest {
     private suspend fun recorridoReal(pago: String, pagos: Int): Any? {
         respuestaDeLaLista = { http(it, pagina(filaA(pago, pagos))) }
         assertEquals(true, ordenes().loadOrders(1, null, null).isSuccess)
-        copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } } // el proceso se reinició: misma copia en disco
+        copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined } // el proceso se reinició: misma copia en disco
         respuestaDeLaLista = { throw UnknownHostException("sin red") }
         val r = ordenes()
         r.loadOrderDetail("A")

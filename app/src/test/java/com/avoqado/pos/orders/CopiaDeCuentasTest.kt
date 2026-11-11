@@ -40,7 +40,7 @@ class CopiaDeCuentasTest {
         }
     }
     private var reloj = 1_000_000_000L
-    private val copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+    private val copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined }
     private fun c(id: String, saldo: Int? = 6000, creada: String = "2026-11-10T18:00:00Z", status: String = "PENDING",
         pago: String = "PENDING", pagos: Int? = 0, origen: String = "AVOQADO_ANDROID", mesa: Boolean? = false, vales: Boolean? = false,
         tarjetas: Boolean = false, saldoDeRegalo: Int? = 0, reembolso: String = "NONE") = OrderSummary(id = id,
@@ -135,7 +135,7 @@ class CopiaDeCuentasTest {
 
         falloAlGuardar = false
         copia.alLeer("v1", listOf(c("N")), Lectura.SUELTA)
-        val trasReiniciar = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+        val trasReiniciar = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined }
         assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(trasReiniciar.cuenta("v1", "A")!!.cuenta))
         assertNull(trasReiniciar.cuenta("v1", "B"))
         assertNotNull(trasReiniciar.cuenta("v1", "N"))
@@ -166,6 +166,24 @@ class CopiaDeCuentasTest {
         assertEquals(antes, guardados)
         copia.alLeer("v1", listOf(c("Y")), Lectura.PRIMERA_PAGINA, vieja)
         assertNull("una lista más vieja no la mete", copia.cuenta("v1", "Y"))
+    }
+
+    /**
+     * Final fix ronda 2 (menor 3): lo que anota un cobro entra EN EL ACTO y en orden (cualquier lectura posterior ya lo aplica), y leer,
+     * decodificar y guardar la copia va por su despachador, nunca por el hilo de quien llama.
+     */
+    @Test fun `anotar en el acto deja la evidencia antes de cualquier lectura y el trabajo pesado va por su despachador`() = runTest {
+        copia.alLeer("v1", listOf(c("A"), c("B")), Lectura.SUELTA)
+        var usos = 0
+        copia.io = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun isDispatchNeeded(context: kotlin.coroutines.CoroutineContext) = true
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { usos++; block.run() }
+        }
+        copia.anotarYa("v1", "A", EvidenciaDelDetalle.NoExiste) // no suspende: entra ya
+        copia.anotarYa("v1", "B", EvidenciaDelDetalle.Abono(saldoCents = 2000, conSaldo = false))
+        assertNull(copia.cuenta("v1", "A"))
+        assertEquals(RazonSinRed.CON_ABONO, razonParaNoCobrar(copia.cuenta("v1", "B")!!.cuenta))
+        assertEquals("leer, decodificar y guardar no van por el hilo de quien llama", true, usos > 0)
     }
 
     @Test fun `los turnos de una sucursal no frenan a otra`() = runTest {

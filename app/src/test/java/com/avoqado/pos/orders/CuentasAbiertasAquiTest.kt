@@ -29,7 +29,7 @@ class CuentasAbiertasAquiTest {
         }
     }
     private var reloj = 1_000_000_000_000L
-    private val copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+    private val copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined }
     private val marcas = CuentasAbiertasAqui(cache, copia).also { it.ahora = { reloj } }
     private fun c(id: String) = OrderSummary(id = id, status = "PENDING", paymentStatus = "PENDING", createdAt = "2026-11-10T18:00:00Z")
     private fun dias(n: Int) = n * 24 * 60 * 60 * 1000L

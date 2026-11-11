@@ -54,7 +54,7 @@ class PedidoSinRedTest {
         }
     }
     private var reloj = 1_000_000_000L
-    private var copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
+    private var copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined }
     private var venue = "v1"
     private val storage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } answers { venue } }
 
@@ -182,7 +182,7 @@ class PedidoSinRedTest {
         )) }
         assertEquals(true, repoConRutas().loadOrders(1, null, null).isSuccess)
 
-        copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } } // el proceso se reinició: misma copia en disco
+        copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined } // el proceso se reinició: misma copia en disco
         lista = sinRed()
         val r = repoConRutas()
         r.loadOrders(1, null, null)

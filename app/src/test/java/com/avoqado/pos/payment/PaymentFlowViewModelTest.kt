@@ -154,7 +154,7 @@ class PaymentFlowViewModelTest {
         coEvery { saveDurable(any(), any(), any()) } answers {
             discoDeLaCopia["${firstArg<String>()}|${secondArg<String>()}"] = com.avoqado.pos.core.data.local.PayloadCache.Cached(thirdArg(), 0)
         }
-    })
+    }).also { it.io = kotlinx.coroutines.Dispatchers.Unconfined }
 
     /** La sesión de mesa REAL que ve el ViewModel (A5: una mesa en PAYING no puede capturar el cobro de un pedido web). */
     private val sesionDeMesa = com.avoqado.pos.tables.data.TableSession()

@@ -98,8 +98,14 @@ class CopiaDeCuentas @Inject constructor(
     /** Por sucursal, el turno de la última lista que retira ausentes (PRIMERA_PAGINA o LISTA_COMPLETA) ya aplicada. */
     private val ultimaLista = HashMap<String, Long>()
 
-    /** Lo que llegó y todavía no se aplica (el disco no se dejó leer), por sucursal y en orden de llegada. */
+    /**
+     * Lo que llegó y todavía no se aplica, por sucursal y en orden de llegada. Menor 3 (ronda 2): bajo su PROPIO candado de JVM, no el
+     * de la copia: anotar nunca suspende ni espera al disco, así que lo anotado entra antes que cualquier lectura posterior.
+     */
     private val pendientes = HashMap<String, MutableList<Anotada>>()
+
+    /** Las sucursales cuya cola pasó el tope con el disco ilegible: su copia vuelve a empezar vacía (bajo el candado de [pendientes]). */
+    private val empiezanVacias = HashSet<String>()
 
     /** La copia más nueva de una sucursal que no llegó al disco: manda sobre él hasta que se guarde. */
     private val sinGuardar = HashMap<String, List<CuentaGuardada>>()
@@ -166,6 +172,18 @@ class CopiaDeCuentas @Inject constructor(
             }
         }
 
+    /**
+     * Menor 3 (ronda 2): anota lo que este aparato acaba de saber de una cuenta SIN suspender (en el hilo de quien llama, en orden):
+     * cualquier lectura posterior ya lo aplica. Guardarlo en disco lo hace [aplicarAnotado], fuera del hilo principal.
+     */
+    fun anotarYa(venueId: String, orderId: String, evidencia: EvidenciaDelDetalle, turno: Long = abrirLectura()) =
+        anotarEnMemoria(venueId, deDetalle(orderId, evidencia, turno, ahora()))
+
+    /** Aplica y guarda lo anotado de [venueId] (lee, decodifica y escribe por [io]). Nunca lanza, salvo la cancelación. */
+    suspend fun aplicarAnotado(venueId: String) {
+        leer(venueId)
+    }
+
     /** Las vigentes de esa sucursal (más nueva primero, como el servidor). */
     suspend fun cuentas(venueId: String): List<CuentaGuardada> = leer(venueId)
 
@@ -183,19 +201,7 @@ class CopiaDeCuentas @Inject constructor(
 
     /** Anota lo que llegó (sin poder fallar ni cortarse) y trata de aplicarlo; si el disco no se deja leer, se aplica en la siguiente lectura. */
     private suspend fun anotar(venueId: String, a: Anotada) {
-        withContext(NonCancellable) {
-            mutex.withLock {
-                val cola = pendientes.getOrPut(venueId, ::mutableListOf)
-                // ponytail: tope de lo anotado con el disco ilegible. Al pasarlo la copia de la sucursal vuelve a empezar vacía (se
-                // ofrece de menos, nunca de más) en vez de crecer sin fin.
-                if (cola.size >= MAX_PENDIENTES) {
-                    Log.w(TAG, "⚠️ el disco lleva $MAX_PENDIENTES lecturas sin leerse: la copia de $venueId vuelve a empezar")
-                    cola.clear()
-                    sinGuardar[venueId] = emptyList()
-                }
-                cola += a
-            }
-        }
+        anotarEnMemoria(venueId, a)
         try {
             aplicar(venueId)
         } catch (e: CancellationException) {
@@ -205,17 +211,34 @@ class CopiaDeCuentas @Inject constructor(
         }
     }
 
+    private fun anotarEnMemoria(venueId: String, a: Anotada) = synchronized(pendientes) {
+        val cola = pendientes.getOrPut(venueId, ::mutableListOf)
+        // ponytail: tope de lo anotado con el disco ilegible. Al pasarlo la copia de la sucursal vuelve a empezar vacía (se ofrece de
+        // menos, nunca de más) en vez de crecer sin fin.
+        if (cola.size >= MAX_PENDIENTES) {
+            Log.w(TAG, "⚠️ el disco lleva $MAX_PENDIENTES lecturas sin leerse: la copia de $venueId vuelve a empezar")
+            cola.clear()
+            empiezanVacias += venueId
+        }
+        cola += a
+    }
+
     /**
      * Aplica lo anotado sobre la copia (la de memoria si no se pudo guardar, o la del disco) y regresa las vigentes. LANZA si el
      * disco no se deja leer (revisión T4 #2: «no se pudo leer» no es «no hay copia»): lo anotado se queda para la siguiente. Una
      * copia ilegible sí cuenta como vacía: no hay nada que conservar, y sin reemplazarla la copia de esa sucursal no volvería a servir.
      */
-    private suspend fun aplicar(venueId: String): List<CuentaGuardada> = mutex.withLock {
+    private suspend fun aplicar(venueId: String): List<CuentaGuardada> = mutex.withLock { withContext(io) { aplicarYa(venueId) } }
+
+    /** El cuerpo de [aplicar], ya con el candado y en [io] (menor 3: leer Room, decodificar y guardar no van en el hilo principal). */
+    private suspend fun aplicarYa(venueId: String): List<CuentaGuardada> {
+        if (synchronized(pendientes) { empiezanVacias.remove(venueId) }) sinGuardar[venueId] = emptyList()
         val base = sinGuardar[venueId] ?: leerDelDisco(venueId)
         // Final fix ronda 2 (R2-1): lo que ESTE aparato cobró sin efectivo (tarjeta, saldo de regalo) y la copia aún no sabe. Va después
         // de lo anotado y con turnos nuevos: es lo más nuevo que el aparato sabe de esas cuentas. Si no se puede leer, LANZA (falla cerrado).
         val marcas = cuentasCobradas?.marcasDe(venueId).orEmpty()
-        val cola = pendientes.remove(venueId).orEmpty() + marcas.map { deDetalle(it.orderId, it.comoEvidencia(), abrirLectura(), ahora()) }
+        val cola = synchronized(pendientes) { pendientes.remove(venueId).orEmpty() } +
+            marcas.map { deDetalle(it.orderId, it.comoEvidencia(), abrirLectura(), ahora()) }
         val filas = base.filter { it.vistaEn >= ahora() - VIGENCIA_MS }.associateByTo(LinkedHashMap()) { it.cuenta.id }
         val antes = HashMap(filas)
         val ganados = HashMap<String, Long>()
@@ -248,7 +271,7 @@ class CopiaDeCuentas @Inject constructor(
             // R2-1: las marcas se sueltan sólo cuando lo que dicen ya está en el disco de la copia (si no, se vuelven a aplicar).
             if (enDisco && marcas.isNotEmpty()) runCatching { cuentasCobradas?.olvidar(marcas) }
         }
-        orden
+        return orden
     }
 
     private suspend fun leerDelDisco(venueId: String): List<CuentaGuardada> {

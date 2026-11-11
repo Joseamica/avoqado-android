@@ -686,10 +686,12 @@ class PaymentFlowViewModel @Inject constructor(
         val evidencia = evidenciaDelCobro(c, encolado = st.isQueued) ?: return
         val orderId = c.orderId ?: return
         val venue = secureStorage.venueId ?: return
-        val turno = copia.abrirLectura() // el de AHORA: una lectura que salió antes del cobro ya no la regresa a cobrable
+        // El turno de AHORA: una lectura que salió antes del cobro ya no la regresa a cobrable. Menor 3 (ronda 2): se anota en el acto (no
+        // suspende) y en orden, y leer, decodificar y guardar la copia va fuera del hilo principal.
+        copia.anotarYa(venue, orderId, evidencia, copia.abrirLectura())
         viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
-            runCatching { copia.alLeerDetalle(venue, orderId, evidencia, turno) }
-                .onFailure { Log.w("💵", "No se pudo poner al día la copia de «Pedidos» con el cobro de $orderId: ${it.message}") }
+            runCatching { copia.aplicarAnotado(venue) }
+                .onFailure { Log.w("💵", "No se pudo guardar en la copia de «Pedidos» el cobro de $orderId: ${it.message}") }
         }
     }
 
