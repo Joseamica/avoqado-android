@@ -570,8 +570,9 @@ class TpvSettingsRepository internal constructor(
             // en disco. (`deviceTerminal` ausente CON data sí es legítimo: terminal desactivada.)
             if (!result.success || result.data == null) return
 
-            // La lista vigente de permisos (r3 #4): sin el campo (servidor viejo) no se toca nada.
-            result.data.permisosDeLaSesion?.let { secureStorage.guardarPermisosDeLaSesionSi(sello, venueId, it) }
+            // La lista vigente de permisos (r3 #4): sin el campo (servidor viejo) no se toca nada. Bajo el boleto (H4): una respuesta
+            // más vieja que la vigente no repone un permiso que la nueva ya quitó; el sello y la sucursal los mira SecureStorage.
+            result.data.permisosDeLaSesion?.let { lista -> whileCurrent { secureStorage.guardarPermisosDeLaSesionSi(sello, venueId, lista) } }
 
             val terminalNavigation = result.data.toTerminalNavigationSettings()
             if (!whileCurrent { _terminalNavigation.value = terminalNavigation; _generacionDelFiltro.update { it + 1 } }) return

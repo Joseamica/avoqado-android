@@ -61,6 +61,31 @@ class TpvSettingsRepositoryPermisosTest {
         assertFalse(otroVenue.vigente)
     }
 
+    /**
+     * H4: dos consultas de la misma sesión y sucursal, contestadas fuera de orden. La más nueva quita el retiro; la vieja, que llega
+     * después, todavía lo traía. Gana la nueva: el boleto que descarta respuestas viejas se mira ANTES de escribir los permisos.
+     */
+    @Test fun `dos respuestas fuera de orden - gana la mas nueva`() = runTest {
+        val fixture = Fixture()
+        val repo = fixture.repository()
+        var llamadas = 0
+        fixture.beforeResponse = {
+            llamadas++
+            if (llamadas == 1) {
+                // Con la primera (la vieja) todavía en camino, sale y vuelve la segunda (la nueva).
+                fixture.body = """{"data":{"permisosDeLaSesion":["orders:read"]}}"""
+                kotlinx.coroutines.runBlocking { repo.refreshSettingsForVenue("venue-a") }
+                fixture.body = """{"data":{"permisosDeLaSesion":["cash-drawer:pay-out","orders:read"]}}"""
+            }
+        }
+
+        repo.refreshSettingsForVenue("venue-a")
+
+        assertEquals(2, llamadas)
+        assertEquals("la respuesta vieja repuso el permiso", listOf("orders:read"), fixture.permisos)
+        assertTrue(fixture.vigente)
+    }
+
     @Test fun `sin el campo, nada cambia`() = runTest {
         val fixture = Fixture()
         fixture.body = """{"data":{}}"""

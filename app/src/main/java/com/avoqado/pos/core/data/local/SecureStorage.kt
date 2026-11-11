@@ -36,10 +36,11 @@ class SecureStorage @Inject constructor(
 
     /**
      * El sello de sesión (D4, 29-oct): sube cada vez que cambia quién está adentro, al instalar una sesión (contraseña,
-     * PIN, huella) y al cerrarla. No sube al renovar las llaves ni al cambiar de sucursal. Una petición, un aviso, un
-     * cierre o un intento de entrar que llegue con otra generación es de una sesión que ya no está: no renueva, no
-     * reenvía, no instala y no cierra. Se muta bajo el candado de esta clase; vive en memoria y empieza en 0 con el
-     * proceso.
+     * PIN, huella) y al cerrarla, y también al cambiar de sucursal (retiro con gerente, H5: una respuesta que salió en la
+     * sucursal A no instala sus permisos en B, ni en A después de A → B → A). No sube al renovar las llaves. Una petición,
+     * un aviso, un cierre o un intento de entrar que llegue con otra generación es de una sesión que ya no está: no
+     * renueva, no reenvía, no instala y no cierra. Se muta bajo el candado de esta clase; vive en memoria y empieza en 0
+     * con el proceso.
      */
     @Volatile
     var generacion: Long = 0L
@@ -383,9 +384,10 @@ class SecureStorage @Inject constructor(
         }
 
     /**
-     * `true` sólo cuando [venuePermissions] vino de `permisosDeLaSesion` (la lista vigente que calcula el SERVIDOR). Un login,
-     * un cambio de usuario o de sucursal y cerrar sesión la apagan: esas listas pueden ser de antes de que existiera un permiso
-     * (retiro con gerente, r3 #4). Ver `puedeRetirar`.
+     * `true` sólo cuando [venuePermissions] es la lista vigente que calcula el SERVIDOR: la de `permisosDeLaSesion`, o la del
+     * login / cambio de usuario / cambio de sucursal cuando su venue trae `permisosVigentes` (H3). Sin esa marca (servidor
+     * viejo) esas listas pueden ser de antes de que existiera un permiso (retiro con gerente, r3 #4), y cerrar sesión la
+     * apaga. Ver `puedeRetirar`.
      */
     var listaDePermisosVigente: Boolean
         get() = prefs.getBoolean(KEY_LISTA_DE_PERMISOS_VIGENTE, false)
@@ -702,6 +704,7 @@ class SecureStorage @Inject constructor(
         refreshToken: String,
         venueTimezone: String? = null,
         venuePermissions: List<String> = emptyList(),
+        permisosVigentes: Boolean = false,
     ) {
         this.userId = userId
         this.userEmail = email
@@ -714,8 +717,11 @@ class SecureStorage @Inject constructor(
         this.userRole = role
         this.accessToken = accessToken
         this.refreshToken = refreshToken
+        // La marca se apaga ANTES de escribir la lista nueva y se prende después (si el servidor la dio por vigente, H3):
+        // nunca conviven una lista nueva y un `true` viejo.
         this.listaDePermisosVigente = false
         this.venuePermissions = venuePermissions
+        this.listaDePermisosVigente = permisosVigentes
         generacion++
     }
 
@@ -797,6 +803,11 @@ class SecureStorage @Inject constructor(
         return true
     }
 
+    /**
+     * Bajo el mismo candado que [guardarPermisosDeLaSesionSi] y subiendo la [generacion] (H5): un refresco de permisos de la
+     * sucursal anterior no se cuela entre su comprobación y su escritura, ni instala su lista en la sucursal nueva.
+     */
+    @Synchronized
     fun switchVenue(venue: StoredVenue) {
         this.venueId = venue.id
         this.venueName = venue.name
@@ -806,6 +817,8 @@ class SecureStorage @Inject constructor(
         // La marca se apaga ANTES de escribir la lista nueva: nunca conviven una lista nueva y un `true` viejo.
         this.listaDePermisosVigente = false
         this.venuePermissions = venue.permissions
+        this.listaDePermisosVigente = venue.permisosVigentes
+        generacion++
         // Plan is per-venue: clear stale plan from the previous venue so we
         // fail OPEN until the new venue's settings (with plan) are fetched.
         this.planTier = null
@@ -1024,6 +1037,9 @@ data class StoredVenue(
     // Giro del negocio. Espejo EXACTO del campo `venueType` de iOS.
     // Default null: el JSON ya persistido de sesiones viejas decodifica sin él.
     val venueType: String? = null,
+    // La lista de [permissions] es la vigente del SERVIDOR (`VenueData.permisosVigentes`, H3). Default false: el JSON ya
+    // persistido de sesiones viejas decodifica sin él y su lista sigue siendo de origen desconocido.
+    val permisosVigentes: Boolean = false,
 ) {
     val displayRole: String
         get() = roleDisplayName(role) ?: "Staff"
