@@ -6,9 +6,11 @@ import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.domain.Inbox
+import com.avoqado.pos.onlineorders.domain.ListaPorCobrar
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
@@ -70,12 +72,15 @@ class EfectivoTrasTarjetaTest {
     private var respuesta: Result<ListaPorPagar> = Result.failure(IOException("sin red"))
     private var efectivo: suspend (String) -> EfectivoDelPedido = { EfectivoDelPedido.NINGUNO }
 
-    private fun armar() = OnlineOrdersViewModel(
+    private var reparto: Result<ListaPorCobrar> = Result.failure(IOException("sin red"))
+
+    private fun armar(conReparto: Boolean = false) = OnlineOrdersViewModel(
         repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true },
         hayPedidosAbiertos = { true }, ventanaALaVista = MutableStateFlow(true), efectivoDelPedido = { efectivo(it) },
         leerPorPagar = { _, _, _ -> respuesta }, foliosGuardados = { guardada },
         ahoraMs = { Instant.parse("2026-11-06T18:10:00Z").toEpochMilli() },
         foliosConTarjeta = marcas, cobrosConTarjeta = { cobros }, venueActual = { "v1" },
+        leerPorCobrar = { reparto }, tieneCanalDeReparto = { conReparto },
     )
 
     @Test
@@ -180,6 +185,45 @@ class EfectivoTrasTarjetaTest {
         advanceUntilIdle()
 
         assertEquals(13400, vm.cobroAbierto.value?.saldoCents)
+    }
+
+    @Test
+    fun `r4 Mi equipo - si la bandeja ya dice otro saldo cuando falla la consulta, cobra el de la bandeja`() = runTest(dispatcher) {
+        // Codex r4 #1: se toca «Cobrar» con $134; mientras se consulta el saldo, una lectura trae $54 (abono de otro aparato) y la consulta
+        // falla por red. Nunca los $134 del toque.
+        val pedido = folio().copy(orderId = "p1", onlineOrderId = "oo-p1", status = OnlineOrderStatus.ACCEPTED, requiresAcceptance = true)
+        lateinit var vm: OnlineOrdersViewModel
+        coEvery { repo.saldoDelPedido("p1") } coAnswers {
+            coEvery { repo.inbox(any(), any(), any()) } returns Result.success(Inbox(Instant.parse("2026-11-06T18:10:00Z"), 0, 1, 0,
+                listOf(pedido.copy(remainingCents = 5400)), storeOff = false, truncated = false, nextCursor = null))
+            vm.refrescar(imprimirPendientes = false)
+            Result.failure(IOException("sin red"))
+        }
+        vm = armar()
+
+        vm.cobrar(pedido)
+        advanceUntilIdle()
+
+        assertEquals(5400, vm.cobroAbierto.value?.saldoCents)
+    }
+
+    @Test
+    fun `r4 reparto - igual con la lista de por cobrar`() = runTest(dispatcher) {
+        val rappi = PedidoPorCobrar(orderId = "r1", orderNumber = "881655210", provider = "RAPPI", customerName = "Ana",
+            createdAt = Instant.parse("2026-11-06T18:00:00Z"), remainingBalanceCents = 13400, saleCents = 13400, tipCents = 0,
+            thirdPartyCents = 0, thirdPartyLabel = "Rappi")
+        lateinit var vm: OnlineOrdersViewModel
+        coEvery { repo.saldoDelPedido("r1") } coAnswers {
+            reparto = Result.success(ListaPorCobrar(listOf(rappi.copy(remainingBalanceCents = 5400)), 1, truncated = false, nextCursor = null))
+            vm.refrescar(imprimirPendientes = false)
+            Result.failure(IOException("sin red"))
+        }
+        vm = armar(conReparto = true)
+
+        vm.cobrarDeReparto(rappi)
+        advanceUntilIdle()
+
+        assertEquals(5400, vm.cobroAbierto.value?.saldoCents)
     }
 
     @Test

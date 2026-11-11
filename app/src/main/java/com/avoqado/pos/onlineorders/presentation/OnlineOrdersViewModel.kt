@@ -937,7 +937,10 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrar(pedido: OnlineOrder) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = pedido.remainingCents,
+        saldoGuardado = {
+            _secciones.value.let { it.porAceptar + it.enPreparacion + it.listos + it.hoy }
+                .firstOrNull { it.orderId == pedido.orderId }?.remainingCents ?: pedido.remainingCents
+        },
         plataforma = null,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
@@ -955,7 +958,7 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrarFolio(pedido: OnlineOrder) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = pedido.remainingCents,
+        saldoGuardado = { pedido.remainingCents }, // no se usa: sin red, el folio cobra lo que dice la copia guardada (R104)
         plataforma = null,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA_SIN_SALDO_ACTUALIZADO,
@@ -972,7 +975,7 @@ class OnlineOrdersViewModel internal constructor(
     fun cobrarDeReparto(pedido: PedidoPorCobrar) = abrirCobro(
         orderId = pedido.orderId,
         orderNumber = pedido.orderNumber,
-        saldoGuardado = pedido.remainingBalanceCents,
+        saldoGuardado = { _porCobrar.value?.pedidos?.firstOrNull { it.orderId == pedido.orderId }?.remainingBalanceCents ?: pedido.remainingBalanceCents },
         plataforma = pedido.thirdPartyLabel,
         origenConSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO,
         origenSinSaldo = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO,
@@ -982,7 +985,11 @@ class OnlineOrdersViewModel internal constructor(
     private fun abrirCobro(
         orderId: String,
         orderNumber: String,
-        saldoGuardado: Long,
+        /**
+         * Sin red, lo último que dijo la lista de este pedido. Se lee al usarse, no al tocar (Codex r4 #1): durante la consulta del saldo
+         * otra lectura pudo traer lo que falta tras un abono de otro aparato. Si ya no está en la lista, lo del toque (como antes).
+         */
+        saldoGuardado: () -> Long,
         plataforma: String?,
         origenConSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
         origenSinSaldo: com.avoqado.pos.payment.domain.OrigenDelCobro,
@@ -1032,7 +1039,7 @@ class OnlineOrdersViewModel internal constructor(
                             return@launch
                         }
                         if (folio == null) {
-                            saldoGuardado
+                            saldoGuardado()
                         } else {
                             // W-1: UNA foto de la copia decide la tarjeta, las marcas y el saldo que se cobra (`alinearConLaCopia`).
                             val copia = alinearConLaCopia()
