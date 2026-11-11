@@ -997,8 +997,10 @@ class OnlineOrdersViewModel internal constructor(
         _ocupados.value = _ocupados.value + orderId
         viewModelScope.launch {
             try {
-                // R100: UNA sola pregunta por todo el dinero de este aparato que el SERVIDOR todavía no confirma.
-                val dinero = dineroSinConfirmar(venueActual(), orderId, esFolio = folio != null)
+                // R100: UNA sola pregunta por todo el dinero de este aparato que el SERVIDOR todavía no confirma. El negocio se toma una vez:
+                // la revisión de antes de abrir pregunta por el mismo.
+                val venue = venueActual()
+                val dinero = dineroSinConfirmar(venue, orderId, esFolio = folio != null)
                 if (dinero.bloquea) {
                     _aviso.value = dinero.aviso
                     return@launch
@@ -1092,9 +1094,16 @@ class OnlineOrdersViewModel internal constructor(
                 // confirmar el cobro con tarjeta de esta orden; con la consulta fallando sin red (o con el servidor sin contarlo aún) se abría
                 // el efectivo de un folio ya pagado. Se vuelve a revisar el dinero de este aparato justo antes de abrir, sin otra espera de
                 // por medio: lo confirmado (tarjeta, su marca, efectivo, saldo en duda) frena con su texto.
-                val dineroAlAbrir = dineroSinConfirmar(venueActual(), orderId, esFolio = folio != null)
+                val dineroAlAbrir = dineroSinConfirmar(venue, orderId, esFolio = folio != null)
                 if (dineroAlAbrir.bloquea) {
                     _aviso.value = dineroAlAbrir.aviso
+                    return@launch
+                }
+                // Codex r2 #1: una tarjeta en duda que CAMBIÓ mientras se esperaba (confirmada, salió de la lista, dejó su marca y una
+                // lectura nueva la soltó; o declarada sin cobro) ya no deja rastro en esta revisión, y el saldo de arriba es de antes. Lo
+                // único que se fía es lo que no se movió: si las tarjetas en duda de esta orden no son las mismas que al empezar, no se abre.
+                if (dineroAlAbrir.tarjetasEnDuda != dinero.tarjetasEnDuda) {
+                    _aviso.value = TextosPedidosEnLinea.TARJETA_CAMBIO
                     return@launch
                 }
                 // Codex r1 #1: esa revisión espera (la cola en Room); si mientras tanto llegó a la pantalla una lista MÁS NUEVA que la foto con
@@ -1148,7 +1157,8 @@ class OnlineOrdersViewModel internal constructor(
             tarjetas.any { it.cobrado } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
             // Una marca de saldo (A1) NO frena aquí: con red manda el saldo del servidor; sin red la revisa `abrirCobro` (Codex r1 #4).
             foliosConTarjeta.marcasDe(venueId).any { it.orderId == orderId && !it.conSaldo } -> DineroSinConfirmar(bloquea = true, aviso = yaConTarjeta)
-            tarjetas.isNotEmpty() -> DineroSinConfirmar(bloquea = false, aviso = com.avoqado.pos.payment.domain.CardChargeDecision.UNDETERMINED_MESSAGE)
+            tarjetas.isNotEmpty() -> DineroSinConfirmar(bloquea = false, aviso = com.avoqado.pos.payment.domain.CardChargeDecision.UNDETERMINED_MESSAGE,
+                tarjetasEnDuda = tarjetas.map { it.requestId }.toSet())
             else -> DineroSinConfirmar.NADA
         }
     } catch (e: CancellationException) {
@@ -1266,8 +1276,11 @@ class OnlineOrdersViewModel internal constructor(
     }
 }
 
-/** R100: lo que contesta `dineroSinConfirmar`. [bloquea] = «Cobrar» no abre; si no, [aviso] (si hay) se dice y se cobra igual. */
-data class DineroSinConfirmar(val bloquea: Boolean, val aviso: String?) {
+/**
+ * R100: lo que contesta `dineroSinConfirmar`. [bloquea] = «Cobrar» no abre; si no, [aviso] (si hay) se dice y se cobra igual.
+ * [tarjetasEnDuda] = las solicitudes con tarjeta de la orden que siguen en duda (no frenan, founder «B»).
+ */
+data class DineroSinConfirmar(val bloquea: Boolean, val aviso: String?, val tarjetasEnDuda: Set<String> = emptySet()) {
     companion object {
         val NADA = DineroSinConfirmar(bloquea = false, aviso = null)
     }

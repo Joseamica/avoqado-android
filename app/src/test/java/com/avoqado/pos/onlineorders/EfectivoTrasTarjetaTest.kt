@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -135,7 +136,7 @@ class EfectivoTrasTarjetaTest {
         val vm = armar()
 
         vm.cobrarFolio(folio())
-        kotlinx.coroutines.test.runCurrent() // detenido en la segunda revisión, con el saldo de la copia ($134) ya elegido
+        runCurrent() // detenido en la segunda revisión, con el saldo de la copia ($134) ya elegido
         respuesta = Result.success(guardada.copy(porPagar = listOf(folio().copy(remainingCents = 5400)), numero = 2))
         vm.refrescar()
         compuerta.complete(Unit)
@@ -143,6 +144,39 @@ class EfectivoTrasTarjetaTest {
 
         assertNull("nunca $134 con la tarjeta en $54", vm.cobroAbierto.value)
         assertEquals(TextosPedidosEnLinea.SALDO_NO_LEIDO, vm.aviso.value)
+    }
+
+    @Test
+    fun `r2 con red - la tarjeta se confirma, sale de la lista y su marca se suelta durante la segunda revision - no abre`() = runTest(dispatcher) {
+        // Codex r2 #1: saldo del servidor viejo ($134); mientras la segunda revisión espera a la cola, la tarjeta se confirma, sale de la
+        // lista por su antigüedad, deja su marca y una lectura que ya cuenta el pago la suelta: no queda rastro, sólo que ya no está en duda.
+        cobros = listOf(enDuda)
+        var llamadas = 0
+        efectivo = { llamadas++; if (llamadas == 2) cobros = emptyList(); EfectivoDelPedido.NINGUNO }
+        coEvery { repo.saldoDelPedido("f1") } returns Result.success(SaldoDelPedido(13400L, estadoDeLaCuenta = "PENDING"))
+        val vm = armar()
+
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+
+        assertNull("nunca el efectivo con el saldo de antes de la tarjeta", vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.TARJETA_CAMBIO, vm.aviso.value)
+    }
+
+    @Test
+    fun `r2 igual si todo eso pasa mientras se consulta el saldo`() = runTest(dispatcher) {
+        cobros = listOf(enDuda)
+        coEvery { repo.saldoDelPedido("f1") } coAnswers {
+            cobros = emptyList() // confirmada, purgada y su marca ya soltada
+            Result.success(SaldoDelPedido(13400L, estadoDeLaCuenta = "PENDING"))
+        }
+        val vm = armar()
+
+        vm.cobrarFolio(folio())
+        advanceUntilIdle()
+
+        assertNull(vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.TARJETA_CAMBIO, vm.aviso.value)
     }
 
     @Test
