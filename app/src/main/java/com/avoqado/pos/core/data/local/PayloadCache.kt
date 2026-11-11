@@ -70,5 +70,8 @@ class PayloadCache @Inject constructor(
 
         /** Plano en el POS (spec 2026-10-09 §4.1). Mismo nombre que iOS `CachedPayloadStore.typeFloorPlan`. */
         const val TYPE_FLOOR_PLAN = "floor_plan"
+
+        /** D12: copia de las cuentas abiertas de «Pedidos», para cobrarlas en efectivo sin red (`orders.data.CopiaDeCuentas`). */
+        const val TYPE_COPIA_DE_PEDIDOS = "copia_de_pedidos"
     }
 }
