@@ -1832,10 +1832,15 @@ class TableOrderViewModel @Inject constructor(
                     notes = item.notes,
                 )
             }
-            // «No lleva comanda»: lo de estaciones sin comanda no se marcha (y no se avisa).
-            val plans = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true).plans
-            if (plans.isNotEmpty()) comandaPrinter.printComandas(
-                plans = plans,
+            // «No lleva comanda»: lo de estaciones sin comanda no se marcha. Si era TODO el tiempo, no salió nada: «¡Marchando!»
+            // mandaría al mesero a buscar un papel que no existe (Codex código r1 #3). Marchar sólo imprime; no toca el servidor.
+            val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
+            if (ruteo.plans.isEmpty() && ruteo.omitidasSinComanda > 0) {
+                showMessage(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE)
+                return@launch
+            }
+            if (ruteo.plans.isNotEmpty()) comandaPrinter.printComandas(
+                plans = ruteo.plans,
                 config = config,
                 orderNumber = session.orderNumber,
                 orderType = "Mesa ${session.tableNumber} · ¡MARCHAR ${course ?: "Inmediato"}!",

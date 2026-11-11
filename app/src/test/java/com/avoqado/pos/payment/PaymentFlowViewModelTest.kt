@@ -202,6 +202,8 @@ class PaymentFlowViewModelTest {
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
         coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
+        // D2 (Codex código r1 #2): el despachador lee las impresoras guardadas de la caja; un mock relajado no da una lista.
+        every { printerService.savedPrinters } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
         every { secureStorage.venueId } returns "venue-1"
@@ -1801,6 +1803,75 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
         assertNull("lo de una estación sin comanda no avisa", viewModel.comandaWarning.value)
+    }
+
+    /**
+     * Codex código r1 #2: una tienda sin cocina (D2) que crea su primera estación, «Sin comanda», y deja un producto sin
+     * asignar. Ya no entra al ticket legado (hay una estación activa): el producto cae en «SIN ESTACIÓN», no hay impresora
+     * de cocina que lo saque, y el cobro NO puede volver a avisar «No salió la comanda» como antes de D2.
+     */
+    @Test
+    fun tienda_sin_cocina_con_solo_sin_comanda_no_avisa() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-tienda")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-tienda", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns
+            PrintConfig(stations = listOf(StationInfo(id = "st_tienda", name = "Tienda", active = true, sendsComanda = false)))
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 0, printed = 0, skippedNoPrinter = 1, lastError = null, skippedStations = listOf("SIN ESTACIÓN"))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-jabon"), name = "Jabón", unitPrice = 4500, categoryId = "cat_sin_asignar"),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(4500)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        assertNull("una tienda sin cocina no debe ver aviso de comanda", viewModel.comandaWarning.value)
+    }
+
+    /**
+     * El reverso de la de arriba: un restaurante CON cocina configurada (estación con comanda) cuya comanda no sale se sigue
+     * avisando, aunque esta caja no tenga impresora de cocina y el negocio también tenga una estación «Sin comanda».
+     */
+    @Test
+    fun restaurante_con_cocina_sigue_avisando() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-resto")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-resto", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig(
+            stations = listOf(
+                StationInfo(id = "st_cocina", name = "Cocina", active = true),
+                StationInfo(id = "st_tienda", name = "Tienda", active = true, sendsComanda = false),
+            ),
+            defaultStationId = "st_cocina",
+        )
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 0, printed = 0, skippedNoPrinter = 1, lastError = null, skippedStations = listOf("Cocina"))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Taco", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        val aviso = viewModel.comandaWarning.value
+        assertTrue("la cocina que no recibió el pedido se avisa: $aviso", aviso is EstadoDeComanda.NoSalio && aviso.estaciones.contains("Cocina"))
     }
 
     /**

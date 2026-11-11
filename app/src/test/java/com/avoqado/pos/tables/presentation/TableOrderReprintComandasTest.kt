@@ -439,7 +439,7 @@ class TableOrderReprintComandasTest {
 
     /**
      * Reimprimir una mesa de puros productos de tienda (su categoría va a una estación creada sin comanda) no manda papel y
-     * lo dice en neutro: no es un error. Marchar ese tiempo tampoco imprime, y no avisa nada nuevo.
+     * lo dice en neutro: no es un error. Marchar ese tiempo tampoco imprime.
      */
     @Test
     fun reimprimir_solo_tienda_dice_no_llevan() = runTest {
@@ -463,6 +463,29 @@ class TableOrderReprintComandasTest {
         assertFalse("no es un error", vm.actionIsError.value)
 
         vm.marcharCourse(null)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * Codex código r1 #3: marchar un tiempo de puros productos «Sin comanda» no manda nada; el mesero no puede leer
+     * «¡Marchando!» (iría a la cocina a buscar un papel que no salió). Lee lo mismo que al reimprimir, en neutro.
+     */
+    @Test
+    fun marchar_solo_sin_comanda_dice_no_llevan() = runTest {
+        val config = PrintConfig(
+            stations = listOf(StationInfo(id = "st-tienda", name = "Tienda", active = true, sendsComanda = false)),
+            categoryRouting = listOf(CategoryRoute(categoryId = "cat-tienda", printStationId = "st-tienda")),
+        )
+        val vm = buildVm(
+            items = listOf(linea("i1", "Takis")),
+            config = config,
+            catalogo = listOf(Product(id = "prod-i1", name = "Takis", categoryId = "cat-tienda")),
+        )
+
+        vm.marcharCourse(null)
+
+        assertEquals(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE, vm.actionMessage.value)
+        assertFalse("no es un error", vm.actionIsError.value)
         coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
     }
 
