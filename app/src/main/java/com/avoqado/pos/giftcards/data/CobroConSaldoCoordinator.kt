@@ -28,6 +28,8 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
     private val store: SolicitudesDeTarjetaStore,
     private val secureStorage: SecureStorage,
     private val cobrosLocales: CobrosLocalesDeLaCuenta,
+    /** D12 (final fix ronda 2, R2-1): la marca «aquí ya se cobró» de la copia de «Pedidos». Hilt (y Guice) siempre la pasan. */
+    private val cuentasCobradas: com.avoqado.pos.orders.data.CuentasCobradasAqui? = null,
 ) {
     private val mutex = Mutex()
     private val entregasPendientes = kotlinx.coroutines.flow.MutableStateFlow<Map<String, String>>(emptyMap())
@@ -171,6 +173,13 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
     }
 
     private fun confirmar(s: SolicitudDeTarjeta, r: CobroConSaldo): DesenlaceDeCobro {
+        // D12 (final fix ronda 2, R2-1): TODO positivo de saldo pasa por aquí (cobro directo, consulta, reuso de la llave y el resolutor,
+        // que no pasa por la pantalla). La copia de «Pedidos» se entera ANTES de soltar la solicitud, que es lo que hasta ahora la deja gris.
+        if (cuentasCobradas?.anotar(com.avoqado.pos.orders.data.CuentaCobradaAqui(llave = "saldo:${s.llave}", venueId = s.venueId,
+                orderId = r.orderId, pagada = r.orderRemaining <= 0.0, saldoCents = (r.orderRemaining * 100).roundToInt().takeIf { it > 0 },
+                conSaldo = true)) == false) {
+            android.util.Log.e("🎁", "❌ No se pudo guardar en disco la marca de un cobro con saldo de regalo")
+        }
         if (s.deMostrador && r.orderRemaining > 0) {
             store.dejarPorTerminar(s.llave, r.orderId, r.orderNumber, (r.orderRemaining * 100).roundToInt())
         } else store.quitar(s.llave)

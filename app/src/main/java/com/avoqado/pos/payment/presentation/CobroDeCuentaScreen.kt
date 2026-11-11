@@ -64,6 +64,8 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val planManager: com.avoqado.pos.core.domain.PlanManager? = null,
     private val lanHub: com.avoqado.pos.core.data.lan.LanHubService? = null,
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
+    /** D12 (final fix ronda 2, R2-1): la lista durable de cobros con tarjeta de esta caja (una tarjeta en duda o cobrada da gris). */
+    private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
 ) : ViewModel() {
     private val foto = MutableStateFlow<OrderDetail?>(null)
     val detalle = foto.asStateFlow()
@@ -150,12 +152,17 @@ class CobroDeCuentaViewModel @Inject constructor(
         suspend fun leer(siFalla: Boolean, bloque: suspend () -> Boolean?): Boolean = try {
             bloque() ?: siFalla
         } catch (e: CancellationException) { throw e } catch (_: Exception) { siFalla }
+        // Final fix ronda 2 (R2-1): una tarjeta de ESTA caja en duda o ya cobrada para esta cuenta (su lista durable; un contexto sin
+        // negocio también cuenta). Se lee ANTES que la copia: un positivo que vence al leerla deja su marca y la copia la aplica.
+        val tarjetaDeEstaCaja = venue != null && leer(true) {
+            terminalPaymentService?.let { s -> s.cobrosConTarjetaDelNegocio(venue).any { it.orderId == orderId } } ?: false
+        }
         return DatosDelCobroSinRed(
             cuenta = venue?.let { copiaDeCuentas?.cuenta(it, orderId) },
             puedeCobrar = puedeCobrar,
             abiertaAqui = venue != null && leer(false) { cuentasAbiertasAqui?.laAbrioAqui(venue, orderId) },
-            // Un cobro local pendiente, O una cortesía sin confirmar de «Pagar después» (fila REVISAR) de esta cuenta.
-            cobroLocalPendiente = venue == null || leer(true) { cobrosLocales?.hayPendiente(venue, orderId) } || leer(true) {
+            // Un cobro local pendiente (también una tarjeta de esta caja), O una cortesía sin confirmar de «Pagar después» (fila REVISAR).
+            cobroLocalPendiente = venue == null || tarjetaDeEstaCaja || leer(true) { cobrosLocales?.hayPendiente(venue, orderId) } || leer(true) {
                 payLaterQueue?.filas?.value?.any { it.venueId == venue && it.orderId == orderId && it.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR }
             },
             huboEfectivoSubido = leer(true) { cashPaymentRepository?.huboEfectivoSubido(orderId) },

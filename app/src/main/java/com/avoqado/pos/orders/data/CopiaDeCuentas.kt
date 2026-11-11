@@ -79,8 +79,15 @@ sealed interface EvidenciaDelDetalle {
  * - Nunca lanza (salvo la cancelación de quien llama).
  */
 @Singleton
-class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
+class CopiaDeCuentas @Inject constructor(
+    private val cache: PayloadCache,
+    /** Final fix ronda 2 (R2-1): los cobros no efectivo de este aparato que aún no se aplican. Hilt (y Guice) siempre la pasan. */
+    private val cuentasCobradas: CuentasCobradasAqui? = null,
+) {
     internal var ahora: () -> Long = System::currentTimeMillis
+
+    /** Seam de pruebas: dónde se lee, decodifica y guarda la copia (nunca en el hilo principal). */
+    internal var io: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO
     private val json = Json { ignoreUnknownKeys = true }
     private val mutex = Mutex()
     private val ultimoTurno = AtomicLong()
@@ -134,9 +141,11 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
     }
 
     /** Un detalle bueno (o un cobro de este aparato) actualiza o retira la fila que ya está; nunca agrega una (la lista trae origen y fecha). */
-    suspend fun alLeerDetalle(venueId: String, orderId: String, evidencia: EvidenciaDelDetalle, turno: Long = abrirLectura()) {
-        val vista = ahora()
-        anotar(venueId, Anotada(turno, esLista = false) { filas, _, gana ->
+    suspend fun alLeerDetalle(venueId: String, orderId: String, evidencia: EvidenciaDelDetalle, turno: Long = abrirLectura()) =
+        anotar(venueId, deDetalle(orderId, evidencia, turno, ahora()))
+
+    private fun deDetalle(orderId: String, evidencia: EvidenciaDelDetalle, turno: Long, vista: Long) =
+        Anotada(turno, esLista = false) { filas, _, gana ->
             if (!gana(orderId)) return@Anotada
             val fila = filas[orderId]?.cuenta
             when {
@@ -155,8 +164,7 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
                     cobrosConSaldo = if (evidencia.conSaldo) (fila.cobrosConSaldo ?: 0) + 1 else fila.cobrosConSaldo,
                 ), vista)
             }
-        })
-    }
+        }
 
     /** Las vigentes de esa sucursal (más nueva primero, como el servidor). */
     suspend fun cuentas(venueId: String): List<CuentaGuardada> = leer(venueId)
@@ -204,7 +212,10 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
      */
     private suspend fun aplicar(venueId: String): List<CuentaGuardada> = mutex.withLock {
         val base = sinGuardar[venueId] ?: leerDelDisco(venueId)
-        val cola = pendientes.remove(venueId).orEmpty()
+        // Final fix ronda 2 (R2-1): lo que ESTE aparato cobró sin efectivo (tarjeta, saldo de regalo) y la copia aún no sabe. Va después
+        // de lo anotado y con turnos nuevos: es lo más nuevo que el aparato sabe de esas cuentas. Si no se puede leer, LANZA (falla cerrado).
+        val marcas = cuentasCobradas?.marcasDe(venueId).orEmpty()
+        val cola = pendientes.remove(venueId).orEmpty() + marcas.map { deDetalle(it.orderId, it.comoEvidencia(), abrirLectura(), ahora()) }
         val filas = base.filter { it.vistaEn >= ahora() - VIGENCIA_MS }.associateByTo(LinkedHashMap()) { it.cuenta.id }
         val antes = HashMap(filas)
         val ganados = HashMap<String, Long>()
@@ -221,15 +232,21 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
         withContext(NonCancellable) {
             turnos.putAll(ganados)
             if (lista != Long.MIN_VALUE) ultimaLista[venueId] = lista
-            if (filas != antes || venueId in sinGuardar) {
+            val enDisco = if (filas != antes || venueId in sinGuardar) {
                 try {
                     cache.saveDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId, json.encodeToString(orden))
                     sinGuardar.remove(venueId)
+                    true
                 } catch (e: Exception) {
                     Log.w(TAG, "⚠️ no se pudo guardar la copia de $venueId; manda la de memoria: ${e.message}")
                     sinGuardar[venueId] = orden
+                    false
                 }
+            } else {
+                true
             }
+            // R2-1: las marcas se sueltan sólo cuando lo que dicen ya está en el disco de la copia (si no, se vuelven a aplicar).
+            if (enDisco && marcas.isNotEmpty()) runCatching { cuentasCobradas?.olvidar(marcas) }
         }
         orden
     }
