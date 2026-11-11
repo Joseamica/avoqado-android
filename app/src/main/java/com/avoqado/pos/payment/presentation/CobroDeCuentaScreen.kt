@@ -23,7 +23,24 @@ import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.TableServiceRepository
+import com.avoqado.pos.tables.data.comoEvidencia
 import com.avoqado.pos.tables.data.restanteCents
+import com.avoqado.pos.core.data.lan.LeaseOutcome
+import com.avoqado.pos.orders.data.CuentaGuardada
+import com.avoqado.pos.payment.domain.DatosDelCobroSinRed
+import com.avoqado.pos.payment.domain.DecisionSinRed
+import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
+import com.avoqado.pos.payment.domain.decidirCobroSinRed
+import com.avoqado.pos.payment.domain.llaveDeCuenta
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +56,12 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val roles: RoleManager,
     private val store: SolicitudesDeTarjetaStore,
     private val cobrosLocales: com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta? = null,
+    private val copiaDeCuentas: com.avoqado.pos.orders.data.CopiaDeCuentas? = null,
+    private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
+    private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
+    private val planManager: com.avoqado.pos.core.domain.PlanManager? = null,
+    private val lanHub: com.avoqado.pos.core.data.lan.LanHubService? = null,
+    private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
 ) : ViewModel() {
     private val foto = MutableStateFlow<OrderDetail?>(null)
     val detalle = foto.asStateFlow()
@@ -70,9 +93,16 @@ class CobroDeCuentaViewModel @Inject constructor(
         val venue = storage.venueId
         venueDeLaCuenta = venue
         if (venue == null) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
+        val turnoCopia = copiaDeCuentas?.abrirLectura()
         val resultado = repo.getOrderDetail(venue, orderId)
         // Si salió otra consulta después, manda ella: una respuesta atrasada no pisa su saldo ni su aviso (Codex D14 r1 P1).
         if (turno != turnos.get() && resultado.exceptionOrNull() !is kotlinx.coroutines.CancellationException) return
+        // D12 (Codex r3 H1): lo que dice este detalle (o su 404) también pone al día la copia de «Pedidos».
+        val evidencia = resultado.fold(
+            onSuccess = { d -> d.takeIf { it.id == orderId }?.comoEvidencia() },
+            onFailure = { e -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.NoExiste.takeIf { e is retrofit2.HttpException && e.code() == 404 } },
+        )
+        if (evidencia != null && turnoCopia != null) copiaDeCuentas?.alLeerDetalle(venue, orderId, evidencia, turnoCopia)
         if (storage.venueId != venue) { aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA; return }
         resultado.fold(onSuccess = {
             if (it.id != orderId) aviso.value = TextosDeTarjetas.CUENTA_NO_ENCONTRADA
@@ -97,6 +127,131 @@ class CobroDeCuentaViewModel @Inject constructor(
         ofertaActual.value = resultado
         return resultado
     }
+    // MARK: - D12: cobrar sin red con la copia de «Pedidos»
+
+    private val decisionSinRed = MutableStateFlow<DecisionSinRed?>(null)
+    /** Lo que la cuenta ofrece sin red (null = aún no se decide). Lo publican las cuatro funciones de abajo. */
+    val sinRed: StateFlow<DecisionSinRed?> = decisionSinRed.asStateFlow()
+    /** La llave del candado que sostiene esta pantalla, y si salió de `acquireCoordinado` (caja ajena). */
+    private var llave: Pair<String, Boolean>? = null
+    /** P11: el toque en curso; un segundo toque espera ESTE resultado en vez de pedir otro candado. */
+    private var pedidoEnVuelo: Pair<String, Deferred<DecisionSinRed>>? = null
+    /** La revalidación previa al efectivo dijo que no: al volver, la cuenta se queda con ese gris (no se vuelve a ofrecer en el acto). */
+    private var rechazadoAntesDelEfectivo = false
+    // ponytail: un alcance suelto por pantalla, sólo para soltar el candado también en `onCleared` (cuando `viewModelScope` ya murió).
+    private val alcanceDeSoltar = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+    /** Lo que decide: la copia VIGENTE de la sucursal ACTUAL (vencida u otra sucursal = sin cuenta) y lo local; leer mal = gris. */
+    private suspend fun datosSinRed(orderId: String): DatosDelCobroSinRed {
+        val venue = storage.venueId
+        suspend fun leer(siFalla: Boolean, bloque: suspend () -> Boolean?): Boolean = try {
+            bloque() ?: siFalla
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { siFalla }
+        return DatosDelCobroSinRed(
+            cuenta = venue?.let { copiaDeCuentas?.cuenta(it, orderId) },
+            puedeCobrar = puedeCobrar,
+            abiertaAqui = venue != null && leer(false) { cuentasAbiertasAqui?.laAbrioAqui(venue, orderId) },
+            // Un cobro local pendiente, O una cortesía sin confirmar de «Pagar después» (fila REVISAR) de esta cuenta.
+            cobroLocalPendiente = venue == null || leer(true) { cobrosLocales?.hayPendiente(venue, orderId) } || leer(true) {
+                payLaterQueue?.filas?.value?.any { it.venueId == venue && it.orderId == orderId && it.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR }
+            },
+            huboEfectivoSubido = leer(true) { cashPaymentRepository?.huboEfectivoSubido(orderId) },
+            premiumAcreditado = leer(false) { planManager?.tieneAcreditada("OFFLINE_LAN_HUB") },
+            hayOtraCajaDelNegocio = leer(false) { lanHub?.hayOtraCajaDelNegocio() },
+            hubEncendido = lanHub?.enabled?.value == true,
+        )
+    }
+
+    /** Sin candado: lo que la cuenta ofrece antes del toque. */
+    suspend fun consultarSinRed(orderId: String) {
+        decisionSinRed.value = decidirCobroSinRed(datosSinRed(orderId), candado = null)
+    }
+
+    /** El toque en «Cobrar $X en efectivo»: pide el candado si toca (la caja que la abrió con `acquire`, otra con `acquireCoordinado`). */
+    suspend fun pedirCobroSinRed(orderId: String): DecisionSinRed {
+        pedidoEnVuelo?.let { (id, enCurso) -> if (id == orderId && enCurso.isActive) return enCurso.await() }
+        val propio = CompletableDeferred<DecisionSinRed>()
+        pedidoEnVuelo = orderId to propio
+        try {
+            return pedirUnaVez(orderId).also { propio.complete(it) }
+        } catch (e: Throwable) {
+            propio.completeExceptionally(e)
+            throw e
+        } finally {
+            if (pedidoEnVuelo?.second === propio) pedidoEnVuelo = null
+        }
+    }
+
+    private suspend fun pedirUnaVez(orderId: String): DecisionSinRed {
+        val datos = datosSinRed(orderId)
+        val antes = decidirCobroSinRed(datos, candado = null)
+        val hub = lanHub
+        // Sin hub no hay candado que pedir (y `datosSinRed` ya dio hub apagado y ninguna otra caja).
+        if (antes !is DecisionSinRed.Cobrar || !antes.pedirCandado || hub == null) return antes.also { decisionSinRed.value = it }
+        val k = llaveDeCuenta(orderId)
+        val staffId = storage.selectedStaffIdForCurrentVenue.orEmpty()
+        val staffName = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
+        // El candado concedido se guarda aunque cancelen el toque: si no, el hub lo renovaría para siempre a nombre de esta caja.
+        val candado = try {
+            withContext(NonCancellable) {
+                val r = try {
+                    if (datos.abiertaAqui) hub.acquire(k, staffId, staffName) else hub.acquireCoordinado(k, staffId, staffName)
+                } catch (_: Exception) { LeaseOutcome.NoHub }
+                if (r is LeaseOutcome.Granted) llave = k to !datos.abiertaAqui
+                r
+            }
+        } catch (e: CancellationException) {
+            soltarCobroSinRed()
+            throw e
+        }
+        return decidirCobroSinRed(datos, candado).also { decisionSinRed.value = it }
+    }
+
+    /** Suelta el candado que sostiene esta pantalla (si sostiene uno). */
+    fun soltarCobroSinRed() {
+        val (k, _) = llave ?: return
+        llave = null
+        val hub = lanHub ?: return
+        alcanceDeSoltar.launch { hub.release(k) }
+    }
+
+    /**
+     * Codex r3 H3: JUSTO antes de recibir el efectivo. null = sigue; un texto = no se cobra (y la cuenta lo enseña). La caja ajena
+     * necesita su candado de `acquireCoordinado` vigente en vivo; la que abrió la cuenta no pasa por el hub.
+     */
+    suspend fun revalidarCobroSinRed(orderId: String): String? {
+        val datos = datosSinRed(orderId)
+        val decision = decidirCobroSinRed(datos, candado = null)
+        val texto = when {
+            decision is DecisionSinRed.Gris -> decision.texto
+            datos.abiertaAqui -> null
+            else -> {
+                val k = llaveDeCuenta(orderId)
+                val vigente = llave == (k to true) && try { lanHub?.candadoVigente(k) == true }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { false }
+                if (vigente) null else TextosDeCuentaSinRed.CANDADO_PERDIDO.also { soltarCobroSinRed() }
+            }
+        } ?: return null
+        rechazadoAntesDelEfectivo = true
+        decisionSinRed.value = DecisionSinRed.Gris(texto)
+        return texto
+    }
+
+    /** Al volver del cobro con la copia. false = la revalidación dijo que no: su gris se queda y la cuenta no se refresca. */
+    suspend fun alVolverDelCobroSinRed(orderId: String): Boolean {
+        soltarCobroSinRed()
+        if (rechazadoAntesDelEfectivo) {
+            rechazadoAntesDelEfectivo = false
+            return false
+        }
+        consultarSinRed(orderId)
+        return true
+    }
+
+    override fun onCleared() {
+        soltarCobroSinRed()
+    }
+
     suspend fun cancelar(reason: String): Boolean {
         val cuenta = foto.value ?: return false
         val venue = venueDeLaCuenta
@@ -127,12 +282,22 @@ class CobroDeCuentaViewModel @Inject constructor(
 
 enum class CierreDeCuenta { ABIERTA, PAGADA, CANCELADA }
 
+/**
+ * D12 (Codex r2): cómo vuelve a la cuenta un cobro hecho con la copia. PAGADA sólo si el SERVIDOR confirmó que no falta nada; un
+ * cobro encolado sale ABIERTA aunque la resta local diga 0 (`buildCompletion` da 0 sin saldo del servidor).
+ */
+fun cierreDelCobroDesdeLaCopia(c: PaymentCompletion): CierreDeCuenta =
+    if (c.saldoDelServidor && c.remainingBalanceCents == 0) CierreDeCuenta.PAGADA else CierreDeCuenta.ABIERTA
+
 @Composable
 fun CobroDeCuentaScreen(
     orderId: String,
     onSalir: (CierreDeCuenta) -> Unit,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-$orderId"),
+    /** D12: sin red, el cobro en efectivo de la cuenta de la copia de «Pedidos» (no consulta la red). null = como siempre. */
+    copia: CuentaGuardada? = null,
 ) {
+    if (copia != null) { CobroDesdeLaCopia(orderId, copia, onSalir, viewModel); return }
     val conectado by viewModel.conectado.collectAsState()
     val servidor by viewModel.servidor.collectAsState()
     val enLinea = controlDeRedDeCuenta(conectado, servidor, true)
@@ -204,6 +369,73 @@ fun CobroDeCuentaScreen(
     }
 }
 
+/**
+ * D12: el cobro en efectivo de una cuenta con la copia de «Pedidos». Sólo efectivo, contra SU orden y sin dividir (el saldo esperado
+ * tras cobrar es 0); la revalidación corre justo antes de recibir el efectivo y, si dice que no, el flujo sale solo (`debeSalir` →
+ * `onCancel`) y la cuenta enseña su gris. Un cobro encolado vuelve ABIERTA, nunca «Pagada».
+ */
+@Composable
+private fun CobroDesdeLaCopia(orderId: String, copia: CuentaGuardada, onSalir: (CierreDeCuenta) -> Unit, viewModel: CobroDeCuentaViewModel) {
+    val cents = copia.cuenta.saldoPendienteCents ?: 0
+    var cierre by rememberSaveable(orderId) { mutableStateOf(CierreDeCuenta.ABIERTA) }
+    fun salir(c: CierreDeCuenta) {
+        viewModel.soltarCobroSinRed()
+        onSalir(c)
+    }
+    Dialog(onDismissRequest = { salir(CierreDeCuenta.ABIERTA) }, properties = DialogProperties(
+        usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false)) {
+        ImmersiveWindow()
+        DisposableEffect(Unit) {
+            com.avoqado.pos.payment.domain.PaymentOverlayState.setPaying(true)
+            onDispose { com.avoqado.pos.payment.domain.PaymentOverlayState.setPaying(false) }
+        }
+        val cart = remember(orderId, cents) { CartState(items = listOf(CartItem(
+            type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = cents))) }
+        PaymentFlowScreen(cartState = cart, resumeOrderId = orderId, desdeCuentasAbiertas = true,
+            origen = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA,
+            antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId) },
+            onPaymentCommitted = { cierre = cierreDelCobroDesdeLaCopia(it) },
+            onDone = { salir(cierre) },
+            onCancel = { salir(CierreDeCuenta.ABIERTA) },
+            // ponytail: sin red no hay cobro anterior que resolver con el servidor; si pasa, se vuelve a la cuenta sin su aviso.
+            onPreviousChargeResolved = { salir(CierreDeCuenta.ABIERTA) },
+        )
+    }
+}
+
+/** D12: el botón sin red de la cuenta de la copia: «Cobrar $X en efectivo», «Revisando…» mientras pide el candado, o el gris con su razón. */
+@Composable
+private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel: CobroDeCuentaViewModel, onCobrar: () -> Unit) {
+    val decision by viewModel.sinRed.collectAsState()
+    val scope = rememberCoroutineScope()
+    var revisando by remember(orderId) { mutableStateOf(false) }
+    var confirmar by remember(orderId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(copia) { viewModel.consultarSinRed(orderId) }
+    when (val d = decision) {
+        is DecisionSinRed.Cobrar -> PrimaryButton(
+            text = if (revisando) TextosDeCuentaSinRed.REVISANDO else TextosDeCuentaSinRed.cobrarEnEfectivo(d.saldoCents),
+            enabled = !revisando,
+            onClick = {
+                revisando = true
+                scope.launch {
+                    try {
+                        val r = viewModel.pedirCobroSinRed(orderId)
+                        if (r is DecisionSinRed.Cobrar) { if (r.confirmar != null) confirmar = r.confirmar else onCobrar() }
+                    } finally { revisando = false }
+                }
+            })
+        is DecisionSinRed.Gris -> Text(d.texto)
+        null -> PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
+    }
+    confirmar?.let { texto ->
+        val volver = { confirmar = null; viewModel.soltarCobroSinRed() }
+        AvoqadoDialog(title = texto, onDismiss = volver) {
+            PrimaryButton(text = TextosDeCuentaSinRed.COBRAR_AQUI, onClick = { confirmar = null; onCobrar() })
+            TextButton(onClick = volver) { Text(TextosDeCuentaSinRed.VOLVER) }
+        }
+    }
+}
+
 @Composable
 private fun CancelarCuenta(viewModel: CobroDeCuentaViewModel, onCancelada: () -> Unit) {
     val conectado by viewModel.conectado.collectAsState()
@@ -258,6 +490,8 @@ fun AccionesDeCuentaAbierta(
     onActualizar: () -> Unit,
     onCancelada: () -> Unit,
     onSalioSinCobrar: () -> Unit,
+    /** D12: la cuenta de la copia que respalda este detalle sin red (`OrdersRepository.detalleDeLaCopia`), o null. */
+    copia: CuentaGuardada? = null,
     viewModel: CobroDeCuentaViewModel = hiltViewModel(key = "cuenta-${order.id}"),
 ) {
     if (order.status in listOf("CANCELLED", "DELETED") || order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID ||
@@ -284,7 +518,14 @@ fun AccionesDeCuentaAbierta(
         if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id)
     }
     val cents = detalle?.let(::restanteCents)
-    if (elegible) {
+    // D12: sin red, la cuenta que respalda la copia se decide con la FILA de la copia, no con este detalle reconstruido (`payments`
+    // null abriría la compuerta de abonos por accidente). Con red, todo como siempre.
+    val conCopia = !enLinea && copia != null && copia.cuenta.id == order.id
+    // El cobro abierto con la copia sigue abierto aunque vuelva la red a medio cobro (no se desmonta con `conCopia`).
+    var cobroConCopia by remember(order.id) { mutableStateOf<CuentaGuardada?>(null) }
+    DisposableEffect(viewModel) { onDispose { viewModel.soltarCobroSinRed() } }
+    if (conCopia) CobrarCuentaSinRed(order.id, copia!!, viewModel) { cobroConCopia = copia }
+    else if (elegible) {
         if (detalle == null && cuentaEnConsulta(consultasEnCurso, enLinea, consultaPedida)) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
         else if (detalle == null) TextButton(enabled = enLinea, onClick = {
             scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
@@ -298,8 +539,8 @@ fun AccionesDeCuentaAbierta(
         order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID || order.status in listOf("CANCELLED", "DELETED"),
         onCancelada = { onCancelada(); onActualizar() })
     if (detalle?.esCuentaDeTarjetas == true) CancelarCuenta(viewModel) { onCancelada(); onActualizar() }
-    if (oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
-    (if (enLinea) mensaje ?: aviso else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
+    if (!conCopia && oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
+    if (!conCopia) (if (enLinea) mensaje ?: aviso else com.avoqado.pos.giftcards.domain.avisoDeCuentaSinRed(
         order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
         sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
     if (abierta) CobroDeCuentaScreen(order.id, onSalir = { cierre ->
@@ -309,6 +550,14 @@ fun AccionesDeCuentaAbierta(
             if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
         scope.launch { if (enLinea) viewModel.cargar(order.id) }
     }, viewModel = viewModel)
+    // Al volver, sin «La venta quedó en Cuentas abiertas» (un cobro guardado no es salir sin cobrar). Si la revalidación dijo que no,
+    // la cuenta se queda con ese gris; si no, se vuelve a decidir y se refresca (un cobro encolado se ve «sin sincronizar»).
+    cobroConCopia?.let { guardada ->
+        CobroDeCuentaScreen(order.id, onSalir = {
+            cobroConCopia = null
+            scope.launch { if (viewModel.alVolverDelCobroSinRed(order.id)) onActualizar() }
+        }, viewModel = viewModel, copia = guardada)
+    }
 }
 
 @Composable

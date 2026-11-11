@@ -41,6 +41,11 @@ object TextosDeCuentaSinRed {
     fun cobrarDeTodosModos(quien: String) = "$quien la está cobrando. ¿Cobrar aquí de todos modos?"
     fun cobrarEnEfectivo(cents: Int) = "Cobrar ${formatMoneyFromCents(cents)} en efectivo"
 
+    /** El botón mientras se pide el candado a las otras cajas (puede tardar unos segundos; nunca en rojo). */
+    const val REVISANDO = "Revisando…"
+    const val COBRAR_AQUI = "Cobrar aquí"
+    const val VOLVER = "Volver"
+
     /** Por qué el cobro de una cuenta hecho con la copia es sólo efectivo (`OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA`). */
     const val SOLO_EFECTIVO = "Sin conexión: esta cuenta se cobra sólo en efectivo."
 }
