@@ -25,13 +25,15 @@ corre DIRECTO en el árbol real, acotado:
 
 ```bash
 JAVA_HOME=$(/usr/libexec/java_home -v 17) nice -n 19 ./gradlew assembleRelease bundleRelease \
-  -Dkotlin.daemon.jvmargs=-Xmx4096m --max-workers=2
+  -Pkotlin.compiler.execution.strategy=in-process --max-workers=2
 ```
 
-Sin el `-Dkotlin.daemon.jvmargs` el daemon de Kotlin arranca con su default de **2 GB**
-(`gradle.properties` solo sube el heap del daemon de GRADLE, no el de Kotlin) y
-`compileReleaseKotlin` muere por memoria al final — costó un build de 32 minutos. Con el heap en
-4 GB y 2 workers: 4 minutos.
+`in-process` compila Kotlin dentro del daemon de GRADLE, que ya tiene 6 GB por `gradle.properties`:
+un solo proceso grande en vez de dos. Sin eso, el daemon de Kotlin arranca con su default de
+**2 GB** y `compileReleaseKotlin` muere por memoria al final («Not enough memory to run
+compilation», GC overhead). 🔴 El viejo `-Dkotlin.daemon.jvmargs=-Xmx4096m` ya NO lo sube (medido el
+11-nov-2026 con la 2.25.42: el daemon salió con `-Xmx2g` y el build murió a los 10 min). Con
+`in-process` y 2 workers: 14 min en la Mac cargada.
 
 This file provides guidance to Claude Code when working with this repository.
 
