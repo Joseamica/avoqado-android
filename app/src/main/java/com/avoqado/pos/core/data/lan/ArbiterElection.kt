@@ -38,6 +38,11 @@ data class LanPeer(
     val sirveLeases: Boolean = true,
     val preparationVersion: Int = 0,
     val urgencyVersion: Int = 0,
+    /**
+     * D12 (paso 2): el anuncio trae `venue` y es MI sucursal. Dato LOCAL (no viaja ni cambia el TXT). Un anuncio sin
+     * `venue` sigue entrando para Mesas y KDS, pero no cuenta como «otra caja del negocio» para cobrar una cuenta ajena.
+     */
+    val venueExplicito: Boolean = false,
 )
 
 object ArbiterElection {

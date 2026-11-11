@@ -5,6 +5,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,5 +59,12 @@ class LanHubServiceTest {
         every { secure.venueId } returns null
         hub.start()
         verify(exactly = 0) { transporte.conectarHub(any()) }
+    }
+
+    @Test
+    fun `D12 sin hub no hay otra caja ni candado`() = runTest {
+        assertFalse(hub.hayOtraCajaDelNegocio())
+        assertEquals(LeaseOutcome.NoHub, hub.acquireCoordinado("cuenta:o1", "s1", "Juan"))
+        assertFalse(hub.candadoVigente("cuenta:o1"))
     }
 }

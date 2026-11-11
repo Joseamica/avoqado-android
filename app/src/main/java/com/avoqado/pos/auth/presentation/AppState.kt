@@ -192,6 +192,9 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
+            // D12 (paso 2): el hub Premium vive con la sesión, no sólo con el plano de Mesas, para que otra caja de
+            // Mostrador pueda pedir el candado de una cuenta. Falla abierto como Mesas; idempotente por venue.
+            if (::lanHubService.isInitialized && planManager.hasFeature("OFFLINE_LAN_HUB")) lanHubService.start()
             if (::preparationDelivery.isInitialized) preparationDelivery.start(venueId)
             // Ronda 2 (N2): una pasada al abrir y otra cada minuto, como el reloj de la libreta. Idempotente: con otra
             // sucursal sólo cambia a cuál apunta. Su lazo atrapa todo menos la cancelación (N6: al cerrar sesión no hay

@@ -262,6 +262,41 @@ class AppStateVenueRecoveryTest {
         }
     }
 
+    /**
+     * D12 (paso 2): el hub Premium se enciende con la sesión, no sólo al abrir el plano de Mesas: otra caja de Mostrador
+     * tiene que poder pedir el candado de una cuenta sin pasar por Mesas. Falla abierto con `hasFeature`, como Mesas.
+     */
+    @Test
+    fun `D12 con OFFLINE_LAN_HUB el hub se enciende al arrancar la sesion`() = runTest {
+        val plan = mockk<PlanManager>(relaxed = true) { every { hasFeature("OFFLINE_LAN_HUB") } returns true }
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, planManager = plan)
+        val transporte = mockk<com.avoqado.pos.core.data.lan.TransporteLan>(relaxed = true)
+        val hub = mockk<com.avoqado.pos.core.data.lan.LanHubService>(relaxed = true)
+        appState.transporteLan = transporte
+        appState.lanHubService = hub
+
+        appState.onLoginSuccess()
+        io.mockk.verifyOrder {
+            hub.sincronizarVenue("venue-atole")
+            transporte.iniciar("venue-atole")
+            hub.start()
+        }
+    }
+
+    @Test
+    fun `D12 sin OFFLINE_LAN_HUB no se enciende`() = runTest {
+        val plan = mockk<PlanManager>(relaxed = true) { every { hasFeature("OFFLINE_LAN_HUB") } returns false }
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, planManager = plan)
+        val transporte = mockk<com.avoqado.pos.core.data.lan.TransporteLan>(relaxed = true)
+        val hub = mockk<com.avoqado.pos.core.data.lan.LanHubService>(relaxed = true)
+        appState.transporteLan = transporte
+        appState.lanHubService = hub
+
+        appState.onLoginSuccess()
+        verify { transporte.iniciar("venue-atole") }
+        verify(exactly = 0) { hub.start() }
+    }
+
     @Test
     fun `Q15 arranque y cambio PIN sincronizan contexto antes de iniciar observador`() {
         var contextReady = false

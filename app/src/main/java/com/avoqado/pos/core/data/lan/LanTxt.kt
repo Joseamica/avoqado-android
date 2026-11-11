@@ -56,6 +56,7 @@ object LanTxt {
             sirveLeases = txt[LeaseProtocol.TXT_HUB] != "0",
             preparationVersion = if (peerVenue == myVenueId && txt["prep"] == "1") 1 else 0,
             urgencyVersion = if (peerVenue == myVenueId && txt["prep"] == "1" && txt["urg"] == "1") 1 else 0,
+            venueExplicito = peerVenue == myVenueId && myVenueId.isNotBlank(),
         )
     }
 }
