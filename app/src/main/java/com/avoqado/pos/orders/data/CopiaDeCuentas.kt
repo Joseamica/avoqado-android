@@ -8,7 +8,10 @@ import com.avoqado.pos.orders.data.model.estaAbierta
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -64,8 +67,9 @@ sealed interface EvidenciaDelDetalle {
  * - Cada fila caduca a las 24 h de vista; las vencidas no se ofrecen y se BORRAN del disco en la siguiente escritura.
  * - Turnos (Codex r3 H1): por `venue|orderId` se recuerda en memoria el turno de la última evidencia aplicada (también de un
  *   retiro); una evidencia de turno menor o igual se descarta. Así una respuesta vieja que llega tarde no resucita ni pisa a
- *   una más nueva. Tras reiniciar el proceso no hay respuestas viejas en vuelo: lo de disco cede ante cualquier turno nuevo.
- * - Nunca lanza: si no puede escribir, deja la copia anterior.
+ *   una más nueva; y una lectura más vieja que la última lista de la sucursal no mete cuentas nuevas. Tras reiniciar el
+ *   proceso no hay respuestas viejas en vuelo: lo de disco cede ante cualquier turno nuevo.
+ * - Nunca lanza (salvo la cancelación de quien llama): si no puede leer o escribir el disco, deja la copia anterior.
  */
 @Singleton
 class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
@@ -77,13 +81,23 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
     // ponytail: un renglón por cuenta vista en la vida del proceso (KB por miles); podar si algún día pesa.
     private val turnos = HashMap<String, Long>()
 
+    /** Por sucursal, el turno de la última lista que retira ausentes (PRIMERA_PAGINA o LISTA_COMPLETA) que llegó al disco. */
+    private val ultimaLista = HashMap<String, Long>()
+
     /** Turno MONÓTONO del proceso: se toma cuando la petición SALE. */
     fun abrirLectura(): Long = ultimoTurno.incrementAndGet()
 
     suspend fun alLeer(venueId: String, cuentas: List<OrderSummary>, lectura: Lectura, turno: Long = abrirLectura()) =
-        editar(venueId, turno) { filas, gana ->
+        editar(venueId, turno, esLista = lectura != Lectura.SUELTA) { filas, gana ->
+            // Revisión T4 #1: una lista más nueva ya se aplicó y no trajo esta cuenta (quizá ya se cobró). Una respuesta más vieja
+            // no mete cuentas NUEVAS a la copia: lo peor es que falte hasta la siguiente lectura, nunca que se cobre de más.
+            // ponytail: también frena las que la lista nueva no podía ver (más viejas que su página); bastaría con su ventana.
+            val metenNuevas = turno > (ultimaLista[venueId] ?: Long.MIN_VALUE)
             for (c in cuentas) if (gana(c.id)) {
-                if (estaAbierta(c.status, c.paymentStatus, c.refundState)) filas[c.id] = CuentaGuardada(c, ahora()) else filas.remove(c.id)
+                when {
+                    !estaAbierta(c.status, c.paymentStatus, c.refundState) -> filas.remove(c.id)
+                    c.id in filas || metenNuevas -> filas[c.id] = CuentaGuardada(c, ahora())
+                }
             }
             val vinieron = cuentas.mapTo(HashSet()) { it.id }
             val frontera = cuentas.mapNotNull { VenueDateTimeFormatter.parseIso(it.createdAt) }.minOrNull()
@@ -123,8 +137,22 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
 
     suspend fun cuenta(venueId: String, orderId: String): CuentaGuardada? = leer(venueId).firstOrNull { it.cuenta.id == orderId }
 
-    private suspend fun leer(venueId: String): List<CuentaGuardada> {
-        val guardado = cache.load(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId) ?: return emptyList()
+    /** Para enseñar: si el disco falla, no hay copia que ofrecer. */
+    private suspend fun leer(venueId: String): List<CuentaGuardada> = try {
+        leerDelDisco(venueId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "⚠️ no se pudo leer la copia de $venueId: ${e.message}")
+        emptyList()
+    }
+
+    /**
+     * LANZA si el disco falla (revisión T4 #2): para escribir, «no se pudo leer» no es «no hay copia». Una copia ilegible sí
+     * cuenta como vacía: no hay nada que conservar, y sin reemplazarla la copia de esa sucursal no volvería a servir.
+     */
+    private suspend fun leerDelDisco(venueId: String): List<CuentaGuardada> {
+        val guardado = cache.loadDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId) ?: return emptyList()
         val desde = ahora() - VIGENCIA_MS
         return runCatching { json.decodeFromString<List<CuentaGuardada>>(guardado.json) }
             .getOrElse { Log.w(TAG, "⚠️ copia ilegible de $venueId: ${it.message}"); emptyList() }
@@ -134,6 +162,7 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
     private suspend fun editar(
         venueId: String,
         turno: Long,
+        esLista: Boolean = false,
         cambiar: (filas: MutableMap<String, CuentaGuardada>, gana: (orderId: String) -> Boolean) -> Unit,
     ): Unit = mutex.withLock {
         val ganados = HashMap<String, Long>()
@@ -141,7 +170,15 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
             val llave = "$venueId|$orderId"
             (turno > (ganados[llave] ?: turnos[llave] ?: Long.MIN_VALUE)).also { if (it) ganados[llave] = turno }
         }
-        val filas = leer(venueId).associateByTo(LinkedHashMap()) { it.cuenta.id }
+        val filas = try {
+            leerDelDisco(venueId).associateByTo(LinkedHashMap()) { it.cuenta.id }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudo leer la copia de $venueId; no se toca: ${e.message}")
+            return@withLock
+        }
+        currentCoroutineContext().ensureActive() // Cancelada mientras leía: nada se escribe encima.
         cambiar(filas, gana)
         try {
             // Disco y turnos van juntos: un turno sólo cuenta como aplicado si su evidencia llegó al disco.
@@ -149,6 +186,7 @@ class CopiaDeCuentas @Inject constructor(private val cache: PayloadCache) {
                 val orden = filas.values.sortedByDescending { VenueDateTimeFormatter.parseIso(it.cuenta.createdAt) }
                 cache.saveDurable(PayloadCache.TYPE_COPIA_DE_PEDIDOS, venueId, json.encodeToString(orden))
                 turnos.putAll(ganados)
+                if (esLista) ultimaLista[venueId] = maxOf(ultimaLista[venueId] ?: Long.MIN_VALUE, turno)
             }
         } catch (e: Exception) {
             Log.w(TAG, "⚠️ no se pudo guardar la copia de $venueId; se queda la anterior: ${e.message}")

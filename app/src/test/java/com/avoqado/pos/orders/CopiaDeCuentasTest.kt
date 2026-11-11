@@ -25,9 +25,17 @@ import org.junit.Test
  */
 class CopiaDeCuentasTest {
     private val disco = mutableMapOf<String, PayloadCache.Cached>()
+
+    /** Lo que lanza la lectura del disco (`loadDurable`); `load`, como el real, se lo traga y da null. */
+    private var falloAlLeer: Exception? = null
+    private var falloAlGuardar = false
     private val cache = mockk<PayloadCache> {
-        coEvery { load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
-        coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
+        coEvery { load(any(), any()) } answers { if (falloAlLeer != null) null else disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { loadDurable(any(), any()) } answers { falloAlLeer?.let { throw it }; disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { saveDurable(any(), any(), any()) } answers {
+            if (falloAlGuardar) throw IllegalStateException("disco lleno")
+            disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
+        }
     }
     private var reloj = 1_000_000_000L
     private val copia = CopiaDeCuentas(cache).also { it.ahora = { reloj } }
@@ -77,6 +85,46 @@ class CopiaDeCuentasTest {
         val vieja = copia.abrirLectura(); val nueva = copia.abrirLectura()
         copia.alLeer("v1", emptyList(), Lectura.LISTA_COMPLETA, nueva)
         copia.alLeer("v1", listOf(c("A")), Lectura.PRIMERA_PAGINA, vieja)
+        assertNull(copia.cuenta("v1", "A"))
+    }
+    @Test fun `una lista vieja que llega tarde no mete una cuenta que una lista nueva ya no trajo`() = runTest {
+        // Revisión T4 #1: Y nunca estuvo en la copia. R1 (vieja) la vio abierta; se cobró en otra caja; R2 (nueva) volvió primero sin ella.
+        val vieja = copia.abrirLectura(); val nueva = copia.abrirLectura()
+        copia.alLeer("v1", listOf(c("B")), Lectura.LISTA_COMPLETA, nueva)
+        copia.alLeer("v1", listOf(c("Y"), c("B")), Lectura.PRIMERA_PAGINA, vieja)
+        assertNull(copia.cuenta("v1", "Y"))
+        assertNotNull(copia.cuenta("v1", "B"))
+    }
+    @Test fun `si falla la lectura del disco la copia anterior se queda`() = runTest {
+        // Revisión T4 #2: un error de E/S o una cancelación al leer no es «no hay copia»: no se escribe una copia nueva encima.
+        copia.alLeer("v1", listOf(c("A")), Lectura.SUELTA)
+        listOf(java.io.IOException("disco"), kotlinx.coroutines.CancellationException("cancelada")).forEach { falla ->
+            falloAlLeer = falla
+            runCatching { copia.alLeer("v1", listOf(c("B")), Lectura.LISTA_COMPLETA) }
+            runCatching { copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.NoExiste) }
+            falloAlLeer = null
+            assertEquals(falla.toString(), setOf("A"), ids())
+        }
+    }
+    @Test fun `si falla el guardado la copia anterior se queda y no se anota ningun turno`() = runTest {
+        copia.alLeer("v1", listOf(c("A")), Lectura.SUELTA)
+        val entre = copia.abrirLectura(); val fallida = copia.abrirLectura()
+        falloAlGuardar = true
+        copia.alLeer("v1", emptyList(), Lectura.LISTA_COMPLETA, fallida) // no lanza
+        falloAlGuardar = false
+        assertEquals(setOf("A"), ids())
+        // Si `fallida` hubiera quedado anotada (por cuenta o por sucursal), estas dos evidencias más viejas se descartarían.
+        copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.Vigente(true, 6000, 0, cobrosConSaldo = 1, esCuentaDeTarjetas = false), entre)
+        copia.alLeer("v1", listOf(c("N")), Lectura.SUELTA, entre)
+        assertEquals(RazonSinRed.TARJETAS_DE_REGALO, razonParaNoCobrar(copia.cuenta("v1", "A")!!.cuenta))
+        assertNotNull(copia.cuenta("v1", "N"))
+    }
+    @Test fun `los turnos de una sucursal no frenan a otra`() = runTest {
+        val vieja = copia.abrirLectura(); val nueva = copia.abrirLectura()
+        copia.alLeer("v1", listOf(c("A")), Lectura.LISTA_COMPLETA, nueva)
+        copia.alLeerDetalle("v1", "A", EvidenciaDelDetalle.NoExiste, copia.abrirLectura())
+        copia.alLeer("v2", listOf(c("A"), c("B")), Lectura.SUELTA, vieja)
+        assertEquals(setOf("A", "B"), ids("v2"))
         assertNull(copia.cuenta("v1", "A"))
     }
     @Test fun `el detalle con abono, saldo de regalo, cierre o 404 actualiza o retira la fila`() = runTest {

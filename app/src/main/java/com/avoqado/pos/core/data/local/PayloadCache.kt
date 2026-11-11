@@ -26,8 +26,12 @@ class PayloadCache @Inject constructor(
     }
 
     suspend fun load(type: String, venueId: String): Cached? = runCatching {
-        dao.get(key(type, venueId))?.let { Cached(it.json, it.updatedAt) }
+        loadDurable(type, venueId)
     }.onFailure { Log.e(TAG, "❌ load $type falló: ${it.message}") }.getOrNull()
+
+    /** Como [load], pero LANZA si la lectura falla: aquí `null` es sólo «no hay nada guardado». */
+    suspend fun loadDurable(type: String, venueId: String): Cached? =
+        dao.get(key(type, venueId))?.let { Cached(it.json, it.updatedAt) }
 
     suspend fun save(type: String, venueId: String, json: String) {
         runCatching { saveDurable(type, venueId, json) }
