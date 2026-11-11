@@ -12,12 +12,17 @@ import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.data.network.OverrideResult
 import com.avoqado.pos.core.data.network.PermissionOverrideRepository
 import com.avoqado.pos.core.di.registroDeRed
+import io.mockk.Runs
+import io.mockk.coEvery
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -52,6 +57,10 @@ class CashDrawerRetiroTest {
     @get:Rule val temporal = TemporaryFolder()
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    /** La escritura de la cola truena (disco lleno, la app muere a media escritura). */
+    private var fallarAlEscribirLaCola = false
+    /** La escritura de la cola «sale bien» pero no queda nada: `encolar` lo detecta al releer. */
+    private var ignorarEscriturasDeLaCola = false
     private val dao = FakeCashDrawerDao().apply { runBlocking { insertSession(sesionLocal("srv-1", openedAt = haceMinutos(60))) } }
     private val storage = almacenConCola()
     private val store by lazy {
@@ -71,7 +80,10 @@ class CashDrawerRetiroTest {
         every { st.userFirstName } returns "Ana"
         every { st.userLastName } returns "Ruiz"
         every { st.pendingDrawerOpsJson(any()) } answers { cola }
-        every { st.setPendingDrawerOpsJson(any(), any()) } answers { cola = secondArg() }
+        every { st.setPendingDrawerOpsJson(any(), any()) } answers {
+            if (fallarAlEscribirLaCola) throw IllegalStateException("no se pudo escribir la cola")
+            if (!ignorarEscriturasDeLaCola) cola = secondArg()
+        }
     }
 
     private fun cola(): List<PendingDrawerOp> =
@@ -94,8 +106,8 @@ class CashDrawerRetiroTest {
         }
     }
 
-    private fun repo(client: OkHttpClient) = CashDrawerRepository(
-        dao, storage, client, sinCobrosEnCola(), conectividadDePrueba(), database = null, comprobantes = store,
+    private fun repo(client: OkHttpClient, comprobantes: ComprobantesDeRetiroPorImprimir = store) = CashDrawerRepository(
+        dao, storage, client, sinCobrosEnCola(), conectividadDePrueba(), database = null, comprobantes = comprobantes,
     )
 
     private fun retiroDelServidor(authorizedBy: String = "null") =
@@ -160,7 +172,8 @@ class CashDrawerRetiroTest {
         assertNull(reenvio.header(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
     }
 
-    @Test fun `un retiro sin autorizacion se reproduce como siempre, sin headers nuevos`() = runBlocking {
+    /** Fallo de revisión #2: el teclado global sólo daría un token suelto, que `/pay-out` nunca acepta. */
+    @Test fun `un retiro sin autorizacion se reproduce sin token, con marca local`() = runBlocking {
         repo(servidor { null }).addPayOut(5_000, "Proveedor", localId = "loc-1")
         assertNull(cola().single().autorizacion)
         enElCable.clear()
@@ -169,7 +182,41 @@ class CashDrawerRetiroTest {
 
         val reenvio = enElCable.single(::pagoAlRetiro)
         assertNull(reenvio.header(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER))
-        assertNull(reenvio.header(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+        assertNotNull(reenvio.header(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+    }
+
+    @Test fun `el primer POST sin token lleva la marca local`() = runBlocking {
+        repo(servidor { 201 to retiroDelServidor() }).addPayOut(5_000, "Proveedor", localId = "loc-1")
+
+        val peticion = enElCable.single(::pagoAlRetiro)
+        assertNull(peticion.header(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER))
+        assertNotNull(peticion.header(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+    }
+
+    /** Fallo de revisión #4: nunca un `Hecho(confirmado = false)` sin una operación durable que lo vaya a mandar. */
+    @Test fun `si la cola no se puede guardar, se deshace y no se manda nada`() = runBlocking {
+        ignorarEscriturasDeLaCola = true
+        val r = repo(servidor { 201 to retiroDelServidor() })
+            .addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertEquals(ResultadoDelRetiro.Rechazado("No se pudo guardar el retiro en el aparato. Intenta de nuevo."), r)
+        assertTrue("quedó la fila", retiros().isEmpty())
+        assertTrue("salió el POST", enElCable.none(::pagoAlRetiro))
+        assertTrue("quedó el comprobante", store.pendientes(VENUE_ID).isEmpty())
+    }
+
+    @Test fun `si falla anotar el comprobante, Rechazado y no queda nada`() = runBlocking {
+        val roto = mockk<ComprobantesDeRetiroPorImprimir> {
+            coEvery { anotar(any()) } throws IOException("disco lleno")
+            coEvery { quitar(any(), any()) } just Runs
+        }
+        val r = repo(servidor { 201 to retiroDelServidor() }, comprobantes = roto)
+            .addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertEquals(ResultadoDelRetiro.Rechazado("No se pudo guardar el retiro en el aparato. Intenta de nuevo."), r)
+        assertTrue("quedó la fila", retiros().isEmpty())
+        assertTrue("quedó en la cola: ${cola()}", cola().isEmpty())
+        assertTrue("salió el POST", enElCable.none(::pagoAlRetiro))
     }
 
     @Test fun `403 al momento se deshace - ni fila ni cola`() = runBlocking {
@@ -236,6 +283,31 @@ class CashDrawerRetiroTest {
         assertTrue(store.pendientes(VENUE_ID).isEmpty())
     }
 
+    /**
+     * Fallo de revisión #1: el papel se quita PRIMERO. Si deshacer se interrumpe después (aquí: la cola no se deja escribir), no queda
+     * un comprobante que la recuperación imprimiría como reimpresión de un retiro que el servidor rechazó.
+     */
+    @Test fun `si deshacer el rechazo se interrumpe al quitar la cola, no queda comprobante`() = runBlocking {
+        val r = repo(servidor { fallarAlEscribirLaCola = true; 403 to """{"message":"no"}""" })
+        runCatching { r.addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante()) }
+
+        assertTrue("quedó el comprobante de un retiro rechazado", store.pendientes(VENUE_ID).isEmpty())
+        assertTrue("la fila se borra antes que la operación", retiros().isEmpty())
+        assertEquals("la operación sigue (su replay recibirá el rechazo y lo marcará)", "loc-1", cola().single().localId)
+    }
+
+    /** Fallo de revisión #1: cerrar la pantalla (cancelar la corrutina) con la respuesta en camino no deja el rechazo a medias. */
+    @Test fun `si cancelan la corrutina con la respuesta en camino, el rechazo igual se deshace`() = runBlocking {
+        lateinit var trabajo: Job
+        val r = repo(servidor { trabajo.cancel(); 403 to """{"message":"no"}""" })
+        trabajo = launch { r.addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante()) }
+        trabajo.join()
+
+        assertTrue("quedó el comprobante", store.pendientes(VENUE_ID).isEmpty())
+        assertTrue("quedó la fila", retiros().isEmpty())
+        assertTrue("quedó en la cola: ${cola()}", cola().isEmpty())
+    }
+
     @Test fun `el comprobante de otro negocio no sale en este`() = runBlocking {
         store.anotar(comprobante().copy(venueId = "otro"))
         store.anotar(comprobante("loc-2"))
@@ -254,6 +326,21 @@ class CashDrawerRetiroTest {
         assertNotNull(cola().single().rechazadaEn)
         assertEquals(0, repo(servidor { null }).movimientosSinSubir(VENUE_ID))
         assertEquals(0, repo(servidor { null }).movimientosSinSubir("otro-negocio"))
+    }
+
+    /**
+     * Fallo de revisión #3: lo que está detrás de una apertura RECHAZADA no lo puede mandar la cola (se ve en Caja con «Reintentar»);
+     * contarlo bloquearía cerrar sesión para siempre. Detrás de una apertura sólo pendiente, sí cuenta.
+     */
+    @Test fun `movimientosSinSubir no cuenta lo que espera a una apertura rechazada`() {
+        val cola = """[
+            {"kind":"OPEN","sessionId":"s-1","amountCents":50000,"localId":"ev-open-1","at":1,"rechazadaEn":2,"motivoDelRechazo":"no"},
+            {"kind":"PAY_OUT","sessionId":"s-1","amountCents":5000,"localId":"loc-1","at":3},
+            {"kind":"OPEN","sessionId":"s-2","amountCents":50000,"localId":"ev-open-2","at":4},
+            {"kind":"PAY_OUT","sessionId":"s-2","amountCents":5000,"localId":"loc-2","at":5}]"""
+        storage.setPendingDrawerOpsJson(VENUE_ID, cola)
+
+        assertEquals("la apertura pendiente y su retiro", 2, repo(servidor { null }).movimientosSinSubir(VENUE_ID))
     }
 
     // MARK: - El log de depuración (Codex r3 #11)

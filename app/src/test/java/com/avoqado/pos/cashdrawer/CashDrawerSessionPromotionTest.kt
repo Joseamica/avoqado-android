@@ -108,7 +108,7 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `los eventos creados contra el id local siguen contando despues de la promocion`() = runTest {
         val dao = FakeCashDrawerDao()
-        val sinRed = cashDrawerRepo(dao, cashDrawerClient())
+        val sinRed = cashDrawerRepo(dao, cashDrawerClient(), secureStorage = cashDrawerSecureStorageConCola())
         sinRed.openSession(FONDO_CENTS)
         sinRed.addPayOut(20_000, "Compra de hielo") // $200.00, sin red: no llega al server
 
@@ -219,6 +219,7 @@ class CashDrawerSessionPromotionTest {
                 "/cash-drawer/pay-out" to
                     """{"success":true,"data":${eventoJson("srv-ev-retiro", "PAY_OUT", "50.00", note = "Propinas")}}""",
             ),
+            secureStorage = cashDrawerSecureStorageConCola(),
         )
         retirar.addPayOut(5_000, "Propinas")
 
@@ -256,7 +257,7 @@ class CashDrawerSessionPromotionTest {
 
         dao.falla = true
         val resp = "{\"success\":true,\"data\":" + eventoJson("srv-ev-retiro", "PAY_OUT", "50.00", note = "Propinas") + "}"
-        val retirar = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/pay-out" to resp))
+        val retirar = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/pay-out" to resp), secureStorage = cashDrawerSecureStorageConCola())
         try { retirar.addPayOut(5_000, "Propinas") } catch (_: Exception) {}
 
         assertEquals("quedaron dos PAY_OUT del mismo retiro", 1, dao.events.values.count { it.type == "PAY_OUT" })
@@ -273,7 +274,7 @@ class CashDrawerSessionPromotionTest {
         val abrir = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
         abrir.openSession(FONDO_CENTS)
 
-        val sinRed = cashDrawerRepo(dao, cashDrawerClient()) // el POST del retiro no sale
+        val sinRed = cashDrawerRepo(dao, cashDrawerClient(), secureStorage = cashDrawerSecureStorageConCola()) // el POST del retiro no sale
         sinRed.addPayOut(5_000, "Compra de hielo")
 
         val sincronizar = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))

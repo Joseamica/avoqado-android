@@ -249,6 +249,16 @@ internal fun cashDrawerSecureStorage(): SecureStorage = mockk(relaxed = true) {
 }
 
 /**
+ * Como [cashDrawerSecureStorage], pero la cola del cajón SÍ queda guardada (en memoria). La necesita quien llame `addPayOut`: relee
+ * la cola y, si su operación no quedó, deshace el retiro (revisión de Task 9 #4), así que con la cola de mentira no habría retiro.
+ */
+internal fun cashDrawerSecureStorageConCola(): SecureStorage = cashDrawerSecureStorage().also { st ->
+    var cola: String? = null
+    every { st.pendingDrawerOpsJson(any()) } answers { cola }
+    every { st.setPendingDrawerOpsJson(any(), any()) } answers { cola = secondArg() }
+}
+
+/**
  * Por defecto NO hay ningún cobro esperando en la cola — que es el estado normal
  * de un local con red. Los tests que prueban la venta encolada lo dicen explícito.
  */
@@ -378,9 +388,10 @@ internal fun cashDrawerRepo(
     client: OkHttpClient,
     pendingCashSales: PendingCashSales = sinCobrosEnCola(),
     conectividad: ConnectivityMonitor = conectividadDePrueba(),
+    secureStorage: SecureStorage = cashDrawerSecureStorage(),
 ) = CashDrawerRepository(
     dao = dao,
-    secureStorage = cashDrawerSecureStorage(),
+    secureStorage = secureStorage,
     client = client,
     pendingCashSales = pendingCashSales,
     conectividad = conectividad,
