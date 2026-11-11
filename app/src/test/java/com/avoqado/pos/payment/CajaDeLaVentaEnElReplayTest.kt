@@ -8,6 +8,7 @@ import io.mockk.every
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -94,6 +95,32 @@ class CajaDeLaVentaEnElReplayTest {
             assertFalse(falso.de("pay").single().has("cashDrawerSessionId"))
             coVerify(exactly = 0) { f.drawer.idDeCajaParaElServidor(any(), any()) }
         }
+    }
+
+    /**
+     * D12 (Codex r1 #4): el cobro de una cuenta abierta hecho con la copia viaja en el PRIMER envío como captura previa y con la caja
+     * del servidor, igual que el replay. Un cobro que no es captura previa no la manda (su cuerpo queda como hoy).
+     */
+    @Test fun `D12 el primer envio de una captura previa lleva la caja del servidor`() = runTest {
+        val cuerpos = mutableListOf<org.json.JSONObject>()
+        val cliente = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+            val buffer = okio.Buffer().also { chain.request().body!!.writeTo(it) }
+            cuerpos += org.json.JSONObject(buffer.readUtf8())
+            okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(500).message("x")
+                .body("{}".toResponseBody()).build()
+        }.build()
+        val repo = com.avoqado.pos.payment.data.OrderRepository(io.mockk.mockk(relaxed = true), cliente)
+
+        repo.recordCashPayment(orderId = "o1", amount = 10000, staffId = "s", capturaPrevia = true,
+            cashDrawerSessionId = "caja-servidor", capturedVenueId = "v1")
+        repo.recordCashPayment(orderId = "o1", amount = 10000, staffId = "s", capturaPrevia = false,
+            cashDrawerSessionId = "caja-servidor", capturedVenueId = "v1")
+
+        val (previa, normal) = cuerpos
+        assertTrue(previa.getBoolean("isOfflineReplay"))
+        assertEquals("caja-servidor", previa.getString("cashDrawerSessionId"))
+        assertFalse(normal.has("cashDrawerSessionId"))
+        assertFalse(normal.has("isOfflineReplay"))
     }
 
     @Test fun `el cuerpo del replay sin caja es identico al de hoy y con caja la agrega`() {

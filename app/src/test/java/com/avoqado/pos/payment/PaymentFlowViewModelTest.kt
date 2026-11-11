@@ -5720,5 +5720,243 @@ class PaymentFlowViewModelTest {
         assertEquals(listOf(tacos), ctx.items)
         assertEquals("lo que se cobra no cambia", 7900, ctx.totalCents)
     }
+
+    // MARK: - D12: el cobro de una cuenta abierta hecho con la copia (sólo efectivo, captura previa y caja desde el primer envío)
+
+    private val desdeLaCopia = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA
+
+    private fun carritoDeLaCopia() = CartState(items = listOf(CartItem(type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 6000)))
+
+    private fun cajaAbierta(id: String) = com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity(
+        id = id, venueId = "venue-1", deviceName = null, openedByStaffId = "s", openedByName = "S", openedAt = 0, startingAmountCents = 0,
+    )
+
+    /** La caja abierta al confirmar es local y el servidor la conoce con otro id. */
+    private fun conLaCajaDeLaCopia() {
+        coEvery { cashDrawerRepository.getOpenSession() } returns cajaAbierta("caja-local")
+        every { cashDrawerRepository.idDeCajaParaElServidor("caja-local", "venue-1") } returns "caja-servidor"
+        every { cashDrawerRepository.cajasQueEsperanSuApertura() } returns emptySet()
+    }
+
+    private fun alCobrarEnEfectivo(resultado: Result<OrderRepository.CashPayResult>) = coEvery {
+        orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(),
+            importeAceptadoCents = any(), capturaPrevia = any(), lineasDelTicket = any(), cashDrawerSessionId = any())
+    } returns resultado
+
+    @Test
+    fun `D12 desde la copia el efectivo va como captura previa con su caja y su saldo esperado`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = 10000, changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = null, tenderType = null, amountCents = 6000,
+                tipCents = 0, splitType = any(), venueId = "venue-1", capturadaEn = any(), cajaDelCobro = "caja-local", enLugarDe = any(),
+                lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 0, any(), any(), null, null, capturedVenueId = any(),
+                capturaPrevia = true, lineasDelTicket = any(), cashDrawerSessionId = "caja-servidor")
+        }
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    @Test
+    fun `D12 sin red se encola con el mismo saldo esperado`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        // El MISMO saldo esperado en la reserva y en la cola: `PendingPaymentDao.insert` compara las dos capturas.
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = any(), tipCents = any(), splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                enLugarDe = any(), lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = null, tenderType = null,
+                amountCents = 6000, tipCents = 0, splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = "caja-local",
+                lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+    }
+
+    @Test
+    fun `D12 el primer envio que si llega con la cuenta crecida deja lo pendiente del servidor`() = runTest {
+        // Tras confirmar, la caja abierta ya es otra: el envío conserva la que se leyó al confirmar.
+        coEvery { cashDrawerRepository.getOpenSession() } returnsMany listOf(cajaAbierta("caja-local"), cajaAbierta("otra-caja"))
+        every { cashDrawerRepository.idDeCajaParaElServidor("caja-local", "venue-1") } returns "caja-servidor"
+        every { cashDrawerRepository.idDeCajaParaElServidor("otra-caja", any()) } returns "otra-servidor"
+        every { cashDrawerRepository.cajasQueEsperanSuApertura() } returns emptySet()
+        alCobrarEnEfectivo(
+            Result.success(
+                OrderRepository.CashPayResult(
+                    paymentId = "pay-copia", receiptAccessKey = null, recordedAmountCents = 6000, recordedTipCents = 0,
+                    authoritativeChangeCents = 0, remainingBalanceCents = 20000, orderPaymentStatus = "PARTIAL", cashRetainedCents = 6000,
+                ),
+            ),
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        val cierre = requireNotNull(viewModel.consumeCompletion())
+        assertEquals("otra caja la hizo crecer: lo pendiente lo dice el servidor", 20000, cierre.remainingBalanceCents)
+        assertTrue(cierre.saldoDelServidor)
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 0, any(), any(), null, null, capturedVenueId = any(),
+                capturaPrevia = true, lineasDelTicket = any(), cashDrawerSessionId = "caja-servidor")
+        }
+    }
+
+    @Test
+    fun `D12 si la revalidacion previa falla no se reserva ni se cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { "La está cobrando Ana" })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertTrue("el flujo se cierra y la cuenta enseña su gris", viewModel.debeSalir.value)
+    }
+
+    @Test
+    fun `D12 ya reservado el dinero no se vuelve a revalidar`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        var preguntas = 0
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { preguntas++; if (preguntas == 1) null else "La está cobrando Ana" })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any())
+        }
+        assertEquals(1, preguntas)
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+    }
+
+    /** El reintento de una venta con su efectivo ya apartado (un rechazo del servidor) no vuelve a preguntar: se cobra con lo apartado. */
+    @Test
+    fun `D12 un reintento con el efectivo ya apartado no vuelve a revalidar`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(OrderRepository.ServerException(422, "Algo no cuadró")))
+        var preguntas = 0
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { preguntas++; if (preguntas == 1) null else "La está cobrando Ana" })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        assertEquals(1, preguntas)
+        assertFalse(viewModel.debeSalir.value)
+        coVerify(exactly = 2) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `D12 desde la copia no hay otra forma de pago`() = runTest {
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.entries.first()))
+        advanceUntilIdle()
+        assertEquals("«Ya pagó de otra forma» no cobra", antes, viewModel.state.value)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals("tarjeta no se ofrece", antes, viewModel.state.value)
+        viewModel.retry()
+        advanceUntilIdle()
+        assertFalse("reintentar no abre la terminal", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA.permiteTarjeta)
+        assertTrue(com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA.esPedidoEnLinea)
+    }
+
+    @Test
+    fun `D12 desde la copia un tipo de pago del negocio no cobra`() = runTest {
+        val uber = TenderTypeOption(
+            id = "t-uber", revision = 1, name = "Uber Eats", isSystem = false,
+            baseMethod = "OTHER", captureTip = false, posSection = "PRIMARY", displayOrder = 1,
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.confirmManualChoice(ManualPaymentChoice.Tender(uber))
+        advanceUntilIdle()
+
+        assertEquals(antes, viewModel.state.value)
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `D12 desde la copia la terminal no recibe nada`() = runTest {
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals(antes, viewModel.state.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+    }
+
+    @Test
+    fun `un cobro NORMAL no manda caja en el primer envio`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 0, any(), any(), null, null, capturedVenueId = any(),
+                capturaPrevia = false, lineasDelTicket = any(), cashDrawerSessionId = null)
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = any(), tipCents = any(), splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                enLugarDe = any(), lineasDelTicket = any(), restanteEsperadoCents = null,
+            )
+        }
+        verify(exactly = 0) { cashDrawerRepository.idDeCajaParaElServidor(any(), any()) }
+    }
 }
 

@@ -11,4 +11,7 @@ object TextosDeCuentaSinRed {
      * debe. Con un esperado > 0 diría sólo lo de más, no el total.
      */
     fun quedoDebiendo(cents: Int) = "La cuenta quedó debiendo ${com.avoqado.pos.core.util.formatMoneyFromCents(cents)}"
+
+    /** Por qué el cobro de una cuenta hecho con la copia es sólo efectivo (`OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA`). */
+    const val SOLO_EFECTIVO = "Sin conexión: esta cuenta se cobra sólo en efectivo."
 }

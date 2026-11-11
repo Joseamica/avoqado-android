@@ -96,6 +96,8 @@ fun PaymentFlowScreen(
     textoSiLaCuentaSeCancelo: (() -> String?)? = null,
     /** Tienda híbrida (R100): el cobro sale de la bandeja «Pedidos en línea». Ver `PaymentFlowViewModel.startPaymentFlow`. */
     cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
+    /** D12 (Codex r3 H3): la revalidación justo antes de recibir el efectivo. Ver `PaymentFlowViewModel.startPaymentFlow`. null = como siempre. */
+    antesDeRecibirEfectivo: (suspend () -> String?)? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -195,6 +197,7 @@ fun PaymentFlowScreen(
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
             cobroDeLaBandeja = cobroDeLaBandeja,
+            antesDeRecibirEfectivo = antesDeRecibirEfectivo,
         )
         aperturaIniciada = true
     }
@@ -773,5 +776,7 @@ private fun SplitType.toApiSplitType(): String {
 /** Rappi 2b: por qué el cobro es sólo efectivo, según quién lo abrió. D15: una venta en $0 lo dice primero. */
 private fun textoSoloEfectivoDe(origen: com.avoqado.pos.payment.domain.OrigenDelCobro, ventaEnCero: Boolean = false): String =
     if (ventaEnCero) PaymentFlowViewModel.TEXTO_VENTA_EN_CERO
+    else if (origen == com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA)
+        com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SOLO_EFECTIVO
     else if (origen.esDePlataforma) com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.REPARTO_SOLO_EFECTIVO
     else com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO

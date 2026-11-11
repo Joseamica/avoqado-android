@@ -1266,6 +1266,11 @@ class OrderRepository @Inject constructor(
          * válido y dentro de los topes). Viaja tal cual como `lineasDelTicket`. null = no viaja y el body queda byte a byte como hoy.
          */
         lineasDelTicket: String? = null,
+        /**
+         * D12 (Codex r1 #4): la caja de la venta, YA con el id del servidor (`CashDrawerRepository.idDeCajaParaElServidor`). Viaja sólo
+         * con [capturaPrevia], igual que en el replay: el servidor saca de ahí el turno del efectivo ya recibido. null = no viaja.
+         */
+        cashDrawerSessionId: String? = null,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -1291,6 +1296,9 @@ class OrderRepository @Inject constructor(
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
                 if (capturaPrevia) append("\"isOfflineReplay\":true,")
+                // Un id inválido para el servidor no viaja (sería un 400 permanente), como `PaymentSyncService.cajaDelCobroParaElServidor`.
+                cashDrawerSessionId?.takeIf { capturaPrevia && it.isNotBlank() && it.length <= 64 }
+                    ?.let { append("\"cashDrawerSessionId\":${JsonPrimitive(it)},") }
                 // Un OBJETO JSON (sus textos ya vienen escapados): se pega como valor. Se vuelve a leer antes, porque un texto roto
                 // dejaría el body inválido y el cobro rebotaría por una copia que es sólo texto del ticket: sin objeto, no viaja.
                 lineasDelTicket?.let { runCatching { Json.parseToJsonElement(it) as JsonObject }.getOrNull() }
