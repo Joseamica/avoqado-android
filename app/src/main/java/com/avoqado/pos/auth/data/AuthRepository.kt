@@ -112,6 +112,7 @@ class AuthRepository @Inject constructor(
                         refreshToken = response.refreshToken ?: "",
                         venueTimezone = primaryVenue.timezone,
                         venuePermissions = primaryVenue.permissions,
+                        permisosVigentes = primaryVenue.permisosVigentes,
                     )
                     secureStorage.venuesList = venues.map { it.toStoredVenue() }
                 }
@@ -201,6 +202,7 @@ class AuthRepository @Inject constructor(
                     refreshToken = response.refreshToken ?: "",
                     venueTimezone = venue.timezone,
                     venuePermissions = venue.permissions,
+                    permisosVigentes = venue.permisosVigentes,
                 )
 
                 // 🔴 `venuesList` TAMBIÉN se reemplaza. Se descubrió en el simulador de iPad, donde la
@@ -464,6 +466,7 @@ private fun VenueData.toStoredVenue() = StoredVenue(
     permissions = permissions,
     organizationId = organizationId,
     venueType = type,
+    permisosVigentes = permisosVigentes,
 )
 
 /** Resultado de cambiar de usuario con PIN. */

@@ -52,7 +52,7 @@ class AppState @Inject constructor(
     private val tableSyncCoordinator: com.avoqado.pos.tables.data.TableSyncCoordinator,
     private val posModeManager: PosModeManager,
     private val inventoryCountSyncCoordinator: InventoryCountSyncCoordinator,
-    cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
+    private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
     private val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository,
@@ -561,7 +561,9 @@ class AppState @Inject constructor(
                 // Las llegadas del kiosco sólo se mandan con SU sucursal activa: entrar a otra las dejaría varadas.
                 reservationRepository.pendingKioskArrivals(venueId) +
                 // D4: lo mismo los paquetes cobrados por entregar o por revisar.
-                (pendingGrantQueue?.bloqueantes(venueId) ?: 0)
+                (pendingGrantQueue?.bloqueantes(venueId) ?: 0) +
+                // Retiro con gerente (Codex r3 #12): la cola del cajón se manda con la sesión que esté; no se cierra encima.
+                (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."

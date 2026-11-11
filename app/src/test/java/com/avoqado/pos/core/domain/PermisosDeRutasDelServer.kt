@@ -21,11 +21,11 @@ package com.avoqado.pos.core.domain
  * nombre de permiso. No salen aquí porque el modal nunca los pide; sus etiquetas
  * existen para el resto de la app, no para ese modal.
  *
- * Derivado de avoqado-server · huella 970833f4754c57f3.
+ * Derivado de avoqado-server · huella 0eec0629697e2b4e.
  */
 object PermisosDeRutasDelServer {
 
-    /** Los 61 permisos que un `checkPermission(...)` de `mobile.routes.ts` puede rechazar. */
+    /** Los 62 permisos que un `checkPermission(...)` de `mobile.routes.ts` puede rechazar. */
     val MOBILE: List<String> = listOf(
         "area-tickets:cancel",
         "area-tickets:checkout",
@@ -33,6 +33,7 @@ object PermisosDeRutasDelServer {
         "area-tickets:confirm-external",
         "area-tickets:deliver",
         "area-tickets:issue",
+        "cash-drawer:pay-out",
         "class-sessions:read-assigned",
         "coupons:create",
         "coupons:delete",

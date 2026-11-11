@@ -2,6 +2,7 @@ package com.avoqado.pos.settings
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.auth.data.SwitchUserResult
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
 import com.avoqado.pos.kiosk.data.KioskTap
@@ -44,10 +45,53 @@ class MoreMenuViewModelLlegadasTest {
                 ),
             )
         }
+        val vm = construir(storage, auth, llegadas)
+
+        vm.switchVenue(StoredVenue(id = "v2", name = "Sucursal Centro"))
+
+        coVerify(exactly = 0) { auth.switchVenue(any()) }
+        val aviso = vm.sessionGuardMessage.value.orEmpty()
+        assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
+    /** Retiro con gerente (Task 9, Codex r3 #12): el replay usa la sesión vigente; relevar con un retiro sin subir lo dejaría a nombre de otro. */
+    @Test
+    fun `con un retiro sin subir no se cambia de usuario`() = runTest {
+        val storage = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "v1" }
+        val auth = mockk<AuthRepository>(relaxed = true)
+        val cajon = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository> { every { movimientosSinSubir("v1") } returns 1 }
+
+        val resultado = construir(storage, auth, cajon = cajon).switchUser("1234")
+
+        coVerify(exactly = 0) { auth.switchUser(any()) }
+        assertTrue("esperaba el aviso de pendientes, llegó $resultado", (resultado as? SwitchUserResult.Error)?.message.orEmpty().contains("Hay 1 operación sin enviar"))
+    }
+
+    /** H6: un retiro sin subir se manda sólo con SU sucursal activa; cambiar de sucursal lo dejaría atrás (y luego a nombre de otro). */
+    @Test
+    fun `con un retiro sin subir no se cambia de sucursal`() = runTest {
+        val storage = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "v1" }
+        val auth = mockk<AuthRepository>(relaxed = true)
+        val cajon = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository> { every { movimientosSinSubir("v1") } returns 1 }
+        val vm = construir(storage, auth, cajon = cajon)
+
+        vm.switchVenue(StoredVenue(id = "v2", name = "Sucursal Centro"))
+
+        coVerify(exactly = 0) { auth.switchVenue(any()) }
+        val aviso = vm.sessionGuardMessage.value.orEmpty()
+        assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
+    private fun construir(
+        storage: SecureStorage,
+        auth: AuthRepository,
+        llegadas: PendingReservationActionDao = mockk { coEvery { all() } returns emptyList() },
+        cajon: com.avoqado.pos.cashdrawer.data.CashDrawerRepository? = null,
+    ): MoreMenuViewModel {
         val tpv = mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
         }
-        val vm = MoreMenuViewModel(
+        return MoreMenuViewModel(
             secureStorage = storage,
             authRepository = auth,
             timeEntryRepository = mockk(relaxed = true),
@@ -74,12 +118,7 @@ class MoreMenuViewModelLlegadasTest {
             vigilanteDePedidos = mockk(relaxed = true),
             pedidosEnLineaRepository = mockk(relaxed = true) { coEvery { porCobrarGuardado() } returns null },
             pendingReservationDao = llegadas,
+            cashDrawerRepository = cajon,
         )
-
-        vm.switchVenue(StoredVenue(id = "v2", name = "Sucursal Centro"))
-
-        coVerify(exactly = 0) { auth.switchVenue(any()) }
-        val aviso = vm.sessionGuardMessage.value.orEmpty()
-        assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
     }
 }

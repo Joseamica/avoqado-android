@@ -23,7 +23,12 @@ sealed interface OverrideResult {
 }
 
 @Serializable
-private data class OverrideRequestBody(val pin: String, val permission: String)
+private data class OverrideRequestBody(
+    val pin: String,
+    val permission: String,
+    /** Sólo si viene (el `Json` de aquí no escribe los default): ata la autorización a UNA operación, p. ej. `llaveDelRetiro`. */
+    val operationKey: String? = null,
+)
 
 @Serializable
 private data class OverrideResponseBody(val success: Boolean = false, val data: OverrideData? = null)
@@ -52,19 +57,23 @@ private data class OverrideErrorBody(val code: String? = null, val message: Stri
  * El PIN viaja una sola vez, sobre TLS, y NUNCA se guarda en el dispositivo.
  */
 @Singleton
-open class PermissionOverrideRepository @Inject constructor(
+open class PermissionOverrideRepository internal constructor(
     private val secureStorage: SecureStorage,
+    /** 🔴 Se llama `client` a propósito: escritorio (`Inyector`) le pone su guarda por reflexión a este campo. */
+    private val client: OkHttpClient,
 ) {
-    private val client = OkHttpClient()
+    @Inject constructor(secureStorage: SecureStorage) : this(secureStorage, OkHttpClient())
+
     private val json = Json { ignoreUnknownKeys = true }
 
-    open suspend fun requestToken(venueId: String, pin: String, permission: String): OverrideResult =
+    /** [operationKey]: la autorización sólo servirá para esa operación (el retiro: `llaveDelRetiro`). Sin ella, la suelta de siempre. */
+    open suspend fun requestToken(venueId: String, pin: String, permission: String, operationKey: String? = null): OverrideResult =
         withContext(Dispatchers.IO) {
             val accessToken = secureStorage.accessToken
                 ?: return@withContext OverrideResult.Failed("Tu sesión expiró. Vuelve a entrar.")
 
             val body = json
-                .encodeToString(OverrideRequestBody.serializer(), OverrideRequestBody(pin, permission))
+                .encodeToString(OverrideRequestBody.serializer(), OverrideRequestBody(pin, permission, operationKey))
                 .toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()

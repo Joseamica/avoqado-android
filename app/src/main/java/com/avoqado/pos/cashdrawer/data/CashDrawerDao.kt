@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Update
 import androidx.room.Query
+import androidx.room.Transaction
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 
@@ -118,6 +119,17 @@ interface CashDrawerDao {
 
     @Query("DELETE FROM cash_drawer_events WHERE id = :eventId")
     suspend fun deleteEvent(eventId: String)
+
+    /**
+     * Promover un movimiento (id local -> id del server) en UNA transacción: se inserta la copia con el id del server y se
+     * borra la local. En dos escrituras sueltas, si la app moría en medio quedaban DOS filas del mismo retiro y el cajón
+     * lo restaba dos veces (Codex r2 #5, retiro con gerente).
+     */
+    @Transaction
+    suspend fun promoverEvento(localId: String, copiaConIdDelServidor: CashDrawerEventEntity) {
+        insertEvent(copiaConIdDelServidor)
+        deleteEvent(localId)
+    }
 
     /**
      * Los eventos se mudan con su sesión cuando ésta adopta el id del server. Sin

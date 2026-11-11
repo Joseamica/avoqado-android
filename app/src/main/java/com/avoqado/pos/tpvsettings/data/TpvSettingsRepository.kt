@@ -511,6 +511,8 @@ class TpvSettingsRepository internal constructor(
                 if (!selected) return
             }
 
+            // D4: el sello de quien manda la petición; si entra otra persona mientras viaja, su lista no se toca.
+            val sello = secureStorage.generacion
             val token = secureStorage.accessToken
             if (token == null) {
                 whileCurrent { _terminalNavigation.value = TerminalNavigationSettings.DEFAULT }
@@ -567,6 +569,10 @@ class TpvSettingsRepository internal constructor(
             // Un 200 degradado (`success:false` o sin `data`) no trae el perfil del aparato: conserva lo que había, en memoria y
             // en disco. (`deviceTerminal` ausente CON data sí es legítimo: terminal desactivada.)
             if (!result.success || result.data == null) return
+
+            // La lista vigente de permisos (r3 #4): sin el campo (servidor viejo) no se toca nada. Bajo el boleto (H4): una respuesta
+            // más vieja que la vigente no repone un permiso que la nueva ya quitó; el sello y la sucursal los mira SecureStorage.
+            result.data.permisosDeLaSesion?.let { lista -> whileCurrent { secureStorage.guardarPermisosDeLaSesionSi(sello, venueId, lista) } }
 
             val terminalNavigation = result.data.toTerminalNavigationSettings()
             if (!whileCurrent { _terminalNavigation.value = terminalNavigation; _generacionDelFiltro.update { it + 1 } }) return
@@ -1002,6 +1008,8 @@ internal data class VenueSettingsData(
     /** Saldo a favor (aditivo): el SERVIDOR sabe dar saldo (sus dos llaves). Ausente ⇒ null ⇒ no disponible. */
     @Serializable(with = com.avoqado.pos.transactions.data.model.BooleanTolerante::class)
     val storeCreditAvailable: Boolean? = null,
+    /** Permisos vigentes de quien pide (retiro con gerente). Ausente (servidor viejo) ⇒ null ⇒ no se toca la lista guardada. */
+    val permisosDeLaSesion: List<String>? = null,
     /**
      * Encabezado del ticket impreso. Ausente (server viejo) ⇒ null ⇒ el ticket
      * sale sin encabezado fiscal, como hoy.

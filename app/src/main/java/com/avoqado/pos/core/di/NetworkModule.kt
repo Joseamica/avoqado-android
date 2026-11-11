@@ -63,16 +63,7 @@ object NetworkModule {
         managerOverrideCoordinator: ManagerOverrideCoordinator,
         secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
     ): OkHttpClient {
-        val logging = HttpLoggingInterceptor().apply {
-            redactHeader("Authorization")
-            // hz:e0b12f00:D2: el token del PIN de gerente vale una autorización (60 s, un uso): tampoco va al log.
-            redactHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
-            level = if (BuildConfig.DEBUG) {
-                HttpLoggingInterceptor.Level.BODY
-            } else {
-                HttpLoggingInterceptor.Level.NONE
-            }
-        }
+        val logging = registroDeRed(BuildConfig.DEBUG)
 
         // Nace del cliente base compartido (ver ConexionesCompartidas): el refresco de sesión reusa estas conexiones.
         return com.avoqado.pos.core.data.network.ConexionesCompartidas.base.newBuilder()
@@ -107,4 +98,17 @@ object NetworkModule {
     fun provideApiService(retrofit: Retrofit): ApiService {
         return retrofit.create(ApiService::class.java)
     }
+}
+
+/**
+ * El log de red de depuración (en release no registra nada). 🔴 Tapa los dos headers que valen algo por sí solos: la sesión y la
+ * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11).
+ */
+internal fun registroDeRed(
+    depuracion: Boolean,
+    logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT,
+): HttpLoggingInterceptor = HttpLoggingInterceptor(logger).apply {
+    redactHeader("Authorization")
+    redactHeader(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
+    level = if (depuracion) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
 }
