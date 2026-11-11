@@ -157,12 +157,6 @@ internal fun cobraLosValesDeLaSesion(items: List<CartItem>, checkout: AreaTicket
         checkout.tickets.flatMap { it.lines }.map { it.id to it.total.moneyToCents() }.sortedBy { it.first }
 
 /**
- * El aviso de un cobro con tarjeta de OTRA venta que quedó sin confirmar, o que SÍ pasó. 🔴 Founder, 25-sep: esa duda ya no
- * frena la tarjeta de esta venta; se DICE en la selección de terminal.
- *
- * @param yaCobrado consta que ese cobro SÍ pasó: se ofrece «Entendido» en vez de «Revisar».
- */
-/**
  * D12 (final fix, I-2): lo que la copia de «Pedidos» debe saber de un cobro de ESTE aparato. Uno encolado no la toca: su marca local
  * (cobro sin sincronizar, luego «esta caja ya subió un cobro») ya la deja en gris. Uno que el servidor registró: pagada ⇒ sale de la
  * copia; con saldo ⇒ «ya tiene un abono» con el saldo del servidor (sin él, «sin saldo»). Sin orden (venta rápida) no hay cuenta.
@@ -173,6 +167,12 @@ internal fun evidenciaDelCobro(c: PaymentCompletion, encolado: Boolean): com.avo
     else -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(c.remainingBalanceCents.takeIf { c.saldoDelServidor }, c.conSaldo)
 }
 
+/**
+ * El aviso de un cobro con tarjeta de OTRA venta que quedó sin confirmar, o que SÍ pasó. 🔴 Founder, 25-sep: esa duda ya no
+ * frena la tarjeta de esta venta; se DICE en la selección de terminal.
+ *
+ * @param yaCobrado consta que ese cobro SÍ pasó: se ofrece «Entendido» en vez de «Revisar».
+ */
 data class AvisoDeOtroCobro(val requestId: String, val texto: String, val yaCobrado: Boolean)
 
 @HiltViewModel
@@ -676,11 +676,6 @@ class PaymentFlowViewModel @Inject constructor(
     private fun efectivoEnVuelo(): Boolean = (_state.value as? PaymentFlowState.Processing)?.efectivoEnVuelo == true
 
     /**
-     * La venta se cobró (D2 v5, punto 2). El apartado del intento que cobró sólo se suelta (ya subió, se encoló o se da por
-     * cobrado); los de intentos anteriores de esta venta sobran y se borran. Si ese borrado falla, se reintenta antes del
-     * siguiente cobro ([primeroDescartarLosPendientes]).
-     */
-    /**
      * D12 (final fix, I-2): un cobro de este aparato (tarjeta, saldo de regalo, efectivo, «Ya pagó de otra forma»; desde «Pedidos», el
      * carrito, Mesas o la bandeja) pone al día la copia de «Pedidos»: si no, al irse la red se volvía a ofrecer «Cobrar $X en efectivo»
      * de una cuenta recién pagada. Todos los cobros terminan en este `Success`; sólo toca filas que ya están en la copia.
@@ -698,6 +693,11 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    /**
+     * La venta se cobró (D2 v5, punto 2). El apartado del intento que cobró sólo se suelta (ya subió, se encoló o se da por
+     * cobrado); los de intentos anteriores de esta venta sobran y se borran. Si ese borrado falla, se reintenta antes del
+     * siguiente cobro ([primeroDescartarLosPendientes]).
+     */
     private fun alCobrarLaVenta(st: PaymentFlowState.Success) {
         val cobrado = apartadoDelIntento?.takeIf { st.method == PaymentMethod.CASH }
         val anteriores = apartadosDeEstaVenta.filter { it != cobrado }
