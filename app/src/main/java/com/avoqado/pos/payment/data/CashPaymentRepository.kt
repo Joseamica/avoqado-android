@@ -119,6 +119,11 @@ class CashPaymentRepository @Inject constructor(
         cajaDelCobro: String? = null,
         /** D1: la copia del papel de esta parte (`CopiaDelTicket`), para el reenvío. null = no viaja (venta de un solo cobro). */
         lineasDelTicket: String? = null,
+        /**
+         * D12: el saldo que la cuenta debía quedar tras este cobro hecho con la copia (`ConciliacionDelCobro`, «quedó debiendo»).
+         * 🔴 El MISMO que el de [reservarCobro] con esta llave: `PendingPaymentDao.insert` exige la captura de la reserva.
+         */
+        restanteEsperadoCents: Int? = null,
     ): String {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -128,7 +133,7 @@ class CashPaymentRepository @Inject constructor(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId ?: original?.orderId,
             orderExternalId ?: original?.externalOriginal(),
             customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING, amountCents, tipCents, splitType, venue, hora,
-            cajaDelCobro, lineasDelTicket = lineasDelTicket,
+            cajaDelCobro, lineasDelTicket = lineasDelTicket, restanteEsperadoCents = restanteEsperadoCents,
         )
         // REPLACE: si este cobro se había reservado (`reservarCobro`, misma llave) la reserva se
         // vuelve la fila de la cola, con los datos finales del intento. 🔴 Rediseño r9: si esa reserva seguía `EN_VUELO`, su
@@ -202,6 +207,8 @@ class CashPaymentRepository @Inject constructor(
         enLugarDe: Collection<String> = emptyList(),
         /** D1: la copia del papel de esta parte, guardada con la reserva ANTES de la red (la cola la reenvía si la app muere). */
         lineasDelTicket: String? = null,
+        /** D12: el saldo que la cuenta debía quedar tras este cobro hecho con la copia. El MISMO que el de [queueCashPayment]. */
+        restanteEsperadoCents: Int? = null,
     ) {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -218,7 +225,7 @@ class CashPaymentRepository @Inject constructor(
             // D15: lo que la caja ya trae ANTES del POST no puede ser la gemela de este cobro. Un reintento conserva la foto del primero;
             // una llave que ya se apartó (Codex r19: «Cancelar» y volver a cobrar) no toma otra.
             ventasYaEnLaCaja = if (primeraVez) salida?.ventasDelServidorEnLaCaja(cajaDelCobro, venue, hora) else null,
-            lineasDelTicket = lineasDelTicket,
+            lineasDelTicket = lineasDelTicket, restanteEsperadoCents = restanteEsperadoCents,
         )
         val anteriores = enLugarDe.filter { it != entity.id }
         // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
@@ -508,6 +515,8 @@ class CashPaymentRepository @Inject constructor(
         ventasYaEnLaCaja: List<String>? = null,
         /** D1: la copia del papel de esta parte; columna propia, nunca `itemsJson` (ése es de `/fast`). */
         lineasDelTicket: String? = null,
+        /** D12: sólo viaja en la captura (no hay columna): la conciliación lo compara con el saldo del servidor. */
+        restanteEsperadoCents: Int? = null,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         // La misma regla que crear la orden en línea: una venta rápida DIVIDIDA también es ORDER (D2 etapa 2), así su parte
@@ -576,7 +585,8 @@ class CashPaymentRepository @Inject constructor(
             daPorCobradaAlAbandonar = true.takeIf { estado == PaymentSyncStatus.EN_VUELO },
             // Codex r11 #1: la hora de ESTE intento; si ya había captura en disco, `filaAlReemplazar` conserva la del primero.
             primeraCapturaEn = capturadaEn,
-            ventasYaEnLaCaja = ventasYaEnLaCaja)
+            ventasYaEnLaCaja = ventasYaEnLaCaja,
+            restanteEsperadoCents = restanteEsperadoCents)
         return entity.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(capture),
             capturedOrderRef = entity.orderId ?: if (hasOrderItems) orderExternalId ?: "offline-order:$localId" else null)
     }

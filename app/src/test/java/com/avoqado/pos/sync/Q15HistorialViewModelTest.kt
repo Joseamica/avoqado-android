@@ -99,6 +99,15 @@ class Q15HistorialViewModelTest {
         assertTrue(detail.toString(),detail.contains("Se cobró de más: $20.00"))
         assertTrue(detail.toString(),detail.contains("Campos distintos: saldo de la mesa"))
     }
+    // D12 (Codex r1 #1): la cuenta cobrada con la copia que creció en otra caja; el gerente ve cuánto quedó debiendo.
+    @Test fun `D12 detalle dice cuanto quedo debiendo la cuenta`() {
+        val capture=com.avoqado.pos.payment.data.ConciliacionDelCobro.guardarCaptura(com.avoqado.pos.payment.data.CapturaDelCobro("FULLTEST-A","p1","o1",10000,0,restanteEsperadoCents=0))
+        val resultado="""{"paymentId":"sp1","orderId":"o1","amountCents":10000,"tipCents":0,"camposDiferentes":["saldoDeLaCuenta"],"camposNoComprobados":[],"saldoEsperadoCents":0,"saldoEnElServidorCents":20000}"""
+        val detail=vm().detalle(row("p1").copy(q15CaptureJson=capture,q15InitialResultJson=resultado,q15ResultJson=resultado))
+        assertTrue(detail.toString(),detail.contains("Campos distintos: saldo de la cuenta"))
+        assertTrue(detail.toString(),detail.contains("Saldo esperado $0.00 · saldo en el servidor $200.00"))
+        assertTrue(detail.toString(),detail.contains("La cuenta quedó debiendo $200.00"))
+    }
     @Test fun detalle_legacy_o_campo_ausente_nunca_muestra_cero_como_prueba() {
         val r=row("p1").copy(q15CaptureJson=null,q15ResultJson="""{"paymentId":"sp1"}""")
         val detail=vm().detalle(r)

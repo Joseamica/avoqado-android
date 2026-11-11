@@ -191,11 +191,18 @@ internal fun salesNoticeResultWarnings(row:SalesNoticeSnapshot):List<String> {
     val result=row.registeredResult() ?: return emptyList()
     val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto",
         "tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden",
-        "saldoDeLaMesa" to "saldo de la mesa","cashRetainedCents" to "efectivo retenido")
+        "saldoDeLaMesa" to "saldo de la mesa","saldoDeLaCuenta" to "saldo de la cuenta","cashRetainedCents" to "efectivo retenido")
     return listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar").mapNotNull { (key,title) ->
         val fields=(result[key] as? JsonArray)?.map { labels[it.jsonPrimitive.content] ?: "otros datos" }.orEmpty()
         if(fields.isEmpty()) null else "$title: ${fields.joinToString()}"
-    }
+    } + listOfNotNull(salesNoticeDebe(result)?.let(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed::quedoDebiendo))
+}
+/** D12: lo que la cuenta quedó debiendo de más tras el cobro (el saldo del servidor pasa del esperado); null = nada. */
+private fun salesNoticeDebe(result:JsonObject):Int? {
+    fun cents(key:String)=(result[key] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it>=0 }
+    val esperado=cents("saldoEsperadoCents") ?: return null
+    val enServidor=cents("saldoEnElServidorCents") ?: return null
+    return (enServidor-esperado).takeIf { it>0 }
 }
 private fun salesNoticeMoney(cents:Int?)=cents?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it) } ?: "Sin confirmar"
 private fun salesNoticeDate(epoch:Long)=com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epoch))

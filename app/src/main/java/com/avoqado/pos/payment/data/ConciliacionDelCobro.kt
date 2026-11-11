@@ -163,19 +163,27 @@ object ConciliacionDelCobro {
         // 19-oct (mesa sin red retenida, founder «a»): la mesa cobrada sin red ya no espera a comprobar el precio; el servidor la
         // valora con el de HOY. Si el saldo que dejó no es el que el aparato esperaba, o el cobro sobró (pagado > total: el saldo
         // queda en 0 en los dos lados), el gerente lo ve. Propinas fuera: se cancelan entre total y pagado (`orderBalance.ts`).
-        val saldoDeLaMesa = if (canal == CanalDelCobro.ACK && (c.localOrderId != null || c.orderId != null)) {
+        fun saldo(campo: String, tolerancia: Long): Triple<Int, Int, Long?>? {
             val enServidor = integer(payment["remainingBalanceCents"])
-            val tolerancia = (c.toleranciaCents ?: 0).toLong()
             val deMas = integer(payment["totalPaidCents"])?.let { pagado -> integer(payment["orderTotalCents"])?.let { pagado.toLong() - it } }
                 ?.takeIf { it > tolerancia }
-            when {
-                enServidor == null -> { missing.add("saldoDeLaMesa"); null }
-                c.restanteEsperadoCents == null -> { missing.add("saldoDeLaMesa"); null }
+            return when {
+                enServidor == null -> { missing.add(campo); null }
+                c.restanteEsperadoCents == null -> { missing.add(campo); null }
                 kotlin.math.abs(enServidor.toLong() - c.restanteEsperadoCents) > tolerancia || deMas != null -> {
-                    different.add("saldoDeLaMesa"); Triple(c.restanteEsperadoCents, enServidor, deMas)
+                    different.add(campo); Triple(c.restanteEsperadoCents, enServidor, deMas)
                 }
                 else -> null
             }
+        }
+        val saldoDeLaMesa = if (canal == CanalDelCobro.ACK && (c.localOrderId != null || c.orderId != null)) {
+            saldo("saldoDeLaMesa", (c.toleranciaCents ?: 0).toLong())
+        } else null
+        // D12 (Codex r1 #1): la cuenta abierta cobrada con la copia, sin red. Si creció en otra caja antes del apagón, el cobro sube
+        // bien pero la cuenta quedó debiendo (o se cobró de más): el gerente lo ve. Sólo con saldo esperado (lo lleva el cobro hecho
+        // con la copia); sin él, como antes. La misma regla que la mesa, sin tolerancia: el servidor ya valoró esa cuenta.
+        val saldoDeLaCuenta = if (canal == CanalDelCobro.ORDER && c.orderId != null && c.localOrderId == null && c.restanteEsperadoCents != null) {
+            saldo("saldoDeLaCuenta", 0)
         } else null
         val result = buildJsonObject {
             put("paymentId", paymentId); put("orderId", orderId)
@@ -190,7 +198,7 @@ object ConciliacionDelCobro {
             put("camposDiferentes", JsonArray(different.map(::JsonPrimitive)))
             put("camposNoComprobados", JsonArray(missing.map(::JsonPrimitive)))
             totalDeLaOrden?.let { (alCobrar, enServidor) -> put("totalAlCobrarCents", alCobrar); put("totalEnElServidorCents", enServidor) }
-            saldoDeLaMesa?.let { (esperado, enServidor, deMas) ->
+            (saldoDeLaMesa ?: saldoDeLaCuenta)?.let { (esperado, enServidor, deMas) ->
                 put("saldoEsperadoCents", esperado); put("saldoEnElServidorCents", enServidor); deMas?.let { put("cobradoDeMasCents", it) }
             }
         }.toString()

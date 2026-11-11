@@ -216,6 +216,60 @@ class Q15ConciliacionDelCobroTest {
         assertNull(evaluate(pagoDeOrdenNueva(totalServidor = 10506), original = sinRed(), cola = true).motivo)
         assertEquals(ConciliacionDelCobro.DIFERENCIA, evaluate(pagoDeOrdenNueva(totalServidor = 10507), original = sinRed(), cola = true).motivo)
     }
+    // D12 (Codex r1 #1): el cobro de una cuenta hecho con la copia lleva el saldo que esperaba dejar. Si la cuenta creció en otra
+    // caja antes del apagón, «cobro guardado» no es «cuenta saldada»: el gerente lo ve. Sólo ORDER con orden del servidor.
+    private val cuenta = CapturaDelCobro(venueId = "FULLTEST-A", key = "p1", orderId = "o1", amountCents = 10000, tipCents = 0,
+        method = "CASH", restanteEsperadoCents = 0)
+    private fun pagoDeCuenta(extra: String) =
+        """{"success":true,"payment":{"paymentId":"p1","orderId":"o1","status":"COMPLETED","amount":10000,"tipAmount":0,"method":"CASH"$extra}}"""
+    private fun saldos(result: com.avoqado.pos.payment.data.EvaluacionDelCobro) = org.json.JSONObject(result.resultadoJson!!).let {
+        Triple(it.optInt("saldoEsperadoCents", -1), it.optInt("saldoEnElServidorCents", -1), it.optInt("cobradoDeMasCents", -1))
+    }
+
+    @Test fun `D12 la cuenta quedo debiendo es diferencia`() {
+        val result = evaluate(pagoDeCuenta(""","remainingBalanceCents":20000,"orderPaymentStatus":"PARTIAL","orderTotalCents":30000,"totalPaidCents":10000"""),
+            original = cuenta)
+        assertTrue(result.aplicado)
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, result.motivo)
+        assertTrue(result.camposDiferentes.contains("saldoDeLaCuenta"))
+        assertEquals(Triple(0, 20000, -1), saldos(result))
+    }
+    @Test fun `D12 la cuenta quedo en cero no avisa`() {
+        val result = evaluate(pagoDeCuenta(""","remainingBalanceCents":0,"orderPaymentStatus":"PAID","orderTotalCents":10000,"totalPaidCents":10000"""),
+            original = cuenta)
+        assertNull(result.motivo); assertTrue(result.camposDiferentes.isEmpty())
+        assertFalse(result.camposNoComprobados.contains("saldoDeLaCuenta"))
+        assertFalse(result.resultadoJson!!.contains("saldoEsperadoCents"))
+    }
+    @Test fun `D12 el sobrepago tambien se marca`() {
+        val result = evaluate(pagoDeCuenta(""","remainingBalanceCents":0,"orderPaymentStatus":"PAID","orderTotalCents":10000,"totalPaidCents":20000"""),
+            original = cuenta)
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, result.motivo)
+        assertTrue(result.camposDiferentes.contains("saldoDeLaCuenta"))
+        assertEquals(Triple(0, 0, 10000), saldos(result))
+    }
+    @Test fun `un cobro de orden sin saldo esperado sigue como hoy`() {
+        val result = evaluate(pagoDeCuenta(""","remainingBalanceCents":20000,"orderPaymentStatus":"PARTIAL","orderTotalCents":30000,"totalPaidCents":10000"""),
+            original = cuenta.copy(restanteEsperadoCents = null))
+        assertNull(result.motivo)
+        assertFalse(result.camposDiferentes.contains("saldoDeLaCuenta")); assertFalse(result.camposNoComprobados.contains("saldoDeLaCuenta"))
+        assertFalse(result.resultadoJson!!.contains("saldoEsperadoCents"))
+    }
+    @Test fun `servidor sin saldo deja el campo sin comprobar pero aplicado`() {
+        val result = evaluate(pagoDeCuenta(""), original = cuenta)
+        assertTrue(result.aplicado)
+        assertTrue(result.camposNoComprobados.contains("saldoDeLaCuenta"))
+        assertNull(result.motivo)
+    }
+    @Test fun `D12 el saldo de la cuenta no se mira en la mesa ni en la venta rapida`() {
+        // Una mesa de la cola (lleva su número local) sigue con su regla de siempre: por ORDER no se compara el saldo.
+        val mesa = evaluate(pagoDeCuenta(""","remainingBalanceCents":20000,"orderTotalCents":30000,"totalPaidCents":10000"""),
+            original = cuenta.copy(localOrderId = "L1"))
+        assertNull(mesa.motivo); assertFalse(mesa.camposNoComprobados.contains("saldoDeLaCuenta"))
+        val rapida = evaluate("""{"success":true,"data":{"id":"p1","orderId":"o1","status":"COMPLETED","amount":"100.00","tipAmount":"0","method":"CASH","remainingBalanceCents":20000}}""",
+            CanalDelCobro.FAST, original = cuenta)
+        assertNull(rapida.motivo); assertFalse(rapida.camposDiferentes.contains("saldoDeLaCuenta"))
+    }
     @Test fun success_debe_ser_booleano_real_no_cadena_o_numero() {
         for (value in listOf("\"true\"", "1", "false")) {
             val result = evaluate(order().replace("\"success\":true", "\"success\":$value"))

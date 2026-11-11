@@ -188,6 +188,25 @@ class CobroEnVueloRepositoryTest {
         assertEquals("caja-A", com.avoqado.pos.core.data.local.database.filaAlReemplazar(null, nueva).cashDrawerSessionId)
     }
 
+    /**
+     * D12 (Codex r1 #1): el cobro de una cuenta hecho con la copia lleva el saldo que esperaba dejar, en la reserva y en el encolado.
+     * 🔴 El MISMO valor en las dos: `PendingPaymentDao.insert` exige que la captura del encolado sea la de la reserva.
+     */
+    @Test
+    fun `D12 la reserva y el encolado llevan el mismo saldo esperado`() = runTest {
+        coEvery { dao.findForVenue(any(), any()) } returns null
+        val filas = mutableListOf<PendingPaymentEntity>()
+        coEvery { dao.insert(capture(filas)) } returns Unit
+
+        repository.reservarCobro(venta, "staff-1", 10_000, 0, null, orderId = "o1", idempotencyKey = "llave-D12", restanteEsperadoCents = 0)
+        repository.queueCashPayment(venta, "staff-1", 10_000, 0, null, orderId = "o1", idempotencyKey = "llave-D12", restanteEsperadoCents = 0)
+
+        assertEquals(listOf(PaymentSyncStatus.EN_VUELO.name, PaymentSyncStatus.PENDING.name), filas.map { it.syncStatus })
+        for (fila in filas) {
+            assertEquals(0, ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, "venue-1", "llave-D12")?.restanteEsperadoCents)
+        }
+    }
+
     @Test
     fun `regresión - encolar sin red sobrescribe la reserva como PENDING con la misma llave`() = runTest {
         repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A")
