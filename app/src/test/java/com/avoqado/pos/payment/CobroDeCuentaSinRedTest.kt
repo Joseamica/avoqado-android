@@ -321,6 +321,41 @@ class CobroDeCuentaSinRedTest {
         assertNull(copia.cuenta("v1", "A"))
     }
 
+    /**
+     * Caso 4 en aparatos (SAMSUNG + D3, 12-nov): con la cuenta ya apartada con la caja que la abrió, se apaga el WiFi de ESTA caja justo
+     * antes del cajón. La revalidación ya no la ve y corta antes de la puerta: el texto es el de «No recibas el efectivo», no el de «no la
+     * encuentro» (la cajera ya tocó «$180»).
+     */
+    @Test fun `la duena deja de verse con la cuenta apartada y la revalidacion dice que se perdio el contacto`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Sunmi D3"
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Concedida, "d3", "Sunmi D3", 0L) }
+        val m = vm()
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        otraCaja = false // se apagó el WiFi de esta caja: la dueña ya no se ve
+        assertEquals(TextosDeCuentaSinRed.sePerdioElContacto("Sunmi D3"), m.revalidarCobroSinRed("o1", 6000))
+        assertEquals(Gris(TextosDeCuentaSinRed.sePerdioElContacto("Sunmi D3")), m.sinRed.value)
+    }
+
+    /** Caso 4, el otro lado: sin apartado vivo con la dueña (nunca se pidió, o ya se soltó) sigue el texto de «no la encuentro». */
+    @Test fun `sin apartado con la duena la revalidacion sigue diciendo que no la encuentra`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Sunmi D3"
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Concedida, "d3", "Sunmi D3", 0L) }
+        val m = vm()
+        otraCaja = false
+        assertEquals(TextosDeCuentaSinRed.noLaEncuentro("Sunmi D3"), m.revalidarCobroSinRed("o1", 6000))
+
+        otraCaja = true
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        m.soltarCobroSinRed() // salió del cobro: ya no hay apartado
+        otraCaja = false
+        assertEquals(TextosDeCuentaSinRed.noLaEncuentro("Sunmi D3"), m.revalidarCobroSinRed("o1", 6000))
+        assertEquals(Gris(TextosDeCuentaSinRed.noLaEncuentro("Sunmi D3")), m.sinRed.value)
+    }
+
     /** Codex r3 H3. */
     /** Opción D: la puerta del cobro (en `PaymentFlowViewModel`) dice que no justo antes del cajón: la cuenta enseña ese gris. */
     @Test fun `la puerta que dice no justo antes del cajón deja la cuenta en gris`() = runTest {

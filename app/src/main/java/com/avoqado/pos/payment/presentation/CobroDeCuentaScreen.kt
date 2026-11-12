@@ -261,8 +261,15 @@ class CobroDeCuentaViewModel @Inject constructor(
      * cobra (y la cuenta lo enseña). El permiso de la caja que la abrió lo pide la puerta del cobro (`PaymentFlowViewModel`, Opción D).
      */
     suspend fun revalidarCobroSinRed(orderId: String, saldoCents: Int): String? {
-        val decision = decidirCobroSinRed(datosSinRed(orderId), permiso = null)
+        val datos = datosSinRed(orderId)
+        val decision = decidirCobroSinRed(datos, permiso = null)
+        // Caso 4 (aparatos, 12-nov): la caja que la abrió dejó de verse con la cuenta YA apartada con ella: la cajera ya tecleó el
+        // efectivo, así que es el «No recibas el efectivo» de la puerta, no el «no la encuentro» de antes del toque. Se corta igual.
+        val sinContactoCon = datos.cajaQueLaAbrio?.takeIf {
+            apartadoDe == orderId && decision == DecisionSinRed.Gris(TextosDeCuentaSinRed.noLaEncuentro(it))
+        }
         val texto = when {
+            sinContactoCon != null -> TextosDeCuentaSinRed.sePerdioElContacto(sinContactoCon)
             decision is DecisionSinRed.Gris -> decision.texto
             decision is DecisionSinRed.NoConfirmo -> decision.texto
             decision is DecisionSinRed.Cobrar && decision.saldoCents != saldoCents -> TextosDeCuentaSinRed.saldoCambio(decision.saldoCents)
