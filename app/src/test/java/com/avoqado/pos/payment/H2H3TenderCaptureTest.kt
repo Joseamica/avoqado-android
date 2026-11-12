@@ -350,6 +350,65 @@ class H2H3TenderCaptureTest {
         assertEquals(4500, venta.amountCents)
     }
 
+    /** D5 · B1: una mesa nacida en el SERVIDOR (id real). Sin la bandera es la mesa de hoy; con `cobroSinRed` (la prende B2b) va por la cola de mesas. */
+    private fun mesaDelServidor(cobroSinRed: Boolean) {
+        tableSession.start(TableSession.Active("table-A", "5", null, "order-R", "R-7", 3, 4000,
+            TableSession.Mode.PAYING, cobroSinRed = cobroSinRed))
+        open(orderId = "order-R")
+    }
+
+    private fun recordCashPaymentDe(orderId: String, veces: Int) = coVerify(exactly = veces) {
+        orderRepository.recordCashPayment(orderId, any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+    }
+
+    @Test fun `B1 mesa del servidor con cobroSinRed sale por la cola de mesas con su orderId real`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        mesaDelServidor(cobroSinRed = true)
+        assertTrue(viewModel.cobroDeMesaSinRed())
+        viewModel.processCashPayment(4500); finishCash()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertTrue("el éxito es «se sube solo»", exito.isQueued)
+        val cobro = intents.single()
+        assertEquals("PAY_CASH", cobro.type)
+        assertEquals(ColaDelCobro.Outbox(cobro.id), exito.colaDelCobro)
+        val payload = Json.parseToJsonElement(cobro.payloadJson).jsonObject
+        assertEquals("el id real de la orden", "order-R", payload["orderId"]?.jsonPrimitive?.content)
+        assertFalse(payload.containsKey("localOrderId"))
+        assertEquals(4000, payload.getValue("amountCents").jsonPrimitive.int)
+        assertEquals(500, payload.getValue("tipCents").jsonPrimitive.int)
+        assertEquals("la caja de la venta", "drawer-A", payload["cashDrawerSessionId"]?.jsonPrimitive?.content)
+        val captura = com.avoqado.pos.payment.data.ConciliacionDelCobro.leerCaptura(cobro.q15CaptureJson, "venue-1", cobro.id)!!
+        assertEquals("order-R", captura.orderId)
+        assertEquals("el saldo que la tablet espera tras el cobro (4000 − 4000)", 0, captura.restanteEsperadoCents)
+        recordCashPaymentDe("order-R", 0)
+        assertTrue("nada en la cola de cobros", rows.isEmpty())
+        assertEquals("una venta en el cajón, con la llave del cobro", CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id), ventasDelCajon().single().id)
+    }
+
+    /** B1, lo más importante: sin la bandera, la mesa del servidor cobra EXACTAMENTE como hoy (por `/pay`; sin red, su apartado). */
+    @Test fun `B1 sin la bandera la mesa del servidor cobra como hoy y no toca la cola de mesas`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        mesaDelServidor(cobroSinRed = false)
+        assertFalse(viewModel.cobroDeMesaSinRed())
+        viewModel.processCashPayment(4500); finishCash()
+
+        assertTrue("la cola de mesas no se toca", intents.isEmpty())
+        recordCashPaymentDe("order-R", 1)
+        assertEquals("su apartado en la cola de cobros, como hoy", 1, rows.size)
+    }
+
+    @Test fun `B1 con cobroSinRed la tarjeta no se ofrece aunque haya red, sin la bandera si`() = runTest {
+        online.value = true
+        mesaDelServidor(cobroSinRed = true)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD); advanceUntilIdle()
+        assertTrue("sigue en efectivo", viewModel.state.value is PaymentFlowState.CollectingCashAmount)
+
+        mesaDelServidor(cobroSinRed = false)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD); advanceUntilIdle()
+        assertFalse("hoy la tarjeta sí se intenta", viewModel.state.value is PaymentFlowState.CollectingCashAmount)
+    }
+
     /** B0, vecina: dos cobros de la misma mesa provisional (dos partes) siguen siendo DOS `PAY_CASH`, cada uno con su llave. */
     @Test fun `B0 mesa provisional - dos cobros de la misma mesa son dos PAY_CASH con llaves distintas`() = runTest {
         coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)

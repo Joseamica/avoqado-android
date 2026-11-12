@@ -18,6 +18,22 @@ class TableSessionSinRedTest {
         assertEquals(setOf("o1"), active.idsDeLaOrden)
     }
 
+    // D5 · B1: el cobro de una mesa del servidor por la cola de mesas. Nace apagada y nadie la prende en B1 (lo hará B2b).
+    @Test fun `B1 cobroSinRed nace apagada, volver del piso la quita y un ACK a media pantalla no`() {
+        val delServidor = provisional().copy(orderId = "o1", isProvisional = false, mode = TableSession.Mode.PAYING)
+        assertFalse(delServidor.cobroSinRed)
+        val session = TableSession().apply { start(delServidor.copy(cobroSinRed = true), "v1") }
+        session.confirmarCambio("v1", setOf("o1"), 3, 1500, session.contextoActual())
+        assertTrue("un ACK a media pantalla no la quita", session.current()!!.cobroSinRed)
+        assertTrue(session.estacionar("v1", session.current()!!))
+        assertFalse("estacionada y reabierta desde el piso, ya no", session.abrirDesdePiso("v1", delServidor)!!.cobroSinRed)
+        session.start(session.current()!!.copy(cobroSinRed = true), "v1")
+        assertFalse("reabierta desde el piso con la sesión viva, tampoco", session.abrirDesdePiso("v1", delServidor)!!.cobroSinRed)
+        session.start(session.current()!!.copy(cobroSinRed = true), "v1")
+        session.finalizar("v1", setOf("o1"))
+        assertNull(session.current())
+    }
+
     @Test fun `rondas sin red suman en la sesion y sobreviven al cambio de modo`() {
         val session = TableSession().apply { start(provisional()) }
         session.sumarRondaSinRed(3300)

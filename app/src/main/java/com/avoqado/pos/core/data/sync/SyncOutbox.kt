@@ -450,11 +450,12 @@ class SyncOutbox @Inject constructor(
      * (falso positivo para el gerente; nunca esconde dinero). Salida: que la ronda lleve las unidades de cada opción (Codex r4).
      */
     private suspend fun toleranciaSinRedQ16(venueId: String, payload: JsonObject): Int {
-        val ref = (payload["localOrderId"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return 0
+        // D5 · B1: la mesa del servidor cobrada por la cola de mesas lleva `orderId`, igual que sus rondas.
+        val ref = ((payload["localOrderId"] ?: payload["orderId"]) as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return 0
         return dao.pendingFifo(venueId, 1000).filter { it.type == SyncIntentTypes.OPEN_TABLE || it.type == SyncIntentTypes.ADD_ITEMS }
             .sumOf { row -> runCatching {
                 val p = json.decodeFromString(JsonObject.serializer(), row.payloadJson)
-                if ((p["localOrderId"] as? JsonPrimitive)?.content != ref) 0
+                if (((p["localOrderId"] ?: p["orderId"]) as? JsonPrimitive)?.content != ref) 0
                 else (p["items"] as? kotlinx.serialization.json.JsonArray)?.sumOf { item ->
                     val combo = (item as? JsonObject)?.get("promotionRef") as? JsonObject ?: return@sumOf 0
                     ((combo["selections"] as? kotlinx.serialization.json.JsonArray)?.size ?: 1).coerceAtLeast(1) } ?: 0
