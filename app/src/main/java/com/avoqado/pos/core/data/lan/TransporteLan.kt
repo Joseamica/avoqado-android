@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
@@ -50,6 +51,8 @@ class TransporteLan @Inject constructor(
     @ApplicationContext private val context: Context,
     private val syncOutbox: SyncOutbox,
     private val printConfigRepository: PrintConfigRepository,
+    /** D12 · tubería (hz:e5ee98bc:D4): el disco de las cajas recordadas ([CajasRecordadas]); null = no recuerda (pruebas sin disco). */
+    private val cajasEnDisco: com.avoqado.pos.core.data.local.PayloadCache? = null,
 ) : LanDiscoveryPort {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -85,6 +88,9 @@ class TransporteLan @Inject constructor(
 
     @Volatile private var venueId: String? = null
     @Volatile private var hub: ((String) -> LeaseResponse)? = null
+    /** D12 · Opción D: las ops `cuenta_*` y el nombre que va en el anuncio. */
+    @Volatile private var cuentas: (suspend (String) -> String)? = null
+    @Volatile private var nombreCaja: String? = null
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
     @Volatile private var preparationReceiver: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? = null
     @Volatile private var preparationDisplay: ((com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Set<String>)? = null
@@ -103,6 +109,12 @@ class TransporteLan @Inject constructor(
     private var acceptJob: Job? = null
     private var configJob: Job? = null
     private var discovery: LanDiscovery? = null
+
+    /** D12 · tubería: las cajas que siguen por TCP cuando NSD las pierde. Vive lo que vive [discovery] (una por encendido de la red). */
+    private var recordadas: CajasRecordadas? = null
+
+    /** El `quien` por TCP (≤ 1.5 s por caja); inyectable en pruebas. */
+    internal var preguntarQuien: suspend (LanPeer) -> LeaseResponse? = { LeaseClient().quien(it) }
 
     /** El nivel de API que ve [LanDiscovery]; inyectable en pruebas (en la JVM vale 0 y abajo de 34 el re-resolve no corre). */
     internal var apiNivel: Int = Build.VERSION.SDK_INT
@@ -137,7 +149,10 @@ class TransporteLan @Inject constructor(
                 // socket, mismo TXT ⇒ nada), pero levanta un socket que no abrió y re-anuncia tras una ráfaga de
                 // registros fallida agotada — sin esto un aparato sólo-hub se quedaba invisible hasta el siguiente cambio.
                 while (true) {
-                    encender()
+                    // Menor 1 (ronda 1): al abrir el socket, primero el último puerto propio (las otras cajas recuerdan esta dirección).
+                    encender(if (puerto <= 0) leerPuertoPropio() else null)
+                    guardarPuertoPropio()
+                    revisarPorTcp()
                     delay(REVISION_DE_RED_MS)
                 }
             }
@@ -171,6 +186,18 @@ class TransporteLan @Inject constructor(
     override fun desconectarHub() {
         hub = null
         _hubConectado.value = false
+        reanunciar()
+    }
+
+    override fun conectarCuentas(manejador: suspend (String) -> String, nombreCaja: String) {
+        cuentas = manejador
+        this.nombreCaja = nombreCaja
+        reanunciar()
+    }
+
+    override fun desconectarCuentas() {
+        cuentas = null
+        nombreCaja = null
         reanunciar()
     }
 
@@ -230,12 +257,13 @@ class TransporteLan @Inject constructor(
     // MARK: - Red
 
     @Synchronized
-    private fun encender() {
+    private fun encender(puertoPreferido: Int?) {
         val v = venueId ?: return
-        val port = abrirSocket() ?: return
+        val port = abrirSocket(puertoPreferido) ?: return
         val d = discovery ?: run {
             lateinit var nueva: LanDiscovery
             nueva = LanDiscovery(context, deviceId, v, apiNivel = apiNivel) { lista -> alCambiarAjenos(nueva, lista) }
+            recordadas = cajasEnDisco?.let { CajasRecordadas(it, v, deviceId, preguntarQuien) }
             nueva.also { discovery = it }
         }
         d.anunciar(port, txt(v))
@@ -247,6 +275,7 @@ class TransporteLan @Inject constructor(
     @Synchronized
     private fun apagarRed() {
         discovery?.parar(); discovery = null
+        recordadas = null
         acceptJob?.cancel(); acceptJob = null
         runCatching { serverSocket?.close() }; serverSocket = null
         ajenos = emptyList()
@@ -317,12 +346,45 @@ class TransporteLan @Inject constructor(
     @Synchronized
     private fun alCambiarAjenos(origen: LanDiscovery, lista: List<LanPeer>) {
         if (discovery !== origen) return
+        val perdidas = ajenos.filter { a -> lista.none { it.deviceId == a.deviceId } }
         ajenos = lista
+        recordadas?.let { r ->
+            // D12 · tubería: la que NSD perdió sigue en la lista mientras conteste por TCP; se confirma y se recuerda en el fondo, nunca
+            // en el hilo de NSD que avisó. Frescura (Codex r5 #1): la foto se fecha AQUÍ, al avisar NSD, no al terminar de confirmar.
+            val trabajo = r.alCambiarNsd(perdidas, lista)
+            scope.launch {
+                runCatching { trabajo() }.onFailure { Log.w(TAG, "⚠️ cajas por TCP: ${it.message}") }
+                publicarSiVigente(r)
+            }
+        }
         publicarPeers()
     }
 
+    /**
+     * D12 · tubería: en la revisión de cada minuto, en el scope del transporte (nunca en quien llama): recuerda lo que NSD ve y pregunta
+     * `quien` a las recordadas que no ve (≤ 1.5 s cada una, en paralelo).
+     */
+    internal suspend fun revisarPorTcp() {
+        val (r, vistos) = synchronized(this) { recordadas to ajenos }
+        r ?: return
+        try {
+            r.revisar(vistos)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ revisión de cajas por TCP: ${e.message}")
+        }
+        publicarSiVigente(r)
+    }
+
+    /** Lo que llega tarde de un encendido anterior (otra sucursal, la red apagada) no se publica. */
+    @Synchronized
+    private fun publicarSiVigente(r: CajasRecordadas) {
+        if (recordadas === r) publicarPeers()
+    }
+
     private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
-        if (preparationReceiver != null) 1 else 0, urgencyVersion)
+        if (preparationReceiver != null) 1 else 0, urgencyVersion, cajaConD = nombreCaja?.takeIf { cuentas != null })
 
     @Synchronized
     private fun publicarPeers() {
@@ -330,13 +392,15 @@ class TransporteLan @Inject constructor(
         if (venueId == null || p <= 0) { _peers.value = emptyList(); return }
         val yo = LanPeer(deviceId, "127.0.0.1", p, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
             if (preparationReceiver != null) 1 else 0, urgencyVersion)
-        _peers.value = listOf(yo) + ajenos
+        _peers.value = listOf(yo) + ajenos + recordadas?.porTcp(ajenos).orEmpty()
     }
 
-    private fun abrirSocket(): Int? {
+    private fun abrirSocket(preferido: Int?): Int? {
         serverSocket?.takeIf { !it.isClosed }?.let { return it.localPort }
         return try {
-            val socket = ServerSocket(0) // puerto efímero: se publica en el TXT, nadie lo adivina
+            // El puerto va en el anuncio (nadie lo adivina). Ronda 1, Menor 1: primero el último propio, porque las otras cajas lo
+            // recuerdan para hablarle por TCP si NSD las pierde; ocupado ⇒ uno efímero, como antes, y se guarda el nuevo.
+            val socket = preferido?.let(::escucharEn) ?: ServerSocket(0)
             serverSocket = socket
             publicarReceptor()
             acceptJob = scope.launch { aceptar(socket) }
@@ -345,6 +409,70 @@ class TransporteLan @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ No se pudo abrir el socket del transporte: ${e.message} — sin red local")
             null
+        }
+    }
+
+    private fun escucharEn(puerto: Int): ServerSocket? {
+        val s = ServerSocket()
+        return try {
+            s.reuseAddress = true // conexiones del proceso anterior en TIME_WAIT no lo traban
+            s.bind(java.net.InetSocketAddress(puerto))
+            s
+        } catch (e: Exception) {
+            runCatching { s.close() }
+            Log.i(TAG, "🛰️ El puerto $puerto ya no está libre (${e.message}) — se abre otro")
+            null
+        }
+    }
+
+    /** Lo que hay en disco del puerto propio de esta sucursal (null = sin disco, nada guardado o no se pudo leer). */
+    @Volatile private var puertoEnDisco: Int? = null
+
+    /** Ronda 2: la última lectura del puerto guardado TRONÓ: en esta sesión no se escribe encima del bueno (como el 5b de las cajas). */
+    @Volatile private var puertoIlegible = false
+
+    /**
+     * Familia B (el puerto propio): leer y escribir van bajo este candado, y se escribe el puerto del socket de ESE momento. Un guardado del
+     * encendido anterior que tardaba (se reinició la red local a media escritura) aterrizaba después del nuevo y dejaba en disco otro
+     * puerto, mientras la memoria ([puertoEnDisco]) decía que ya estaba guardado.
+     */
+    private val candadoDelPuerto = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun leerPuertoPropio(): Int? = candadoDelPuerto.withLock { leerPuertoPropioYa() }
+
+    private suspend fun guardarPuertoPropio() = candadoDelPuerto.withLock { guardarPuertoPropioYa() }
+
+    private suspend fun leerPuertoPropioYa(): Int? {
+        val c = cajasEnDisco ?: return null
+        val v = venueId ?: return null
+        val leido = try {
+            c.loadDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PUERTO_PROPIO, v)?.json?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudo leer el puerto propio (se abre otro y no se guarda): ${e.message}")
+            puertoIlegible = true
+            puertoEnDisco = null
+            return null
+        }
+        puertoIlegible = false
+        puertoEnDisco = leido
+        return leido
+    }
+
+    private suspend fun guardarPuertoPropioYa() {
+        val c = cajasEnDisco ?: return
+        val v = venueId ?: return
+        val p = puerto
+        if (p <= 0 || p == puertoEnDisco || puertoIlegible) return
+        puertoEnDisco = null // en duda mientras se escribe: si este guardado se corta (cancelado a medias), la siguiente vuelta lo repite
+        try {
+            c.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PUERTO_PROPIO, v, p.toString())
+            puertoEnDisco = p
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudo guardar el puerto propio: ${e.message}")
         }
     }
 
@@ -386,7 +514,8 @@ class TransporteLan @Inject constructor(
             val prep = preparationReceiver
             val prepVigente: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? =
                 if (prep == null) null else { command -> prep(command) && generacion == g && venueId == command.venueId }
-            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay)
+            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay, cuentas,
+                quien = venueId?.let { txt(it) })
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }
     }

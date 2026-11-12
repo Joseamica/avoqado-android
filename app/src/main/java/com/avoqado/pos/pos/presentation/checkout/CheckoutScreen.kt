@@ -2012,7 +2012,7 @@ fun CheckoutScreen(
                             // TABLE_SERVICE (PAYING): the table's order was just
                             // fully paid through the normal flow — release it.
                             if (tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING) {
-                                tablesViewModel.finishTableAfterPayment()
+                                tablesViewModel.finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)
                             }
                         }
                     }

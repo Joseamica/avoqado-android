@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.orders.data.CuentasAbiertasAqui
 import com.avoqado.pos.payment.data.CierreDeLlave
 import com.avoqado.pos.payment.data.DesenlacePagarDespues
 import com.avoqado.pos.payment.data.OrderRepository
@@ -52,8 +53,9 @@ class PagarDespuesFilaTest {
 
     private fun fila(q: PayLaterQueue, id: String) = q.filas.value.firstOrNull { it.id == id }
 
-    private fun cola() = PayLaterQueue(disco.context, ordenes, storage, SavedCartsRepository(copias.context), mockk(relaxed = true))
-        .apply { io = Dispatchers.Unconfined }
+    private fun cola(marcas: CuentasAbiertasAqui? = null) =
+        PayLaterQueue(disco.context, ordenes, storage, SavedCartsRepository(copias.context), mockk(relaxed = true), marcas)
+            .apply { io = Dispatchers.Unconfined }
 
     private fun responde(code: Int, body: String, contentType: String = "application/json") {
         coEvery { ordenes.enviarPagarDespues(any(), any()) } returns OrderRepository.RespuestaCruda(code, contentType, null, body)
@@ -645,5 +647,38 @@ class PagarDespuesFilaTest {
 
         assertEquals(DesenlacePagarDespues.Creada("ord-1", 10000), desenlace)
         assertTrue(q.filas.value.isEmpty())
+    }
+
+    // MARK: - D12 (Tarea 6): la marca «la abrió aquí» se escribe ANTES de borrar la evidencia local
+
+    @Test
+    fun `PayLaterQueue marca ANTES de cerrarAceptada`() = runTest {
+        val marcas = mockk<CuentasAbiertasAqui>()
+        val q = cola(marcas)
+        val llave = "pay-later:1"
+        q.guardar(fila(id = llave, total = 10000))
+        responde(201, """{"success":true,"order":{"id":"o9","total":100.0}}""")
+        var filaAlMarcar: PayLaterRow? = null
+        coEvery { marcas.marcar("venue-A", "o9") } answers { filaAlMarcar = fila(q, llave) }
+
+        q.drenar()
+
+        assertTrue("la fila aún existía al marcar", filaAlMarcar != null)
+        assertNull("después se borró", fila(q, llave))
+        coVerify(exactly = 1) { marcas.marcar("venue-A", "o9") }
+    }
+
+    @Test
+    fun `PayLaterQueue marca la cuenta que ya existia al cerrar la llave`() = runTest {
+        val marcas = mockk<CuentasAbiertasAqui>(relaxed = true)
+        val q = cola(marcas)
+        q.guardar(fila(estado = Estado.PENDIENTE, copia = "copia-1").copy(venta = ventaDeAna))
+        responde(400, """{"message":"Producto inválido"}""")
+        cierra(200, """{"success":true,"released":false,"order":{"id":"o9","total":100}}""")
+
+        q.drenar()
+
+        assertTrue(q.filas.value.isEmpty())
+        coVerify(exactly = 1) { marcas.marcar("venue-A", "o9") }
     }
 }

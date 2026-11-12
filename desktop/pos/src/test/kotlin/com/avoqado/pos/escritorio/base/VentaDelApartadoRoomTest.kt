@@ -325,9 +325,9 @@ class VentaDelApartadoRoomTest {
         ventaEnLaCaja("cmh0servidorcafeanterior01", 10_000, orden = null, hora = System.currentTimeMillis() - 60_000)
         var fallar = true
         val discoQueFallaUnaVez = object : PendingPaymentDao by pagos {
-            override suspend fun insert(payment: PendingPaymentEntity) {
+            override suspend fun insert(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) {
                 if (fallar) { fallar = false; throw java.io.IOException("disco de prueba") }
-                pagos.insert(payment)
+                pagos.insert(payment, antesDelInsert)
             }
         }
         val repo = CashPaymentRepository(storage, discoQueFallaUnaVez, inyector.getInstance(SalidaDelApartado::class.java))

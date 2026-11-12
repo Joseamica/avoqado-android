@@ -498,4 +498,19 @@ class TransporteLanLoopbackTest {
             t.detener()
         }
     }
+
+    /** D12 · Opción D: las ops `cuenta_*` llegan por el socket REAL a su manejador (sin él, «Operación desconocida»), con el plazo de 5 s. */
+    @Test
+    fun `D12 opción D - las ops de cuenta llegan a su manejador por el socket real`() = runBlocking {
+        transporte.iniciar("venue-1")
+        transporte.conectarHub { LeaseResponse(status = LeaseProtocol.STATUS_LEASES, leases = emptyList()) }
+        val puerto = esperarPuerto()
+        val pedido = CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i", venueId = "venue-1")
+        val sin = LeaseProtocol.decodeResponse(enviarLinea(puerto, LeaseProtocol.encode(pedido))!!)!!
+        assertEquals("Operación desconocida: cuenta_apartar", sin.message)
+        transporte.conectarCuentas({ LeaseProtocol.encode(LeaseResponse(status = LeaseProtocol.STATUS_GRANTED, caja = "Caja 1")) }, "Caja 1")
+        val con = LeaseClient().preguntarCuenta(LanPeer("x", "127.0.0.1", puerto), pedido)
+        assertEquals(LeaseProtocol.STATUS_GRANTED, con?.status)
+        assertEquals("Caja 1", con?.caja)
+    }
 }

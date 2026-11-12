@@ -62,11 +62,16 @@ object NetworkModule {
         // → SecureStorage, y el repositorio construye su PROPIO OkHttpClient.
         managerOverrideCoordinator: ManagerOverrideCoordinator,
         secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
+        /** D5 · B2b (piloto): las fotos de mesas que borra el punto de paso ①. Sin fotos ni lecturas, no hace nada. */
+        fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas,
     ): OkHttpClient {
         val logging = registroDeRed(BuildConfig.DEBUG)
 
         // Nace del cliente base compartido (ver ConexionesCompartidas): el refresco de sesión reusa estas conexiones.
         return com.avoqado.pos.core.data.network.ConexionesCompartidas.base.newBuilder()
+            // D5 · B2b, punto de paso ①: el PRIMERO, para ver cada petición una vez y su respuesta final (reintentos y PIN de
+            // gerente incluidos). Los clientes derivados (`newBuilder()`) lo heredan; `RedSoloPorElClientePrincipalTest` lo vigila.
+            .addInterceptor(com.avoqado.pos.core.data.network.PuertaDeLaFoto(fotosDeMesas))
             .addInterceptor(authInterceptor)
             // Registro pasivo de dispositivos (estilo Square Device Management): manda
             // los headers X-Device-* para que el server registre este aparato en el

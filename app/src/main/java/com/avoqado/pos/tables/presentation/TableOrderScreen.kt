@@ -303,6 +303,9 @@ fun TableOrderScreen(
         }
     }
     BackHandler { requestExit() }
+    // B3 (visto 1): su cobro y su liberación subieron con la pantalla abierta (fuera del cobro): se dice y «atrás» regresa al plano.
+    val activa by viewModel.tableSession.active.collectAsState()
+    LaunchedEffect(activa == null, showPayment) { if (activa == null && !showPayment) viewModel.showBlockedReason(CUENTA_CERRADA) }
 
     /** Read-only por propiedad de mesa: avisa y bloquea la acción de EDITAR. */
     fun blockIfReadOnly(): Boolean {
@@ -393,7 +396,16 @@ fun TableOrderScreen(
         if (isTablet) {
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    // hz:cc708532:D3 (12-nov): mientras se busca, el buscador ocupa TODO el panel izquierdo. Debajo de la barra de la mesa,
+                    // las pestañas y el aviso de tiempos, el teclado en pantalla no dejaba espacio para los resultados (visto en la D3).
+                    // El campo NO se vacía al elegir: la cajera agrega varios productos de la misma búsqueda. La cuenta (derecha) no cambia.
+                    if (showSearch && !showCombos) {
+                        SearchOverlayView(
+                            viewModel = catalogViewModel,
+                            onProductTap = { handleProductTap(it); showSearch = false },
+                            onDismiss = { showSearch = false },
+                        )
+                    } else Column(modifier = Modifier.fillMaxSize()) {
                         contextBar()
                         HorizontalDivider()
                         Row(modifier = Modifier.fillMaxWidth()) {
@@ -406,12 +418,6 @@ fun TableOrderScreen(
                                 com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
                                     estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
                                     onPromotionTap = { selectedCombo = it })
-                            } else if (showSearch) {
-                                SearchOverlayView(
-                                    viewModel = catalogViewModel,
-                                    onProductTap = { handleProductTap(it); showSearch = false },
-                                    onDismiss = { showSearch = false },
-                                )
                             } else {
                                 Column(modifier = Modifier.fillMaxSize()) {
                                     TableSearchBar(onSearchTap = { showSearch = true })
@@ -470,7 +476,7 @@ fun TableOrderScreen(
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
-                                cuentaCobradaAqui = viewModel.cuentaCobradaAqui,
+                                motivoCobradaAqui = viewModel.motivoCobradaAqui,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -551,6 +557,16 @@ fun TableOrderScreen(
                     }
                 }
             }
+        } else if (showSearch && !showCombos) {
+            // D26 (12-nov, hz:e5ee98bc:D26): en pantalla chica el buscador ocupa TODA la cuenta, como en «Cobrar». Metido debajo de la
+            // barra de la mesa y las pestañas, y encima de «Ver cheque», con el teclado abierto y los avisos de arriba («Sin conexión»,
+            // «operaciones por revisar») no cabían ni el campo ni los resultados: el mesero escribía a ciegas (visto en la N86).
+            // Al elegir un producto el campo se vacía (abría con el texto viejo). En tableta NO: ahí la cajera agrega varios de una búsqueda.
+            SearchOverlayView(
+                viewModel = catalogViewModel,
+                onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(""); showSearch = false },
+                onDismiss = { showSearch = false },
+            )
         } else {
             Column(modifier = Modifier.fillMaxSize()) {
                 contextBar()
@@ -565,14 +581,6 @@ fun TableOrderScreen(
                         com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
                             estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
                             onPromotionTap = { selectedCombo = it })
-                    }
-                } else if (showSearch) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        SearchOverlayView(
-                            viewModel = catalogViewModel,
-                            onProductTap = { handleProductTap(it); showSearch = false },
-                            onDismiss = { showSearch = false },
-                        )
                     }
                 } else {
                     TableSearchBar(onSearchTap = { showSearch = true })
@@ -654,7 +662,7 @@ fun TableOrderScreen(
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
-                                cuentaCobradaAqui = viewModel.cuentaCobradaAqui,
+                                motivoCobradaAqui = viewModel.motivoCobradaAqui,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -1071,7 +1079,7 @@ fun TableOrderScreen(
                             // Pagada por completo: liberar la mesa de inmediato. La
                             // pantalla de recibo sigue visible hasta que el operador
                             // pulse "Venta nueva".
-                            tablesViewModel.finishTableAfterPayment()
+                            tablesViewModel.finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)
                         }
                     },
                     onDone = {
@@ -1520,8 +1528,8 @@ internal fun TableCheckPanel(
     cuentaCompletaAqui: Boolean,
     /** Se está leyendo la cuenta o hay un cambio propio en vuelo. */
     cargandoCuenta: Boolean,
-    /** 9b: la mesa abierta sin internet ya se cobró aquí y falta subirla (ver `TableOrderViewModel.cuentaCobradaAqui`). */
-    cuentaCobradaAqui: Boolean = false,
+    /** 9b / B2b: ya se cobró aquí y falta subirla; el aviso del toque (ver `TableOrderViewModel.motivoCobradaAqui`). Null = no. */
+    motivoCobradaAqui: String? = null,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1737,7 +1745,7 @@ internal fun TableCheckPanel(
                 // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
                 // 9b: ya cobrada aquí sin internet, no se ofrece cobrarla otra vez.
                 val motivoParaNoPagar = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos }
-                    ?: CUENTA_COBRADA_AQUI.takeIf { cuentaCobradaAqui }
+                    ?: motivoCobradaAqui
                 BlockedTapOverlay(
                     reason = motivoParaNoPagar,
                     onBlocked = onBlocked,
@@ -1745,7 +1753,7 @@ internal fun TableCheckPanel(
                 ) {
                     PrimaryButton(
                         text = when {
-                            cuentaCobradaAqui -> "Ya pagada"
+                            motivoCobradaAqui != null -> "Ya pagada"
                             saldoDeMesaConocido -> "Pagar ${centsDisplay(subtotalCents)}"
                             else -> "Pagar"
                         },

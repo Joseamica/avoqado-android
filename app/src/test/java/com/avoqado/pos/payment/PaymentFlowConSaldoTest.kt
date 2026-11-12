@@ -290,6 +290,32 @@ class PaymentFlowConSaldoTest {
         assertEquals(FilaDeLaCaja.T13,subject.conductaDeSaldo().fila)
         assertTrue(subject.cobrarConSaldo(identified,8000) is DesenlaceDeCobro.NoSalio);assertEquals(0,server.requestCount)
     }
+    /** D12: el cobro de una cuenta hecho con la copia es sólo efectivo puro: el saldo de regalo no se abre ni se cobra. */
+    @Test fun desdeLaCopiaNoSeCobraConSaldoDeRegalo()=runTest {
+        val subject=vm("o")
+        assertTrue("control: el mismo cobro NORMAL sí ofrece el saldo",subject.conductaDeSaldo().habilitada)
+        subject.startPaymentFlow(cart,resumeOrderId="o",origen=com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA)
+        val fila=subject.conductaDeSaldo()
+        assertFalse(fila.visible);assertFalse(fila.habilitada)
+        assertFalse(subject.abrirSaldoDesdeConsultar(identified) { fail("no abre la hoja del saldo") })
+        assertTrue(subject.cobrarConSaldo(identified,8000) is DesenlaceDeCobro.NoSalio)
+        assertEquals(0,server.requestCount)
+    }
+    /** Ronda 1 (Minor 3c): un pedido de Rappi en efectivo tampoco abre ni cobra el saldo de regalo (antes sólo la pantalla lo escondía). */
+    @Test fun rappiEnEfectivoNoSeCobraConSaldoDeRegalo()=runTest {
+        for (origen in listOf(com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO,
+                com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO)) {
+            val subject=vm("o")
+            assertTrue("control: el mismo cobro NORMAL sí ofrece el saldo",subject.conductaDeSaldo().habilitada)
+            subject.startPaymentFlow(cart,resumeOrderId="o",origen=origen)
+            val fila=subject.conductaDeSaldo()
+            assertFalse("$origen",fila.visible);assertFalse("$origen",fila.habilitada)
+            assertFalse(subject.abrirSaldoDesdeConsultar(identified) { fail("no abre la hoja del saldo") })
+            assertTrue(subject.cobrarConSaldo(identified,8000) is DesenlaceDeCobro.NoSalio)
+            assertEquals(0,server.requestCount)
+            subject.viewModelScope.cancel()
+        }
+    }
 
     @Test fun marcarFalseNoVaciaNiManda()=runTest {
         val disk=spyk(storage);var writes=0

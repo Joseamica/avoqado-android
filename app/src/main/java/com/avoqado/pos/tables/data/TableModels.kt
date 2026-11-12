@@ -360,6 +360,19 @@ data class PreBillBalance(
     val tipAmountCents: Int = 0,
 )
 
+/**
+ * D12 (Codex r3 H1): lo que el detalle que se consulta para cobrar sabe de la cuenta, para poner al día la copia de «Pedidos». Espejo de
+ * `orders.data.model.OrderDetail.comoEvidencia` (este modelo no trae `refundState`: un reembolso implica un pago, que ya cuenta).
+ */
+fun OrderDetail.comoEvidencia(): com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente =
+    com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente(
+        abierta = com.avoqado.pos.orders.data.model.estaAbierta(status, paymentStatus, null),
+        saldoCents = preBillBalance?.remainingBalanceCents?.takeIf { it >= 0 }, // negativo = raro ⇒ «sin saldo», como la lista
+        pagosCompletados = payments.count { it.status == "COMPLETED" },
+        cobrosConSaldo = cobrosConSaldo ?: 0,
+        esCuentaDeTarjetas = esCuentaDeTarjetas,
+    )
+
 fun restanteCents(detalle: OrderDetail): Int? {
     detalle.preBillBalance?.let { return it.remainingBalanceCents }
     if (detalle.payments.any { it.status == "COMPLETED" }) return null

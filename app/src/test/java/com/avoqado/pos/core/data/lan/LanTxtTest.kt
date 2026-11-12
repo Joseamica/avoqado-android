@@ -57,6 +57,27 @@ class LanTxtTest {
         assertEquals(5L, sinVenue.bootedAtMillis)
     }
 
+    // D12 (paso 2): sólo un anuncio con la sucursal EXPLÍCITA cuenta como «otra caja del negocio». Dato local: el TXT
+    // no cambia (lo fija `construir pone kds solo si hay estaciones, y hub siempre`).
+
+    @Test
+    fun `D12 la sucursal explicita marca al peer`() {
+        val peer = LanTxt.peerDesde(mapOf("did" to "otro", "venue" to "v1"), "10.0.0.2", 9000, "yo", "v1")!!
+        assertTrue(peer.venueExplicito)
+    }
+
+    @Test
+    fun `D12 un anuncio sin venue se admite pero no acredita`() {
+        val peer = LanTxt.peerDesde(mapOf("did" to "otro"), "10.0.0.2", 9000, "yo", "v1")
+        assertEquals("otro", peer?.deviceId)
+        assertFalse(peer!!.venueExplicito)
+    }
+
+    @Test
+    fun `un anuncio de otra sucursal sigue fuera`() {
+        assertNull(LanTxt.peerDesde(mapOf("did" to "otro", "venue" to "v2"), "10.0.0.2", 9000, "yo", "v1"))
+    }
+
     @Test
     fun `peerDesde lee kds y hub - sin hub en el TXT es una app vieja que SI sirve leases`() {
         val viejo = LanTxt.peerDesde(mapOf("did" to "otro", "venue" to "venue-1"), "10.0.0.2", 9000, "yo", "venue-1")!!

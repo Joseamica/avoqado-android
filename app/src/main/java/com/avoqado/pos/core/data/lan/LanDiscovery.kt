@@ -351,7 +351,7 @@ class LanDiscovery(
 
     private fun onPeerResolved(info: NsdServiceInfo) {
         if (parado) return // un resolve que estaba en vuelo al parar (revisión I2)
-        val txt = info.attributes.orEmpty().mapValues { (_, v) -> v?.let { String(it) } }
+        val txt = info.attributes.orEmpty().mapValues { (_, v) -> v?.let { String(it, Charsets.UTF_8) } }
         // El TXT se lee PURO (`LanTxt`): otro venue, este mismo aparato o sin host ⇒ null.
         val peer = LanTxt.peerDesde(txt, info.host?.hostAddress, info.port, deviceId, venueId) ?: return
         val actuales = peers

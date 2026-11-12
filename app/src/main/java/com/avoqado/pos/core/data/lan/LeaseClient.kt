@@ -2,6 +2,8 @@ package com.avoqado.pos.core.data.lan
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.PrintWriter
@@ -50,6 +52,47 @@ class LeaseClient(
 
     suspend fun list(arbiter: LanPeer): LeaseResponse? = send(arbiter, LeaseRequest(op = LeaseProtocol.OP_LIST))
 
+    /**
+     * D12 · Opción D (R7): una pregunta `cuenta_*` con plazo ABSOLUTO de [plazoTotalMs] — conectar, escribir, leer y el reintento —. Cada
+     * intento tiene a lo más [plazoIntentoMs] y un vigía CIERRA el socket al vencer (un `soTimeout` sólo corta un silencio: una respuesta
+     * que gotea byte por byte lo burlaba). Un reintento sólo si queda tiempo. null = no contestó. Mesas no usa esto.
+     */
+    suspend fun preguntarCuenta(
+        peer: LanPeer,
+        request: LeaseRequest,
+        plazoTotalMs: Long = PLAZO_CUENTA_MS,
+        plazoIntentoMs: Long = PLAZO_INTENTO_CUENTA_MS,
+    ): LeaseResponse? {
+        val vence = System.nanoTime() / 1_000_000 + plazoTotalMs
+        repeat(2) {
+            val queda = vence - System.nanoTime() / 1_000_000
+            if (queda <= 0) return null
+            intentoConVigia(peer, request, minOf(plazoIntentoMs, queda))?.let { return it }
+        }
+        return null
+    }
+
+    /** D12 · tubería (hz:e5ee98bc:D4): «¿quién eres?» con plazo ABSOLUTO de [PLAZO_QUIEN_MS] (conectar, escribir y leer). null = no contestó. */
+    suspend fun quien(peer: LanPeer): LeaseResponse? =
+        preguntarCuenta(peer, LeaseRequest(op = LeaseProtocol.OP_QUIEN), PLAZO_QUIEN_MS, PLAZO_QUIEN_MS)
+
+    private suspend fun intentoConVigia(peer: LanPeer, request: LeaseRequest, plazoMs: Long): LeaseResponse? = withContext(Dispatchers.IO) {
+        val socket = Socket()
+        val vigia = launch { delay(plazoMs); runCatching { socket.close() } }
+        try {
+            runCatching {
+                socket.use { s ->
+                    s.connect(InetSocketAddress(peer.host, peer.port), plazoMs.toInt().coerceAtLeast(1))
+                    s.soTimeout = plazoMs.toInt().coerceAtLeast(1)
+                    s.getOutputStream().run { write((LeaseProtocol.encode(request) + "\n").toByteArray(Charsets.UTF_8)); flush() }
+                    LineaAcotada.leer(BufferedInputStream(s.getInputStream()))?.let { LeaseProtocol.decodeResponse(it) }
+                }
+            }.onFailure { Log.d(TAG, "📴 ${peer.host}:${peer.port} no contestó la cuenta (${it.message})") }.getOrNull()
+        } finally {
+            vigia.cancel()
+        }
+    }
+
     private suspend fun send(arbiter: LanPeer, request: LeaseRequest): LeaseResponse? = withContext(Dispatchers.IO) {
         runCatching {
             Socket().use { socket ->
@@ -72,5 +115,14 @@ class LeaseClient(
 
         /** Lo que antes era `LeaseServer.SOCKET_TIMEOUT_MS`: 3 s para que el árbitro conteste una petición de lease. */
         const val READ_TIMEOUT_MS = 3_000
+
+        /** D12 · Opción D (R7): «Avisándole a <caja>…» nunca dura más de esto. */
+        const val PLAZO_CUENTA_MS = 5_000L
+
+        /** Cada pregunta espera esto y se reintenta una vez (regla 4 de `opcion-d.md`). */
+        const val PLAZO_INTENTO_CUENTA_MS = 2_000L
+
+        /** D12 · tubería: lo más que espera una caja el `quien` de otra (en la misma red, un aparato vivo contesta en milisegundos). */
+        const val PLAZO_QUIEN_MS = 1_500L
     }
 }

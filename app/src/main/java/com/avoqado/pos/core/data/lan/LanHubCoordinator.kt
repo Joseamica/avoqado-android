@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LanHubCoordinator"
 
@@ -43,8 +44,11 @@ class LanHubCoordinator(
     /** ¿Hay con quién coordinarse? Si es false, el POS trabaja como isla. */
     val hubAvailable: StateFlow<Boolean> = _hubAvailable.asStateFlow()
 
-    /** Leases que ESTE dispositivo sostiene ahora: tableId → lease. */
-    private val heldLeases = mutableMapOf<String, TableLease>()
+    /**
+     * Leases que ESTE dispositivo sostiene ahora: tableId → lease. Concurrente: lo tocan la UI (Main) y [renewLoop] (IO);
+     * con un mapa simple, recorrerlo mientras el otro hilo escribe tumbaba la app (revisión D12 T10).
+     */
+    private val heldLeases = ConcurrentHashMap<String, TableLease>()
 
     private val _myTables = MutableStateFlow<Set<String>>(emptySet())
     val myTables: StateFlow<Set<String>> = _myTables.asStateFlow()
@@ -151,29 +155,35 @@ class LanHubCoordinator(
     private suspend fun renewLoop() {
         while (scope.isActive) {
             delay(LeaseRegistry.RENEW_INTERVAL_MILLIS)
-            if (heldLeases.isEmpty()) continue
-            val arbiter = currentArbiter() ?: continue
+            renovarUnaVez()
+        }
+    }
 
-            for ((tableId, lease) in heldLeases.toMap()) {
-                val response = if (arbiter.deviceId == deviceId) {
-                    server.respondTo(
-                        LeaseProtocol.encode(
-                            LeaseRequest(op = LeaseProtocol.OP_RENEW, tableId = tableId, deviceId = deviceId, epoch = lease.epoch),
-                        ),
-                    )
-                } else {
-                    client.renew(arbiter, tableId, deviceId, lease.epoch) ?: continue // sin respuesta: NO soltar aún
-                }
+    /** Una vuelta de [renewLoop], sin el `delay`: es lo que se prueba. */
+    internal suspend fun renovarUnaVez() {
+        if (heldLeases.isEmpty()) return
+        val arbiter = currentArbiter() ?: return
 
-                when (response.status) {
-                    LeaseProtocol.STATUS_GRANTED -> response.lease?.toDomain()?.let { heldLeases[tableId] = it }
-                    LeaseProtocol.STATUS_DENIED, LeaseProtocol.STATUS_STALE -> {
-                        Log.w(TAG, "🧟 Perdí la mesa $tableId (época vieja) — la suelto en la UI")
-                        heldLeases.remove(tableId)
-                        _myTables.value = heldLeases.keys.toSet()
-                    }
-                    else -> Unit
+        for ((tableId, lease) in heldLeases.toMap()) {
+            val response = if (arbiter.deviceId == deviceId) {
+                server.respondTo(
+                    LeaseProtocol.encode(
+                        LeaseRequest(op = LeaseProtocol.OP_RENEW, tableId = tableId, deviceId = deviceId, epoch = lease.epoch),
+                    ),
+                )
+            } else {
+                client.renew(arbiter, tableId, deviceId, lease.epoch) ?: continue // sin respuesta: NO soltar aún
+            }
+
+            when (response.status) {
+                // Sólo si la llave sigue siendo la MISMA que se mandó: una respuesta tardía no revive lo soltado ni un STALE de la
+                // copia vieja borra una concesión nueva.
+                LeaseProtocol.STATUS_GRANTED -> response.lease?.toDomain()?.let { heldLeases.replace(tableId, lease, it) }
+                LeaseProtocol.STATUS_DENIED, LeaseProtocol.STATUS_STALE -> if (heldLeases.remove(tableId, lease)) {
+                    Log.w(TAG, "🧟 Perdí la mesa $tableId (época vieja) — la suelto en la UI")
+                    _myTables.value = heldLeases.keys.toSet()
                 }
+                else -> Unit
             }
         }
     }

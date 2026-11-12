@@ -23,8 +23,16 @@ import javax.inject.Singleton
             pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map { com.avoqado.pos.payment.data.dineroDeLaFila(it) }, soltadasHasta)
     }
 
-    suspend fun hayPendiente(venueId: String, orderId: String): Boolean {
-        if (pendingPaymentDao.forVenue(venueId).any { it.orderId == orderId && it.syncStatus != "SYNCED" }) return true
+    /**
+     * [enLinea] (D12 · Opción D, I4): para quien cobra con internet, una fila FAILED ya la contestó el SERVIDOR (su saldo manda): no es
+     * dinero por subir. Sin red cuenta como siempre.
+     * [incluirColaDeMesas] = `false` SÓLO en el saldo sin red de una mesa del servidor (D5 · B2b), que ya cuenta su propio efectivo de
+     * la cola de mesas. Quien decide si se OFRECE el saldo de regalo (`conductaDeSaldo`) conserva el default (acuerdo (b)).
+     */
+    suspend fun hayPendiente(venueId: String, orderId: String, enLinea: Boolean = false, incluirColaDeMesas: Boolean = true): Boolean {
+        if (pendingPaymentDao.forVenue(venueId).any {
+                it.orderId == orderId && it.syncStatus != "SYNCED" && !(enLinea && it.syncStatus == "FAILED")
+            }) return true
         if (PendientesDeTarjeta.leer(secureStorage.pendingCardChargesJson).any {
             it.orderId == orderId && runCatching {
                 Json.parseToJsonElement(it.contexto).jsonObject["venueId"]?.jsonPrimitive?.contentOrNull == venueId
@@ -33,6 +41,7 @@ import javax.inject.Singleton
         if (store.delNegocio(venueId).any {
             it.tipo == "GIFT_CARD_REDEEM" && it.orderId == orderId && it.mandado && !it.porTerminar && !it.porRecuperar
         }) return true
+        if (!incluirColaDeMesas) return false
         return try {
             outbox?.trabajoSinResolverDeLaOrden(venueId, setOf(orderId))?.tipos?.contains("PAY_CASH") == true
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }

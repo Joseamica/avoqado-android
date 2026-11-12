@@ -750,6 +750,54 @@ class TableOrderCuentaGarantizadaTest {
         } finally { done.complete(Result.success(Unit)); a.viewModelScope.cancel(); f.viewModelScope.cancel() }
     }
 
+    // D24 (hz:e5ee98bc:D24): con el efectivo de la mesa en la cola de cobros, «liberar mesa» llegaba al servidor antes que su pago.
+    @Test fun `D24 con el cobro en la cola de cobros no se pide liberar la mesa y su sesion se cierra`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(cobroEnCola = true); advanceUntilIdle()
+            coVerify(exactly = 0) { repository.clearTable(any(), any()) }
+            assertNull(session.current())
+            // Pagada aquí y sin subir: al volver a abrirla no se cobra otra vez sin leer la cuenta del servidor.
+            f.startOrdering(table(provisional = false)) {}
+            assertTrue(session.current()!!.requiereLecturaServidor)
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D24 con el cobro confirmado por el servidor la mesa se sigue liberando`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(); advanceUntilIdle()
+            coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1") }
+            assertNull(session.current())
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D24 los dos llamadores reales avisan si el cobro quedo en la cola de cobros`() {
+        for (path in listOf("src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt",
+            "src/main/java/com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt")) {
+            val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+            assertEquals(path, 1, source.componentsCount("finishTableAfterPayment("))
+            assertTrue(path, source.contains("finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)"))
+        }
+    }
+
+    // D26 (hz:e5ee98bc:D26): en la terminal de mano el buscador de la mesa no cabía con el teclado y los avisos, y abría con el texto viejo.
+    @Test fun `D26 el buscador de la mesa ocupa toda la cuenta en telefono y se vacia al elegir un producto`() {
+        val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt"
+        val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+        assertTrue(source.contains("} else if (showSearch && !showCombos) {"))
+        assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(\"\"); showSearch = false }"))
+        // En tableta el campo conserva el texto a propósito: la cajera agrega varios productos de la misma búsqueda.
+        assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); showSearch = false }"))
+        // hz:cc708532:D3: también en tableta el buscador ocupa todo su panel (ya no va metido debajo de la barra y las pestañas).
+        assertEquals(2, source.componentsCount("if (showSearch && !showCombos) {"))
+        assertEquals(0, source.componentsCount("} else if (showSearch) {"))
+    }
+
     @Test fun `ACK cash completo desde piso invalida solo cuenta pagada y parcial la conserva`() = runTest {
         val a = vm(provisional = true); val f = floor()
         try {

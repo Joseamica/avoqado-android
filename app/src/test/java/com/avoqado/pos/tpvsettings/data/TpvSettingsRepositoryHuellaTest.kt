@@ -285,6 +285,16 @@ class TpvSettingsRepositoryHuellaTest {
         assertEquals(7, repo.receiptTicketFor(A).layout?.revision)
     }
 
+    /** D5 · B2b: cada lectura del plan le avisa a las fotos de mesas de ESA sucursal (apagado ⇒ se borran; lo decide `FotosDeMesas`). */
+    @Test
+    fun `B2b leer el plan avisa a las fotos de mesas de esa sucursal`() = runTest {
+        val fotos = mockk<com.avoqado.pos.core.data.sync.FotosDeMesas>(relaxed = true)
+        val repo = repositorio(Guion(Paso(respuesta(plan = "PRO"))), fotos = fotos)
+        repo.refreshSettingsForVenue(A)
+        io.mockk.verify(exactly = 1) { fotos.alLeerElPlan(A) }
+        io.mockk.verify(exactly = 0) { fotos.alLeerElPlan(B) }
+    }
+
     @Test
     fun `servidor viejo sin componentsStatus se comporta como hoy`() = runTest {
         val repo = repositorio(Guion(Paso(respuesta(panel = "HIDDEN", pin = true, plan = "PRO", recibo = 7, verCalificacion = false))))
@@ -400,6 +410,7 @@ class TpvSettingsRepositoryHuellaTest {
     private fun repositorio(
         guion: Guion,
         preferencias: PreferencesDataStore = preferenciasEn(mutableMapOf()),
+        fotos: com.avoqado.pos.core.data.sync.FotosDeMesas? = null,
     ) = TpvSettingsRepository(
         secureStorage = sesion.storage,
         client = guion.client,
@@ -416,6 +427,7 @@ class TpvSettingsRepositoryHuellaTest {
         },
         deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
         displayModeAuthorityGate = DisplayModeAuthorityGate(),
+        fotosDeMesas = fotos,
     )
 
     /** Proceso nuevo, sin red, sobre el MISMO disco: lo que quedó guardado para A. */

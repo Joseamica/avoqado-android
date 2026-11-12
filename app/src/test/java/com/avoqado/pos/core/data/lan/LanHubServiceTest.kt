@@ -5,6 +5,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,5 +59,15 @@ class LanHubServiceTest {
         every { secure.venueId } returns null
         hub.start()
         verify(exactly = 0) { transporte.conectarHub(any()) }
+    }
+
+    @Test
+    fun `D12 opción D - el hub enciende las cuentas entre cajas con la sucursal y las apaga al parar`() {
+        val cuentas = mockk<CuentasEntreCajas>(relaxed = true)
+        val h = LanHubService(secure, transporte, cuentas)
+        h.start()
+        verify(exactly = 1) { cuentas.encender("venue-a") }
+        h.stop()
+        io.mockk.verifyOrder { cuentas.encender("venue-a"); cuentas.apagar() } // `start` también apaga lo anterior antes de encender
     }
 }
