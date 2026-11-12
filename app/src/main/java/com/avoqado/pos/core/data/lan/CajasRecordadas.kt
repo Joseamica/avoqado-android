@@ -64,12 +64,12 @@ class CajasRecordadas(
     suspend fun confirmarPerdidas(perdidas: List<LanPeer>) {
         val porPreguntar = perdidas.filter(::cuenta)
         if (porPreguntar.isEmpty()) return
-        val resultados = coroutineScope { porPreguntar.map { p -> async { p.deviceId to hastaDos(p.deviceId, p.host, p.port) } }.awaitAll() }
+        val resultados = coroutineScope { porPreguntar.map { p -> async { Contestado(p, hastaDos(p.deviceId, p.host, p.port)) } }.awaitAll() }
         mutex.withLock {
             val r = cargar()
-            for ((did, sondeos) in resultados) {
-                fallas.remove(did)
-                sondeos.forEach { aplicar(r, did, it) }
+            for (c in resultados) {
+                if (sigueEn(r, c.en)) fallas.remove(c.en.deviceId)
+                c.sondeos.forEach { aplicar(r, c.en, it) }
             }
             guardar(r)
         }
@@ -106,12 +106,12 @@ class CajasRecordadas(
         val resultados = coroutineScope {
             foto.map { (did, d) ->
                 val (p, sostenida) = d
-                async { did to if (sostenida) hastaDos(did, p.host, p.port) else listOf(sondear(did, p.host, p.port)) }
+                async { Contestado(p, if (sostenida) hastaDos(did, p.host, p.port) else listOf(sondear(did, p.host, p.port))) }
             }.awaitAll()
         }
         mutex.withLock {
             val r = cargar()
-            for ((did, sondeos) in resultados) sondeos.forEach { aplicar(r, did, it) }
+            for (c in resultados) c.sondeos.forEach { aplicar(r, c.en, it) }
             guardar(r)
         }
     }
@@ -154,8 +154,26 @@ class CajasRecordadas(
         return LanTxt.peerDesde(txt, host, port, yo, venueId)?.let { Sondeo.Es(it) } ?: Sondeo.Otra
     }
 
-    /** [r] null = el disco no se pudo leer: la lista sí cambia (en memoria), el disco no. */
-    private fun aplicar(r: MutableMap<String, Recordada>?, did: String, s: Sondeo) {
+    /** Lo que contestó la dirección [en] (su `did`, `host` y `port` son los que se preguntaron). */
+    private class Contestado(val en: LanPeer, val sondeos: List<Sondeo>)
+
+    /**
+     * Ronda 2: ¿la caja sigue en la dirección que se preguntó? La red va sin candado: mientras tanto un [sostener] o un [recordar] pudo
+     * traer otra (el DHCP le cambió la IP y otro aparato tomó la vieja). Lo que no esté, no protege nada.
+     */
+    private fun sigueEn(r: Map<String, Recordada>?, en: LanPeer): Boolean {
+        val lista = enLista[en.deviceId]
+        val disco = r?.get(en.deviceId)
+        return (lista == null || (lista.host == en.host && lista.port == en.port)) && (disco == null || (disco.host == en.host && disco.port == en.port))
+    }
+
+    /**
+     * [r] null = el disco no se pudo leer: la lista sí cambia (en memoria), el disco no. Un «es otro» o un «no contesta» de una dirección
+     * que la caja ya dejó se descarta (ronda 2): borraría la nueva, y entre bandas NSD quizá nunca la vuelva a traer.
+     */
+    private fun aplicar(r: MutableMap<String, Recordada>?, en: LanPeer, s: Sondeo) {
+        val did = en.deviceId
+        if (s !is Sondeo.Es && !sigueEn(r, en)) return
         when (s) {
             is Sondeo.Es -> {
                 enLista[did] = s.peer

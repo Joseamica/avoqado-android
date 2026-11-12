@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -236,4 +237,32 @@ class CajasRecordadasTest {
         c.recordar(listOf(otra))
         assertEquals("al volver a leer se junta, sin perder nada", setOf(n86.deviceId, d3.deviceId, otra.deviceId), enDisco().keys)
     }
+
+    // MARK: - Ronda de arreglos 2
+
+    /**
+     * Un resultado viejo se aplica por dirección, no sólo por `did`: mientras se le preguntaba a la dirección VIEJA, NSD trajo la NUEVA
+     * (el DHCP le cambió la IP y otro aparato tomó la vieja). El «es otro» o el «no contesta» de la vieja no borra la nueva, ni del disco.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.mientrasPreguntaLlegaLaNueva(enLaVieja: LeaseResponse?) {
+        val puerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p ->
+            if (p.host == n86.host) { puerta.await(); enLaVieja } else soy(p.deviceId)
+        }, { hora })
+        c.recordar(listOf(n86))
+        c.sostener(listOf(n86))
+        val confirma = launch { c.confirmarPerdidas(listOf(n86)) }
+        runCurrent() // ya le preguntó a la vieja
+        val nueva = vistaPorNsd(n86.deviceId, "192.168.100.153")
+        c.recordar(listOf(nueva))
+        c.sostener(listOf(nueva))
+        puerta.complete(Unit)
+        confirma.join()
+        assertEquals("sigue en la lista con la nueva", listOf("192.168.100.153"), c.porTcp(emptyList()).map { it.host })
+        assertEquals("y en disco", "192.168.100.153", enDisco()[n86.deviceId]?.host)
+    }
+
+    @Test fun `el es otro de la dirección vieja no borra la nueva`() = runTest { mientrasPreguntaLlegaLaNueva(soy("otra-tablet")) }
+
+    @Test fun `el no contesta de la dirección vieja no saca a la nueva`() = runTest { mientrasPreguntaLlegaLaNueva(null) }
 }
