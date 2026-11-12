@@ -192,10 +192,16 @@ internal fun salesNoticeResultWarnings(row:SalesNoticeSnapshot):List<String> {
     val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto",
         "tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden",
         "saldoDeLaMesa" to "saldo de la mesa","cashRetainedCents" to "efectivo retenido")
-    return listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar").mapNotNull { (key,title) ->
+    val campos = listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar").mapNotNull { (key,title) ->
         val fields=(result[key] as? JsonArray)?.map { labels[it.jsonPrimitive.content] ?: "otros datos" }.orEmpty()
         if(fields.isEmpty()) null else "$title: ${fields.joinToString()}"
     }
+    // Mesa cobrada sin red (promesa D5, tabla de residuales): «quedó debiendo» y «se cobró de más», con los mismos textos que
+    // «Operaciones por revisar» (`HistorialDelCobroViewModel.detalle`).
+    fun cents(key:String)=(result[key] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it>=0 }
+    val saldo = cents("saldoEsperadoCents")?.let { esperado -> cents("saldoEnElServidorCents")?.let { enServidor ->
+        "Saldo esperado ${salesNoticeMoney(esperado)} · saldo en el servidor ${salesNoticeMoney(enServidor)}" } }
+    return campos + listOfNotNull(saldo, cents("cobradoDeMasCents")?.let { "Se cobró de más: ${salesNoticeMoney(it)}" })
 }
 private fun salesNoticeMoney(cents:Int?)=cents?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it) } ?: "Sin confirmar"
 private fun salesNoticeDate(epoch:Long)=com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epoch))

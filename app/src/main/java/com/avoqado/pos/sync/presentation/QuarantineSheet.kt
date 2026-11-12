@@ -388,8 +388,8 @@ fun QuarantineSheet(
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 Text(viewModel.describeType(item.type), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatTime(item.createdAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                item.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                                Text(viewModel.resolutionHint(item.errorCode, item.type), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                viewModel.describeMessage(item.type, item.message)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                                Text(viewModel.resolutionHint(item.errorCode, item.type, item.message), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (viewModel.canResolve && item.type != "PAY_CASH") {
                                     AccionDeRevision(text = "Marcar resuelta", onClick = { viewModel.dismiss(item.id) })
                                 }

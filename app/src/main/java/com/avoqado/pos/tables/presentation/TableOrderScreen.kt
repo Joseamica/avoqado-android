@@ -303,6 +303,9 @@ fun TableOrderScreen(
         }
     }
     BackHandler { requestExit() }
+    // B3 (visto 1): su cobro y su liberación subieron con la pantalla abierta (fuera del cobro): se dice y «atrás» regresa al plano.
+    val activa by viewModel.tableSession.active.collectAsState()
+    LaunchedEffect(activa == null, showPayment) { if (activa == null && !showPayment) viewModel.showBlockedReason(CUENTA_CERRADA) }
 
     /** Read-only por propiedad de mesa: avisa y bloquea la acción de EDITAR. */
     fun blockIfReadOnly(): Boolean {
@@ -470,7 +473,7 @@ fun TableOrderScreen(
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
-                                cuentaCobradaAqui = viewModel.cuentaCobradaAqui,
+                                motivoCobradaAqui = viewModel.motivoCobradaAqui,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -654,7 +657,7 @@ fun TableOrderScreen(
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
-                                cuentaCobradaAqui = viewModel.cuentaCobradaAqui,
+                                motivoCobradaAqui = viewModel.motivoCobradaAqui,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -1520,8 +1523,8 @@ internal fun TableCheckPanel(
     cuentaCompletaAqui: Boolean,
     /** Se está leyendo la cuenta o hay un cambio propio en vuelo. */
     cargandoCuenta: Boolean,
-    /** 9b: la mesa abierta sin internet ya se cobró aquí y falta subirla (ver `TableOrderViewModel.cuentaCobradaAqui`). */
-    cuentaCobradaAqui: Boolean = false,
+    /** 9b / B2b: ya se cobró aquí y falta subirla; el aviso del toque (ver `TableOrderViewModel.motivoCobradaAqui`). Null = no. */
+    motivoCobradaAqui: String? = null,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1737,7 +1740,7 @@ internal fun TableCheckPanel(
                 // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
                 // 9b: ya cobrada aquí sin internet, no se ofrece cobrarla otra vez.
                 val motivoParaNoPagar = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos }
-                    ?: CUENTA_COBRADA_AQUI.takeIf { cuentaCobradaAqui }
+                    ?: motivoCobradaAqui
                 BlockedTapOverlay(
                     reason = motivoParaNoPagar,
                     onBlocked = onBlocked,
@@ -1745,7 +1748,7 @@ internal fun TableCheckPanel(
                 ) {
                     PrimaryButton(
                         text = when {
-                            cuentaCobradaAqui -> "Ya pagada"
+                            motivoCobradaAqui != null -> "Ya pagada"
                             saldoDeMesaConocido -> "Pagar ${centsDisplay(subtotalCents)}"
                             else -> "Pagar"
                         },

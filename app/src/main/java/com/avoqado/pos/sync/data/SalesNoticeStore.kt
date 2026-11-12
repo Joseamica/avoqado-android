@@ -93,7 +93,10 @@ data class SalesNoticeSnapshot(val venueId: String, val origin: String, val id: 
     }
     /** Presentación de componentes conocidos; Entendido conserva todos los datos y no resuelve una revisión financiera. */
     fun registeredResult(): JsonObject? {
-        if (origin!="PAYMENT" || state!="SYNCED" || !eligible()) return null
+        // D5 · B3 (5b, C3): el efectivo de MESA de la cola de mesas (`PAY_CASH`, ACKED) también tiene resultado del servidor; sin
+        // esto el gerente leía «Importe del servidor: Sin confirmar» aunque el acuse traía el saldo y lo cobrado de más.
+        val aplicado = origin=="PAYMENT" && state=="SYNCED" || origin=="INTENT" && type=="PAY_CASH" && state=="ACKED"
+        if (!aplicado || !eligible()) return null
         val o=result?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() } ?: return null
         val amount=o.enteroAviso("amountCents") ?: return null
         val tip=o.enteroAviso("tipCents") ?: return null

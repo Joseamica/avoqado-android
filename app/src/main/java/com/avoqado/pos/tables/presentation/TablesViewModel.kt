@@ -61,6 +61,8 @@ class TablesViewModel @Inject constructor(
      * lleva para que la cuenta nazca en el turno de esa caja aunque suba tarde. Ver [openTableOffline].
      */
     private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
+    /** D5 · B2b (piloto): sin red, una mesa del servidor se cobra desde su cuenta (la foto vive ahí), no desde el plano. */
+    private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
 ) : ViewModel() {
 
     private var generacion = 0L
@@ -472,6 +474,10 @@ class TablesViewModel @Inject constructor(
             val reason = when {
                 tableSession.contextoActual() != contextoAlSalir || venueId != vId || tableSession.current() != sessionAlSalir || generacion != epoch || mutacionesEnVuelo > 0 || repository.tables.value.firstOrNull { it.id == table.id }?.primaryCheck?.id != order.id -> "La cuenta se está actualizando. Intenta en un momento."
                 work == null -> "No se pudo revisar si esta mesa tiene cambios sin sincronizar. Intenta de nuevo."
+                // D5 · B2b (piloto): con trabajo sin subir o sin red, el saldo sin red se arma en la cuenta (y el plano ya no cobra su
+                // total sin restar abonos, A1).
+                !order.isProvisional && (work.intents > 0 || connectivityMonitor?.let { !(it.isConnected.value && it.isServerReachable.value) } == true) &&
+                    planManager.concedidaPorAvoqado(TableOrderViewModel.CODIGO_PILOTO_SIN_RED) -> ABRE_PARA_COBRAR
                 work.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
                 order.isProvisional || tableSession.requiereRevisarSaldo(vId, existingForIds?.idsDeLaOrden ?: setOf(order.id)) -> "Abre esta cuenta para revisar el saldo antes de cobrar."
                 else -> null
@@ -821,5 +827,7 @@ class TablesViewModel @Inject constructor(
 
     companion object {
         private const val POLL_MS = 10_000L
+        /** D5 · B2b (piloto): el plano manda a la cuenta, que es donde se arma el saldo sin red. */
+        const val ABRE_PARA_COBRAR = "Abre esta cuenta para cobrarla."
     }
 }
