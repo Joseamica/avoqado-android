@@ -58,6 +58,16 @@ fun muestraCancelarFolio(pedido: OnlineOrder, puedeCancelar: Boolean, sinConexio
 fun textoDeFolioCerrado(venceA: Instant?, ahora: Instant): String =
     if (venceA == null || !venceA.isAfter(ahora)) TextosPedidosEnLinea.FOLIO_VENCIDO else TextosPedidosEnLinea.FOLIO_CANCELADO
 
+/**
+ * Parte 2 (S14): «Con cuenta: Ana L.», como el DASHBOARD. null sin cuenta (o con un SERVIDOR viejo): la tarjeta queda como hoy. Sin
+ * «suma su sello al pagar» (Codex A1 r2 #2): la lista no dice si los sellos siguen prendidos y el aparato sólo guarda el último que vio
+ * al ligar un cliente; prometerlo con eso puede mentir. PURA.
+ */
+fun lineaDeCuenta(pedido: OnlineOrder): String? = pedido.cliente?.let { TextosPedidosEnLinea.conCuenta(it.nombre) }
+
+/** Parte 2 (S14, R1): cuántos beneficios trae la cuenta además de los que llegaron («y N más»); nunca se esconden. PURA. */
+fun beneficiosDeMas(pedido: OnlineOrder): Int = (pedido.beneficiosTotal - pedido.beneficios.size).coerceAtLeast(0)
+
 /** R67: «Pagado a las HH:MM» en «Por entregar»; null si el SERVIDOR no manda `paidAt` (se queda como hoy). */
 fun textoDePago(pedido: OnlineOrder): String? = pedido.paidAt?.let { TextosPedidosEnLinea.pagadoALas(horaDelNegocio(it)) }
 
@@ -116,11 +126,14 @@ fun tarjetasConfirmadasPorLaCopia(marcas: List<FolioCobradoConTarjeta>, venueId:
     val porPagar = copia.porPagar.associateBy { it.orderId }
     val porEntregar = copia.porEntregar.map { it.orderId }.toSet()
     return marcas.filter { marca ->
-        if (!marca.esFolio || (marca.venueId != null && marca.venueId != venueId)) return@filter false
+        // D14: la de fuera de la bandeja también, si la copia trae su orden (pudo ser un folio cobrado desde «Pedidos → detalle»).
+        if ((!marca.esFolio && !marca.fueraDeLaBandeja) || (marca.venueId != null && marca.venueId != venueId)) return@filter false
         val debe = porPagar[marca.orderId]
         when {
             debe != null -> debe.remainingCents <= marca.saldoAntesCents - marca.montoCents
-            marca.venueId == null -> marca.orderId in porEntregar
+            // Sin la orden en «Por pagar», la de fuera sólo se suelta si está en «Por entregar»: no estar no prueba que sea un folio
+            // pagado (pudo ser de «Mi equipo»); si nadie la ve, se cae sola a las 24 h.
+            marca.venueId == null || marca.fueraDeLaBandeja -> marca.orderId in porEntregar
             else -> copia.nextCursors.toPay == null
         }
     }
@@ -137,7 +150,8 @@ fun cobradosConTarjetaEnLaLista(
     lista: ListaPorPagar?,
 ): Map<String, Long> {
     val porPagar = lista?.porPagar.orEmpty().associateBy { it.orderId }
-    val deMarcas = marcas.filter { m -> porPagar[m.orderId]?.let { it.remainingCents > m.saldoAntesCents - m.montoCents } == true }
+    // A1: una marca de saldo frena «Cobrar» (`dineroSinConfirmar`) pero no mueve el folio: pudo ser parcial y todavía debe.
+    val deMarcas = marcas.filter { m -> !m.conSaldo && porPagar[m.orderId]?.let { it.remainingCents > m.saldoAntesCents - m.montoCents } == true }
         .groupBy { it.orderId }.mapValues { (_, m) -> m.sumOf { it.montoCents } }
     return (deMarcas.keys + positivos.keys.filter { it in porPagar }).associateWith { deMarcas[it] ?: positivos.getValue(it) }
 }

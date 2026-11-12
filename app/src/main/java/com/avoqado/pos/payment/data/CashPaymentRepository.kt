@@ -457,6 +457,16 @@ class CashPaymentRepository @Inject constructor(
         return pendingPaymentDao.forVenue(venueId).any { it.orderId == orderId && it.syncStatus == PaymentSyncStatus.SYNCED.name }
     }
 
+    /**
+     * 🔴 D13 (la puerta del efectivo): de UNA lectura, cada cobro de la orden [orderId] que este aparato tiene, en CUALQUIER estado (en
+     * cola, en vuelo, por revisar o ya subido), por su llave. Una fila que cambia de estado entre dos lecturas sigue siendo la misma. La
+     * ya subida trae el id del pago que dio su 2xx (`paymentId` del resultado), para saber si el saldo del servidor ya la contaba.
+     */
+    suspend fun cobrosDelPedido(orderId: String, venueId: String? = secureStorage.venueId): List<com.avoqado.pos.payment.domain.DineroDeLaOrden> {
+        if (venueId == null || orderId.isBlank()) return emptyList()
+        return pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map(::dineroDeLaFila)
+    }
+
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
     fun observarEstado(id: String): Flow<String?> = pendingPaymentDao.observarEstado(id)
 
@@ -640,6 +650,17 @@ internal fun estadoDeParte(fila: PendingPaymentEntity?): EstadoDeParte {
         else -> EstadoDeParte.PorRevisar
     }
 }
+
+/** D13: una fila de la cola, para la puerta del efectivo (`CashPaymentRepository.cobrosDelPedido`). PURA. */
+internal fun dineroDeLaFila(fila: PendingPaymentEntity) = com.avoqado.pos.payment.domain.DineroDeLaOrden(
+    llave = com.avoqado.pos.payment.domain.PuertaDelEfectivo.llaveDeEfectivo(fila.id),
+    montoCents = fila.amountCents.toLong(),
+    esTarjeta = false,
+    confirmado = fila.syncStatus == PaymentSyncStatus.SYNCED.name,
+    pagoDelServidor = fila.takeIf { it.syncStatus == PaymentSyncStatus.SYNCED.name }?.q15ResultJson?.let { crudo ->
+        runCatching { (Json.parseToJsonElement(crudo).jsonObject["paymentId"] as? JsonPrimitive)?.takeIf { it.isString }?.content }.getOrNull()
+    }?.takeIf { it.isNotBlank() },
+)
 
 /** Lo que este aparato tiene guardado de una orden, para «Cobrar» de la bandeja. Ver `CashPaymentRepository.efectivoDelPedido`. */
 enum class EfectivoDelPedido {

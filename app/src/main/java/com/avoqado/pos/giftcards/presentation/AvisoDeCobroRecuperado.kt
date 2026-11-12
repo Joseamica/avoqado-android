@@ -44,7 +44,11 @@ internal fun siguienteAvisoDeSaldo(contexto: Pair<String?, String?>, actual: Pai
         if (aviso is AvisoDeSaldo.Cobro) aviso.cobro.redeemed.forEach {
             Text(TextosDeTarjetas.cobroRecuperado(kotlin.math.round(it.amount * 100).toInt(), it.last4, aviso.cobro.orderNumber))
         }
-        if (restante != null && restante > 0) {
+        if (restante != null && restante > 0 && aviso is AvisoDeSaldo.Cobro && aviso.cobro.deFolio) {
+            // A1 (Codex r1 #2): el resto de un folio se cobra en «Pedidos en línea», donde el cobro sabe que es folio (marca, vencido).
+            Text(TextosDeTarjetas.cobroConfirmadoFaltan(restante))
+            Text(TextosDeTarjetas.FOLIO_FALTA_EN_POR_PAGAR)
+        } else if (restante != null && restante > 0) {
             Text(TextosDeTarjetas.cobroConfirmadoFaltan(restante))
             if (!puede) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
             PrimaryButton(text = TextosDeTarjetas.CONTINUAR, enabled = puede, onClick = {

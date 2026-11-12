@@ -370,6 +370,8 @@ private fun CobroDelPedido(cobro: CobroDePedido, onTerminado: () -> Unit, onCobr
             textoSiLaCuentaSeCancelo = { cobro.textoSiLaCuentaSeCancelo(Instant.now()) },
             // R100: folio o «Mi equipo», la tarjeta lleva el saldo de la bandeja: su positivo deja la marca «aquí ya se cobró».
             cobroDeLaBandeja = com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(cobro.saldoCents.toLong(), cobro.esFolio),
+            // D13: lo que el saldo de la bandeja ya contaba; lo que llegue después lo frena la puerta del efectivo.
+            dineroConocido = cobro.dineroConocido,
         )
     }
 }

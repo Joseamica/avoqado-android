@@ -34,6 +34,14 @@ class ImpresorasDeEstaCajaTest {
         assertTrue(sinImpresoraDeCocina(listOf(cocinaLocal.copy(isEnabled = false)), PrintConfig()))
     }
 
+    /** «No lleva comanda»: una tienda con sólo su estación sin comanda sigue siendo un negocio sin cocina. */
+    @Test fun sinImpresoraDeCocina_no_cuenta_sin_comanda() {
+        assertTrue(sinImpresoraDeCocina(listOf(recibos), PrintConfig(stations = listOf(StationInfo(id = "s", name = "Tienda", sendsComanda = false)))))
+        assertFalse(sinImpresoraDeCocina(listOf(recibos), PrintConfig(stations = listOf(
+            StationInfo(id = "s", name = "Tienda", sendsComanda = false), StationInfo(id = "c", name = "Cocina"),
+        ))))
+    }
+
     @Test fun `el nombre del aparato nunca se inventa`() {
         assertEquals("Avoqado Windows 10 (2)", nombreDelAparato("  Avoqado Windows 10 (2) "))
         assertNull(nombreDelAparato("   "))

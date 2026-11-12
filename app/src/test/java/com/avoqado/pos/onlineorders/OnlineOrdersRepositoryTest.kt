@@ -376,6 +376,18 @@ class OnlineOrdersRepositoryTest {
     }
 
     @Test
+    fun `D13 saldoDelPedido trae los ids de los pagos COMPLETADOS de la misma respuesta - y null si no viene la lista`() = runTest {
+        server.enqueue(MockResponse().setBody(
+            """{"success":true,"order":{"id":"o1","preBillBalance":{"orderTotalCents":13400,"totalPaidCents":3500,"remainingBalanceCents":9900,""" +
+                """"tipAmountCents":0},"items":[],"payments":[{"id":"p-ok","status":"COMPLETED","amount":35},""" +
+                """{"id":"p-falla","status":"FAILED","amount":10}]}}"""))
+        assertEquals(setOf("p-ok"), repo.saldoDelPedido("o1").getOrThrow().pagos)
+
+        server.enqueue(MockResponse().setBody(detalle(10000, """{"productName":"A","quantity":1,"total":100,"weightQuantity":null}""")))
+        assertNull("sin lista no se inventa una vacía", repo.saldoDelPedido("o1").getOrThrow().pagos)
+    }
+
+    @Test
     fun `saldoDelPedido con un abono previo no trae precios aunque cuadren`() = runTest {
         // Codex r2 #2: cargo por servicio de $20 y abono de $20 dejan el saldo igual a los productos por casualidad.
         server.enqueue(MockResponse().setBody(detalle(10000, """{"productName":"A","quantity":1,"total":100,"weightQuantity":null}""", pagado = 2000)))

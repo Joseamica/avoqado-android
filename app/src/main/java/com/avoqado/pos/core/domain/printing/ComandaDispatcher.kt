@@ -38,6 +38,7 @@ import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.TrabajoPendiente
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.presentation.sinImpresoraDeCocina
 import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -129,6 +130,8 @@ class ComandaDispatcher @Inject constructor(
         val curso: String? = null,
         val etiquetaPantalla: String? = null,
         val configCongelada: PrintConfig? = null,
+        /** «No lleva comanda»: lo prenden SÓLO las ventas del POS (mostrador por tiempos, rondas de mesa). Ver [dispatch]. */
+        val omitirSinComanda: Boolean = false,
     )
 
     /**
@@ -192,6 +195,7 @@ class ComandaDispatcher @Inject constructor(
                     etiquetaPantalla = pedido.etiquetaPantalla,
                     curso = pedido.curso,
                     noMarcar = noMarcar,
+                    omitirSinComanda = pedido.omitirSinComanda,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -242,7 +246,7 @@ class ComandaDispatcher @Inject constructor(
             val config = configCongelada ?: printConfigRepository.getCurrentConfig()
             val entregas = pedidos.flatMap { p ->
                 entregasPorWifi(
-                    venueId, PrintRoutingMapper.buildComandas(p.lines, config), config, orderNumber, p.orderType,
+                    venueId, PrintRoutingMapper.rutear(p.lines, config, p.omitirSinComanda).plans, config, orderNumber, p.orderType,
                     serverName = null, comboNames = comboNamesDe(p.lines), orderId = orderId, origen = origen,
                     etiquetaPantalla = p.etiquetaPantalla, curso = p.curso,
                 )
@@ -328,6 +332,13 @@ class ComandaDispatcher @Inject constructor(
         encabezado: List<String>? = null,
         /** Folios cuyo papel de respaldo NO se marca: van en más de un tiempo de la ronda ([despacharEnFondo], Codex 3.6 #1). */
         noMarcar: (String) -> Boolean = { false },
+        /**
+         * «No lleva comanda» (10-nov): `true` SÓLO en las ventas del POS. Lo de estaciones creadas sin comanda no se rutea:
+         * si era todo, devuelve [EstadoDeComanda.SinComanda] sin papel, libreta ni entregas; si era una mezcla, sigue lo de
+         * siempre con lo demás. Uber/Rappi, pedidos en línea y el KDS llaman con `false` y no cambian. Va al final para no
+         * mover los argumentos posicionales de nadie.
+         */
+        omitirSinComanda: Boolean = false,
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -375,7 +386,13 @@ class ComandaDispatcher @Inject constructor(
             return estadoLegado
         }
 
-        val plans = PrintRoutingMapper.buildComandas(lines, config)
+        val ruteo = PrintRoutingMapper.rutear(lines, config, omitirSinComanda)
+        val plans = ruteo.plans
+        // «No lleva comanda»: todo era de estaciones sin comanda. No hacía falta papel: ni libreta, ni entregas, ni aviso.
+        if (plans.isEmpty() && ruteo.omitidasSinComanda > 0) {
+            alCambiarEstado(EstadoDeComanda.SinComanda)
+            return EstadoDeComanda.SinComanda
+        }
         val paperPlans = plans.map { it.copy(lines = it.lines.filterNot { line ->
             line.serviceCourse?.preparationVersion == 1 && line.serviceCourse.kind == "STANDARD"
         }) }.filter { it.lines.isNotEmpty() }
@@ -419,6 +436,10 @@ class ComandaDispatcher @Inject constructor(
                 // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
                 venueId = venueId,
                 orderId = orderId,
+                // D2 con «No lleva comanda» (Codex código r1 #2 y r2): la tienda sin cocina que crea sólo «Sin comanda» ya no
+                // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
+                // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
+                negocioSinCocina = { omitirSinComanda && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -617,6 +638,8 @@ class ComandaDispatcher @Inject constructor(
         serverName: String? = null,
         /** Lo mismo que en [dispatch]: una comanda que se rindió se le DICE al cajero que emitió el vale. */
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+        /** Lo mismo que en [dispatch]. */
+        omitirSinComanda: Boolean = false,
     ): Boolean {
         if (!AreaComandaPolicy.shouldPrint(mode, moment)) {
             Log.d(TAG, "🎟️ Vale $areaTicketCode: $mode no pide comanda en $moment — se omite")
@@ -636,6 +659,7 @@ class ComandaDispatcher @Inject constructor(
             // papel por la impresora de cocina local.
             noStationsFallback = NoStationsFallback.RouteAnyway,
             alCambiarEstado = alCambiarEstado,
+            omitirSinComanda = omitirSinComanda,
         )
         return true
     }

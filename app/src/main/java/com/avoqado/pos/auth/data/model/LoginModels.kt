@@ -47,6 +47,9 @@ data class VenueData(
     // tiraba. Sólo SUGIERE el modo de punto de venta — ver `modoSugeridoPorGiro`.
     // Opcional: un server viejo que no lo mande deja null y no se sugiere nada.
     val type: String? = null,
+    // `true` = [permissions] es la lista VIGENTE que calculó el SERVIDOR (retiro con gerente, H3): manda ella, también
+    // vacía. Un servidor viejo no lo manda (`false`): la lista es de origen desconocido y vale el respaldo por rol.
+    val permisosVigentes: Boolean = false,
 )
 
 @Serializable

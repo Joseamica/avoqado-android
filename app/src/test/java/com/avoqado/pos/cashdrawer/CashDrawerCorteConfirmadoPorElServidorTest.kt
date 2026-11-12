@@ -271,6 +271,11 @@ class CashDrawerCorteConfirmadoPorElServidorTest {
             ),
             printerService = mockk<PrinterService>(relaxed = true),
             roleManager = mockk<RoleManager>(relaxed = true).also { every { it.hasVenuePermission(any(), any()) } returns true },
+            tpvSettingsRepository = mockk(relaxed = true),
+            conectividad = mockk(relaxed = true),
+            permissionOverrideRepository = mockk(relaxed = true),
+            comprobantes = mockk(relaxed = true),
+            secureStorage = mockk(relaxed = true),
         ).also { pantallas += it }
         fun consultas() = synchronized(llamadas) { llamadas.count { it.path.endsWith("/cash-drawer/current") } }
 

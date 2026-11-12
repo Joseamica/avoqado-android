@@ -220,6 +220,41 @@ class AuthRepositorySwitchUserTest {
         assertTrue(r is SwitchUserResult.Error)
     }
 
+    /**
+     * H3 (A): el SERVIDOR marca `permisosVigentes` cuando la lista del venue es la que él calculó. El login y el cambio de usuario la
+     * instalan con esa marca: una lista vigente sin el retiro manda, aunque el rol sea de gerente (y aunque no haya red después).
+     */
+    @Test
+    fun `H3 el login y el PIN instalan la marca de lista vigente que manda el servidor`() = runTest {
+        every { secureStorage.venueId } returns "venue-1"
+        val vigente = respuestaDeGerente().let { r ->
+            r.copy(user = r.user!!.copy(venues = r.user!!.venues.map { it.copy(permissions = listOf("orders:read"), permisosVigentes = true) }))
+        }
+        coEvery { apiService.login(any()) } returns vigente
+        coEvery { apiService.switchUser("venue-1", SwitchUserRequest("9335")) } returns vigente
+
+        repository.loginWithEmail("ana@x.com", "contraseña")
+        repository.switchUser("9335")
+
+        verify(exactly = 2) {
+            secureStorage.saveLogin(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                venuePermissions = listOf("orders:read"),
+                permisosVigentes = true,
+            )
+        }
+        verify { secureStorage.venuesList = match { l -> l.single().permisosVigentes } }
+    }
+
+    @Test
+    fun `H3 el campo permisosVigentes viaja en el JSON del login y falta en un servidor viejo`() {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val nuevo = json.decodeFromString<VenueData>("""{"id":"v","name":"N","permissions":[],"permisosVigentes":true}""")
+        val viejo = json.decodeFromString<VenueData>("""{"id":"v","name":"N","permissions":["orders:read"]}""")
+        assertTrue(nuevo.permisosVigentes)
+        assertFalse(viejo.permisosVigentes)
+    }
+
     @Test
     fun `P1 el rol nuevo queda accesible de inmediato para que la UI se repinte`() = runTest {
         every { secureStorage.venueId } returns "venue-1"

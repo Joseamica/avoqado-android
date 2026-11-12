@@ -23,6 +23,7 @@ package com.avoqado.pos.core.domain
  */
 object PermissionLabels {
     private val LABELS = mapOf(
+        "cash-drawer:pay-out" to "retirar efectivo de la caja",
         "giftCards:read" to "consultar tarjetas de regalo",
         "giftCards:sell" to "vender tarjetas de regalo",
         "giftCards:redeem" to "cobrar con tarjeta de regalo",

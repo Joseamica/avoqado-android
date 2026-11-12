@@ -10,6 +10,8 @@ import kotlinx.serialization.json.*
     val porTerminar: Boolean = false, val restanteCents: Int? = null, val mandado: Boolean = false,
     val iniciadoPor: String? = null, val iniciadoPorNombre: String? = null,
     val deMostrador: Boolean = false,
+    /** Tienda híbrida (A1): cobro con saldo de un folio de la bandeja. Al confirmarse deja la marca «aquí ya se cobró con saldo». */
+    val deFolio: Boolean = false,
 ) { override fun toString() = "SolicitudDeTarjeta(****)" }
 object SolicitudesDeTarjeta {
     const val TOPE = 50
