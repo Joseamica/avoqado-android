@@ -261,6 +261,26 @@ class PuertaDeLaFotoTest {
         assertNull(enDisco("order-F"))
     }
 
+    @Test fun `Codex b2b-r3 F2 apagar a media lectura - no nace la foto, aunque el piloto se vuelva a prender antes de guardarla`() {
+        var prendido = true
+        val conInterruptor = FotosDeMesas(dir, { prendido })
+        fun foto() = FotoDeMesa("v1", "order-H", emptyList(), "table-H", OrderDetail("order-H", total = 100.0), 1, emptyList(), System.currentTimeMillis())
+        // Apagado al recibir: no nace.
+        var lectura = conInterruptor.empezarLectura(setOf("order-H", "table-H"), "v1")
+        prendido = false
+        assertFalse(conInterruptor.crearSi(foto(), lectura))
+        conInterruptor.terminarLectura(lectura)
+        // La purga (plan apagado leído) ensucia la lectura en curso de ESA sucursal, aunque se vuelva a prender antes de guardar.
+        prendido = true
+        lectura = conInterruptor.empezarLectura(setOf("order-H", "table-H"), "v1")
+        val deOtra = conInterruptor.empezarLectura(setOf("order-Z", "table-Z"), "v2")
+        prendido = false; conInterruptor.alLeerElPlan("v1"); prendido = true
+        assertFalse(conInterruptor.crearSi(foto(), lectura))
+        assertTrue("la lectura de otra sucursal no se ensucia", conInterruptor.crearSi(
+            FotoDeMesa("v2", "order-Z", emptyList(), "table-Z", OrderDetail("order-Z", total = 1.0), 1, emptyList(), System.currentTimeMillis()), deOtra))
+        assertNull(FotosDeMesas(dir).foto("v1", "order-H"))
+    }
+
     @Test fun `el formato viejo de un archivo por sucursal se descarta`() {
         java.io.File(dir, "0123abcd.json").writeText("""[{"venueId":"v1","orderId":"order-F","detalle":{"id":"order-F"},"seq":1,"tomadaEn":${System.currentTimeMillis()}}]""")
         assertNull(FotosDeMesas(dir).foto("v1", "order-F"))

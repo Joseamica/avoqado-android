@@ -433,6 +433,51 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    @Test fun `Codex b2b-r3 F2 el piloto se apaga a media lectura - no nace la foto`() = runTest {
+        val subject = mesaConFoto()
+        escribir("orders/order-F/discounts", """{"discountId":"d"}""") // la foto se va; la próxima lectura la tomaría de nuevo
+        assertNull(fotoEnDisco())
+        // Avoqado apaga el piloto mientras la tablet está leyendo la cuenta (la lectura empezó con el piloto prendido).
+        antesDelGet = { piloto = false; fotos.alLeerElPlan(venue); antesDelGet = null }
+        leer(subject)
+        assertNull("no nace la foto", fotoEnDisco())
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `Codex b2b-r3 F2 el piloto se apaga entre calcular el saldo y abrir el cobro - camino de hoy, sin cobroSinRed`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        // La lectura de la cola (suspende) coincide con guardar el plan apagado.
+        coEvery { outbox.filasDeLaOrdenDesde(any(), any(), any()) } answers {
+            piloto = false
+            cola.filter { it.seq > arg<Long>(2) || it.estado in setOf("PENDING", "HELD", "REJECTED") }
+        }
+        assertFalse(subject.preparePagar())
+        assertEquals("el texto de hoy", "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen.", subject.blockedNotice.value)
+        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+        assertFalse(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `Codex b2b-r3 F2 apagar con un saldo sin red ya en pantalla - vuelve lo de hoy`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        assertTrue(subject.saldoDeMesaConocido); assertEquals(4500, subject.saldoDeMesa.porPagarCents)
+        piloto = false
+        assertFalse("«Pagar $45» ya no se dice con el piloto apagado", subject.saldoDeMesaConocido)
+        // Y «Ya pagada» tampoco: cobrada aquí sin internet, reabierta, y luego se apaga.
+        piloto = true
+        cobrado(4500)
+        subject = reiniciar(subject)
+        leer(subject)
+        assertTrue(subject.cuentaCobradaAqui)
+        piloto = false
+        assertFalse(subject.cuentaCobradaAqui)
+        subject.viewModelScope.cancel()
+    }
+
     private fun colaReal(dao: SyncIntentDao): SyncOutbox {
         val connectivity = mockk<ConnectivityMonitor>()
         every { connectivity.isConnected } returns MutableStateFlow(false)

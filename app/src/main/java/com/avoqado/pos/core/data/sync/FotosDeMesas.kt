@@ -62,8 +62,9 @@ class FotosDeMesas(
     @Inject constructor(@ApplicationContext context: Context, planManager: com.avoqado.pos.core.domain.PlanManager) :
         this(File(context.filesDir, "fotos-de-mesas"), { planManager.concedidaPorAvoqado(CODIGO_PILOTO) })
 
-    /** Una lectura de la cuenta en curso: cualquier escritura que la mencione desde [desde] la ensucia. */
-    class Lectura internal constructor(internal val ids: Set<String>, internal val desde: Long, internal val limpia: Boolean)
+    /** Una lectura de la cuenta en curso: cualquier escritura que la mencione desde [desde] la ensucia, y apagar el piloto de su sucursal. */
+    class Lectura internal constructor(internal val ids: Set<String>, internal val desde: Long, internal val limpia: Boolean,
+        internal val venueId: String? = null)
 
     /** Una escritura en vuelo: [ids] vacío = no mencionaba nada vigilado (cuenta para que ninguna lectura empiece «limpia»). */
     class Escritura internal constructor(internal val ids: Set<String>)
@@ -85,9 +86,9 @@ class FotosDeMesas(
         fotos()[llave]?.takeIf { llave !in muertas && vigente(it) }
     }
 
-    fun empezarLectura(ids: Set<String>): Lectura = synchronized(lock) {
+    fun empezarLectura(ids: Set<String>, venueId: String? = null): Lectura = synchronized(lock) {
         val limpia = ajenasEnVuelo == 0 && ids.none { (enVuelo[it] ?: 0) > 0 }
-        Lectura(ids, version, limpia).also { lecturas += it }
+        Lectura(ids, version, limpia, venueId).also { lecturas += it }
     }
 
     fun terminarLectura(lectura: Lectura) = synchronized(lock) { lecturas.remove(lectura); Unit }
@@ -95,7 +96,8 @@ class FotosDeMesas(
     /** Guarda [foto] sólo si [lectura] sigue limpia (ver la clase). Un disco que falla la deja sin foto nueva, nunca a medias. */
     fun crearSi(foto: FotoDeMesa, lectura: Lectura): Boolean = synchronized(lock) {
         val ids = foto.ids + lectura.ids
-        if (lectura !in lecturas || !lectura.limpia ||
+        // Codex b2b-r3 (F2): con el piloto apagado nunca nace una foto, aunque la lectura empezara prendida.
+        if (lectura !in lecturas || !lectura.limpia || !prendido() ||
             ids.any { (marcas[it] ?: 0) > lectura.desde || (enVuelo[it] ?: 0) > 0 }) return@synchronized false
         try { escribir(foto) } catch (_: Exception) { return@synchronized false }
         val llave = foto.venueId to foto.orderId
@@ -142,6 +144,9 @@ class FotosDeMesas(
      */
     fun alLeerElPlan(venueId: String) = synchronized(lock) {
         if (prendido()) return@synchronized
+        // Codex b2b-r3 (F2): las lecturas en curso de esa sucursal quedan sucias (no nacen fotos aunque el piloto vuelva a prenderse).
+        version++
+        lecturas.filter { it.venueId == venueId }.forEach { l -> l.ids.forEach { marcas[it] = version } }
         val dir = carpeta(venueId)
         val mias = fotos().keys.filter { it.first == venueId }
         if (mias.isEmpty() && !dir.isDirectory) return@synchronized

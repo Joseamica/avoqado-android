@@ -334,7 +334,8 @@ class TableOrderViewModel @Inject constructor(
 
     /** El saldo sin red que manda en la pantalla: sólo con el piloto, en una mesa del servidor que no se pudo leer al día. */
     private fun saldoSinRedVigente(s: TableSession.Active): SaldoSinRed.Conocido? =
-        saldoSinRedDelServidor?.takeIf { !s.isProvisional && !cuentaAlDiaAqui && it.first == (venueId to s.orderId) }?.second as? SaldoSinRed.Conocido
+        // Codex b2b-r3 (F2): con el piloto apagado, la pantalla vuelve a decir lo de hoy aunque ya hubiera un saldo calculado.
+        saldoSinRedDelServidor?.takeIf { !s.isProvisional && !cuentaAlDiaAqui && it.first == (venueId to s.orderId) && pilotoSinRed }?.second as? SaldoSinRed.Conocido
 
     /** Foto + rondas posteriores − efectivo posterior, leído de disco (foto, borrador y colas). Lo que no se asegura, en gris. */
     private suspend fun leerSaldoDelServidorSinRed(vId: String, s: TableSession.Active): SaldoSinRed {
@@ -374,7 +375,7 @@ class TableOrderViewModel @Inject constructor(
 
     private suspend fun pedirFoto(vId: String, s: TableSession.Active): PedidoDeFoto? {
         val fotos = fotos ?: return null
-        val lectura = fotos.empezarLectura(s.idsDeLaOrden + s.tableId)
+        val lectura = fotos.empezarLectura(s.idsDeLaOrden + s.tableId, vId)
         return try { PedidoDeFoto(lectura, syncOutbox.secuenciaActual(), nadaPendiente(vId, s)) }
         catch (e: kotlinx.coroutines.CancellationException) { fotos.terminarLectura(lectura); throw e }
         catch (_: Exception) { fotos.terminarLectura(lectura); null }
@@ -2215,8 +2216,9 @@ class TableOrderViewModel @Inject constructor(
             hayMutacionEnVuelo, vioCambios, trabajo)
         var sinRed: SaldoSinRed.Conocido? = null
         if (motivo != null) {
-            val saldo = if (!session.isProvisional && trabajo != null && !hayMutacionEnVuelo && vId != null && pilotoSinRed)
-                leerSaldoDelServidorSinRed(vId, session) else null
+            // Codex b2b-r3 (F2): si el piloto se apagó mientras se leía, el camino de hoy (el motivo de siempre, sin `cobroSinRed`).
+            val saldo = (if (!session.isProvisional && trabajo != null && !hayMutacionEnVuelo && vId != null && pilotoSinRed)
+                leerSaldoDelServidorSinRed(vId, session) else null)?.takeIf { pilotoSinRed }
             // La decisión pegada a la acción: de aquí a `tableSession.start(PAYING)` ya no hay suspensión.
             val vigente = tableSession.contextoActual() == contextoDeSesion && venueId == vId && tableSession.current() == session &&
                 generacion == epoch && checkLoadGeneration == read && !hayMutacionEnVuelo
