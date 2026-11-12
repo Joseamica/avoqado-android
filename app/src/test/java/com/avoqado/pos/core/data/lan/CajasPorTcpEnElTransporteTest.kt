@@ -111,7 +111,7 @@ class CajasPorTcpEnElTransporteTest {
         coEvery { apartar(any(), any(), any()) } returns null
     }, cache) { null }.also { it.client = clienteDeCuentas; it.encender("venue-1") }
 
-    @Test fun `NSD la pierde y su quien contesta - sigue en la lista, D la encuentra como dueña, y con dos fallas sale`() = runBlocking {
+    @Test fun `NSD la pierde y su quien contesta - sigue en la lista, D la encuentra como dueña, y si muere sale en la misma revisión`() = runBlocking {
         val t = encendido(transporte())
         try {
             vistaPorNsd(t)
@@ -132,9 +132,7 @@ class CajasPorTcpEnElTransporteTest {
 
             respuesta = null
             t.revisarPorTcp()
-            assertTrue("una falla no la saca", t.laN86() != null)
-            t.revisarPorTcp()
-            assertNull("dos seguidas: fuera", t.laN86())
+            assertNull("dos seguidas, en la misma revisión (Menor 4): fuera; mesas no se queda en isla ~2 min", t.laN86())
             assertEquals("abajo de Android 14 (detalle 7) es TCP puro: ningún resolve más de NSD", 1, resoluciones.size)
         } finally {
             t.detener()
@@ -238,6 +236,45 @@ class CajasPorTcpEnElTransporteTest {
             assertFalse(t.peers.value.any { it.deviceId != "tablet-prueba" })
         } finally {
             t.detener()
+        }
+    }
+
+    // MARK: - Ronda de arreglos 1, Menor 1: el puerto propio sobrevive al reinicio de la app
+
+    /**
+     * Al cerrar el socket, el hilo que espera en `accept` lo suelta un instante después (el JDK difiere el cierre real): se espera a que
+     * el puerto quede libre, como cuando el proceso de la app muere de verdad.
+     */
+    private suspend fun esperarQueSeLibere(puerto: Int) = withTimeout(5_000) {
+        while (runCatching { ServerSocket().use { it.reuseAddress = true; it.bind(java.net.InetSocketAddress(puerto)) } }.isFailure) delay(25)
+    }
+
+    @Test fun `la caja que reinicia la app conserva su puerto y vuelve a contestar quien en la dirección recordada`() = runBlocking {
+        val antes = encendido(transporte())
+        val recordado = antes.puerto
+        antes.detener() // la app se cierra (actualización, cierre de sesión, reinicio nocturno)
+        esperarQueSeLibere(recordado)
+        val despues = encendido(transporte()) // la misma tablet: mismo disco
+        try {
+            assertEquals(recordado, despues.puerto)
+            val r = LeaseClient().quien(LanPeer("tablet-prueba", "127.0.0.1", recordado))
+            assertEquals(LeaseProtocol.STATUS_OK, r?.status)
+            assertEquals("tablet-prueba", r?.txt?.get("did"))
+        } finally {
+            despues.detener()
+        }
+    }
+
+    @Test fun `si su puerto está ocupado abre otro como hoy y guarda el nuevo`() = runBlocking {
+        ServerSocket(0).use { ocupado -> // otro proceso tomó el puerto guardado
+            disco["${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"] = PayloadCache.Cached(ocupado.localPort.toString(), 0)
+            val t = encendido(transporte())
+            try {
+                assertTrue("otro puerto, no se queda sin red", t.puerto > 0 && t.puerto != ocupado.localPort)
+                esperar("guardó el nuevo") { disco["${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"]?.json == t.puerto.toString() }
+            } finally {
+                t.detener()
+            }
         }
     }
 }

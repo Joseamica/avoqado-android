@@ -89,5 +89,8 @@ class PayloadCache @Inject constructor(
 
         /** D12 · tubería: las cajas que NSD resolvió en la sucursal, para seguir hablándoles por TCP si NSD las pierde (`core.data.lan.CajasRecordadas`). */
         const val TYPE_CAJAS_RECORDADAS = "cajas_recordadas"
+
+        /** D12 · tubería, ronda 1: el último puerto propio en la sucursal, para que las otras cajas lo sigan encontrando tras reiniciar la app. */
+        const val TYPE_PUERTO_PROPIO = "puerto_propio"
     }
 }

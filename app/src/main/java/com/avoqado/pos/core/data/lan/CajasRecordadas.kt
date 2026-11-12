@@ -3,6 +3,7 @@ package com.avoqado.pos.core.data.lan
 import android.util.Log
 import com.avoqado.pos.core.data.local.PayloadCache
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -18,8 +19,8 @@ import kotlinx.serialization.json.Json
  * - Cada caja que NSD resuelve en MI sucursal se recuerda en disco (`did → host, port, venue, vistoEn`). Nunca este aparato.
  * - La que NSD pierde (o que no ve al arrancar) sigue en la lista mientras conteste [LeaseProtocol.OP_QUIEN] en esa dirección con el
  *   MISMO `did` y el MISMO `venue`; su TXT sale de esa respuesta (así `d`, `caja` y `kds` siguen al día).
- * - Dos fallas seguidas, otra identidad (el DHCP le dio esa IP a otro aparato u otro negocio) o una app vieja (error) ⇒ fuera. Al
- *   perderla NSD se pregunta dos veces seguidas (una caja que cerró su app sale al instante, como hoy); después, una vez por revisión.
+ * - Dos fallas seguidas, otra identidad (el DHCP le dio esa IP a otro aparato u otro negocio) o una app vieja (error) ⇒ fuera. A una
+ *   en la lista que no contesta (al perderla NSD o en la revisión) se le pregunta otra vez enseguida: sale en segundos, como hoy.
  * - 24 h sin contestar ⇒ se olvida. Una caja que NSD nunca vio aquí no entra: no hay dirección que probar.
  *
  * Una instancia por encendido de la red de [TransporteLan] (como su `LanDiscovery`), que la usa en su revisión y al perder un peer,
@@ -40,7 +41,7 @@ class CajasRecordadas(
 
     private val mutex = Mutex()
 
-    /** Bajo [mutex]. null = todavía no se lee el disco. */
+    /** Bajo [mutex]. null = todavía no se lee el disco (o la última lectura falló: se vuelve a intentar). */
     private var recordadas: MutableMap<String, Recordada>? = null
     private var guardadas: Map<String, Recordada> = emptyMap()
     private val fallas = HashMap<String, Int>()
@@ -56,43 +57,63 @@ class CajasRecordadas(
         for (p in perdidas) if (cuenta(p)) enLista[p.deviceId] = p
     }
 
-    /** Al perderlas NSD: hasta dos `quien` seguidos (≤ 1.5 s cada uno), en paralelo entre cajas. */
-    suspend fun confirmarPerdidas(perdidas: List<LanPeer>) = mutex.withLock {
-        val r = cargar()
+    /**
+     * Al perderlas NSD: hasta dos `quien` seguidos (≤ 1.5 s cada uno), en paralelo entre cajas. Ronda 1, Menor 3: el candado no se tiene
+     * durante la red (dos pérdidas a la vez, o una pérdida y la revisión, no van en fila); sólo para aplicar lo que contestaron.
+     */
+    suspend fun confirmarPerdidas(perdidas: List<LanPeer>) {
+        val porPreguntar = perdidas.filter(::cuenta)
+        if (porPreguntar.isEmpty()) return
+        val resultados = coroutineScope { porPreguntar.map { p -> async { p.deviceId to hastaDos(p.deviceId, p.host, p.port) } }.awaitAll() }
+        mutex.withLock {
+            val r = cargar()
+            for ((did, sondeos) in resultados) {
+                fallas.remove(did)
+                sondeos.forEach { aplicar(r, did, it) }
+            }
+            guardar(r)
+        }
+    }
+
+    /** Lo que NSD ve: recordado (sin red; si el disco no se pudo leer, no se escribe nada). */
+    suspend fun recordar(vistas: List<LanPeer>) = mutex.withLock {
+        val r = cargar() ?: return@withLock
+        anotarVistas(r, vistas)
+        guardar(r)
+    }
+
+    /**
+     * La revisión (≤ 1 min): recuerda lo que NSD ve y pregunta, en paralelo y sin candado, a las que NSD no ve. Ronda 1, Menor 4: a una
+     * que está en la lista y no contesta se le pregunta otra vez enseguida; dos seguidas y sale en ESTA revisión (antes tardaba ~2 min y
+     * las mesas de esa caja trabajaban en isla mientras tanto). A una recordada que no está en la lista, una sola pregunta.
+     */
+    suspend fun revisar(vistas: List<LanPeer>) {
+        val foto = mutex.withLock {
+            val r = cargar()
+            if (r != null) {
+                anotarVistas(r, vistas)
+                val t = ahora()
+                r.entries.removeAll { (did, c) -> (t - c.vistoEn >= OLVIDAR_MS).also { if (it) { enLista.remove(did); fallas.remove(did) } } }
+                guardar(r)
+            }
+            // La dirección de la lista es la más nueva (lo último que dijo NSD o el `quien`); si no, la del disco.
+            val direcciones = LinkedHashMap<String, Pair<LanPeer, Boolean>>()
+            enLista.forEach { (did, p) -> direcciones[did] = p to true }
+            r?.forEach { (did, c) -> direcciones.putIfAbsent(did, LanPeer(did, c.host, c.port) to false) }
+            direcciones.filterKeys { did -> vistas.none { it.deviceId == did } }
+        }
+        if (foto.isEmpty()) return
         val resultados = coroutineScope {
-            perdidas.filter(::cuenta).map { p ->
-                async {
-                    val primero = sondear(p.deviceId, p.host, p.port)
-                    p.deviceId to if (primero == Sondeo.NoContesta) listOf(primero, sondear(p.deviceId, p.host, p.port)) else listOf(primero)
-                }
+            foto.map { (did, d) ->
+                val (p, sostenida) = d
+                async { did to if (sostenida) hastaDos(did, p.host, p.port) else listOf(sondear(did, p.host, p.port)) }
             }.awaitAll()
         }
-        for ((did, sondeos) in resultados) {
-            fallas.remove(did)
-            sondeos.forEach { aplicar(r, did, it) }
+        mutex.withLock {
+            val r = cargar()
+            for ((did, sondeos) in resultados) sondeos.forEach { aplicar(r, did, it) }
+            guardar(r)
         }
-        guardar(r)
-    }
-
-    /** Lo que NSD ve: recordado y con su fecha al día. */
-    suspend fun recordar(vistas: List<LanPeer>) = mutex.withLock {
-        val r = cargar()
-        anotarVistas(r, vistas)
-        guardar(r)
-    }
-
-    /** La revisión (≤ 1 min): recuerda lo que NSD ve y pregunta una vez, en paralelo, a las recordadas que NSD no ve. */
-    suspend fun revisar(vistas: List<LanPeer>) = mutex.withLock {
-        val r = cargar()
-        anotarVistas(r, vistas)
-        val t = ahora()
-        r.entries.removeAll { (did, c) -> (t - c.vistoEn >= OLVIDAR_MS).also { if (it) { enLista.remove(did); fallas.remove(did) } } }
-        val candidatas = r.filterKeys { did -> vistas.none { it.deviceId == did } }
-        val resultados = coroutineScope {
-            candidatas.map { (did, c) -> async { did to sondear(did, c.host, c.port) } }.awaitAll()
-        }
-        for ((did, s) in resultados) aplicar(r, did, s)
-        guardar(r)
     }
 
     private fun cuenta(p: LanPeer) = p.venueExplicito && p.deviceId.isNotEmpty() && p.deviceId != yo
@@ -102,14 +123,26 @@ class CajasRecordadas(
      * [sostener] ya la puso en la lista: quitarla aquí la tiraría hasta la siguiente revisión).
      */
     private fun anotarVistas(r: MutableMap<String, Recordada>, vistas: List<LanPeer>) {
+        for (p in vistas) if (cuenta(p)) fechar(r, p.deviceId, p.host, p.port)
+    }
+
+    /** Ronda 1, Menor 5a: se vuelve a escribir sólo si cambió la dirección o la fecha guardada tiene más de [REFECHAR_MS]. */
+    private fun fechar(r: MutableMap<String, Recordada>, did: String, host: String, port: Int) {
         val t = ahora()
-        for (p in vistas) if (cuenta(p)) r[p.deviceId] = Recordada(p.host, p.port, venueId, t)
+        val antes = r[did]
+        if (antes == null || antes.host != host || antes.port != port || t - antes.vistoEn > REFECHAR_MS) r[did] = Recordada(host, port, venueId, t)
     }
 
     private sealed interface Sondeo {
         data class Es(val peer: LanPeer) : Sondeo
         data object Otra : Sondeo
         data object NoContesta : Sondeo
+    }
+
+    /** Dos `quien` seguidos si el primero no contesta (una respuesta, aunque sea de otro, no se repite: no es la red). */
+    private suspend fun hastaDos(did: String, host: String, port: Int): List<Sondeo> {
+        val primero = sondear(did, host, port)
+        return if (primero == Sondeo.NoContesta) listOf(primero, sondear(did, host, port)) else listOf(primero)
     }
 
     private suspend fun sondear(did: String, host: String, port: Int): Sondeo {
@@ -121,17 +154,18 @@ class CajasRecordadas(
         return LanTxt.peerDesde(txt, host, port, yo, venueId)?.let { Sondeo.Es(it) } ?: Sondeo.Otra
     }
 
-    private fun aplicar(r: MutableMap<String, Recordada>, did: String, s: Sondeo) {
+    /** [r] null = el disco no se pudo leer: la lista sí cambia (en memoria), el disco no. */
+    private fun aplicar(r: MutableMap<String, Recordada>?, did: String, s: Sondeo) {
         when (s) {
             is Sondeo.Es -> {
                 enLista[did] = s.peer
                 fallas.remove(did)
-                r[did] = Recordada(s.peer.host, s.peer.port, venueId, ahora())
+                r?.let { fechar(it, did, s.peer.host, s.peer.port) }
             }
             Sondeo.Otra -> {
                 if (enLista.remove(did) != null) Log.i(TAG, "👋 ${did.take(6)}: en su dirección contesta otro aparato o una app vieja")
                 fallas.remove(did)
-                r.remove(did)
+                r?.remove(did)
             }
             Sondeo.NoContesta -> {
                 val n = (fallas[did] ?: 0) + 1
@@ -143,20 +177,30 @@ class CajasRecordadas(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Un disco ilegible o que falla cuenta como vacío: sin dirección recordada sólo se pierde el atajo, nunca dinero. */
-    private suspend fun cargar(): MutableMap<String, Recordada> {
+    /**
+     * Ronda 1, Menor 5b: si LEER falla (Room no contesta), null: no se toma como vacío ni se escribe encima de lo guardado (se perderían
+     * justo las cajas del otro lado de la banda); se vuelve a intentar la siguiente vez, como `CuentasEntreCajas.leer`. Un JSON ilegible
+     * sí cuenta como vacío: sin dirección recordada sólo se pierde el atajo, nunca dinero.
+     */
+    private suspend fun cargar(): MutableMap<String, Recordada>? {
         recordadas?.let { return it }
-        val leidas = runCatching {
-            cache.loadDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId)?.json?.let { json.decodeFromString(Disco.serializer(), it).cajas }
-        }.onFailure { Log.w(TAG, "⚠️ no se pudieron leer las cajas recordadas: ${it.message}") }.getOrNull().orEmpty()
+        val guardado = try {
+            cache.loadDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudieron leer las cajas recordadas (se reintenta): ${e.message}")
+            return null
+        }
+        val leidas = guardado?.json?.let { runCatching { json.decodeFromString(Disco.serializer(), it).cajas }.getOrNull() }.orEmpty()
         val r = leidas.filter { (did, c) -> did != yo && c.venue == venueId }.toMutableMap()
         guardadas = leidas
         recordadas = r
         return r
     }
 
-    private suspend fun guardar(r: Map<String, Recordada>) {
-        if (r == guardadas) return
+    private suspend fun guardar(r: Map<String, Recordada>?) {
+        if (r == null || r == guardadas) return
         runCatching { cache.saveDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId, json.encodeToString(Disco.serializer(), Disco(r.toMap()))) }
             .onSuccess { guardadas = r.toMap() }
             .onFailure { Log.w(TAG, "⚠️ no se pudieron guardar las cajas recordadas: ${it.message}") }
@@ -170,5 +214,8 @@ class CajasRecordadas(
 
         /** Sin contestar (ni por NSD ni por TCP) en este tiempo, una caja se olvida. */
         const val OLVIDAR_MS = 24 * 60 * 60 * 1000L
+
+        /** Ronda 1, Menor 5a: la fecha de una caja que sigue en la misma dirección se vuelve a escribir a lo más cada hora. */
+        const val REFECHAR_MS = 60 * 60 * 1000L
     }
 }

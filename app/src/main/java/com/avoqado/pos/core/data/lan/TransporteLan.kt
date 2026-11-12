@@ -148,7 +148,9 @@ class TransporteLan @Inject constructor(
                 // socket, mismo TXT ⇒ nada), pero levanta un socket que no abrió y re-anuncia tras una ráfaga de
                 // registros fallida agotada — sin esto un aparato sólo-hub se quedaba invisible hasta el siguiente cambio.
                 while (true) {
-                    encender()
+                    // Menor 1 (ronda 1): al abrir el socket, primero el último puerto propio (las otras cajas recuerdan esta dirección).
+                    encender(if (puerto <= 0) leerPuertoPropio() else null)
+                    guardarPuertoPropio()
                     revisarPorTcp()
                     delay(REVISION_DE_RED_MS)
                 }
@@ -254,9 +256,9 @@ class TransporteLan @Inject constructor(
     // MARK: - Red
 
     @Synchronized
-    private fun encender() {
+    private fun encender(puertoPreferido: Int?) {
         val v = venueId ?: return
-        val port = abrirSocket() ?: return
+        val port = abrirSocket(puertoPreferido) ?: return
         val d = discovery ?: run {
             lateinit var nueva: LanDiscovery
             nueva = LanDiscovery(context, deviceId, v, apiNivel = apiNivel) { lista -> alCambiarAjenos(nueva, lista) }
@@ -393,10 +395,12 @@ class TransporteLan @Inject constructor(
         _peers.value = listOf(yo) + ajenos + recordadas?.porTcp(ajenos).orEmpty()
     }
 
-    private fun abrirSocket(): Int? {
+    private fun abrirSocket(preferido: Int?): Int? {
         serverSocket?.takeIf { !it.isClosed }?.let { return it.localPort }
         return try {
-            val socket = ServerSocket(0) // puerto efímero: se publica en el TXT, nadie lo adivina
+            // El puerto va en el anuncio (nadie lo adivina). Ronda 1, Menor 1: primero el último propio, porque las otras cajas lo
+            // recuerdan para hablarle por TCP si NSD las pierde; ocupado ⇒ uno efímero, como antes, y se guarda el nuevo.
+            val socket = preferido?.let(::escucharEn) ?: ServerSocket(0)
             serverSocket = socket
             publicarReceptor()
             acceptJob = scope.launch { aceptar(socket) }
@@ -405,6 +409,52 @@ class TransporteLan @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ No se pudo abrir el socket del transporte: ${e.message} — sin red local")
             null
+        }
+    }
+
+    private fun escucharEn(puerto: Int): ServerSocket? {
+        val s = ServerSocket()
+        return try {
+            s.reuseAddress = true // conexiones del proceso anterior en TIME_WAIT no lo traban
+            s.bind(java.net.InetSocketAddress(puerto))
+            s
+        } catch (e: Exception) {
+            runCatching { s.close() }
+            Log.i(TAG, "🛰️ El puerto $puerto ya no está libre (${e.message}) — se abre otro")
+            null
+        }
+    }
+
+    /** Lo que hay en disco del puerto propio de esta sucursal (null = sin disco, nada guardado o no se pudo leer). */
+    @Volatile private var puertoEnDisco: Int? = null
+
+    private suspend fun leerPuertoPropio(): Int? {
+        val c = cajasEnDisco ?: return null
+        val v = venueId ?: return null
+        val leido = try {
+            c.loadDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PUERTO_PROPIO, v)?.json?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudo leer el puerto propio: ${e.message}")
+            null
+        }
+        puertoEnDisco = leido
+        return leido
+    }
+
+    private suspend fun guardarPuertoPropio() {
+        val c = cajasEnDisco ?: return
+        val v = venueId ?: return
+        val p = puerto
+        if (p <= 0 || p == puertoEnDisco) return
+        try {
+            c.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PUERTO_PROPIO, v, p.toString())
+            puertoEnDisco = p
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudo guardar el puerto propio: ${e.message}")
         }
     }
 

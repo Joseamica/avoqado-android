@@ -4,6 +4,8 @@ import com.avoqado.pos.core.data.local.PayloadCache
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -21,9 +23,17 @@ class CajasRecordadasTest {
     private val v = "venue-1"
     private var hora = 1_700_000_000_000L
     private val disco = mutableMapOf<String, PayloadCache.Cached>()
+    private var escrituras = 0
+    private var lecturaFalla = false
     private val cache = mockk<PayloadCache> {
-        coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
-        coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
+        coEvery { loadDurable(any(), any()) } answers {
+            if (lecturaFalla) throw java.io.IOException("Room no contestó")
+            disco["${firstArg<String>()}|${secondArg<String>()}"]
+        }
+        coEvery { saveDurable(any(), any(), any()) } answers {
+            escrituras++
+            disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
+        }
     }
 
     /** host → lo que contesta `quien` (sin entrada o null = no contesta). */
@@ -70,19 +80,24 @@ class CajasRecordadasTest {
         assertTrue("lo que ve NSD manda", c.porTcp(listOf(n86)).isEmpty())
     }
 
-    @Test fun `deja de contestar dos veces seguidas sale, con una sola falla no`() = runTest {
+    /** Ronda 1, Menor 4: a una sostenida que no contesta se le pregunta otra vez enseguida; dos seguidas y sale en la MISMA revisión. */
+    @Test fun `una sostenida que deja de contestar sale en la misma revisión`() = runTest {
         val c = cajas()
         perdidaQueContesta(c)
+        preguntas.clear()
         contesta[n86.host] = null
         c.revisar(emptyList())
-        assertEquals("una falla no la saca", 1, c.porTcp(emptyList()).size)
-        contesta[n86.host] = soy(n86.deviceId)
-        c.revisar(emptyList())
-        contesta[n86.host] = null
-        c.revisar(emptyList())
-        assertEquals("contestó en medio: no son seguidas", 1, c.porTcp(emptyList()).size)
-        c.revisar(emptyList())
-        assertTrue("dos seguidas: fuera", c.porTcp(emptyList()).isEmpty())
+        assertTrue("dos seguidas en la misma revisión: fuera", c.porTcp(emptyList()).isEmpty())
+        assertEquals("la segunda pregunta va enseguida", listOf(n86.host, n86.host), preguntas)
+    }
+
+    @Test fun `una falla suelta no la saca - la segunda pregunta contesta`() = runTest {
+        var n = 0
+        val c = CajasRecordadas(cache, v, "yo", { p -> n++; if (n == 2) null else soy(p.deviceId) }, { hora })
+        perdidaQueContesta(c) // pregunta 1: contesta
+        c.revisar(emptyList()) // pregunta 2: no contesta; pregunta 3: contesta
+        assertEquals(3, n)
+        assertEquals(1, c.porTcp(emptyList()).size)
     }
 
     @Test fun `al perderla NSD y no contestar dos veces seguidas sale enseguida, como hoy`() = runTest {
@@ -171,5 +186,54 @@ class CajasRecordadasTest {
         lentas.revisar(emptyList())
         assertEquals(2, preguntas.size)
         assertEquals("1.5 s por caja, no 1.5 s × cajas", LeaseClient.PLAZO_QUIEN_MS, currentTime - antes)
+    }
+
+    // MARK: - Ronda de arreglos 1
+
+    /** Menor 3: el candado no se tiene durante la red. Dos pérdidas a la vez y la revisión preguntan en paralelo, no en fila. */
+    @Test fun `dos cajas perdidas a la vez y la revisión se preguntan en paralelo`() = runTest {
+        val d3 = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val lentas = CajasRecordadas(cache, v, "yo", { p -> delay(LeaseClient.PLAZO_QUIEN_MS); soy(p.deviceId) }, { hora })
+        lentas.sostener(listOf(n86, d3))
+        val antes = currentTime
+        listOf(
+            launch { lentas.confirmarPerdidas(listOf(n86)) },
+            launch { lentas.confirmarPerdidas(listOf(d3)) },
+            launch { lentas.revisar(emptyList()) },
+        ).joinAll()
+        assertEquals("1.5 s en total, no 1.5 s en fila por cada una", LeaseClient.PLAZO_QUIEN_MS, currentTime - antes)
+        assertEquals(setOf(n86.deviceId, d3.deviceId), lentas.porTcp(emptyList()).map { it.deviceId }.toSet())
+    }
+
+    /** Menor 5a: el disco sólo se escribe si cambió la dirección o la fecha guardada tiene más de 1 h. */
+    @Test fun `el disco sólo se escribe si cambió la dirección o la fecha tiene más de 1 h`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86))
+        assertEquals(1, escrituras)
+        hora += 60_000
+        c.recordar(listOf(n86))
+        c.revisar(listOf(n86))
+        assertEquals("un minuto después no hay nada nuevo que escribir", 1, escrituras)
+        hora += 60 * 60_000
+        c.recordar(listOf(n86))
+        assertEquals("más de 1 h: se vuelve a fechar", 2, escrituras)
+        c.recordar(listOf(vistaPorNsd(n86.deviceId, "192.168.100.153")))
+        assertEquals("cambió la dirección", 3, escrituras)
+        assertEquals("192.168.100.153", enDisco().getValue(n86.deviceId).host)
+    }
+
+    /** Menor 5b: un error al LEER el disco no cuenta como «vacío»: no se pisa lo guardado (se pierden las cajas del otro lado de la banda). */
+    @Test fun `si leer el disco falla, lo guardado queda intacto`() = runTest {
+        val d3 = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val otra = vistaPorNsd("otra-cccc", "192.168.100.70")
+        cajas().recordar(listOf(n86, d3))
+        val c = cajas()
+        lecturaFalla = true
+        c.recordar(listOf(otra))
+        c.revisar(listOf(otra))
+        assertEquals(setOf(n86.deviceId, d3.deviceId), enDisco().keys)
+        lecturaFalla = false
+        c.recordar(listOf(otra))
+        assertEquals("al volver a leer se junta, sin perder nada", setOf(n86.deviceId, d3.deviceId, otra.deviceId), enDisco().keys)
     }
 }
