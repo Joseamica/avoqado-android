@@ -47,8 +47,14 @@ data class FotoDeMesa(
  * pedirla y ninguna escritura sin identificar volaba en la tablet en ese momento. Sin fotos ni lecturas, ① no lee el cuerpo ni toca el disco.
  */
 @Singleton
-class FotosDeMesas(private val directory: File, private val reloj: () -> Long = System::currentTimeMillis) {
-    @Inject constructor(@ApplicationContext context: Context) : this(File(context.filesDir, "fotos-de-mesas"))
+class FotosDeMesas(
+    private val directory: File,
+    /** El interruptor del piloto. Apagado, las puertas no hacen nada y las fotos que quedaron se tiran (Codex b2b-r1 #2). */
+    private val prendido: () -> Boolean = { true },
+    private val reloj: () -> Long = System::currentTimeMillis,
+) {
+    @Inject constructor(@ApplicationContext context: Context, planManager: com.avoqado.pos.core.domain.PlanManager) :
+        this(File(context.filesDir, "fotos-de-mesas"), { planManager.concedidaPorAvoqado(CODIGO_PILOTO) })
 
     /** Una lectura de la cuenta en curso: cualquier escritura que la mencione desde [desde] la ensucia. */
     class Lectura internal constructor(internal val ids: Set<String>, internal val desde: Long, internal val limpia: Boolean)
@@ -117,7 +123,17 @@ class FotosDeMesas(private val directory: File, private val reloj: () -> Long = 
         Unit
     }
 
-    private fun vigilado(): Boolean = lecturas.isNotEmpty() || fotos().values.any { it.isNotEmpty() }
+    /**
+     * Hay algo que vigilar y el piloto sigue prendido. Apagado, se tiran las fotos que quedaron (si el disco falla, igual se olvidan en
+     * memoria: con el piloto apagado nadie las usa) y ninguna escritura vuelve a depender de este almacén.
+     */
+    private fun vigilado(): Boolean {
+        if (lecturas.isEmpty() && fotos().values.all { it.isEmpty() }) return false
+        if (prendido()) return true
+        cargadas = mutableMapOf()
+        directory.listFiles { f -> f.extension == "json" }.orEmpty().forEach { runCatching { it.delete() } }
+        return false
+    }
 
     /** Los ids de toda foto o lectura que [texto] menciona (por id, alias o mesa). Ilegible ⇒ todos. */
     private fun mencionadas(texto: String?): Set<String> {
@@ -164,5 +180,9 @@ class FotosDeMesas(private val directory: File, private val reloj: () -> Long = 
         } finally { temporal.delete() }
     }
 
-    companion object { const val VIGENCIA_MS = 24L * 60 * 60 * 1000 }
+    companion object {
+        const val VIGENCIA_MS = 24L * 60 * 60 * 1000
+        /** El código del piloto «mesas sin red» (espejo EXACTO de la `Feature` del SERVIDOR). */
+        const val CODIGO_PILOTO = "MESAS_SIN_RED"
+    }
 }

@@ -30,6 +30,7 @@ import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
 import com.avoqado.pos.tables.data.UpdatedOrder
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -346,6 +347,24 @@ class MesaDelServidorSinRedTest {
         assertFalse("nunca $45 sobre la foto vieja", subject.preparePagar())
         assertEquals(SIN_CUENTA_COMPLETA, subject.blockedNotice.value)
         assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `Codex b2b-r1 #1 si el disco falla al guardar el rechazo, la mesa queda en gris y nunca cobra la ronda rechazada`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        val dao = mockk<SyncIntentDao>(relaxed = true)
+        val fila = SyncIntentEntity(llave, venue, "staff", 2, "ADD_ITEMS", """{"orderId":"order-F","items":[]}""")
+        assertTrue(dirFotos.setWritable(false))
+        try { colaReal(dao).conservarAck(SyncAck(llave, "REJECTED", "BUSINESS_RULE", "Producto agotado"), fila, venue, "d1", "d1") }
+        finally { dirFotos.setWritable(true) }
+        coVerify(exactly = 1) { dao.resolve(llave, "REJECTED", any(), any(), any()) }
+        estado(llave, "REJECTED")
+        assertNotNull("la foto no se pudo borrar", fotoEnDisco())
+        assertFalse("nunca $45 con la ronda rechazada", subject.preparePagar())
+        assertEquals(CAMBIOS_SIN_SINCRONIZAR, subject.blockedNotice.value)
         subject.viewModelScope.cancel()
     }
 

@@ -686,9 +686,10 @@ class SyncOutbox @Inject constructor(
     /** Both HTTP replay and readonly recovery must use this same local commit before emitting ACK. */
     internal suspend fun conservarAck(ack: SyncAck, row: SyncIntentEntity, venueId: String, sentDeviceId: String, currentDeviceId: String) {
         val resultJson = ack.result?.let { json.encodeToString(JsonObject.serializer(), it) }
-        // D5 · B2b (R5-1): un rechazo de algo de la mesa (su ronda, sobre todo) mata su foto ANTES de guardarse: si el gerente la
-        // descarta y el borrador la vuelve a encolar, nunca suma sobre la foto. Si el disco falla, el acuse no se guarda y se repite.
-        if (!ack.isAcked) fotos?.borrarSiMenciona(row.payloadJson)
+        // D5 · B2b (R5-1): un rechazo de algo de la mesa (su ronda, sobre todo) mata su foto: si el gerente la descarta y el borrador
+        // la vuelve a encolar, nunca suma sobre la foto. Si el disco falla, el rechazo se guarda igual (Codex b2b-r1 #1): la fila
+        // rechazada pone la mesa en gris, y «Marcar resuelta» no la quita hasta poder borrar la foto (`dismissRejected`).
+        if (!ack.isAcked) runCatching { fotos?.borrarSiMenciona(row.payloadJson) }
         if(ack.status == "REJECTED" && ack.errorCode == "STALE_DEVICE_SEQUENCE") {
             require(row.venueId == venueId && sentDeviceId.isNotBlank() && sentDeviceId == currentDeviceId)
             dao.resolveStaleSequence(ack.id,venueId,row.seq,
@@ -728,7 +729,8 @@ class SyncOutbox @Inject constructor(
 
     /** El gerente resolvió el rechazo a mano y lo descarta de la cuarentena. */
     suspend fun dismissRejected(venueId: String, id: String) {
-        // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto.
+        // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Si el disco falla, lanza y la fila
+        // rechazada se queda (la mesa sigue en gris).
         fotos?.let { f -> dao.findForVenue(venueId, id)?.let { f.borrarSiMenciona(it.payloadJson) } }
         dao.dismiss(id)
         refreshCounts(venueId)

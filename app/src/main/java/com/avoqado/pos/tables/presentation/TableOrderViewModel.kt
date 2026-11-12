@@ -521,7 +521,7 @@ class TableOrderViewModel @Inject constructor(
 
     companion object {
         /** D5 · B2b: el código del piloto «mesas sin red» (espejo EXACTO de la `Feature` del SERVIDOR). */
-        const val CODIGO_PILOTO_SIN_RED = "MESAS_SIN_RED"
+        const val CODIGO_PILOTO_SIN_RED = com.avoqado.pos.core.data.sync.FotosDeMesas.CODIGO_PILOTO
 
         /** Base slots, always visible in the pending card (Square-style). */
         val BASE_COURSES: List<String?> = listOf(null, "Aperitivos", "Principales", "Postres")

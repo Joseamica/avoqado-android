@@ -202,6 +202,26 @@ class PuertaDeLaFotoTest {
         assertEquals(2, escrito)
     }
 
+    @Test fun `Codex b2b-r1 #2 con el piloto apagado la puerta no lee ni depende del disco aunque hayan quedado fotos`() {
+        tomar()
+        var prendido = false
+        var escrito = 0
+        val espia = object : RequestBody() {
+            override fun contentType() = "application/json".toMediaType()
+            override fun contentLength() = 30L
+            override fun writeTo(sink: BufferedSink) { escrito++; sink.writeUtf8("""{"orderId":"order-F","x":"12345"}""".take(30)) }
+        }
+        val apagable = FotosDeMesas(dir, { prendido })
+        val cliente = OkHttpClient.Builder().addInterceptor(PuertaDeLaFoto(apagable)).build()
+        assertTrue(dir.setWritable(false)) // un disco que falla ya no puede frenar nada
+        cliente.newCall(Request.Builder().url(server.url("/api/v1/mobile/venues/v1/orders/order-F/comp")).post(espia).build()).execute().close()
+        dir.setWritable(true)
+        assertEquals("la petición salió", 1, server.requestCount)
+        assertEquals("y la puerta no leyó el cuerpo", 1, escrito)
+        prendido = true
+        assertNull("las fotos del piloto apagado se olvidaron: no vuelven al prenderlo", apagable.foto("v1", "order-F"))
+    }
+
     @Test fun `la foto vence a las 24 h y sobrevive a reiniciar mientras tanto`() {
         var ahora = 1_000_000L
         val conReloj = FotosDeMesas(dir) { ahora }

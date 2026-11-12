@@ -111,14 +111,37 @@ class FotosEnLaColaTest {
         assertNull(enDisco("order-F"))
     }
 
-    @Test fun `R5-1 el acuse de una ronda no borra la foto, pero si el disco falla el rechazo no se guarda`() = runTest {
+    @Test fun `R5-1 el acuse de una ronda no borra la foto, y si el disco falla el rechazo se guarda igual y el descarte no procede`() = runTest {
         tomar("order-F")
         cola().conservarAck(SyncAck("ronda-1", "ACKED"), ronda, "v1", "d1", "d1")
         assertNotNull("una ronda aceptada la cuenta la fórmula", enDisco("order-F"))
         assertTrue(dir.setWritable(false))
-        try { cola().conservarAck(SyncAck("ronda-1", "REJECTED", "BUSINESS_RULE", "x"), ronda, "v1", "d1", "d1"); fail() } catch (_: IOException) {}
+        // Codex b2b-r1 #1: el rechazo es un hecho; se guarda aunque la foto no se pueda borrar (la fila rechazada pone gris).
+        cola().conservarAck(SyncAck("ronda-1", "REJECTED", "BUSINESS_RULE", "x"), ronda, "v1", "d1", "d1")
+        coVerify(exactly = 1) { dao.resolve("ronda-1", SyncIntentEntity.STATUS_REJECTED, any(), any(), any()) }
+        // …y «Marcar resuelta» no quita la fila mientras la foto siga ahí.
+        coEvery { dao.findForVenue("v1", "ronda-1") } returns ronda.copy(status = SyncIntentEntity.STATUS_REJECTED)
+        try { cola().dismissRejected("v1", "ronda-1"); fail("debió fallar") } catch (_: IOException) {}
+        coVerify(exactly = 0) { dao.dismiss(any()) }
         dir.setWritable(true)
-        coVerify(exactly = 0) { dao.resolve("ronda-1", SyncIntentEntity.STATUS_REJECTED, any(), any(), any()) }
+    }
+
+    @Test fun `con el piloto apagado la cola no lee ni borra fotos aunque hayan quedado`() = runTest {
+        tomar("order-F")
+        var prendido = true
+        val apagable = FotosDeMesas(dir, { prendido })
+        assertNotNull(apagable.foto("v1", "order-F"))
+        prendido = false
+        val connectivity = mockk<ConnectivityMonitor>(relaxed = true)
+        val prefs = mockk<SharedPreferences>(relaxed = true)
+        val context = mockk<Context>(relaxed = true)
+        every { context.getSharedPreferences(any(), any()) } returns prefs
+        val storage = mockk<SecureStorage>(relaxed = true)
+        assertTrue(dir.setWritable(false)) // ni siquiera un disco que falla frena la cola
+        SyncOutbox(dao, mockk<ApiService>(relaxed = true), connectivity, storage, mockk<CashDrawerRepository>(relaxed = true), context,
+            mockk(relaxed = true), fotos = apagable).enqueue("v1", "APPLY_DISCOUNT", payload("""{"orderId":"order-F"}"""))
+        dir.setWritable(true)
+        coVerify(exactly = 1) { dao.insertWithNextSeq(any()) }
     }
 
     @Test fun `R5-1 descartar la ronda en la cuarentena borra la foto antes de quitar la fila`() = runTest {
