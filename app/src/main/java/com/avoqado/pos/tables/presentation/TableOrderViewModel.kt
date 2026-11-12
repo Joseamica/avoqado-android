@@ -25,6 +25,7 @@ import com.avoqado.pos.tables.data.OrderDetailItem
 import com.avoqado.pos.tables.data.RondaConLlave
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
+import com.avoqado.pos.tables.data.paraLaCuenta
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1629,8 +1630,12 @@ class TableOrderViewModel @Inject constructor(
 
     // MARK: - Recompensas (lealtad)
 
-    private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?>(null)
-    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> = _loyalty.asStateFlow()
+    private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.LealtadLeida?>(null)
+
+    /** El saldo de la cuenta que se ve; el de otra cuenta, otro cliente u otra versión no se ofrece (Codex android r4 #1). */
+    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> =
+        combine(_loyalty, _check) { leida, cuenta -> leida.paraLaCuenta(cuenta) }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
 
     /** Por qué no se pudo leer el saldo (null = no falló). Decide el motivo del botón gris: sin red no es «agrega el cliente». */
     private val _loyaltyFallo = MutableStateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?>(null)
@@ -1643,7 +1648,9 @@ class TableOrderViewModel @Inject constructor(
      */
     fun alVolverLaRed() {
         val session = tableSession.current() ?: return
-        if (_check.value == null && !session.isProvisional) loadCheck() else loadLoyalty(olvidarElSaldo = true)
+        // Siempre olvida el saldo y deja atrás cualquier lectura pendiente, también cuando falta la cuenta (Codex android r4 #1).
+        loadLoyalty(olvidarElSaldo = true)
+        if (_check.value == null && !session.isProvisional) loadCheck()
     }
 
     /** La lectura del saldo más nueva: una respuesta vieja (la que se colgó sin red) no pisa a la que llegó después. */
@@ -1656,19 +1663,21 @@ class TableOrderViewModel @Inject constructor(
     fun loadLoyalty(olvidarElSaldo: Boolean = false) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        val customerId = _check.value?.customerId
+        val cuenta = _check.value
+        val customerId = cuenta?.customerId
         val lectura = ++lecturaDeLealtad
-        if (customerId.isNullOrBlank() || olvidarElSaldo) {
+        if (cuenta == null || customerId.isNullOrBlank() || olvidarElSaldo) {
             _loyalty.value = null
             _loyaltyFallo.value = null
         }
-        if (customerId.isNullOrBlank()) return
+        if (cuenta == null || customerId.isNullOrBlank()) return
         viewModelScope.launch {
             val leido = repository.getCustomerLoyalty(vId, customerId, session.orderId)
             if (lectura != lecturaDeLealtad) return@launch
             leido.fold(
                 onSuccess = {
-                    _loyalty.value = it
+                    // Etiquetado con la cuenta que se pidió: si para entonces se ve otra, no se ofrece (Codex android r4 #1).
+                    _loyalty.value = com.avoqado.pos.tables.data.LealtadLeida(session.orderId, customerId, cuenta.version, it)
                     _loyaltyFallo.value = null
                 },
                 onFailure = {

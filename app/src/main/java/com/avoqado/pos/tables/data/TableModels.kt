@@ -443,6 +443,18 @@ data class CustomerLoyalty(
         enLinea && points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
 }
 
+/**
+ * Un saldo de puntos y la cuenta para la que se leyó (orden, cliente y versión de la cuenta). La GET calcula el máximo contra ESA
+ * cuenta (subtotal − descuentos, abono, pagada), así que sólo vale para ella: si la cuenta que se ve cambió —otra cuenta de la mesa,
+ * otro cliente, otra versión—, no se ofrece y se lee de nuevo (Codex android r4 #1, pasada completa de «saldo de otra cuenta»).
+ */
+data class LealtadLeida(val orderId: String, val customerId: String, val version: Int?, val lealtad: CustomerLoyalty)
+
+/** El saldo leído, sólo si es de la cuenta que se ve; si no, null («Leyendo los puntos del cliente…»). */
+fun LealtadLeida?.paraLaCuenta(cuenta: OrderDetail?): CustomerLoyalty? =
+    this?.takeIf { cuenta != null && it.orderId == cuenta.id && it.customerId == cuenta.customerId && it.version == cuenta.version }
+        ?.lealtad
+
 /** El texto de «Recompensas» sin red: el del botón gris y el del diálogo abierto. */
 const val RECOMPENSAS_SIN_RED = "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
 
@@ -467,9 +479,10 @@ fun motivoSinRecompensas(
     // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea. Va antes
     // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
     !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) -> RECOMPENSAS_SIN_RED
-    lealtad?.canRedeem == true -> null
+    // La cuenta va antes que `canRedeem`: un saldo sólo se ofrece sobre una cuenta con cliente (Codex android r4 #1).
     tieneCliente == null -> "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento."
     !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
+    lealtad?.canRedeem == true -> null
     lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
     lealtad == null -> "Leyendo los puntos del cliente…"
     !lealtad.active -> "El programa de lealtad está apagado en esta sucursal. Se prende desde el panel web."
