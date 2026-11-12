@@ -46,4 +46,18 @@ class ValorDelCanjeTest {
         assertEquals(1.5, lealtad(0.0149).valorDelCanje(101), 0.0)
         assertEquals(0.0, lealtad(0.01).valorDelCanje(0), 0.0)
     }
+
+    @Test
+    fun `Canjear sólo con un número que el canje acepta - nunca 0 puntos ni un monto de $0 (Codex android r1 6)`() {
+        val l = CustomerLoyalty(redemptionRate = 1.0, balance = 1, minPointsRedeem = 0, maxRedeemablePoints = 1)
+        assertEquals(false, l.puedeCanjear(0))
+        assertEquals(true, l.puedeCanjear(1))
+        val chica = CustomerLoyalty(redemptionRate = 0.0001, balance = 100, minPointsRedeem = 10, maxRedeemablePoints = 100)
+        assertEquals(false, chica.puedeCanjear(40)) // 40 × 0.0001 = $0.00: el canje lo rechaza
+        assertEquals(true, chica.puedeCanjear(50)) // $0.01
+        assertEquals(false, chica.puedeCanjear(101)) // arriba del máximo
+        val conMinimo = CustomerLoyalty(redemptionRate = 1.0, balance = 500, minPointsRedeem = 10, maxRedeemablePoints = 90)
+        assertEquals(false, conMinimo.puedeCanjear(9))
+        assertEquals(true, conMinimo.puedeCanjear(10))
+    }
 }

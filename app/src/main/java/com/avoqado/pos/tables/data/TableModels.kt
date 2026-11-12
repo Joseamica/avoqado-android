@@ -434,6 +434,10 @@ data class CustomerLoyalty(
      * $0.14).
      */
     fun valorDelCanje(points: Int): Double = Math.round(points * redemptionRate * 100) / 100.0
+
+    /** «Canjear» sólo con un número que el canje acepta: entero positivo, desde el mínimo, hasta el máximo y con descuento > $0. */
+    fun puedeCanjear(points: Int): Boolean =
+        points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
 }
 
 /**
@@ -449,10 +453,11 @@ fun motivoSinRecompensas(
     fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
     enLinea: Boolean = true,
 ): String? = when {
-    lealtad?.canRedeem == true -> null
-    // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea.
+    // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea. Va antes
+    // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
     !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) ->
         "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
+    lealtad?.canRedeem == true -> null
     !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
     lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
     lealtad == null -> "Leyendo los puntos del cliente…"

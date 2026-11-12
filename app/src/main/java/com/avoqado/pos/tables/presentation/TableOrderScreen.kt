@@ -172,6 +172,19 @@ fun TableOrderScreen(
     val actionMessage by viewModel.actionMessage.collectAsState()
     val loyalty by viewModel.loyalty.collectAsState()
     val loyaltyFallo by viewModel.loyaltyFallo.collectAsState()
+    // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
+    val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
+        tieneCliente = !check?.customerId.isNullOrBlank(),
+        lealtad = loyalty,
+        fallo = loyaltyFallo,
+        enLinea = isConnected,
+    )
+    val recompensasSinRed =
+        !isConnected || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
+    // Al volver la red, el saldo que no se pudo leer sin ella se vuelve a pedir: «Sin conexión» no se queda pegado (Codex android r1 #4).
+    LaunchedEffect(isConnected) {
+        if (isConnected && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) viewModel.loadLoyalty()
+    }
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
@@ -544,16 +557,9 @@ fun TableOrderScreen(
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
-                                hasLoyalty = loyalty?.canRedeem == true,
-                                rewardsBlockedReason = com.avoqado.pos.tables.data.motivoSinRecompensas(
-                                    tieneCliente = !check?.customerId.isNullOrBlank(),
-                                    lealtad = loyalty,
-                                    fallo = loyaltyFallo,
-                                    enLinea = isConnected,
-                                ),
-                                rewardsBlockedByConnection = !isConnected || (
-                                    loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED
-                                ),
+                                hasLoyalty = motivoRecompensas == null,
+                                rewardsBlockedReason = motivoRecompensas,
+                                rewardsBlockedByConnection = recompensasSinRed,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -737,16 +743,9 @@ fun TableOrderScreen(
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
-                                hasLoyalty = loyalty?.canRedeem == true,
-                                rewardsBlockedReason = com.avoqado.pos.tables.data.motivoSinRecompensas(
-                                    tieneCliente = !check?.customerId.isNullOrBlank(),
-                                    lealtad = loyalty,
-                                    fallo = loyaltyFallo,
-                                    enLinea = isConnected,
-                                ),
-                                rewardsBlockedByConnection = !isConnected || (
-                                    loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED
-                                ),
+                                hasLoyalty = motivoRecompensas == null,
+                                rewardsBlockedReason = motivoRecompensas,
+                                rewardsBlockedByConnection = recompensasSinRed,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -3418,7 +3417,7 @@ private fun RewardsDialog(
             PrimaryButton(
                 text = "Canjear",
                 onClick = { onRedeem(points) },
-                enabled = points >= loyalty.minPointsRedeem && points <= loyalty.maxRedeemablePoints,
+                enabled = loyalty.puedeCanjear(points),
                 fullWidth = true,
             )
         },

@@ -27,6 +27,14 @@ class MotivoSinRecompensasTest {
     )
 
     @Test
+    fun `sin red con un saldo leído antes (canRedeem true) - el botón se apaga y dice sin red (Codex android r1 3)`() {
+        assertEquals(
+            "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red.",
+            motivoSinRecompensas(tieneCliente = true, lealtad = lealtad(canRedeem = true, max = 100), fallo = null, enLinea = false),
+        )
+    }
+
+    @Test
     fun `sin cliente se pide agregarlo (el texto de siempre)`() {
         assertEquals(
             "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
