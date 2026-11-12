@@ -341,4 +341,41 @@ class MesaSinRedTrasReinicioTest {
             assertEquals(noRecuperado, subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
+
+    // MARK: - Codex b2a-r3
+
+    @Test fun `r3 la apertura que el servidor confirma durante la segunda lectura no se cobra`() = runTest {
+        val subject = vm()
+        try {
+            ronda(subject, 3000)
+            // `saldoSinRedDeDisco` ya pasó; mientras `leerTrabajo` espera, el replay guarda la promoción en disco.
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } coAnswers {
+                drafts.promote("v-b2a", "local-1", "real-1")
+                TrabajoSinResolver(cola.size, 0, cola.map { it.tipo }.toSet(), 0)
+            }
+            assertFalse(subject.preparePagar())
+            assertEquals(noRecuperado, subject.blockedNotice.value)
+            assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `r3 A5 tras reiniciar una cuenta cobrada no recibe otra ronda antes de terminar la primera lectura`() = runTest {
+        val a = vm()
+        ronda(a, 5500); cobrado(5500)
+        val b = reiniciar(a)
+        try {
+            val primera = CompletableDeferred<Unit>()
+            var lecturas = 0
+            coEvery { outbox.filasSinResolverDeLaOrden(any(), any()) } coAnswers { if (lecturas++ == 0) primera.await(); cola.toList() }
+            b.loadCheck(); runCurrent()
+            assertFalse("La memoria todavía no sabe que está pagada", b.cuentaCobradaAqui)
+            val rondasAntes = cola.count { it.tipo == "ADD_ITEMS" }
+            var enviada: Boolean? = null
+            b.addCustomAmount("Postre", 2000); b.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
+            assertEquals(false, enviada)
+            assertEquals(rondasAntes, cola.count { it.tipo == "ADD_ITEMS" })
+            assertEquals(cuentaPagada, b.blockedNotice.value)
+            primera.complete(Unit); advanceUntilIdle()
+        } finally { b.viewModelScope.cancel() }
+    }
 }
