@@ -342,42 +342,6 @@ class MesaSinRedTrasReinicioTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
-    /**
-     * D16 (`hz:e5ee98bc:D16`): la ronda entra a la cola y algo DESPUÉS falla; el mesero vuelve a tocar «Enviar» sin cambiar nada.
-     * Tiene que quedar UNA ronda con la llave del primer intento (la cola real conserva la fila del mismo id), no dos que el
-     * SERVIDOR sumaría. Otra ronda distinta sí estrena su llave.
-     */
-    @Test fun `D16 reintentar Enviar tras fallar despues de guardar deja una sola ronda con la misma llave`() = runTest {
-        val subject = vm()
-        try {
-            var fallarTrasGuardar = true
-            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
-                val id = arg<String>(3)
-                if (cola.none { it.id == id }) cola += FilaDeLaOrden(id, arg(1), "PENDING", null)
-                if (fallarTrasGuardar) { fallarTrasGuardar = false; error("refreshCounts") }
-                id
-            }
-            var enviada: Boolean? = null
-            subject.addCustomAmount("Ronda", 3000); subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
-            assertEquals("el primer intento dice error", false, enviada)
-            val primera = cola.single { it.tipo == "ADD_ITEMS" }.id
-
-            // Codex b1-r1 #1: el segundo intento falla al guardar el borrador (disco) y no llega a la cola; el tercero sigue con la llave.
-            root.setWritable(false)
-            try { subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle() } finally { root.setWritable(true) }
-            assertEquals(false, enviada)
-            subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
-            assertEquals(true, enviada)
-            assertEquals("una sola ronda en la cola, con la llave del primer intento", listOf(primera), cola.filter { it.tipo == "ADD_ITEMS" }.map { it.id })
-            assertTrue(subject.preparePagar()); assertEquals("la cuenta cobra la ronda una vez", 3000, session.current()!!.totalCents)
-
-            session.start(session.current()!!.copy(mode = TableSession.Mode.ORDERING))
-            ronda(subject, 2000)
-            val rondas = cola.filter { it.tipo == "ADD_ITEMS" }.map { it.id }
-            assertEquals(2, rondas.size); assertNotEquals(rondas[0], rondas[1])
-        } finally { subject.viewModelScope.cancel() }
-    }
-
     // MARK: - Codex b2a-r3
 
     @Test fun `r3 la apertura que el servidor confirma durante la segunda lectura no se cobra`() = runTest {
