@@ -5295,6 +5295,58 @@ class PaymentFlowViewModelTest {
         assertTrue("de otra venta: «Cobro anterior sin confirmar»", viewModel.revisaCobroDeOtraVenta())
     }
 
+    /**
+     * D37 (ensayo general F2, D3 12-nov): una mesa abierta con internet, el cobro abierto con internet, se corta y «Cobrar con
+     * terminal» dice «Cobra en efectivo…». «Cancelar» (o Esc) cerraba TODO el cobro; al volver a «Pagar» sin internet la cuenta ya
+     * no se podía leer al día y el efectivo se negaba. Ahora regresa a elegir método con el MISMO cobro, donde está el efectivo.
+     */
+    @Test
+    fun `P1 sin red Cancelar en la lista de terminales regresa a elegir metodo con el mismo cobro`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Error("Error de conexión", sinRed = true)
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns cobroRegistrado(amount = 30000, retenido = null)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "mesa-5", type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 30000),
+        )))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals(PaymentFlowViewModel.TARJETA_SIN_RED, (viewModel.state.value as PaymentFlowState.SelectingTerminal).sinLista)
+
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        assertFalse("no sale del cobro", viewModel.debeSalir.value)
+        assertEquals(PaymentFlowState.SelectingPaymentMethod(30000), viewModel.state.value)
+        // Y el efectivo de la pantalla sale a la cuenta de la mesa, como si nunca se hubiera tocado la terminal.
+        viewModel.confirmCashPreset(tenderedCents = 30000)
+        advanceUntilIdle()
+        assertEquals(listOf("orden-de-la-mesa"), cobradas)
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    /** D37: con red, un error del SERVIDOR al traer la lista no promete efectivo: «Cancelar» sale del cobro como siempre. */
+    @Test
+    fun `D37 con un error del servidor en la lista Cancelar sigue saliendo del cobro`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Error("Error al buscar terminales (503)")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "mesa-5", type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 30000),
+        )))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        assertTrue("regresa a la cuenta", viewModel.debeSalir.value)
+    }
+
     @Test
     fun `B7b-5 sin red la seleccion de terminal dice que la tarjeta necesita internet y conserva el aviso`() = runTest {
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
