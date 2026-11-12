@@ -265,13 +265,14 @@ class MoreMenuViewModel @Inject constructor(
             // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
             val rechazadas = if (blocking > 0) {
                 com.avoqado.pos.auth.presentation.rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, currentVenueId)
-                    .coerceAtMost(blocking)
             } else {
-                0
+                null
             }
-            if (rechazadas > 0) {
+            val conRechazo = rechazadas?.total?.coerceAtMost(blocking) ?: 0
+            if (conRechazo > 0) {
                 _sessionGuardMessage.value = com.avoqado.pos.auth.presentation.textoDelFrenoConRechazos(
-                    blocking, rechazadas, roleManager.canResolveQuarantine, "cambiar de establecimiento",
+                    blocking, conRechazo, roleManager.canResolveQuarantine, "cambiar de establecimiento",
+                    deOtraSucursal = rechazadas?.deOtraSucursal?.coerceAtMost(conRechazo) ?: 0,
                 )
                 return@launch
             }
