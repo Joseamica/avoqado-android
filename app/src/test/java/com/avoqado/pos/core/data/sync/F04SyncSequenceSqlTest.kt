@@ -111,6 +111,7 @@ class F04SyncSequenceSqlTest {
         override suspend fun pendingFifoLane(venueId: String, preparationLane: Boolean, limit: Int): List<SyncIntentEntity> = error("Not used")
         // No son parte del algoritmo probado por este fixture. Room se prueba en androidTest.
         override suspend fun sinResolver(venueId: String): List<IntentSinResolver> = error("Not used")
+        override suspend fun filasSinResolver(venueId: String): List<com.avoqado.pos.core.data.local.database.FilaSinResolver> = error("Not used")
         override suspend fun pendingFifo(venueId: String, limit: Int): List<SyncIntentEntity> = error("Not used")
         override suspend fun soltar(id: String): Int = error("Not used")
         override suspend fun descartar(id: String): Int = error("Not used")
