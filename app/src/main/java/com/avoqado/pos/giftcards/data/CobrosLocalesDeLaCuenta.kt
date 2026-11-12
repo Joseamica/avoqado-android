@@ -13,8 +13,14 @@ import javax.inject.Singleton
     private val store: SolicitudesDeTarjetaStore,
     private val outbox: com.avoqado.pos.core.data.sync.SyncOutbox? = null,
 ) {
-    suspend fun hayPendiente(venueId: String, orderId: String): Boolean {
-        if (pendingPaymentDao.forVenue(venueId).any { it.orderId == orderId && it.syncStatus != "SYNCED" }) return true
+    /**
+     * [enLinea] (D12 · Opción D, I4): para quien cobra con internet, una fila FAILED ya la contestó el SERVIDOR (su saldo manda): no es
+     * dinero por subir. Sin red cuenta como siempre.
+     */
+    suspend fun hayPendiente(venueId: String, orderId: String, enLinea: Boolean = false): Boolean {
+        if (pendingPaymentDao.forVenue(venueId).any {
+                it.orderId == orderId && it.syncStatus != "SYNCED" && !(enLinea && it.syncStatus == "FAILED")
+            }) return true
         if (PendientesDeTarjeta.leer(secureStorage.pendingCardChargesJson).any {
             it.orderId == orderId && runCatching {
                 Json.parseToJsonElement(it.contexto).jsonObject["venueId"]?.jsonPrimitive?.contentOrNull == venueId

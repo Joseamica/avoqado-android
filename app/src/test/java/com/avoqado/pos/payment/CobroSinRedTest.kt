@@ -139,4 +139,8 @@ class CobroSinRedTest {
     @Test fun `llave de la cuenta`() {
         assertEquals("cuenta:o1", llaveDeCuenta("o1"))
     }
+
+    @Test fun `M1 - lo que cerró el servidor dice Ya se cobró`() {
+        assertEquals(Gris("Ya se cobró"), decide(datos(registro = enRegistro(EstadoDeCuenta.CERRADA, por = "servidor").copy(caja = ""))))
+    }
 }

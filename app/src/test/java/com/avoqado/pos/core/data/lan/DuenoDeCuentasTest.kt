@@ -8,6 +8,7 @@ import com.avoqado.pos.orders.data.CuentasCobradasAqui
 import com.avoqado.pos.orders.data.Lectura
 import com.avoqado.pos.orders.data.model.OrderSummary
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -36,7 +37,8 @@ class DuenoDeCuentasTest {
     }
     private val llaveDelRegistro = "${PayloadCache.TYPE_REGISTRO_DE_CUENTAS}|v1"
     private var mias = setOf("o1")
-    private val abiertas = mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } answers { mias } }
+    private var hiloDeTodas: String? = null
+    private val abiertas = mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } answers { hiloDeTodas = Thread.currentThread().name; mias } }
     private var dinero = false
     private var tarjeta = false
     private val filas = mutableMapOf<String, String>()
@@ -46,7 +48,7 @@ class DuenoDeCuentasTest {
     private fun pasan(n: Long) { ms += n; hora += n }
 
     /** La caja 1, dueña de lo que esté en [mias]. Una instancia nueva = la app se reinició (mismo disco). */
-    private fun cajaUno() = DuenoDeCuentas(cache, abiertas, { _, _ -> dinero }, { _, _ -> tarjeta }, { filas[it] }, { "caja-1" }, { "Caja 1" })
+    private fun cajaUno() = DuenoDeCuentas(cache, abiertas, { _, _, _ -> dinero }, { _, _ -> tarjeta }, { filas[it] }, { "caja-1" }, { "Caja 1" })
         .also { it.reloj = { Instante(arranque, ms) }; it.horaDePared = { hora } }
 
     private val ana = Solicitud("caja-2", "Caja 2", "Ana", "i-ana")
@@ -99,8 +101,8 @@ class DuenoDeCuentasTest {
         assertEquals(Respuesta.Concedida, a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = false))
         // Vivo: aunque no haya fila todavía, nadie más la obtiene.
         assertEquals(Respuesta.Ocupada("Yo", "Caja 1"), a.apartar(v, "o1", ana))
-        // La app murió con el efectivo EN_VUELO: al volver, su fila manda (se dará por cobrado).
-        filas["llave-1"] = "EN_VUELO"
+        // La app murió y su efectivo ya pasó a la cola: al volver, su fila manda.
+        filas["llave-1"] = "PENDING"
         val tras = cajaUno()
         assertEquals(CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-1", "Caja 1", "Yo", "llave-1", Instante(arranque, ms), hora, faltaSubirla = true),
             tras.estadoDe(v, "o1"))
@@ -253,5 +255,66 @@ class DuenoDeCuentasTest {
         copia.cuentas(v)
         assertEquals(0, marcas.marcasDe(v).size)
         assertEquals(Respuesta.Cerrada("Caja 1", false), a.apartar(v, "o1", beto))
+    }
+
+    // MARK: - Ronda de arreglos 1
+
+    /** C1 (dueña): una EN_VUELO es dinero EN DUDA: no la cierra; sigue COMPROMETIDA y, si la cajera la descarta, vuelve a LIBRE. */
+    @Test fun `C1 - una EN_VUELO en duda no la cierra, sigue COMPROMETIDA y si se descarta vuelve a LIBRE`() = runTest {
+        val a = cajaUno()
+        a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = false)
+        filas["llave-1"] = "EN_VUELO"
+        a.terminarPropio(v, "o1", "llave-1") // la pantalla se fue con el apartado vivo en su ViewModel
+        assertEquals(EstadoDeCuenta.COMPROMETIDA, a.estadoDe(v, "o1")?.estado)
+        assertEquals(Respuesta.Ocupada("Yo", "Caja 1"), a.apartar(v, "o1", ana))
+        filas.remove("llave-1") // «Cancelar»
+        assertNull(a.estadoDe(v, "o1"))
+    }
+
+    /** C1 + I4 (dueña): la cola ya tiene el efectivo y el SERVIDOR lo rechazó (FAILED): sí se cobró, y ya no «falta subirla». */
+    @Test fun `C1 e I4 - una fila FAILED propia la cierra sin falta subirla`() = runTest {
+        val a = cajaUno()
+        a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = false)
+        filas["llave-1"] = "FAILED"
+        a.terminarPropio(v, "o1", "llave-1")
+        assertEquals(CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-1", "Caja 1", "Yo", "llave-1", Instante(arranque, ms), hora, faltaSubirla = false),
+            a.estadoDe(v, "o1"))
+    }
+
+    /** I4: con la parte 1 de una venta dividida rechazada por el SERVIDOR (FAILED), quien pregunta CON red no queda bloqueado; sin red, sí. */
+    @Test fun `I4 - una fila FAILED no bloquea a quien pregunta con red, sin red sí`() = runTest {
+        val dao = mockk<com.avoqado.pos.core.data.local.database.PendingPaymentDao> {
+            coEvery { forVenue(any()) } returns listOf(com.avoqado.pos.core.data.local.database.PendingPaymentEntity(
+                id = "parte-1", venueId = v, staffId = "s1", amountCents = 3000, tipCents = 0, method = "CASH",
+                paymentType = "ORDER", orderId = "o1", syncStatus = "FAILED",
+            ))
+            coEvery { syncStatusOf(any()) } returns null
+        }
+        val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>(relaxed = true) { every { pendingCardChargesJson } returns null }
+        val solicitudes = mockk<com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore> { every { delNegocio(any()) } returns emptyList() }
+        val a = DuenoDeCuentas(
+            cache, abiertas,
+            com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta(dao, storage, solicitudes),
+            mockk<com.avoqado.pos.payment.data.TerminalPaymentService> { every { cobrosConTarjetaDelNegocio(any()) } returns emptyList() },
+            com.avoqado.pos.orders.data.CuentasCobradasAqui({ null }, { f -> f(null); true }, { _, _ -> true }),
+            dao,
+            mockk<com.avoqado.pos.core.data.sync.SyncOutbox> { every { deviceId } returns "caja-1" },
+            mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository> {
+                every { terminalNavigation } returns kotlinx.coroutines.flow.MutableStateFlow(
+                    com.avoqado.pos.tpvsettings.data.TerminalNavigationSettings(terminalName = "Caja 1"))
+            },
+        ).also { it.reloj = { Instante(arranque, ms) }; it.horaDePared = { hora } }
+        assertEquals(Respuesta.Concedida, a.apartar(v, "o1", ana.copy(enLinea = true)))
+        a.soltar(v, "o1", "i-ana")
+        assertEquals("la dueña también cobra en línea", Respuesta.Concedida, a.comprometerPropio(v, "o1", "llave-2", "Yo", enLinea = true))
+        a.soltar(v, "o1", "llave-2")
+        assertEquals("sin red no cambia", Respuesta.Cerrada("Caja 1", true), a.apartar(v, "o1", ana))
+    }
+
+    /** M6: el registro (disco y JSON) no se lee en el hilo de quien llama (la pantalla). */
+    @Test fun `M6 - el registro se lee fuera del hilo de quien llama`() = runTest {
+        val yo = Thread.currentThread().name
+        cajaUno().estadoDe(v, "o1")
+        assertTrue("leyó en $hiloDeTodas", hiloDeTodas != null && hiloDeTodas != yo)
     }
 }

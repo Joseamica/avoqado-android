@@ -71,7 +71,7 @@ class CuentasPorLaRedTest {
         coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
     }
     private val abiertas = mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns setOf("o1") }
-    private val dueno = DuenoDeCuentas(cache, abiertas, { _, _ -> false }, { _, _ -> false }, { null }, { "caja-1" }, { "Caja 1" })
+    private val dueno = DuenoDeCuentas(cache, abiertas, { _, _, _ -> false }, { _, _ -> false }, { null }, { "caja-1" }, { "Caja 1" })
         .also { it.reloj = { Instante("b", 1_000) }; it.horaDePared = { 1L } }
 
     private suspend fun preguntar(op: String, orden: String, intento: String = "i-ana", enLinea: Boolean = false, subida: Boolean = false): LeaseResponse =

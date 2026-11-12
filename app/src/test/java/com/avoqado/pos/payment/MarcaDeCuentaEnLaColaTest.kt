@@ -94,14 +94,24 @@ class MarcaDeCuentaEnLaColaTest {
         }
     }
 
-    /** D12 · Opción D (un solo dueño): la cola que cobra una cuenta que YA existía —de otra caja— nunca la marca «abierta aquí». */
+    /**
+     * D12 · Opción D (un solo dueño, ronda 1 I3): la cola que cobra una cuenta que YA existía —de otra caja— nunca la marca «abierta
+     * aquí». El pedido lleva una cortesía CONFIRMADA (total y `externalId` por artículo, y el servidor la devuelve igual), así que la
+     * cola sí re-resuelve la orden y llega a la marca: sin la condición «sólo si la cola la creó», esta prueba falla.
+     */
     @Test fun `la cola nunca marca una cuenta que ya existía`() = runTest {
         Q16PrecioCapturadoTest.Fixture().use { f ->
             val falso = ServidorFalso()
-            f.server.dispatcher = falso
-            falso.ordenes["ext-ajena"] = "o-ajena" // la cortesía se re-resuelve contra la MISMA cuenta ajena
-            f.seed(id = "p1", order = "o-ajena",
-                request = """{"externalId":"ext-ajena","items":[{"productId":"p","quantity":1,"isCortesia":true}]}""")
+            falso.mercancia["o-ajena"] = 10005
+            f.server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.path!!.endsWith("/orders")) MockResponse().setResponseCode(201).setBody(
+                        """{"success":true,"order":{"id":"o-ajena","total":100.05,""" +
+                            """"items":[{"externalId":"l1","isCortesia":true,"cortesiaReason":"Regalo"}]}}""")
+                    else falso.dispatch(request)
+            }
+            f.seed(id = "p1", order = "o-ajena", request = """{"externalId":"ext-ajena","total":10005,""" +
+                """"items":[{"productId":"p","quantity":1,"externalId":"l1","isCortesia":true,"cortesiaReason":"Regalo"}]}""")
             val servicio = PaymentSyncService(f.dao, f.storage, f.client, f.network, f.drawer, f.outbox,
                 mockk(relaxed = true), cuentasAbiertasAqui = marcas)
             servicio.usarContextoDeSincronizacion(Dispatchers.Unconfined)
@@ -111,6 +121,7 @@ class MarcaDeCuentaEnLaColaTest {
             } finally {
                 servicio.stop()
             }
+            assertTrue("la cola sí re-resolvió la cuenta y siguió (no quedó FAILED)", f.row()["syncStatus"] != "FAILED")
             coVerify(exactly = 0) { marcas.marcar(any(), any()) }
         }
     }

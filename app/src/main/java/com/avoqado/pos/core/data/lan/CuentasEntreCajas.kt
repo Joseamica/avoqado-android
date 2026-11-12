@@ -12,7 +12,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -156,6 +158,18 @@ class CuentasEntreCajas internal constructor(
         /** R1: al volver a comprometer porque la autorización venció, el MISMO intento (si la dueña lo canceló, ya no pasa). */
         intentoPrevio: String? = null,
     ): Puerta {
+        // M4: no se corta a la mitad: lo que la dueña concedió queda con su aviso aunque quien preguntaba ya se haya ido.
+        val r = withContext(NonCancellable) { puertaSinCortar(venueId, orderId, llave, quien, enLinea, esTarjeta, esCuentaDePedidos, intentoPrevio) }
+        // `withContext(NonCancellable)` no lanza al salir: si quien preguntaba se fue, lo concedido no se usa y su aviso lo suelta.
+        if (r is Puerta.Pasa && !currentCoroutineContext().isActive) terminarEnFondo(venueId, orderId, r, quien, cobrado = false, subida = false)
+        currentCoroutineContext().ensureActive()
+        return r
+    }
+
+    private suspend fun puertaSinCortar(
+        venueId: String, orderId: String, llave: String, quien: String, enLinea: Boolean, esTarjeta: Boolean, esCuentaDePedidos: Boolean,
+        intentoPrevio: String?,
+    ): Puerta {
         // La llave del cobro (o el intento que ya se comprometió en esta venta): reemplaza el apartado de ESTA caja (misma caja).
         val intento = intentoPrevio ?: llave
         val propia = try {
@@ -167,8 +181,11 @@ class CuentasEntreCajas internal constructor(
         }
         if (propia != null) {
             apartados.remove(orderId)
-            return if (propia == Respuesta.Concedida) Puerta.Pasa(intento, esDueno = true, autorizadoEn = null)
-            else Puerta.NoPasa(textoDe(propia, dueno.nombreCaja))
+            if (propia == Respuesta.Concedida) return Puerta.Pasa(intento, esDueno = true, autorizadoEn = null)
+            // I2: con o sin red, a los 2 min de que otra caja la comprometió sin confirmar, su «no confirmó» (la salida vive en la cuenta).
+            val e = if (propia is Respuesta.Ocupada) dueno.estadoDe(venueId, orderId) else null
+            if (e != null && dueno.puedeDeclararNoSeCobro(e)) return Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.noConfirmo(e.quien, e.caja))
+            return Puerta.NoPasa(textoDe(propia, dueno.nombreCaja))
         }
         if (esTarjeta) return Puerta.Libre
         if (!encendida) return if (enLinea) Puerta.Libre else Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
@@ -177,8 +194,9 @@ class CuentasEntreCajas internal constructor(
         apartados.remove(orderId)
         val respuesta = r.respuesta
         if (respuesta == null) {
-            // Quizá la dueña sí lo anotó y su respuesta se perdió: «suelta» durable hasta su acuse (sólo si se sabe quién es).
-            r.deviceId?.let { d -> runCatching { anotarAviso(venueId, orderId, intento, llave, quien, d) } }
+            // Quizá la dueña sí lo anotó y su respuesta se perdió: «suelta» durable hasta su acuse. I2: aunque no se sepa cuál caja es la
+            // dueña (dueña vacía = se le pide a todas las cajas con D; sólo la dueña acusa).
+            runCatching { anotarAviso(venueId, orderId, intento, llave, quien, r.deviceId.orEmpty()) }
             return if (enLinea) Puerta.Libre
             else Puerta.NoPasa(r.caja?.let { com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto(it) } ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
         }
@@ -224,6 +242,20 @@ class CuentasEntreCajas internal constructor(
         }
     }
 
+    /**
+     * C1: «Reintentar» con otra llave, con el efectivo de esta venta ya apartado (la puerta no se vuelve a preguntar). La dueña pasa su
+     * compromiso a la llave nueva; otra caja, la llave de su aviso. Va ANTES de guardar el efectivo nuevo. Nunca lanza.
+     */
+    suspend fun cambiarLlave(venueId: String, orderId: String, p: Puerta.Pasa, nuevaLlave: String): Puerta.Pasa = withContext(NonCancellable) {
+        if (p.esDueno) {
+            if (dueno.renombrarIntentoPropio(venueId, orderId, p.intento, nuevaLlave)) p.copy(intento = nuevaLlave) else p
+        } else {
+            runCatching { cambiar(venueId) { e -> e.copy(avisos = e.avisos.map { if (it.intento == p.intento) it.copy(llave = nuevaLlave) else it }) } }
+                .onFailure { Log.w(TAG, "⚠️ no se pudo pasar el aviso ${p.intento} a la llave nueva: ${it.message}") }
+            p
+        }
+    }
+
     /** [terminar] sin esperar (desde un ViewModel, también al destruirse). */
     fun terminarEnFondo(venueId: String, orderId: String, p: Puerta.Pasa, quien: String, cobrado: Boolean, subida: Boolean) {
         scope.launch(NonCancellable) { terminar(venueId, orderId, p, quien, cobrado, subida) }
@@ -263,8 +295,13 @@ class CuentasEntreCajas internal constructor(
         scope.launch { peerDe(duena)?.let { client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, orderId, intento, quien)) } }
     }
 
+    /** M2: una vuelta a la vez (el lazo de 10 s y el empujón de [terminar] no se pisan). */
+    private val vuelta = Mutex()
+
     /** Una vuelta del lazo: renovar apartados y mandar los avisos pendientes. */
-    internal suspend fun unaVuelta() {
+    internal suspend fun unaVuelta() = vuelta.withLock { unaVueltaSola() }
+
+    private suspend fun unaVueltaSola() {
         for ((orden, a) in apartados.toMap()) {
             val r = if (a.dueno == dueno.deviceId) dueno.apartar(a.venueId, orden, Solicitud(a.dueno, dueno.nombreCaja, a.quien, a.intento, a.enLinea))
             else peerDe(a.dueno)?.let { CuentasPorLaRed.desdeCable(client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_APARTAR, orden, a.intento, a.quien, a.enLinea))) }
@@ -279,30 +316,46 @@ class CuentasEntreCajas internal constructor(
         val estado = leer(venueId)
         if (estado.avisos.isEmpty()) return
         val vigentes = estado.avisos.filter { horaDePared() - it.creado < PODA_MS }
-        val quedan = mutableListOf<Aviso>()
+        val quedan = LinkedHashMap<String, Aviso>()
         for (a in vigentes) {
-            if (a.intento in vivos) { quedan += a; continue }
+            if (a.intento in vivos) { quedan[a.intento] = a; continue }
             val fila = estadoDeLaFila(a.llave)
-            val visto = a.copy(cobradaVista = a.cobradaVista || fila != null, subida = a.subida || fila == "SYNCED")
-            val peer = peerDe(a.dueno)
-            if (peer == null) { quedan += visto; continue }
-            if (!visto.cobradaVista) {
-                val r = client.preguntarCuenta(peer, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, a.orderId, a.intento, a.quien))
-                if (!CuentasPorLaRed.acuso(r) && r?.status != LeaseProtocol.STATUS_NO_ES_MIA) quedan += visto
-                continue
+            // C1: «cobrada» sólo de un cobro que SÍ ocurrió (la cola ya tiene el efectivo, o el flujo lo cobró: `terminar`). Una EN_VUELO
+            // está en duda: no se manda nada y la dueña ofrece «No se cobró» a los 2 min; si se descarta, se vuelve «suelta».
+            val visto = a.copy(
+                cobradaVista = a.cobradaVista || fila in DuenoDeCuentas.CON_DINERO,
+                subida = a.subida || fila in DuenoDeCuentas.CONTESTADA,
+            )
+            if (!visto.cobradaVista && fila == DuenoDeCuentas.EN_VUELO) { quedan[a.intento] = visto; continue }
+            val destinos = if (visto.dueno.isBlank()) cajasConD() else listOfNotNull(peerDe(visto.dueno))
+            if (destinos.isEmpty()) { quedan[a.intento] = visto; continue }
+            val op = if (visto.cobradaVista) LeaseProtocol.OP_CUENTA_COBRADA else LeaseProtocol.OP_CUENTA_SOLTAR
+            if (visto.cobradaVista && visto.acusado == visto.subida) { quedan[a.intento] = visto; continue }
+            var acuso = false
+            var todasNoEsMia = true
+            for (p in destinos) {
+                val r = client.preguntarCuenta(p, pedido(op, a.orderId, a.intento, a.quien, subida = visto.subida))
+                if (CuentasPorLaRed.acuso(r)) { acuso = true; break }
+                if (r?.status != LeaseProtocol.STATUS_NO_ES_MIA) todasNoEsMia = false
             }
-            if (visto.acusado == visto.subida) { quedan += visto; continue }
-            val r = client.preguntarCuenta(peer, pedido(LeaseProtocol.OP_CUENTA_COBRADA, a.orderId, a.intento, a.quien, subida = visto.subida))
             when {
-                r?.status == LeaseProtocol.STATUS_NO_ES_MIA -> Unit // ya no es dueña (marca podada): nadie a quién avisar
-                CuentasPorLaRed.acuso(r) && visto.subida -> Unit // la dueña sabe que se cobró y que ya subió
-                CuentasPorLaRed.acuso(r) -> quedan += visto.copy(acusado = false)
-                else -> quedan += visto
+                // Nadie la abrió (marca podada, o ninguna de las que contestaron): no hay a quién avisar.
+                !acuso && todasNoEsMia -> Unit
+                !acuso -> quedan[a.intento] = visto
+                op == LeaseProtocol.OP_CUENTA_SOLTAR -> Unit
+                visto.subida -> Unit // la dueña sabe que se cobró y que ya subió
+                else -> quedan[a.intento] = visto.copy(acusado = false)
             }
         }
-        // Lo que cambió en disco mientras se mandaba (otro aviso nuevo) se conserva: se reescribe por llave.
-        val tocados = estado.avisos.map { it.intento }.toSet()
-        cambiar(venueId) { actual -> actual.copy(avisos = quedan + actual.avisos.filter { it.intento !in tocados }) }
+        // M2: lo que otro cambió en el disco mientras se mandaba (`terminar` lo marcó cobrado, `cambiarLlave`, un aviso nuevo) manda sobre
+        // lo que esta vuelta leyó antes de la red: se queda como está y la siguiente vuelta lo vuelve a decidir.
+        val leidos = estado.avisos.associateBy { it.intento }
+        cambiar(venueId) { actual ->
+            actual.copy(avisos = actual.avisos.mapNotNull { act ->
+                val leido = leidos[act.intento]
+                if (leido == null || act != leido) act else quedan[act.intento]
+            })
+        }
     }
 
     /** Por intento: volver a comprometer (R1, o un reintento con llave nueva) sólo cambia la llave cuya fila decide. */
@@ -360,7 +413,9 @@ class CuentasEntreCajas internal constructor(
 
         fun textoDe(r: Respuesta, caja: String?): String = when (r) {
             is Respuesta.Ocupada -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja.ifBlank { caja ?: DuenoDeCuentas.nombreDeCaja(null) })
-            is Respuesta.Cerrada -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(r.caja.ifBlank { caja ?: DuenoDeCuentas.nombreDeCaja(null) }, r.faltaSubirla)
+            // M1: lo que cerró el SERVIDOR no lleva caja: su propio chip, nunca el nombre de una caja.
+            is Respuesta.Cerrada -> if (r.caja.isBlank()) com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.YA_SE_COBRO
+            else com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
             Respuesta.Rechazada -> caja?.let { com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto(it) } ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA
             Respuesta.Concedida -> ""
         }

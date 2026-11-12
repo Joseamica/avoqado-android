@@ -71,6 +71,9 @@ object TextosDeCuentaSinRed {
     /** «Avisándole a las otras cajas…» cuando todavía no se sabe cuál la abrió. */
     const val LAS_OTRAS_CAJAS = "las otras cajas"
 
+    /** M1: la cerró una lectura del SERVIDOR (no se sabe en qué caja): su propio chip, nunca el nombre de una caja. */
+    const val YA_SE_COBRO = "Ya se cobró"
+
     /** En la lista (y como razón del gris): ya se cobró en esa caja. */
     fun cobradaEn(caja: String, faltaSubirla: Boolean) = if (faltaSubirla) "Cobrada en $caja · falta subirla" else "Cobrada en $caja"
 
@@ -142,7 +145,8 @@ fun decidirCobroSinRed(d: DatosDelCobroSinRed, permiso: CuentasEntreCajas.DelDue
     if (d.abiertaAqui) {
         val r = d.registro
         return when {
-            r?.estado == EstadoDeCuenta.CERRADA -> DecisionSinRed.Gris(TextosDeCuentaSinRed.cobradaEn(r.caja.ifBlank { "esta caja" }, r.faltaSubirla))
+            r?.estado == EstadoDeCuenta.CERRADA ->
+                DecisionSinRed.Gris(if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla))
             r != null && r.por != d.miDeviceId && d.puedeDeclararNoSeCobro -> DecisionSinRed.NoConfirmo(TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja), saldo)
             r != null && r.por != d.miDeviceId -> DecisionSinRed.Gris(TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja))
             permiso != null -> deLaRespuesta(permiso, saldo)

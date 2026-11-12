@@ -6198,7 +6198,9 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         nadaSeReservaNiSeCobra()
-        assertEquals("Ana la está cobrando en Caja 2. Espera a que termine.", (viewModel.state.value as PaymentFlowState.Error).message)
+        // I1: en línea, el «no» va con el texto neutro, nunca la pantalla roja de error.
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        assertEquals("Ana la está cobrando en Caja 2. Espera a que termine.", viewModel.avisoDeLaPuerta.value)
         coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = true, esTarjeta = false, any(), intentoPrevio = null) }
     }
 
@@ -6271,7 +6273,24 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = true, esTarjeta = true, any(), intentoPrevio = null) }
-        assertEquals("Cobrada en Caja 1 · falta subirla", (viewModel.state.value as PaymentFlowState.Error).message)
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        assertEquals("Cobrada en Caja 1 · falta subirla", viewModel.avisoDeLaPuerta.value)
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+    }
+
+    /** C1: la pantalla se fue en `Error` con el efectivo apartado: el permiso sigue (lo termina su desenlace, no el cambio de pestaña). */
+    @Test
+    fun `D12 opción D - C1 salir de la pantalla con el efectivo apartado no termina el permiso`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(OrderRepository.ServerException(422, "Algo no cuadró")))
+        laPuerta(pasaDeOtraCaja)
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+
+        viewModel.alSalirDeLaPantalla()
+
+        io.mockk.verify(exactly = 0) { cuentasEntreCajas.terminarEnFondo(any(), any(), any(), any(), any(), any()) }
     }
 }

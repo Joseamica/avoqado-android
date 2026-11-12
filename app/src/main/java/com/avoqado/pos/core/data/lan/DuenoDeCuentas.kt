@@ -30,8 +30,11 @@ import kotlinx.coroutines.withContext
 class DuenoDeCuentas internal constructor(
     private val cache: PayloadCache,
     private val abiertas: CuentasAbiertasAqui,
-    /** R4: cobro local pendiente (efectivo, regalo, cola), tarjeta en duda o cobrada, o marca de cobro aún sin aplicar a la copia. */
-    private val dineroDeLaCuenta: suspend (venueId: String, orderId: String) -> Boolean,
+    /**
+     * R4: cobro local pendiente (efectivo, regalo, cola), tarjeta en duda o cobrada, o marca de cobro aún sin aplicar a la copia. [enLinea]
+     * (I4): quien pregunta cobra con internet: lo que el SERVIDOR ya contestó (FAILED) no cuenta.
+     */
+    private val dineroDeLaCuenta: suspend (venueId: String, orderId: String, enLinea: Boolean) -> Boolean,
     /** ¿Una tarjeta de esta caja sigue en curso o en duda para esa cuenta? (su lista durable). */
     private val tarjetaEnCurso: (venueId: String, orderId: String) -> Boolean,
     /** El `syncStatus` de la fila `pending_payments` de esa llave, o null si no existe. */
@@ -51,8 +54,8 @@ class DuenoDeCuentas internal constructor(
     ) : this(
         cache = cache,
         abiertas = abiertas,
-        dineroDeLaCuenta = { venue, orden ->
-            cobrosLocales.hayPendiente(venue, orden) ||
+        dineroDeLaCuenta = { venue, orden, enLinea ->
+            cobrosLocales.hayPendiente(venue, orden, enLinea) ||
                 tarjetas.cobrosConTarjetaDelNegocio(venue).any { it.orderId == orden } ||
                 cobradas.marcasDe(venue).any { it.orderId == orden }
         },
@@ -65,6 +68,9 @@ class DuenoDeCuentas internal constructor(
     /** Seams de prueba: el reloj monotónico con su arranque, y la hora de pared (sólo para enseñar y podar). */
     internal var reloj: () -> Instante = { Instante(ARRANQUE, SystemClock.elapsedRealtime()) }
     internal var horaDePared: () -> Long = System::currentTimeMillis
+
+    /** M6: el registro (disco y JSON) nunca en el hilo de quien llama. */
+    internal var io: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO
 
     private val mutex = Mutex()
 
@@ -174,7 +180,7 @@ class DuenoDeCuentas internal constructor(
     private suspend fun pedir(venueId: String, orderId: String, s: Solicitud, comprometer: Boolean, lanzarSiFalla: Boolean = false): Respuesta? = try {
         conRegistro(venueId, orderId) { reg ->
             // R4: sin nada en el registro, el dinero durable de esta caja manda; no se escribe (puede resolverse como no cobrado).
-            if (reg.cuentas[orderId] == null && s.intento !in reg.cancelados && dineroDeLaCuenta(venueId, orderId)) {
+            if (reg.cuentas[orderId] == null && s.intento !in reg.cancelados && dineroDeLaCuenta(venueId, orderId, s.enLinea)) {
                 reg to Respuesta.Cerrada(nombreCaja, faltaSubirla = true)
             } else {
                 val paso = if (comprometer) RegistroDeCuentas.comprometer(reg, orderId, s, reloj(), horaDePared())
@@ -199,7 +205,7 @@ class DuenoDeCuentas internal constructor(
      * contesta algo que no quedó guardado.
      */
     private suspend fun <T> conRegistroYMias(venueId: String, orderId: String?, cambio: suspend (Registro, Set<String>) -> Pair<Registro, T>): T? =
-        withContext(NonCancellable) {
+        withContext(NonCancellable + io) {
             mutex.withLock {
                 val mias = abiertas.todas(venueId)
                 if (orderId != null && orderId !in mias) return@withLock null
@@ -214,22 +220,27 @@ class DuenoDeCuentas internal constructor(
             }
         }
 
-    /** R2: los COMPROMETIDA de esta caja cuyo intento ya no vive en este proceso, contra lo que quedó en disco (y su «falta subirla»). */
+    /**
+     * R2: lo propio cuyo intento ya no vive en este proceso, contra lo que quedó en disco. C1: sólo un cobro que SÍ ocurrió cierra (la cola
+     * ya tiene el efectivo: PENDING, SYNCING, SYNCED o FAILED); una `EN_VUELO` está en duda y sigue COMPROMETIDA. I4: «falta subirla» se
+     * quita cuando el SERVIDOR contestó (SYNCED o FAILED); si la fila se borró sin verse, sólo una lectura del servidor lo quita.
+     */
     private suspend fun reconciliar(venueId: String, reg: Registro): Registro {
         val yo = deviceId
         var r = reg
         for ((orden, c) in reg.cuentas) {
             if (c.por != yo || c.intento in vivos) continue
-            // Un cobro propio que se fue a la cola: «falta subirla» se quita al verse su fila SYNCED (si se borró sin verla, sólo una
-            // lectura del servidor lo quita). Sin esto, con internet la dueña no podía cobrar el resto de una cuenta con abono.
             if (c.estado == EstadoDeCuenta.CERRADA && c.faltaSubirla) {
-                if (estadoDeLaFila(c.intento) == "SYNCED") r = RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = false, reloj(), horaDePared())
+                if (estadoDeLaFila(c.intento) in CONTESTADA) {
+                    r = RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = false, reloj(), horaDePared())
+                }
                 continue
             }
             if (c.estado != EstadoDeCuenta.COMPROMETIDA) continue
             val fila = estadoDeLaFila(c.intento)
             r = when {
-                fila != null -> RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = fila != "SYNCED", reloj(), horaDePared())
+                fila == EN_VUELO -> r
+                fila != null -> RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = fila !in CONTESTADA, reloj(), horaDePared())
                 tarjetaEnCurso(venueId, orden) -> r
                 else -> RegistroDeCuentas.soltar(r, orden, c.intento)
             }
@@ -237,8 +248,33 @@ class DuenoDeCuentas internal constructor(
         return r
     }
 
+    /** C1: «Reintentar» con otra llave: el compromiso propio pasa a la llave nueva ANTES de guardar su efectivo. false = no estaba o el disco falló. */
+    suspend fun renombrarIntentoPropio(venueId: String, orderId: String, viejo: String, nuevo: String): Boolean {
+        vivos += nuevo
+        val hecho = try {
+            conRegistro(venueId, orderId) { reg ->
+                val nuevoReg = RegistroDeCuentas.renombrarIntento(reg, orderId, deviceId, viejo, nuevo)
+                nuevoReg to (nuevoReg !== reg)
+            } == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ no se pudo pasar el intento $viejo a $nuevo: ${e.message}")
+            false
+        }
+        vivos -= if (hecho) viejo else nuevo
+        return hecho
+    }
+
     companion object {
         private const val TAG = "DuenoDeCuentas"
+
+        /** C1: la fila de un cobro que SÍ ocurrió (la cola ya tiene el efectivo). `EN_VUELO` no: está en duda. */
+        internal val CON_DINERO = setOf("PENDING", "SYNCING", "SYNCED", "FAILED")
+
+        /** I4: el SERVIDOR ya contestó esa fila (la aplicó o la rechazó): ya no «falta subirla». */
+        internal val CONTESTADA = setOf("SYNCED", "FAILED")
+        internal const val EN_VUELO = "EN_VUELO"
 
         /** Arranque del aparato: el `boot_id` del kernel si se puede leer; si no, la hora de arranque al minuto. */
         val ARRANQUE: String by lazy {

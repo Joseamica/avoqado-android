@@ -119,6 +119,13 @@ object RegistroDeCuentas {
         }
     }
 
+    /** C1: «Reintentar» con otra llave: el compromiso de ESA caja y ESE intento pasa a la llave nueva (la fila que lo decide). */
+    fun renombrarIntento(r: Registro, orderId: String, por: String, viejo: String, nuevo: String): Registro {
+        val c = r.cuentas[orderId] ?: return r
+        if (c.estado != EstadoDeCuenta.COMPROMETIDA || c.por != por || c.intento != viejo) return r
+        return r.copy(cuentas = r.cuentas + (orderId to c.copy(intento = nuevo)))
+    }
+
     /** «Suelta»: sólo la APARTADA o COMPROMETIDA de ESE intento (R1). */
     fun soltar(r: Registro, orderId: String, intento: String): Registro {
         val c = r.cuentas[orderId] ?: return r

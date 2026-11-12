@@ -232,9 +232,7 @@ class CobroDeCuentaViewModel @Inject constructor(
      * el intento de la otra caja queda cancelado y la cuenta se aparta aquí. false = todavía no se puede o el disco falló.
      */
     suspend fun noSeCobroYCobrarAqui(orderId: String): DecisionSinRed {
-        val venue = storage.venueId
-        val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
-        if (venue != null) duenoDeCuentas?.noSeCobro(venue, orderId, quien)
+        declararNoSeCobro(orderId)
         return pedirCobroSinRed(orderId)
     }
 
@@ -268,7 +266,26 @@ class CobroDeCuentaViewModel @Inject constructor(
     suspend fun textoDeLaLista(orderId: String): String? {
         val venue = storage.venueId ?: return null
         val r = duenoDeCuentas?.estadoDe(venue, orderId) ?: return null
-        return if (r.estado == com.avoqado.pos.core.data.lan.EstadoDeCuenta.CERRADA && r.caja.isNotBlank()) TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla) else null
+        if (r.estado != com.avoqado.pos.core.data.lan.EstadoDeCuenta.CERRADA) return null
+        return if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
+    }
+
+    /**
+     * I2: con internet, en la caja que la abrió: el «<quién> empezó a cobrarla en <caja> y no confirmó…» de otra caja, a los 2 min. null =
+     * nada que decir. Su botón es «No se cobró: cobrar aquí» ([declararNoSeCobro]).
+     */
+    suspend fun noConfirmoEnLinea(orderId: String): String? {
+        val venue = storage.venueId ?: return null
+        val d = duenoDeCuentas ?: return null
+        val r = d.estadoDe(venue, orderId) ?: return null
+        return if (d.puedeDeclararNoSeCobro(r)) TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja) else null
+    }
+
+    /** «No se cobró» (lo declara una persona en la caja que la abrió). false = todavía no se puede, no es suya o el disco falló. */
+    suspend fun declararNoSeCobro(orderId: String): Boolean {
+        val venue = storage.venueId ?: return false
+        val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
+        return duenoDeCuentas?.noSeCobro(venue, orderId, quien) == true
     }
 
     /** La puerta del cobro dijo que no (Opción D): la cuenta se queda con ese gris al volver. */
@@ -489,6 +506,31 @@ private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel
     }
 }
 
+/** I2: con internet, el «no confirmó» de otra caja y su salida, en la caja que abrió la cuenta. Se vuelve a mirar cada 10 s. */
+@Composable
+private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel, onDeclarado: () -> Unit) {
+    var texto by remember(orderId) { mutableStateOf<String?>(null) }
+    var declarando by remember(orderId) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(orderId) {
+        while (true) {
+            texto = viewModel.noConfirmoEnLinea(orderId)
+            kotlinx.coroutines.delay(10_000)
+        }
+    }
+    texto?.let { t ->
+        Text(t)
+        PrimaryButton(text = TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI, enabled = !declarando, onClick = {
+            declarando = true
+            scope.launch {
+                try {
+                    if (viewModel.declararNoSeCobro(orderId)) { texto = null; onDeclarado() }
+                } finally { declarando = false }
+            }
+        })
+    }
+}
+
 @Composable
 private fun CancelarCuenta(viewModel: CobroDeCuentaViewModel, onCancelada: () -> Unit) {
     val conectado by viewModel.conectado.collectAsState()
@@ -620,6 +662,12 @@ fun AccionesDeCuentaAbierta(
     // D12: sin red, la cuenta que respalda la copia se decide con la FILA de la copia, no con este detalle reconstruido (`payments`
     // null abriría la compuerta de abonos por accidente). Con red, todo como siempre.
     val conCopia = !enLinea && copia != null && copia.cuenta.id == order.id
+    // I2: con internet, la caja que la abrió también ofrece «No se cobró: cobrar aquí» cuando otra la comprometió y no confirmó.
+    if (enLinea && elegible) NoConfirmoEnLinea(order.id, viewModel) {
+        scope.launch {
+            if (viewModel.puedeCobrar && viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER) abierta = true
+        }
+    }
     if (conCopia) CobrarCuentaSinRed(order.id, copia!!, viewModel) { saldo -> cobroSinRed = saldo }
     else if (elegible) {
         if (detalle == null && cuentaEnConsulta(consultasEnCurso, enLinea, consultaPedida)) PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})

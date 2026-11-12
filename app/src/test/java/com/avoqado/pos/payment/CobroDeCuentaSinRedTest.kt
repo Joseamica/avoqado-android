@@ -489,4 +489,15 @@ class CobroDeCuentaSinRedTest {
         assertEquals(Gris(TextosDeTarjetas.SIN_RED), m.sinRed.value)
         assertEquals(TextosDeTarjetas.SIN_RED, m.revalidarCobroSinRed("A", 10000))
     }
+
+    @Test fun `I2 - con internet la dueña ve el no confirmó a los 2 min y lo declara`() = runTest {
+        val m = vm()
+        registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0))
+        assertNull(m.noConfirmoEnLinea("o1"))
+        puedeDeclarar = true
+        assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Pregúntale antes de cobrar.", m.noConfirmoEnLinea("o1"))
+        assertTrue(m.declararNoSeCobro("o1"))
+        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", any()) }
+        assertNull(m.noConfirmoEnLinea("o1"))
+    }
 }

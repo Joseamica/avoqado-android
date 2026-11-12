@@ -895,7 +895,35 @@ class PaymentFlowViewModel @Inject constructor(
 
     private data class PermisoDeLaCuenta(
         val venueId: String, val orderId: String, val pasa: com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa, val quien: String,
+        /** La llave del cobro con que se pasó (la fila que decide «cobrada» o «suelta»). */
+        val llave: String,
     )
+
+    private val _avisoDeLaPuerta = MutableStateFlow<String?>(null)
+
+    /**
+     * I1: el «no» de la puerta EN LÍNEA (Pedidos con red, el carrito, la tarjeta de la dueña), con su texto neutro: nunca la pantalla roja
+     * de error. La pantalla lo enseña y, al cerrarlo, sale del cobro. null = nada.
+     */
+    val avisoDeLaPuerta: StateFlow<String?> = _avisoDeLaPuerta.asStateFlow()
+
+    fun cerrarAvisoDeLaPuerta() {
+        _avisoDeLaPuerta.value = null
+    }
+
+    /** I1: la puerta dijo que no, con red: sin cobrar y sin rojo. */
+    private fun noPasoLaPuerta(texto: String) {
+        isProcessingPayment = false
+        _avisoDeLaPuerta.value = texto
+        _state.value = PaymentFlowState.Loading
+    }
+
+    /** C1: «Reintentar» con otra llave y el efectivo ya apartado: el permiso sigue, con la llave nueva (la fila que lo decide). */
+    private suspend fun renovarLlaveDelPermiso(orden: String?, llave: String) {
+        val p = permisoDeLaCuenta?.takeIf { it.orderId == orden && it.llave != llave } ?: return
+        val nuevo = runCatching { cuentasEntreCajas?.cambiarLlave(p.venueId, p.orderId, p.pasa, llave) }.getOrNull() ?: return
+        permisoDeLaCuenta = p.copy(pasa = nuevo, llave = llave)
+    }
 
     /** D12 · Opción D: el permiso de la cuenta que cobra esta venta (null = ninguno). Termina con el cobro, otra venta o al salir. */
     private var permisoDeLaCuenta: PermisoDeLaCuenta? = null
@@ -920,7 +948,7 @@ class PaymentFlowViewModel @Inject constructor(
         var p = una(previo)
         if (p is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa && !cuentas.autorizacionVigente(p)) p = una(p.intento)
         return when (p) {
-            is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa -> { permisoDeLaCuenta = PermisoDeLaCuenta(venue, orden, p, quien); null }
+            is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa -> { permisoDeLaCuenta = PermisoDeLaCuenta(venue, orden, p, quien, llave); null }
             is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.NoPasa -> p.texto
             com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre -> null
         }
@@ -941,7 +969,8 @@ class PaymentFlowViewModel @Inject constructor(
      * desenlace (o la siguiente venta) lo termina.
      */
     fun alSalirDeLaPantalla() {
-        if (!isProcessingPayment) terminarPermiso(cobrado = false)
+        // C1: con efectivo de esta venta apartado tampoco: lo termina su desenlace («Cancelar», el cobro, otra venta o `onCleared`).
+        if (!isProcessingPayment && apartadosDeEstaVenta.isEmpty()) terminarPermiso(cobrado = false)
     }
 
     /** R100: el cobro salió de la bandeja «Pedidos en línea» ([startPaymentFlow]); viaja con la tarjeta. null = otro cobro. */
@@ -2855,7 +2884,7 @@ class PaymentFlowViewModel @Inject constructor(
                         com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO
                     }
                     if (texto != null) {
-                        if (!otraVenta(venta)) _state.value = PaymentFlowState.Error(message = texto, source = PaymentErrorSource.UNKNOWN)
+                        if (!otraVenta(venta)) noPasoLaPuerta(texto)
                         return@launch
                     }
                 }
@@ -3447,7 +3476,10 @@ class PaymentFlowViewModel @Inject constructor(
                         return@launch
                     }
                     // D12 · Opción D: la puerta única, JUSTO antes de reservar. Con efectivo de esta venta ya apartado no se vuelve a preguntar.
-                    val textoDeLaPuerta = if (anterioresDeEstaVenta.isNotEmpty()) null else try {
+                    val textoDeLaPuerta = if (anterioresDeEstaVenta.isNotEmpty()) {
+                        renovarLlaveDelPermiso(ordenCapturada, llaveCapturada) // C1: «Reintentar» con otra llave
+                        null
+                    } else try {
                         pasarLaPuerta(venueCapturado, ordenCapturada, llaveCapturada, continuaCapturada, esTarjeta = false, desdeLaCopia = desdeLaCopia)
                     } catch (e: Exception) {
                         currentCoroutineContext().ensureActive()
@@ -3461,7 +3493,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 alNoPasarCapturado(textoDeLaPuerta)
                                 salirDelFlujo()
                             } else {
-                                _state.value = PaymentFlowState.Error(message = textoDeLaPuerta, source = PaymentErrorSource.UNKNOWN)
+                                noPasoLaPuerta(textoDeLaPuerta)
                             }
                         }
                         return@launch

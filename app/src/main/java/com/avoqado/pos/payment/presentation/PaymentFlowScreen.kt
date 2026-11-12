@@ -126,6 +126,14 @@ fun PaymentFlowScreen(
     val state by viewModel.state.collectAsState()
     // D12 · Opción D: al irse la pantalla, el permiso de la cuenta se termina (lo decide lo durable).
     androidx.compose.runtime.DisposableEffect(viewModel) { onDispose { viewModel.alSalirDeLaPantalla() } }
+    // I1: el «no» de la puerta con red, neutro (nunca la pantalla roja): se lee, se cierra y se sale del cobro sin cobrar.
+    val avisoDeLaPuerta by viewModel.avisoDeLaPuerta.collectAsState()
+    avisoDeLaPuerta?.let { texto ->
+        val cerrar = { viewModel.cerrarAvisoDeLaPuerta(); onCancel() }
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(title = texto, onDismiss = cerrar) {
+            com.avoqado.pos.designsystem.components.PrimaryButton(text = "Entendido", onClick = cerrar)
+        }
+    }
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()

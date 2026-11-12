@@ -7,6 +7,8 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -24,13 +26,21 @@ class CuentasEntreCajasTest {
     private var hora = 1_700_000_000_000L
     private val cajas = mutableMapOf<String, Caja>()
 
+    /** (op, llave) → (freno, llegó): esa pregunta espera el freno antes de llegar y avisa al llegar (M2, M4). */
+    private val retenidas = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Pair<kotlinx.coroutines.CompletableDeferred<Unit>, kotlinx.coroutines.CompletableDeferred<Unit>>>()
+
     /** El cable de verdad (JSON por `CuentasPorLaRed.contestar`), sin sockets. */
     private val cliente = mockk<LeaseClient> {
         coEvery { preguntarCuenta(any(), any(), any(), any()) } coAnswers {
+            val pedido = secondArg<LeaseRequest>()
+            val retenida = retenidas[pedido.op to pedido.tableId]
+            retenida?.first?.await()
             val caja = cajas[firstArg<LanPeer>().deviceId]
-            if (caja == null || !caja.contesta) null
-            else LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(secondArg<LeaseRequest>()), v, caja.dueno))
+            val r = if (caja == null || !caja.contesta) null
+            else LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(pedido), v, caja.dueno))
                 .takeUnless { caja.pierdeRespuestas }
+            retenida?.second?.complete(Unit)
+            r
         }
     }
 
@@ -44,7 +54,7 @@ class CuentasEntreCajasTest {
             coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
             coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
         }
-        val dueno = DuenoDeCuentas(cache, mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns mias }, { _, _ -> false }, { _, _ -> false },
+        val dueno = DuenoDeCuentas(cache, mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns mias }, { _, _, _ -> false }, { _, _ -> false },
             { filas[it] }, { id }, { nombre }).also { it.reloj = { Instante("boot-$id", ms) }; it.horaDePared = { hora } }
         val peers = MutableStateFlow<List<LanPeer>>(emptyList())
         private val red = object : LanDiscoveryPort {
@@ -67,7 +77,7 @@ class CuentasEntreCajasTest {
 
     @After fun apagar() = cajas.values.forEach { it.entre.apagar() }
 
-    private val a = Caja("caja-1", "Caja 1", mias = setOf("o1"))
+    private val a = Caja("caja-1", "Caja 1", mias = setOf("o1", "o2"))
     private val b = Caja("caja-2", "Caja 2")
     private val c = Caja("caja-3", "Caja 3")
 
@@ -249,5 +259,102 @@ class CuentasEntreCajasTest {
         assertEquals("llave-c", (c.entre.puertaSinRed() as CuentasEntreCajas.Puerta.Pasa).intento)
         assertFalse(c.entre.tieneApartado("o1"))
         assertEquals(Respuesta.Ocupada("Beto", "Caja 3"), b.entre.apartar(v, "o1", "i-b", "Ana", enLinea = false).respuesta)
+    }
+
+    // MARK: - Ronda de arreglos 1
+
+    @Test fun `C1 - la EN_VUELO en duda de otra caja no avisa cobrada, y si se descarta suelta`() = runTest {
+        red(a, c)
+        val pasa = c.entre.puertaSinRed() as CuentasEntreCajas.Puerta.Pasa
+        c.filas["llave-c"] = "EN_VUELO"
+        c.entre.terminar(v, "o1", pasa, "Beto", cobrado = false, subida = false) // la pantalla se fue en Error con el apartado
+        c.entre.unaVuelta()
+        assertEquals("en duda: sigue comprometida, nadie la da por cobrada", EstadoDeCuenta.COMPROMETIDA, a.dueno.estadoDe(v, "o1")?.estado)
+        c.filas.remove("llave-c") // «Cancelar»
+        c.entre.unaVuelta()
+        assertNull(a.dueno.estadoDe(v, "o1"))
+    }
+
+    @Test fun `C1 - Reintentar con otra llave reemplaza el intento propio en la dueña`() = runTest {
+        red(a, c)
+        val p = a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        val p2 = a.entre.cambiarLlave(v, "o1", p, "llave-a2")
+        a.filas["llave-a2"] = "PENDING" // el efectivo del reintento ya está en la cola
+        a.entre.terminar(v, "o1", p2, "Yo", cobrado = false, subida = false)
+        assertEquals(EstadoDeCuenta.CERRADA, a.dueno.estadoDe(v, "o1")?.estado)
+    }
+
+    @Test fun `C1 - Reintentar con otra llave cambia la llave del aviso en otra caja`() = runTest {
+        red(a, c)
+        val p = c.entre.puertaSinRed() as CuentasEntreCajas.Puerta.Pasa
+        val p2 = c.entre.cambiarLlave(v, "o1", p, "llave-c2")
+        c.filas["llave-c2"] = "PENDING"
+        c.entre.terminar(v, "o1", p2, "Beto", cobrado = false, subida = false)
+        c.entre.unaVuelta()
+        assertEquals(EstadoDeCuenta.CERRADA, a.dueno.estadoDe(v, "o1")?.estado)
+    }
+
+    @Test fun `I2 - con internet la dueña ve el no confirmó a los 2 min`() = runTest {
+        red(a, c)
+        c.entre.puertaSinRed()
+        a.ms += RegistroDeCuentas.NO_CONFIRMO_MS
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.noConfirmo("Beto", "Caja 3")),
+            a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+    }
+
+    @Test fun `I2 - si se pierde la respuesta de comprometer sin conocer a la dueña, la suelta igual se guarda`() = runTest {
+        red(a, b, c)
+        a.pierdeRespuestas = true
+        c.entre.puertaSinRed()
+        assertEquals(EstadoDeCuenta.COMPROMETIDA, a.dueno.estadoDe(v, "o1")?.estado) // la dueña sí lo anotó
+        a.pierdeRespuestas = false
+        c.entre.unaVuelta()
+        assertNull(a.dueno.estadoDe(v, "o1"))
+    }
+
+    @Test fun `M1 - lo que cerró el servidor dice Ya se cobró, nunca el nombre de una caja`() {
+        assertEquals("Ya se cobró", CuentasEntreCajas.textoDe(Respuesta.Cerrada("", false), "Caja 1"))
+    }
+
+    @Test fun `M2 - una vuelta lenta no pisa el cobrada que el cobro anotó mientras tanto`() = runTest {
+        red(a, c)
+        val pasa = c.entre.puertaSinRed() as CuentasEntreCajas.Puerta.Pasa // o1: vivo
+        val otra = c.entre.puerta(v, "o2", "llave-o2", "Beto", enLinea = false, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        val soltarO2 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        retenidas[LeaseProtocol.OP_CUENTA_SOLTAR to "cuenta:o2"] = soltarO2 to kotlinx.coroutines.CompletableDeferred()
+        // El «cobrada» de o1 se detiene hasta el final: lo que se mira es lo que quedó en el disco de esta caja.
+        val cobradaO1 = kotlinx.coroutines.CompletableDeferred<Unit>()
+        retenidas[LeaseProtocol.OP_CUENTA_COBRADA to "cuenta:o1"] = cobradaO1 to kotlinx.coroutines.CompletableDeferred()
+        c.entre.terminar(v, "o2", otra, "Beto", cobrado = false, subida = false) // o2 sin dinero: su vuelta manda «suelta» (lenta)
+        val lenta = launch { c.entre.unaVuelta() }
+        runCurrent()
+        val cobro = launch { c.entre.terminar(v, "o1", pasa, "Beto", cobrado = true, subida = false) } // o1 sí cobró, mientras tanto
+        runCurrent()
+        soltarO2.complete(Unit)
+        cobro.join()
+        cobradaO1.complete(Unit) // con las vueltas en fila, la que sigue manda el «cobrada»
+        lenta.join()
+        val estado = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(CuentasEntreCajas.Estado.serializer(), c.disco["${PayloadCache.TYPE_CUENTAS_ENTRE_CAJAS}|v1"]!!.json)
+        assertTrue("el aviso de o1 sigue diciendo que se cobró", estado.avisos.single { it.orderId == "o1" }.cobradaVista)
+    }
+
+    @Test fun `M4 - salir mientras pregunta no deja la cuenta trabada`() = runTest {
+        red(a, c)
+        c.entre.apartar(v, "o1", "i-c", "Beto", enLinea = false)
+        val freno = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val llego = kotlinx.coroutines.CompletableDeferred<Unit>()
+        retenidas[LeaseProtocol.OP_CUENTA_COMPROMETER to "cuenta:o1"] = freno to llego
+        val toque = launch { runCatching { c.entre.puertaSinRed() } }
+        runCurrent()
+        toque.cancel()
+        freno.complete(Unit) // la dueña sí recibe el «comprometer»
+        toque.join()
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(5_000) { while (a.dueno.estadoDe(v, "o1")?.estado != EstadoDeCuenta.COMPROMETIDA && !llego.isCompleted) kotlinx.coroutines.delay(10) }
+        }
+        retenidas.clear()
+        c.entre.unaVuelta()
+        assertNull(a.dueno.estadoDe(v, "o1"))
     }
 }
