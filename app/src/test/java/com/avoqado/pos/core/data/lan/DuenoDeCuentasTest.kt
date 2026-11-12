@@ -126,6 +126,20 @@ class DuenoDeCuentasTest {
         assertEquals(Respuesta.Cerrada("Caja 1", true), a.apartar(v, "o1", ana))
     }
 
+    @Test fun `el cobro propio en cola deja de faltar al verse su fila SYNCED, y una fila borrada sin verla no lo quita`() = runTest {
+        val a = cajaUno()
+        a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = false)
+        a.cerrarPropio(v, "o1", "llave-1", "Yo", subida = false)
+        assertTrue(a.estadoDe(v, "o1")!!.faltaSubirla)
+        // La fila se borró sin verse SYNCED: sólo una lectura del servidor lo quita (lado conservador).
+        assertTrue(cajaUno().estadoDe(v, "o1")!!.faltaSubirla)
+        filas["llave-1"] = "SYNCED"
+        assertFalse(cajaUno().estadoDe(v, "o1")!!.faltaSubirla)
+        // Con internet ya no la bloquea a la dueña (manda el saldo del servidor); sin red sigue CERRADA.
+        assertEquals(Respuesta.Concedida, a.comprometerPropio(v, "o1", "llave-2", "Yo", enLinea = true))
+        assertEquals(Respuesta.Cerrada("Caja 1", false), a.apartar(v, "o1", ana))
+    }
+
     @Test fun `la duena con su cuenta CERRADA - sin red siempre bloquea, en linea solo si falta subirla`() = runTest {
         val a = cajaUno()
         a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = true)

@@ -214,12 +214,19 @@ class DuenoDeCuentas internal constructor(
             }
         }
 
-    /** R2: los COMPROMETIDA de esta caja cuyo intento ya no vive en este proceso, contra lo que quedó en disco. */
+    /** R2: los COMPROMETIDA de esta caja cuyo intento ya no vive en este proceso, contra lo que quedó en disco (y su «falta subirla»). */
     private suspend fun reconciliar(venueId: String, reg: Registro): Registro {
         val yo = deviceId
         var r = reg
         for ((orden, c) in reg.cuentas) {
-            if (c.estado != EstadoDeCuenta.COMPROMETIDA || c.por != yo || c.intento in vivos) continue
+            if (c.por != yo || c.intento in vivos) continue
+            // Un cobro propio que se fue a la cola: «falta subirla» se quita al verse su fila SYNCED (si se borró sin verla, sólo una
+            // lectura del servidor lo quita). Sin esto, con internet la dueña no podía cobrar el resto de una cuenta con abono.
+            if (c.estado == EstadoDeCuenta.CERRADA && c.faltaSubirla) {
+                if (estadoDeLaFila(c.intento) == "SYNCED") r = RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = false, reloj(), horaDePared())
+                continue
+            }
+            if (c.estado != EstadoDeCuenta.COMPROMETIDA) continue
             val fila = estadoDeLaFila(c.intento)
             r = when {
                 fila != null -> RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = fila != "SYNCED", reloj(), horaDePared())
