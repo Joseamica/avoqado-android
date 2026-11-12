@@ -12,9 +12,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "TableServiceRepository"
-
-/** D12: lo más que espera abrir una mesa antes de abrirla sin red (regla offline §2.5: ≤ 12 s). */
-internal const val PLAZO_ABRIR_MESA_MS = 12_000L
 /**
  * Cobrada en el servidor: no se reabre (otro cobro es venta nueva). Cancelada o borrada NO cuentan: un abono cobrado sin red
  * que llega tarde la reabre (avoqado-server `estadoAlRecibirDinero`, `services/shared/orderBalance.ts`; Codex r7).
@@ -332,16 +329,9 @@ class TableServiceRepository @Inject constructor(
         if (loadedVenueId != venueId) mirarA(venueId) else hydrateFromCache(venueId)
     }
 
-    /**
-     * Opens a table (reuses its active order or creates an empty one). Returns the order.
-     *
-     * D12 (Codex r2 #2): plazo TOTAL de [PLAZO_ABRIR_MESA_MS]. `RendirseRapido` acota conectar y leer, pero no un DNS colgado; al
-     * vencer sale como `SocketTimeoutException` (sin red), y quien llama abre la mesa sin red como siempre.
-     */
+    /** Opens a table (reuses its active order or creates an empty one). Returns the order. */
     suspend fun openTable(venueId: String, tableId: String, covers: Int): Result<OpenedOrder> = runCatching {
-        val response = kotlinx.coroutines.withTimeoutOrNull(PLAZO_ABRIR_MESA_MS) {
-            apiService.openTable(venueId, tableId, OpenTableRequest(covers))
-        } ?: throw java.net.SocketTimeoutException("Abrir mesa: sin respuesta en ${PLAZO_ABRIR_MESA_MS / 1000} s")
+        val response = apiService.openTable(venueId, tableId, OpenTableRequest(covers))
         response.data?.order ?: error("Respuesta sin orden")
     }.onFailure { Log.e(TAG, "❌ openTable failed: ${it.message}") }
 

@@ -28,8 +28,9 @@ import java.util.concurrent.TimeUnit
  * `isServerReachable`, pero no deja el recuerdo, y ahí se intenta como siempre. El recuerdo caduca en cuanto alguien contesta (el ping
  * de cada 10 s con cualquier código, o cualquier respuesta HTTP) y vence a [VENTANA_MS].
  *
- * Un DNS colgado no lo acota el plazo de conectar: en la ruta del dinero lo acota el plazo total de 15 s del cliente, y abrir mesa
- * tiene su propio plazo total (`TableServiceRepository.openTable`, Codex r2 #2).
+ * ponytail: un DNS que no contesta no lo acota el plazo de conectar. En la ruta del dinero lo acota el plazo total de 15 s del
+ * cliente; abrir mesa depende del resolver del sistema, como antes. Un plazo total ahí cortaría también la espera del PIN del gerente
+ * (`ForbiddenInterceptor`, Codex r3 #1), por eso no se puso. Si se ve en un aparato: plazo total sólo hasta el primer byte.
  */
 class RendirseRapido(
     private val conectividad: ConnectivityMonitor,

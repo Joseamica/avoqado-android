@@ -338,20 +338,4 @@ class RendirseRapidoTest {
         assertTrue("debía rendirse por tiempo: $falla", falla is SocketTimeoutException)
         assertTrue("abrir mesa tardó $ms ms", ms < 5_000)
     }
-
-    /**
-     * Codex r2 #2: un DNS colgado no lo acota el plazo de conectar. Abrir mesa tiene su plazo TOTAL (12 s) y al vencer sale como sin red
-     * (`SocketTimeoutException`): quien llama la abre sin red. Tiempo virtual: la petición nunca contesta.
-     */
-    @Test fun `P1 abrir mesa tiene plazo total y sale como sin red`() = kotlinx.coroutines.test.runTest {
-        val api = mockk<ApiService> { io.mockk.coEvery { openTable(any(), any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() } }
-        val repo = com.avoqado.pos.tables.data.TableServiceRepository(
-            api, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
-        )
-
-        val resultado = repo.openTable("v-1", "mesa-8", 2)
-
-        assertTrue("debía salir como sin red: ${resultado.exceptionOrNull()}", resultado.exceptionOrNull() is SocketTimeoutException)
-        assertEquals(com.avoqado.pos.tables.data.PLAZO_ABRIR_MESA_MS, testScheduler.currentTime)
-    }
 }
