@@ -310,8 +310,8 @@ fun PaymentFlowScreen(
                         onCancel = cancelarElCobro,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         // D15: una venta rápida en $0 también es sólo efectivo, con su razón.
-                        saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero(),
-                        textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero()),
+                        saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
+                        textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -337,8 +337,8 @@ fun PaymentFlowScreen(
                         tenderTypes = tenderTypes,
                     onCancel = cancelarElCobro,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
-                        saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero(),
-                        textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero()),
+                        saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
+                        textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     // D15: con $0 no hay nada que dividir.
@@ -774,7 +774,8 @@ private fun SplitType.toApiSplitType(): String {
 }
 
 /** Rappi 2b: por qué el cobro es sólo efectivo, según quién lo abrió. D15: una venta en $0 lo dice primero. */
-private fun textoSoloEfectivoDe(origen: com.avoqado.pos.payment.domain.OrigenDelCobro, ventaEnCero: Boolean = false): String =
+private fun textoSoloEfectivoDe(origen: com.avoqado.pos.payment.domain.OrigenDelCobro, ventaEnCero: Boolean = false, mesaSinRed: Boolean = false): String =
     if (ventaEnCero) PaymentFlowViewModel.TEXTO_VENTA_EN_CERO
+    else if (mesaSinRed) PaymentFlowViewModel.TEXTO_MESA_SIN_RED
     else if (origen.esDePlataforma) com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.REPARTO_SOLO_EFECTIVO
     else com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO
