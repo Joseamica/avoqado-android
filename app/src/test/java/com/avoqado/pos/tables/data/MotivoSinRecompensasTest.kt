@@ -17,11 +17,15 @@ class MotivoSinRecompensasTest {
         balance: Int = 500,
         min: Int = 10,
         max: Int = 0,
+        rate: Double = 0.10,
     ) = CustomerLoyalty(
         customerName = "Laurel Berge",
         active = active,
         balance = balance,
+        redemptionRate = rate,
         minPointsRedeem = min,
+        // Como lo manda el SERVIDOR: `money(balance × redemptionRate)`.
+        balanceValue = Math.round(balance * rate * 100) / 100.0,
         maxRedeemablePoints = max,
         canRedeem = canRedeem,
     )
@@ -105,11 +109,54 @@ class MotivoSinRecompensasTest {
         // La GET real del SERVIDOR: cuenta de $100 con $99.99 de descuento, sin pagos; saldo 2,000, mínimo 1,000, $0.10 por punto.
         val l = CustomerLoyalty(
             customerName = "Laurel Berge", active = true, balance = 2000, redemptionRate = 0.10, minPointsRedeem = 1000,
-            maxRedeemablePoints = 0, maxRedeemableValue = 0.01, canRedeem = false,
+            balanceValue = 200.0, maxRedeemablePoints = 0, maxRedeemableValue = 0.01, canRedeem = false,
         )
         assertEquals(
             "Lo que queda por descontar en esta cuenta ($0.01) no alcanza para canjear puntos.",
             motivoSinRecompensas(tieneCliente = true, lealtad = l, fallo = null),
+        )
+    }
+
+    // Pasada completa de la familia «causa falsa» (Codex android r3 #1): cada forma en que el SERVIDOR (`getCustomerLoyalty`) manda
+    // canRedeem=false con el programa prendido y el saldo en el mínimo del negocio.
+
+    @Test
+    fun `mínimo 0 y saldo 0 - dice que no tiene puntos, no «tiene un pago» (Codex android r3 1)`() {
+        val l = CustomerLoyalty(
+            customerName = "Laurel Berge", active = true, balance = 0, redemptionRate = 0.10, minPointsRedeem = 0,
+            balanceValue = 0.0, maxRedeemablePoints = 0, maxRedeemableValue = 0.0,
+        )
+        assertEquals("Laurel Berge no tiene puntos para canjear.", motivoSinRecompensas(true, l, null))
+    }
+
+    @Test
+    fun `puntos que valen $0 al redondear - lo dice, no «tiene un pago» (Codex android r3 1)`() {
+        // Mínimo 10, saldo 40 y $0.0001 por punto: 40 × 0.0001 = $0.004 → $0.00.
+        val l = CustomerLoyalty(
+            customerName = "Laurel Berge", active = true, balance = 40, redemptionRate = 0.0001, minPointsRedeem = 10,
+            balanceValue = 0.0, maxRedeemablePoints = 0, maxRedeemableValue = 0.0,
+        )
+        assertEquals(
+            "Los 40 puntos de Laurel Berge valen $0.00: no alcanzan para descontar nada.",
+            motivoSinRecompensas(true, l, null),
+        )
+        assertEquals(
+            "Los 40 puntos del cliente valen $0.00: no alcanzan para descontar nada.",
+            motivoSinRecompensas(true, l.copy(customerName = null), null),
+        )
+    }
+
+    @Test
+    fun `una combinación que el SERVIDOR de hoy no manda - un texto que no inventa la causa`() {
+        val l = lealtad(balance = 500, min = 10, max = 5).copy(maxRedeemableValue = 0.5)
+        assertEquals("Laurel Berge tiene 500 puntos, pero en esta cuenta no se pueden canjear.", motivoSinRecompensas(true, l, null))
+    }
+
+    @Test
+    fun `la cuenta no ha llegado del servidor (no se sabe si tiene cliente) - no dice «agrega el cliente» (Codex android r3 2)`() {
+        assertEquals(
+            "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento.",
+            motivoSinRecompensas(tieneCliente = null, lealtad = null, fallo = null),
         )
     }
 

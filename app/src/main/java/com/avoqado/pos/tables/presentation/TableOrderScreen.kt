@@ -180,7 +180,8 @@ fun TableOrderScreen(
     val recompensasEnLinea = isConnected && servidorAlcanzable
     // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
     val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
-        tieneCliente = !check?.customerId.isNullOrBlank(),
+        // Sin la cuenta del servidor no se sabe si tiene cliente: «Agrega el cliente» sería falso (Codex android r3 #2).
+        tieneCliente = check?.let { !it.customerId.isNullOrBlank() },
         lealtad = loyalty,
         fallo = loyaltyFallo,
         enLinea = recompensasEnLinea,
@@ -246,13 +247,14 @@ fun TableOrderScreen(
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
     // Cada vez que vuelve la red (el WiFi, o sólo el servidor), el saldo se relee SIEMPRE: el que no se pudo leer y también el que se
-    // leyó bien, que pudo gastarse en otra caja. Mientras llega, «Leyendo…»; el diálogo abierto se cierra (Codex android r2 #2 y #3).
+    // leyó bien, que pudo gastarse en otra caja; si la cuenta nunca llegó, primero la cuenta. Mientras llega, «Leyendo…»; el diálogo
+    // abierto se cierra (Codex android r2 #2 y #3, r3 #2).
     LaunchedEffect(Unit) {
         kotlinx.coroutines.flow.combine(viewModel.isConnected, viewModel.isServerReachable) { red, servidor -> red && servidor }
             .distinctUntilChanged().drop(1).collect { enLinea ->
                 if (enLinea) {
                     showRewards = false
-                    viewModel.loadLoyalty(olvidarElSaldo = true)
+                    viewModel.alVolverLaRed()
                 }
             }
     }

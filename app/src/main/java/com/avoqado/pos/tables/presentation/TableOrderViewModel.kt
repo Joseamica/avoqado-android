@@ -1636,6 +1636,16 @@ class TableOrderViewModel @Inject constructor(
     private val _loyaltyFallo = MutableStateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?>(null)
     val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> = _loyaltyFallo.asStateFlow()
 
+    /**
+     * Al volver la red (el WiFi, o sólo el servidor): relee el saldo de puntos, que pudo gastarse en otra caja. Si la cuenta nunca llegó
+     * del servidor, no se sabe el cliente: se pide primero la cuenta, que al llegar relee el saldo (Codex android r3 #2). Una cuenta
+     * abierta sin red en este aparato (provisional) todavía no existe en el servidor: no tiene saldo que leer.
+     */
+    fun alVolverLaRed() {
+        val session = tableSession.current() ?: return
+        if (_check.value == null && !session.isProvisional) loadCheck() else loadLoyalty(olvidarElSaldo = true)
+    }
+
     /** La lectura del saldo más nueva: una respuesta vieja (la que se colgó sin red) no pisa a la que llegó después. */
     private var lecturaDeLealtad = 0
 

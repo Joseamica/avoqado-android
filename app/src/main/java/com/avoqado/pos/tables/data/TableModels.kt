@@ -451,10 +451,15 @@ const val RECOMPENSAS_SIN_RED = "Sin conexión: canjear puntos necesita internet
  * («Agrega el cliente…»), que mentía sin red y en una cuenta con abono, donde la clienta sí está (nube, 12-nov; el SERVIDOR
  * apaga `canRedeem` en cuentas con abono, pagadas o anuladas desde el PR #391).
  *
+ * [tieneCliente] null = la cuenta todavía no llega del servidor: no se sabe si tiene cliente (Codex android r3 #2).
  * [fallo] es por qué no se pudo leer el saldo (null = no falló: todavía se está leyendo, o se leyó bien).
+ *
+ * Con el programa prendido y el saldo en el mínimo, el SERVIDOR (`getCustomerLoyalty`) apaga `canRedeem` sólo si no cabe ni un punto
+ * (`maxRedeemablePoints == 0`). Cada causa de eso tiene su texto (pasada completa, Codex android r3 #1): sin puntos, puntos que valen
+ * $0.00, lo que queda por descontar no alcanza un punto, o la cuenta no admite canje (abono, pagada, anulada o ya sin nada).
  */
 fun motivoSinRecompensas(
-    tieneCliente: Boolean,
+    tieneCliente: Boolean?,
     lealtad: CustomerLoyalty?,
     fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
     enLinea: Boolean = true,
@@ -463,17 +468,28 @@ fun motivoSinRecompensas(
     // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
     !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) -> RECOMPENSAS_SIN_RED
     lealtad?.canRedeem == true -> null
+    tieneCliente == null -> "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento."
     !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
     lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
     lealtad == null -> "Leyendo los puntos del cliente…"
     !lealtad.active -> "El programa de lealtad está apagado en esta sucursal. Se prende desde el panel web."
     lealtad.balance < lealtad.minPointsRedeem ->
         "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos; se necesitan al menos ${lealtad.minPointsRedeem} para canjear."
+    // Mínimo 0 y saldo 0 (Codex android r3 #1).
+    lealtad.balance <= 0 -> "${lealtad.customerName ?: "El cliente"} no tiene puntos para canjear."
+    // El saldo vale $0.00 al redondear (40 puntos a $0.0001), o el valor por punto es 0 (Codex android r3 #1).
+    lealtad.balanceValue <= 0 ->
+        "Los ${lealtad.balance} puntos ${lealtad.customerName?.let { "de $it" } ?: "del cliente"} valen $0.00: no alcanzan para descontar nada."
     // Queda algo por descontar, pero ningún número de puntos cabe sin prometer más de lo que el canje descuenta (cuenta de $100 con
-    // $99.99 de descuento y $0.10 por punto). Una cuenta con abono, pagada o anulada llega con $0 y sigue abajo (Codex android r2 #1).
+    // $99.99 de descuento y $0.10 por punto) (Codex android r2 #1).
     lealtad.maxRedeemablePoints == 0 && lealtad.maxRedeemableValue > 0 ->
         "Lo que queda por descontar en esta cuenta (${com.avoqado.pos.core.util.formatMoney(lealtad.maxRedeemableValue)}) no alcanza para canjear puntos."
-    else -> "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar."
+    // Con puntos que sí valen dinero, `maxRedeemableValue` sale en $0 sólo si la cuenta no admite canje (el SERVIDOR pone la base en 0
+    // con abono, pagada o anulada) o ya no queda nada que descontar.
+    lealtad.maxRedeemableValue <= 0 ->
+        "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar."
+    // El SERVIDOR de hoy no llega aquí (con puntos que caben, el mínimo de la cuenta nunca pasa de ellos); un texto que no inventa causa.
+    else -> "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos, pero en esta cuenta no se pueden canjear."
 }
 
 @Serializable
