@@ -1131,6 +1131,9 @@ class TableOrderViewModel @Inject constructor(
     /** Conectividad, para que la UI distinga "espera" de "te falta un paso". */
     val isConnected: StateFlow<Boolean> = connectivityMonitor.isConnected
 
+    /** ¿El servidor contesta? Con WiFi conectado pero sin internet, `isConnected` sigue en true y sólo esto cambia. */
+    val isServerReachable: StateFlow<Boolean> get() = connectivityMonitor.isServerReachable
+
     /**
      * Un botón gris que no explica por qué está gris es el peor estado posible
      * para un mesero: toca, no pasa nada, y no sabe si está roto. Esto le da
@@ -1633,18 +1636,27 @@ class TableOrderViewModel @Inject constructor(
     private val _loyaltyFallo = MutableStateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?>(null)
     val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> = _loyaltyFallo.asStateFlow()
 
-    /** Carga el saldo del cliente adjunto al cheque (null si no hay cliente). */
-    fun loadLoyalty() {
+    /** La lectura del saldo más nueva: una respuesta vieja (la que se colgó sin red) no pisa a la que llegó después. */
+    private var lecturaDeLealtad = 0
+
+    /**
+     * Carga el saldo del cliente adjunto al cheque (null si no hay cliente). [olvidarElSaldo]: al volver la red, el saldo leído
+     * antes pudo gastarse en otra caja; mientras llega el nuevo, el botón dice «Leyendo…» y no ofrece el viejo (Codex android r2 #3).
+     */
+    fun loadLoyalty(olvidarElSaldo: Boolean = false) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val customerId = _check.value?.customerId
-        if (customerId.isNullOrBlank()) {
+        val lectura = ++lecturaDeLealtad
+        if (customerId.isNullOrBlank() || olvidarElSaldo) {
             _loyalty.value = null
             _loyaltyFallo.value = null
-            return
         }
+        if (customerId.isNullOrBlank()) return
         viewModelScope.launch {
-            repository.getCustomerLoyalty(vId, customerId, session.orderId).fold(
+            val leido = repository.getCustomerLoyalty(vId, customerId, session.orderId)
+            if (lectura != lecturaDeLealtad) return@launch
+            leido.fold(
                 onSuccess = {
                     _loyalty.value = it
                     _loyaltyFallo.value = null

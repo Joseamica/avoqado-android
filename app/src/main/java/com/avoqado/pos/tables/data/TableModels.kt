@@ -435,10 +435,16 @@ data class CustomerLoyalty(
      */
     fun valorDelCanje(points: Int): Double = Math.round(points * redemptionRate * 100) / 100.0
 
-    /** «Canjear» sólo con un número que el canje acepta: entero positivo, desde el mínimo, hasta el máximo y con descuento > $0. */
-    fun puedeCanjear(points: Int): Boolean =
-        points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
+    /**
+     * «Canjear» sólo con un número que el canje acepta: entero positivo, desde el mínimo, hasta el máximo y con descuento > $0, y
+     * con red: el canje es sólo en línea, y el diálogo ya abierto al perderla no ofrece lo que se va a rechazar (Codex android r2 #4).
+     */
+    fun puedeCanjear(points: Int, enLinea: Boolean = true): Boolean =
+        enLinea && points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
 }
+
+/** El texto de «Recompensas» sin red: el del botón gris y el del diálogo abierto. */
+const val RECOMPENSAS_SIN_RED = "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
 
 /**
  * Por qué «Recompensas» está gris, siempre con la causa verdadera; null = se puede canjear. Antes había UN texto para todo
@@ -455,8 +461,7 @@ fun motivoSinRecompensas(
 ): String? = when {
     // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea. Va antes
     // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
-    !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) ->
-        "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
+    !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) -> RECOMPENSAS_SIN_RED
     lealtad?.canRedeem == true -> null
     !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
     lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
@@ -464,6 +469,10 @@ fun motivoSinRecompensas(
     !lealtad.active -> "El programa de lealtad está apagado en esta sucursal. Se prende desde el panel web."
     lealtad.balance < lealtad.minPointsRedeem ->
         "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos; se necesitan al menos ${lealtad.minPointsRedeem} para canjear."
+    // Queda algo por descontar, pero ningún número de puntos cabe sin prometer más de lo que el canje descuenta (cuenta de $100 con
+    // $99.99 de descuento y $0.10 por punto). Una cuenta con abono, pagada o anulada llega con $0 y sigue abajo (Codex android r2 #1).
+    lealtad.maxRedeemablePoints == 0 && lealtad.maxRedeemableValue > 0 ->
+        "Lo que queda por descontar en esta cuenta (${com.avoqado.pos.core.util.formatMoney(lealtad.maxRedeemableValue)}) no alcanza para canjear puntos."
     else -> "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar."
 }
 

@@ -60,4 +60,11 @@ class ValorDelCanjeTest {
         assertEquals(false, conMinimo.puedeCanjear(9))
         assertEquals(true, conMinimo.puedeCanjear(10))
     }
+
+    @Test
+    fun `sin red «Canjear» se apaga aunque el número sea bueno - el diálogo abierto no ofrece lo que se va a rechazar (Codex android r2 4)`() {
+        val l = CustomerLoyalty(redemptionRate = 1.0, balance = 500, minPointsRedeem = 10, maxRedeemablePoints = 90)
+        assertEquals(true, l.puedeCanjear(50, enLinea = true))
+        assertEquals(false, l.puedeCanjear(50, enLinea = false))
+    }
 }

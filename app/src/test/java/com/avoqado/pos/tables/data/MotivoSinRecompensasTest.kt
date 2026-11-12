@@ -101,6 +101,19 @@ class MotivoSinRecompensasTest {
     }
 
     @Test
+    fun `queda algo por descontar pero no cabe ni un punto - dice eso, no «tiene un pago» (Codex android r2 1)`() {
+        // La GET real del SERVIDOR: cuenta de $100 con $99.99 de descuento, sin pagos; saldo 2,000, mínimo 1,000, $0.10 por punto.
+        val l = CustomerLoyalty(
+            customerName = "Laurel Berge", active = true, balance = 2000, redemptionRate = 0.10, minPointsRedeem = 1000,
+            maxRedeemablePoints = 0, maxRedeemableValue = 0.01, canRedeem = false,
+        )
+        assertEquals(
+            "Lo que queda por descontar en esta cuenta ($0.01) no alcanza para canjear puntos.",
+            motivoSinRecompensas(tieneCliente = true, lealtad = l, fallo = null),
+        )
+    }
+
+    @Test
     fun `cuenta con abono, pagada o sin nada que descontar - no dice que falta el cliente`() {
         assertEquals(
             "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar.",

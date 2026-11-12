@@ -70,6 +70,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -172,19 +174,19 @@ fun TableOrderScreen(
     val actionMessage by viewModel.actionMessage.collectAsState()
     val loyalty by viewModel.loyalty.collectAsState()
     val loyaltyFallo by viewModel.loyaltyFallo.collectAsState()
+    // El canje es sólo en línea: hace falta red Y que el servidor conteste (WiFi sin internet deja `isConnected` en true). Es lo
+    // mismo que prende la franja de «Sin conexión» de la app (`AppState.showOfflineBanner`).
+    val servidorAlcanzable by viewModel.isServerReachable.collectAsState()
+    val recompensasEnLinea = isConnected && servidorAlcanzable
     // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
     val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
         tieneCliente = !check?.customerId.isNullOrBlank(),
         lealtad = loyalty,
         fallo = loyaltyFallo,
-        enLinea = isConnected,
+        enLinea = recompensasEnLinea,
     )
     val recompensasSinRed =
-        !isConnected || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
-    // Al volver la red, el saldo que no se pudo leer sin ella se vuelve a pedir: «Sin conexión» no se queda pegado (Codex android r1 #4).
-    LaunchedEffect(isConnected) {
-        if (isConnected && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) viewModel.loadLoyalty()
-    }
+        !recompensasEnLinea || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
@@ -243,6 +245,17 @@ fun TableOrderScreen(
     var showTimeClock by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
+    // Cada vez que vuelve la red (el WiFi, o sólo el servidor), el saldo se relee SIEMPRE: el que no se pudo leer y también el que se
+    // leyó bien, que pudo gastarse en otra caja. Mientras llega, «Leyendo…»; el diálogo abierto se cierra (Codex android r2 #2 y #3).
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.flow.combine(viewModel.isConnected, viewModel.isServerReachable) { red, servidor -> red && servidor }
+            .distinctUntilChanged().drop(1).collect { enLinea ->
+                if (enLinea) {
+                    showRewards = false
+                    viewModel.loadLoyalty(olvidarElSaldo = true)
+                }
+            }
+    }
     var showCheckSwitcher by remember { mutableStateOf(false) }
     var pendingSwitchTarget by remember { mutableStateOf<com.avoqado.pos.tables.data.OpenCheckSummary?>(null) }
     var showServiceCharges by remember { mutableStateOf(false) }
@@ -1251,6 +1264,7 @@ fun TableOrderScreen(
         loyalty?.let { l ->
             RewardsDialog(
                 loyalty = l,
+                enLinea = recompensasEnLinea,
                 onDismiss = { showRewards = false },
                 onRedeem = { pts ->
                     showRewards = false
@@ -3401,6 +3415,7 @@ private fun ServiceChargesDialog(
 @Composable
 private fun RewardsDialog(
     loyalty: com.avoqado.pos.tables.data.CustomerLoyalty,
+    enLinea: Boolean,
     onDismiss: () -> Unit,
     onRedeem: (Int) -> Unit,
 ) {
@@ -3417,7 +3432,8 @@ private fun RewardsDialog(
             PrimaryButton(
                 text = "Canjear",
                 onClick = { onRedeem(points) },
-                enabled = loyalty.puedeCanjear(points),
+                // Sin red se apaga también con el diálogo ya abierto: no ofrece lo que se va a rechazar (Codex android r2 #4).
+                enabled = loyalty.puedeCanjear(points, enLinea),
                 fullWidth = true,
             )
         },
@@ -3445,6 +3461,15 @@ private fun RewardsDialog(
                 }
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                if (!enLinea) {
+                    // Sin red es un estado normal, no un error: mismo color que la nota de abajo, nunca rojo.
+                    Text(
+                        text = com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                }
                 Text(
                     text = "Mínimo ${loyalty.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan.",
                     style = MaterialTheme.typography.labelSmall,
