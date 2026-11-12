@@ -210,8 +210,9 @@ class CashPaymentRepository @Inject constructor(
         /** D12: el saldo que la cuenta debía quedar tras este cobro hecho con la copia. El MISMO que el de [queueCashPayment]. */
         restanteEsperadoCents: Int? = null,
         /**
-         * D12 · Codex r3 #2 (R1): corre DESPUÉS de las esperas de disco y justo antes del INSERT, sin ninguna suspensión de por medio. Si
-         * lanza, no se guarda nada y la excepción sale tal cual (la autorización de la caja que abrió la cuenta venció mientras tanto).
+         * D12 · familia A (R1, Codex r4 #1): viaja a la transacción de Room que guarda la reserva y corre ya con el escritor, justo antes
+         * del INSERT, sin ninguna espera de por medio (ni la cola de Room). Si lanza, no se guarda nada y la excepción sale tal cual (la
+         * autorización de la caja que abrió la cuenta venció mientras tanto).
          */
         antesDeGuardar: (() -> Unit)? = null,
     ) {
@@ -238,8 +239,9 @@ class CashPaymentRepository @Inject constructor(
         // 🔴 Un REINTENTO con la misma llave ya era del flujo: si su guardado falla, la fila anterior sigue siendo suya (Codex r7).
         val esNueva = reservasDeEsteProceso.add(entity.id)
         try {
-            antesDeGuardar?.invoke() // D12 · Codex r3 #2: después de toda espera, sin suspensión hasta el INSERT
-            if (anteriores.isEmpty()) pendingPaymentDao.insert(entity) else pendingPaymentDao.reservarEnLugarDe(entity, anteriores)
+            // D12 · familia A: la comprobación corre DENTRO de la transacción, después de toda espera (también la del escritor de Room).
+            if (anteriores.isEmpty()) pendingPaymentDao.insert(entity, antesDeGuardar)
+            else pendingPaymentDao.reservarEnLugarDe(entity, anteriores, antesDeGuardar)
         } catch (e: Exception) {
             if (esNueva) reservasDeEsteProceso -= entity.id
             throw e

@@ -15,7 +15,6 @@ import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -85,29 +84,31 @@ class CobroEnVueloRepositoryTest {
     }
 
     /**
-     * D12 · Codex r3 #2 (R1): la comprobación de quien llama corre DESPUÉS de las esperas de disco (la lectura de la fila, la caja) y justo
-     * antes del INSERT, sin suspensión de por medio. Si dice que no (la autorización de la caja que abrió la cuenta venció mientras el disco
-     * tardaba), no se guarda nada y la reserva no queda como del flujo.
+     * D12 · familia A (Codex r4 #1, R1): la comprobación de quien llama ya no corre en el repositorio (después de sus esperas, pero ANTES de
+     * la cola de Room): viaja a la transacción del DAO, que la corre ya con el escritor y justo antes del INSERT
+     * (`AutorizacionDentroDeLaTransaccionRoomTest`, con Room de verdad, en WINDOWS). Aquí, el contrato: el repositorio no la corre por su
+     * cuenta, se la entrega al DAO (con o sin apartados anteriores) y, si dice que no, la reserva no queda como del flujo.
      */
     @Test
-    fun `la comprobacion previa corre justo antes del INSERT y si dice que no no se guarda nada`() = runTest {
-        val disco = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { dao.findForVenue(any(), any()) } coAnswers { disco.await(); null }
-        var vencida = false
-        val reserva = async {
-            runCatching {
-                repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A",
-                    antesDeGuardar = { check(!vencida) { "autorización vencida" } })
-            }
-        }
-        testScheduler.runCurrent() // detenida en la lectura del disco
-        vencida = true // pasaron los 20 s mientras el disco tardaba
-        disco.complete(Unit)
+    fun `la comprobacion previa viaja a la transaccion del INSERT y si dice que no la reserva no queda del flujo`() = runTest {
+        var corridas = 0
+        val vencida: () -> Unit = { corridas++; error("autorización vencida") }
+        // Lo que hace la transacción de Room: la corre justo antes de escribir; si lanza, no escribe.
+        coEvery { dao.insert(any(), any()) } coAnswers { secondArg<(() -> Unit)?>()?.invoke() }
+        coEvery { dao.reservarEnLugarDe(any(), any(), any()) } coAnswers { thirdArg<(() -> Unit)?>()?.invoke() }
 
-        assertTrue(reserva.await().isFailure)
-        coVerify(exactly = 0) { dao.insert(any()) }
-        coVerify(exactly = 0) { dao.reservarEnLugarDe(any(), any()) }
+        val r = runCatching { repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A", antesDeGuardar = vencida) }
+        val r2 = runCatching {
+            repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-B", enLugarDe = listOf("llave-0"),
+                antesDeGuardar = vencida)
+        }
+
+        assertTrue(r.isFailure && r2.isFailure)
+        assertEquals("sólo la corrió la transacción, una vez por reserva", 2, corridas)
+        coVerify(exactly = 1) { dao.insert(any(), vencida) }
+        coVerify(exactly = 1) { dao.reservarEnLugarDe(any(), listOf("llave-0"), vencida) }
         assertFalse("llave-A" in repository.salesNoticeReservedIds())
+        assertFalse("llave-B" in repository.salesNoticeReservedIds())
     }
 
     @Test

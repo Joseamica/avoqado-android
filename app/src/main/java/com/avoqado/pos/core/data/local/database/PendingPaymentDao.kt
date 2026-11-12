@@ -29,11 +29,14 @@ interface PendingPaymentDao {
     }
 
 
-    suspend fun insert(payment: PendingPaymentEntity) = com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(payment.venueId) {
-        insertTransactionQ16(payment)
-    }
+    /**
+     * D12 · familia A (Codex r4 #1, R1): [antesDelInsert] corre DENTRO de la transacción, ya con el escritor de Room y después de leer la
+     * fila, justo antes del INSERT y sin ninguna espera de por medio. Si lanza, no se escribe nada y la excepción sale tal cual.
+     */
+    suspend fun insert(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)? = null) =
+        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(payment.venueId) { insertTransactionQ16(payment, antesDelInsert) }
     @androidx.room.Transaction
-    suspend fun insertTransactionQ16(payment: PendingPaymentEntity) {
+    suspend fun insertTransactionQ16(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)? = null) {
         val old = findByIdQ15(payment.id)
         require(old == null || old.venueId == payment.venueId) { "La reserva pertenece a otro negocio" }
         require(old==null || payment.q15CaptureJson==null || (old.q15CaptureJson!=null && old.q15Reason==null)) {
@@ -95,6 +98,7 @@ interface PendingPaymentDao {
                 "La misma llave debe conservar el pedido original"
             }
         }
+        antesDelInsert?.invoke() // familia A: ya con el escritor, sin espera hasta el INSERT
         if (old?.syncStatus == "SYNCED") return
         insertRaw(filaAlReemplazar(old, payment, protegerCeroOriginal))
     }
@@ -274,16 +278,17 @@ interface PendingPaymentDao {
      * de sus intentos anteriores van en UNA escritura: si el guardado falla, los viejos se quedan (nunca dos filas por un billete,
      * y nunca ninguna).
      */
-    suspend fun reservarEnLugarDe(payment: PendingPaymentEntity, anteriores: Collection<String>) =
-        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(payment.venueId) { reservarEnLugarDeTransaccion(payment, anteriores) }
+    suspend fun reservarEnLugarDe(payment: PendingPaymentEntity, anteriores: Collection<String>, antesDelInsert: (() -> Unit)? = null) =
+        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(payment.venueId) { reservarEnLugarDeTransaccion(payment, anteriores, antesDelInsert) }
     /**
      * ⚠️ Sólo a través de [reservarEnLugarDe]: llamarlo directo se salta `AdmisionDePrecioQ16.write`. Es público porque un DAO de
      * Room es una interfaz y su `@Transaction` necesita que Room genere la implementación (igual que [insertTransactionQ16]).
      */
     @androidx.room.Transaction
-    suspend fun reservarEnLugarDeTransaccion(payment: PendingPaymentEntity, anteriores: Collection<String>) {
+    suspend fun reservarEnLugarDeTransaccion(payment: PendingPaymentEntity, anteriores: Collection<String>, antesDelInsert: (() -> Unit)? = null) {
         for (id in anteriores) if (id != payment.id) descartarReservaRechazada(id)
-        insertTransactionQ16(payment)
+        // Familia A: si [antesDelInsert] lanza, la transacción se deshace entera (también el borrado de los apartados anteriores).
+        insertTransactionQ16(payment, antesDelInsert)
     }
 
     @Query("SELECT * FROM pending_payments WHERE venueId = :venueId AND syncStatus = 'EN_VUELO' ORDER BY createdAt ASC")
