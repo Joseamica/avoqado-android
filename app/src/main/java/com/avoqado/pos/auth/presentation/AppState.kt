@@ -567,6 +567,12 @@ class AppState @Inject constructor(
                 (pendingGrantQueue?.bloqueantes(venueId) ?: 0) +
                 // Retiro con gerente (Codex r3 #12): la cola del cajón se manda con la sesión que esté; no se cierra encima.
                 (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
+            // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
+            val rechazadas = if (blocking > 0) rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId).coerceAtMost(blocking) else 0
+            if (rechazadas > 0) {
+                _sessionGuardMessage.value = textoDelFrenoConRechazos(blocking, rechazadas, roleManager.canResolveQuarantine, "cerrar sesión")
+                return@launch
+            }
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
@@ -605,3 +611,48 @@ class AppState @Inject constructor(
         _sessionGuardMessage.value = null
     }
 }
+
+/**
+ * D34: lo rechazado que frena cerrar sesión o cambiar de sucursal y que no vuelve a salir solo: lo resuelve un gerente en
+ * «Operaciones por revisar». Los cobros fallidos sin revisar, lo que el servidor rechazó de la cola de mesas (el cambio de usuario por
+ * PIN ya no los cuenta, D28) y los paquetes por revisar de esta sucursal. Se cuenta DIRECTO, nunca restando dos lecturas (Codex r1
+ * #1: un acuse entre las dos inventaba un rechazo).
+ */
+internal suspend fun rechazadasPorRevisar(
+    pagos: PaymentSyncService,
+    cola: com.avoqado.pos.core.data.sync.SyncOutbox,
+    paquetes: com.avoqado.pos.customers.data.PendingGrantQueue?,
+    venueId: String?,
+): Int = pagos.porRevisarCount() + (venueId?.let { cola.rechazadasCount(it) } ?: 0) +
+    (paquetes?.filas?.value?.count { it.venueId == venueId && it.porRevisar } ?: 0)
+
+/**
+ * D34 (opción «a» de la conversación principal, 12-nov): el texto del freno cuando hay [rechazadas] entre las [total] operaciones que
+ * frenan. El freno se queda (cerrar sesión puede borrar lo local), pero «resuélvela» sólo se le dice a quien puede: un mesero no puede
+ * «Marcar resuelta» ([RoleManager.canResolveQuarantine]), así que se le dice que entre un gerente por «Cambiar usuario», que lo
+ * rechazado ya no frena (D28). PURA. [antesDe]: «cerrar sesión» o «cambiar de establecimiento».
+ */
+internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver: Boolean, antesDe: String): String {
+    val sinEnviar = (total - rechazadas).coerceAtLeast(0)
+    val rechazo = if (rechazadas == 1) "1 operación rechazada por revisar" else "$rechazadas operaciones rechazadas por revisar"
+    if (sinEnviar == 0) {
+        return if (puedeResolver) {
+            "Hay $rechazo. ${if (rechazadas == 1) "Resuélvela" else "Resuélvelas"} en $DONDE_SE_RESUELVE antes de $antesDe."
+        } else {
+            "Hay $rechazo. Pídele a un gerente que ${if (rechazadas == 1) "la" else "las"} resuelva: Más › Cambiar usuario."
+        }
+    }
+    val cabeza = "Hay $total operaciones pendientes: $sinEnviar sin enviar y $rechazo. Espera a que se sincronice lo pendiente y"
+    return if (puedeResolver) {
+        "$cabeza resuelve lo rechazado en $DONDE_SE_RESUELVE antes de $antesDe."
+    } else {
+        "$cabeza pídele a un gerente que resuelva lo rechazado: Más › Cambiar usuario."
+    }
+}
+
+/**
+ * Dónde lo resuelve un gerente, siempre (Codex r1 #2): el aviso de arriba puede no estar (un «Entendido» en Ventas lo descuenta y el
+ * cobro sigue por revisar). Ventas › Pendientes es de quien tiene `canResolveQuarantine` y su último renglón abre «Operaciones por
+ * revisar», con «Marcar resuelta».
+ */
+private const val DONDE_SE_RESUELVE = "Ventas › Pendientes › «Otras operaciones y revisiones anteriores»"

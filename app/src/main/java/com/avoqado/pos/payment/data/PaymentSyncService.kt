@@ -1257,8 +1257,10 @@ class PaymentSyncService @Inject constructor(
     }
 
     /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto: lo que falta enviar y los cobros por revisar. */
-    suspend fun blockingWorkCount(): Int =
-        sinEnviarCount() + dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) }
+    suspend fun blockingWorkCount(): Int = sinEnviarCount() + porRevisarCount()
+
+    /** Los cobros fallidos que un gerente todavía no revisa: no salen solos (D34 los cuenta aparte para el texto del freno). */
+    suspend fun porRevisarCount(): Int = dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) }
 
     /**
      * Lo que todavía va a salir: la cola y un cobro interrumpido (la app murió a media petición), que tampoco puede irse con la
