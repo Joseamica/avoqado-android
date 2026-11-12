@@ -167,6 +167,7 @@ class TableSessionAuthBoundaryTest {
                     com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros.LIBRES,
                 )
                 every { cierreEsperaVentas } returns MutableStateFlow(0)
+                every { movimientosPorSubir } returns MutableStateFlow(0)
             },
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,

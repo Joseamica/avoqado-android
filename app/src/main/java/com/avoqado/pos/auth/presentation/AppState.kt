@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -145,6 +146,8 @@ class AppState @Inject constructor(
         // Codex ANDROID r1 A-8: los contadores y la cuarentena de «Pagar después» siguen a la sucursal de la sesión.
         payLaterQueue?.alCambiarLaSesion()
         pendingGrantQueue?.alCambiarLaSesion()
+        // D40: y lo que la cola del cajón de ESTA sucursal todavía va a subir.
+        cashDrawerRepository.recontarMovimientosPorSubir()
         // D8: y los carritos guardados (también al entrar y salir, no sólo al cambiar de sucursal).
         savedCartsRepository?.alCambiarLaSesion()
         syncOutbox.refreshQ15Observation()
@@ -299,13 +302,18 @@ class AppState @Inject constructor(
 
     val failedPaymentCount: StateFlow<Int> = paymentSyncService.failedCount
 
-    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos + cuentas de «Pagar después» + paquetes por entregar. */
+    /**
+     * Operaciones offline esperando replay: outbox de mesas + cola de pagos + cuentas de «Pagar después» + paquetes por entregar +
+     * ingresos, retiros, aperturas y cierres de caja sin subir (D40: antes la cajera no los veía en «N por sincronizar»).
+     */
     val offlinePendingCount: StateFlow<Int> = combine(
         syncOutbox.pendingCount,
         paymentSyncService.pendingCount,
         payLaterQueue?.porSubir ?: kotlinx.coroutines.flow.flowOf(0),
         pendingGrantQueue?.porEntregar ?: kotlinx.coroutines.flow.flowOf(0),
-    ) { intents, payments, cuentas, paquetes -> intents + payments + cuentas + paquetes }
+        // Al suscribirse (la app recién abierta con una cola de antes) se cuenta; al cambiar la sesión, `notifyDeviceSessionChanged`.
+        cashDrawerRepository.movimientosPorSubir.onStart { cashDrawerRepository.recontarMovimientosPorSubir() },
+    ) { intents, payments, cuentas, paquetes, caja -> intents + payments + cuentas + paquetes + caja }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),

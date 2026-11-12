@@ -502,6 +502,66 @@ class CashDrawerRetiroTest {
         assertEquals("la apertura pendiente y su retiro", 2, repo(servidor { null }).movimientosSinSubir(VENUE_ID))
     }
 
+    // MARK: - «N por sincronizar» (hz:8024bc1c:D40)
+
+    /**
+     * D40 (ensayo general, 12-nov): sin internet, la cajera registra un ingreso, un retiro y el cierre, y la banda «N por sincronizar»
+     * seguía en 13: el cajón nunca entraba en la cuenta. [CashDrawerRepository.movimientosPorSubir] cuenta lo mismo que las guardas
+     * ([CashDrawerRepository.movimientosSinSubir]) y sube y baja con cada escritura de la cola.
+     */
+    @Test fun `P1 movimientosPorSubir sube con el ingreso, el retiro y el cierre sin red y baja al subir`() = runBlocking {
+        var conRed = false
+        val r = repo(servidor { req ->
+            if (!conRed) null
+            else when {
+                req.url.encodedPath.endsWith("/pay-in") -> 200 to """{"success":true,"data":${eventoJson("srv-in", "PAY_IN", "100.00")}}"""
+                req.url.encodedPath.endsWith("/pay-out") -> 200 to retiroDelServidor()
+                req.url.encodedPath.endsWith("/close") -> 200 to sesionJson("srv-1")
+                else -> 200 to """{"success":true,"data":{}}"""
+            }
+        })
+        assertEquals(0, r.movimientosPorSubir.value)
+
+        r.addPayIn(PAY_IN_CENTS, "Cambio")
+        assertEquals("el ingreso", 1, r.movimientosPorSubir.value)
+        r.addPayOut(5_000, "Proveedor", localId = "loc-1")
+        assertEquals("el ingreso y el retiro", 2, r.movimientosPorSubir.value)
+        r.closeSession(FONDO_CENTS, null)
+        assertEquals("el ingreso, el retiro y el cierre", 3, r.movimientosPorSubir.value)
+        assertEquals("lo mismo que cuentan las guardas", r.movimientosSinSubir(VENUE_ID), r.movimientosPorSubir.value)
+
+        conRed = true
+        r.reproducirPendientes()
+        assertEquals("todo subió: ${cola()}", 0, r.movimientosSinSubir(VENUE_ID))
+        assertEquals("y la banda lo dice", 0, r.movimientosPorSubir.value)
+    }
+
+    /** Al arrancar la app o cambiar de sesión, lo que ya estaba en la cola de ESA sucursal se cuenta; lo rechazado no. */
+    @Test fun `P1 recontar cuenta la cola guardada de la sucursal de la sesion, sin lo rechazado`() {
+        storage.setPendingDrawerOpsJson(VENUE_ID, """[
+            {"kind":"PAY_IN","sessionId":"srv-1","amountCents":10000,"localId":"in-1","at":1},
+            {"kind":"PAY_OUT","sessionId":"srv-1","amountCents":5000,"localId":"loc-1","at":2,"rechazadaEn":3,"motivoDelRechazo":"no"},
+            {"kind":"CLOSE","sessionId":"srv-1","amountCents":500000,"at":4}]""")
+        val r = repo(servidor { null })
+
+        r.recontarMovimientosPorSubir()
+
+        assertEquals("el ingreso y el cierre", 2, r.movimientosPorSubir.value)
+    }
+
+    /** Codex D40 r1 #2: una cola que no se puede leer no es una cola vacía: la banda se queda con el número que tenía. */
+    @Test fun `P1 si la cola no se puede leer, la banda no se va a cero`() {
+        storage.setPendingDrawerOpsJson(VENUE_ID, """[{"kind":"PAY_IN","sessionId":"srv-1","amountCents":10000,"localId":"in-1","at":1}]""")
+        val r = repo(servidor { null })
+        r.recontarMovimientosPorSubir()
+        assertEquals(1, r.movimientosPorSubir.value)
+
+        storage.setPendingDrawerOpsJson(VENUE_ID, "{ esto no es una cola")
+        r.recontarMovimientosPorSubir()
+
+        assertEquals(1, r.movimientosPorSubir.value)
+    }
+
     // MARK: - El log de depuración (Codex r3 #11)
 
     @Test fun `el log de depuracion tapa X-Permission-Override`() {
