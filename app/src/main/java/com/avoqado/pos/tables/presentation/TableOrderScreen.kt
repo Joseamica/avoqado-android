@@ -396,7 +396,16 @@ fun TableOrderScreen(
         if (isTablet) {
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    // hz:cc708532:D3 (12-nov): mientras se busca, el buscador ocupa TODO el panel izquierdo. Debajo de la barra de la mesa,
+                    // las pestañas y el aviso de tiempos, el teclado en pantalla no dejaba espacio para los resultados (visto en la D3).
+                    // El campo NO se vacía al elegir: la cajera agrega varios productos de la misma búsqueda. La cuenta (derecha) no cambia.
+                    if (showSearch && !showCombos) {
+                        SearchOverlayView(
+                            viewModel = catalogViewModel,
+                            onProductTap = { handleProductTap(it); showSearch = false },
+                            onDismiss = { showSearch = false },
+                        )
+                    } else Column(modifier = Modifier.fillMaxSize()) {
                         contextBar()
                         HorizontalDivider()
                         Row(modifier = Modifier.fillMaxWidth()) {
@@ -409,12 +418,6 @@ fun TableOrderScreen(
                                 com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
                                     estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
                                     onPromotionTap = { selectedCombo = it })
-                            } else if (showSearch) {
-                                SearchOverlayView(
-                                    viewModel = catalogViewModel,
-                                    onProductTap = { handleProductTap(it); showSearch = false },
-                                    onDismiss = { showSearch = false },
-                                )
                             } else {
                                 Column(modifier = Modifier.fillMaxSize()) {
                                     TableSearchBar(onSearchTap = { showSearch = true })

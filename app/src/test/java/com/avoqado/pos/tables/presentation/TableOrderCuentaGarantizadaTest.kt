@@ -793,6 +793,9 @@ class TableOrderCuentaGarantizadaTest {
         assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(\"\"); showSearch = false }"))
         // En tableta el campo conserva el texto a propósito: la cajera agrega varios productos de la misma búsqueda.
         assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); showSearch = false }"))
+        // hz:cc708532:D3: también en tableta el buscador ocupa todo su panel (ya no va metido debajo de la barra y las pestañas).
+        assertEquals(2, source.componentsCount("if (showSearch && !showCombos) {"))
+        assertEquals(0, source.componentsCount("} else if (showSearch) {"))
     }
 
     @Test fun `ACK cash completo desde piso invalida solo cuenta pagada y parcial la conserva`() = runTest {
