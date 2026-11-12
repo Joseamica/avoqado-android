@@ -33,6 +33,10 @@ import kotlinx.serialization.json.Json
  * dirección (la foto de NSD, la respuesta de `quien`), no la hora en que se escribe. Toda escritura aplica sólo si su observación no es
  * más vieja que lo guardado de esa caja: un éxito que esperó a otra respuesta, o una foto que esperó a confirmar las perdidas, ya no
  * reponen una dirección vieja.
+ *
+ * Codex r6 #1, la misma familia: también cuenta lo que se observó y no se escribió (5a), y lo que se quitó (un «es otra» o dos fallas dejan
+ * su hora en esa dirección: un éxito más viejo no la resucita). Una hora ENTRANTE en el futuro (el reloj se atrasó después de tomarla) no
+ * gana a lo que ya se sabe.
  */
 class CajasRecordadas(
     private val cache: PayloadCache,
@@ -57,6 +61,15 @@ class CajasRecordadas(
 
     /** Las que hoy están en la lista por TCP. Las lee el transporte desde cualquier hilo. */
     private val enLista = ConcurrentHashMap<String, EnLista>()
+
+    /**
+     * Frescura (Codex r6 #1), bajo [candado]: la última vez que se OBSERVÓ a cada caja en su dirección, aunque no se escribiera (la misma
+     * dirección de hace menos de [REFECHAR_MS] no reescribe el disco: 5a). Es parte de la verdad que se compara, no del disco.
+     */
+    private val vistaEn = HashMap<String, Long>()
+
+    /** Frescura (Codex r6 #1), bajo [candado]: `did|host:port` → cuándo se supo que la caja YA NO está ahí («es otra» o dos fallas). */
+    private val salioEn = HashMap<String, Long>()
 
     init {
         vigentes[venueId] = this // Codex r3 #3: el encendido nuevo retira al anterior de la misma sucursal (ya no escribe)
@@ -147,20 +160,32 @@ class CajasRecordadas(
      * observación más vieja que la guardada no escribe nada.
      */
     private fun fechar(r: MutableMap<String, Recordada>, did: String, host: String, port: Int, en: Long) {
+        if (vencida(did, host, port, en, r, esta = true)) return
+        vistaEn[did] = en // Codex r6 #1: aunque no se reescriba, ya es lo más nuevo que se sabe
         val antes = r[did]
-        if (antes != null && esMasVieja(en, antes.vistoEn)) return
         if (antes == null || antes.host != host || antes.port != port || en - antes.vistoEn > REFECHAR_MS) r[did] = Recordada(host, port, venueId, en)
     }
 
     /**
-     * Frescura: [en] es más vieja que [guardada]. Una hora guardada en el futuro (el reloj del aparato se atrasó después) no frena nada: si
-     * no, ninguna observación nueva aplicaría hasta que el reloj la alcance.
+     * Frescura: [en] no es más nueva que [guardada]. Una hora guardada en el futuro (el reloj del aparato se atrasó después) no frena nada: si
+     * no, ninguna observación nueva aplicaría hasta que el reloj la alcance. Codex r6 #1: una hora ENTRANTE en el futuro (se tomó antes de
+     * que el reloj se atrasara: una foto o un `quien` que esperaron) no gana a lo que ya se sabe; sin nada guardado, sí aplica.
      */
-    private fun esMasVieja(en: Long, guardada: Long): Boolean = en < guardada && guardada <= ahora()
+    private fun esMasVieja(en: Long, guardada: Long): Boolean {
+        val t = ahora()
+        return if (en > t) guardada != Long.MIN_VALUE else en < guardada && guardada <= t
+    }
 
-    /** La observación más nueva que se tiene de esa caja, en la lista o en el disco. */
+    /** La observación más nueva que se tiene de esa caja: en la lista, en el disco o la que no se escribió ([vistaEn]). */
     private fun masNueva(did: String, r: Map<String, Recordada>?): Long =
-        maxOf(enLista[did]?.en ?: Long.MIN_VALUE, r?.get(did)?.vistoEn ?: Long.MIN_VALUE)
+        maxOf(enLista[did]?.en ?: Long.MIN_VALUE, r?.get(did)?.vistoEn ?: Long.MIN_VALUE, vistaEn[did] ?: Long.MIN_VALUE)
+
+    /**
+     * Frescura (Codex r5 #1 y r6 #1): lo observado en [host]:[port] a la hora [en] ya no aplica si de esa caja se sabe algo más nuevo, o si
+     * ([esta]: la observación dice que la caja está ahí) después se supo que en ESA dirección ya no está.
+     */
+    private fun vencida(did: String, host: String, port: Int, en: Long, r: Map<String, Recordada>?, esta: Boolean): Boolean =
+        esMasVieja(en, masNueva(did, r)) || (esta && salioEn["$did|$host:$port"]?.let { esMasVieja(en, it) } == true)
 
     /** Lo que contestó una dirección y cuándo ([en]: al llegar la respuesta, o al agotarse su plazo). */
     private sealed interface Sondeo {
@@ -207,9 +232,10 @@ class CajasRecordadas(
     private fun aplicar(r: MutableMap<String, Recordada>?, en: LanPeer, s: Sondeo) {
         val did = en.deviceId
         if (s !is Sondeo.Es && !sigueEn(r, en)) return
-        // Frescura (Codex r5 #1): lo que se observó ANTES que lo que ya se sabe de esa caja (una foto de NSD o un `quien` más nuevos) no
-        // aplica: un éxito que esperó a otra respuesta ya no repone una dirección vieja.
-        if (esMasVieja(s.en, masNueva(did, r))) return
+        // Frescura (Codex r5 #1 y r6 #1): lo que se observó ANTES que lo que ya se sabe de esa caja (una foto de NSD o un `quien` más nuevos,
+        // aunque no se hayan escrito, o que en esa dirección ya no está) no aplica: un éxito que esperó a otra respuesta ya no repone ni
+        // resucita una dirección vieja.
+        if (vencida(did, en.host, en.port, s.en, r, esta = s is Sondeo.Es)) return
         when (s) {
             is Sondeo.Es -> {
                 enLista[did] = EnLista(s.peer, s.en)
@@ -217,6 +243,7 @@ class CajasRecordadas(
                 r?.let { fechar(it, did, s.peer.host, s.peer.port, s.en) }
             }
             is Sondeo.Otra -> {
+                salioEn["$did|${en.host}:${en.port}"] = s.en // Codex r6 #1: borrar la entrada ya no borra cuándo se supo
                 if (enLista.remove(did) != null) Log.i(TAG, "👋 ${did.take(6)}: en su dirección contesta otro aparato o una app vieja")
                 fallas.remove(did)
                 r?.remove(did)
@@ -224,7 +251,10 @@ class CajasRecordadas(
             is Sondeo.NoContesta -> {
                 val n = (fallas[did] ?: 0) + 1
                 fallas[did] = n
-                if (n >= FALLAS_PARA_SALIR && enLista.remove(did) != null) Log.i(TAG, "👋 ${did.take(6)}: no contestó por TCP $n veces seguidas")
+                if (n >= FALLAS_PARA_SALIR) {
+                    salioEn["$did|${en.host}:${en.port}"] = s.en
+                    if (enLista.remove(did) != null) Log.i(TAG, "👋 ${did.take(6)}: no contestó por TCP $n veces seguidas")
+                }
             }
         }
     }

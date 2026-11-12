@@ -373,4 +373,87 @@ class CajasRecordadasTest {
         assertTrue("192.168.100.153" in preguntadas)
         assertFalse(n86.host in preguntadas)
     }
+
+    // MARK: - Frescura (Codex r6 #1): también cuenta lo que se observó y no se escribió, lo que se quitó, y el reloj que se atrasa
+
+    /** P en .152 (en disco) y la foto de NSD [vieja] de P, que espera a confirmar una perdida lenta; [mientras] corre antes de soltarla. */
+    private suspend fun kotlinx.coroutines.test.TestScope.fotoRetenida(vieja: LanPeer, mientras: suspend (CajasRecordadas) -> Unit) {
+        val perdida = vistaPorNsd("otra-cccc", "192.168.100.70")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p -> if (p.host == perdida.host) retenida.await(); soy(p.deviceId) }, { hora })
+        c.recordar(listOf(n86, perdida))
+        hora += 1_000
+        val tarea = launch { c.alCambiarNsd(perdidas = listOf(perdida), lista = listOf(vieja))() }
+        runCurrent() // confirmando la perdida
+        mientras(c)
+        retenida.complete(Unit)
+        tarea.join()
+    }
+
+    /**
+     * `:149`: una foto MÁS NUEVA trae a P otra vez en .152 mientras la vieja (.153) espera. Coincide con el disco y pasó menos de 1 h: no se
+     * reescribe (5a). La vieja se comparaba contra la fecha del disco, más vieja que las dos, y reemplazaba la dirección buena.
+     */
+    @Test fun `frescura r6 - la foto nueva que no se escribió sigue ganándole a la vieja retenida`() = runTest {
+        fotoRetenida(vistaPorNsd(n86.deviceId, "192.168.100.153")) { c ->
+            hora += 1_000
+            c.alCambiarNsd(perdidas = emptyList(), lista = listOf(n86))()
+        }
+        assertEquals(n86.host, enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue(n86.host in preguntadas)
+        assertFalse("192.168.100.153" in preguntadas)
+    }
+
+    /**
+     * `:159`: el reloj del aparato se atrasa (la hora de red lo corrige) mientras la foto de .153 espera; ya atrasado, NSD trae a P en .154 y
+     * se guarda. La foto retenida llega con una hora «del futuro» y ganaba.
+     */
+    @Test fun `frescura r6 - una hora entrante del futuro (el reloj se atrasó) no gana`() = runTest {
+        fotoRetenida(vistaPorNsd(n86.deviceId, "192.168.100.153")) { c ->
+            hora -= 10 * 60_000
+            c.alCambiarNsd(perdidas = emptyList(), lista = listOf(vistaPorNsd(n86.deviceId, "192.168.100.154")))()
+        }
+        assertEquals("192.168.100.154", enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue("192.168.100.154" in preguntadas)
+        assertFalse("192.168.100.153" in preguntadas)
+    }
+
+    /**
+     * Una revisión le pregunta a P (.152) y a Q; el «soy yo» de P espera a Q. Mientras, P se vuelve a preguntar en .152 (NSD la perdió) y
+     * [despues] contesta. Al terminar Q, el «soy yo» viejo no puede deshacer lo que se supo después.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.exitoViejoTrasSalir(despues: LeaseResponse?): CajasRecordadas {
+        val q = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var aP = 0
+        val c = CajasRecordadas(cache, v, "yo", { p ->
+            if (p.host == q.host) { retenida.await(); soy(p.deviceId) } else if (++aP == 1) soy(p.deviceId) else despues
+        }, { hora })
+        c.recordar(listOf(n86, q))
+        val revision = launch { c.revisar(emptyList()) }
+        runCurrent() // P ya dijo «soy yo» desde .152; Q sigue
+        hora += 1_000
+        c.sostener(listOf(n86)) // NSD la pierde
+        c.confirmarPerdidas(listOf(n86))
+        assertTrue("premisa: ya salió de la lista", c.porTcp(emptyList()).none { it.deviceId == n86.deviceId })
+        retenida.complete(Unit)
+        revision.join()
+        return c
+    }
+
+    /** `:207`: en .152 ya contesta OTRO aparato (el DHCP le dio esa IP): sale de la lista y del disco. El «es otra» borraba también su hora. */
+    @Test fun `frescura r6 - el es otra deja su hora y un éxito más viejo no resucita la dirección`() = runTest {
+        val c = exitoViejoTrasSalir(soy("otra-tablet"))
+        assertTrue("no vuelve a la lista", c.porTcp(emptyList()).none { it.deviceId == n86.deviceId })
+        assertFalse("ni al disco", n86.deviceId in enDisco())
+        assertFalse("la reconstruida no la busca en .152", n86.host in laReconstruidaPregunta())
+    }
+
+    /** La misma familia por «no contesta»: dos fallas seguidas la sacan de la lista; un «soy yo» más viejo no la regresa. */
+    @Test fun `frescura r6 - tras dos fallas seguidas un éxito más viejo no la regresa a la lista`() = runTest {
+        val c = exitoViejoTrasSalir(null)
+        assertTrue(c.porTcp(emptyList()).none { it.deviceId == n86.deviceId })
+    }
 }
