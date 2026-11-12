@@ -303,6 +303,7 @@ class DuenoDeCuentasTest {
                 every { terminalNavigation } returns kotlinx.coroutines.flow.MutableStateFlow(
                     com.avoqado.pos.tpvsettings.data.TerminalNavigationSettings(terminalName = "Caja 1"))
             },
+            com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta({ null }, { f -> f(null); true }),
         ).also { it.reloj = { Instante(arranque, ms) }; it.horaDePared = { hora } }
         assertEquals(Respuesta.Concedida, a.apartar(v, "o1", ana.copy(enLinea = true)))
         a.soltar(v, "o1", "i-ana")
@@ -316,5 +317,57 @@ class DuenoDeCuentasTest {
         val yo = Thread.currentThread().name
         cajaUno().estadoDe(v, "o1")
         assertTrue("leyó en $hiloDeTodas", hiloDeTodas != null && hiloDeTodas != yo)
+    }
+
+    // MARK: - Merge de develop (#199): la marca de tarjeta de la orden (D14)
+
+    /**
+     * Ruling 2 del merge: con #199, el positivo de una tarjeta de una cuenta de Pedidos deja la marca `FoliosCobradosConTarjeta` (D14) en
+     * lugar de la de la copia. Es dinero de la cuenta: la dueña no contesta LIBRE mientras exista, y su propio compromiso con esa tarjeta
+     * resuelta tarde pasa a CERRADA.
+     */
+    @Test fun `merge 199 - la marca de tarjeta de la orden (D14) frena a las demás y cierra lo propio`() = runTest {
+        var crudo: String? = null
+        var enDuda = false
+        val folios = com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta({ crudo }, { f -> crudo = f(crudo); true })
+        val dao = mockk<com.avoqado.pos.core.data.local.database.PendingPaymentDao> {
+            coEvery { forVenue(any()) } returns emptyList()
+            coEvery { syncStatusOf(any()) } returns null
+        }
+        val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>(relaxed = true) { every { pendingCardChargesJson } returns null }
+        val a = DuenoDeCuentas(
+            cache, abiertas,
+            com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta(dao, storage,
+                mockk<com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore> { every { delNegocio(any()) } returns emptyList() }),
+            mockk<com.avoqado.pos.payment.data.TerminalPaymentService> {
+                every { cobrosConTarjetaDelNegocio(any()) } answers {
+                    if (enDuda) listOf(com.avoqado.pos.payment.data.ContextoDeCobro("r1", venueId = v, terminalId = null, orderId = "o1", cobrado = false))
+                    else emptyList()
+                }
+            },
+            com.avoqado.pos.orders.data.CuentasCobradasAqui({ null }, { f -> f(null); true }, { _, _ -> true }),
+            dao,
+            mockk<com.avoqado.pos.core.data.sync.SyncOutbox> { every { deviceId } returns "caja-1" },
+            mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository> {
+                every { terminalNavigation } returns kotlinx.coroutines.flow.MutableStateFlow(
+                    com.avoqado.pos.tpvsettings.data.TerminalNavigationSettings(terminalName = "Caja 1"))
+            },
+            folios,
+        ).also { it.reloj = { Instante(arranque, ms) }; it.horaDePared = { hora } }
+        // La caja 1 cobra su cuenta con tarjeta; el cobro queda en duda (en la lista) y la pantalla se va: sigue COMPROMETIDA.
+        assertEquals(Respuesta.Concedida, a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = true))
+        enDuda = true
+        a.terminarPropio(v, "o1", "llave-1")
+        assertEquals(EstadoDeCuenta.COMPROMETIDA, a.estadoDe(v, "o1")?.estado)
+        // El positivo llega tarde (conciliación): sale de la lista y deja SÓLO la marca D14.
+        enDuda = false
+        folios.anotar(com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta(orderId = "o1", montoCents = 6000, saldoAntesCents = 6000,
+            enMs = 1L, venueId = v, requestId = "r1", esFolio = false, fueraDeLaBandeja = true))
+        assertEquals(EstadoDeCuenta.CERRADA, a.estadoDe(v, "o1")?.estado)
+        // Y sin compromiso propio de por medio, la marca también frena a otra caja (R4).
+        mias = setOf("o1", "o3")
+        folios.anotar(com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta(orderId = "o3", montoCents = 6000, saldoAntesCents = 6000,
+            enMs = 1L, venueId = v, requestId = "r3", esFolio = false, fueraDeLaBandeja = true))
+        assertEquals(Respuesta.Cerrada("Caja 1", true), a.apartar(v, "o3", ana))
     }
 }

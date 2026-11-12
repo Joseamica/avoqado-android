@@ -6244,14 +6244,15 @@ class PaymentFlowViewModelTest {
     fun `I-2 un cobro con tarjeta de una cuenta guardada la saca de la copia`() = runTest {
         guardadaEnLaCopia("o1")
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            // Merge #199 (D14): la tarjeta de una cuenta que continúa lleva su contexto fuera de la bandeja (8.º argumento).
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-1", requestId = "req-1")
         viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         viewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertTrue("estado: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.Success)
         assertNull("sin red ya no se ofrece cobrarla otra vez en efectivo", copiaDeCuentas.cuenta("venue-1", "o1"))
     }
 

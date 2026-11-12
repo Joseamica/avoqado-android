@@ -41,6 +41,11 @@ class DuenoDeCuentas internal constructor(
     private val estadoDeLaFila: suspend (llave: String) -> String?,
     private val miDeviceId: () -> String,
     private val miCaja: () -> String,
+    /**
+     * Merge #199 (D14): ¿una tarjeta de esta caja ya consta cobrada para esa cuenta? (la marca de la copia o la marca de la orden de
+     * `FoliosCobradosConTarjeta`). Un compromiso propio con su tarjeta resuelta tarde pasa a CERRADA.
+     */
+    private val tarjetaCobrada: (venueId: String, orderId: String) -> Boolean = { _, _ -> false },
 ) {
     @Inject constructor(
         cache: PayloadCache,
@@ -51,18 +56,22 @@ class DuenoDeCuentas internal constructor(
         pendientes: com.avoqado.pos.core.data.local.database.PendingPaymentDao,
         outbox: com.avoqado.pos.core.data.sync.SyncOutbox,
         ajustes: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
+        folios: com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta,
     ) : this(
         cache = cache,
         abiertas = abiertas,
         dineroDeLaCuenta = { venue, orden, enLinea ->
             cobrosLocales.hayPendiente(venue, orden, enLinea) ||
                 tarjetas.cobrosConTarjetaDelNegocio(venue).any { it.orderId == orden } ||
-                cobradas.marcasDe(venue).any { it.orderId == orden }
+                cobradas.marcasDe(venue).any { it.orderId == orden } ||
+                // Merge #199 (ruling 2): desde D14 el positivo de una tarjeta de Pedidos deja ESTA marca en lugar de la de la copia.
+                folios.marcasDe(venue).any { it.orderId == orden }
         },
         tarjetaEnCurso = { venue, orden -> tarjetas.cobrosConTarjetaDelNegocio(venue).any { it.orderId == orden } },
         estadoDeLaFila = { llave -> pendientes.syncStatusOf(llave) },
         miDeviceId = { outbox.deviceId },
         miCaja = { nombreDeCaja(ajustes.terminalNavigation.value.terminalName) },
+        tarjetaCobrada = { venue, orden -> cobradas.marcasDe(venue).any { it.orderId == orden } || folios.marcasDe(venue).any { it.orderId == orden } },
     )
 
     /** Seams de prueba: el reloj monotónico con su arranque, y la hora de pared (sólo para enseñar y podar). */
@@ -242,6 +251,8 @@ class DuenoDeCuentas internal constructor(
                 fila == EN_VUELO -> r
                 fila != null -> RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = fila !in CONTESTADA, reloj(), horaDePared())
                 tarjetaEnCurso(venueId, orden) -> r
+                tarjetaCobrada(venueId, orden) ->
+                    RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = false, reloj(), horaDePared())
                 else -> RegistroDeCuentas.soltar(r, orden, c.intento)
             }
         }

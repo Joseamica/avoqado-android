@@ -168,6 +168,9 @@ class CobroDeCuentaViewModel @Inject constructor(
         // negocio también cuenta). Se lee ANTES que la copia: un positivo que vence al leerla deja su marca y la copia la aplica.
         val tarjetaDeEstaCaja = venue != null && leer(true) {
             terminalPaymentService?.let { s -> s.cobrosConTarjetaDelNegocio(venue).any { it.orderId == orderId } } ?: false
+        } || venue != null && leer(true) {
+            // Merge #199 (D14): el positivo de una tarjeta de «Pedidos → detalle» deja la marca de la ORDEN, no la de la copia.
+            com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta(storage).marcasDe(venue).any { it.orderId == orderId }
         }
         val abiertaAqui = venue != null && leer(false) { cuentasAbiertasAqui?.laAbrioAqui(venue, orderId) }
         val registro = if (abiertaAqui && venue != null) duenoDeCuentas?.estadoDe(venue, orderId) else null

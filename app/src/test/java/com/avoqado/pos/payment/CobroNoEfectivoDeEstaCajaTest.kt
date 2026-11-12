@@ -165,6 +165,21 @@ class CobroNoEfectivoDeEstaCajaTest {
         noSeOfreceEfectivo("C")
     }
 
+    /**
+     * Merge #199 (D14): el positivo de la tarjeta de «Pedidos → detalle» deja la marca de la ORDEN (`FoliosCobradosConTarjeta`) en vez de
+     * la de la copia. Sin red, la cuenta tampoco se ofrece en efectivo: la marca es dinero de esta caja.
+     */
+    @Test fun `merge 199 - la marca de tarjeta de la orden (D14) tampoco la deja cobrable en efectivo`() = runBlocking {
+        guardadaEnLaCopia("H")
+        val ctx = JSONObject(contexto("req-9", "H")).put("bandejaSaldoAntesCents", 10000L)
+            .put("bandejaEsFolio", false).put("bandejaFuera", true).toString()
+        storage.persistPendingCardCharge("req-9", "H", ctx)
+        assertTrue(servicio.aplicarDesenlaceTardio("req-9", CardChargeOutcome.Charged("pay-9")))
+        servicio.reconocerCobro("req-9") // sale de la lista con SU marca de la orden
+        assertEquals("ya salió de la lista", emptyList<String>(), servicio.cobrosConTarjetaDelNegocio("v1").map { it.requestId })
+        noSeOfreceEfectivo("H")
+    }
+
     /** Una tarjeta en duda cuyo contexto no dice de qué negocio es también frena (falla cerrado). */
     @Test fun `una tarjeta en duda sin negocio en su contexto tambien deja la cuenta en gris`() = runBlocking {
         guardadaEnLaCopia("D")
@@ -188,7 +203,7 @@ class CobroNoEfectivoDeEstaCajaTest {
         guardadaEnLaCopia("F")
         val store = SolicitudesDeTarjetaStore(storage)
         val coordinador = CobroConSaldoCoordinator(GiftCardsRepository(OkHttpClient(), storage), store, storage,
-            CobrosLocalesDeLaCuenta(dao, storage, store), CuentasCobradasAqui(storage))
+            CobrosLocalesDeLaCuenta(dao, storage, store), cuentasCobradas = CuentasCobradasAqui(storage))
         assertTrue(store.guardar(SolicitudDeTarjeta(tipo = "GIFT_CARD_REDEEM", llave = "k", venueId = "v1", creadaEn = 1, orderId = "F",
             cuerpo = """{ "idempotencyKey": "k", "amount": 40.00 }""", mandado = true)))
         assertEquals("en duda", Gris(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR), decision("F"))

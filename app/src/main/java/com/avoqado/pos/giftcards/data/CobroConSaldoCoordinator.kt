@@ -29,11 +29,11 @@ enum class Recuperacion { RECUPERADA, CARRITO_OCUPADO, NO_SE_PUDO_SOLTAR, PENDIE
     private val store: SolicitudesDeTarjetaStore,
     private val secureStorage: SecureStorage,
     private val cobrosLocales: CobrosLocalesDeLaCuenta,
-    /** D12 (final fix ronda 2, R2-1): la marca «aquí ya se cobró» de la copia de «Pedidos». Hilt (y Guice) siempre la pasan. */
-    private val cuentasCobradas: com.avoqado.pos.orders.data.CuentasCobradasAqui? = null,
     /** Tienda híbrida (A1): la marca «aquí ya se cobró con saldo» de un folio, en el mismo disco que las de tarjeta. */
     private val foliosCobrados: com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta =
         com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta(secureStorage),
+    /** D12 (final fix ronda 2, R2-1): la marca «aquí ya se cobró» de la copia de «Pedidos». Hilt (y Guice) siempre la pasan. */
+    private val cuentasCobradas: com.avoqado.pos.orders.data.CuentasCobradasAqui? = null,
 ) {
     private val mutex = Mutex()
     private val entregasPendientes = kotlinx.coroutines.flow.MutableStateFlow<Map<String, String>>(emptyMap())
