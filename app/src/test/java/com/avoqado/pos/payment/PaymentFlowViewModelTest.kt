@@ -6424,6 +6424,29 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 0) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
+    /**
+     * Acordado con «Arquitectura» (D5 de mesas sin red, su B0/B1): el efectivo de una MESA nunca pasa por la puerta de D. La mesa no
+     * «continúa» una cuenta de Pedidos (continua=false aunque llegue con otra orden ligada), no le pregunta a ninguna caja y no revalida la
+     * copia (la pantalla de la mesa no pasa `antesDeRecibirEfectivo`: `TableOrderScreen`). El cobro va a la orden de la mesa, como hoy.
+     */
+    @Test
+    fun `D12 opción D - el efectivo de una mesa nunca pasa por la puerta de D`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "orden-parte-1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals(listOf("orden-de-la-mesa"), cobradas)
+        coVerify(exactly = 0) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cuentasEntreCajas.apartar(any(), any(), any(), any(), any()) }
+        io.mockk.verify(exactly = 0) { cuentasEntreCajas.autorizacionVigente(any()) }
+        io.mockk.verify(exactly = 0) { cuentasEntreCajas.terminarEnFondo(any(), any(), any(), any(), any(), any()) }
+    }
+
     @Test
     fun `D12 opción D - la tarjeta de una cuenta abierta pasa por la puerta y si dice no, no sale a la terminal`() = runTest {
         laPuerta(noPasa("Cobrada en Caja 1 · falta subirla"))
