@@ -119,6 +119,39 @@ class Q15RecoveryNoticeTest {
         }
     }
 
+    /** D5 · B3 (5b y C3): el efectivo de una MESA cobrada sin red (cola de mesas, ACKED) le dice al gerente lo que trajo el acuse REAL. */
+    @Test fun mesa_sin_red_ACKED_shows_the_manager_the_overcharge_and_the_owed_balance() = runBlocking {
+        SalesNoticeSqlTest.Fixture().use { f ->
+            // 5b (D3, M6): esperaba dejarla en $0 con $45; la N86 ya había cobrado $25: el servidor queda con $70 pagados de $45.
+            val sobra=mesaAplicada(f,"cobro-5b",4500,remaining=0,total=4500,paid=7000)
+            assertEquals("Pago registrado · revisa las diferencias",com.avoqado.pos.sync.presentation.salesNoticeStatus(sobra))
+            assertEquals("Importe registrado: \$45.00 · propina: \$0.00",com.avoqado.pos.sync.presentation.salesNoticeServerMoney(sobra))
+            assertEquals(listOf("Campos distintos: saldo de la mesa","Saldo esperado \$0.00 · saldo en el servidor \$0.00","Se cobró de más: \$25.00"),
+                com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(sobra))
+            // C3 (N86, M6): esperaba dejarla en $0 con $25 y el servidor ya tenía la ronda de $20 de la D3: queda debiendo $20.
+            val debe=mesaAplicada(f,"cobro-c3",2500,remaining=2000,total=4500,paid=2500)
+            assertEquals(listOf("Campos distintos: saldo de la mesa","Saldo esperado \$0.00 · saldo en el servidor \$20.00"),
+                com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(debe))
+            // Sin acuse (sigue en la cola), igual que antes: sin confirmar.
+            assertEquals("Sin confirmar",com.avoqado.pos.sync.presentation.salesNoticeStatus(debe.copy(state="PENDING")))
+        }
+    }
+
+    private suspend fun mesaAplicada(f:SalesNoticeSqlTest.Fixture,id:String,amount:Int,remaining:Int,total:Int,paid:Int):SalesNoticeSnapshot {
+        val payload="""{"orderId":"order-M6","amountCents":$amount,"tipCents":0,"expectedBalanceBeforeCents":$amount}"""
+        val c=ConciliacionDelCobro.capturarIntent(VENUE,id,payload,restanteEsperadoCents=0)
+        // El acuse del SERVIDOR (`PAY_CASH`), con sus campos en centavos.
+        val ack=JSONObject().put("orderId","order-M6").put("paymentId","pay-$id").put("orderNumber","ORD-1794488493066")
+            .put("amount",amount).put("tipAmount",0).put("changeCents",0).put("cashRetainedCents",amount).put("method","CASH")
+            .put("remainingBalanceCents",remaining).put("orderPaymentStatus",if(remaining==0)"PAID" else "PARTIAL")
+            .put("orderTotalCents",total).put("totalPaidCents",paid).toString()
+        val e=ConciliacionDelCobro.evaluar(c,VENUE,id,CanalDelCobro.ACK,ack)
+        check(e.aplicado && e.motivo==ConciliacionDelCobro.DIFERENCIA) { e.toString() }
+        f.intent(id,VENUE,mapOf("payload_json" to payload,"status" to "ACKED","q15CaptureJson" to c,"result_json" to ack,
+            "q15InitialResultJson" to e.resultadoJson,"q15ResultJson" to e.resultadoJson,"q15Reason" to e.motivo,"q15DetectedAt" to 102L))
+        return f.dao.page(VENUE,"",null,emptySet()).rows.single { it.id==id }
+    }
+
     private suspend fun seed(f:SalesNoticeSqlTest.Fixture,remoteTender:Boolean=false):SalesNoticeSnapshot {
         val c=ConciliacionDelCobro.guardarCaptura(capture())
         val payment=JSONObject().put("paymentId","server-payment").put("orderId","original-order").put("venueId",VENUE)

@@ -271,7 +271,10 @@ class QuarantineViewModel @Inject constructor(
                 _errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."
                 return@launch
             }
-            syncOutbox.dismissRejected(venueId,id)
+            // D5 · B2b (R5-1): si no se pudo borrar la foto de su mesa, la operación se queda (la mesa sigue en gris).
+            try { syncOutbox.dismissRejected(venueId,id) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { _errorMessage.value = "No se pudo marcar como resuelta. Libera espacio en el aparato e intenta de nuevo."; return@launch }
             _successMessage.value="Operación marcada como resuelta"
             load()
         }
@@ -513,8 +516,22 @@ class QuarantineViewModel @Inject constructor(
         else -> type
     }
 
+    /**
+     * D5 · B3 (C3): el servidor rechaza «Liberar mesa» con un código genérico (`BUSINESS_RULE`) y el texto en inglés
+     * «Cannot clear table with unpaid order ORD-…» (sin el saldo): se traduce por tipo y texto. Lo demás pasa igual.
+     */
+    fun describeMessage(type: String, message: String?): String? {
+        if (!mesaConSaldo(type, message)) return message
+        val cuenta = message!!.removePrefix(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO).trim()
+        return "La mesa sigue ocupada: la cuenta ${if (cuenta.isEmpty()) "" else "$cuenta "}todavía debe."
+    }
+
+    private fun mesaConSaldo(type: String, message: String?) = type == "CLEAR_TABLE" && message?.startsWith(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO) == true
+
     /** Guía de resolución según la razón del rechazo. */
-    fun resolutionHint(errorCode: String?, type: String): String = if(type=="PAY_CASH" && errorCode!="STALE_DEVICE_SEQUENCE") {
+    fun resolutionHint(errorCode: String?, type: String, message: String? = null): String = if (mesaConSaldo(type, message)) {
+        "Si ya se cobró, la mesa se libera sola al subir el cobro. Si sigue ocupada en el plano, cobra lo que falta y libérala."
+    } else if(type=="PAY_CASH" && errorCode!="STALE_DEVICE_SEQUENCE") {
         "El resultado de este pago no está confirmado. Conserva su folio y el efectivo registrado. No vuelvas a cobrar."
     } else when (errorCode) {
         // 🔴 Esta cuenta NO se puede anular ni fusionar hasta que su cobro con tarjeta termine:

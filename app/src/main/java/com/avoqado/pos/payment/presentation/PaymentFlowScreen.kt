@@ -312,6 +312,7 @@ fun PaymentFlowScreen(
                         // D15: una venta rápida en $0 también es sólo efectivo, con su razón.
                         saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
                         textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
+                        soloEfectivoSinRed = viewModel.cobroDeMesaSinRed(),
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -339,6 +340,7 @@ fun PaymentFlowScreen(
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
                         textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
+                        soloEfectivoSinRed = viewModel.cobroDeMesaSinRed(),
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     // D15: con $0 no hay nada que dividir.

@@ -28,6 +28,8 @@ class TableRoundDraftStore(private val directory: File) {
         val preparationRouting: Map<String, com.avoqado.pos.printing.routing.PrintConfig> = emptyMap(),
         // nil = historical file whose reverse identities are not proven. Never infer empty.
         val originalOrderIdsQ16: List<String>? = null,
+        /** D5 · B2b: esta tablet le mandó al menos una ronda a la cuenta (sólo ella la cobra sin internet). Nunca se apaga. */
+        val tomadaAqui: Boolean = false,
     )
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private fun file(venueId: String, orderId: String): File {
@@ -74,7 +76,7 @@ class TableRoundDraftStore(private val directory: File) {
         config
     }
     fun save(venueId: String, orderId: String, pending: List<PendingLine>, rounds: Map<String, List<PendingLine>>, cachedCheck: OrderDetail? = null,
-        preparationRouting: Map<String, com.avoqado.pos.printing.routing.PrintConfig> = emptyMap()): Snapshot = synchronized(diskLock) {
+        preparationRouting: Map<String, com.avoqado.pos.printing.routing.PrintConfig> = emptyMap(), tomadaAqui: Boolean = false): Snapshot = synchronized(diskLock) {
         val (targetOrder, previous) = resolved(venueId, orderId)
         require(cachedCheck == null || cachedCheck.id == orderId || cachedCheck.id == targetOrder) { "La cuenta no pertenece a este pedido" }
         require(preparationRouting.keys.all { it in rounds }) { "Primero guarda la ronda en este pedido" }
@@ -83,7 +85,7 @@ class TableRoundDraftStore(private val directory: File) {
         val snapshot = Snapshot(pending.filterNot { it.item.id in stagedIds }, rounds,
             rounds.keys.associateWith { previous.createdAtLocal[it] ?: now }, cachedCheck?.copy(id = targetOrder) ?: previous.cachedCheck,
             preparationRouting = (preparationRouting + previous.preparationRouting).filterKeys { it in rounds },
-            originalOrderIdsQ16 = previous.originalOrderIdsQ16)
+            originalOrderIdsQ16 = previous.originalOrderIdsQ16, tomadaAqui = previous.tomadaAqui || tomadaAqui)
         write(venueId, targetOrder, snapshot)
         snapshot
     }
@@ -110,7 +112,7 @@ class TableRoundDraftStore(private val directory: File) {
         }
         val routing = (source.preparationRouting + target.preparationRouting).filterKeys { it in rounds }
         write(venueId, targetOrder, Snapshot(pending, rounds, dates, target.cachedCheck ?: source.cachedCheck?.copy(id = targetOrder),
-            preparationRouting = routing, originalOrderIdsQ16 = inverse))
+            preparationRouting = routing, originalOrderIdsQ16 = inverse, tomadaAqui = source.tomadaAqui || target.tomadaAqui))
         write(venueId, localOrderId, Snapshot(redirectOrderId = targetOrder))
         } } finally { com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.end(venueId) }
     }

@@ -91,6 +91,8 @@ fun PaymentMethodSelectionScreen(
     saldoSinActualizar: Boolean = false,
     /** Por qué sólo efectivo (con [saldoSinActualizar]): el saldo sin actualizar, o un pedido de plataforma (Rappi 2b). */
     textoSoloEfectivo: String = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
+    /** D5 · B2b (B3): la mesa del servidor cobrada sin internet: sólo efectivo, y el subtítulo lo dice (no «envía a una terminal»). */
+    soloEfectivoSinRed: Boolean = false,
     onRetryTerminals: () -> Unit = {},
     /** Link "Dividir importe" arriba (Mesas y tienda, como Square) — null lo oculta. */
     onSplitImporte: (() -> Unit)? = null,
@@ -186,9 +188,7 @@ fun PaymentMethodSelectionScreen(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         Text(
-            // Sin terminal, «envía el cobro a una terminal» mandaba a algo que no se puede (iPad, 31-oct; igual en iOS).
-            text = if (terminalsUnavailable && metodosHabilitados) "Cobra en efectivo o conecta una terminal"
-            else "Envía el cobro a una terminal para procesar el pago",
+            text = subtituloDelCobro(terminalsUnavailable, metodosHabilitados, soloEfectivoSinRed),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1078,4 +1078,14 @@ private fun formatCompactAmount(cents: Int): String {
     } else {
         formatMoney(pesos)
     }
+}
+
+/**
+ * El subtítulo bajo el importe. Sin terminal, «envía el cobro a una terminal» mandaba a algo que no se puede (iPad, 31-oct; igual en
+ * iOS). D5 · B2b (B3): una mesa cobrada sin internet es sólo efectivo.
+ */
+internal fun subtituloDelCobro(terminalsUnavailable: Boolean, metodosHabilitados: Boolean, soloEfectivoSinRed: Boolean): String = when {
+    soloEfectivoSinRed && metodosHabilitados -> "Cobra en efectivo"
+    terminalsUnavailable && metodosHabilitados -> "Cobra en efectivo o conecta una terminal"
+    else -> "Envía el cobro a una terminal para procesar el pago"
 }
