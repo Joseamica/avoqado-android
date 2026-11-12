@@ -397,8 +397,8 @@ private fun OrderListView(
     val statusFilter by viewModel.statusFilter.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val avisoDeLaLista by viewModel.avisoDeLaLista.collectAsState()
-    // Familia D: la lista es la respuesta del SERVIDOR sólo sin hora de copia; si no, el saldo de sus filas es viejo.
-    val copiaVistaA by viewModel.copiaVistaA.collectAsState()
+    // Familia D: ¿la lista es la respuesta del SERVIDOR? Si no (la copia), el saldo de sus filas es viejo.
+    val listaDelServidor by viewModel.listaDelServidor.collectAsState()
 
     val grouped = remember(orders) { viewModel.groupOrdersByDate(orders) }
 
@@ -494,7 +494,7 @@ private fun OrderListView(
                             OrderRow(
                                 order = order,
                                 isSelected = isSelected,
-                                listaDelServidor = copiaVistaA == null,
+                                listaDelServidor = listaDelServidor,
                                 onClick = { viewModel.selectOrder(order.id) },
                             )
 
