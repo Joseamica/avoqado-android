@@ -149,6 +149,12 @@ class PaymentFlowViewModelTest {
 
     /** Final fix (F1, I-2): la copia de «Pedidos», REAL sobre un disco de memoria. Sin filas, ninguna venta la reescribe. */
     private val discoDeLaCopia = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
+    /** D12 · Opción D: la puerta de la cuenta; por default no hay cuenta que coordinar (como hoy). */
+    private val cuentasEntreCajas = mockk<com.avoqado.pos.core.data.lan.CuentasEntreCajas>(relaxed = true).also {
+        coEvery { it.puerta(any(), any(), any(), any(), any(), any(), any(), any()) } returns com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre
+        every { it.autorizacionVigente(any()) } returns true
+    }
+
     private val copiaDeCuentas = com.avoqado.pos.orders.data.CopiaDeCuentas(mockk<com.avoqado.pos.core.data.local.PayloadCache> {
         coEvery { loadDurable(any(), any()) } answers { discoDeLaCopia["${firstArg<String>()}|${secondArg<String>()}"] }
         coEvery { saveDurable(any(), any(), any()) } answers {
@@ -289,6 +295,7 @@ class PaymentFlowViewModelTest {
             cancelacionDeCobro = cancelacionDeCobro,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
             copiaDeCuentas = copiaDeCuentas,
+            cuentasEntreCajas = cuentasEntreCajas,
         )
     }
 
@@ -6145,5 +6152,126 @@ class PaymentFlowViewModelTest {
             evidenciaDelCobro(c.copy(remainingBalanceCents = 2000, saldoDelServidor = true), encolado = false))
         assertEquals("sin el saldo del servidor no se inventa uno", com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(null, conSaldo = true),
             evidenciaDelCobro(c.copy(remainingBalanceCents = 2000, conSaldo = true), encolado = false))
+    }
+
+    // MARK: - D12 · Opción D: la puerta única (la caja que abrió la cuenta da el permiso)
+
+    private val pasaDeOtraCaja = com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa("i-1", esDueno = false, autorizadoEn = 0L)
+    private fun noPasa(texto: String) = com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.NoPasa(texto)
+    private fun laPuerta(vararg r: com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta) = coEvery {
+        cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any())
+    } returnsMany r.toList()
+
+    private fun nadaSeReservaNiSeCobra() {
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `D12 opción D - desde la copia la puerta que dice no, no reserva, le pasa el texto a la cuenta y cierra el flujo`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(noPasa("Se perdió el contacto con Caja 1"))
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        nadaSeReservaNiSeCobra()
+        assertEquals("Se perdió el contacto con Caja 1", gris)
+        assertTrue(viewModel.debeSalir.value)
+        coVerify(exactly = 1) {
+            cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = false, esTarjeta = false, esCuentaDePedidos = true, intentoPrevio = null)
+        }
+    }
+
+    @Test
+    fun `D12 opción D - en línea la puerta que dice no enseña su texto y no cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(noPasa("Ana la está cobrando en Caja 2. Espera a que termine."))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        nadaSeReservaNiSeCobra()
+        assertEquals("Ana la está cobrando en Caja 2. Espera a que termine.", (viewModel.state.value as PaymentFlowState.Error).message)
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = true, esTarjeta = false, any(), intentoPrevio = null) }
+    }
+
+    @Test
+    fun `D12 opción D - pasa ANTES de reservar y al cobrar termina con dinero`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        laPuerta(pasaDeOtraCaja)
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        io.mockk.coVerifyOrder {
+            cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), any(), any(), any(), any())
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = true, subida = true) }
+    }
+
+    @Test
+    fun `D12 opción D - R1 con la autorización vencida vuelve a comprometer con el MISMO intento`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(pasaDeOtraCaja, noPasa("Se perdió el contacto con Caja 1"))
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returns false
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), false, false, true, intentoPrevio = "i-1") }
+        nadaSeReservaNiSeCobra()
+        assertEquals("Se perdió el contacto con Caja 1", gris)
+    }
+
+    @Test
+    fun `D12 opción D - salir sin cobrar termina el permiso sin dinero`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(pasaDeOtraCaja)
+        coEvery {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        } throws IllegalStateException("disco lleno")
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        viewModel.alSalirDeLaPantalla()
+
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = false, subida = false) }
+    }
+
+    @Test
+    fun `D12 opción D - una venta nueva no pasa por la puerta`() = runTest {
+        conLaCajaDeLaCopia()
+        viewModel.startPaymentFlow(carritoDeLaCopia())
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D12 opción D - la tarjeta de una cuenta abierta pasa por la puerta y si dice no, no sale a la terminal`() = runTest {
+        laPuerta(noPasa("Cobrada en Caja 1 · falta subirla"))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = true, esTarjeta = true, any(), intentoPrevio = null) }
+        assertEquals("Cobrada en Caja 1 · falta subirla", (viewModel.state.value as PaymentFlowState.Error).message)
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 }

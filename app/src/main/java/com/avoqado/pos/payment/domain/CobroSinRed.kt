@@ -1,6 +1,9 @@
 package com.avoqado.pos.payment.domain
 
-import com.avoqado.pos.core.data.lan.LeaseOutcome
+import com.avoqado.pos.core.data.lan.CuentaEnElRegistro
+import com.avoqado.pos.core.data.lan.CuentasEntreCajas
+import com.avoqado.pos.core.data.lan.EstadoDeCuenta
+import com.avoqado.pos.core.data.lan.Respuesta
 import com.avoqado.pos.core.util.formatMoneyFromCents
 import com.avoqado.pos.giftcards.domain.TextosDeTarjetas
 import com.avoqado.pos.orders.data.CuentaGuardada
@@ -44,8 +47,6 @@ object TextosDeCuentaSinRed {
     const val SIN_PERMISO = "No tienes permiso para cobrar. Pídeselo a tu gerente."
     const val CON_ABONO = "Esta cuenta ya tiene un abono: cóbrala con internet."
 
-    /** Codex r3 H3: la caja ajena perdió el candado antes de recibir el efectivo. */
-    const val CANDADO_PERDIDO = "Se perdió el contacto con las otras cajas: esta cuenta no se cobró aquí."
 
     // MARK: - D12 · Opción D: la caja que abrió la cuenta da el permiso (`opcion-d-brief.md`). <caja> = el nombre de la caja.
 
@@ -67,6 +68,9 @@ object TextosDeCuentaSinRed {
     fun noConfirmo(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} empezó a cobrarla en $caja y no confirmó. Pregúntale antes de cobrar."
     const val NO_SE_COBRO_COBRAR_AQUI = "No se cobró: cobrar aquí"
 
+    /** «Avisándole a las otras cajas…» cuando todavía no se sabe cuál la abrió. */
+    const val LAS_OTRAS_CAJAS = "las otras cajas"
+
     /** En la lista (y como razón del gris): ya se cobró en esa caja. */
     fun cobradaEn(caja: String, faltaSubirla: Boolean) = if (faltaSubirla) "Cobrada en $caja · falta subirla" else "Cobrada en $caja"
 
@@ -78,21 +82,17 @@ object TextosDeCuentaSinRed {
         RazonSinRed.CON_ABONO -> CON_ABONO
     }
 
-    fun laEstaCobrando(quien: String) = "La está cobrando $quien"
-    fun cobrarDeTodosModos(quien: String) = "$quien la está cobrando. ¿Cobrar aquí de todos modos?"
     fun cobrarEnEfectivo(cents: Int) = "Cobrar ${formatMoneyFromCents(cents)} en efectivo"
 
-    /** El botón mientras se pide el candado a las otras cajas (puede tardar unos segundos; nunca en rojo). */
+    /** El botón mientras esta caja revisa su propio registro (la caja que la abrió; nunca en rojo). */
     const val REVISANDO = "Revisando…"
-    const val COBRAR_AQUI = "Cobrar aquí"
-    const val VOLVER = "Volver"
 
     /** Por qué el cobro de una cuenta hecho con la copia es sólo efectivo (`OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA`). */
     const val SOLO_EFECTIVO = "Sin conexión: esta cuenta se cobra sólo en efectivo."
 }
 
-/** La llave del candado del hub LAN: texto opaco, el cable no cambia. */
-fun llaveDeCuenta(orderId: String): String = "cuenta:$orderId"
+/** La llave de una cuenta en la red del local (`CuentasPorLaRed`). */
+fun llaveDeCuenta(orderId: String): String = com.avoqado.pos.core.data.lan.CuentasPorLaRed.llave(orderId)
 
 data class DatosDelCobroSinRed(
     /** null = no hay copia VIGENTE de la cuenta. */
@@ -104,17 +104,32 @@ data class DatosDelCobroSinRed(
     /** `CashPaymentRepository.huboEfectivoSubido(orderId)` TAL CUAL, estricto (Codex r2 #2). */
     val huboEfectivoSubido: Boolean,
     val premiumAcreditado: Boolean,
+    /** Opción D: otra caja de la sucursal que anuncia `d=1` (con el hub Premium encendido aquí). */
     val hayOtraCajaDelNegocio: Boolean,
-    val hubEncendido: Boolean,
+    /** Opción D: si esta caja la abrió, lo que dice su registro (null = LIBRE). */
+    val registro: CuentaEnElRegistro? = null,
+    /** Opción D: el registro ya deja declarar «No se cobró» (otra caja la comprometió hace 2 min o más). */
+    val puedeDeclararNoSeCobro: Boolean = false,
+    /** Opción D: el `deviceId` de esta caja (lo suyo en su registro no la bloquea antes del toque). */
+    val miDeviceId: String = "",
+    /** Opción D: el nombre de la caja que la abrió, si alguna vez contestó; null = no se sabe. */
+    val cajaQueLaAbrio: String? = null,
 )
 
 sealed interface DecisionSinRed {
-    data class Cobrar(val saldoCents: Int, val pedirCandado: Boolean, val confirmar: String? = null) : DecisionSinRed
+    /** [pedirPermiso]: al tocar se aparta con la caja que la abrió (en local si es ésta). */
+    data class Cobrar(val saldoCents: Int, val pedirPermiso: Boolean = true) : DecisionSinRed
     data class Gris(val texto: String) : DecisionSinRed
+
+    /** Opción D, en la caja que la abrió: otra la comprometió y no confirmó en 2 min. Una persona decide con «No se cobró: cobrar aquí». */
+    data class NoConfirmo(val texto: String, val saldoCents: Int) : DecisionSinRed
 }
 
-/** Quién puede cobrar sin red una cuenta abierta. Pura. [candado] null = aún no se pide (antes del toque). */
-fun decidirCobroSinRed(d: DatosDelCobroSinRed, candado: LeaseOutcome?): DecisionSinRed {
+/**
+ * Quién puede cobrar sin red una cuenta abierta (Opción D: el permiso lo da la caja que la ABRIÓ). Pura. [permiso] null = aún no se pide
+ * (antes del toque); si no, lo que contestó la caja que la abrió (o esta misma, en local).
+ */
+fun decidirCobroSinRed(d: DatosDelCobroSinRed, permiso: CuentasEntreCajas.DelDueno?): DecisionSinRed {
     val c = d.cuenta?.cuenta
     if (c == null || !estaAbierta(c.status, c.paymentStatus, c.refundState)) {
         return DecisionSinRed.Gris(TextosDeTarjetas.COBRAR_CUENTA_SIN_RED)
@@ -124,15 +139,22 @@ fun decidirCobroSinRed(d: DatosDelCobroSinRed, candado: LeaseOutcome?): Decision
     if (!d.puedeCobrar) return DecisionSinRed.Gris(TextosDeCuentaSinRed.SIN_PERMISO)
     if (d.cobroLocalPendiente) return DecisionSinRed.Gris(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
     if (d.huboEfectivoSubido) return DecisionSinRed.Gris(TextosDeCuentaSinRed.YA_SUBIO_UN_COBRO)
-    // Degradar, nunca bloquear: quien abrió la cuenta siempre cobra, a lo más con aviso.
     if (d.abiertaAqui) {
-        val aviso = (candado as? LeaseOutcome.Taken)?.let { TextosDeCuentaSinRed.cobrarDeTodosModos(it.holderName) }
-        return DecisionSinRed.Cobrar(saldo, pedirCandado = d.hubEncendido, confirmar = aviso)
+        val r = d.registro
+        return when {
+            r?.estado == EstadoDeCuenta.CERRADA -> DecisionSinRed.Gris(TextosDeCuentaSinRed.cobradaEn(r.caja.ifBlank { "esta caja" }, r.faltaSubirla))
+            r != null && r.por != d.miDeviceId && d.puedeDeclararNoSeCobro -> DecisionSinRed.NoConfirmo(TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja), saldo)
+            r != null && r.por != d.miDeviceId -> DecisionSinRed.Gris(TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja))
+            permiso != null -> deLaRespuesta(permiso, saldo)
+            else -> DecisionSinRed.Cobrar(saldo)
+        }
     }
-    if (!d.premiumAcreditado || !d.hayOtraCajaDelNegocio) return DecisionSinRed.Gris(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
-    return when (candado) {
-        null, is LeaseOutcome.Granted -> DecisionSinRed.Cobrar(saldo, pedirCandado = true)
-        is LeaseOutcome.Taken -> DecisionSinRed.Gris(TextosDeCuentaSinRed.laEstaCobrando(candado.holderName))
-        LeaseOutcome.NoHub -> DecisionSinRed.Gris(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
-    }
+    if (!d.premiumAcreditado || !d.hayOtraCajaDelNegocio) return DecisionSinRed.Gris(TextosDeCuentaSinRed.noLaEncuentro(d.cajaQueLaAbrio))
+    return if (permiso == null) DecisionSinRed.Cobrar(saldo) else deLaRespuesta(permiso, saldo)
+}
+
+private fun deLaRespuesta(p: CuentasEntreCajas.DelDueno, saldo: Int): DecisionSinRed = when (val r = p.respuesta) {
+    Respuesta.Concedida -> DecisionSinRed.Cobrar(saldo)
+    null -> DecisionSinRed.Gris(TextosDeCuentaSinRed.noLaEncuentro(p.caja))
+    else -> DecisionSinRed.Gris(CuentasEntreCajas.textoDe(r, p.caja))
 }

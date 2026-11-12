@@ -62,13 +62,6 @@ class LanHubServiceTest {
     }
 
     @Test
-    fun `D12 sin hub no hay otra caja ni candado`() = runTest {
-        assertFalse(hub.hayOtraCajaDelNegocio())
-        assertEquals(LeaseOutcome.NoHub, hub.acquireCoordinado("cuenta:o1", "s1", "Juan"))
-        assertFalse(hub.candadoVigente("cuenta:o1"))
-    }
-
-    @Test
     fun `D12 opción D - el hub enciende las cuentas entre cajas con la sucursal y las apaga al parar`() {
         val cuentas = mockk<CuentasEntreCajas>(relaxed = true)
         val h = LanHubService(secure, transporte, cuentas)

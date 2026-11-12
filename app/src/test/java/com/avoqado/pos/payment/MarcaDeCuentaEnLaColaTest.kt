@@ -93,4 +93,25 @@ class MarcaDeCuentaEnLaColaTest {
             coVerify(exactly = 1) { marcas.marcar(Q16PrecioCapturadoTest.VENUE, "o5") }
         }
     }
+
+    /** D12 · Opción D (un solo dueño): la cola que cobra una cuenta que YA existía —de otra caja— nunca la marca «abierta aquí». */
+    @Test fun `la cola nunca marca una cuenta que ya existía`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            val falso = ServidorFalso()
+            f.server.dispatcher = falso
+            falso.ordenes["ext-ajena"] = "o-ajena" // la cortesía se re-resuelve contra la MISMA cuenta ajena
+            f.seed(id = "p1", order = "o-ajena",
+                request = """{"externalId":"ext-ajena","items":[{"productId":"p","quantity":1,"isCortesia":true}]}""")
+            val servicio = PaymentSyncService(f.dao, f.storage, f.client, f.network, f.drawer, f.outbox,
+                mockk(relaxed = true), cuentasAbiertasAqui = marcas)
+            servicio.usarContextoDeSincronizacion(Dispatchers.Unconfined)
+            try {
+                servicio.start()
+                servicio.esperarSincronizacionActualQ16()
+            } finally {
+                servicio.stop()
+            }
+            coVerify(exactly = 0) { marcas.marcar(any(), any()) }
+        }
+    }
 }

@@ -1,6 +1,5 @@
 package com.avoqado.pos.payment
 
-import com.avoqado.pos.core.data.lan.LanHubService
 import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
@@ -109,7 +108,6 @@ class CobroNoEfectivoDeEstaCajaTest {
             cuentasAbiertasAqui = mockk<CuentasAbiertasAqui> { coEvery { laAbrioAqui(any(), any()) } returns true },
             cashPaymentRepository = mockk<CashPaymentRepository> { coEvery { huboEfectivoSubido(any()) } returns false },
             planManager = mockk<PlanManager> { every { tieneAcreditada(any()) } returns false },
-            lanHub = mockk<LanHubService>(relaxed = true) { every { enabled } returns MutableStateFlow(false) },
             payLaterQueue = mockk<PayLaterQueue> { every { filas } returns MutableStateFlow(emptyList<PayLaterRow>()) },
             terminalPaymentService = servicio,
         )
@@ -132,7 +130,7 @@ class CobroNoEfectivoDeEstaCajaTest {
     /** El caso de Codex r2: «Revisar» de un cobro anterior confirma que sí pasó → «Entendido» → se cae la red. */
     @Test fun `Revisar confirma el cobro anterior y Entendido no la deja cobrable en efectivo`() = runBlocking {
         guardadaEnLaCopia("A")
-        assertEquals("montaje: sin tarjeta, la cuenta se ofrece", Cobrar(10000, false), decision("A"))
+        assertEquals("montaje: sin tarjeta, la cuenta se ofrece", Cobrar(10000), decision("A"))
         storage.persistPendingCardCharge("req-1", "A", contexto("req-1", "A"))
         assertEquals("en duda", Gris(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR), decision("A"))
 
@@ -179,7 +177,7 @@ class CobroNoEfectivoDeEstaCajaTest {
         guardadaEnLaCopia("E")
         storage.persistPendingCardCharge("req-5", "E", contexto("req-5", "E"))
         servicio.soltarLlaveSiEs("req-5")
-        assertEquals(Cobrar(10000, false), decision("E"))
+        assertEquals(Cobrar(10000), decision("E"))
         assertEquals(emptyList<Any>(), CuentasCobradasAqui.leer(storage.cuentasCobradasAquiJson))
     }
 

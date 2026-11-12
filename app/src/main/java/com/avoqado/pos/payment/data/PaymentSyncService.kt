@@ -1290,8 +1290,9 @@ class PaymentSyncService @Inject constructor(
                             return false
                         }
                         resolvedOrderId = result.orderId.also(alResolverOrden)
-                        // D12: la abrió esta caja; si el /pay no la salda (o no llega), queda marcada.
-                        cuentasAbiertasAqui?.marcar(venueId, result.orderId)
+                        // D12: la abrió esta caja; si el /pay no la salda (o no llega), queda marcada. Opción D (un solo dueño): sólo si la
+                        // cola la CREÓ; una cuenta que ya existía (la cortesía que se re-resuelve) nunca se marca aquí.
+                        if (payment.orderId == null) cuentasAbiertasAqui?.marcar(venueId, result.orderId)
                     }
                     is OrderResolution.AuthExpired -> {
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)

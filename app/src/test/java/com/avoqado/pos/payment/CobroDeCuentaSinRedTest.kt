@@ -1,8 +1,11 @@
 package com.avoqado.pos.payment
 
-import com.avoqado.pos.core.data.lan.LanHubService
-import com.avoqado.pos.core.data.lan.LeaseOutcome
-import com.avoqado.pos.core.data.lan.TableLease
+import com.avoqado.pos.core.data.lan.CuentaEnElRegistro
+import com.avoqado.pos.core.data.lan.CuentasEntreCajas
+import com.avoqado.pos.core.data.lan.DuenoDeCuentas
+import com.avoqado.pos.core.data.lan.EstadoDeCuenta
+import com.avoqado.pos.core.data.lan.Instante
+import com.avoqado.pos.core.data.lan.Respuesta
 import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
@@ -24,6 +27,7 @@ import com.avoqado.pos.payment.data.PayLaterQueue
 import com.avoqado.pos.payment.data.PayLaterRow
 import com.avoqado.pos.payment.domain.DecisionSinRed.Cobrar
 import com.avoqado.pos.payment.domain.DecisionSinRed.Gris
+import com.avoqado.pos.payment.domain.DecisionSinRed.NoConfirmo
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel
 import com.avoqado.pos.payment.presentation.LoQueSePinta
@@ -58,7 +62,7 @@ import java.net.UnknownHostException
 
 /**
  * D12 (Tarea 12): «Cobrar $X en efectivo» sin red desde la copia de «Pedidos». La caja que abrió la cuenta cobra en todos los
- * planes; otra caja sólo en PREMIUM, con el candado coordinado del hub LAN. Todo lo demás, gris con su razón.
+ * planes; otra caja sólo en PREMIUM, con permiso de la caja que la abrió (Opción D). Todo lo demás, gris con su razón.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CobroDeCuentaSinRedTest {
@@ -84,11 +88,21 @@ class CobroDeCuentaSinRedTest {
     private val efectivo = mockk<CashPaymentRepository> { coEvery { huboEfectivoSubido(any()) } returns false }
     private var premium = false
     private val plan = mockk<PlanManager> { every { tieneAcreditada("OFFLINE_LAN_HUB") } answers { premium } }
-    private val hubEncendido = MutableStateFlow(false)
     private var otraCaja = false
-    private val hub = mockk<LanHubService>(relaxed = true) {
-        every { enabled } returns hubEncendido
-        every { hayOtraCajaDelNegocio() } answers { otraCaja }
+    private val concedido = CuentasEntreCajas.DelDueno(Respuesta.Concedida, "caja-1", "Caja 1", 0L)
+    private var respuestaDelDueno: suspend () -> CuentasEntreCajas.DelDueno = { concedido }
+    private val entre = mockk<CuentasEntreCajas>(relaxed = true) {
+        every { hayOtraCajaConD() } answers { otraCaja }
+        coEvery { cajaQueLaAbrio(any(), any()) } returns null
+        coEvery { apartar(any(), any(), any(), any(), any()) } coAnswers { respuestaDelDueno() }
+    }
+    private var registro: CuentaEnElRegistro? = null
+    private var puedeDeclarar = false
+    private val dueno = mockk<DuenoDeCuentas>(relaxed = true) {
+        coEvery { estadoDe(any(), any()) } answers { registro }
+        every { puedeDeclararNoSeCobro(any()) } answers { puedeDeclarar }
+        every { deviceId } returns "caja-yo"
+        coEvery { noSeCobro(any(), any(), any()) } answers { registro = null; puedeDeclarar = false; true }
     }
     private val filasDePagarDespues = MutableStateFlow<List<PayLaterRow>>(emptyList())
     private val pagarDespues = mockk<PayLaterQueue> { every { filas } returns filasDePagarDespues }
@@ -98,7 +112,7 @@ class CobroDeCuentaSinRedTest {
     private fun vm(efectivoReal: CashPaymentRepository = efectivo) = CobroDeCuentaViewModel(
         repo, storage, mockk<ConnectivityMonitor>(), roles, mockk(relaxed = true), locales,
         copiaDeCuentas = copia, cuentasAbiertasAqui = marcas, cashPaymentRepository = efectivoReal,
-        planManager = plan, lanHub = hub, payLaterQueue = pagarDespues,
+        planManager = plan, cuentasEntreCajas = entre, duenoDeCuentas = dueno, payLaterQueue = pagarDespues,
     )
 
     private fun cuenta(id: String = "o1", saldo: Int? = 6000, pagos: Int = 0, pago: String = "PENDING") = OrderSummary(
@@ -108,14 +122,11 @@ class CobroDeCuentaSinRedTest {
 
     private suspend fun enLaCopia(vararg c: OrderSummary, en: String = "v1") = copia.alLeer(en, c.toList(), Lectura.SUELTA)
 
-    private val concedido = LeaseOutcome.Granted(TableLease("cuenta:o1", "d1", "s1", "Yo", 1L, 99L))
-
-    /** Otra caja de la sucursal, PREMIUM acreditado, con el hub encendido. */
+    /** Otra caja de la sucursal, PREMIUM acreditado, con otra caja que anuncia `d=1`. */
     private fun otraCajaPremium() {
         laAbrioAqui = false
         premium = true
         otraCaja = true
-        hubEncendido.value = true
     }
 
     // MARK: - La cadena real: JSON de la lista → disco → reinicio sin red → detalle de la copia → decisión
@@ -149,7 +160,7 @@ class CobroDeCuentaSinRedTest {
     @Test fun `recorrido real 100 40 60 queda en gris por el abono`() = runTest {
         assertEquals(Gris(TextosDeCuentaSinRed.CON_ABONO), recorridoReal("PARTIAL", 1))
         disco.clear()
-        assertEquals(Cobrar(6000, false), recorridoReal("PENDING", 0))
+        assertEquals(Cobrar(6000), recorridoReal("PENDING", 0))
     }
 
     /** Codex r2 #2: `huboEfectivoSubido` del repositorio REAL, estricto. */
@@ -166,54 +177,76 @@ class CobroDeCuentaSinRedTest {
         assertEquals(Gris(TextosDeCuentaSinRed.YA_SUBIO_UN_COBRO), m.sinRed.value)
     }
 
-    @Test fun `la abrio aqui sin hub se ofrece cobrar sin pedir candado`() = runTest {
+    @Test fun `la abrio aqui se ofrece cobrar y al tocar la aparta en su propio registro`() = runTest {
         enLaCopia(cuenta())
         val m = vm()
         m.consultarSinRed("o1")
-        assertEquals(Cobrar(6000, false), m.sinRed.value)
-        assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
-        coVerify(exactly = 0) { hub.acquire(any(), any(), any()) }
-        coVerify(exactly = 0) { hub.acquireCoordinado(any(), any(), any()) }
+        assertEquals(Cobrar(6000), m.sinRed.value)
+        coVerify(exactly = 0) { entre.apartar(any(), any(), any(), any(), any()) }
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        coVerify(exactly = 1) { entre.apartar("v1", "o1", any(), any(), enLinea = false) }
+        assertNull("sin «Avisándole…»: la pregunta es a sí misma", m.avisandoA.value)
     }
 
-    @Test fun `otra caja PREMIUM pide candado coordinado al tocar y lo suelta al salir`() = runTest {
+    @Test fun `otra caja PREMIUM le pide permiso a la que la abrió al tocar y lo suelta al salir`() = runTest {
         enLaCopia(cuenta())
         otraCajaPremium()
-        coEvery { hub.acquireCoordinado("cuenta:o1", any(), any()) } returns concedido
         val m = vm()
         m.consultarSinRed("o1")
-        assertEquals("antes del toque no pide nada", Cobrar(6000, true), m.sinRed.value)
-        coVerify(exactly = 0) { hub.acquireCoordinado(any(), any(), any()) }
-        assertEquals(Cobrar(6000, true), m.pedirCobroSinRed("o1"))
+        assertEquals("antes del toque no pregunta nada", Cobrar(6000), m.sinRed.value)
+        coVerify(exactly = 0) { entre.apartar(any(), any(), any(), any(), any()) }
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
         m.soltarCobroSinRed()
-        coVerify { hub.release("cuenta:o1") }
+        io.mockk.verify(exactly = 1) { entre.soltarApartado("o1") }
     }
 
-    @Test fun `otra caja PREMIUM con candado ajeno queda en gris con el nombre`() = runTest {
+    @Test fun `otra caja PREMIUM - si otra la está cobrando, gris con quién y dónde, y no hay nada que soltar`() = runTest {
         enLaCopia(cuenta())
         otraCajaPremium()
-        coEvery { hub.acquireCoordinado("cuenta:o1", any(), any()) } returns LeaseOutcome.Taken("Ana")
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Ocupada("Ana", "Caja 2"), "caja-1", "Caja 1", 0L) }
         val m = vm()
-        assertEquals(Gris("La está cobrando Ana"), m.pedirCobroSinRed("o1"))
-        assertEquals(Gris("La está cobrando Ana"), m.sinRed.value)
+        assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.pedirCobroSinRed("o1"))
+        assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.sinRed.value)
         m.soltarCobroSinRed()
-        coVerify(exactly = 0) { hub.release(any()) }
+        io.mockk.verify(exactly = 0) { entre.soltarApartado(any()) }
+    }
+
+    @Test fun `otra caja PREMIUM - la que la abrió no contesta, gris con su nombre`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(null, "caja-1", "Caja 1", 0L) }
+        assertEquals(Gris(TextosDeCuentaSinRed.noLaEncuentro("Caja 1")), vm().pedirCobroSinRed("o1"))
+    }
+
+    @Test fun `mientras pregunta dice Avisándole a la caja que la abrió`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Caja 1"
+        val respuesta = CompletableDeferred<CuentasEntreCajas.DelDueno>()
+        respuestaDelDueno = { respuesta.await() }
+        val m = vm()
+        val toque = async { m.pedirCobroSinRed("o1") }
+        runCurrent()
+        assertEquals("Caja 1", m.avisandoA.value)
+        respuesta.complete(concedido)
+        assertEquals(Cobrar(6000), toque.await())
+        assertNull(m.avisandoA.value)
     }
 
     /** Review Focus 4. */
-    @Test fun `doble toque pide un solo candado`() = runTest {
+    @Test fun `doble toque pregunta una sola vez`() = runTest {
         enLaCopia(cuenta())
         otraCajaPremium()
-        val respuesta = CompletableDeferred<LeaseOutcome>()
-        coEvery { hub.acquireCoordinado(any(), any(), any()) } coAnswers { respuesta.await() }
+        val respuesta = CompletableDeferred<CuentasEntreCajas.DelDueno>()
+        respuestaDelDueno = { respuesta.await() }
         val m = vm()
         val primero = async { m.pedirCobroSinRed("o1") }
         val segundo = async { m.pedirCobroSinRed("o1") }
         runCurrent()
         respuesta.complete(concedido)
-        assertEquals(Cobrar(6000, true), primero.await())
-        assertEquals(Cobrar(6000, true), segundo.await())
-        coVerify(exactly = 1) { hub.acquireCoordinado(any(), any(), any()) }
+        assertEquals(Cobrar(6000), primero.await())
+        assertEquals(Cobrar(6000), segundo.await())
+        coVerify(exactly = 1) { entre.apartar(any(), any(), any(), any(), any()) }
     }
 
     @Test fun `si leer lo local falla queda en gris`() = runTest {
@@ -242,7 +275,7 @@ class CobroDeCuentaSinRedTest {
 
         filasDePagarDespues.value = filasDePagarDespues.value.map { it.copy(venueId = "v2") }
         m.consultarSinRed("o1")
-        assertEquals("la de otra sucursal no cuenta", Cobrar(6000, false), m.sinRed.value)
+        assertEquals("la de otra sucursal no cuenta", Cobrar(6000), m.sinRed.value)
     }
 
     /** Codex r2 / Review Focus 2. */
@@ -254,8 +287,7 @@ class CobroDeCuentaSinRedTest {
         m.consultarSinRed("A")
         assertEquals(Gris(TextosDeTarjetas.COBRAR_CUENTA_SIN_RED), m.sinRed.value)
         assertEquals(Gris(TextosDeTarjetas.COBRAR_CUENTA_SIN_RED), m.pedirCobroSinRed("A"))
-        coVerify(exactly = 0) { hub.acquireCoordinado(any(), any(), any()) }
-        coVerify(exactly = 0) { hub.acquire(any(), any(), any()) }
+        coVerify(exactly = 0) { entre.apartar(any(), any(), any(), any(), any()) }
     }
 
     /**
@@ -265,7 +297,7 @@ class CobroDeCuentaSinRedTest {
     @Test fun `al volver de un cobro encolado con la copia la cuenta queda sin sincronizar`() = runTest {
         enLaCopia(cuenta())
         val m = vm()
-        assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
         assertNull(m.revalidarCobroSinRed("o1", 6000))
         coEvery { locales.hayPendiente("v1", "o1") } returns true // el efectivo quedó en la cola
         assertEquals("se vuelve a decidir y se recarga", true, m.alVolverDelCobroSinRed("o1"))
@@ -290,58 +322,56 @@ class CobroDeCuentaSinRedTest {
     }
 
     /** Codex r3 H3. */
-    @Test fun `caja ajena perder el candado antes de recibir el efectivo la deja en gris sin cobrar`() = runTest {
+    /** Opción D: la puerta del cobro (en `PaymentFlowViewModel`) dice que no justo antes del cajón: la cuenta enseña ese gris. */
+    @Test fun `la puerta que dice no justo antes del cajón deja la cuenta en gris`() = runTest {
         enLaCopia(cuenta())
         otraCajaPremium()
-        coEvery { hub.acquireCoordinado("cuenta:o1", any(), any()) } returns concedido
-        coEvery { hub.candadoVigente("cuenta:o1") } returns false
         val m = vm()
-        assertEquals(Cobrar(6000, true), m.pedirCobroSinRed("o1"))
-        assertEquals(TextosDeCuentaSinRed.CANDADO_PERDIDO, m.revalidarCobroSinRed("o1", 6000))
-        assertEquals(Gris(TextosDeCuentaSinRed.CANDADO_PERDIDO), m.sinRed.value)
-        coVerify { hub.release("cuenta:o1") }
-
-        coEvery { hub.candadoVigente("cuenta:o1") } returns true
-        val otra = vm()
-        assertEquals(Cobrar(6000, true), otra.pedirCobroSinRed("o1"))
-        assertNull(otra.revalidarCobroSinRed("o1", 6000))
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        assertNull("la revalidación de la copia ya no pregunta por la red", m.revalidarCobroSinRed("o1", 6000))
+        m.alNoPasarLaPuerta(TextosDeCuentaSinRed.sePerdioElContacto("Caja 1"))
+        assertEquals(Gris(TextosDeCuentaSinRed.sePerdioElContacto("Caja 1")), m.sinRed.value)
     }
 
     /** Ruling 5: tras el rechazo de la revalidación, volver a la cuenta deja su gris (no se vuelve a ofrecer en el acto). */
+    /** Ruling 5: tras un «no» de la puerta, volver a la cuenta deja su gris (no se vuelve a ofrecer en el acto). */
     @Test fun `tras el rechazo antes del efectivo la cuenta se queda en gris al volver`() = runTest {
         enLaCopia(cuenta())
         otraCajaPremium()
-        coEvery { hub.acquireCoordinado("cuenta:o1", any(), any()) } returns concedido
-        coEvery { hub.candadoVigente("cuenta:o1") } returns false
         val m = vm()
         m.pedirCobroSinRed("o1")
-        m.revalidarCobroSinRed("o1", 6000)
+        m.alNoPasarLaPuerta(TextosDeCuentaSinRed.sePerdioElContacto("Caja 1"))
         assertEquals("no se refresca la cuenta", false, m.alVolverDelCobroSinRed("o1"))
-        assertEquals(Gris(TextosDeCuentaSinRed.CANDADO_PERDIDO), m.sinRed.value)
+        assertEquals(Gris(TextosDeCuentaSinRed.sePerdioElContacto("Caja 1")), m.sinRed.value)
 
         // Un cobro que sí siguió: se vuelve a decidir y se refresca.
-        coEvery { hub.candadoVigente("cuenta:o1") } returns true
         m.pedirCobroSinRed("o1")
         assertNull(m.revalidarCobroSinRed("o1", 6000))
         assertEquals(true, m.alVolverDelCobroSinRed("o1"))
-        assertEquals(Cobrar(6000, true), m.sinRed.value)
+        assertEquals(Cobrar(6000), m.sinRed.value)
     }
 
-    @Test fun `la caja que abrio la cuenta no depende del candado para cobrar`() = runTest {
+    @Test fun `en la caja que la abrió, su registro manda - otra la tiene, ya se cobró o no confirmó`() = runTest {
         enLaCopia(cuenta())
-        hubEncendido.value = true
-        coEvery { hub.acquire("cuenta:o1", any(), any()) } returns concedido
-        coEvery { hub.candadoVigente(any()) } throws IllegalStateException("no se pregunta")
         val m = vm()
-        assertEquals(Cobrar(6000, true), m.pedirCobroSinRed("o1"))
-        assertNull(m.revalidarCobroSinRed("o1", 6000))
-        coVerify(exactly = 0) { hub.candadoVigente(any()) }
+        registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0))
+        m.consultarSinRed("o1")
+        assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.sinRed.value)
+        puedeDeclarar = true
+        m.consultarSinRed("o1")
+        assertEquals(NoConfirmo("Ana empezó a cobrarla en Caja 2 y no confirmó. Pregúntale antes de cobrar.", 6000), m.sinRed.value)
+        // «No se cobró: cobrar aquí»: lo declara una persona y la cuenta se aparta aquí.
+        assertEquals(Cobrar(6000), m.noSeCobroYCobrarAqui("o1"))
+        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", any()) }
+        registro = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0), faltaSubirla = true)
+        m.consultarSinRed("o1")
+        assertEquals(Gris("Cobrada en Caja 2 · falta subirla"), m.sinRed.value)
     }
 
     @Test fun `si la copia vence entre preparar y recibir el efectivo no se cobra`() = runTest {
         enLaCopia(cuenta())
         val m = vm()
-        assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
         reloj += 24 * 60 * 60 * 1000L + 1
         assertEquals(TextosDeTarjetas.COBRAR_CUENTA_SIN_RED, m.revalidarCobroSinRed("o1", 6000))
     }
@@ -360,11 +390,11 @@ class CobroDeCuentaSinRedTest {
 
         val m = vm()
         m.consultarSinRed("A")
-        assertEquals("la caja que la abrió", Cobrar(6000, false), m.sinRed.value)
+        assertEquals("la caja que la abrió", Cobrar(6000), m.sinRed.value)
 
         otraCajaPremium()
         m.consultarSinRed("A")
-        assertEquals("otra caja PREMIUM con otra caja de la sucursal", Cobrar(6000, true), m.sinRed.value)
+        assertEquals("otra caja PREMIUM con otra caja de la sucursal", Cobrar(6000), m.sinRed.value)
 
         premium = false
         m.consultarSinRed("A")
@@ -374,20 +404,21 @@ class CobroDeCuentaSinRedTest {
     // MARK: - Ronda 1 de la revisión
 
     /** I2: la cajera sale durante «Revisando…» (o vuelve la red y el botón sale de pantalla): el candado concedido tarde se suelta. */
-    @Test fun `salir durante Revisando suelta el candado concedido y no lo guarda`() = runTest {
+    /** I2: la cajera sale durante «Avisándole…» (o vuelve la red y el botón sale de pantalla): el apartado concedido tarde se suelta. */
+    @Test fun `salir durante Revisando suelta el apartado concedido y no lo guarda`() = runTest {
         enLaCopia(cuenta())
         otraCajaPremium()
-        val respuesta = CompletableDeferred<LeaseOutcome>()
-        coEvery { hub.acquireCoordinado("cuenta:o1", any(), any()) } coAnswers { respuesta.await() }
+        val respuesta = CompletableDeferred<CuentasEntreCajas.DelDueno>()
+        respuestaDelDueno = { respuesta.await() }
         val m = vm()
         val toque = launch { m.pedirCobroSinRed("o1") }
         runCurrent()
         toque.cancel()
         respuesta.complete(concedido)
         toque.join()
-        coVerify(exactly = 1) { hub.release("cuenta:o1") }
-        m.soltarCobroSinRed() // no quedó guardada: no hay nada más que soltar
-        coVerify(exactly = 1) { hub.release("cuenta:o1") }
+        io.mockk.verify(exactly = 1) { entre.soltarApartado("o1") }
+        m.soltarCobroSinRed() // no quedó guardado: no hay nada más que soltar
+        io.mockk.verify(exactly = 1) { entre.soltarApartado("o1") }
     }
 
     /** I1: una recarga PAGADA o CANCELADA a medio cobro no desmonta el cobro abierto (la cajera ve su resultado y su cambio). */
@@ -413,14 +444,14 @@ class CobroDeCuentaSinRedTest {
     @Test fun `si la copia ya dice otro saldo que el del carrito no se cobra`() = runTest {
         enLaCopia(cuenta(saldo = 6000))
         val m = vm()
-        assertEquals(Cobrar(6000, false), m.pedirCobroSinRed("o1"))
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
         assertNull("mismo saldo: sigue", m.revalidarCobroSinRed("o1", 6000))
         enLaCopia(cuenta(saldo = 8000))
         assertEquals(TextosDeCuentaSinRed.saldoCambio(8000), m.revalidarCobroSinRed("o1", 6000))
         assertEquals(Gris(TextosDeCuentaSinRed.saldoCambio(8000)), m.sinRed.value)
         assertEquals("al volver se queda el gris", false, m.alVolverDelCobroSinRed("o1"))
         m.consultarSinRed("o1") // vuelve a abrir la cuenta: el botón trae el monto nuevo
-        assertEquals(Cobrar(8000, false), m.sinRed.value)
+        assertEquals(Cobrar(8000), m.sinRed.value)
     }
 
     /**

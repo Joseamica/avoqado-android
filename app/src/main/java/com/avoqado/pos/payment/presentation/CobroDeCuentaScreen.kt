@@ -25,13 +25,11 @@ import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.comoEvidencia
 import com.avoqado.pos.tables.data.restanteCents
-import com.avoqado.pos.core.data.lan.LeaseOutcome
 import com.avoqado.pos.orders.data.CuentaGuardada
 import com.avoqado.pos.payment.domain.DatosDelCobroSinRed
 import com.avoqado.pos.payment.domain.DecisionSinRed
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import com.avoqado.pos.payment.domain.decidirCobroSinRed
-import com.avoqado.pos.payment.domain.llaveDeCuenta
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -62,7 +60,10 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
     private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
     private val planManager: com.avoqado.pos.core.domain.PlanManager? = null,
-    private val lanHub: com.avoqado.pos.core.data.lan.LanHubService? = null,
+    /** D12 · Opción D: pedirle permiso a la caja que abrió la cuenta (o apartarla en local si es ésta). */
+    private val cuentasEntreCajas: com.avoqado.pos.core.data.lan.CuentasEntreCajas? = null,
+    /** D12 · Opción D: el registro de esta caja como dueña de las cuentas que abrió. */
+    private val duenoDeCuentas: com.avoqado.pos.core.data.lan.DuenoDeCuentas? = null,
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** D12 (final fix ronda 2, R2-1): la lista durable de cobros con tarjeta de esta caja (una tarjeta en duda o cobrada da gris). */
     private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
@@ -137,14 +138,15 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val decisionSinRed = MutableStateFlow<DecisionSinRed?>(null)
     /** Lo que la cuenta ofrece sin red (null = aún no se decide). Lo publican las cuatro funciones de abajo. */
     val sinRed: StateFlow<DecisionSinRed?> = decisionSinRed.asStateFlow()
-    /** La llave del candado que sostiene esta pantalla, y si salió de `acquireCoordinado` (caja ajena). */
-    private var llave: Pair<String, Boolean>? = null
+    /** La cuenta cuyo apartado sostiene esta pantalla (Opción D), o null. */
+    private var apartadoDe: String? = null
+    private val avisando = MutableStateFlow<String?>(null)
+    /** Mientras se le pregunta a la caja que la abrió: su nombre («Avisándole a <caja>…»). null = no se está preguntando a otra caja. */
+    val avisandoA: StateFlow<String?> = avisando.asStateFlow()
     /** P11: el toque en curso; un segundo toque espera ESTE resultado en vez de pedir otro candado. */
     private var pedidoEnVuelo: Pair<String, Deferred<DecisionSinRed>>? = null
     /** La revalidación previa al efectivo dijo que no: al volver, la cuenta se queda con ese gris (no se vuelve a ofrecer en el acto). */
     private var rechazadoAntesDelEfectivo = false
-    // ponytail: un alcance suelto por pantalla, sólo para soltar el candado también en `onCleared` (cuando `viewModelScope` ya murió).
-    private val alcanceDeSoltar = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     /** Lo que decide: la copia VIGENTE de la sucursal ACTUAL (vencida u otra sucursal = sin cuenta) y lo local; leer mal = gris. */
     private suspend fun datosSinRed(orderId: String): DatosDelCobroSinRed {
@@ -157,27 +159,34 @@ class CobroDeCuentaViewModel @Inject constructor(
         val tarjetaDeEstaCaja = venue != null && leer(true) {
             terminalPaymentService?.let { s -> s.cobrosConTarjetaDelNegocio(venue).any { it.orderId == orderId } } ?: false
         }
+        val abiertaAqui = venue != null && leer(false) { cuentasAbiertasAqui?.laAbrioAqui(venue, orderId) }
+        val registro = if (abiertaAqui && venue != null) duenoDeCuentas?.estadoDe(venue, orderId) else null
         return DatosDelCobroSinRed(
             cuenta = venue?.let { copiaDeCuentas?.cuenta(it, orderId) },
             puedeCobrar = puedeCobrar,
-            abiertaAqui = venue != null && leer(false) { cuentasAbiertasAqui?.laAbrioAqui(venue, orderId) },
+            abiertaAqui = abiertaAqui,
             // Un cobro local pendiente (también una tarjeta de esta caja), O una cortesía sin confirmar de «Pagar después» (fila REVISAR).
             cobroLocalPendiente = venue == null || tarjetaDeEstaCaja || leer(true) { cobrosLocales?.hayPendiente(venue, orderId) } || leer(true) {
                 payLaterQueue?.filas?.value?.any { it.venueId == venue && it.orderId == orderId && it.estado == com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR }
             },
             huboEfectivoSubido = leer(true) { cashPaymentRepository?.huboEfectivoSubido(orderId) },
             premiumAcreditado = leer(false) { planManager?.tieneAcreditada("OFFLINE_LAN_HUB") },
-            hayOtraCajaDelNegocio = leer(false) { lanHub?.hayOtraCajaDelNegocio() },
-            hubEncendido = lanHub?.enabled?.value == true,
+            hayOtraCajaDelNegocio = leer(false) { cuentasEntreCajas?.hayOtraCajaConD() },
+            registro = registro,
+            puedeDeclararNoSeCobro = duenoDeCuentas?.puedeDeclararNoSeCobro(registro) == true,
+            miDeviceId = duenoDeCuentas?.deviceId.orEmpty(),
+            cajaQueLaAbrio = if (!abiertaAqui && venue != null) runCatching { cuentasEntreCajas?.cajaQueLaAbrio(venue, orderId) }.getOrNull() else null,
         )
     }
 
-    /** Sin candado: lo que la cuenta ofrece antes del toque. */
+    /** Sin permiso todavía: lo que la cuenta ofrece antes del toque. Con un toque en curso no se pinta encima (lo publica él). */
     suspend fun consultarSinRed(orderId: String) {
-        decisionSinRed.value = decidirCobroSinRed(datosSinRed(orderId), candado = null)
+        if (pedidoEnVuelo?.second?.isActive == true) return
+        val d = decidirCobroSinRed(datosSinRed(orderId), permiso = null)
+        if (pedidoEnVuelo?.second?.isActive != true) decisionSinRed.value = d
     }
 
-    /** El toque en «Cobrar $X en efectivo»: pide el candado si toca (la caja que la abrió con `acquire`, otra con `acquireCoordinado`). */
+    /** El toque en «Cobrar $X en efectivo»: aparta con la caja que la abrió (en local si es ésta), en 5 s o menos. */
     suspend fun pedirCobroSinRed(orderId: String): DecisionSinRed {
         pedidoEnVuelo?.let { (id, enCurso) -> if (id == orderId && enCurso.isActive) return enCurso.await() }
         val propio = CompletableDeferred<DecisionSinRed>()
@@ -194,63 +203,81 @@ class CobroDeCuentaViewModel @Inject constructor(
 
     private suspend fun pedirUnaVez(orderId: String): DecisionSinRed {
         val datos = datosSinRed(orderId)
-        val antes = decidirCobroSinRed(datos, candado = null)
-        val hub = lanHub
-        // Sin hub no hay candado que pedir (y `datosSinRed` ya dio hub apagado y ninguna otra caja).
-        if (antes !is DecisionSinRed.Cobrar || !antes.pedirCandado || hub == null) return antes.also { decisionSinRed.value = it }
-        val k = llaveDeCuenta(orderId)
-        val staffId = storage.selectedStaffIdForCurrentVenue.orEmpty()
-        val staffName = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
-        // El candado concedido se guarda aunque cancelen el toque: si no, el hub lo renovaría para siempre a nombre de esta caja.
-        val candado = try {
+        val antes = decidirCobroSinRed(datos, permiso = null)
+        val cuentas = cuentasEntreCajas
+        val venue = storage.venueId
+        if (antes !is DecisionSinRed.Cobrar || cuentas == null || venue == null) return antes.also { decisionSinRed.value = it }
+        val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
+        val intento = java.util.UUID.randomUUID().toString()
+        if (!datos.abiertaAqui) avisando.value = datos.cajaQueLaAbrio ?: TextosDeCuentaSinRed.LAS_OTRAS_CAJAS
+        // Lo concedido se guarda aunque cancelen el toque: si no, se renovaría para siempre a nombre de esta caja.
+        val permiso = try {
             withContext(NonCancellable) {
-                val r = try {
-                    if (datos.abiertaAqui) hub.acquire(k, staffId, staffName) else hub.acquireCoordinado(k, staffId, staffName)
-                } catch (_: Exception) { LeaseOutcome.NoHub }
-                if (r is LeaseOutcome.Granted) llave = k to !datos.abiertaAqui
+                val r = try { cuentas.apartar(venue, orderId, intento, quien, enLinea = false) }
+                    catch (_: Exception) { com.avoqado.pos.core.data.lan.CuentasEntreCajas.DelDueno(null, null, datos.cajaQueLaAbrio, 0) }
+                if (r.respuesta == com.avoqado.pos.core.data.lan.Respuesta.Concedida) apartadoDe = orderId
                 r
             }.also { currentCoroutineContext().ensureActive() } // `withContext(NonCancellable)` no lanza al salir: aquí se ve la cancelación
         } catch (e: CancellationException) {
             soltarCobroSinRed()
             throw e
+        } finally {
+            avisando.value = null
         }
-        return decidirCobroSinRed(datos, candado).also { decisionSinRed.value = it }
-    }
-
-    /** Suelta el candado que sostiene esta pantalla (si sostiene uno). */
-    fun soltarCobroSinRed() {
-        val (k, _) = llave ?: return
-        llave = null
-        val hub = lanHub ?: return
-        alcanceDeSoltar.launch { runCatching { hub.release(k) } } // soltar nunca tumba la app; si falla, el candado vence a los 30 s
+        return decidirCobroSinRed(datos, permiso).also { decisionSinRed.value = it }
     }
 
     /**
-     * Codex r3 H3: JUSTO antes de recibir el efectivo. null = sigue; un texto = no se cobra (y la cuenta lo enseña). La caja ajena
-     * necesita su candado de `acquireCoordinado` vigente en vivo; la que abrió la cuenta no pasa por el hub.
-     * T12b (O3): [saldoCents] es lo que cobra el carrito; si la copia ya dice otro saldo (volvió la red y la recarga lo cambió), no
-     * se cobra: «Cobrar $X» ya no sería todo lo que se debe.
+     * «No se cobró: cobrar aquí» en la caja que la abrió (2 min después de que otra la comprometió sin confirmar). Lo declara una persona:
+     * el intento de la otra caja queda cancelado y la cuenta se aparta aquí. false = todavía no se puede o el disco falló.
+     */
+    suspend fun noSeCobroYCobrarAqui(orderId: String): DecisionSinRed {
+        val venue = storage.venueId
+        val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
+        if (venue != null) duenoDeCuentas?.noSeCobro(venue, orderId, quien)
+        return pedirCobroSinRed(orderId)
+    }
+
+    /** Suelta el apartado que sostiene esta pantalla (si sostiene uno). Nunca espera a la red. */
+    fun soltarCobroSinRed() {
+        val orden = apartadoDe ?: return
+        apartadoDe = null
+        cuentasEntreCajas?.soltarApartado(orden)
+    }
+
+    /**
+     * Justo antes de recibir el efectivo, lo que sólo sabe la copia: su gris y si su saldo cambió (T12b, O3). null = sigue; un texto = no se
+     * cobra (y la cuenta lo enseña). El permiso de la caja que la abrió lo pide la puerta del cobro (`PaymentFlowViewModel`, Opción D).
      */
     suspend fun revalidarCobroSinRed(orderId: String, saldoCents: Int): String? {
-        val datos = datosSinRed(orderId)
-        val decision = decidirCobroSinRed(datos, candado = null)
+        val decision = decidirCobroSinRed(datosSinRed(orderId), permiso = null)
         val texto = when {
             decision is DecisionSinRed.Gris -> decision.texto
+            decision is DecisionSinRed.NoConfirmo -> decision.texto
             decision is DecisionSinRed.Cobrar && decision.saldoCents != saldoCents -> TextosDeCuentaSinRed.saldoCambio(decision.saldoCents)
-            datos.abiertaAqui -> null
-            else -> {
-                val k = llaveDeCuenta(orderId)
-                val vigente = llave == (k to true) && try { lanHub?.candadoVigente(k) == true }
-                    catch (e: CancellationException) { throw e } catch (_: Exception) { false }
-                if (vigente) null else TextosDeCuentaSinRed.CANDADO_PERDIDO.also { soltarCobroSinRed() }
-            }
+            else -> null
         } ?: return null
-        rechazadoAntesDelEfectivo = true
-        decisionSinRed.value = DecisionSinRed.Gris(texto)
+        alNoPasarLaPuerta(texto)
         return texto
     }
 
-    /** Al volver del cobro con la copia. false = la revalidación dijo que no: su gris se queda y la cuenta no se refresca. */
+    /**
+     * Opción D, en la lista de Pedidos: «Cobrada en <caja>» (y «· falta subirla») si ESTA caja la abrió y su registro la da cobrada en una
+     * caja con nombre. null = nada que decir (o no la abrió aquí, o no se pudo leer).
+     */
+    suspend fun textoDeLaLista(orderId: String): String? {
+        val venue = storage.venueId ?: return null
+        val r = duenoDeCuentas?.estadoDe(venue, orderId) ?: return null
+        return if (r.estado == com.avoqado.pos.core.data.lan.EstadoDeCuenta.CERRADA && r.caja.isNotBlank()) TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla) else null
+    }
+
+    /** La puerta del cobro dijo que no (Opción D): la cuenta se queda con ese gris al volver. */
+    fun alNoPasarLaPuerta(texto: String) {
+        rechazadoAntesDelEfectivo = true
+        decisionSinRed.value = DecisionSinRed.Gris(texto)
+    }
+
+    /** Al volver del cobro con la copia. false = la revalidación o la puerta dijeron que no: su gris se queda y la cuenta no se refresca. */
     suspend fun alVolverDelCobroSinRed(orderId: String): Boolean {
         soltarCobroSinRed()
         if (rechazadoAntesDelEfectivo) {
@@ -410,6 +437,7 @@ private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCue
         } ?: PaymentFlowScreen(cartState = cart, resumeOrderId = orderId, desdeCuentasAbiertas = true,
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA,
             antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId, cents) },
+            alNoPasarLaPuerta = viewModel::alNoPasarLaPuerta,
             onPaymentCommitted = {},
             onDone = { salir() },
             onCancel = { salir() },
@@ -418,37 +446,46 @@ private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCue
     }
 }
 
-/** D12: el botón sin red de la cuenta de la copia: «Cobrar $X en efectivo», «Revisando…» mientras pide el candado, o el gris con su razón. */
+/**
+ * D12: el botón sin red de la cuenta de la copia: «Cobrar $X en efectivo», «Avisándole a <caja>…» mientras le pregunta a la caja que la
+ * abrió (5 s o menos), o el gris con su razón. En la caja que la abrió, si otra la comprometió y no confirmó en 2 min: el aviso y «No se
+ * cobró: cobrar aquí» (Opción D, regla 7). Se vuelve a decidir cada 10 s: los 2 min pasan con la cuenta a la vista.
+ */
 @Composable
 private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel: CobroDeCuentaViewModel, onCobrar: (saldoCents: Int) -> Unit) {
     val decision by viewModel.sinRed.collectAsState()
+    val avisandoA by viewModel.avisandoA.collectAsState()
     // Si este botón sale de la pantalla (atrás, o volvió la red) a media consulta, su alcance se cancela y el VM suelta lo concedido.
     val scope = rememberCoroutineScope()
     var revisando by remember(orderId) { mutableStateOf(false) }
-    var confirmar by remember(orderId) { mutableStateOf<DecisionSinRed.Cobrar?>(null) }
-    LaunchedEffect(copia) { viewModel.consultarSinRed(orderId) }
+    LaunchedEffect(copia) {
+        while (true) {
+            viewModel.consultarSinRed(orderId)
+            kotlinx.coroutines.delay(10_000)
+        }
+    }
+    fun pedir(accion: suspend () -> DecisionSinRed) {
+        revisando = true
+        scope.launch {
+            try {
+                val r = accion()
+                if (r is DecisionSinRed.Cobrar) onCobrar(r.saldoCents)
+            } finally { revisando = false }
+        }
+    }
+    val textoRevisando = avisandoA?.let { TextosDeCuentaSinRed.avisandoA(it) } ?: TextosDeCuentaSinRed.REVISANDO
     when (val d = decision) {
         is DecisionSinRed.Cobrar -> PrimaryButton(
-            text = if (revisando) TextosDeCuentaSinRed.REVISANDO else TextosDeCuentaSinRed.cobrarEnEfectivo(d.saldoCents),
+            text = if (revisando) textoRevisando else TextosDeCuentaSinRed.cobrarEnEfectivo(d.saldoCents),
             enabled = !revisando,
-            onClick = {
-                revisando = true
-                scope.launch {
-                    try {
-                        val r = viewModel.pedirCobroSinRed(orderId)
-                        if (r is DecisionSinRed.Cobrar) { if (r.confirmar != null) confirmar = r else onCobrar(r.saldoCents) }
-                    } finally { revisando = false }
-                }
-            })
+            onClick = { pedir { viewModel.pedirCobroSinRed(orderId) } })
+        is DecisionSinRed.NoConfirmo -> {
+            Text(d.texto)
+            PrimaryButton(text = if (revisando) textoRevisando else TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI, enabled = !revisando,
+                onClick = { pedir { viewModel.noSeCobroYCobrarAqui(orderId) } })
+        }
         is DecisionSinRed.Gris -> Text(d.texto)
         null -> PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
-    }
-    confirmar?.let { c ->
-        val volver = { confirmar = null; viewModel.soltarCobroSinRed() }
-        AvoqadoDialog(title = c.confirmar.orEmpty(), onDismiss = volver) {
-            PrimaryButton(text = TextosDeCuentaSinRed.COBRAR_AQUI, onClick = { confirmar = null; onCobrar(c.saldoCents) })
-            TextButton(onClick = volver) { Text(TextosDeCuentaSinRed.VOLVER) }
-        }
     }
 }
 

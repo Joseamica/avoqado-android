@@ -1129,6 +1129,10 @@ private fun OrderRow(
         ((order.cobrosConSaldo ?: 0) >= 1 || solicitudes.any {
             it.venueId == diario.venueActual && it.orderId == order.id && it.porTerminar
         })
+    // D12 · Opción D: la cuenta que abrió esta caja y su registro da por cobrada en otra (o aquí): «Cobrada en <caja>».
+    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status) {
+        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id) else null
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1195,7 +1199,7 @@ private fun OrderRow(
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = if (porTerminar) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.POR_TERMINAR else order.formattedTotal,
+                    text = cobradaEn ?: if (porTerminar) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.POR_TERMINAR else order.formattedTotal,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

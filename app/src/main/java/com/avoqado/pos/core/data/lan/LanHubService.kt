@@ -80,17 +80,6 @@ class LanHubService @Inject constructor(
     suspend fun acquire(tableId: String, staffId: String, staffName: String): LeaseOutcome =
         coordinator?.acquire(tableId, staffId, staffName) ?: LeaseOutcome.NoHub
 
-    /**
-     * D12 (paso 2): el cobro sin red de una cuenta AJENA (llave `cuenta:<orderId>`). Con el hub apagado: no hay otra
-     * caja, `NoHub` y candado no vigente — la cuenta queda en gris en esta caja; la que la abrió usa [acquire].
-     */
-    fun hayOtraCajaDelNegocio(): Boolean = coordinator?.hayOtraCajaDelNegocio() ?: false
-
-    suspend fun acquireCoordinado(key: String, staffId: String, staffName: String): LeaseOutcome =
-        coordinator?.acquireCoordinado(key, staffId, staffName) ?: LeaseOutcome.NoHub
-
-    suspend fun candadoVigente(key: String): Boolean = coordinator?.candadoVigente(key) ?: false
-
     suspend fun release(tableId: String) {
         coordinator?.release(tableId)
     }

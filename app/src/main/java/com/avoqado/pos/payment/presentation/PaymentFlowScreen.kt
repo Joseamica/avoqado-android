@@ -98,6 +98,8 @@ fun PaymentFlowScreen(
     cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
     /** D12 (Codex r3 H3): la revalidación justo antes de recibir el efectivo. Ver `PaymentFlowViewModel.startPaymentFlow`. null = como siempre. */
     antesDeRecibirEfectivo: (suspend () -> String?)? = null,
+    /** D12 · Opción D: la puerta de la cuenta dijo que no (ver `PaymentFlowViewModel.startPaymentFlow`). */
+    alNoPasarLaPuerta: ((String) -> Unit)? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -122,6 +124,8 @@ fun PaymentFlowScreen(
     // tarjeta rechazada, por ejemplo), se suelta, igual que con «Cancelar» (Codex r4 #6).
     val salirSinCobrar: () -> Unit = { viewModel.alSalirSinCobrar(); onCancel() }
     val state by viewModel.state.collectAsState()
+    // D12 · Opción D: al irse la pantalla, el permiso de la cuenta se termina (lo decide lo durable).
+    androidx.compose.runtime.DisposableEffect(viewModel) { onDispose { viewModel.alSalirDeLaPantalla() } }
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
@@ -198,6 +202,7 @@ fun PaymentFlowScreen(
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
             cobroDeLaBandeja = cobroDeLaBandeja,
             antesDeRecibirEfectivo = antesDeRecibirEfectivo,
+            alNoPasarLaPuerta = alNoPasarLaPuerta,
         )
         aperturaIniciada = true
     }
