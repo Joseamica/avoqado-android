@@ -312,6 +312,39 @@ class CuentasEntreCajasTest {
         assertNull(a.dueno.estadoDe(v, "o1"))
     }
 
+    /**
+     * Re-revisión r1 (Menor, dinero): el aviso con dueña DESCONOCIDA se borraba en una vuelta si la dueña no se veía y las demás cajas D
+     * contestaban «no es mía». Con 3 cajas y la dueña a medias en el WiFi, la «cobrada» real se perdía y a los 2 min alguien podía
+     * declarar «No se cobró» y cobrar otra vez. Con dueña vacía sólo lo borra el acuse de la dueña (o la poda de 7 días).
+     */
+    @Test fun `I2 - el aviso sin dueña conocida no se borra porque las demás digan no es mía y llega cuando vuelve la dueña`() = runTest {
+        red(a, b, c)
+        a.pierdeRespuestas = true
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o1", "llave-c", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        assertEquals(EstadoDeCuenta.COMPROMETIDA, a.dueno.estadoDe(v, "o1")?.estado) // la dueña sí lo anotó
+        a.pierdeRespuestas = false
+        c.filas["llave-c"] = "SYNCED" // se cobró con internet
+        c.peers.value = listOf(b.peer) // la dueña no se ve en esta vuelta; la tercera contesta «no es mía»
+        c.entre.unaVuelta()
+        c.peers.value = listOf(a.peer, b.peer) // vuelve la dueña
+        c.entre.unaVuelta()
+        assertEquals("la dueña recibió la «cobrada» y la cerró", EstadoDeCuenta.CERRADA, a.dueno.estadoDe(v, "o1")?.estado)
+        assertFalse(a.dueno.estadoDe(v, "o1")!!.faltaSubirla)
+    }
+
+    /** Lo mismo, y cuando después se sabe quién es la dueña (otra pregunta la encontró), el aviso queda a su nombre. */
+    @Test fun `I2 - al volver a comprometer el mismo intento con la dueña conocida, el aviso la anota`() = runTest {
+        red(a, b, c)
+        a.pierdeRespuestas = true
+        c.entre.puertaSinRed()
+        a.pierdeRespuestas = false
+        // R1: el mismo intento vuelve a comprometer; ahora sí contesta la dueña (y ya se sabe cuál es).
+        assertTrue(c.entre.puertaSinRed(intentoPrevio = "llave-c") is CuentasEntreCajas.Puerta.Pasa)
+        val estado = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(CuentasEntreCajas.Estado.serializer(), c.disco["${PayloadCache.TYPE_CUENTAS_ENTRE_CAJAS}|v1"]!!.json)
+        assertEquals("caja-1", estado.avisos.single { it.intento == "llave-c" }.dueno)
+    }
+
     @Test fun `M1 - lo que cerró el servidor dice Ya se cobró, nunca el nombre de una caja`() {
         assertEquals("Ya se cobró", CuentasEntreCajas.textoDe(Respuesta.Cerrada("", false), "Caja 1"))
     }

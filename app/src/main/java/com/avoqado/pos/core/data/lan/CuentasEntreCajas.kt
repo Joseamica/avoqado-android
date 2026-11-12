@@ -342,20 +342,21 @@ class CuentasEntreCajas internal constructor(
             if (destinos.isEmpty()) { quedan[a.intento] = visto; continue }
             val op = if (visto.cobradaVista) LeaseProtocol.OP_CUENTA_COBRADA else LeaseProtocol.OP_CUENTA_SOLTAR
             if (visto.cobradaVista && visto.acusado == visto.subida) { quedan[a.intento] = visto; continue }
-            var acuso = false
+            var acuso: String? = null
             var todasNoEsMia = true
             for (p in destinos) {
                 val r = client.preguntarCuenta(p, pedido(op, a.orderId, a.intento, a.quien, subida = visto.subida))
-                if (CuentasPorLaRed.acuso(r)) { acuso = true; break }
+                if (CuentasPorLaRed.acuso(r)) { acuso = p.deviceId; break }
                 if (r?.status != LeaseProtocol.STATUS_NO_ES_MIA) todasNoEsMia = false
             }
             when {
-                // Nadie la abrió (marca podada, o ninguna de las que contestaron): no hay a quién avisar.
-                !acuso && todasNoEsMia -> Unit
-                !acuso -> quedan[a.intento] = visto
+                // La dueña conocida dice que no es suya (marca podada): no hay a quién avisar. Con dueña DESCONOCIDA (I2) un «no es mía»
+                // de las demás no prueba nada (la dueña puede no verse en esta vuelta): sólo la borra su acuse o la poda de 7 días.
+                acuso == null && todasNoEsMia && visto.dueno.isNotBlank() -> Unit
+                acuso == null -> quedan[a.intento] = visto
                 op == LeaseProtocol.OP_CUENTA_SOLTAR -> Unit
                 visto.subida -> Unit // la dueña sabe que se cobró y que ya subió
-                else -> quedan[a.intento] = visto.copy(acusado = false)
+                else -> quedan[a.intento] = visto.copy(acusado = false, dueno = visto.dueno.ifBlank { acuso })
             }
         }
         // M2: lo que otro cambió en el disco mientras se mandaba (`terminar` lo marcó cobrado, `cambiarLlave`, un aviso nuevo) manda sobre
@@ -372,7 +373,8 @@ class CuentasEntreCajas internal constructor(
     /** Por intento: volver a comprometer (R1, o un reintento con llave nueva) sólo cambia la llave cuya fila decide. */
     private suspend fun anotarAviso(venueId: String, orderId: String, intento: String, llave: String, quien: String, duena: String) {
         cambiar(venueId) { e ->
-            if (e.avisos.any { it.intento == intento }) e.copy(avisos = e.avisos.map { if (it.intento == intento) it.copy(llave = llave) else it })
+            // I2: si el aviso nació sin dueña (se perdió la respuesta) y ahora se sabe cuál es, queda a su nombre.
+            if (e.avisos.any { it.intento == intento }) e.copy(avisos = e.avisos.map { if (it.intento == intento) it.copy(llave = llave, dueno = it.dueno.ifBlank { duena }) else it })
             else e.copy(avisos = e.avisos + Aviso(orderId, intento, llave, duena, quien, horaDePared()))
         }
     }
