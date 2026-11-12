@@ -601,8 +601,17 @@ class TablesViewModel @Inject constructor(
 
     // MARK: - After payment (called from the Checkout completion in PAYING mode)
 
-    /** Releases the table once its order was fully paid through the normal flow. */
-    fun finishTableAfterPayment() {
+    /**
+     * Releases the table once its order was fully paid through the normal flow.
+     *
+     * @param cobroEnCola D24 (12-nov): el cobro quedó en la cola de COBROS (`pending_payments`) y todavía no sube. Pedir «liberar
+     *   mesa» ahora llega al servidor ANTES que su pago (`CLEAR_TABLE` por la otra cola, o `/clear` en línea si la red volvió) y
+     *   sale rechazado: una «operación por revisar» falsa. La mesa la libera el SERVIDOR al saldarse su última cuenta
+     *   (`releaseTableIfSettled`); si ese cobro no la salda, sigue ocupada con su saldo. Aquí sólo se cierra la sesión del aparato.
+     *   ponytail: sin segundo intento desde el aparato si al SERVIDOR le falla esa liberación (pasajero; Codex r1 #1). No toca
+     *   dinero y el plano pinta libre una mesa sin cuenta viva ([DiningTable.isAvailable]). Si duele: que el SERVIDOR reintente.
+     */
+    fun finishTableAfterPayment(cobroEnCola: Boolean = false) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session.idsDeLaOrden)?.let { _actionState.value = TableActionState.Error(it); return }
@@ -611,7 +620,7 @@ class TablesViewModel @Inject constructor(
             // Server-driven settle check: clearTable succeeds ONLY when the
             // order is fully PAID. If it's still PARTIAL (split-the-bill),
             // keep the session alive so the next payment stays routed to it.
-            val cleared = mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId) }.isSuccess
+            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId) }.isSuccess
             repository.refresh(vId)
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
