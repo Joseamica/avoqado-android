@@ -86,6 +86,9 @@ class OrderRepository @Inject constructor(
                 chain.proceed(
                     chain.request().newBuilder()
                         .header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
+                        // D12: el interceptor del principal da a esta ruta el plazo corto y la saca directo a la cola si la
+                        // anterior se quedó sin respuesta y el servidor sigue sin contestar (`RendirseRapido`).
+                        .header(com.avoqado.pos.core.data.network.RendirseRapido.HEADER, "1")
                         .build(),
                 )
             })

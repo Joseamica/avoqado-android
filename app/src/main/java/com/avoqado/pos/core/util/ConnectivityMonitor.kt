@@ -76,6 +76,19 @@ class ConnectivityMonitor @Inject constructor(
     private val _sinRespuesta = MutableStateFlow(false)
     val sinRespuesta: StateFlow<Boolean> = _sinRespuesta.asStateFlow()
 
+    /**
+     * D12 · `RendirseRapido` (Codex r1 #2): cuándo contestó el servidor por última vez, con CUALQUIER código (ping, salud o una respuesta
+     * HTTP del cliente principal), en reloj monotónico (ms). Sólo se escribe; no cambia [sinRespuesta] ni [isServerReachable]. Sirve
+     * para que el recuerdo de «la última marcada se quedó sin respuesta» caduque en cuanto alguien contesta.
+     */
+    @Volatile var ultimaRespuestaMs: Long = 0L
+        private set
+
+    /** Alguien contestó (cualquier código). Ver [ultimaRespuestaMs]. */
+    fun anotarRespuesta() {
+        ultimaRespuestaMs = System.nanoTime() / 1_000_000
+    }
+
     /** Seam de pruebas: la URL del servidor para el ping y la salud. En producción, [ApiConstants.BASE_URL]. */
     @androidx.annotation.VisibleForTesting
     internal var urlBase: String = ApiConstants.BASE_URL
@@ -126,6 +139,7 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     fun reportServerSuccess() {
+        anotarRespuesta()
         _sinRespuesta.value = false
         if (!_isServerReachable.value) {
             _isServerReachable.value = true
@@ -212,6 +226,7 @@ class ConnectivityMonitor @Inject constructor(
             }
             plazo?.revisar() // la consulta tardó en arrancar y el plazo ya venció: no se conecta
             val code = connection.responseCode
+            anotarRespuesta()
             _sinRespuesta.value = false // alguien contestó, aunque sea mal
             val cuerpo = if (code == 200) leerCuerpo(connection, plazo) else null
             val ok = saludContesta(code, connection.contentType, cuerpo)
@@ -254,6 +269,7 @@ class ConnectivityMonitor @Inject constructor(
                 instanceFollowRedirects = true
             }
             val code = connection.responseCode
+            anotarRespuesta()
             _sinRespuesta.value = false // R2-2: alguien contestó (también un 5xx)
             val ngrokError = connection.getHeaderField("ngrok-error-code")
             // Matches iOS: any 200–499 means the server (or its proxy) is answering.
