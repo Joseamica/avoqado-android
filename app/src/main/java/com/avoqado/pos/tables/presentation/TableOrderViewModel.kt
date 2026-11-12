@@ -104,6 +104,15 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
     else -> null
 }
 
+/** Por qué no se cobra una cuenta sin artículos a la vista. D3 (11-nov, ensayo 27): sin leer la cuenta al día, este aparato no
+ *  sabe qué tiene (la abrió otro y se fue la red); «no tiene cargos» hizo recapturar y el SERVIDOR sumó las dos rondas. */
+internal fun motivoSinArticulos(cuentaCompletaAqui: Boolean, cargando: Boolean): String = when {
+    cuentaCompletaAqui -> "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
+    cargando -> "La cuenta se está actualizando. Intenta en un momento."
+    else -> "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. " +
+        "Cóbrala en el aparato donde se tomó la orden o cuando vuelva la conexión."
+}
+
 private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda excede el límite de la cuenta. Ajusta la ronda antes de enviarla."
 
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
@@ -213,6 +222,9 @@ class TableOrderViewModel @Inject constructor(
     internal val chequeAlDia: StateFlow<Boolean> = _chequeAlDia.asStateFlow()
     internal val hayMutacionEnVuelo: Boolean get() = mutacionesEnVuelo > 0 || _isSending.value
     internal val vioCambios: Boolean get() = generacion > 0 || tableSession.current()?.requiereLecturaServidor == true
+    /** Lo que se ve aquí es TODA la cuenta: abierta sin red en este aparato (con su saldo local) o leída al día del servidor. */
+    internal val cuentaCompletaAqui: Boolean get() =
+        tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else cuentaAlDiaAqui } == true
     private var trabajoParaSaldo by mutableStateOf<Triple<String, Set<String>, TrabajoSinResolver>?>(null)
 
     private fun marcarCambio() {
@@ -311,6 +323,8 @@ class TableOrderViewModel @Inject constructor(
                         return@collect
                     }
                     if (!ack.isAcked) return@collect
+                    // 27c (11-nov): el aviso «cambios sin sincronizar» se quedaba junto a «Pagar $90.00» ya sincronizado.
+                    invalidateBlockedNotice()
                     rondasConfirmadas += ack.id
                     if (localRef != null && ackOrder != null) {
                         tableSession.promoteProvisional(vId, localRef, ackOrder,
@@ -2051,8 +2065,7 @@ class TableOrderViewModel @Inject constructor(
                 // 🔴 Ninguno de estos tres dice ya "no tiene cargos" a lo bruto.
                 // Ese texto era falso en DOS de los tres casos, y el mesero se
                 // quedaba sin saber qué hacer.
-                articulos <= 0 ->
-                    showBlockedReason("Esta cuenta todavía no tiene cargos. Agrega artículos y envíalos antes de cobrar.")
+                articulos <= 0 -> showBlockedReason(motivoSinArticulos(cuentaCompletaAqui, _isLoadingCheck.value))
                 totalDelCheque > 0 ->
                     // Tiene cargos y su total NO es 0: el saldo llegó a 0 porque
                     // YA se pagó. Ofrecer "Pagar" aquí termina en un rechazo del

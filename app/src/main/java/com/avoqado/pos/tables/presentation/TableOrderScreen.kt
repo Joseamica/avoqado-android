@@ -142,6 +142,9 @@ fun TableOrderScreen(
     val isConnected by viewModel.isConnected.collectAsState()
     val blockedNotice by viewModel.blockedNotice.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
+    val cuentaCompletaAqui = chequeAlDia.let { viewModel.cuentaCompletaAqui }
+    // Un cambio propio en curso (asignar, comensales…) baja `chequeAlDia` un momento: es «actualizando», no «no se puede leer».
+    val cargandoCuenta = isLoadingCheck || chequeAlDia.let { viewModel.hayMutacionEnVuelo }
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
     val selectedCourse by viewModel.selectedCourse.collectAsState()
@@ -462,6 +465,8 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
+                                cuentaCompletaAqui = cuentaCompletaAqui,
+                                cargandoCuenta = cargandoCuenta,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 onBlocked = { viewModel.showBlockedReason(it) },
@@ -641,6 +646,8 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
+                                cuentaCompletaAqui = cuentaCompletaAqui,
+                                cargandoCuenta = cargandoCuenta,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 onBlocked = { viewModel.showBlockedReason(it) },
@@ -1500,6 +1507,10 @@ internal fun TableCheckPanel(
     pendingTotalCents: Int,
     saldo: TableOrderViewModel.SaldoDeMesa,
     saldoDeMesaConocido: Boolean,
+    /** Lo que se ve es toda la cuenta (ver `TableOrderViewModel.cuentaCompletaAqui`). */
+    cuentaCompletaAqui: Boolean,
+    /** Se está leyendo la cuenta o hay un cambio propio en vuelo. */
+    cargandoCuenta: Boolean,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1534,6 +1545,17 @@ internal fun TableCheckPanel(
                     modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
                     horizontalArrangement = Arrangement.Center,
                 ) { CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp) }
+            }
+            // D3 (11-nov): sin leer la cuenta, aquí no se ve lo que pidió otro aparato; «Subtotal (0)» la hacía parecer vacía
+            // y la cajera recapturó todo. Se dice, y que lo que se agregue SE SUMA. Nunca leída aquí: con red no parpadea.
+            if (!cuentaCompletaAqui && check == null && !cargandoCuenta) {
+                Text(
+                    text = "La cuenta todavía no se puede leer del servidor, así que aquí no se ve lo que ya tiene. " +
+                        "Lo que agregues se suma a esa cuenta.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.md),
+                )
             }
 
             // ── Gray card: what the kitchen already has ──────────────────
@@ -1701,9 +1723,9 @@ internal fun TableCheckPanel(
                 //
                 // Se distingue por los artículos, no por el importe.
                 val sinCargos = itemCount <= 0
+                // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
                 BlockedTapOverlay(
-                    reason = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
-                        .takeIf { sinCargos },
+                    reason = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos },
                     onBlocked = onBlocked,
                     modifier = Modifier.weight(0.5f),
                 ) {

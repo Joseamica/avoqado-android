@@ -1051,4 +1051,61 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // D3 (11-nov, ensayo 27): sin internet, la caja abrió una mesa que tomó otro aparato. Sin poder leer su cuenta decía
+    // «no tiene cargos. Agrega productos…»; la cajera recapturó y al volver la red el SERVIDOR sumó las dos rondas ($90 por $45).
+    private val sinLeer = "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. " +
+        "Cóbrala en el aparato donde se tomó la orden o cuando vuelva la conexión."
+    private val sinCargos = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
+
+    @Test fun `P1 sin leer la cuenta del servidor no dice que no tiene cargos ni invita a recapturar`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(totalCents = 0))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            assertFalse(subject.cuentaCompletaAqui)
+            assertFalse(subject.preparePagar())
+            assertEquals(sinLeer, subject.blockedNotice.value)
+            assertEquals("Mismo texto en el botón Pagar de la pantalla", sinLeer, motivoSinArticulos(subject.cuentaCompletaAqui, cargando = false))
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `cuenta vacia leida al dia o abierta sin red aqui sigue diciendo que no tiene cargos`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(totalCents = 0))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            assertTrue(subject.cuentaCompletaAqui)
+            assertFalse(subject.preparePagar())
+            assertEquals(sinCargos, subject.blockedNotice.value)
+        } finally { subject.viewModelScope.cancel() }
+        val provisional = vm(provisional = true)
+        try { assertTrue("La mesa abierta sin red en este aparato es toda local", provisional.cuentaCompletaAqui) }
+        finally { provisional.viewModelScope.cancel() }
+        assertEquals(sinCargos, motivoSinArticulos(cuentaCompletaAqui = true, cargando = true))
+        assertEquals("La cuenta se está actualizando. Intenta en un momento.", motivoSinArticulos(cuentaCompletaAqui = false, cargando = true))
+    }
+
+    // 27c (11-nov): ya sincronizado todo, la caja seguía mostrando «cambios sin sincronizar: cóbrala cuando se sincronicen»
+    // junto a «Pagar $90.00». El acuse de ESTA cuenta cambia ese estado; el siguiente toque vuelve a decidir.
+    @Test fun `acuse de la ronda de esta cuenta quita el aviso viejo de cambios sin sincronizar`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(1, 0, setOf("ADD_ITEMS"), 0)
+            assertFalse(subject.preparePagar())
+            val aviso = "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
+            assertEquals(aviso, subject.blockedNotice.value)
+            acks.emit(SyncAck("ajena", "ACKED", result = buildJsonObject { put("orderId", "otra") })); advanceUntilIdle()
+            acks.emit(SyncAck("rechazada", "REJECTED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertEquals("Un acuse ajeno o un rechazo no lo quitan", aviso, subject.blockedNotice.value)
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns empty
+            acks.emit(SyncAck("ronda", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertNull(subject.blockedNotice.value)
+            assertTrue(subject.preparePagar())
+        } finally { subject.viewModelScope.cancel() }
+    }
+
 }
