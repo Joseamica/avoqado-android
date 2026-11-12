@@ -96,14 +96,16 @@ object TextosDeCuentaSinRed {
 
 /**
  * Opción D, en la lista de Pedidos de la caja que la ABRIÓ: «Cobrada en <caja>» (y «· falta subirla») si su registro la da cobrada. null =
- * nada que decir. [saldoPendienteCents]: lo que la fila dice que falta (null = no se sabe). [delServidor]: la lista es la respuesta del
- * SERVIDOR a lo que se pidió (`OrdersViewModel.copiaVistaA` nulo); si no, es la copia (o la última lectura buena) y su saldo es viejo.
+ * nada que decir. [saldoPendienteCents]: lo que la fila dice que falta (null = no se sabe). [lecturaDelServidorEn]: a qué hora se leyó del
+ * SERVIDOR esa fila (`OrdersRepository.lecturaDelServidorEn`; null = la copia sin red).
  */
-fun textoDeLaListaDe(r: CuentaEnElRegistro?, saldoPendienteCents: Int?, delServidor: Boolean): String? {
+fun textoDeLaListaDe(r: CuentaEnElRegistro?, saldoPendienteCents: Int?, lecturaDelServidorEn: Long?): String? {
     if (r?.estado != EstadoDeCuenta.CERRADA) return null
-    // M-1 y familia D: un abono no es «Cobrada». Con la lista del SERVIDOR y el cobro ya subido, su saldo dice si queda algo (venga de la
-    // caja que venga). Con la copia su saldo es de ANTES del cobro (caso 3 de opcion-d: otra caja la cobró con internet): manda el registro.
-    val debe = if (delServidor && !r.faltaSubirla && saldoPendienteCents != null) saldoPendienteCents > 0 else r.conAbono
+    // M-1 y frescura (Codex r5 #2): un abono no es «Cobrada», y gana lo más nuevo. El saldo de la fila decide sólo si es de una lectura del
+    // SERVIDOR posterior a la entrada CERRADA y el cobro ya subió: lo que todavía debe es un abono, venga de la caja que venga. Si no (la
+    // copia, o una lectura de ANTES del cobro que un 5xx dejó a la vista, o «falta subirla»), manda el registro (`conAbono`).
+    val saldoAlDia = lecturaDelServidorEn != null && lecturaDelServidorEn > r.hora && !r.faltaSubirla
+    val debe = if (saldoAlDia && saldoPendienteCents != null) saldoPendienteCents > 0 else r.conAbono
     if (debe) return null
     return if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
 }

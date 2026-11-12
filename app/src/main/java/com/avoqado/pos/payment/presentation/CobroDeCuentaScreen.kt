@@ -276,9 +276,13 @@ class CobroDeCuentaViewModel @Inject constructor(
      * Opción D, en la lista de Pedidos: «Cobrada en <caja>» (y «· falta subirla») si ESTA caja la abrió y su registro la da cobrada
      * ([com.avoqado.pos.payment.domain.textoDeLaListaDe]). null = nada que decir (o no la abrió aquí, o no se pudo leer).
      */
-    suspend fun textoDeLaLista(orderId: String, saldoPendienteCents: Int?, delServidor: Boolean): String? {
+    /** La versión del registro de la dueña: cambia cada vez que se guarda (para volver a calcular la etiqueta de la lista). */
+    val versionDelRegistro: kotlinx.coroutines.flow.StateFlow<Long> =
+        duenoDeCuentas?.version ?: kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    suspend fun textoDeLaLista(orderId: String, saldoPendienteCents: Int?, lecturaDelServidorEn: Long?): String? {
         val venue = storage.venueId ?: return null
-        return com.avoqado.pos.payment.domain.textoDeLaListaDe(duenoDeCuentas?.estadoDe(venue, orderId), saldoPendienteCents, delServidor)
+        return com.avoqado.pos.payment.domain.textoDeLaListaDe(duenoDeCuentas?.estadoDe(venue, orderId), saldoPendienteCents, lecturaDelServidorEn)
     }
 
     /**

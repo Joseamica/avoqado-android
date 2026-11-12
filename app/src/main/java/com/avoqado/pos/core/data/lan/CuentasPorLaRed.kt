@@ -35,9 +35,9 @@ object CuentasPorLaRed {
     /** [venueId]: la sucursal de la cuenta (ronda 1 de la tubería, Menor 2); sin valor por omisión a propósito. */
     fun pedido(
         op: String, orderId: String, yo: String, caja: String, quien: String, intento: String, enLinea: Boolean = false, subida: Boolean = false,
-        venueId: String,
+        venueId: String, conAbono: Boolean? = null,
     ) = LeaseRequest(op = op, tableId = llave(orderId), deviceId = yo, staffName = quien, intento = intento, caja = caja, enLinea = enLinea,
-        subida = subida, venueId = venueId)
+        subida = subida, venueId = venueId, conAbono = conAbono)
 
     /** Lo que contesta ESTA caja a una línea `cuenta_*` de otra, con su registro. Nunca lanza (salvo la cancelación). */
     suspend fun contestar(linea: String, venueId: String?, dueno: DuenoDeCuentas): String {
@@ -55,7 +55,8 @@ object CuentasPorLaRed {
                 LeaseProtocol.OP_CUENTA_APARTAR -> aCable(dueno.apartar(v, orden, s))
                 LeaseProtocol.OP_CUENTA_COMPROMETER -> aCable(dueno.comprometer(v, orden, s))
                 LeaseProtocol.OP_CUENTA_SOLTAR -> acuse(dueno.soltar(v, orden, req.intento))
-                LeaseProtocol.OP_CUENTA_COBRADA -> acuse(dueno.cobrada(v, orden, s, req.subida))
+                // W2: la caja que cobró dice si quedó saldo; sin el dato (null) cuenta como abono, nunca como «Cobrada».
+                LeaseProtocol.OP_CUENTA_COBRADA -> acuse(dueno.cobrada(v, orden, s, req.subida, req.conAbono))
                 else -> return error("Operación desconocida: ${req.op}")
             }
         } catch (e: kotlinx.coroutines.CancellationException) {

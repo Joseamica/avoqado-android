@@ -814,6 +814,49 @@ class PedidoSinRedTest {
         assertNull(r.detalleDeLaCopia.value)
         return r to reloj
     }
+    // MARK: - D12 · frescura de «Cobrada en <caja>» (Codex r5 #2)
+
+    /**
+     * Gana lo más nuevo entre la lectura buena del SERVIDOR y la entrada CERRADA del registro de la dueña. A leyó la lista (200); Caja B la
+     * cobró COMPLETA, la subió y A lo supo; A recarga y el SERVIDOR contesta 500 conservando las filas. Esas filas siguen siendo la lectura
+     * de ANTES del cobro (un refresco fallido no la vuelve fresca): su saldo viejo ya no esconde «Cobrada en Caja B».
+     */
+    @Test fun `frescura - tras un 500 que conserva las filas, la etiqueta la decide lo más nuevo`() = runTest {
+        lista = { http(it, 200, pagina(fila("o1", saldo = "2000"))) }
+        val r = repoConRutas()
+        r.loadOrders(1, null, null)
+        val leida = r.lecturaDelServidorEn.value
+        assertEquals("la hora de la lectura buena", reloj, leida)
+
+        reloj += 60_000
+        val dueno = com.avoqado.pos.core.data.lan.DuenoDeCuentas(cache,
+            mockk<com.avoqado.pos.orders.data.CuentasAbiertasAqui> { coEvery { todas(any()) } returns setOf("o1") },
+            { _, _, _ -> false }, { _, _ -> false }, { null }, { "caja-a" }, { "Caja A" },
+        ).also {
+            it.reloj = { com.avoqado.pos.core.data.lan.Instante("boot", 1) }
+            it.horaDePared = { reloj }
+            it.io = kotlinx.coroutines.Dispatchers.Unconfined
+        }
+        dueno.cobrada("v1", "o1", com.avoqado.pos.core.data.lan.Solicitud("caja-b", "Caja B", "Ana", "i-b"), subida = true)
+        suspend fun etiqueta() = com.avoqado.pos.payment.domain.textoDeLaListaDe(
+            dueno.estadoDe("v1", "o1"), r.orders.value.single().saldoPendienteCents, r.lecturaDelServidorEn.value)
+
+        lista = { http(it, 500, """{"message":"boom"}""") }
+        r.loadOrders(1, null, null)
+        assertEquals("las filas de antes siguen a la vista", listOf("o1"), ids(r))
+        assertEquals("un refresco fallido no vuelve fresca la lectura vieja", leida, r.lecturaDelServidorEn.value)
+        assertEquals("Cobrada en Caja B", etiqueta())
+
+        // Una lectura buena DESPUÉS del cobro sí decide con su saldo: ahí el SERVIDOR ya lo tiene, y dice que todavía debe (un abono).
+        reloj += 60_000
+        lista = { http(it, 200, pagina(fila("o1", saldo = "2000"))) }
+        r.loadOrders(1, null, null)
+        assertNull(etiqueta())
+        // Sin red la lista es la copia: no hay lectura del SERVIDOR a la vista.
+        lista = sinRed()
+        r.loadOrders(1, null, null)
+        assertNull(r.lecturaDelServidorEn.value)
+    }
 }
 
 /** D22: mientras «Pedidos» se ve, el pedido que no abrió por falta de red se vuelve a pedir solo cuando el aparato tiene red. */

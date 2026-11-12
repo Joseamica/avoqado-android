@@ -397,8 +397,8 @@ private fun OrderListView(
     val statusFilter by viewModel.statusFilter.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val avisoDeLaLista by viewModel.avisoDeLaLista.collectAsState()
-    // Familia D: ¿la lista es la respuesta del SERVIDOR? Si no (la copia), el saldo de sus filas es viejo.
-    val listaDelServidor by viewModel.listaDelServidor.collectAsState()
+    // Frescura: a qué hora se leyó del SERVIDOR lo que se ve (null = la copia); «Cobrada en <caja>» gana si el registro es más nuevo.
+    val lecturaDelServidorEn by viewModel.lecturaDelServidorEn.collectAsState()
 
     val grouped = remember(orders) { viewModel.groupOrdersByDate(orders) }
 
@@ -494,7 +494,7 @@ private fun OrderListView(
                             OrderRow(
                                 order = order,
                                 isSelected = isSelected,
-                                listaDelServidor = listaDelServidor,
+                                lecturaDelServidorEn = lecturaDelServidorEn,
                                 onClick = { viewModel.selectOrder(order.id) },
                             )
 
@@ -1130,8 +1130,8 @@ private fun DetailSectionHeader(title: String) {
 private fun OrderRow(
     order: OrderSummary,
     isSelected: Boolean = false,
-    /** Familia D: la lista es la respuesta del SERVIDOR (su saldo es de ahora); falso = la copia sin red. */
-    listaDelServidor: Boolean,
+    /** Frescura: a qué hora se leyó del SERVIDOR esta fila (null = la copia sin red). */
+    lecturaDelServidorEn: Long?,
     onClick: () -> Unit,
 ) {
     val diario: com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel = hiltViewModel(key = "diario-cuentas-abiertas")
@@ -1141,8 +1141,11 @@ private fun OrderRow(
             it.venueId == diario.venueActual && it.orderId == order.id && it.porTerminar
         })
     // D12 · Opción D: la cuenta que abrió esta caja y su registro da por cobrada en otra (o aquí): «Cobrada en <caja>».
-    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status, order.saldoPendienteCents, listaDelServidor) {
-        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id, order.saldoPendienteCents, listaDelServidor) else null
+    // La versión del registro de la dueña es llave: el «cobrada» de otra caja la cambia y la etiqueta aparece con Pedidos ya abierto.
+    val versionDelRegistro by diario.versionDelRegistro.collectAsState()
+    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status, order.saldoPendienteCents, lecturaDelServidorEn,
+        versionDelRegistro) {
+        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id, order.saldoPendienteCents, lecturaDelServidorEn) else null
     }
     Row(
         modifier = Modifier

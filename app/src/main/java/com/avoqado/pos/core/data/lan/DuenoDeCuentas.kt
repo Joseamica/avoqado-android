@@ -9,6 +9,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -83,6 +84,14 @@ class DuenoDeCuentas internal constructor(
 
     private val mutex = Mutex()
 
+    private val _version = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /**
+     * Sube cada vez que el registro se guarda (un «cobrada» de otra caja, un cierre propio, la reconciliación): la lista de Pedidos la usa
+     * de llave para volver a calcular «Cobrada en <caja>» aunque ya estuviera abierta.
+     */
+    val version: kotlinx.coroutines.flow.StateFlow<Long> = _version.asStateFlow()
+
     /** Intentos PROPIOS en curso en este proceso (entre comprometer y su desenlace): la reconciliación no los toca. */
     private val vivos = ConcurrentHashMap.newKeySet<String>()
 
@@ -135,8 +144,11 @@ class DuenoDeCuentas internal constructor(
     suspend fun soltar(venueId: String, orderId: String, intento: String): Boolean? =
         conRegistro(venueId, orderId) { reg -> RegistroDeCuentas.soltar(reg, orderId, intento) to true }
 
-    /** «Cobrada»: siempre se acepta, también de un intento cancelado. null = no es mía. LANZA si no se pudo guardar (no hay acuse). */
-    suspend fun cobrada(venueId: String, orderId: String, s: Solicitud, subida: Boolean, conAbono: Boolean = false): Boolean? =
+    /**
+     * «Cobrada»: siempre se acepta, también de un intento cancelado. null = no es mía. LANZA si no se pudo guardar (no hay acuse). W2:
+     * [conAbono] null = no se sabe si quedó saldo (el aviso de otra caja que se rearmó desde su fila): cuenta como abono.
+     */
+    suspend fun cobrada(venueId: String, orderId: String, s: Solicitud, subida: Boolean, conAbono: Boolean? = false): Boolean? =
         conRegistro(venueId, orderId) { reg -> RegistroDeCuentas.cobrada(reg, orderId, s, faltaSubirla = !subida, reloj(), horaDePared(), conAbono) to true }
 
     /** M-3: ¿esta caja tiene dinero de la cuenta que el SERVIDOR aún no tiene (R4)? Con el registro ilegible es lo único que queda. Si falla, sí. */
@@ -239,7 +251,10 @@ class DuenoDeCuentas internal constructor(
                 val normal = RegistroDeCuentas.normalizar(leido, reloj(), horaDePared())
                 val base = reconciliar(venueId, normal.copy(cuentas = normal.cuentas.filterKeys { it in mias }))
                 val (nuevo, t) = cambio(base, mias)
-                if (nuevo != leido) cache.saveDurable(PayloadCache.TYPE_REGISTRO_DE_CUENTAS, venueId, RegistroDeCuentas.escribir(nuevo))
+                if (nuevo != leido) {
+                    cache.saveDurable(PayloadCache.TYPE_REGISTRO_DE_CUENTAS, venueId, RegistroDeCuentas.escribir(nuevo))
+                    _version.value = _version.value + 1
+                }
                 t
             }
         }

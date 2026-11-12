@@ -513,7 +513,7 @@ class CuentasEntreCajasTest {
         a.entre.terminar(v, "o1", p, "Yo", cobrado = true, subida = true, conAbono = true)
         val r = a.dueno.estadoDe(v, "o1")
         assertEquals("sigue protegida (H1)", EstadoDeCuenta.CERRADA, r?.estado)
-        assertNull("la lista no dice «Cobrada en Caja 1»", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null, delServidor = false))
+        assertNull("la lista no dice «Cobrada en Caja 1»", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null, lecturaDelServidorEn = null))
         assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.CON_ABONO),
             a.entre.puerta(v, "o1", "llave-a2", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true))
         assertTrue("con internet, el resto", a.entre.puerta(v, "o1", "llave-a3", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true)
@@ -526,23 +526,25 @@ class CuentasEntreCajasTest {
         a.dueno.alSaberCerradas(v, emptyList(), listOf("o1"), conAbono = listOf("o1"))
         val r = a.dueno.estadoDe(v, "o1")
         assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
-        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null, delServidor = false))
+        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null, lecturaDelServidorEn = null))
     }
 
     /**
-     * M-1 y familia D, en la lista: con la lista del SERVIDOR (y el cobro ya subido) su saldo dice si queda algo: lo que todavía debe es un
-     * abono, venga de la caja que venga. Con la COPIA (sin red), su saldo es de antes del cobro: manda el registro (`conAbono`).
+     * M-1 y familia D, en la lista: gana lo más nuevo (Codex r5 #2). Una lectura buena del SERVIDOR posterior a la CERRADA (y con el cobro ya
+     * subido) dice con su saldo si queda algo: lo que todavía debe es un abono, venga de la caja que venga. Con la COPIA, o con una lectura
+     * del SERVIDOR anterior a la CERRADA, ese saldo es de antes del cobro: manda el registro (`conAbono`).
      */
-    @Test fun `M-1 - la lista dice Cobrada según el saldo sólo si viene del SERVIDOR, y con la copia según el registro`() {
-        val cerrada = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0))
-        fun texto(c: CuentaEnElRegistro, saldo: Int?, delServidor: Boolean) = com.avoqado.pos.payment.domain.textoDeLaListaDe(c, saldo, delServidor)
-        assertEquals("Cobrada en Caja 2", texto(cerrada, 0, delServidor = true))
-        assertNull("ya subió y el SERVIDOR dice que debe: un abono", texto(cerrada, 2000, delServidor = true))
-        assertEquals("con la copia el saldo es de antes del cobro: manda el registro", "Cobrada en Caja 2", texto(cerrada, 2000, delServidor = false))
-        assertNull("un abono que el registro sabe, con la copia", texto(cerrada.copy(conAbono = true), 2000, delServidor = false))
+    @Test fun `M-1 - la lista dice Cobrada según el saldo sólo si la lectura del SERVIDOR es más nueva, y si no según el registro`() {
+        val cerrada = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0), hora = 1_000)
+        fun texto(c: CuentaEnElRegistro, saldo: Int?, lecturaEn: Long?) = com.avoqado.pos.payment.domain.textoDeLaListaDe(c, saldo, lecturaEn)
+        assertEquals("Cobrada en Caja 2", texto(cerrada, 0, lecturaEn = 2_000))
+        assertNull("ya subió y el SERVIDOR, después, dice que debe: un abono", texto(cerrada, 2000, lecturaEn = 2_000))
+        assertEquals("la lectura es de ANTES de la cobrada: manda el registro", "Cobrada en Caja 2", texto(cerrada, 2000, lecturaEn = 500))
+        assertEquals("con la copia el saldo es de antes del cobro: manda el registro", "Cobrada en Caja 2", texto(cerrada, 2000, lecturaEn = null))
+        assertNull("un abono que el registro sabe, con la copia", texto(cerrada.copy(conAbono = true), 2000, lecturaEn = null))
         assertEquals("aún no sube: el saldo del SERVIDOR no lo sabe", "Cobrada en Caja 2 · falta subirla",
-            texto(cerrada.copy(faltaSubirla = true), 2000, delServidor = true))
-        assertNull(texto(cerrada.copy(estado = EstadoDeCuenta.COMPROMETIDA), 0, delServidor = true))
+            texto(cerrada.copy(faltaSubirla = true), 2000, lecturaEn = 2_000))
+        assertNull(texto(cerrada.copy(estado = EstadoDeCuenta.COMPROMETIDA), 0, lecturaEn = 2_000))
     }
 
     /** Cambio de sucursal: los apartados de la anterior se olvidan (y nada los renueva). */
@@ -567,7 +569,7 @@ class CuentasEntreCajasTest {
         val r = a.dueno.estadoDe(v, "o1")
         assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
         assertFalse("ya subió", r!!.faltaSubirla)
-        assertEquals("Cobrada en Caja 2", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = 2000, delServidor = false))
+        assertEquals("Cobrada en Caja 2", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = 2000, lecturaDelServidorEn = null))
     }
 
     /** M-3 (la prueba que faltaba): con el registro ilegible y dinero de esta caja que aún no sube (R4), ni con red viva se cobra otra vez. */
@@ -625,5 +627,44 @@ class CuentasEntreCajasTest {
             c.entre.puerta(v, "o1", "l3", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
         contesta = true
         assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o1", "l4", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+    }
+
+    // MARK: - W2 y la dueña (re-revisión de la pasada por familia)
+
+    /** W2: un abono PARCIAL en Caja 2 con internet viaja con su «cobrada»: la dueña sin red no dice «Cobrada en Caja 2». */
+    @Test fun `W2 - el abono parcial de otra caja viaja y la dueña sin red no dice Cobrada`() = runTest {
+        red(a, b)
+        val p = b.entre.puerta(v, "o1", "llave-b", "Ana", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        b.entre.terminar(v, "o1", p, "Ana", cobrado = true, subida = true, conAbono = true)
+        b.entre.unaVuelta()
+        val r = a.dueno.estadoDe(v, "o1")
+        assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
+        assertTrue("con abono", r!!.conAbono)
+        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = 2000, lecturaDelServidorEn = null))
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.CON_ABONO),
+            a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true))
+    }
+
+    /** W2: el aviso que se rearma sin saber (el flujo se fue; su fila dice que sí hubo dinero) manda «no se sabe», que cuenta como abono. */
+    @Test fun `W2 - un aviso rearmado desde la fila manda no se sabe y cuenta como abono`() = runTest {
+        red(a, b)
+        val p = b.entre.puerta(v, "o1", "llave-b", "Ana", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        b.filas["llave-b"] = "SYNCED"
+        b.entre.terminar(v, "o1", p, "Ana", cobrado = false, subida = false)
+        b.entre.unaVuelta()
+        val r = a.dueno.estadoDe(v, "o1")
+        assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
+        assertTrue("no se sabe si quedó saldo: no es «Cobrada»", r!!.conAbono)
+    }
+
+    /**
+     * Regresión de la dueña (Menor 2 de la re-revisión): una cuenta «abierta aquí» nunca es de la bandeja ni de Rappi 2b. Con internet y
+     * su cuenta fuera de la copia (más de 24 h, nunca listada, o la copia ilegible), la dueña cobra el resto de su cuenta ya cobrada y subida.
+     */
+    @Test fun `dueña - con internet y su cuenta fuera de la copia cobra el resto`() = runTest {
+        red(a, c)
+        a.dueno.cobrada(v, "o1", Solicitud("caja-1", "Caja 1", "Yo", "llave-0"), subida = true, conAbono = true)
+        assertTrue(a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = false)
+            is CuentasEntreCajas.Puerta.Pasa)
     }
 }

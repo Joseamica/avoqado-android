@@ -422,4 +422,18 @@ class DuenoDeCuentasTest {
         assertEquals("sin red: «cóbrala con internet», nunca «Cobrada»", Respuesta.Cerrada("Caja 1", false, conAbono = true),
             cajaUno().comprometerPropio(v, "o1", "llave-2", "Yo", enLinea = false))
     }
+
+    /**
+     * La etiqueta se refresca sola: el registro dice cuándo cambió (su versión sube al guardar), y la lista de Pedidos la usa como llave; así
+     * «Cobrada en <caja>» aparece aunque Pedidos ya estuviera abierto cuando llega el «cobrada». Sólo leer no la mueve.
+     */
+    @Test fun `la versión del registro sube cuando cambia, y sólo leer no la mueve`() = runTest {
+        val a = cajaUno()
+        val antes = a.version.value
+        a.cobrada(v, "o1", ana, subida = true)
+        val tras = a.version.value
+        assertTrue("llegó el cobrada de otra caja", tras > antes)
+        a.estadoDe(v, "o1")
+        assertEquals("sólo leer", tras, a.version.value)
+    }
 }

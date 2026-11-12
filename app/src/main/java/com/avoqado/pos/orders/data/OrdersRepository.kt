@@ -104,6 +104,15 @@ class OrdersRepository @Inject constructor(
     /** Hora de lo que se ve en la lista cuando NO hay red (la de la copia, o la de la última lectura buena); null = con red. */
     val copiaVistaA: StateFlow<Long?> = _copiaVistaA.asStateFlow()
 
+    private val _lecturaDelServidorEn = MutableStateFlow<Long?>(null)
+
+    /**
+     * D12 · frescura (Codex r5 #2): a qué hora se LEYÓ del SERVIDOR lo que se ve en la lista (la página 1 de la consulta a la vista); null =
+     * la lista es la copia sin red, o está vacía por otra razón. Un refresco que falla (5xx, 403) NO la mueve: las filas siguen siendo las de
+     * esa lectura. La etiqueta «Cobrada en <caja>» la compara con la de la entrada CERRADA del registro: gana lo más nuevo.
+     */
+    val lecturaDelServidorEn: StateFlow<Long?> = _lecturaDelServidorEn.asStateFlow()
+
     private val _avisoDeLaLista = MutableStateFlow<String?>(null)
     /** T12b: el aviso gris de la lista cuando no es la respuesta del servidor a lo que se pidió (null = sí lo es). */
     val avisoDeLaLista: StateFlow<String?> = _avisoDeLaLista.asStateFlow()
@@ -308,6 +317,7 @@ class OrdersRepository @Inject constructor(
                 } else {
                     _orders.value = pageData.orders
                     listaVistaA = ahora()
+                    _lecturaDelServidorEn.value = listaVistaA
                     listaConBusqueda = conBusqueda
                 }
                 venueDeLaLista = venueId
@@ -332,6 +342,7 @@ class OrdersRepository @Inject constructor(
                 _orders.value = emptyList()
                 venueDeLaLista = actual
                 listaVistaA = null
+                _lecturaDelServidorEn.value = null
                 listaConBusqueda = true
                 _currentPage.value = 1
                 _hasMore.value = false
@@ -351,6 +362,7 @@ class OrdersRepository @Inject constructor(
                     _orders.value = emptyList()
                     venueDeLaLista = actual
                     listaVistaA = null
+                    _lecturaDelServidorEn.value = null
                     listaConBusqueda = conBusqueda
                     listaDeLas(null, sinRed = false)
                     _currentPage.value = 1
@@ -450,6 +462,7 @@ class OrdersRepository @Inject constructor(
         venueDeLaLista = venueId
         listaConBusqueda = false
         listaVistaA = guardadas.minOfOrNull { it.vistaEn }
+        _lecturaDelServidorEn.value = null // la copia no es una lectura del SERVIDOR
         listaDeLas(listaVistaA, sinRed = true)
         _currentPage.value = 1
         _hasMore.value = false // la copia es todo lo que hay: nada que pedir «más» encima

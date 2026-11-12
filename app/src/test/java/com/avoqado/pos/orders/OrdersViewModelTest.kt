@@ -320,22 +320,4 @@ class OrdersViewModelTest {
         alcanzable.value = true; runCurrent()
         coVerify(exactly = 1) { repository.alPerderLaRed() }
     }
-
-    /**
-     * D12 · familia D: la lista dice si es la respuesta del SERVIDOR (su saldo es de ahora). Con la copia sin red (o la última lectura buena)
-     * no lo es, y «Cobrada en <caja>» lo decide el registro de la dueña, no el saldo viejo de la fila.
-     */
-    @Test
-    fun `familia D - la lista sabe si viene del servidor o de la copia`() = runTest {
-        val copiaVistaA = MutableStateFlow<Long?>(null)
-        every { repository.copiaVistaA } returns copiaVistaA
-        val viewModel = createViewModel()
-        assertEquals(true, viewModel.listaDelServidor.value)
-        copiaVistaA.value = 1_700_000_000_000L // se fue la red: la lista es la copia
-        runCurrent()
-        assertEquals(false, viewModel.listaDelServidor.value)
-        copiaVistaA.value = null
-        runCurrent()
-        assertEquals(true, viewModel.listaDelServidor.value)
-    }
 }

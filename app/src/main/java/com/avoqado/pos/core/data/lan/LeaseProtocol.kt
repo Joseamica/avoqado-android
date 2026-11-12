@@ -141,6 +141,11 @@ data class LeaseRequest(
     val subida: Boolean = false,
     /** D12 · tubería, ronda 1 (Menor 2): la sucursal de la cuenta que se pregunta; una caja de otra sucursal contesta error. */
     val venueId: String = "",
+    /**
+     * D12 · W2 (sólo en `cuenta_cobrada`): ese cobro dejó saldo (true) o la cobró completa (false). null = no se sabe (un aviso rearmado
+     * desde su fila tras irse el flujo): la dueña lo toma como abono, nunca como «Cobrada».
+     */
+    val conAbono: Boolean? = null,
 )
 
 @Serializable

@@ -194,13 +194,17 @@ class CuentasEntreCajas internal constructor(
         // La llave del cobro (o el intento que ya se comprometió en esta venta): reemplaza el apartado de ESTA caja (misma caja).
         val intento = intentoPrevio ?: llave
         // Familia C: «en línea» de verdad se pregunta UNA vez y sólo si cambia la respuesta. Primero todo va como sin red (lo más estricto);
-        // con la tarjeta (sin red no sale) no se mide, y fuera de Pedidos (la bandeja, Rappi 2b) nunca se pregunta.
-        var vivo: Boolean? = null
-        suspend fun enLineaYa(): Boolean = vivo ?: (enLinea && (esTarjeta || (esCuentaDePedidos && servidorContestaSinLanzar()))).also { vivo = it }
+        // con la tarjeta (sin red no sale) no se mide, y fuera de Pedidos (la bandeja, Rappi 2b) otra caja nunca la pregunta.
+        var salud: Boolean? = null
+        suspend fun saludYa(): Boolean = salud ?: servidorContestaSinLanzar().also { salud = it }
+        // La dueña (Menor 2 de la re-revisión): una cuenta «abierta aquí» nunca es de la bandeja ni de Rappi 2b (sólo la marcan los caminos
+        // que la CREAN en este aparato), así que no necesita estar en la copia para preguntar.
+        suspend fun enLineaPropia(): Boolean = enLinea && (esTarjeta || saludYa())
+        suspend fun enLineaYa(): Boolean = enLinea && (esTarjeta || (esCuentaDePedidos && saludYa()))
         val propia = try {
             val sinRed = dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea = false)
             // Una CERRADA (o dinero propio que el SERVIDOR ya contestó, I4) sólo se abre con internet de verdad.
-            if (sinRed is Respuesta.Cerrada && enLineaYa()) dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea = true) else sinRed
+            if (sinRed is Respuesta.Cerrada && enLineaPropia()) dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea = true) else sinRed
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: DuenoDeCuentas.RegistroIlegible) {
@@ -208,7 +212,7 @@ class CuentasEntreCajas internal constructor(
             // salvo que esta caja tenga dinero de la cuenta que aún no sube (R4). Sin red, no. A otra caja nunca le concede (`pedir` calla).
             Log.e(TAG, "🚨 ${e.message}")
             return when {
-                !enLineaYa() -> Puerta.NoPasa(NO_SE_GUARDO)
+                !enLineaPropia() -> Puerta.NoPasa(NO_SE_GUARDO)
                 dueno.tieneDineroDe(venueId, orderId) ->
                     Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(dueno.nombreCaja, faltaSubirla = true))
                 else -> Puerta.Libre
@@ -280,10 +284,13 @@ class CuentasEntreCajas internal constructor(
                 p.esDueno && cobrado -> dueno.cerrarPropio(venueId, orderId, p.intento, quien, subida, conAbono)
                 p.esDueno -> dueno.terminarPropio(venueId, orderId, p.intento)
                 else -> {
-                    // El flujo SABE que cobró: el aviso queda «cobrada» aunque su fila se limpie antes de la siguiente vuelta (H4).
+                    // El flujo SABE que cobró: el aviso queda «cobrada» aunque su fila se limpie antes de la siguiente vuelta (H4). W2: y sabe si
+                    // quedó saldo; ese dato viaja con el «cobrada» (un aviso que se rearma desde su fila no lo sabe: null, abono en la dueña).
                     if (cobrado) runCatching {
                         cambiar(venueId) { e ->
-                            e.copy(avisos = e.avisos.map { if (it.intento == p.intento) it.copy(cobradaVista = true, subida = it.subida || subida) else it })
+                            e.copy(avisos = e.avisos.map {
+                                if (it.intento == p.intento) it.copy(cobradaVista = true, subida = it.subida || subida, conAbono = conAbono) else it
+                            })
                         }
                     }.onFailure { Log.w(TAG, "⚠️ no se pudo marcar cobrado el aviso ${p.intento}; decide su fila: ${it.message}") }
                     vivos -= p.intento
@@ -321,8 +328,10 @@ class CuentasEntreCajas internal constructor(
     private fun peerDe(deviceId: String): LanPeer? = cajasConD().firstOrNull { it.deviceId == deviceId }
 
     /** Ronda 1 de la tubería (Menor 2): con la sucursal de la cuenta; una caja que hoy está en otra contesta error, nunca «no es mía». */
-    private fun pedido(op: String, orderId: String, intento: String, quien: String, enLinea: Boolean = false, subida: Boolean = false, venueId: String) =
-        CuentasPorLaRed.pedido(op, orderId, dueno.deviceId, dueno.nombreCaja, quien, intento, enLinea, subida, venueId)
+    private fun pedido(
+        op: String, orderId: String, intento: String, quien: String, enLinea: Boolean = false, subida: Boolean = false, venueId: String,
+        conAbono: Boolean? = null,
+    ) = CuentasPorLaRed.pedido(op, orderId, dueno.deviceId, dueno.nombreCaja, quien, intento, enLinea, subida, venueId, conAbono)
 
     /**
      * Le pregunta a la dueña conocida, o a todas las cajas con D en paralelo (≤ 5 s cada una). Gana la primera que contesta por la cuenta;
@@ -401,7 +410,8 @@ class CuentasEntreCajas internal constructor(
             var acuso: String? = null
             var todasNoEsMia = true
             for (p in destinos) {
-                val r = client.preguntarCuenta(p, pedido(op, a.orderId, a.intento, a.quien, subida = visto.subida, venueId = venueId))
+                val r = client.preguntarCuenta(p, pedido(op, a.orderId, a.intento, a.quien, subida = visto.subida, venueId = venueId,
+                    conAbono = visto.conAbono))
                 if (CuentasPorLaRed.acuso(r)) { acuso = p.deviceId; break }
                 if (r?.status != LeaseProtocol.STATUS_NO_ES_MIA) todasNoEsMia = false
             }
@@ -453,6 +463,8 @@ class CuentasEntreCajas internal constructor(
         val subida: Boolean = false,
         /** El `subida` que la dueña ya acusó (null = nada acusado). */
         val acusado: Boolean? = null,
+        /** W2: el cobro dejó saldo (true) o no (false), si el flujo lo supo; null = no se sabe (el aviso se rearmó desde su fila). */
+        val conAbono: Boolean? = null,
     )
 
     @Serializable

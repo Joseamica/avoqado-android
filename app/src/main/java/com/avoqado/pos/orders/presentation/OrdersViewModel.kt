@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -79,11 +78,11 @@ class OrdersViewModel @Inject constructor(
     val detalleDeLaCopia = repository.detalleDeLaCopia
 
     /**
-     * D12 · familia D: la lista es la respuesta del SERVIDOR a lo que se pidió (el saldo de sus filas es de ahora). Falso = la copia sin red
-     * o la última lectura buena: su saldo es viejo y «Cobrada en <caja>» lo decide el registro de la dueña.
+     * D12 · frescura (Codex r5 #2, y Menor 3 de la re-revisión): a qué hora se leyó del SERVIDOR lo que se ve en la lista; null = la copia
+     * sin red. Tras un 5xx que conserva las filas sigue siendo la hora de AQUELLA lectura buena (no la del intento fallido): «Cobrada en
+     * <caja>» gana si la entrada CERRADA del registro es más nueva.
      */
-    val listaDelServidor: StateFlow<Boolean> = repository.copiaVistaA.map { it == null }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, repository.copiaVistaA.value == null)
+    val lecturaDelServidorEn = repository.lecturaDelServidorEn
 
     /** Final fix (F3): el pedido que está SIN RED (la copia sólo cobra mientras lo esté: `copiaParaCobrar`). */
     val detalleSinRed = repository.detalleSinRed
