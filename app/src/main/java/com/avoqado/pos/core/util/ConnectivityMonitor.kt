@@ -160,38 +160,29 @@ class ConnectivityMonitor @Inject constructor(
 
     /**
      * D12 · familia C (Codex r4 #2): [elServidorContesta] con plazo TOTAL [plazoMs] (resolver, conectar, encabezados y cuerpo). «No» al
-     * instante, sin preguntar, si el monitor ya sabe que no hay red ([isConnected] falso o [sinRespuesta]). Al vencer se cierra la conexión
-     * y cuenta como «no» (falla cerrado), sin tocar [sinRespuesta]: un plazo corto propio no prueba que nadie conteste. La consulta corre en
-     * el scope del monitor: quien pregunta no espera a un DNS o un cuerpo que no termina.
+     * instante, sin preguntar, si el monitor ya sabe que no hay red ([isConnected] falso o [sinRespuesta]). Al vencer cuenta como «no» (falla
+     * cerrado) y no toca [sinRespuesta]: un plazo corto propio no prueba que nadie conteste. La consulta corre en el scope del monitor: quien
+     * pregunta regresa al vencer, sin esperar a un DNS o a un cuerpo que gotea; la consulta deja de leer y cierra SU conexión en su hilo,
+     * a más tardar un plazo después (cada espera de conectar o leer dura ≤ [plazoMs]). Cerrarla desde el hilo de quien pregunta no sirve:
+     * `disconnect()` espera el candado de la conexión, que el hilo que lee vuelve a tomar en cada byte.
      */
     suspend fun elServidorContestaEn(plazoMs: Long): Boolean {
         if (!_isConnected.value || _sinRespuesta.value) return false
-        val plazo = PlazoDeLaSalud()
+        val plazo = PlazoDeLaSalud(plazoMs.toInt())
         val consulta = scope.async { consultarSalud(plazo) }
         try {
             return kotlinx.coroutines.withTimeoutOrNull(plazoMs) { consulta.await() } == true
         } finally {
-            if (!consulta.isCompleted) {
-                plazo.vencer()
-                consulta.cancel()
-            }
+            if (!consulta.isCompleted) plazo.vencido = true
         }
     }
 
-    /** La conexión de UNA consulta de la salud con plazo: al vencer se cierra (también si se abre después). */
-    private class PlazoDeLaSalud {
+    /** UNA consulta de la salud con plazo total: [ms] topa cada espera; al [vencido], la consulta deja de leer y cierra su conexión. */
+    private class PlazoDeLaSalud(val ms: Int) {
         @Volatile var vencido = false
-            private set
-        @Volatile private var conexion: HttpURLConnection? = null
 
-        fun abrir(c: HttpURLConnection) {
-            conexion = c
-            if (vencido) c.disconnect()
-        }
-
-        fun vencer() {
-            vencido = true
-            conexion?.disconnect()
+        fun revisar() {
+            if (vencido) throw java.io.IOException("plazo de la salud vencido")
         }
     }
 
@@ -211,24 +202,24 @@ class ConnectivityMonitor @Inject constructor(
             val url = java.net.URI(urlBase).resolve("/api/public/healthcheck").toURL()
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = PING_TIMEOUT_MS
-                readTimeout = PING_TIMEOUT_MS
+                connectTimeout = plazo?.let { minOf(it.ms, PING_TIMEOUT_MS) } ?: PING_TIMEOUT_MS
+                readTimeout = plazo?.let { minOf(it.ms, PING_TIMEOUT_MS) } ?: PING_TIMEOUT_MS
                 instanceFollowRedirects = false
                 // Codex apps r7 #3: nunca una respuesta guardada (ni aquí ni en un proxy): la salud vale sólo si es de AHORA.
                 useCaches = false
                 setRequestProperty("Cache-Control", "no-cache, no-store")
                 setRequestProperty("Pragma", "no-cache")
             }
-            plazo?.abrir(connection)
+            plazo?.revisar() // la consulta tardó en arrancar y el plazo ya venció: no se conecta
             val code = connection.responseCode
             _sinRespuesta.value = false // alguien contestó, aunque sea mal
-            val cuerpo = if (code == 200) connection.inputStream.bufferedReader().use { it.readText() } else null
+            val cuerpo = if (code == 200) leerCuerpo(connection, plazo) else null
             val ok = saludContesta(code, connection.contentType, cuerpo)
             if (ok) reportServerSuccess() else Log.d("📡", "Salud del servidor: $code (${connection.contentType}) — no cuenta")
             ok
         } catch (e: java.io.IOException) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
-            if (plazo?.vencido != true) _sinRespuesta.value = true // familia C: el cierre por el plazo propio no es «nadie contesta»
+            if (plazo == null) _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
             null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
@@ -236,6 +227,19 @@ class ConnectivityMonitor @Inject constructor(
         } finally {
             connection?.disconnect()
         }
+    }
+
+    /** El cuerpo de la salud; con [plazo], se deja de leer en cuanto vence (su conexión la cierra el `finally` de quien lee). */
+    private fun leerCuerpo(c: HttpURLConnection, plazo: PlazoDeLaSalud?): String = c.inputStream.use { entrada ->
+        val salida = java.io.ByteArrayOutputStream()
+        val trozo = ByteArray(1024)
+        while (true) {
+            plazo?.revisar()
+            val n = entrada.read(trozo)
+            if (n < 0) break
+            salida.write(trozo, 0, n)
+        }
+        salida.toString(Charsets.UTF_8.name())
     }
 
     internal fun pingServer() {

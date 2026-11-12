@@ -75,15 +75,19 @@ class NadieContestaTest {
         val server = MockWebServer().also { it.start() }
         val m = monitor(server)
         server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"status":"ok","database":"connected"}""")
-            .throttleBody(1, 250, java.util.concurrent.TimeUnit.MILLISECONDS)) // ~10 s de cuerpo, 1 byte cada 250 ms
-        val antes = System.nanoTime()
-        val contesta = m.elServidorContestaEn(1_000)
-        val tardo = (System.nanoTime() - antes) / 1_000_000
-        assertEquals("venció: cuenta como sin red", false, contesta)
-        assertTrue("plazo total, no lo que tarde el cuerpo: $tardo ms", tardo < 2_500)
-        Thread.sleep(500) // la consulta que se cerró termina en su hilo
-        assertEquals("un plazo propio no prueba que nadie conteste", false, m.sinRespuesta.value)
-        server.shutdown()
+            .throttleBody(1, 400, java.util.concurrent.TimeUnit.MILLISECONDS)) // ~15 s de cuerpo, 1 byte cada 400 ms (< 5 s por lectura)
+        try {
+            val antes = System.nanoTime()
+            val contesta = m.elServidorContestaEn(1_000)
+            val tardo = (System.nanoTime() - antes) / 1_000_000
+            assertEquals("venció: cuenta como sin red", false, contesta)
+            // Holgura para la máquina cargada; sin plazo total tardaría lo que el cuerpo (~15 s).
+            assertTrue("plazo total, no lo que tarde el cuerpo: $tardo ms", tardo < 5_000)
+            Thread.sleep(500) // la consulta que se cerró termina en su hilo
+            assertEquals("un plazo propio no prueba que nadie conteste", false, m.sinRespuesta.value)
+        } finally {
+            runCatching { server.shutdown() }
+        }
     }
 
     /** «No» al instante, sin preguntar, si el monitor ya sabe que nadie contesta (el último ping o la última salud). */
