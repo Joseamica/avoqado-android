@@ -113,6 +113,10 @@ internal fun motivoSinArticulos(cuentaCompletaAqui: Boolean, cargando: Boolean):
     else -> "$CUENTA_SIN_LEER: cóbrala cuando vuelva la conexión."
 }
 
+/** PURA: el aviso del botón gris de «Recompensas» al día con su motivo; si el aviso es de otro botón, se queda como está. */
+internal fun avisoDeRecompensasAlDia(aviso: String?, motivoAnterior: String?, motivoNuevo: String?): String? =
+    if (aviso != null && aviso == motivoAnterior) motivoNuevo else aviso
+
 /** Codex r1: no se manda a cobrar «en el aparato donde se tomó la orden»: con una ronda en su cola tampoco puede (27b). */
 internal const val CUENTA_SIN_LEER =
     "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. No vuelvas a capturar lo que ya se pidió"
@@ -1193,6 +1197,14 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
+     * El aviso que dejó un toque al botón gris de «Recompensas» describe un estado: si su motivo cambia (volvió la red, llegó el
+     * saldo), el aviso dice el nuevo, o se va si ya se puede canjear. El aviso de otro botón no se toca (Codex android r5 #2).
+     */
+    fun renovarAvisoDeRecompensas(motivoAnterior: String?, motivoNuevo: String?) {
+        _blockedNotice.value = avisoDeRecompensasAlDia(_blockedNotice.value, motivoAnterior, motivoNuevo)
+    }
+
+    /**
      * El aviso describe un ESTADO ("esta cuenta no tiene cargos"). En cuanto el
      * mesero cambia ese estado —agrega un artículo, envía la ronda, se cambia de
      * cuenta— deja de ser cierto y pasa a mentir.
@@ -1642,35 +1654,38 @@ class TableOrderViewModel @Inject constructor(
     val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> = _loyaltyFallo.asStateFlow()
 
     /**
-     * Al volver la red (el WiFi, o sólo el servidor): relee el saldo de puntos, que pudo gastarse en otra caja. Si la cuenta nunca llegó
-     * del servidor, no se sabe el cliente: se pide primero la cuenta, que al llegar relee el saldo (Codex android r3 #2). Una cuenta
-     * abierta sin red en este aparato (provisional) todavía no existe en el servidor: no tiene saldo que leer.
+     * Al volver la red (el WiFi, o sólo el servidor): el saldo pudo gastarse y la clienta de la cuenta pudo cambiar en otra caja.
+     * Se olvida el saldo (y cualquier lectura pendiente) y se relee SIEMPRE la cuenta primero; al llegar, `loadCheck` relee el saldo
+     * de la clienta que tiene ahora (Codex android r3 #2, r4 #1, r5 #1). Una cuenta abierta sin red en este aparato (provisional)
+     * todavía no existe en el servidor: no tiene saldo que leer.
      */
     fun alVolverLaRed() {
         val session = tableSession.current() ?: return
-        // Siempre olvida el saldo y deja atrás cualquier lectura pendiente, también cuando falta la cuenta (Codex android r4 #1).
-        loadLoyalty(olvidarElSaldo = true)
-        if (_check.value == null && !session.isProvisional) loadCheck()
+        olvidarLealtad()
+        if (!session.isProvisional) loadCheck()
+    }
+
+    private fun olvidarLealtad() {
+        lecturaDeLealtad++
+        _loyalty.value = null
+        _loyaltyFallo.value = null
     }
 
     /** La lectura del saldo más nueva: una respuesta vieja (la que se colgó sin red) no pisa a la que llegó después. */
     private var lecturaDeLealtad = 0
 
-    /**
-     * Carga el saldo del cliente adjunto al cheque (null si no hay cliente). [olvidarElSaldo]: al volver la red, el saldo leído
-     * antes pudo gastarse en otra caja; mientras llega el nuevo, el botón dice «Leyendo…» y no ofrece el viejo (Codex android r2 #3).
-     */
-    fun loadLoyalty(olvidarElSaldo: Boolean = false) {
+    /** Carga el saldo del cliente adjunto al cheque (null si no hay cliente). */
+    fun loadLoyalty() {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val cuenta = _check.value
         val customerId = cuenta?.customerId
         val lectura = ++lecturaDeLealtad
-        if (cuenta == null || customerId.isNullOrBlank() || olvidarElSaldo) {
+        if (cuenta == null || customerId.isNullOrBlank()) {
             _loyalty.value = null
             _loyaltyFallo.value = null
+            return
         }
-        if (cuenta == null || customerId.isNullOrBlank()) return
         viewModelScope.launch {
             val leido = repository.getCustomerLoyalty(vId, customerId, session.orderId)
             if (lectura != lecturaDeLealtad) return@launch

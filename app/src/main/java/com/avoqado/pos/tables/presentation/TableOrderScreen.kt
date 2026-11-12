@@ -180,14 +180,21 @@ fun TableOrderScreen(
     val recompensasEnLinea = isConnected && servidorAlcanzable
     // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
     val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
-        // Sin la cuenta del servidor no se sabe si tiene cliente: «Agrega el cliente» sería falso (Codex android r3 #2).
-        tieneCliente = check?.let { !it.customerId.isNullOrBlank() },
+        // Sin la cuenta al día del servidor no se sabe qué clienta tiene: ni «Agrega el cliente» ni el saldo de una clienta que otra
+        // caja pudo quitar (Codex android r3 #2, r5 #1). Tocar el botón gris vuelve a pedir la cuenta (`onBlocked`).
+        tieneCliente = if (cuentaSinLeer) null else check?.let { !it.customerId.isNullOrBlank() },
         lealtad = loyalty,
         fallo = loyaltyFallo,
         enLinea = recompensasEnLinea,
     )
     val recompensasSinRed =
         !recompensasEnLinea || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
+    // El aviso que dejó un toque al botón gris se queda en pantalla: si el motivo cambia, dice el nuevo (Codex android r5 #2).
+    var motivoRecompensasVisto by remember { mutableStateOf(motivoRecompensas) }
+    LaunchedEffect(motivoRecompensas) {
+        viewModel.renovarAvisoDeRecompensas(motivoRecompensasVisto, motivoRecompensas)
+        motivoRecompensasVisto = motivoRecompensas
+    }
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
