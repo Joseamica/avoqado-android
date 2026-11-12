@@ -432,14 +432,6 @@ class TableOrderViewModel @Inject constructor(
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
-    /**
-     * D16 (`hz:e5ee98bc:D16`): la ronda sin red cuyo «Enviar» dijo error aunque su fila pudo entrar a la cola (algo DESPUÉS del
-     * INSERT falló). Si el mesero vuelve a mandar los MISMOS productos, sale con la misma llave: la cola ignora el id repetido y el
-     * servidor deduplica sus renglones (`sync:<llave>:<i>`). Con otros productos, o tras reiniciar la app, llave nueva como antes.
-     * ponytail: sólo memoria; tras reiniciar, la fila huérfana sube y un reenvío suma (residual declarado, como hoy).
-     */
-    private var rondaSinConfirmar: Pair<String, List<PendingLine>>? = null
-
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
 
@@ -876,9 +868,7 @@ class TableOrderViewModel @Inject constructor(
                 onDone(false, e.message ?: "No se pudo preparar el combo")
                 return@launch
             }
-            // D16: reintentar «Enviar» con los MISMOS productos reusa la llave del intento que falló a medias (ver `rondaSinConfirmar`).
-            // No se borra al reusarla (Codex b1-r1 #1): si este reintento también falla al guardar, el siguiente sigue con ella.
-            val roundKey = rondaSinConfirmar?.takeIf { it.second == lines }?.first ?: java.util.UUID.randomUUID().toString()
+            val roundKey = java.util.UUID.randomUUID().toString()
             try { stageDraftRound(vId, session.orderId, roundKey, lines) }
             catch (_: Exception) { _isSending.value = false; onDone(false, "No se pudo guardar la ronda — intenta de nuevo"); return@launch }
             // Offline-first Corte B: una sesión PROVISIONAL (mesa abierta sin
@@ -889,7 +879,6 @@ class TableOrderViewModel @Inject constructor(
                     // D5 · B2a (Codex b2a-r1 #2): la fila pudo quedar en la cola sin su borrador; el saldo en memoria ya no se
                     // asegura y el siguiente «Pagar» lo rearma de disco (fila sin borrador ⇒ gris).
                     tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
-                    rondaSinConfirmar = roundKey to lines
                     finishDraftRound(roundKey, keepPending = true); _isSending.value = false; onDone(false, "No se pudo guardar la ronda sin conexión — intenta de nuevo")
                 }
                 return@launch
