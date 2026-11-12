@@ -3346,6 +3346,14 @@ class PaymentFlowViewModel @Inject constructor(
                                             message = MENSAJE_CUPON_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
+                                    } else if (isQueueable && cart.pideAprobacionDeGerente) {
+                                        // 🔴 D4 (Codex r2 #1): la red cayó al crear la venta. Un descuento que pide aprobación no
+                                        // entra sin red para nadie: encolado subiría sin el PIN (el token es de un uso y 60 s).
+                                        if (otra) return@fold
+                                        _state.value = PaymentFlowState.Error(
+                                            message = DESCUENTO_CON_APROBACION_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
                                     } else if (isQueueable) {
                                         val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
@@ -4148,6 +4156,12 @@ class PaymentFlowViewModel @Inject constructor(
                                         // 🔴 D5: el cupón, igual: necesita validarse, y encolado se subiría como un descuento libre.
                                         _state.value = PaymentFlowState.Error(
                                             message = MENSAJE_CUPON_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable && cart.pideAprobacionDeGerente) {
+                                        // 🔴 D4 (Codex r2 #1): igual que el cupón: sin red este descuento no entra, ni a la cola.
+                                        _state.value = PaymentFlowState.Error(
+                                            message = DESCUENTO_CON_APROBACION_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
@@ -6310,8 +6324,9 @@ class PaymentFlowViewModel @Inject constructor(
             // D2: la etiqueta y el PIN del descuento del cliente, igual en el cobro, `pay-new-order` y la cola sin red.
             descuentoDelClienteId = cart.descuentoDelClienteQueViaja,
             autorizacionDelDescuento = cart.autorizacionQueViaja,
-            // D4: la etiqueta del descuento de cuenta que pide aprobación (el importe sigue en `discount`).
+            // D4: la etiqueta del descuento de cuenta del catálogo (el importe sigue en `discount`).
             descuentoDeCatalogoId = cart.descuentoDeCatalogoQueViaja,
+            descuentoDeCatalogoPideAprobacion = cart.orderDiscount?.pideAprobacion == true,
         )
     }
 
@@ -6643,7 +6658,7 @@ class PaymentFlowViewModel @Inject constructor(
         cart != null && cart.items.isNotEmpty() &&
             (split != "FULLPAYMENT" || cart.couponCode != null || cart.descuentoDelClienteQueViaja != null ||
                 // D4: `/fast` no lleva el descuento que pide aprobación ni su PIN: la venta crea su orden.
-                cart.descuentoDeCatalogoQueViaja != null)
+                (cart.orderDiscount?.pideAprobacion == true && cart.descuentoDeCatalogoQueViaja != null))
 
     /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
     private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()

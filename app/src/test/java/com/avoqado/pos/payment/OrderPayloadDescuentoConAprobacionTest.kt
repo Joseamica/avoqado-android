@@ -29,11 +29,15 @@ class OrderPayloadDescuentoConAprobacionTest {
     private val playera = OrderItemRequest(productId = "playera", name = "Playera", quantity = 1, unitPrice = 10000)
     private val importe = OrderItemRequest(productId = null, name = "Otro importe", quantity = 1, unitPrice = 10000)
 
-    private fun pedido(items: List<OrderItemRequest> = listOf(playera), descuento: Int = 1000, etiqueta: String? = "d-gerente") =
-        CreateOrderRequest(
-            items = items, subtotal = 10000, discount = descuento, total = 10000 - descuento, paymentMethod = "CASH",
-            descuentoDeCatalogoId = etiqueta,
-        )
+    private fun pedido(
+        items: List<OrderItemRequest> = listOf(playera),
+        descuento: Int = 1000,
+        etiqueta: String? = "d-gerente",
+        pideAprobacion: Boolean = true,
+    ) = CreateOrderRequest(
+        items = items, subtotal = 10000, discount = descuento, total = 10000 - descuento, paymentMethod = "CASH",
+        descuentoDeCatalogoId = etiqueta, descuentoDeCatalogoPideAprobacion = pideAprobacion,
+    )
 
     private fun cuerpo(request: CreateOrderRequest) =
         Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(request, staffId = "s1")).jsonObject
@@ -53,9 +57,20 @@ class OrderPayloadDescuentoConAprobacionTest {
     }
 
     @Test
-    fun `una venta de puros importes con la etiqueta crea su orden (no va por FAST)`() {
+    fun `una venta de puros importes con un descuento que pide aprobacion crea su orden (no va por FAST)`() {
         assertTrue(OrderRepository.aceptaCrearOrden(pedido(items = listOf(importe))))
         assertFalse(OrderRepository.aceptaCrearOrden(pedido(items = listOf(importe), etiqueta = null)))
+        // Uno que (según el carrito) no la pide sigue por el cobro rápido como hoy.
+        assertFalse(OrderRepository.aceptaCrearOrden(pedido(items = listOf(importe), pideAprobacion = false)))
+    }
+
+    @Test
+    fun `Codex r2 #2 - un descuento del catalogo sin aprobacion en la foto tambien lleva la etiqueta (decide el SERVIDOR)`() {
+        val delCatalogo = gerencial.copy(id = "cmn3a6xr8000kn227eg8zeh50", requiresApproval = false)
+        assertEquals("cmn3a6xr8000kn227eg8zeh50", CartState(items = listOf(linea), orderDiscount = delCatalogo).descuentoDeCatalogoQueViaja)
+        // Uno que arma la caja (manual, cortesía) no es del catálogo: sin etiqueta.
+        assertNull(CartState(items = listOf(linea), orderDiscount = delCatalogo.copy(id = "manual_1731446400000")).descuentoDeCatalogoQueViaja)
+        assertFalse(CartState(items = listOf(linea), orderDiscount = delCatalogo).pideAprobacionDeGerente)
     }
 
     // MARK: - El carrito decide qué viaja
@@ -108,7 +123,7 @@ class OrderPayloadDescuentoConAprobacionTest {
     }
 
     @Test
-    fun `regresion - un descuento sin aprobacion no pide nada ni lleva etiqueta`() {
+    fun `regresion - un descuento que no es del catalogo y no pide aprobacion no pide nada ni lleva etiqueta`() {
         val carrito = CartState(items = listOf(linea), orderDiscount = gerencial.copy(requiresApproval = false))
         assertFalse(carrito.pideAprobacionDeGerente)
         assertNull(carrito.descuentoDeCatalogoQueViaja)

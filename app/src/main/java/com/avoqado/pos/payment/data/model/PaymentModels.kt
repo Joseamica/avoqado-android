@@ -242,10 +242,12 @@ data class CreateOrderRequest(
     /** D2: el token del PIN de gerente atado al monto. Viaja en el CUERPO, nunca en `X-Permission-Override` ni en la llave. */
     val autorizacionDelDescuento: String? = null,
     /**
-     * D4: el id del descuento de cuenta del catálogo que pide aprobación ([com.avoqado.pos.pos.presentation.cart.CartState.descuentoDeCatalogoQueViaja]).
-     * Etiqueta junto a [discount], que no cambia; hace que la venta lleve ORDEN aunque sean puros importes. Null = el cuerpo no cambia.
+     * D4: el id del descuento de cuenta del catálogo ([com.avoqado.pos.pos.presentation.cart.CartState.descuentoDeCatalogoQueViaja]).
+     * Etiqueta junto a [discount], que no cambia: el SERVIDOR revisa si pide aprobación. Null = el cuerpo no cambia.
      */
     val descuentoDeCatalogoId: String? = null,
+    /** D4, sólo en el aparato (no viaja): ese descuento pide aprobación, así que la venta lleva ORDEN aunque sean puros importes. */
+    val descuentoDeCatalogoPideAprobacion: Boolean = false,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */

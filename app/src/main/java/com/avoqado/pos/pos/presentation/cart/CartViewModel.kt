@@ -186,12 +186,15 @@ data class CartState(
             items.any { it.itemDiscountPideAprobacion && !it.itemDiscountId.isNullOrBlank() && !it.isCortesia }
 
     /**
-     * D4: el id del descuento de CUENTA del catálogo que pide aprobación. Viaja como etiqueta junto al importe (`discount`, que no
-     * cambia) para que el SERVIDOR revise el permiso y guarde quién lo aprobó. No para cupón (el servidor lo busca por su código),
-     * referido ni descuento del cliente (traen su propio `source`).
+     * D4: el id del descuento de CUENTA del catálogo. Viaja como etiqueta junto al importe (`discount`, que no cambia) para que el
+     * SERVIDOR revise con SU catálogo si pide aprobación y guarde quién la dio. Codex r2 #2: también cuando la foto del carrito dice
+     * que no la pide (el catálogo pudo cambiar después): manda el SERVIDOR. No para cupón (el servidor lo busca por su código),
+     * referido, descuento del cliente, cortesía ni manual (traen `source` o un id que no es del catálogo).
      */
     val descuentoDeCatalogoQueViaja: String?
-        get() = orderDiscount?.takeIf { it.pideAprobacion && it.couponCode == null && it.source == null && orderDiscountCents > 0 }?.id
+        get() = orderDiscount?.takeIf {
+            it.couponCode == null && it.source == null && orderDiscountCents > 0 && (it.pideAprobacion || ID_DEL_CATALOGO.matches(it.id))
+        }?.id
 
     /** D2: el token del PIN de ESE descuento, si lo hay. Va en el cuerpo de la venta, nunca en el encabezado ni en la llave. */
     val autorizacionQueViaja: String?
@@ -402,6 +405,9 @@ const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no 
 /** hz:e0b12f00:D2: el «Descuento de la cuenta» deja los productos en $0 y quien cobra no puede dar cortesías. */
 const val CORTESIA_NO_PAGAR_DESPUES =
     "Este descuento deja la cuenta en \$0: es una cortesía. Cóbrala para que un gerente la autorice con su PIN, o quita el descuento."
+/** D4: el id de una fila del catálogo (cuid v1 del SERVIDOR). Los descuentos que arma la caja llevan prefijo (`manual_`, `cortesia_`…). */
+private val ID_DEL_CATALOGO = Regex("^c[a-z0-9]{24}$")
+
 /** D4: «Pagar después» con un descuento que pide aprobación, sin el permiso. */
 const val APROBACION_NO_PAGAR_DESPUES =
     "Este descuento necesita la aprobación de un gerente. Cobra la venta para que la autorice con su PIN, o quita el descuento."
@@ -3344,6 +3350,7 @@ class CartViewModel @Inject constructor(
                 descuentoDelClienteId = venta.descuentoDelClienteQueViaja,
                 autorizacionDelDescuento = venta.autorizacionQueViaja,
                 descuentoDeCatalogoId = venta.descuentoDeCatalogoQueViaja,
+                descuentoDeCatalogoPideAprobacion = venta.orderDiscount?.pideAprobacion == true,
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")

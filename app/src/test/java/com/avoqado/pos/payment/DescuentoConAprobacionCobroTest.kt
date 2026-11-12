@@ -196,6 +196,18 @@ class DescuentoConAprobacionCobroTest {
     }
 
     @Test
+    fun `Codex r2 #1 - la red cae al crear la venta - no se encola, lo dice (aunque ya hubo PIN o sea el gerente)`() = runTest {
+        every { roles.canApproveDiscounts } returns true
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("se cayó la red"))
+        cobrarEnEfectivo(conGerencial())
+        advanceUntilIdle()
+
+        assertEquals(DESCUENTO_CON_APROBACION_SIN_RED, (vm.state.value as PaymentFlowState.Error).message)
+        nadaSeEncolo()
+    }
+
+    @Test
     fun `PIN apagado - lo dice y no sale nada`() = runTest {
         pinPrendido.value = false
         cobrarEnEfectivo(conGerencial())
