@@ -6226,11 +6226,15 @@ class PaymentFlowViewModel @Inject constructor(
     fun cobroDeMesaSinRed(): Boolean = mesaDelCobro?.cobroSinRed == true
 
     /**
-     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden, sin mesa, sin dividir) que un descuento deja en $0.
-     * No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin «Ya pagó
-     * de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la deja
-     * en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
+     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden creada todavía, sin mesa, sin dividir) que un descuento
+     * deja en $0. No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin
+     * «Ya pagó de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la
+     * deja en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
      * (`PaymentFlowViewModel.ventaRapidaEnCero`, mismo texto).
+     *
+     * D2: «sin orden» es la de ANTES de cobrar. Ese efectivo de $0 casi siempre va por `/fast`, pero con el cupón o el descuento del
+     * cliente ([esVentaRapidaDividida]) crea su orden. Con el del cliente es una cortesía y, sin `orders:comp`, pide antes el PIN de un
+     * gerente ([primeroElPinDeCortesia]); el cupón no (lo calcula el SERVIDOR).
      */
     fun ventaRapidaEnCero(): Boolean {
         val cart = cartState ?: return false
@@ -6238,10 +6242,15 @@ class PaymentFlowViewModel @Inject constructor(
             esPagoCompleto() && currentBaseAmount() == 0
     }
 
-    /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
+    /**
+     * ¿La venta de puros importes (sin productos) crea ORDEN en vez de ir por `/fast`? Misma regla que
+     * `OrderRepository.aceptaCrearOrden`, y la usan el cobro con tarjeta, el de efectivo y el PIN de la cortesía. Sí cuando:
+     * - se cobra EN PARTES: la parte 1 crea su orden y las siguientes le abonan (D2 etapa 2);
+     * - lleva cupón (D5): un cobro rápido no tiene orden donde ligarlo y el cupón nunca contaría;
+     * - lleva el descuento del cliente (D2, spec punto 15): `/fast` no lleva descuento, etiqueta ni PIN; tampoco sin red.
+     * El nombre viene del primer caso; no se cambió para no tocar sus llamadas.
+     */
     private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
-        // D5: con cupón también, para que el cupón tenga una orden donde ligarse y contar. D2 (spec punto 15): y con el descuento
-        // del cliente: `/fast` no lleva descuento ni etiqueta, así que nunca va por ahí (tampoco sin red).
         cart != null && cart.items.isNotEmpty() &&
             (split != "FULLPAYMENT" || cart.couponCode != null || cart.descuentoDelClienteQueViaja != null)
 

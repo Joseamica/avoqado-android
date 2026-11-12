@@ -2,6 +2,7 @@ package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.core.di.registroDeRed
 import com.avoqado.pos.payment.Q16PrecioCapturadoTest.Companion.VENUE
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.OrderRepository
@@ -115,6 +116,29 @@ class OrderPayloadDescuentoDelClienteTest {
         }
     }
 
+    /**
+     * El token vive 7 días y ahora viaja en el CUERPO: el log de red de depuración (nivel BODY, `registroDeRed`) lo taparía en el
+     * encabezado pero no aquí. Pasa por el cliente del dinero (crear la venta) y por el de «Pagar después», que nacen del compartido.
+     */
+    @Test
+    fun `7a el log de depuracion nunca copia el token del descuento, y el servidor si lo recibe`() = runBlocking {
+        val lineas = mutableListOf<String>()
+        val conLog = OkHttpClient.Builder().addInterceptor(registroDeRed(depuracion = true) { lineas += it }).build()
+        conRepositorio(conLog) { server, repositorio ->
+            server.enqueue(creada())
+            server.enqueue(creada())
+            repositorio.createOrder(pedido(token = "tok-secreto"), "staff-A", customerId = "c-cecilia", externalId = "venta-1")
+            repositorio.enviarPagarDespues(
+                "venue-A",
+                OrderRepository.buildCreateOrderPayload(pedido(token = "tok-secreto"), "staff-A", "c-cecilia", externalId = "pay-later:1"),
+            )
+
+            repeat(2) { assertTrue("el cuerpo sí lleva el token", "tok-secreto" in server.takeRequest().body.readUtf8()) }
+            assertTrue("no se registró ningún cuerpo", lineas.count { "\"autorizacionDelDescuento\"" in it } == 2)
+            assertFalse(lineas.joinToString("\n"), lineas.any { "tok-secreto" in it })
+        }
+    }
+
     @Test
     fun `7a el carrito dice que etiqueta y que token viajan`() {
         val linea = CartItem(id = "l", type = CartItemType.ProductItem("playera"), name = "Playera", unitPrice = 10000)
@@ -225,13 +249,13 @@ class OrderPayloadDescuentoDelClienteTest {
     private fun creada() = MockResponse().setResponseCode(201)
         .setBody("""{"success":true,"data":{"id":"orden-1","orderNumber":"ORD-7","total":90}}""")
 
-    private suspend fun conRepositorio(block: suspend (MockWebServer, OrderRepository) -> Unit) {
+    private suspend fun conRepositorio(cliente: OkHttpClient = OkHttpClient(), block: suspend (MockWebServer, OrderRepository) -> Unit) {
         val server = MockWebServer().apply { start() }
         try {
             val storage = mockk<SecureStorage>(relaxed = true)
             every { storage.venueId } returns "venue-A"
             every { storage.accessToken } returns "token-QA"
-            val repositorio = OrderRepository(storage, OkHttpClient()).apply {
+            val repositorio = OrderRepository(storage, cliente).apply {
                 baseUrl = server.url("/api/v1").toString().trimEnd('/')
             }
             block(server, repositorio)

@@ -102,13 +102,20 @@ object NetworkModule {
 
 /**
  * El log de red de depuración (en release no registra nada). 🔴 Tapa los dos headers que valen algo por sí solos: la sesión y la
- * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11).
+ * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11). Y la del descuento del cliente, que vive 7 días y viaja en
+ * el CUERPO de la venta (`autorizacionDelDescuento`, D2): la tapa en el texto que se registra, así vale para todo cliente que nace
+ * del compartido (crear la venta, «Pagar después», `pay-new-order` y la cola sin red).
  */
 internal fun registroDeRed(
     depuracion: Boolean,
     logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT,
-): HttpLoggingInterceptor = HttpLoggingInterceptor(logger).apply {
+): HttpLoggingInterceptor = HttpLoggingInterceptor { linea -> logger.log(taparAutorizacionDelDescuento(linea)) }.apply {
     redactHeader("Authorization")
     redactHeader(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
     level = if (depuracion) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
 }
+
+private val AUTORIZACION_DEL_DESCUENTO = Regex("(\"autorizacionDelDescuento\"\\s*:\\s*)\"(?:[^\"\\\\]|\\\\.)*\"")
+
+private fun taparAutorizacionDelDescuento(linea: String): String =
+    if ("autorizacionDelDescuento" !in linea) linea else AUTORIZACION_DEL_DESCUENTO.replace(linea, "$1\"██\"")
