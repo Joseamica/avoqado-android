@@ -305,15 +305,18 @@ class MoreMenuViewModel @Inject constructor(
      * Devuelve el resultado tal cual para que la hoja pinte el error INLINE: alguien que teclea
      * mal su PIN no merece una pantalla de error — va a volver a teclear.
      *
-     * 🔴 Con trabajo offline pendiente NO se cambia, y se reusa la MISMA guarda que el cambio de
-     * establecimiento (`blockingWorkCount`), no una nueva: el servidor rechaza una venta cuyo
-     * autor no coincide con la sesión (`ACTOR_MISMATCH`), así que relevar con cosas en la cola las
-     * dejaría trabadas y sin dueño. Es el mismo riesgo, y ya estaba resuelto aquí al lado.
+     * 🔴 Con trabajo offline SIN ENVIAR NO se cambia: el servidor rechaza una venta cuyo autor no
+     * coincide con la sesión (`ACTOR_MISMATCH`), así que relevar con cosas en la cola las dejaría
+     * trabadas y sin dueño.
+     *
+     * Lo rechazado («Operaciones por revisar») NO frena (D28): no vuelve a salir solo, y sólo un
+     * gerente lo resuelve EN la sesión abierta, así que frenarlo dejaba al mesero sin poder dejarlo
+     * entrar. Su reintento manda al autor original. Cerrar sesión y cambiar de sucursal sí lo cuentan.
      */
     suspend fun switchUser(pin: String): SwitchUserResult {
         val currentVenueId = secureStorage.venueId
-        val blocking = paymentSyncService.blockingWorkCount() +
-            (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
+        val blocking = paymentSyncService.sinEnviarCount() +
+            (currentVenueId?.let { syncOutbox.sinEnviarCount(it) } ?: 0) +
             secureStorage.areaTicketRecoveryCount(currentVenueId) +
             // Codex r3 #12: el replay del cajón usa la sesión vigente; con un retiro sin subir, saldría a nombre de quien entra.
             (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
