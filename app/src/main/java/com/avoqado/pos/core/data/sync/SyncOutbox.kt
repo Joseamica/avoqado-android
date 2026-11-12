@@ -6,6 +6,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.IntentSinResolver
 import com.avoqado.pos.core.data.local.database.SyncIntentDao
 import com.avoqado.pos.core.data.local.database.SyncIntentEntity
+import com.avoqado.pos.core.data.local.database.esMesaConSaldo
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -726,8 +727,8 @@ class SyncOutbox @Inject constructor(
     )
 
     suspend fun rejectedIntents(venueId: String): List<QuarantinedIntent> =
-        // D5 · B3 (C3): el mismo «Liberar mesa» rechazado dos veces (la mesa sigue debiendo) se ve una vez: el más reciente.
-        dao.rejectedIntents(venueId).distinctBy { if (it.type == "CLEAR_TABLE") "CLEAR_TABLE|${it.payloadJson}" else it.id }.map {
+        // D5 · B3 (C3): el mismo «Liberar mesa» rechazado dos veces porque la mesa sigue debiendo se ve una vez: el más reciente.
+        dao.rejectedIntents(venueId).distinctBy { if (it.esMesaConSaldo()) "CLEAR_TABLE|${it.payloadJson}" else it.id }.map {
             QuarantinedIntent(it.id, it.type, it.errorCode, it.message, it.createdAt)
         }
 
@@ -738,9 +739,9 @@ class SyncOutbox @Inject constructor(
         val fila = dao.findForVenue(venueId, id)
         fotos?.let { f -> fila?.let { f.borrarAntesDe(it.payloadJson) } }
         dao.dismiss(id)
-        // D5 · B3 (C3): resolver el «Liberar mesa» que se ve resuelve también sus gemelos escondidos (misma mesa).
-        if (fila?.type == "CLEAR_TABLE") dao.rejectedIntents(venueId)
-            .filter { it.id != id && it.type == fila.type && it.payloadJson == fila.payloadJson }.forEach { dao.dismiss(it.id) }
+        // D5 · B3 (C3): resolver el «Liberar mesa» que se ve resuelve también sus gemelos escondidos (misma mesa, mismo motivo).
+        if (fila?.esMesaConSaldo() == true) dao.rejectedIntents(venueId)
+            .filter { it.id != id && it.esMesaConSaldo() && it.payloadJson == fila.payloadJson }.forEach { dao.dismiss(it.id) }
         refreshCounts(venueId)
     }
 

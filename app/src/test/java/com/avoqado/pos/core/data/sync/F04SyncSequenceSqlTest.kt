@@ -157,12 +157,13 @@ class F04SyncSequenceSqlTest {
 
     @Test fun `B3 C3 el mismo Liberar mesa rechazado dos veces cuenta una, de su sucursal`() = runBlocking {
         Fixture().use { f ->
-            fun liberar(id: String, mesa: String, venue: String = "v1") =
-                intent(id, venue, "REJECTED").copy(type = "CLEAR_TABLE", payloadJson = """{"tableId":"$mesa"}""")
+            fun liberar(id: String, mesa: String, venue: String = "v1") = intent(id, venue, "REJECTED").copy(type = "CLEAR_TABLE",
+                payloadJson = """{"tableId":"$mesa"}""", errorCode = "BUSINESS_RULE", message = "Cannot clear table with unpaid order ORD-$id")
             for (fila in listOf(liberar("c6", "t-6"), liberar("c14", "t-6"), liberar("c15", "t-7"), intent("cobro", status = "REJECTED"),
                 intent("ronda-a", status = "REJECTED").copy(type = "ADD_ITEMS"), intent("ronda-b", status = "REJECTED").copy(type = "ADD_ITEMS"),
-                liberar("otra", "t-6", "v2"), liberar("ok", "t-6").copy(status = "ACKED"))) f.write { f.dao.insertWithNextSeq(fila) }
-            assertEquals("t-6 una vez, t-7, el cobro y las dos rondas", 5, f.dao.rejectedCount("v1"))
+                liberar("otra", "t-6", "v2"), liberar("ok", "t-6").copy(status = "ACKED"),
+                liberar("otro-motivo", "t-6").copy(errorCode = "TABLE_OWNED_BY_OTHER", message = "Table owned by another waiter"))) f.write { f.dao.insertWithNextSeq(fila) }
+            assertEquals("t-6 una vez, t-6 por otro motivo, t-7, el cobro y las dos rondas", 6, f.dao.rejectedCount("v1"))
             assertEquals(1, f.dao.rejectedCount("v2"))
         }
     }

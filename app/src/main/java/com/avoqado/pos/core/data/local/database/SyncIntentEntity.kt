@@ -28,8 +28,17 @@ data class FilaSinResolver(
 )
 
 /** D5 · B2b: lo que la foto de una mesa necesita de la cola: lo posterior a ella (cualquier estado) y lo que sigue sin resolver. */
-/** D5 · B3 (C3): el mismo «Liberar mesa» rechazado varias veces (misma mesa) cuenta una sola vez, como se ve en la lista. */
-internal const val REJECTED_COUNT_SQL = "SELECT COUNT(*) FROM (SELECT 1 FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' AND q15Reason IS NULL GROUP BY CASE WHEN type = 'CLEAR_TABLE' THEN 'CLEAR_TABLE|' || payload_json ELSE id END)"
+/** D5 · B3 (C3): el rechazo de «Liberar mesa» porque la cuenta debe (código genérico `BUSINESS_RULE`, texto del SERVIDOR). */
+internal const val RECHAZO_MESA_CON_SALDO = "Cannot clear table with unpaid order"
+/**
+ * El mismo «Liberar mesa» rechazado varias veces porque la cuenta debe (misma mesa) cuenta una vez, como se ve en la lista. Un rechazo
+ * con otro motivo cuenta aparte (Codex b2b-r4).
+ */
+internal const val REJECTED_COUNT_SQL = "SELECT COUNT(*) FROM (SELECT 1 FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' AND q15Reason IS NULL GROUP BY CASE WHEN type = 'CLEAR_TABLE' AND error_code = 'BUSINESS_RULE' AND message LIKE '$RECHAZO_MESA_CON_SALDO%' THEN 'CLEAR_TABLE|' || payload_json ELSE id END)"
+
+/** El «Liberar mesa» rechazado porque la cuenta debe: sus gemelos (misma mesa, mismo motivo) se ven y se resuelven juntos. */
+internal fun SyncIntentEntity.esMesaConSaldo() =
+    type == "CLEAR_TABLE" && errorCode == "BUSINESS_RULE" && message?.startsWith(RECHAZO_MESA_CON_SALDO) == true
 internal const val FILAS_DESDE_SQL = "SELECT id, type, status, seq, payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND (seq > :desde OR status IN ('PENDING','HELD','REJECTED'))"
 
 data class FilaConSecuencia(

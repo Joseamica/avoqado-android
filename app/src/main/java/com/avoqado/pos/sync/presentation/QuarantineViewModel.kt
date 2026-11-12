@@ -522,11 +522,11 @@ class QuarantineViewModel @Inject constructor(
      */
     fun describeMessage(type: String, message: String?): String? {
         if (!mesaConSaldo(type, message)) return message
-        val cuenta = message!!.removePrefix(MESA_CON_SALDO).trim()
+        val cuenta = message!!.removePrefix(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO).trim()
         return "La mesa sigue ocupada: la cuenta ${if (cuenta.isEmpty()) "" else "$cuenta "}todavía debe."
     }
 
-    private fun mesaConSaldo(type: String, message: String?) = type == "CLEAR_TABLE" && message?.startsWith(MESA_CON_SALDO) == true
+    private fun mesaConSaldo(type: String, message: String?) = type == "CLEAR_TABLE" && message?.startsWith(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO) == true
 
     /** Guía de resolución según la razón del rechazo. */
     fun resolutionHint(errorCode: String?, type: String, message: String? = null): String = if (mesaConSaldo(type, message)) {
@@ -598,5 +598,3 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 }
-
-private const val MESA_CON_SALDO = "Cannot clear table with unpaid order"

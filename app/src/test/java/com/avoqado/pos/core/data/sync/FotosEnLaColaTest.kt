@@ -171,14 +171,17 @@ class FotosEnLaColaTest {
     @Test fun `B3 C3 el mismo Liberar mesa rechazado dos veces se ve una vez y se resuelve junto`() = runTest {
         val viejo = liberar("clear-6", 6, "t-6", 1); val nuevo = liberar("clear-14", 14, "t-6", 2); val otraMesa = liberar("clear-15", 15, "t-7", 3)
         val rondaRechazada = ronda.copy(status = SyncIntentEntity.STATUS_REJECTED)
-        coEvery { dao.rejectedIntents("v1") } returns listOf(otraMesa, nuevo, viejo, rondaRechazada)
+        // Codex b2b-r4: la misma mesa rechazada por OTRO motivo es otra revisión: se ve y se resuelve aparte.
+        val otroMotivo = liberar("clear-16", 16, "t-6", 4).copy(errorCode = "TABLE_OWNED_BY_OTHER", message = "Table owned by another waiter")
+        coEvery { dao.rejectedIntents("v1") } returns listOf(otroMotivo, otraMesa, nuevo, viejo, rondaRechazada)
         val subject = cola()
-        assertEquals(listOf("clear-15", "clear-14", "ronda-1"), subject.rejectedIntents("v1").map { it.id })
+        assertEquals(listOf("clear-16", "clear-15", "clear-14", "ronda-1"), subject.rejectedIntents("v1").map { it.id })
         coEvery { dao.findForVenue("v1", "clear-14") } returns nuevo
         subject.dismissRejected("v1", "clear-14")
         coVerify(exactly = 1) { dao.dismiss("clear-14") }
         coVerify(exactly = 1) { dao.dismiss("clear-6") }
         coVerify(exactly = 0) { dao.dismiss("clear-15") }
+        coVerify(exactly = 0) { dao.dismiss("clear-16") }
         coVerify(exactly = 0) { dao.dismiss("ronda-1") }
     }
 }
