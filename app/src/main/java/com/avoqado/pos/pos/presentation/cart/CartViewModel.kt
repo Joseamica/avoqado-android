@@ -2583,20 +2583,31 @@ class CartViewModel @Inject constructor(
     /** false mientras la venta se cobra por partes contra una orden que ya existe. */
     fun puedeCambiarPremio(): Boolean = _pendingSplitOrder.value == null
 
-    /** D2: la lista de clientes pasa el cliente que recibió, con su descuento (spec r4 #1: nunca se vuelve a buscar en memoria). */
+    /**
+     * D2: la lista de clientes pasa el cliente que recibió, con su descuento (spec r4 #1: nunca se vuelve a buscar en memoria). Es la
+     * lectura más nueva del cliente: su descuento —o su `null`— manda aunque sea el mismo cliente (C10, Codex r5 #2).
+     */
     fun setSelectedCustomer(customer: com.avoqado.pos.customers.data.model.Customer) =
-        setSelectedCustomer(customer.id, customer.fullName, customer.descuentoDelCliente)
+        elegirCliente(customer.id, customer.fullName, customer.descuentoDelCliente, traeSuDescuento = true)
 
+    /** Tarjeta escaneada, alta nueva, quitar al cliente: sin descuento, el MISMO cliente conserva el que ya se sabía. */
     fun setSelectedCustomer(
         customerId: String?,
         customerName: String? = null,
         descuentoDelCliente: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
+    ) = elegirCliente(customerId, customerName, descuentoDelCliente, traeSuDescuento = false)
+
+    private fun elegirCliente(
+        customerId: String?,
+        customerName: String?,
+        descuentoDelCliente: com.avoqado.pos.customers.data.model.DescuentoDelCliente?,
+        traeSuDescuento: Boolean,
     ) {
         val anterior = _selectedCustomer.value
         val previous = anterior?.id
         val id = customerId?.trim()?.takeIf { it.isNotEmpty() }
         // D2: la tarjeta escaneada del MISMO cliente no trae su descuento; se conserva el que ya se sabía.
-        val descuento = descuentoDelCliente ?: anterior?.descuentoDelCliente?.takeIf { previous == id }
+        val descuento = if (traeSuDescuento) descuentoDelCliente else descuentoDelCliente ?: anterior?.descuentoDelCliente?.takeIf { previous == id }
         val nuevo = id?.let { SelectedCustomer(it, customerName?.trim()?.takeIf { n -> n.isNotEmpty() } ?: "Cliente", descuento) }
         if (_selectedCustomer.value == nuevo) return
         _selectedCustomer.value = nuevo
@@ -2619,6 +2630,22 @@ class CartViewModel @Inject constructor(
                 // Customer changed (incl. switch-to-null). Any cached referral
                 // state is for the previous customer, drop it.
                 clearReferral()
+            }
+        } else if (anterior?.descuentoDelCliente != descuento && !hayVentaAMedias() && !cobrandoUnaMesa()) {
+            // D2 (C10, Codex r5 #2): el MISMO cliente volvió con otro descuento (el panel lo cambió o se lo quitó). Lo marcado con los
+            // datos viejos se va y abajo se vuelve a poner con los nuevos (un «Quitar» de esta venta se respeta). El PIN de OTRO
+            // descuento se va; si sólo cambió el monto, el tope del PIN decide.
+            _cartState.update { e ->
+                val marcado = e.orderDiscount?.takeIf { e.descuentoEsDelCliente }
+                val viejo = marcado != null && (
+                    descuento == null || marcado.id != descuento.discountId || marcado.type != descuento.type ||
+                        marcado.value != descuento.value || marcado.maxDiscountAmount != descuento.maxDiscountAmount
+                    )
+                e.copy(
+                    orderDiscount = e.orderDiscount.takeUnless { viejo },
+                    descuentoDeCuentaCongelado = e.descuentoDeCuentaCongelado.takeUnless { viejo },
+                    autorizacionDelDescuento = e.autorizacionDelDescuento?.takeIf { it.discountId == descuento?.discountId },
+                )
             }
         }
         ponerDescuentoDelClienteSiToca()

@@ -865,4 +865,92 @@ class CartViewModelDescuentoDelClienteTest {
         assertNull(vm.cartState.value.orderDiscount)
         assertEquals(10000, vm.cartState.value.totalCents)
     }
+
+    // MARK: - R5 · volver a elegir al MISMO cliente toma su descuento nuevo (spec C10, Codex r5 #2)
+
+    private fun ceciliaCon(d: DescuentoDelCliente?) = cecilia.copy(descuentoDelCliente = d)
+
+    @Test
+    fun `R5 el panel bajo a Cecilia de 20 a 10 por ciento y volver a elegirla cobra 90, no 80`() {
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.setSelectedCustomer(ceciliaCon(DescuentoDelCliente("d-10", "Cliente frecuente", "PERCENTAGE", 20.0)))
+        assertEquals(2000, vm.cartState.value.orderDiscountCents)
+
+        vm.setSelectedCustomer(cecilia) // la búsqueda nueva ya trae el 10 %
+
+        assertEquals(DESCUENTO_DEL_CLIENTE_SOURCE, vm.cartState.value.orderDiscount?.source)
+        assertEquals(10.0, vm.cartState.value.orderDiscount!!.value, 0.0)
+        assertEquals(1000, vm.cartState.value.orderDiscountCents)
+        assertEquals(9000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `R5 el panel le quito el descuento a Cecilia y volver a elegirla lo quita sin aviso`() {
+        val vm = carrito().conPlayeraYCecilia()
+
+        vm.setSelectedCustomer(ceciliaCon(null))
+
+        assertNull(vm.selectedCustomer.value?.descuentoDelCliente)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(10000, vm.cartState.value.totalCents)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        // Y su tarjeta escaneada (sólo id y nombre) no lo regresa: lo último que se leyó es que no tiene.
+        vm.setSelectedCustomer("c-cecilia", "FULLTEST-Cecilia")
+        assertNull(vm.cartState.value.orderDiscount)
+    }
+
+    @Test
+    fun `R5 otro discountId tira el PIN del descuento viejo y sin permiso se vuelve a pedir`() {
+        permisos = listOf("orders:read")
+        val vm = carrito().conPlayeraYCecilia()
+        autorizarConPin(vm)
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+
+        vm.setSelectedCustomer(ceciliaCon(DescuentoDelCliente("d-15", "Socio", "PERCENTAGE", 15.0)))
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        val aviso = vm.avisoDescuentoDelCliente.value!!
+        assertEquals("FULLTEST-Cecilia tiene 15 % de descuento. Tu puesto no puede aplicarlo.", aviso.texto)
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, aviso.accion)
+        assertTrue(vm.puedeCrearOrdenConDescuentoDelCliente())
+    }
+
+    @Test
+    fun `R5 mismo discountId con mas monto conserva el PIN y el tope decide`() {
+        permisos = listOf("orders:read")
+        val vm = carrito().conPlayeraYCecilia()
+        autorizarConPin(vm) // tope $10.00
+
+        vm.setSelectedCustomer(ceciliaCon(DescuentoDelCliente("d-10", "Cliente frecuente", "PERCENTAGE", 20.0)))
+
+        assertEquals(2000, vm.cartState.value.orderDiscountCents)
+        assertEquals(AutorizacionDelDescuento("tok-1", 1000, "c-cecilia", "d-10"), vm.cartState.value.autorizacionDelDescuento)
+        assertEquals("El descuento de FULLTEST-Cecilia subió a $20.00: pide autorización otra vez.", vm.avisoDescuentoDelCliente.value?.texto)
+        assertFalse(vm.puedeCrearOrdenConDescuentoDelCliente())
+    }
+
+    @Test
+    fun `R5 la tarjeta escaneada del mismo cliente conserva el descuento que ya se sabia`() {
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.setSelectedCustomer(ceciliaCon(DescuentoDelCliente("d-10", "Cliente frecuente", "PERCENTAGE", 20.0)))
+
+        vm.setSelectedCustomer("c-cecilia", "Cecilia Escaneada")
+
+        assertEquals(20.0, vm.selectedCustomer.value?.descuentoDelCliente?.value)
+        assertEquals(2000, vm.cartState.value.orderDiscountCents)
+    }
+
+    @Test
+    fun `R5 un Quitar de esta venta se respeta aunque el descuento nuevo sea otro`() {
+        val vm = carrito().conPlayeraYCecilia()
+        vm.quitarDescuentoDelCliente()
+
+        vm.setSelectedCustomer(ceciliaCon(DescuentoDelCliente("d-15", "Socio", "PERCENTAGE", 15.0)))
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(10000, vm.cartState.value.totalCents)
+    }
 }
