@@ -1054,7 +1054,7 @@ class TableOrderCuentaGarantizadaTest {
     // D3 (11-nov, ensayo 27): sin internet, la caja abrió una mesa que tomó otro aparato. Sin poder leer su cuenta decía
     // «no tiene cargos. Agrega productos…»; la cajera recapturó y al volver la red el SERVIDOR sumó las dos rondas ($90 por $45).
     private val sinLeer = "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. " +
-        "Cóbrala en el aparato donde se tomó la orden o cuando vuelva la conexión."
+        "No vuelvas a capturar lo que ya se pidió: cóbrala cuando vuelva la conexión."
     private val sinCargos = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
 
     @Test fun `P1 sin leer la cuenta del servidor no dice que no tiene cargos ni invita a recapturar`() = runTest {
@@ -1101,6 +1101,8 @@ class TableOrderCuentaGarantizadaTest {
             acks.emit(SyncAck("ajena", "ACKED", result = buildJsonObject { put("orderId", "otra") })); advanceUntilIdle()
             acks.emit(SyncAck("rechazada", "REJECTED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
             assertEquals("Un acuse ajeno o un rechazo no lo quitan", aviso, subject.blockedNotice.value)
+            acks.emit(SyncAck("primera", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertEquals("Codex r1: con otra ronda todavía en la cola, el aviso sigue siendo cierto", aviso, subject.blockedNotice.value)
             coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns empty
             acks.emit(SyncAck("ronda", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
             assertNull(subject.blockedNotice.value)

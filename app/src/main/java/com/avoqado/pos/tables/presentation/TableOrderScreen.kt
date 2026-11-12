@@ -144,7 +144,10 @@ fun TableOrderScreen(
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
     val cuentaCompletaAqui = chequeAlDia.let { viewModel.cuentaCompletaAqui }
     // Un cambio propio en curso (asignar, comensales…) baja `chequeAlDia` un momento: es «actualizando», no «no se puede leer».
-    val cargandoCuenta = isLoadingCheck || chequeAlDia.let { viewModel.hayMutacionEnVuelo }
+    // `cargaPedida`: el primer cuadro se pinta antes de que `loadCheck` arranque; sin esto saldría la línea de «sin leer».
+    var cargaPedida by remember { mutableStateOf(false) }
+    val cargandoCuenta = !cargaPedida || isLoadingCheck || chequeAlDia.let { viewModel.hayMutacionEnVuelo }
+    val cuentaSinLeer = !cuentaCompletaAqui && !cargandoCuenta
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
     val selectedCourse by viewModel.selectedCourse.collectAsState()
@@ -252,7 +255,7 @@ fun TableOrderScreen(
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
     var showPhoneCheck by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { viewModel.loadCheck() }
+    LaunchedEffect(Unit) { viewModel.loadCheck(); cargaPedida = true }
     // TODOS los avisos de esta pantalla pasan por aquí: por qué no se puede mover
     // una cuenta, que un producto está agotado, que la cuenta no tiene cargos.
     //
@@ -485,8 +488,9 @@ fun TableOrderScreen(
                                 // el botón quedaba gris justo cuando más se necesita.
                                 // Hacen falta 2: uno se va y otro se queda.
                                 canSeparar = splittableItems.size >= 2,
+                                cuentaSinLeer = cuentaSinLeer,
                                 separarBlockedReason = if (splittableItems.isEmpty()) {
-                                    "Primero envía a cocina lo que quieras separar."
+                                    if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA else "Primero envía a cocina lo que quieras separar."
                                 } else {
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
@@ -666,8 +670,9 @@ fun TableOrderScreen(
                                 // el botón quedaba gris justo cuando más se necesita.
                                 // Hacen falta 2: uno se va y otro se queda.
                                 canSeparar = splittableItems.size >= 2,
+                                cuentaSinLeer = cuentaSinLeer,
                                 separarBlockedReason = if (splittableItems.isEmpty()) {
-                                    "Primero envía a cocina lo que quieras separar."
+                                    if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA else "Primero envía a cocina lo que quieras separar."
                                 } else {
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
@@ -1547,8 +1552,8 @@ internal fun TableCheckPanel(
                 ) { CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp) }
             }
             // D3 (11-nov): sin leer la cuenta, aquí no se ve lo que pidió otro aparato; «Subtotal (0)» la hacía parecer vacía
-            // y la cajera recapturó todo. Se dice, y que lo que se agregue SE SUMA. Nunca leída aquí: con red no parpadea.
-            if (!cuentaCompletaAqui && check == null && !cargandoCuenta) {
+            // y la cajera recapturó todo. Se dice, y que lo que se agregue SE SUMA. También con una copia vieja vacía (Codex r1).
+            if (!cuentaCompletaAqui && sentItems.isEmpty() && !cargandoCuenta) {
                 Text(
                     text = "La cuenta todavía no se puede leer del servidor, así que aquí no se ve lo que ya tiene. " +
                         "Lo que agregues se suma a esa cuenta.",
@@ -2351,6 +2356,8 @@ internal fun TableActionsPanel(
     canSeparar: Boolean = hasSent,
     /** Por qué no se puede separar: distingue "nada enviado" de "un solo artículo". */
     separarBlockedReason: String = "Primero envía a cocina lo que quieras separar.",
+    /** No se pudo leer la cuenta: «primero envía…» invitaría a recapturar lo que ya tiene (D3, 11-nov). */
+    cuentaSinLeer: Boolean = false,
     /** Sin conexión: cambia el motivo del bloqueo y pinta el ícono de nube. */
     isOffline: Boolean = false,
     /** Se dispara al tocar un botón gris, con el motivo en lenguaje de mesero. */
@@ -2435,7 +2442,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Cortesía en la cuenta",
                 enabled = hasSent,
-                blockedReason = "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
+                blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                    else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
                 onBlocked = onBlocked,
                 onClick = onCompWhole,
                 modifier = Modifier.weight(1f),

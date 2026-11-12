@@ -109,9 +109,14 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
 internal fun motivoSinArticulos(cuentaCompletaAqui: Boolean, cargando: Boolean): String = when {
     cuentaCompletaAqui -> "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
     cargando -> "La cuenta se está actualizando. Intenta en un momento."
-    else -> "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. " +
-        "Cóbrala en el aparato donde se tomó la orden o cuando vuelva la conexión."
+    else -> "$CUENTA_SIN_LEER: cóbrala cuando vuelva la conexión."
 }
+
+/** Codex r1: no se manda a cobrar «en el aparato donde se tomó la orden»: con una ronda en su cola tampoco puede (27b). */
+internal const val CUENTA_SIN_LEER =
+    "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. No vuelvas a capturar lo que ya se pidió"
+internal const val CUENTA_SIN_LEER_ESPERA = CUENTA_SIN_LEER + ": espera a que vuelva la conexión."
+
 
 private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda excede el límite de la cuenta. Ajusta la ronda antes de enviarla."
 
@@ -323,8 +328,6 @@ class TableOrderViewModel @Inject constructor(
                         return@collect
                     }
                     if (!ack.isAcked) return@collect
-                    // 27c (11-nov): el aviso «cambios sin sincronizar» se quedaba junto a «Pagar $90.00» ya sincronizado.
-                    invalidateBlockedNotice()
                     rondasConfirmadas += ack.id
                     if (localRef != null && ackOrder != null) {
                         tableSession.promoteProvisional(vId, localRef, ackOrder,
@@ -335,6 +338,9 @@ class TableOrderViewModel @Inject constructor(
                     }
                     // The ack triggers a refresh; only matching lines in the full check retire the local amount.
                     loadCheck()
+                    // 27c (11-nov): «cambios sin sincronizar» se quedaba junto a «Pagar $90.00» ya sincronizado. Se quita cuando
+                    // ESTA cuenta ya no tiene nada en la cola (la fila se guarda antes del acuse); un acuse parcial no basta.
+                    if (_blockedNotice.value != null && tableSession.current()?.let { leerTrabajo(it) }?.intents == 0) invalidateBlockedNotice()
                 }
             }
         }
