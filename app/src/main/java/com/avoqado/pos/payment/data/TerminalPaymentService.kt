@@ -1129,7 +1129,7 @@ class TerminalPaymentService @Inject constructor(
             // Consta que NO se cobró: reintentar es seguro.
             clearMatching(requestId)
             Log.d("💳", "🚫 Consta que no se cobró: $message")
-            TerminalPaymentResult.Error(message, requestId = requestId).also {
+            TerminalPaymentResult.Error(message, requestId = requestId, motivoDeAdmision = motivoDeAdmision).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
             }
         }
@@ -1485,12 +1485,15 @@ sealed class TerminalPaymentResult {
      *   cobro no se envió a la terminal, así que no hay nada que preguntarle.
      * @param bloqueador C1: el 409 `TERMINAL_BUSY` nombró a OTRA solicitud que ocupa la terminal (o la venta). Sólo dice
      *   quién es, para poder revisarla; no resuelve nada de ella.
+     * @param motivoDeAdmision hz:5bda0b30:D2: [message] es el motivo del SERVIDOR al no admitir el cobro, recuperado por GET
+     *   (ver [CardChargeOutcome.NotCharged]). La consulta tardía lo dice en vez de saltar callada a elegir terminal.
      */
     data class Error(
         val message: String,
         val requestId: String? = null,
         val noSeCreo: Boolean = false,
         val bloqueador: BloqueadorDeCobro? = null,
+        val motivoDeAdmision: Boolean = false,
     ) : TerminalPaymentResult()
 
     /**

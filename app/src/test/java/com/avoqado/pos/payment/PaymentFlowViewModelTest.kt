@@ -3798,6 +3798,37 @@ class PaymentFlowViewModelTest {
     // ══════════════════════════════════════════════════════════════════════════════════════
 
     /** Deja al ViewModel exactamente en «Cobro sin confirmar», que es donde vive el botón. */
+    // hz:5bda0b30:D2 (Codex r1): tras «Cobro sin confirmar», la consulta (la del botón y la automática cada 5 s) recupera la
+    // lápida de admisión del SERVIDOR. Antes saltaba callada a elegir terminal y el «falta $84.00» se perdía; ahora se dice,
+    // igual que cuando el POST sí llega. Cualquier otro «no se cobró» sigue yendo directo a elegir terminal.
+    private suspend fun TestScope.consultaTardiaDeLapida(automatica: Boolean) {
+        val falta = "La cuenta 12 ya tiene un abono: falta \$84.00. Actualiza la cuenta y vuelve a intentar."
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any(), any()) } returns
+            TerminalPaymentResult.Error(falta, requestId = "req-1", motivoDeAdmision = true)
+        viewModel.recheckCardCharge(automatica = automatica)
+        advanceUntilIdle()
+        val estado = viewModel.state.value
+        assertTrue("se dice el motivo, no se salta a elegir terminal: $estado", estado is PaymentFlowState.Error)
+        assertEquals(falta, (estado as PaymentFlowState.Error).message)
+    }
+
+    @Test
+    fun `D2 Volver a consultar una lapida de admision dice el motivo del servidor`() = runTest { consultaTardiaDeLapida(automatica = false) }
+
+    @Test
+    fun `D2 la consulta automatica de una lapida de admision dice el motivo del servidor`() = runTest { consultaTardiaDeLapida(automatica = true) }
+
+    @Test
+    fun `D2 la consulta tardia de un no-se-cobro sin motivo de admision sigue yendo a elegir terminal`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any(), any()) } returns
+            TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.", requestId = "req-1")
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
     private suspend fun TestScope.enCobroSinConfirmar(requestId: String = "req-1") {
         stubOrderCreation()
         coEvery {

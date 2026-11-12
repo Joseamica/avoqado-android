@@ -562,6 +562,29 @@ class TerminalPaymentServiceHttpTest {
         assertTrue(idsPendientes().isEmpty())
     }
 
+    // hz:5bda0b30:D2: el camino entero, del JSON del GET al resultado que recibe la pantalla. Se pierde la respuesta del POST
+    // (503) y el GET trae la lápida de admisión del SERVIDOR con su «falta $X»: el resultado lo trae y avisa que es de admisión.
+    @Test
+    fun `D2 la lapida de admision recuperada por GET llega con el motivo del servidor y marcada`() = runBlocking {
+        val falta = "La cuenta 12 ya tiene un abono: falta \$84.00. Actualiza la cuenta y vuelve a intentar."
+        val lapida = """{"status":"FAILED","inProgress":false,"outcome":"NOT_CHARGED","outcomeEvidence":"REJECTED_AT_ADMISSION",""" +
+            """"evidenceClass":"SERVER","failureCode":"REJECTED_ORDER_AMOUNT_OVER_BALANCE","errorMessage":"$falta"}"""
+        enqueue(503)
+        enqueue(200, lapida)
+        val enElCobro = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 13400, orderId = "orden-12") as TerminalPaymentResult.Error
+        assertEquals(falta, enElCobro.message)
+        assertTrue(enElCobro.motivoDeAdmision)
+        assertTrue("consta que no se cobró: se suelta", idsPendientes().isEmpty())
+
+        enqueue(200, lapida)
+        val tardia = service.resolveOutcome("req-tarde") as TerminalPaymentResult.Error
+        assertEquals(falta, tardia.message)
+        assertTrue(tardia.motivoDeAdmision)
+
+        enqueue(200, """{"status":"FAILED","inProgress":false,"outcome":"NOT_CHARGED","outcomeEvidence":"PROCESSOR_DECLINED","errorMessage":"Sin fondos."}""")
+        assertFalse("el rechazo del banco no es de admisión", (service.resolveOutcome("req-banco") as TerminalPaymentResult.Error).motivoDeAdmision)
+    }
+
     @Test
     fun `resolving an old request does not clear a newer pending charge`() = runBlocking {
         pendientes = PendientesDeTarjeta.agregar(null, "new-request", null, "{}")

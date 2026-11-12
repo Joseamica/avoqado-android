@@ -200,6 +200,39 @@ class CardChargeDecisionTest {
         assertTrue(out.message, out.message.contains("fondos suficientes"))
     }
 
+    // hz:5bda0b30:D2 (11-nov): el SERVIDOR rechaza AL ADMITIR (lápida `REJECTED_*`) un cobro remoto que pasa de lo que falta
+    // de una cuenta con abono, y su GET trae el «falta $X». Si se perdió la respuesta del POST, la caja lo recupera por GET:
+    // sin esto pintaba «El cobro fue rechazado» (suena al banco) y la cajera no sabía que tenía que actualizar la cuenta.
+    private fun recuperarPorGet(json: String): String {
+        val dto = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(TerminalPaymentStatusDto.serializer(), json)
+        val r = CardChargeDecision.decide(dto.aProbe(), isFinalAttempt = true)
+        return ((r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged).message
+    }
+
+    @Test
+    fun `lapida REJECTED_ recuperada por GET dice el motivo del SERVIDOR, no el rechazo generico`() {
+        val falta = "La cuenta 12 ya tiene un abono: falta \$84.00. Actualiza la cuenta y vuelve a intentar."
+        val json = "{\"status\":\"FAILED\",\"inProgress\":false,\"outcome\":\"NOT_CHARGED\",\"outcomeEvidence\":\"REJECTED_AT_ADMISSION\"," +
+            "\"evidenceClass\":\"SERVER\",\"failureCode\":\"REJECTED_ORDER_AMOUNT_OVER_BALANCE\",\"errorMessage\":\"$falta\"}"
+        assertEquals(falta, recuperarPorGet(json))
+    }
+
+    @Test
+    fun `lapida REJECTED_ sin mensaje del servidor (o en blanco) sigue con el texto de siempre`() {
+        val sinMensaje = "{\"status\":\"FAILED\",\"inProgress\":false,\"outcome\":\"NOT_CHARGED\",\"outcomeEvidence\":\"REJECTED_AT_ADMISSION\",\"failureCode\":\"REJECTED_ORDER_PAID\"}"
+        val enBlanco = "{\"status\":\"FAILED\",\"inProgress\":false,\"outcomeEvidence\":\"REJECTED_AT_ADMISSION\",\"failureCode\":\"REJECTED_ORDER_PAID\",\"errorMessage\":\"  \"}"
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", recuperarPorGet(sinMensaje))
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", recuperarPorGet(enBlanco))
+    }
+
+    @Test
+    fun `un errorMessage SIN lapida REJECTED_ no cambia el generico de FAILED`() {
+        // Sólo la lápida de admisión y el rechazo del banco traen texto del servidor; otro FAILED no lo adopta a ciegas.
+        val json = "{\"status\":\"FAILED\",\"inProgress\":false,\"failureCode\":\"ALGO_NUEVO\",\"errorMessage\":\"texto cualquiera\"}"
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", recuperarPorGet(json))
+    }
+
     @Test
     fun `FAILED sin evidencia sigue diciendo rechazado (contrato de siempre)`() {
         val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false), isFinalAttempt = true)
