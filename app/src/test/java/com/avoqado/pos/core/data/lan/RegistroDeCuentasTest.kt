@@ -192,4 +192,31 @@ class RegistroDeCuentasTest {
         pasan(8 * 24 * 60 * 60 * 1000L)
         assertFalse("i-ana" in r.normalizar(reg, ahora(), hora).cancelados)
     }
+
+    // MARK: - Frescura W2 (Codex r6 #3): un cobro viejo no pisa lo que ya se sabe de la cuenta
+
+    /** Un abono que llega DESPUÉS de saber que se cobró completa (el servidor la dio pagada, o un «No se cobró» y un aviso tardío) es de antes. */
+    @Test fun `W2 frescura - lo cobrado completo no vuelve a deber por un abono que llega tarde`() {
+        val cerrada = r.servidorLaCerro(Registro().comprometer(ana).registro, "o1", ahora(), hora)
+        val antes = cerrada.estado()!!
+        pasan(60_000)
+        val tarde = r.cobrada(cerrada, "o1", ana, faltaSubirla = true, ahora(), hora, conAbono = true).estado()!!
+        assertFalse("sigue completa", tarde.conAbono)
+        assertEquals("quién la cerró y cuándo no cambian", listOf(antes.por, antes.hora), listOf(tarde.por, tarde.hora))
+        assertTrue("su dinero sin subir sí cuenta", tarde.faltaSubirla)
+        val noSeSabe = r.cobrada(cerrada, "o1", beto, faltaSubirla = false, ahora(), hora, conAbono = null).estado()!!
+        assertEquals("«no se sabe» tampoco la cambia", listOf(false, antes.por, antes.hora, false),
+            listOf(noSeSabe.conAbono, noSeSabe.por, noSeSabe.hora, noSeSabe.faltaSubirla))
+    }
+
+    /** El reintento de un cobro que ya cerró la cuenta y que otro reemplazó (se perdió su acuse, o avisa «ya subió») no trae nada nuevo. */
+    @Test fun `W2 frescura - el reintento de un intento ya visto no cambia quién la cobró ni la hora`() {
+        var reg = r.cobrada(Registro(), "o1", ana, faltaSubirla = false, ahora(), hora)
+        pasan(60_000)
+        reg = r.cobrada(reg, "o1", beto, faltaSubirla = false, ahora(), hora)
+        val despues = reg.estado()!!
+        pasan(60_000)
+        assertEquals(despues, r.cobrada(reg, "o1", ana, faltaSubirla = false, ahora(), hora).estado())
+        assertEquals("Caja 3", despues.caja)
+    }
 }

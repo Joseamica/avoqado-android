@@ -43,6 +43,11 @@ data class CuentaEnElRegistro(
      * todavía debe. Sigue protegida como CERRADA (sin red nadie cobra el resto: «cóbrala con internet»), pero no es «Cobrada en <caja>».
      */
     val conAbono: Boolean = false,
+    /**
+     * W2 · frescura (Codex r6 #3): CERRADA, los intentos que la cerraron ANTES de [intento] (los reemplazó otro cobro, o llegaron tarde). El
+     * reintento de su aviso (se perdió el acuse, o avisa «ya subió») no trae nada nuevo. Crece con los cobros de UNA cuenta.
+     */
+    val vistos: Set<String> = emptySet(),
 )
 
 @Serializable
@@ -146,19 +151,28 @@ object RegistroDeCuentas {
      * [conAbono]: el cobro dejó saldo (true), lo cobró todo (false) o no se sabe (null: la marca de una tarjeta, la reconciliación tras morir
      * la app). Familia D: lo que no se sabe conserva lo que la cuenta ya decía; sin nada antes, abono: nunca «Cobrada» sin saberlo (alguien
      * lo leería y no cobraría lo que falta).
+     *
+     * W2 · frescura (Codex r6 #3): un cobro viejo no pisa lo que ya se sabe. El reintento de un intento que ya la cerró y que otro reemplazó
+     * no cambia nada; y lo cobrado completo no vuelve a deber (no hay reabrir: una venta cobrada sólo se cambia o se reembolsa), así que un
+     * abono o un «no se sabe» que llega después es de antes: sólo suma «falta subirla», y quién la cobró y cuándo se quedan.
      */
     fun cobrada(r: Registro, orderId: String, s: Solicitud, faltaSubirla: Boolean, ahora: Instante, hora: Long, conAbono: Boolean? = false): Registro {
-        val c = r.cuentas[orderId]
+        val c = r.cuentas[orderId]?.takeIf { it.estado == EstadoDeCuenta.CERRADA }
+        if (c != null && c.intento != s.intento && s.intento in c.vistos) return r
         val falta = when {
-            c?.estado != EstadoDeCuenta.CERRADA -> faltaSubirla
+            c == null -> faltaSubirla
             c.intento == s.intento -> c.faltaSubirla && faltaSubirla
             else -> c.faltaSubirla || faltaSubirla
         }
-        if (c?.estado == EstadoDeCuenta.CERRADA && c.intento == s.intento) {
+        if (c != null && c.intento == s.intento) {
             return if (c.faltaSubirla == falta) r else r.copy(cuentas = r.cuentas + (orderId to c.copy(faltaSubirla = falta)))
         }
-        val abono = conAbono ?: (c?.estado != EstadoDeCuenta.CERRADA || c.conAbono)
-        return r.copy(cuentas = r.cuentas + (orderId to CuentaEnElRegistro(EstadoDeCuenta.CERRADA, s.por, s.caja, s.quien, s.intento, ahora, hora, falta, abono)))
+        if (c != null && !c.conAbono && conAbono != false) {
+            return r.copy(cuentas = r.cuentas + (orderId to c.copy(faltaSubirla = falta, vistos = c.vistos + s.intento)))
+        }
+        val abono = conAbono ?: (c == null || c.conAbono)
+        return r.copy(cuentas = r.cuentas + (orderId to CuentaEnElRegistro(EstadoDeCuenta.CERRADA, s.por, s.caja, s.quien, s.intento, ahora, hora, falta,
+            abono, c?.let { it.vistos + it.intento }.orEmpty())))
     }
 
     /** Una lectura del servidor la da pagada, cerrada o cancelada: CERRADA y ya nada «falta subirla». */

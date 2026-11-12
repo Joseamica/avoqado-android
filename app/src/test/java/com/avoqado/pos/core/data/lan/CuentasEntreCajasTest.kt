@@ -40,9 +40,13 @@ class CuentasEntreCajasTest {
             else LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(pedido), caja.sucursal, caja.dueno))
                 .takeUnless { caja.pierdeRespuestas }
             retenida?.second?.complete(Unit)
+            llegaron.computeIfAbsent(pedido.op) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
             r
         }
     }
+
+    /** op → cuántas preguntas llegaron a su caja (con o sin respuesta). */
+    private val llegaron = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
 
     private inner class Caja(val id: String, val nombre: String, val mias: Set<String> = emptySet()) {
         val disco = mutableMapOf<String, PayloadCache.Cached>()
@@ -655,6 +659,34 @@ class CuentasEntreCajasTest {
         val r = a.dueno.estadoDe(v, "o1")
         assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
         assertTrue("no se sabe si quedó saldo: no es «Cobrada»", r!!.conAbono)
+    }
+
+    /**
+     * Codex r6 #3: el «cobrada» de un ABONO de Caja 2 llega a la dueña, pero su acuse se pierde. Después Caja 3, con internet, cobra el resto
+     * (completo, otro intento). Cuando Caja 2 reintenta su aviso viejo, la dueña lo tomaba como otro cobro: la cuenta volvía a «con abono» y
+     * perdía «Cobrada en Caja 3».
+     */
+    @Test fun `W2 frescura - el reintento de un abono viejo no regresa a con abono la cuenta ya cobrada completa`() = runTest {
+        red(a, b, c)
+        val pb = b.entre.puerta(v, "o1", "llave-b", "Ana", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        a.pierdeRespuestas = true
+        b.entre.terminar(v, "o1", pb, "Ana", cobrado = true, subida = true, conAbono = true) // también lanza su vuelta en fondo
+        b.entre.unaVuelta()
+        // Las dos vueltas (la de fondo y ésta) llegaron sin acuse antes de devolver la red: el aviso de Caja 2 sigue pendiente.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(5_000) { while ((llegaron[LeaseProtocol.OP_CUENTA_COBRADA]?.get() ?: 0) < 2) kotlinx.coroutines.delay(5) }
+        }
+        assertTrue("premisa: la dueña lo anotó como abono", a.dueno.estadoDe(v, "o1")!!.conAbono)
+        a.pierdeRespuestas = false
+        val pc = c.entre.puerta(v, "o1", "llave-c", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        c.entre.terminar(v, "o1", pc, "Beto", cobrado = true, subida = true, conAbono = false)
+        c.entre.unaVuelta()
+        assertFalse("premisa: completa", a.dueno.estadoDe(v, "o1")!!.conAbono)
+
+        b.entre.unaVuelta() // el reintento del aviso viejo
+        val r = a.dueno.estadoDe(v, "o1")!!
+        assertFalse("sigue completa", r.conAbono)
+        assertEquals("Cobrada en Caja 3", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = 2000, lecturaDelServidorEn = null))
     }
 
     /**
