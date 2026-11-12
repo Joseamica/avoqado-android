@@ -28,6 +28,8 @@ class TextoDelSelloTest {
         reward: Boolean = false,
         enabled: Boolean = true,
         cartilla: SaleStampCard? = null,
+        added: Int? = null,
+        promo: String? = null,
     ) = SaleStampOutcome(
         stampsEnabled = enabled,
         stamped = stamped,
@@ -36,6 +38,8 @@ class TextoDelSelloTest {
         stampsRequired = required,
         rewardReady = reward,
         saleCard = cartilla,
+        stampsAdded = added,
+        promotionName = promo,
     )
 
     @Test
@@ -226,5 +230,31 @@ class TextoDelSelloTest {
         assertEquals(27.08f, tamanoDeSello(400f, 12)!!, 0.01f)
         assertNull(tamanoDeSello(1000f, 13)) // más de 12: siempre barra
         assertNull(tamanoDeSello(240f, 0))
+    }
+
+    // MARK: - Promoción de lealtad (servidor nuevo manda stampsAdded / promotionName)
+
+    @Test
+    fun `stampsAdded 2 con promo dice cuantos sellos y la promocion`() {
+        assertEquals("✓ +2 sellos · Buen Fin sello doble", textoDelSello(sello(stamped = true, earned = 3, added = 2, promo = "Buen Fin sello doble")))
+        assertEquals("✓ +1 sello", textoDelSello(sello(stamped = true, earned = 3, added = 1)))
+        val t = tarjetaDelSello(sello(stamped = true, added = 2, cartilla = SaleStampCard(5, 7)))!!
+        assertEquals("+2 sellos", t.titulo)
+        assertEquals(2, t.sellosNuevos)
+    }
+
+    @Test
+    fun `stampsAdded 2 con la cartilla de la venta completa y la abierta en 1 de 8 dice Completo`() {
+        val llena = SaleStampCard(7, 7, completed = true, rewardPending = true)
+        assertEquals(
+            "🎁 ¡Completó su tarjeta! Tiene un premio por cobrar",
+            textoDelSello(sello(stamped = true, earned = 1, required = 8, added = 2, promo = "Doble", cartilla = llena)),
+        )
+    }
+
+    @Test
+    fun `sin los campos nuevos el texto es el de hoy`() {
+        assertEquals("✓ +1 sello · 3 de 7", textoDelSello(sello(stamped = true, earned = 3)))
+        assertEquals("+1 sello", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(1, 7)))!!.titulo)
     }
 }

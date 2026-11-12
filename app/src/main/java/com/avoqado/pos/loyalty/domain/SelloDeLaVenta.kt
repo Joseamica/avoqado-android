@@ -27,6 +27,13 @@ object TextosDelSello {
 
     // MARK: - Tarjetita de sellos (21-oct)
     const val TITULO_SUMO = "+1 sello"
+
+    /** «+1 sello» / «+2 sellos». */
+    fun sellos(n: Int): String = if (n == 1) "+1 sello" else "+$n sellos"
+
+    /** Servidor nuevo (manda `stampsAdded`): «✓ +2 sellos · Buen Fin sello doble». */
+    fun selloSumadoConPromo(n: Int, promo: String?): String =
+        "✓ ${sellos(n)}" + (promo?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")
     const val TITULO_COMPLETA = "¡Completó su tarjeta!"
 
     fun cuenta(llenos: Int, total: Int): String = "$llenos de $total"
@@ -53,8 +60,10 @@ data class TarjetaDelSello(
     val completa: Boolean,
     val premio: String?,
     val porCobrar: Boolean = false,
+    /** Sellos que dio ESTA venta (para animar los últimos N círculos); 1 si el servidor no lo dice. */
+    val sellosNuevos: Int = 1,
 ) {
-    val titulo: String get() = if (completa) TextosDelSello.TITULO_COMPLETA else TextosDelSello.TITULO_SUMO
+    val titulo: String get() = if (completa) TextosDelSello.TITULO_COMPLETA else TextosDelSello.sellos(sellosNuevos)
     val cuenta: String get() = TextosDelSello.cuenta(llenos, total)
     val pie: String
         get() = when {
@@ -83,6 +92,7 @@ fun tarjetaDelSello(outcome: SaleStampOutcome?): TarjetaDelSello? {
         completa = completa,
         premio = cartilla.rewardLabel?.trim()?.takeIf { it.isNotEmpty() },
         porCobrar = completa && cartilla.rewardPending,
+        sellosNuevos = (outcome.stampsAdded ?: 1).coerceAtLeast(1),
     )
 }
 
@@ -109,6 +119,12 @@ fun tamanoDeSello(ancho: Float, total: Int): Float? {
 fun textoDelSello(outcome: SaleStampOutcome?): String? {
     if (outcome == null || !outcome.stampsEnabled) return null
     if (outcome.stamped) {
+        // Servidor nuevo: dice cuántos sellos dio la venta y `saleCard.completed` decide «Completó» (con un sello que
+        // pasa a la cartilla nueva, la abierta arranca en 1, no en 0).
+        outcome.stampsAdded?.let { n ->
+            return if (outcome.saleCard?.completed == true) TextosDelSello.PREMIO_POR_COBRAR
+            else TextosDelSello.selloSumadoConPromo(n, outcome.promotionName)
+        }
         // Resuelto por el coordinador: la cartilla recién COMPLETADA deja abierta la nueva en 0 (sólo pasa al completar).
         // `rewardReady` puede venir de un premio viejo sin cobrar, así que no decide el texto cuando hay cuenta. Pero con
         // 0 y SIN premio pendiente no se promete premio (Codex r2 #1, 21-oct): otra venta llenó la cartilla y su premio
