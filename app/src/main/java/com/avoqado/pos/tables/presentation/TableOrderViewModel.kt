@@ -333,9 +333,12 @@ class TableOrderViewModel @Inject constructor(
     private var saldoSinRedDelServidor by mutableStateOf<Pair<Pair<String, String>, SaldoSinRed>?>(null)
 
     /** El saldo sin red que manda en la pantalla: sólo con el piloto, en una mesa del servidor que no se pudo leer al día. */
-    private fun saldoSinRedVigente(s: TableSession.Active): SaldoSinRed.Conocido? =
+    private fun saldoSinRedVigente(s: TableSession.Active): SaldoSinRed.Conocido? = estadoSinRedVigente(s) as? SaldoSinRed.Conocido
+
+    /** El último saldo sin red calculado (conocido o gris), si manda en la pantalla. */
+    private fun estadoSinRedVigente(s: TableSession.Active): SaldoSinRed? =
         // Codex b2b-r3 (F2): con el piloto apagado, la pantalla vuelve a decir lo de hoy aunque ya hubiera un saldo calculado.
-        saldoSinRedDelServidor?.takeIf { !s.isProvisional && !cuentaAlDiaAqui && it.first == (venueId to s.orderId) && pilotoSinRed }?.second as? SaldoSinRed.Conocido
+        saldoSinRedDelServidor?.takeIf { !s.isProvisional && !cuentaAlDiaAqui && it.first == (venueId to s.orderId) && pilotoSinRed }?.second
 
     /** Foto + rondas posteriores − efectivo posterior, leído de disco (foto, borrador y colas). Lo que no se asegura, en gris. */
     private suspend fun leerSaldoDelServidorSinRed(vId: String, s: TableSession.Active): SaldoSinRed {
@@ -489,6 +492,7 @@ class TableOrderViewModel @Inject constructor(
     }
 
     fun addPromotion(promotion: com.avoqado.pos.pos.data.model.Promotion, selections: Map<String, String>, times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>): Boolean {
+        if (cuentaCerrada()) return false
         if (readOnlyCheck.value || _isSending.value) return false
         val chosen = com.avoqado.pos.pos.presentation.promotions.opcionesElegidas(promotion, selections) ?: return false
         if (chosen.any { times[it.grupo.id] == null }) return false
@@ -724,10 +728,18 @@ class TableOrderViewModel @Inject constructor(
         showMessage("Configura los tiempos de esta sucursal en el dashboard, en Configuración › Tiempos de servicio.")
     }
 
+    /** B3 (visto 1): la cuenta de esta pantalla ya se cerró (su cobro subió y se liberó): no acepta productos y lo dice. */
+    private fun cuentaCerrada(): Boolean {
+        if (tableSession.current() != null) return false
+        showBlockedReason(CUENTA_CERRADA)
+        return true
+    }
+
     /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
      *  two courses must stay two lines (they fire at different moments). */
     fun addProduct(product: Product) {
         invalidateBlockedNotice()
+        if (cuentaCerrada()) return
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el stock
         // queda en negativo como señal de descuadre.
         if (product.isOutOfStock) {
@@ -770,6 +782,7 @@ class TableOrderViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
     ) {
+        if (cuentaCerrada()) return
         // Ver addProduct: agotado avisa, nunca bloquea.
         if (product.isOutOfStock) {
             _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
@@ -897,6 +910,7 @@ class TableOrderViewModel @Inject constructor(
      *  customUnitPriceCents, no productId). */
     fun addCustomAmount(name: String, amountCents: Int) {
         invalidateBlockedNotice()
+        if (cuentaCerrada()) return
         if (amountCents <= 0) return
         pendingLines = _pending.value + PendingLine(
             item = CartItem(
@@ -2024,6 +2038,7 @@ class TableOrderViewModel @Inject constructor(
     /** "Repetir" del menú por tiempo (Square): duplica los artículos ya
      *  enviados de ese curso como líneas PENDIENTES (nueva ronda). */
     fun repeatCourse(course: String?) {
+        if (cuentaCerrada()) return
         val courseItems = _check.value?.items?.filter { it.course == course && it.productId != null } ?: emptyList()
         if (courseItems.isEmpty()) {
             _actionMessage.value = "No hay artículos en ese tiempo"
@@ -2178,16 +2193,27 @@ class TableOrderViewModel @Inject constructor(
     val payableTotalCents: Int get() = saldoDeMesa.porPagarCents
 
     /** 9b (`hz:e5ee98bc:D13`): la mesa abierta sin internet ya se cobró aquí y su efectivo espera en la cola: no se ofrece «Pagar». */
-    internal val cuentaCobradaAqui: Boolean get() = tableSession.current()?.let { s ->
-        s.isProvisional && saldoDeMesaConocido && saldoDeMesa.porPagarCents <= 0 &&
-            trabajoParaSaldo?.takeIf { it.first == venueId && it.second == s.idsDeLaOrden }?.third?.tipos
-                ?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true ||
+    internal val cuentaCobradaAqui: Boolean get() = motivoCobradaAqui != null
+
+    /**
+     * El aviso del botón «Ya pagada» al ABRIR la pantalla: la misma verdad que usa el toque (B3 C1). B2a: el disco. B2b: foto + lo
+     * propio cubre la cuenta; o, sin foto, hay efectivo propio de la orden en la cola (el toque diría lo mismo y no deja cobrar).
+     */
+    internal val motivoCobradaAqui: String? get() = tableSession.current()?.let { s ->
+        when {
+            s.isProvisional && saldoDeMesaConocido && saldoDeMesa.porPagarCents <= 0 &&
+                trabajoParaSaldo?.takeIf { it.first == venueId && it.second == s.idsDeLaOrden }?.third?.tipos
+                    ?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true -> CUENTA_COBRADA_AQUI
             // D5 · B2b: la mesa del servidor cobrada aquí sin internet, con su efectivo en la cola.
-            saldoSinRedVigente(s)?.let { it.hayCobro && it.porPagarCents <= 0 } == true
-    } == true
+            saldoSinRedVigente(s)?.let { it.hayCobro && it.porPagarCents <= 0 } == true -> CUENTA_COBRADA_AQUI
+            estadoSinRedVigente(s) == SaldoSinRed.EnGris(COBRO_AQUI_SIN_SUBIR) -> COBRO_AQUI_SIN_SUBIR
+            else -> null
+        }
+    }
 
     suspend fun preparePagar(): Boolean {
-        if (tableSession.current() == null) return false
+        // B3 (visto 1): la cuenta ya se cerró (su cobro y su liberación subieron) con la pantalla abierta: se dice, no se calla.
+        if (tableSession.current() == null) { showBlockedReason(CUENTA_CERRADA); return false }
         if (tableSession.contextoActual() != contextoDeSesion || venueId != venueDeSesion) {
             showBlockedReason("Esta cuenta ya no es la que está abierta en este aparato: vuelve a abrir la mesa para cobrarla.")
             return false
@@ -2224,6 +2250,8 @@ class TableOrderViewModel @Inject constructor(
                 generacion == epoch && checkLoadGeneration == read && !hayMutacionEnVuelo
             if (saldo != null && vigente && vId != null) saldoSinRedDelServidor = (vId to session.orderId) to saldo
             sinRed = (saldo as? SaldoSinRed.Conocido)?.takeIf { vigente && !(it.hayCobro && it.porPagarCents <= 0) }
+            // B3 C7: una cuenta en $0 (cortesía total) sin internet no se cierra aquí: dice su razón, como los demás grises.
+            if (sinRed != null && sinRed.porPagarCents <= 0) { showBlockedReason(CUENTA_EN_CERO_SIN_RED); return false }
             if (sinRed == null) {
                 showBlockedReason(when {
                     saldo == null -> motivo
@@ -2302,7 +2330,8 @@ class TableOrderViewModel @Inject constructor(
      *  the caller confirms with the user first when any exist. */
     fun exitToFloor(): Boolean {
         if (hayMutacionEnVuelo) { showBlockedReason("La cuenta se está actualizando. Intenta en un momento."); return false }
-        val current = tableSession.current() ?: return false
+        // B3 (visto 1): si la cuenta ya se cerró (acuse de su cobro y de su liberación), no hay nada que estacionar: «atrás» funciona.
+        val current = tableSession.current() ?: run { pendingLines = emptyList(); return true }
         val scopedVenue = venueDeSesion ?: return false
         if (venueId != scopedVenue || tableSession.contextoActual() != contextoDeSesion || !tableSession.estacionar(scopedVenue, current)) return false
         pendingLines = emptyList()

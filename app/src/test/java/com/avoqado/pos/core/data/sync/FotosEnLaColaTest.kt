@@ -100,6 +100,13 @@ class FotosEnLaColaTest {
         assertNotNull(enDisco("order-F"))
     }
 
+    @Test fun `B3 C1 liberar la mesa sin red no borra su foto, la mesa cobrada aqui sigue diciendo Ya pagada tras reiniciar`() = runTest {
+        tomar("order-F")
+        cola().enqueue("v1", "CLEAR_TABLE", payload("""{"tableId":"mesa-order-F"}"""))
+        assertEquals(listOf(true), fotoAlEscribir)
+        assertNotNull(enDisco("order-F"))
+    }
+
     @Test fun `F1 piloto prendido si no se puede borrar la foto no se encola`() = runTest {
         tomar("order-F")
         sinPoderBorrar { try { cola().enqueue("v1", "COMP_ORDER", payload("""{"orderId":"order-F"}""")); fail("debió fallar") } catch (_: IOException) {} }
@@ -154,5 +161,24 @@ class FotosEnLaColaTest {
         cola().dismissRejected("v1", "ronda-1")
         assertEquals(listOf(false), fotoAlEscribir)
         assertNull(enDisco("order-F"))
+    }
+
+    // MARK: - B3 C3: el mismo «Liberar mesa» rechazado dos veces
+
+    private fun liberar(id: String, seq: Long, mesa: String, creada: Long) = SyncIntentEntity(id, "v1", "staff", seq, "CLEAR_TABLE",
+        """{"tableId":"$mesa"}""", SyncIntentEntity.STATUS_REJECTED, "BUSINESS_RULE", "Cannot clear table with unpaid order ORD-1", createdAt = creada)
+
+    @Test fun `B3 C3 el mismo Liberar mesa rechazado dos veces se ve una vez y se resuelve junto`() = runTest {
+        val viejo = liberar("clear-6", 6, "t-6", 1); val nuevo = liberar("clear-14", 14, "t-6", 2); val otraMesa = liberar("clear-15", 15, "t-7", 3)
+        val rondaRechazada = ronda.copy(status = SyncIntentEntity.STATUS_REJECTED)
+        coEvery { dao.rejectedIntents("v1") } returns listOf(otraMesa, nuevo, viejo, rondaRechazada)
+        val subject = cola()
+        assertEquals(listOf("clear-15", "clear-14", "ronda-1"), subject.rejectedIntents("v1").map { it.id })
+        coEvery { dao.findForVenue("v1", "clear-14") } returns nuevo
+        subject.dismissRejected("v1", "clear-14")
+        coVerify(exactly = 1) { dao.dismiss("clear-14") }
+        coVerify(exactly = 1) { dao.dismiss("clear-6") }
+        coVerify(exactly = 0) { dao.dismiss("clear-15") }
+        coVerify(exactly = 0) { dao.dismiss("ronda-1") }
     }
 }

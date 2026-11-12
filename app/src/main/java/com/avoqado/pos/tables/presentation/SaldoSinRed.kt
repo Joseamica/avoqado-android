@@ -59,6 +59,11 @@ internal const val SIN_CUENTA_COMPLETA =
 internal const val COBRO_AQUI_SIN_SUBIR =
     "Ya se cobró aquí y falta subirlo. Se sube solo cuando vuelva la conexión; si falta algo, cóbralo entonces."
 
+/** B3 (visto 1): la cuenta de la pantalla ya se cerró (su cobro y su liberación subieron). */
+internal const val CUENTA_CERRADA = "Esta cuenta ya se cerró. Regresa al plano."
+/** B3 C7: una cuenta en $0 (cortesía total) sin internet. */
+internal const val CUENTA_EN_CERO_SIN_RED = "Esta cuenta está en \$0.00: ciérrala cuando vuelva la conexión."
+
 /** (c) La cuenta es simple: sin abonos, sin descuento de cuenta, sin cargo por servicio, sin IVA aparte y abierta. Null = simple. */
 internal fun motivoCuentaNoSimple(d: com.avoqado.pos.tables.data.OrderDetail): String? {
     fun sinInternet(que: String) = "Esta cuenta tiene $que: sin internet no se cobra aquí. Cóbrala cuando vuelva la conexión."

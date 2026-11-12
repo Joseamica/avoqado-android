@@ -726,7 +726,8 @@ class SyncOutbox @Inject constructor(
     )
 
     suspend fun rejectedIntents(venueId: String): List<QuarantinedIntent> =
-        dao.rejectedIntents(venueId).map {
+        // D5 · B3 (C3): el mismo «Liberar mesa» rechazado dos veces (la mesa sigue debiendo) se ve una vez: el más reciente.
+        dao.rejectedIntents(venueId).distinctBy { if (it.type == "CLEAR_TABLE") "CLEAR_TABLE|${it.payloadJson}" else it.id }.map {
             QuarantinedIntent(it.id, it.type, it.errorCode, it.message, it.createdAt)
         }
 
@@ -734,8 +735,12 @@ class SyncOutbox @Inject constructor(
     suspend fun dismissRejected(venueId: String, id: String) {
         // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Con el piloto prendido, si el disco no
         // deja borrarla, lanza y la fila rechazada se queda (la mesa sigue en gris); apagado, sigue como hoy (la foto queda muerta).
-        fotos?.let { f -> dao.findForVenue(venueId, id)?.let { f.borrarAntesDe(it.payloadJson) } }
+        val fila = dao.findForVenue(venueId, id)
+        fotos?.let { f -> fila?.let { f.borrarAntesDe(it.payloadJson) } }
         dao.dismiss(id)
+        // D5 · B3 (C3): resolver el «Liberar mesa» que se ve resuelve también sus gemelos escondidos (misma mesa).
+        if (fila?.type == "CLEAR_TABLE") dao.rejectedIntents(venueId)
+            .filter { it.id != id && it.type == fila.type && it.payloadJson == fila.payloadJson }.forEach { dao.dismiss(it.id) }
         refreshCounts(venueId)
     }
 
@@ -827,9 +832,12 @@ class SyncOutbox @Inject constructor(
         }
 
         const val LOCAL_DRAFT_RECOVERY_FAILED = "LOCAL_DRAFT_RECOVERY_FAILED"
-        /** D5 · B2b: lo que la foto de la mesa ya sabe contar (ronda y cobro posteriores) o no cambia su dinero (cocina). */
+        /**
+         * D5 · B2b: lo que la foto de la mesa ya sabe contar (ronda y cobro posteriores) o no cambia su dinero (cocina, y liberar la
+         * MESA: el SERVIDOR la rechaza si la cuenta debe y si no sólo cambia el estado de la mesa; B3 C1).
+         */
         internal val TIPOS_QUE_NO_TOCAN_LA_FOTO = setOf(SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH,
-            SyncIntentTypes.KDS_ITEM_PROGRESS, SyncIntentTypes.KDS_TICKET_MARK)
+            SyncIntentTypes.KDS_ITEM_PROGRESS, SyncIntentTypes.KDS_TICKET_MARK, "CLEAR_TABLE")
         /** El tipo de intent que MUEVE DINERO EN EFECTIVO. Espejo exacto del `SyncIntentType` del server. */
         internal const val TIPO_PAGO_EN_EFECTIVO = "PAY_CASH"
 

@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -167,5 +168,18 @@ class QuarantineResolveGateTest {
         assertTrue(buildViewModel("OWNER", emptyList()).canResolve)
         assertFalse(buildViewModel("CASHIER", emptyList()).canResolve)
         assertFalse(buildViewModel("WAITER", emptyList()).canResolve)
+    }
+
+    /** D5 · B3 (C3): «Liberar mesa» que el servidor rechaza porque la cuenta debe (código genérico, texto en inglés): en español. */
+    @Test
+    fun `liberar mesa rechazada porque la cuenta debe se lee en espanol, lo demas igual`() = runTest(scheduler) {
+        val vm = buildViewModel("MANAGER", PermisosRealesDelServer.MANAGER)
+        val texto = "Cannot clear table with unpaid order ORD-1794489899628"
+        assertEquals("La mesa sigue ocupada: la cuenta ORD-1794489899628 todavía debe.", vm.describeMessage("CLEAR_TABLE", texto))
+        assertEquals("Si ya se cobró, la mesa se libera sola al subir el cobro. Si sigue ocupada en el plano, cobra lo que falta y libérala.",
+            vm.resolutionHint("BUSINESS_RULE", "CLEAR_TABLE", texto))
+        assertEquals("Producto agotado", vm.describeMessage("ADD_ITEMS", "Producto agotado"))
+        assertEquals(texto, vm.describeMessage("ADD_ITEMS", texto))
+        assertEquals(vm.resolutionHint("BUSINESS_RULE", "CLEAR_TABLE"), vm.resolutionHint("BUSINESS_RULE", "CLEAR_TABLE", "Table not found"))
     }
 }

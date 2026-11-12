@@ -116,6 +116,17 @@ class PuertaDeLaFotoTest {
         assertNotNull(enDisco("order-F"))
     }
 
+    @Test fun `B3 C1 liberar la mesa no borra su foto, el SERVIDOR no la libera si su cuenta debe`() {
+        tomar()
+        post("tables/table-F/clear")
+        post("tables/table-F/clear/", "")
+        assertEquals(listOf(true, true), fotoAlLlegar)
+        assertNotNull(enDisco("order-F"))
+        // Sólo esa ruta: abrir la mesa, u otra escritura con «clear» en el nombre, sí la borran.
+        post("tables/table-F/clear-items", """{"orderId":"order-F"}""")
+        assertFalse(fotoAlLlegar.last()); assertNull(enDisco("order-F"))
+    }
+
     // MARK: - La ronda (POST …/orders/{id}/items): al VOLVER, con 2xx o 4xx (r4 #4); sin respuesta, 409 o 5xx la conserva
 
     @Test fun `la ronda no borra al salir y borra al volver con 2xx 400 o 403`() {

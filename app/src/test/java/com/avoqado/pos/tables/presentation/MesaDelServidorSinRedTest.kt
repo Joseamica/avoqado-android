@@ -257,6 +257,80 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    // MARK: - B3 (recorrido en aparato, 12-nov)
+
+    @Test fun `B3 C1 tras cobrar y liberar la mesa, matar y reabrir dice Ya pagada con el mismo aviso que el toque`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        assertTrue(subject.preparePagar())
+        cobrado(4500)
+        // Al terminar el cobro se libera la mesa. Sin internet va a la cola (② la deja pasar: FotosEnLaColaTest); en línea, por ①.
+        conInternet = true; escribir("tables/table-F/clear", "{}"); conInternet = false
+        assertNotNull("liberar la mesa no borra la foto (el SERVIDOR rechaza liberar una cuenta que debe)", fotoEnDisco())
+        subject = reiniciar(subject)
+        leer(subject)
+        assertEquals("la etiqueta al ABRIR", CUENTA_COBRADA_AQUI, subject.motivoCobradaAqui)
+        assertFalse(subject.preparePagar())
+        assertEquals("y el toque dicen lo mismo", CUENTA_COBRADA_AQUI, subject.blockedNotice.value)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `B3 C1 sin foto y con su efectivo en la cola, al abrir ya dice lo que dira el toque`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        assertTrue(subject.preparePagar())
+        cobrado(4500)
+        conInternet = true; escribir("orders/order-F/discounts", """{"discountId":"d-1"}"""); conInternet = false
+        assertNull("una escritura de la cuenta sí la borra", fotoEnDisco())
+        subject = reiniciar(subject)
+        leer(subject)
+        assertEquals(COBRO_AQUI_SIN_SUBIR, subject.motivoCobradaAqui)
+        assertTrue(subject.cuentaCobradaAqui)
+        assertFalse(subject.preparePagar())
+        assertEquals(COBRO_AQUI_SIN_SUBIR, subject.blockedNotice.value)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `B3 la cuenta se cerro con la pantalla abierta, atras regresa al plano y Pagar y agregar lo dicen, de los dos tipos`() = runTest {
+        for (provisional in listOf(false, true)) {
+            session.clear()
+            if (provisional) session.abrirDesdePiso(venue, TableSession.Active("table-P", "2", null, "local-P", "P-1", 1, 0,
+                TableSession.Mode.ORDERING, isProvisional = true, localOrderId = "local-P"))
+            else abrir()
+            val subject = vm()
+            val ids = session.current()!!.idsDeLaOrden
+            // El acuse de su efectivo dejó la orden en $0 (`TableSyncCoordinator` → `finalizar`), con la pantalla abierta.
+            session.finalizar(venue, ids)
+            assertNull(session.current())
+            assertFalse("$provisional: Pagar no se calla", subject.preparePagar())
+            assertEquals(CUENTA_CERRADA, subject.blockedNotice.value)
+            subject.dismissBlockedNotice()
+            subject.addCustomAmount("Agua", 2000)
+            assertTrue("$provisional: no acepta productos", subject.pending.value.isEmpty())
+            assertEquals(CUENTA_CERRADA, subject.blockedNotice.value)
+            assertTrue("$provisional: atrás regresa al plano", subject.exitToFloor())
+            subject.viewModelScope.cancel()
+        }
+    }
+
+    @Test fun `B3 C7 una cuenta en 0 sin internet dice su razon al tocar Pagar`() = runTest {
+        val subject = mesaConFoto()
+        // Cortesía de toda la cuenta con internet: ① borra la foto y la relectura toma la nueva, de $0.
+        escribir("orders/order-F/comp", """{"reason":"Cortesía"}""")
+        cuenta = cuenta.copy(items = cuenta.items.map { it.copy(total = 0.0) }, total = 0.0, version = (cuenta.version ?: 0) + 1)
+        leer(subject)
+        assertEquals("la foto nueva es de \$0", 0, ((fotoEnDisco()?.detalle?.total ?: -1.0) * 100).toInt())
+        conInternet = false
+        leer(subject) // la pantalla vuelve a pedir la cuenta y no llega
+        val pasa = subject.preparePagar()
+        assertEquals("aviso", CUENTA_EN_CERO_SIN_RED, subject.blockedNotice.value)
+        assertFalse("no abre el cobro", pasa)
+        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+        subject.viewModelScope.cancel()
+    }
+
     // MARK: - Cuándo NO se toma la foto
 
     @Test fun `la D3 que no le mando ninguna ronda no la cobra sin internet`() = runTest {

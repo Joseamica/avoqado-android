@@ -28,6 +28,8 @@ data class FilaSinResolver(
 )
 
 /** D5 · B2b: lo que la foto de una mesa necesita de la cola: lo posterior a ella (cualquier estado) y lo que sigue sin resolver. */
+/** D5 · B3 (C3): el mismo «Liberar mesa» rechazado varias veces (misma mesa) cuenta una sola vez, como se ve en la lista. */
+internal const val REJECTED_COUNT_SQL = "SELECT COUNT(*) FROM (SELECT 1 FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' AND q15Reason IS NULL GROUP BY CASE WHEN type = 'CLEAR_TABLE' THEN 'CLEAR_TABLE|' || payload_json ELSE id END)"
 internal const val FILAS_DESDE_SQL = "SELECT id, type, status, seq, payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND (seq > :desde OR status IN ('PENDING','HELD','REJECTED'))"
 
 data class FilaConSecuencia(
@@ -356,7 +358,7 @@ interface SyncIntentDao {
     @Query(Q15_HISTORY_COUNT_SQL)
     fun observarRevisionesQ15(venueId:String,revisadas:Boolean,busqueda:String):kotlinx.coroutines.flow.Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' AND q15Reason IS NULL")
+    @Query(REJECTED_COUNT_SQL)
     suspend fun rejectedCount(venueId: String): Int
 
     /** Cuarentena: intents rechazados, más recientes primero, para la pantalla de resolución. */

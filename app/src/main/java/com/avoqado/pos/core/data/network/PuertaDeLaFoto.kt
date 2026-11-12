@@ -14,13 +14,17 @@ import okio.Buffer
  *
  * Excepciones: la ronda (`POST …/orders/{id}/items`) borra al VOLVER, con 2xx o 4xx (un 4xx descarta la fila aunque un intento
  * anterior quizá se aplicó); sin respuesta, con 409 o 5xx la ronda sigue en la cola y la foto se conserva. Y lo que sólo
- * reproduce o consulta: `/sync/intents` (la cola ya decide en ②), `/sync/recovery` y `/print-jobs/sync`.
+ * reproduce o consulta: `/sync/intents` (la cola ya decide en ②), `/sync/recovery` y `/print-jobs/sync`. Y liberar la mesa
+ * (`POST …/tables/{id}/clear`, B3 C1): el SERVIDOR la rechaza si alguna cuenta de la mesa debe y, si no, sólo cambia el estado de la
+ * MESA (`clearTableInTransaction`): nunca toca el saldo de una cuenta, así que no invalida la foto. Era la que, justo después de
+ * cobrar sin red, borraba la foto y dejaba la mesa en «Saldo por confirmar» al reabrir.
  */
 class PuertaDeLaFoto(private val fotos: FotosDeMesas) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val ruta = request.url.encodedPath
-        if (request.method == "GET" || request.method == "HEAD" || EXCEPCIONES.any { ruta.endsWith(it) }) return chain.proceed(request)
+        if (request.method == "GET" || request.method == "HEAD" || EXCEPCIONES.any { ruta.endsWith(it) } ||
+            request.method == "POST" && LIBERAR_MESA.matches(ruta)) return chain.proceed(request)
         val ronda = request.method == "POST" && RONDA.matches(ruta)
         val escritura = fotos.empezarEscritura(diferida = ronda) { textoDe(request) }
         // B3: la ruta (nunca el cuerpo) de cada escritura que tocó una mesa vigilada.
@@ -45,6 +49,7 @@ class PuertaDeLaFoto(private val fotos: FotosDeMesas) : Interceptor {
     private companion object {
         const val TAG = "📸 PuertaDeLaFoto"
         val RONDA = Regex(".*/orders/[^/]+/items/?")
+        val LIBERAR_MESA = Regex(".*/tables/[^/]+/clear/?")
         val EXCEPCIONES = listOf("/sync/intents", "/sync/recovery", "/print-jobs/sync")
         const val LIMITE = 1L * 1024 * 1024
     }

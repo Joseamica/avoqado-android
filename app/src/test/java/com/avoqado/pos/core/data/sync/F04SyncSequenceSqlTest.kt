@@ -126,7 +126,11 @@ class F04SyncSequenceSqlTest {
         override suspend fun pendingCount(venueId: String): Int = error("Not used")
         override suspend fun heldCount(venueId: String): Int = error("Not used")
         override suspend fun pendingPayloads(venueId: String, type: String): List<SyncIntentPayload> = error("Not used")
-        override suspend fun rejectedCount(venueId: String): Int = error("Not used")
+        /** D5 · B3 (C3): el SQL real del conteo de rechazos (el mismo «Liberar mesa» cuenta una vez). */
+        override suspend fun rejectedCount(venueId: String): Int =
+            db.prepareStatement(REJECTED_COUNT_SQL.replace(":venueId", "?")).use {
+                it.setString(1, venueId); it.executeQuery().use { r -> r.next(); r.getInt(1) }
+            }
         override suspend fun rejectedIntents(venueId: String): List<SyncIntentEntity> = error("Not used")
         override suspend fun dismiss(id: String) = error("Not used")
         override fun observarEstado(id: String): Flow<String?> = error("Not used")
@@ -148,6 +152,18 @@ class F04SyncSequenceSqlTest {
             assertEquals(4L, filas.single { it.id == "nuevo-ok" }.seq)
             assertEquals("sin foto: sólo lo sin resolver", setOf("viejo-pendiente", "viejo-rechazo", "nuevo-retenido"),
                 f.dao.filasDesde("v1", Long.MAX_VALUE).map { it.id }.toSet())
+        }
+    }
+
+    @Test fun `B3 C3 el mismo Liberar mesa rechazado dos veces cuenta una, de su sucursal`() = runBlocking {
+        Fixture().use { f ->
+            fun liberar(id: String, mesa: String, venue: String = "v1") =
+                intent(id, venue, "REJECTED").copy(type = "CLEAR_TABLE", payloadJson = """{"tableId":"$mesa"}""")
+            for (fila in listOf(liberar("c6", "t-6"), liberar("c14", "t-6"), liberar("c15", "t-7"), intent("cobro", status = "REJECTED"),
+                intent("ronda-a", status = "REJECTED").copy(type = "ADD_ITEMS"), intent("ronda-b", status = "REJECTED").copy(type = "ADD_ITEMS"),
+                liberar("otra", "t-6", "v2"), liberar("ok", "t-6").copy(status = "ACKED"))) f.write { f.dao.insertWithNextSeq(fila) }
+            assertEquals("t-6 una vez, t-7, el cobro y las dos rondas", 5, f.dao.rejectedCount("v1"))
+            assertEquals(1, f.dao.rejectedCount("v2"))
         }
     }
 
