@@ -28,11 +28,21 @@ enum class OrigenDelCobro {
     PEDIDO_DE_PLATAFORMA_EFECTIVO,
 
     /** Igual, abierto con el saldo GUARDADO en el aparato (sin red al abrir): el efectivo ya recibido se manda como captura previa. */
-    PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO;
+    PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO,
+
+    /**
+     * D12: una cuenta abierta de Mostrador cobrada con la copia de «Pedidos» (sin red). Sólo efectivo PURO (la recuperación
+     * automática sólo cubre ése), como captura previa y con la caja del servidor desde el primer envío (Codex r1 #4). Como pedido en
+     * línea: cobra SU orden (no adopta una mesa en `PAYING`), no es cobro de vales y no ofrece tarjeta de regalo.
+     */
+    CUENTA_ABIERTA_DESDE_LA_COPIA;
 
     val esPedidoEnLinea: Boolean get() = this != NORMAL
     val permiteTarjeta: Boolean get() = this == NORMAL || this == PEDIDO_EN_LINEA
     val esDePlataforma: Boolean get() = this == PEDIDO_DE_PLATAFORMA_EFECTIVO || this == PEDIDO_DE_PLATAFORMA_EFECTIVO_SALDO_GUARDADO
+
+    /** Sólo efectivo puro (`CASH`, sin tipo del catálogo ni método manual): ni tarjeta, ni saldo de regalo, ni «Ya pagó de otra forma». */
+    val soloEfectivoPuro: Boolean get() = esDePlataforma || this == CUENTA_ABIERTA_DESDE_LA_COPIA
 
     /**
      * Tienda híbrida, parte 2 (A1): la fila «Tarjeta de regalo». El cobro de siempre, sí; de la bandeja, sólo un folio de «Por pagar»
@@ -48,5 +58,5 @@ enum class OrigenDelCobro {
      * previa), así el SERVIDOR no lo rechaza ni lo recorta si Rappi canceló u otro aparato lo cobró mientras el cobro estaba abierto;
      * lo registra y avisa (Codex plan r1 #1, r2 #1; código de apps r1 #2: también con el saldo fresco).
      */
-    val esCapturaPrevia: Boolean get() = esDePlataforma
+    val esCapturaPrevia: Boolean get() = esDePlataforma || this == CUENTA_ABIERTA_DESDE_LA_COPIA
 }

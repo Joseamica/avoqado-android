@@ -83,6 +83,34 @@ class CobroEnVueloRepositoryTest {
         coVerify { dao.insert(match { it.id == "llave-A" && it.syncStatus == PaymentSyncStatus.EN_VUELO.name }) }
     }
 
+    /**
+     * D12 · familia A (Codex r4 #1, R1): la comprobación de quien llama ya no corre en el repositorio (después de sus esperas, pero ANTES de
+     * la cola de Room): viaja a la transacción del DAO, que la corre ya con el escritor y justo antes del INSERT
+     * (`AutorizacionDentroDeLaTransaccionRoomTest`, con Room de verdad, en WINDOWS). Aquí, el contrato: el repositorio no la corre por su
+     * cuenta, se la entrega al DAO (con o sin apartados anteriores) y, si dice que no, la reserva no queda como del flujo.
+     */
+    @Test
+    fun `la comprobacion previa viaja a la transaccion del INSERT y si dice que no la reserva no queda del flujo`() = runTest {
+        var corridas = 0
+        val vencida: () -> Unit = { corridas++; error("autorización vencida") }
+        // Lo que hace la transacción de Room: la corre justo antes de escribir; si lanza, no escribe.
+        coEvery { dao.insert(any(), any()) } coAnswers { secondArg<(() -> Unit)?>()?.invoke() }
+        coEvery { dao.reservarEnLugarDe(any(), any(), any()) } coAnswers { thirdArg<(() -> Unit)?>()?.invoke() }
+
+        val r = runCatching { repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A", antesDeGuardar = vencida) }
+        val r2 = runCatching {
+            repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-B", enLugarDe = listOf("llave-0"),
+                antesDeGuardar = vencida)
+        }
+
+        assertTrue(r.isFailure && r2.isFailure)
+        assertEquals("sólo la corrió la transacción, una vez por reserva", 2, corridas)
+        coVerify(exactly = 1) { dao.insert(any(), vencida) }
+        coVerify(exactly = 1) { dao.reservarEnLugarDe(any(), listOf("llave-0"), vencida) }
+        assertFalse("llave-A" in repository.salesNoticeReservedIds())
+        assertFalse("llave-B" in repository.salesNoticeReservedIds())
+    }
+
     @Test
     fun `soltar la reserva sólo borra la fila si sigue EN_VUELO`() = runTest {
         repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A")
@@ -186,6 +214,25 @@ class CobroEnVueloRepositoryTest {
         val nueva = fila("llave-nueva").copy(cashDrawerSessionId = "caja-A")
 
         assertEquals("caja-A", com.avoqado.pos.core.data.local.database.filaAlReemplazar(null, nueva).cashDrawerSessionId)
+    }
+
+    /**
+     * D12 (Codex r1 #1): el cobro de una cuenta hecho con la copia lleva el saldo que esperaba dejar, en la reserva y en el encolado.
+     * 🔴 El MISMO valor en las dos: `PendingPaymentDao.insert` exige que la captura del encolado sea la de la reserva.
+     */
+    @Test
+    fun `D12 la reserva y el encolado llevan el mismo saldo esperado`() = runTest {
+        coEvery { dao.findForVenue(any(), any()) } returns null
+        val filas = mutableListOf<PendingPaymentEntity>()
+        coEvery { dao.insert(capture(filas)) } returns Unit
+
+        repository.reservarCobro(venta, "staff-1", 10_000, 0, null, orderId = "o1", idempotencyKey = "llave-D12", restanteEsperadoCents = 0)
+        repository.queueCashPayment(venta, "staff-1", 10_000, 0, null, orderId = "o1", idempotencyKey = "llave-D12", restanteEsperadoCents = 0)
+
+        assertEquals(listOf(PaymentSyncStatus.EN_VUELO.name, PaymentSyncStatus.PENDING.name), filas.map { it.syncStatus })
+        for (fila in filas) {
+            assertEquals(0, ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, "venue-1", "llave-D12")?.restanteEsperadoCents)
+        }
     }
 
     @Test

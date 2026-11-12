@@ -51,12 +51,14 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -164,7 +166,13 @@ fun OrdersScreen(
     LaunchedEffect(viewModel, duenoDelCicloDeVida) {
         duenoDelCicloDeVida.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             // En WINDOWS el ciclo de vida sigue RESUMED con la ventana minimizada (Codex r4 #5).
-            VentanaALaVista.aLaVista.collectLatest { seVe -> if (seVe) viewModel.reabrirAlVolverLaRed() }
+            VentanaALaVista.aLaVista.collectLatest { seVe ->
+                // D12 (Codex r3 H4): y al irse la red, el pedido a la vista se respalda con la copia sin otra consulta.
+                if (seVe) kotlinx.coroutines.coroutineScope {
+                    launch { viewModel.copiaAlPerderLaRed() }
+                    viewModel.reabrirAlVolverLaRed()
+                }
+            }
         }
     }
 
@@ -264,11 +272,37 @@ internal fun estadoDelDetalle(
     isLoadingDetail: Boolean,
     selectedOrder: OrderDetail?,
     errorMessage: String?,
+    /** T12b: hay un cobro abierto encima (`PaymentOverlayState.isPaying`) y el último detalle visto ([ultimoDetalleVisto]). */
+    cobrando: Boolean = false,
+    ultimo: OrderDetail? = null,
 ): EstadoDelDetalle = when {
     selectedOrderId == null -> if (host == HostDelDetalle.TELEFONO) EstadoDelDetalle.Lista else EstadoDelDetalle.Vacio
+    // T12b (punto 4): con un cobro abierto, una recarga que vuelve a cargar o falla (5xx, 404) no desmonta el detalle ni el cobro:
+    // se queda el último de ESA cuenta (el aviso dice la razón). Al cerrar el cobro se pinta lo que diga la cuenta.
+    cobrando && ultimo != null && ultimo.id == selectedOrderId && (isLoadingDetail || selectedOrder?.id != selectedOrderId) ->
+        EstadoDelDetalle.Detalle(ultimo)
     isLoadingDetail -> EstadoDelDetalle.Cargando
     selectedOrder?.id == selectedOrderId -> EstadoDelDetalle.Detalle(selectedOrder)
     else -> EstadoDelDetalle.Fallo(errorMessage ?: "No se pudo cargar el pedido")
+}
+
+/**
+ * Final fix (F3, Codex #4 = I-1): la copia que respalda el detalle sólo COBRA mientras ese pedido está sin red (`OrdersRepository.detalleSinRed`,
+ * que sólo deja una lectura que nadie contestó o una pérdida de red de verdad). Con el servidor contestando (aunque sea mal) sólo se ve.
+ */
+internal fun copiaParaCobrar(copia: com.avoqado.pos.orders.data.CuentaGuardada?, detalleSinRed: String?): com.avoqado.pos.orders.data.CuentaGuardada? =
+    copia?.takeIf { it.cuenta.id == detalleSinRed }
+
+/** O1: la cuenta de tarjetas PAGADA va a su pantalla de resultado, pero no a media cobranza (desmontaría el cobro y su cambio). */
+internal fun vaACuentaDeTarjetas(pedido: OrderDetail, cobrando: Boolean): Boolean =
+    pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID && !cobrando
+
+/** T12b: el último detalle visto. Una recarga que falla lo deja en null en el repositorio, y un cobro abierto lo sigue necesitando. */
+@Composable
+private fun ultimoDetalleVisto(selectedOrder: OrderDetail?): OrderDetail? {
+    val ultimo = remember { mutableStateOf(selectedOrder) }
+    SideEffect { if (selectedOrder != null) ultimo.value = selectedOrder }
+    return selectedOrder ?: ultimo.value
 }
 
 @Composable
@@ -297,14 +331,18 @@ private fun PhoneOrdersLayout(
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
+    val detalleSinRed by viewModel.detalleSinRed.collectAsState()
+    val cobrando by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
+    val ultimo = ultimoDetalleVisto(selectedOrder)
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
-    when (val estado = estadoDelDetalle(HostDelDetalle.TELEFONO, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage)) {
+    when (val estado = estadoDelDetalle(HostDelDetalle.TELEFONO, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage, cobrando, ultimo)) {
         is EstadoDelDetalle.Detalle -> {
             val pedido = estado.pedido
             // Show detail full screen on phone
-            if (pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID) {
+            if (vaACuentaDeTarjetas(pedido, cobrando)) {
                 com.avoqado.pos.giftcards.presentation.CuentaDeTarjetasScreen(pedido.id,onSalir={
                     viewModel.clearSelection();viewModel.invalidateAndRefresh()
                 })
@@ -318,6 +356,9 @@ private fun PhoneOrdersLayout(
                 isReimprimiendoComanda = isReimprimiendoComanda,
                 mensajeDeReimpresion = mensajeDeReimpresion,
                 onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
+                avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
+                copia = copiaParaCobrar(detalleDeLaCopia, detalleSinRed),
+                onReintentarDetalle = { viewModel.refrescarDetalle(pedido.id) },
             )
         }
         EstadoDelDetalle.Cargando -> {
@@ -355,6 +396,9 @@ private fun OrderListView(
     val searchText by viewModel.searchText.collectAsState()
     val statusFilter by viewModel.statusFilter.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
+    val avisoDeLaLista by viewModel.avisoDeLaLista.collectAsState()
+    // Frescura: a qué hora se leyó del SERVIDOR lo que se ve (null = la copia); «Cobrada en <caja>» gana si el registro es más nuevo.
+    val lecturaDelServidorEn by viewModel.lecturaDelServidorEn.collectAsState()
 
     val grouped = remember(orders) { viewModel.groupOrdersByDate(orders) }
 
@@ -398,6 +442,15 @@ private fun OrderListView(
             onFilterSelected = { viewModel.setStatusFilter(it) },
         )
 
+        // D12: sin red, la lista dice de qué hora es lo que enseña (estado normal, nunca en rojo). T12b: o que buscar necesita
+        // internet, o que el servidor contestó mal (no es «Sin conexión»).
+        avisoDeLaLista?.let { texto ->
+            com.avoqado.pos.customers.presentation.AvisoSinRedDeClientes(
+                texto = texto,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.xs),
+            )
+        }
+
         // Content — envuelto con el gesto de refresco (spec §4.7):
         // isRefreshing = SOLO el gesto manual, nunca la carga inicial.
         val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
@@ -415,9 +468,8 @@ private fun OrderListView(
                     AvoqadoBrandLoader(size = 72.dp)
                 }
             }
-            orders.isEmpty() -> {
-                OrdersEmptyState()
-            }
+            // T12b: vacía por una búsqueda sin red, el aviso de arriba lo dice; «No se encontraron pedidos» mentiría.
+            orders.isEmpty() -> if (avisoDeLaLista == null) OrdersEmptyState()
             else -> {
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
@@ -442,6 +494,7 @@ private fun OrderListView(
                             OrderRow(
                                 order = order,
                                 isSelected = isSelected,
+                                lecturaDelServidorEn = lecturaDelServidorEn,
                                 onClick = { viewModel.selectOrder(order.id) },
                             )
 
@@ -486,13 +539,17 @@ private fun OrderDetailPanel(
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val detalleDeLaCopia by viewModel.detalleDeLaCopia.collectAsState()
+    val detalleSinRed by viewModel.detalleSinRed.collectAsState()
+    val cobrando by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
+    val ultimo = ultimoDetalleVisto(selectedOrder)
     val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
     val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
     Box(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
     ) {
-        when (val estado = estadoDelDetalle(HostDelDetalle.TABLETA, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage)) {
+        when (val estado = estadoDelDetalle(HostDelDetalle.TABLETA, selectedOrderId, isLoadingDetail, selectedOrder, errorMessage, cobrando, ultimo)) {
             EstadoDelDetalle.Cargando -> {
                 AvoqadoBrandLoader(
                     modifier = Modifier.align(Alignment.Center),
@@ -501,7 +558,7 @@ private fun OrderDetailPanel(
             }
             is EstadoDelDetalle.Detalle -> {
                 val pedido = estado.pedido
-                if (pedido.esCuentaDeTarjetas && pedido.orderPaymentStatus == PaymentStatus.PAID) {
+                if (vaACuentaDeTarjetas(pedido, cobrando)) {
                     com.avoqado.pos.giftcards.presentation.CuentaDeTarjetasScreen(pedido.id,onSalir={
                         viewModel.clearSelection();viewModel.invalidateAndRefresh()
                     })
@@ -515,6 +572,9 @@ private fun OrderDetailPanel(
                     isReimprimiendoComanda = isReimprimiendoComanda,
                     mensajeDeReimpresion = mensajeDeReimpresion,
                     onReimprimirComanda = { viewModel.reimprimirComanda(pedido.id) },
+                    avisoSinRed = errorMessage.takeIf { detalleDeLaCopia != null || pedido !== selectedOrder },
+                    copia = copiaParaCobrar(detalleDeLaCopia, detalleSinRed),
+                    onReintentarDetalle = { viewModel.refrescarDetalle(pedido.id) },
                 )
             }
             is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
@@ -558,6 +618,12 @@ fun OrderDetailView(
     isReimprimiendoComanda: Boolean = false,
     mensajeDeReimpresion: String? = null,
     onReimprimirComanda: (() -> Unit)? = null,
+    /** D12: «Sin conexión · como estaba a las HH:MM» cuando lo que se ve sale de la copia. */
+    avisoSinRed: String? = null,
+    /** D12: la cuenta de la copia que respalda este detalle sin red: con ella se ofrece (o no) el cobro en efectivo. */
+    copia: com.avoqado.pos.orders.data.CuentaGuardada? = null,
+    /** Final fix ronda 2 (menor 1): «Reintentar» del pedido armado con la copia cuando ya hay red. */
+    onReintentarDetalle: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -592,6 +658,8 @@ fun OrderDetailView(
             modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
+            avisoSinRed?.let { com.avoqado.pos.customers.presentation.AvisoSinRedDeClientes(texto = it) }
+
             // Status section
             OrderStatusSection(order = order)
 
@@ -602,7 +670,7 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
-            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar)
+            com.avoqado.pos.payment.presentation.AccionesDeCuentaAbierta(order, onCuentaActualizada, onCuentaCancelada, onSalioSinCobrar, copia, onReintentarDetalle)
 
             // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
             // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.
@@ -1062,6 +1130,8 @@ private fun DetailSectionHeader(title: String) {
 private fun OrderRow(
     order: OrderSummary,
     isSelected: Boolean = false,
+    /** Frescura: a qué hora se leyó del SERVIDOR esta fila (null = la copia sin red). */
+    lecturaDelServidorEn: Long?,
     onClick: () -> Unit,
 ) {
     val diario: com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel = hiltViewModel(key = "diario-cuentas-abiertas")
@@ -1070,6 +1140,13 @@ private fun OrderRow(
         ((order.cobrosConSaldo ?: 0) >= 1 || solicitudes.any {
             it.venueId == diario.venueActual && it.orderId == order.id && it.porTerminar
         })
+    // D12 · Opción D: la cuenta que abrió esta caja y su registro da por cobrada en otra (o aquí): «Cobrada en <caja>».
+    // La versión del registro de la dueña es llave: el «cobrada» de otra caja la cambia y la etiqueta aparece con Pedidos ya abierto.
+    val versionDelRegistro by diario.versionDelRegistro.collectAsState()
+    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status, order.saldoPendienteCents, lecturaDelServidorEn,
+        versionDelRegistro) {
+        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id, order.saldoPendienteCents, lecturaDelServidorEn) else null
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1136,7 +1213,7 @@ private fun OrderRow(
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = if (porTerminar) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.POR_TERMINAR else order.formattedTotal,
+                    text = cobradaEn ?: if (porTerminar) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.POR_TERMINAR else order.formattedTotal,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

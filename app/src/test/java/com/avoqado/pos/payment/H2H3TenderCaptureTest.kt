@@ -89,8 +89,10 @@ class H2H3TenderCaptureTest {
     private val sql = mockk<PendingPaymentDao>(relaxed = true)
     // Los defaults suspendidos son reales: callOriginal de MockK puede perder la espera de un retorno Unit.
     private val dao = object : PendingPaymentDao by sql {
-        override suspend fun insert(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insert(payment)
-        override suspend fun insertTransactionQ16(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insertTransactionQ16(payment)
+        override suspend fun insert(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) =
+            super<PendingPaymentDao>.insert(payment, antesDelInsert)
+        override suspend fun insertTransactionQ16(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) =
+            super<PendingPaymentDao>.insertTransactionQ16(payment, antesDelInsert)
         override suspend fun insertRaw(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insertRaw(payment)
     }
     private val rows = linkedMapOf<String, PendingPaymentEntity>()

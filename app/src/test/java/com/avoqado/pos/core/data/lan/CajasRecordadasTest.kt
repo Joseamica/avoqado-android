@@ -1,0 +1,459 @@
+package com.avoqado.pos.core.data.lan
+
+import com.avoqado.pos.core.data.local.PayloadCache
+import io.mockk.coEvery
+import io.mockk.mockk
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * D12 · tubería de D (hz:e5ee98bc:D4): en el ensayo del 11-nov NSD perdió a la N86 entre las bandas del WiFi y nunca la volvió a ver,
+ * aunque contestaba por TCP. Aquí, con un disco de memoria y un `quien` de mentira por dirección: la caja que NSD pierde sigue mientras
+ * conteste con su misma identidad, y sale con dos fallas, otra identidad o una app vieja.
+ */
+class CajasRecordadasTest {
+    private val v = "venue-1"
+    private var hora = 1_700_000_000_000L
+    private val disco = mutableMapOf<String, PayloadCache.Cached>()
+    private var escrituras = 0
+    private var lecturaFalla = false
+    private val cache = mockk<PayloadCache> {
+        coEvery { loadDurable(any(), any()) } answers {
+            if (lecturaFalla) throw java.io.IOException("Room no contestó")
+            disco["${firstArg<String>()}|${secondArg<String>()}"]
+        }
+        coEvery { saveDurable(any(), any(), any()) } coAnswers {
+            // Familia B: (guardando, soltar) detiene la SIGUIENTE escritura a medio guardar (la de Room puede tardar).
+            retenerGuardado?.let { (guardando, soltar) -> retenerGuardado = null; guardando.complete(Unit); soltar.await() }
+            escrituras++
+            disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
+        }
+    }
+    @Volatile private var retenerGuardado: Pair<kotlinx.coroutines.CompletableDeferred<Unit>, kotlinx.coroutines.CompletableDeferred<Unit>>? = null
+
+    /** host → lo que contesta `quien` (sin entrada o null = no contesta). */
+    private val contesta = mutableMapOf<String, LeaseResponse?>()
+    private val preguntas = mutableListOf<String>()
+
+    private fun cajas() = CajasRecordadas(cache, v, "yo", { p -> preguntas += p.host; contesta[p.host] }, { hora })
+
+    private fun txt(did: String, venue: String = v, caja: String = "Caja 2", kds: String? = null) =
+        LanTxt.construir(did, venue, false, 1_000, LanTxt.estacionesDe(kds), hub = true, cajaConD = caja)
+
+    private fun soy(did: String, venue: String = v, caja: String = "Caja 2", kds: String? = null) =
+        LeaseResponse(status = LeaseProtocol.STATUS_OK, txt = txt(did, venue, caja, kds))
+
+    private fun vistaPorNsd(did: String, host: String) = requireNotNull(LanTxt.peerDesde(txt(did), host, 4321, "yo", v))
+
+    private val n86 = vistaPorNsd("n86-aaaa", "192.168.100.152")
+
+    private fun enDisco(): Map<String, CajasRecordadas.Recordada> =
+        disco["${PayloadCache.TYPE_CAJAS_RECORDADAS}|$v"]?.let { Json.decodeFromString(CajasRecordadas.Disco.serializer(), it.json).cajas }.orEmpty()
+
+    /** NSD la ve, la pierde (onServiceLost) y su `quien` contesta: sigue en la lista, con el TXT de esa respuesta. */
+    private suspend fun perdidaQueContesta(c: CajasRecordadas, caja: String = "Caja 2", kds: String? = null) {
+        c.recordar(listOf(n86))
+        c.sostener(listOf(n86))
+        contesta[n86.host] = soy(n86.deviceId, caja = caja, kds = kds)
+        c.confirmarPerdidas(listOf(n86))
+    }
+
+    @Test fun `NSD la pierde y su quien contesta - sigue en la lista con su TXT al día`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86))
+        c.sostener(listOf(n86))
+        assertEquals("mientras se confirma no se cae", listOf(n86.deviceId), c.porTcp(emptyList()).map { it.deviceId })
+        contesta[n86.host] = soy(n86.deviceId, caja = "Caja 2 · Barra", kds = "cocina")
+        c.confirmarPerdidas(listOf(n86))
+
+        val p = c.porTcp(emptyList()).single()
+        assertEquals(n86.deviceId, p.deviceId)
+        assertEquals("192.168.100.152", p.host)
+        assertTrue("D la sigue viendo", p.participaEnD)
+        assertEquals("Caja 2 · Barra", p.nombreCaja)
+        assertEquals(setOf("cocina"), p.kdsStations)
+        assertTrue("lo que ve NSD manda", c.porTcp(listOf(n86)).isEmpty())
+    }
+
+    /** Ronda 1, Menor 4: a una sostenida que no contesta se le pregunta otra vez enseguida; dos seguidas y sale en la MISMA revisión. */
+    @Test fun `una sostenida que deja de contestar sale en la misma revisión`() = runTest {
+        val c = cajas()
+        perdidaQueContesta(c)
+        preguntas.clear()
+        contesta[n86.host] = null
+        c.revisar(emptyList())
+        assertTrue("dos seguidas en la misma revisión: fuera", c.porTcp(emptyList()).isEmpty())
+        assertEquals("la segunda pregunta va enseguida", listOf(n86.host, n86.host), preguntas)
+    }
+
+    @Test fun `una falla suelta no la saca - la segunda pregunta contesta`() = runTest {
+        var n = 0
+        val c = CajasRecordadas(cache, v, "yo", { p -> n++; if (n == 2) null else soy(p.deviceId) }, { hora })
+        perdidaQueContesta(c) // pregunta 1: contesta
+        c.revisar(emptyList()) // pregunta 2: no contesta; pregunta 3: contesta
+        assertEquals(3, n)
+        assertEquals(1, c.porTcp(emptyList()).size)
+    }
+
+    @Test fun `al perderla NSD y no contestar dos veces seguidas sale enseguida, como hoy`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86))
+        c.sostener(listOf(n86))
+        c.confirmarPerdidas(listOf(n86)) // cerró la app: nadie escucha en su puerto
+        assertTrue(c.porTcp(emptyList()).isEmpty())
+        assertEquals(listOf(n86.host, n86.host), preguntas)
+    }
+
+    @Test fun `misma IP con otro deviceId u otro venue - fuera y se olvida su dirección`() = runTest {
+        val c = cajas()
+        perdidaQueContesta(c)
+        contesta[n86.host] = soy("otra-tablet") // el DHCP le dio la IP a otro aparato
+        c.revisar(emptyList())
+        assertTrue(c.porTcp(emptyList()).isEmpty())
+        assertFalse(n86.deviceId in enDisco())
+        preguntas.clear()
+        c.revisar(emptyList())
+        assertTrue("ya no se le pregunta nada a esa dirección", preguntas.isEmpty())
+
+        val d = cajas()
+        perdidaQueContesta(d)
+        contesta[n86.host] = soy(n86.deviceId, venue = "otro-negocio") // la plaza comparte WiFi
+        d.revisar(emptyList())
+        assertTrue(d.porTcp(emptyList()).isEmpty())
+    }
+
+    @Test fun `el quien de una app vieja (error) no cuenta`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86))
+        c.sostener(listOf(n86))
+        contesta[n86.host] = LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Operación desconocida: quien")
+        c.confirmarPerdidas(listOf(n86))
+        assertTrue(c.porTcp(emptyList()).isEmpty())
+        assertEquals("un error no se reintenta: no es la red", 1, preguntas.size)
+    }
+
+    @Test fun `reinicio de la app - las recordadas que contestan vuelven a la lista sin NSD`() = runTest {
+        val d3 = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        cajas().recordar(listOf(n86, d3))
+
+        val alArrancar = cajas() // otra instancia, mismo disco
+        contesta[n86.host] = soy(n86.deviceId)
+        alArrancar.revisar(emptyList())
+        assertEquals("la que no contesta no entra", listOf(n86.deviceId), alArrancar.porTcp(emptyList()).map { it.deviceId })
+        assertEquals(setOf(n86.host, d3.host), preguntas.toSet())
+    }
+
+    @Test fun `nunca este aparato, nunca un anuncio sin sucursal, y a las 24 h sin contestar se olvida`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86, LanPeer("yo", "10.0.0.9", 1, venueExplicito = true), LanPeer("vieja", "10.0.0.8", 1, venueExplicito = false)))
+        assertEquals(setOf(n86.deviceId), enDisco().keys)
+        assertEquals(v, enDisco().getValue(n86.deviceId).venue)
+
+        hora += CajasRecordadas.OLVIDAR_MS - 1
+        c.revisar(emptyList())
+        assertEquals("aún no: se le pregunta", listOf(n86.host), preguntas)
+        hora += 1
+        c.revisar(emptyList())
+        assertTrue(enDisco().isEmpty())
+        assertEquals("olvidada: ya no se le pregunta", 1, preguntas.size)
+    }
+
+    @Test fun `una que contesta se vuelve a fechar y una que NSD ve no se sondea`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86))
+        hora += CajasRecordadas.OLVIDAR_MS - 1
+        c.revisar(listOf(n86)) // NSD la ve: al día, sin preguntarle
+        assertTrue(preguntas.isEmpty())
+        hora += CajasRecordadas.OLVIDAR_MS - 1
+        contesta[n86.host] = soy(n86.deviceId)
+        c.revisar(emptyList())
+        assertEquals(listOf(n86.deviceId), c.porTcp(emptyList()).map { it.deviceId })
+    }
+
+    @Test fun `en paralelo y con su plazo - dos cajas lentas tardan lo de una`() = runTest {
+        val lentas = CajasRecordadas(cache, v, "yo", { p ->
+            preguntas += p.host
+            delay(LeaseClient.PLAZO_QUIEN_MS)
+            null
+        }, { hora })
+        lentas.recordar(listOf(n86, vistaPorNsd("d3-bbbb", "192.168.100.60")))
+        val antes = currentTime
+        lentas.revisar(emptyList())
+        assertEquals(2, preguntas.size)
+        assertEquals("1.5 s por caja, no 1.5 s × cajas", LeaseClient.PLAZO_QUIEN_MS, currentTime - antes)
+    }
+
+    // MARK: - Ronda de arreglos 1
+
+    /** Menor 3: el candado no se tiene durante la red. Dos pérdidas a la vez y la revisión preguntan en paralelo, no en fila. */
+    @Test fun `dos cajas perdidas a la vez y la revisión se preguntan en paralelo`() = runTest {
+        val d3 = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val lentas = CajasRecordadas(cache, v, "yo", { p -> delay(LeaseClient.PLAZO_QUIEN_MS); soy(p.deviceId) }, { hora })
+        lentas.sostener(listOf(n86, d3))
+        val antes = currentTime
+        listOf(
+            launch { lentas.confirmarPerdidas(listOf(n86)) },
+            launch { lentas.confirmarPerdidas(listOf(d3)) },
+            launch { lentas.revisar(emptyList()) },
+        ).joinAll()
+        assertEquals("1.5 s en total, no 1.5 s en fila por cada una", LeaseClient.PLAZO_QUIEN_MS, currentTime - antes)
+        assertEquals(setOf(n86.deviceId, d3.deviceId), lentas.porTcp(emptyList()).map { it.deviceId }.toSet())
+    }
+
+    /** Menor 5a: el disco sólo se escribe si cambió la dirección o la fecha guardada tiene más de 1 h. */
+    @Test fun `el disco sólo se escribe si cambió la dirección o la fecha tiene más de 1 h`() = runTest {
+        val c = cajas()
+        c.recordar(listOf(n86))
+        assertEquals(1, escrituras)
+        hora += 60_000
+        c.recordar(listOf(n86))
+        c.revisar(listOf(n86))
+        assertEquals("un minuto después no hay nada nuevo que escribir", 1, escrituras)
+        hora += 60 * 60_000
+        c.recordar(listOf(n86))
+        assertEquals("más de 1 h: se vuelve a fechar", 2, escrituras)
+        c.recordar(listOf(vistaPorNsd(n86.deviceId, "192.168.100.153")))
+        assertEquals("cambió la dirección", 3, escrituras)
+        assertEquals("192.168.100.153", enDisco().getValue(n86.deviceId).host)
+    }
+
+    /** Menor 5b: un error al LEER el disco no cuenta como «vacío»: no se pisa lo guardado (se pierden las cajas del otro lado de la banda). */
+    @Test fun `si leer el disco falla, lo guardado queda intacto`() = runTest {
+        val d3 = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val otra = vistaPorNsd("otra-cccc", "192.168.100.70")
+        cajas().recordar(listOf(n86, d3))
+        val c = cajas()
+        lecturaFalla = true
+        c.recordar(listOf(otra))
+        c.revisar(listOf(otra))
+        assertEquals(setOf(n86.deviceId, d3.deviceId), enDisco().keys)
+        lecturaFalla = false
+        c.recordar(listOf(otra))
+        assertEquals("al volver a leer se junta, sin perder nada", setOf(n86.deviceId, d3.deviceId, otra.deviceId), enDisco().keys)
+    }
+
+    // MARK: - Ronda de arreglos 2
+
+    /**
+     * Un resultado viejo se aplica por dirección, no sólo por `did`: mientras se le preguntaba a la dirección VIEJA, NSD trajo la NUEVA
+     * (el DHCP le cambió la IP y otro aparato tomó la vieja). El «es otro» o el «no contesta» de la vieja no borra la nueva, ni del disco.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.mientrasPreguntaLlegaLaNueva(enLaVieja: LeaseResponse?) {
+        val puerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p ->
+            if (p.host == n86.host) { puerta.await(); enLaVieja } else soy(p.deviceId)
+        }, { hora })
+        c.recordar(listOf(n86))
+        c.sostener(listOf(n86))
+        val confirma = launch { c.confirmarPerdidas(listOf(n86)) }
+        runCurrent() // ya le preguntó a la vieja
+        val nueva = vistaPorNsd(n86.deviceId, "192.168.100.153")
+        c.recordar(listOf(nueva))
+        c.sostener(listOf(nueva))
+        puerta.complete(Unit)
+        confirma.join()
+        assertEquals("sigue en la lista con la nueva", listOf("192.168.100.153"), c.porTcp(emptyList()).map { it.host })
+        assertEquals("y en disco", "192.168.100.153", enDisco()[n86.deviceId]?.host)
+    }
+
+    @Test fun `el es otro de la dirección vieja no borra la nueva`() = runTest { mientrasPreguntaLlegaLaNueva(soy("otra-tablet")) }
+
+    @Test fun `el no contesta de la dirección vieja no saca a la nueva`() = runTest { mientrasPreguntaLlegaLaNueva(null) }
+
+    // MARK: - Arreglo final (Codex r3 #3)
+
+    /**
+     * Un encendido anterior no escribe el disco del nuevo. Su `quien` quedó retenido; la red local se reinició dentro del proceso (nació otra
+     * instancia, que aprendió y guardó la dirección nueva); al soltarse, la vieja aplicaba «es otro» con SU mapa y reescribía la fila entera.
+     * Al reiniciar la app, esa caja ya no se recuperaba por TCP.
+     */
+    @Test fun `un encendido viejo con su respuesta retenida no pisa lo que guardó el nuevo`() = runTest {
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val vieja = CajasRecordadas(cache, v, "yo", { retenida.await(); soy("otra-tablet") }, { hora })
+        vieja.recordar(listOf(n86))
+        vieja.sostener(listOf(n86))
+        val confirma = launch { vieja.confirmarPerdidas(listOf(n86)) }
+        runCurrent() // la vieja ya le preguntó a la dirección vieja
+        val nueva = CajasRecordadas(cache, v, "yo", { p -> soy(p.deviceId) }, { hora }) // se reinició la red local
+        nueva.recordar(listOf(vistaPorNsd(n86.deviceId, "192.168.100.153")))
+        retenida.complete(Unit)
+        confirma.join()
+        val preguntadas = mutableListOf<String>()
+        val tercera = CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }) // la app reiniciada
+        tercera.revisar(emptyList())
+        assertEquals("la reconstruida conserva la dirección nueva", listOf("192.168.100.153"), preguntadas.distinct())
+    }
+
+    // MARK: - Pasada por familia (Codex r4 #3)
+
+    /**
+     * Familia B: la instancia vieja ya pasó la vigencia y está guardando P (Room tarda); nace el encendido nuevo, lee el disco (todavía sin
+     * P), aprende Q y guarda SU mapa: P desaparecía del disco aunque la escritura vieja terminó bien. Ahora toda mutación toma el candado
+     * común, lee el disco, aplica sólo su cambio y guarda: la nueva lee DESPUÉS de que la vieja termina.
+     */
+    @Test fun `familia B - la escritura vieja y la lectura nueva no se cruzan - la reconstruida tiene P y Q`() = runTest {
+        val q = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val vieja = cajas()
+        val guardando = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
+        retenerGuardado = guardando to soltar
+        val tareaVieja = launch { vieja.recordar(listOf(n86)) }
+        runCurrent()
+        assertTrue("premisa: la vieja ya pasó la vigencia y está guardando P", guardando.isCompleted)
+        val nueva = cajas() // se reinició la red local dentro del proceso
+        val tareaNueva = launch { nueva.recordar(listOf(q)) }
+        runCurrent()
+        soltar.complete(Unit)
+        joinAll(tareaVieja, tareaNueva)
+
+        val preguntadas = mutableListOf<String>()
+        CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }).revisar(emptyList()) // la app reiniciada
+        assertEquals("la reconstruida tiene P y Q", setOf(n86.host, q.host), preguntadas.toSet())
+    }
+
+    // MARK: - Frescura (Codex r5 #1): gana la observación más nueva, dentro del MISMO encendido
+
+    private suspend fun laReconstruidaPregunta(): List<String> {
+        val preguntadas = mutableListOf<String>()
+        CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }).revisar(emptyList()) // la app reiniciada
+        return preguntadas
+    }
+
+    /**
+     * Ingreso 1: una revisión le pregunta a P (en su dirección VIEJA, que todavía contesta) y a Q; el «sí soy yo» de P espera a que termine
+     * Q. Mientras tanto NSD trae la dirección NUEVA de P y se recuerda. Al terminar Q, el éxito viejo de P la reponía.
+     */
+    @Test fun `frescura - el éxito viejo de una revisión no repone la dirección vieja`() = runTest {
+        val q = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p -> if (p.host == q.host) retenida.await(); soy(p.deviceId) }, { hora })
+        c.recordar(listOf(n86, q)) // las dos en disco; NSD ya no las ve
+        val revision = launch { c.revisar(emptyList()) }
+        runCurrent() // P ya contestó desde la vieja; Q sigue
+        hora += 1_000
+        c.recordar(listOf(vistaPorNsd(n86.deviceId, "192.168.100.153"))) // NSD trae la nueva
+        retenida.complete(Unit)
+        revision.join()
+
+        assertEquals("192.168.100.153", enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue("la reconstruida busca la nueva", "192.168.100.153" in preguntadas)
+        assertFalse("y no la vieja", n86.host in preguntadas)
+    }
+
+    /**
+     * Ingreso 2 (`TransporteLan.alCambiarAjenos`): NSD pierde una caja y su foto trae a P en la dirección vieja; la foto se recordaba DESPUÉS
+     * de confirmar la perdida (lenta). Mientras tanto otra foto, más nueva, trae la dirección nueva de P y se guarda. La foto vieja ya no la
+     * pisa: lleva la hora en que NSD la dio, no la hora en que se escribe.
+     */
+    @Test fun `frescura - la foto de NSD que esperó a confirmar las perdidas no repone la dirección vieja`() = runTest {
+        val perdida = vistaPorNsd("otra-cccc", "192.168.100.70")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p -> if (p.host == perdida.host) retenida.await(); soy(p.deviceId) }, { hora })
+        c.recordar(listOf(n86, perdida))
+        val vieja = c.alCambiarNsd(perdidas = listOf(perdida), lista = listOf(n86)) // NSD: se pierde una; P sigue en la vieja
+        val tarea = launch { vieja() }
+        runCurrent() // confirmando la perdida
+        hora += 1_000
+        c.alCambiarNsd(perdidas = emptyList(), lista = listOf(vistaPorNsd(n86.deviceId, "192.168.100.153")))() // la foto nueva
+        retenida.complete(Unit)
+        tarea.join()
+
+        assertEquals("192.168.100.153", enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue("192.168.100.153" in preguntadas)
+        assertFalse(n86.host in preguntadas)
+    }
+
+    // MARK: - Frescura (Codex r6 #1): también cuenta lo que se observó y no se escribió, lo que se quitó, y el reloj que se atrasa
+
+    /** P en .152 (en disco) y la foto de NSD [vieja] de P, que espera a confirmar una perdida lenta; [mientras] corre antes de soltarla. */
+    private suspend fun kotlinx.coroutines.test.TestScope.fotoRetenida(vieja: LanPeer, mientras: suspend (CajasRecordadas) -> Unit) {
+        val perdida = vistaPorNsd("otra-cccc", "192.168.100.70")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p -> if (p.host == perdida.host) retenida.await(); soy(p.deviceId) }, { hora })
+        c.recordar(listOf(n86, perdida))
+        hora += 1_000
+        val tarea = launch { c.alCambiarNsd(perdidas = listOf(perdida), lista = listOf(vieja))() }
+        runCurrent() // confirmando la perdida
+        mientras(c)
+        retenida.complete(Unit)
+        tarea.join()
+    }
+
+    /**
+     * `:149`: una foto MÁS NUEVA trae a P otra vez en .152 mientras la vieja (.153) espera. Coincide con el disco y pasó menos de 1 h: no se
+     * reescribe (5a). La vieja se comparaba contra la fecha del disco, más vieja que las dos, y reemplazaba la dirección buena.
+     */
+    @Test fun `frescura r6 - la foto nueva que no se escribió sigue ganándole a la vieja retenida`() = runTest {
+        fotoRetenida(vistaPorNsd(n86.deviceId, "192.168.100.153")) { c ->
+            hora += 1_000
+            c.alCambiarNsd(perdidas = emptyList(), lista = listOf(n86))()
+        }
+        assertEquals(n86.host, enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue(n86.host in preguntadas)
+        assertFalse("192.168.100.153" in preguntadas)
+    }
+
+    /**
+     * `:159`: el reloj del aparato se atrasa (la hora de red lo corrige) mientras la foto de .153 espera; ya atrasado, NSD trae a P en .154 y
+     * se guarda. La foto retenida llega con una hora «del futuro» y ganaba.
+     */
+    @Test fun `frescura r6 - una hora entrante del futuro (el reloj se atrasó) no gana`() = runTest {
+        fotoRetenida(vistaPorNsd(n86.deviceId, "192.168.100.153")) { c ->
+            hora -= 10 * 60_000
+            c.alCambiarNsd(perdidas = emptyList(), lista = listOf(vistaPorNsd(n86.deviceId, "192.168.100.154")))()
+        }
+        assertEquals("192.168.100.154", enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue("192.168.100.154" in preguntadas)
+        assertFalse("192.168.100.153" in preguntadas)
+    }
+
+    /**
+     * Una revisión le pregunta a P (.152) y a Q; el «soy yo» de P espera a Q. Mientras, P se vuelve a preguntar en .152 (NSD la perdió) y
+     * [despues] contesta. Al terminar Q, el «soy yo» viejo no puede deshacer lo que se supo después.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.exitoViejoTrasSalir(despues: LeaseResponse?): CajasRecordadas {
+        val q = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var aP = 0
+        val c = CajasRecordadas(cache, v, "yo", { p ->
+            if (p.host == q.host) { retenida.await(); soy(p.deviceId) } else if (++aP == 1) soy(p.deviceId) else despues
+        }, { hora })
+        c.recordar(listOf(n86, q))
+        val revision = launch { c.revisar(emptyList()) }
+        runCurrent() // P ya dijo «soy yo» desde .152; Q sigue
+        hora += 1_000
+        c.sostener(listOf(n86)) // NSD la pierde
+        c.confirmarPerdidas(listOf(n86))
+        assertTrue("premisa: ya salió de la lista", c.porTcp(emptyList()).none { it.deviceId == n86.deviceId })
+        retenida.complete(Unit)
+        revision.join()
+        return c
+    }
+
+    /** `:207`: en .152 ya contesta OTRO aparato (el DHCP le dio esa IP): sale de la lista y del disco. El «es otra» borraba también su hora. */
+    @Test fun `frescura r6 - el es otra deja su hora y un éxito más viejo no resucita la dirección`() = runTest {
+        val c = exitoViejoTrasSalir(soy("otra-tablet"))
+        assertTrue("no vuelve a la lista", c.porTcp(emptyList()).none { it.deviceId == n86.deviceId })
+        assertFalse("ni al disco", n86.deviceId in enDisco())
+        assertFalse("la reconstruida no la busca en .152", n86.host in laReconstruidaPregunta())
+    }
+
+    /** La misma familia por «no contesta»: dos fallas seguidas la sacan de la lista; un «soy yo» más viejo no la regresa. */
+    @Test fun `frescura r6 - tras dos fallas seguidas un éxito más viejo no la regresa a la lista`() = runTest {
+        val c = exitoViejoTrasSalir(null)
+        assertTrue(c.porTcp(emptyList()).none { it.deviceId == n86.deviceId })
+    }
+}

@@ -96,6 +96,10 @@ fun PaymentFlowScreen(
     textoSiLaCuentaSeCancelo: (() -> String?)? = null,
     /** Tienda híbrida (R100): el cobro sale de la bandeja «Pedidos en línea». Ver `PaymentFlowViewModel.startPaymentFlow`. */
     cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
+    /** D12 (Codex r3 H3): la revalidación justo antes de recibir el efectivo. Ver `PaymentFlowViewModel.startPaymentFlow`. null = como siempre. */
+    antesDeRecibirEfectivo: (suspend () -> String?)? = null,
+    /** D12 · Opción D: la puerta de la cuenta dijo que no (ver `PaymentFlowViewModel.startPaymentFlow`). */
+    alNoPasarLaPuerta: ((String) -> Unit)? = null,
     /** D13: la foto de la puerta del efectivo de quien fijó el saldo (bandeja, «Pedidos → detalle»). null = la toma el cobro. */
     dineroConocido: com.avoqado.pos.payment.domain.DineroConocido? = null,
 ) {
@@ -122,6 +126,16 @@ fun PaymentFlowScreen(
     // tarjeta rechazada, por ejemplo), se suelta, igual que con «Cancelar» (Codex r4 #6).
     val salirSinCobrar: () -> Unit = { viewModel.alSalirSinCobrar(); onCancel() }
     val state by viewModel.state.collectAsState()
+    // D12 · Opción D: al irse la pantalla, el permiso de la cuenta se termina (lo decide lo durable).
+    androidx.compose.runtime.DisposableEffect(viewModel) { onDispose { viewModel.alSalirDeLaPantalla() } }
+    // I1: el «no» de la puerta con red, neutro (nunca la pantalla roja): se lee, se cierra y se sale del cobro sin cobrar.
+    val avisoDeLaPuerta by viewModel.avisoDeLaPuerta.collectAsState()
+    avisoDeLaPuerta?.let { texto ->
+        val cerrar = { viewModel.cerrarAvisoDeLaPuerta(); onCancel() }
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(title = texto, onDismiss = cerrar) {
+            com.avoqado.pos.designsystem.components.PrimaryButton(text = "Entendido", onClick = cerrar)
+        }
+    }
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
@@ -197,6 +211,8 @@ fun PaymentFlowScreen(
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
             cobroDeLaBandeja = cobroDeLaBandeja,
+            antesDeRecibirEfectivo = antesDeRecibirEfectivo,
+            alNoPasarLaPuerta = alNoPasarLaPuerta,
             dineroConocido = dineroConocido,
         )
         aperturaIniciada = true
@@ -778,6 +794,8 @@ private fun SplitType.toApiSplitType(): String {
 /** Rappi 2b: por qué el cobro es sólo efectivo, según quién lo abrió. D15: una venta en $0 lo dice primero. */
 private fun textoSoloEfectivoDe(origen: com.avoqado.pos.payment.domain.OrigenDelCobro, ventaEnCero: Boolean = false, mesaSinRed: Boolean = false): String =
     if (ventaEnCero) PaymentFlowViewModel.TEXTO_VENTA_EN_CERO
+    else if (origen == com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA)
+        com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SOLO_EFECTIVO
     else if (mesaSinRed) PaymentFlowViewModel.TEXTO_MESA_SIN_RED
     else if (origen.esDePlataforma) com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.REPARTO_SOLO_EFECTIVO
     else com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO

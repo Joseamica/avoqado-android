@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +65,21 @@ class ConnectivityMonitor @Inject constructor(
     private val _isServerReachable = MutableStateFlow(true)
     val isServerReachable: StateFlow<Boolean> = _isServerReachable.asStateFlow()
 
+    /**
+     * D12 (final fix ronda 2, R2-2): ¿el último ping o la última consulta de la salud se quedó SIN respuesta (una
+     * [java.io.IOException]: conexión rechazada, tiempo agotado, DNS)? Cualquier respuesta HTTP, también un 5xx, lo apaga, y una
+     * respuesta buena también. Mientras [isServerReachable] siga en falso, el reintento lo vuelve a decidir cada 10 s: así el WiFi
+     * conectado con el módem sin internet sí se nota. Menor 2: la frontera real es «contestó en [PING_TIMEOUT_MS]» (para conectar y otro
+     * tanto para leer; la resolución de DNS no la limita), no «el WiFi está bien»: un servidor colgado que no contesta en ese plazo
+     * también cuenta como «nadie contesta».
+     */
+    private val _sinRespuesta = MutableStateFlow(false)
+    val sinRespuesta: StateFlow<Boolean> = _sinRespuesta.asStateFlow()
+
+    /** Seam de pruebas: la URL del servidor para el ping y la salud. En producción, [ApiConstants.BASE_URL]. */
+    @androidx.annotation.VisibleForTesting
+    internal var urlBase: String = ApiConstants.BASE_URL
+
     // Combined connectivity: device has network AND server is reachable
     val isFullyConnected: Boolean get() = _isConnected.value && _isServerReachable.value
 
@@ -110,6 +126,7 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     fun reportServerSuccess() {
+        _sinRespuesta.value = false
         if (!_isServerReachable.value) {
             _isServerReachable.value = true
             Log.d("📡", "Server marked reachable")
@@ -139,26 +156,71 @@ class ConnectivityMonitor @Inject constructor(
      * hace `SELECT 1`), no la bandera. Cuenta sólo un 200 con JSON `"status":"ok"`: un portal cautivo, un proxy o el servidor sin su
      * base devuelven otra cosa. Lo usa el tope del cierre que espera a sus ventas (efectivo sin red en el turno correcto, 24-oct-2026).
      */
-    suspend fun elServidorContesta(): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
-        if (!_isConnected.value) return@withContext false
+    suspend fun elServidorContesta(): Boolean = consultarSalud() == true
+
+    /**
+     * D12 · familia C (Codex r4 #2): [elServidorContesta] con plazo TOTAL [plazoMs] (resolver, conectar, encabezados y cuerpo). «No» al
+     * instante, sin preguntar, si el monitor ya sabe que no hay red ([isConnected] falso o [sinRespuesta]). Al vencer cuenta como «no» (falla
+     * cerrado) y no toca [sinRespuesta]: un plazo corto propio no prueba que nadie conteste. La consulta corre en el scope del monitor: quien
+     * pregunta regresa al vencer, sin esperar a un DNS o a un cuerpo que gotea; la consulta deja de leer y cierra SU conexión en su hilo,
+     * a más tardar un plazo después (cada espera de conectar o leer dura ≤ [plazoMs]). Cerrarla desde el hilo de quien pregunta no sirve:
+     * `disconnect()` espera el candado de la conexión, que el hilo que lee vuelve a tomar en cada byte.
+     */
+    suspend fun elServidorContestaEn(plazoMs: Long): Boolean {
+        if (!_isConnected.value || _sinRespuesta.value) return false
+        val plazo = PlazoDeLaSalud(plazoMs.toInt())
+        val consulta = scope.async { consultarSalud(plazo) }
+        try {
+            return kotlinx.coroutines.withTimeoutOrNull(plazoMs) { consulta.await() } == true
+        } finally {
+            if (!consulta.isCompleted) plazo.vencido = true
+        }
+    }
+
+    /** UNA consulta de la salud con plazo total: [ms] topa cada espera; al [vencido], la consulta deja de leer y cierra su conexión. */
+    private class PlazoDeLaSalud(val ms: Int) {
+        @Volatile var vencido = false
+
+        fun revisar() {
+            if (vencido) throw java.io.IOException("plazo de la salud vencido")
+        }
+    }
+
+    /**
+     * D12 (final fix, F3): ¿se fue la red DE VERDAD? Sin red del aparato, o nadie contesta la salud (sin datos, DNS, tiempo agotado: un
+     * [java.io.IOException]). Si alguien contesta, aunque sea mal (un 5xx), NO es «sin red»: el mismo criterio que `FalloDeLectura`. La
+     * bandera [isServerReachable] no lo distingue: cualquier 5xx de cualquier pantalla la apaga. Pone al día [sinRespuesta] (ronda 2);
+     * la frontera es «contestó en [PING_TIMEOUT_MS]», no «WiFi bueno» (menor 2).
+     */
+    suspend fun nadieContesta(): Boolean = consultarSalud() == null
+
+    /** La salud profunda: true = nuestra API contestó bien · false = alguien contestó, pero no eso · null = nadie contestó (o sin red). */
+    private suspend fun consultarSalud(plazo: PlazoDeLaSalud? = null): Boolean? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        if (!_isConnected.value) return@withContext null
         var connection: HttpURLConnection? = null
         try {
-            val url = java.net.URI(ApiConstants.BASE_URL).resolve("/api/public/healthcheck").toURL()
+            val url = java.net.URI(urlBase).resolve("/api/public/healthcheck").toURL()
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = PING_TIMEOUT_MS
-                readTimeout = PING_TIMEOUT_MS
+                connectTimeout = plazo?.let { minOf(it.ms, PING_TIMEOUT_MS) } ?: PING_TIMEOUT_MS
+                readTimeout = plazo?.let { minOf(it.ms, PING_TIMEOUT_MS) } ?: PING_TIMEOUT_MS
                 instanceFollowRedirects = false
                 // Codex apps r7 #3: nunca una respuesta guardada (ni aquí ni en un proxy): la salud vale sólo si es de AHORA.
                 useCaches = false
                 setRequestProperty("Cache-Control", "no-cache, no-store")
                 setRequestProperty("Pragma", "no-cache")
             }
+            plazo?.revisar() // la consulta tardó en arrancar y el plazo ya venció: no se conecta
             val code = connection.responseCode
-            val cuerpo = if (code == 200) connection.inputStream.bufferedReader().use { it.readText() } else null
+            _sinRespuesta.value = false // alguien contestó, aunque sea mal
+            val cuerpo = if (code == 200) leerCuerpo(connection, plazo) else null
             val ok = saludContesta(code, connection.contentType, cuerpo)
             if (ok) reportServerSuccess() else Log.d("📡", "Salud del servidor: $code (${connection.contentType}) — no cuenta")
             ok
+        } catch (e: java.io.IOException) {
+            Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
+            if (plazo == null) _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
+            null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
             false
@@ -167,11 +229,24 @@ class ConnectivityMonitor @Inject constructor(
         }
     }
 
-    private fun pingServer() {
+    /** El cuerpo de la salud; con [plazo], se deja de leer en cuanto vence (su conexión la cierra el `finally` de quien lee). */
+    private fun leerCuerpo(c: HttpURLConnection, plazo: PlazoDeLaSalud?): String = c.inputStream.use { entrada ->
+        val salida = java.io.ByteArrayOutputStream()
+        val trozo = ByteArray(1024)
+        while (true) {
+            plazo?.revisar()
+            val n = entrada.read(trozo)
+            if (n < 0) break
+            salida.write(trozo, 0, n)
+        }
+        salida.toString(Charsets.UTF_8.name())
+    }
+
+    internal fun pingServer() {
         if (!_isConnected.value) return
         var connection: HttpURLConnection? = null
         try {
-            val url = URL(ApiConstants.BASE_URL)
+            val url = URL(urlBase)
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "HEAD"
                 connectTimeout = PING_TIMEOUT_MS
@@ -179,6 +254,7 @@ class ConnectivityMonitor @Inject constructor(
                 instanceFollowRedirects = true
             }
             val code = connection.responseCode
+            _sinRespuesta.value = false // R2-2: alguien contestó (también un 5xx)
             val ngrokError = connection.getHeaderField("ngrok-error-code")
             // Matches iOS: any 200–499 means the server (or its proxy) is answering.
             // 5xx and ngrok edge errors (tunnel offline) are still treated as down.
@@ -187,6 +263,9 @@ class ConnectivityMonitor @Inject constructor(
             } else {
                 Log.d("📡", "Ping got $code (ngrok=$ngrokError) — server still down")
             }
+        } catch (e: java.io.IOException) {
+            Log.d("📡", "Ping sin respuesta: ${e.message}")
+            _sinRespuesta.value = true // R2-2: nadie contestó
         } catch (e: Exception) {
             Log.d("📡", "Ping failed: ${e.message}")
         } finally {

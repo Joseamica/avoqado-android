@@ -257,6 +257,56 @@ class PlanManagerTest {
         assertTrue(planManager.hasFeature("OFFLINE_LAN_HUB"))
     }
 
+    // MARK: - D12 (paso 2): el permiso de OTRA caja para cobrar sin red una cuenta ajena falla CERRADO.
+    // Encender el hub sigue con hasFeature (falla abierto, como Mesas).
+
+    @Test
+    fun `D12 acreditada falla cerrado con plan desconocido`() {
+        stubPlan(tier = null)
+        assertTrue(planManager.hasFeature("OFFLINE_LAN_HUB"))
+        assertFalse(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "GOLD_PLATINUM")
+        assertFalse(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "PREMIUM")
+        assertFalse("un código fuera del mapa no se regala", planManager.tieneAcreditada("SOME_FUTURE_CODE"))
+    }
+
+    @Test
+    fun `D12 PREMIUM conocido si`() {
+        stubPlan(tier = "PREMIUM")
+        assertTrue(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "ENTERPRISE")
+        assertTrue(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+    }
+
+    @Test
+    fun `D12 PRO no`() {
+        stubPlan(tier = "PRO")
+        assertFalse(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "FREE")
+        assertFalse(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+    }
+
+    @Test
+    fun `D12 lista del servidor manda`() {
+        stubPlan(tier = "FREE")
+        every { secureStorage.planSnapshot } returns
+            PlanSnapshot(tier = "FREE", accessSchemaVersion = 1, grantedFeatureCodes = listOf("OFFLINE_LAN_HUB"))
+        assertTrue(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+        every { secureStorage.planSnapshot } returns
+            PlanSnapshot(tier = "PREMIUM", accessSchemaVersion = 1, grantedFeatureCodes = emptyList())
+        assertFalse(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+    }
+
+    @Test
+    fun `D12 exempt si`() {
+        stubPlan(tier = null, exempt = true)
+        assertTrue(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "FREE")
+        every { secureStorage.planSnapshot } returns PlanSnapshot(tier = "FREE", exempt = true)
+        assertTrue(planManager.tieneAcreditada("OFFLINE_LAN_HUB"))
+    }
+
     // MARK: - Pantalla de cocina (etapa 3, decisión D-A del 27-sep)
 
     @Test

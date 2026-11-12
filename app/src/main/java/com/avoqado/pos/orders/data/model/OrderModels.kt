@@ -2,14 +2,26 @@ package com.avoqado.pos.orders.data.model
 
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.core.util.VenueTimeZone
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import kotlinx.serialization.builtins.nullable
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import com.avoqado.pos.tables.data.PreBillBalance
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 fun puedeCobrarseDesdeLaLista(cobrosConSaldo: Int?, detalle: OrderDetail, porTerminarAqui: Boolean = false): Boolean =
-    (cobrosConSaldo ?: 0) >= 1 || porTerminarAqui || detalle.payments.orEmpty().none { it.status == "COMPLETED" }
+    // Final fix (F2, Codex #3): el detalle armado con la copia (`payments = null`) no dice «sin abonos»: nunca abre la compuerta en línea.
+    !detalle.deLaCopia && ((cobrosConSaldo ?: 0) >= 1 || porTerminarAqui || detalle.payments.orEmpty().none { it.status == "COMPLETED" })
 
 // MARK: - Enums
 
@@ -97,6 +109,12 @@ data class OrderSummary(
     val refundState: String = "NONE",
     /** Lo devuelto, en PESOS y POSITIVO. 0 cuando no hay reembolsos. */
     val refundedAmount: Double = 0.0,
+    /** D12, aditivo: lo que falta, en CENTAVOS. Ausente (servidor viejo) o raro ⇒ null ⇒ «sin saldo» ⇒ gris sin red. */
+    @Serializable(with = CentavosTolerantes::class) val saldoPendienteCents: Int? = null,
+    /** D12, aditivo: pagos COMPLETED de la cuenta, devoluciones incluidas (espejo de [puedeCobrarseDesdeLaLista]). */
+    @Serializable(with = CentavosTolerantes::class) val pagosCompletados: Int? = null,
+    /** D12, aditivo: la cuenta es de vales por área. */
+    val esDeVales: Boolean? = null,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {
@@ -144,6 +162,67 @@ data class OrderSummary(
     val dateGroup: String = parseDateGroup(createdAt)
 }
 
+/**
+ * D12 (Codex r2): un entero JSON ≥ 0 ⇒ ese `Int`; fraccionario, negativo, texto, `null` u otra cosa ⇒ `null`, SIN lanzar.
+ * Una fila rara nunca tumba la página entera; sólo esa fila queda «sin saldo» (gris sin red).
+ */
+object CentavosTolerantes : KSerializer<Int?> {
+    override val descriptor: SerialDescriptor = Int.serializer().nullable.descriptor
+    override fun deserialize(decoder: Decoder): Int? {
+        val valor = (decoder as JsonDecoder).decodeJsonElement() as? JsonPrimitive ?: return null
+        return if (valor.isString) null else valor.content.toIntOrNull()?.takeIf { it >= 0 }
+    }
+    override fun serialize(encoder: Encoder, value: Int?) = (encoder as JsonEncoder).encodeJsonElement(JsonPrimitive(value))
+}
+
+/**
+ * D12 (P13): LA regla de «cuenta abierta». Una sola, para la copia de «Pedidos», su detalle y el cobro sin red.
+ * Abierta = ni cancelada, ni borrada, ni completada; no pagada; y sin reembolso.
+ */
+fun estaAbierta(status: String?, paymentStatus: String?, refundState: String?): Boolean =
+    status?.uppercase() !in setOf("CANCELLED", "DELETED", "COMPLETED") &&
+        !paymentStatus.equals("PAID", ignoreCase = true) &&
+        RefundState.from(refundState) == RefundState.NONE
+
+/**
+ * La fila de la lista vista como detalle (para enseñarla sin red). 🔴 `payments = null` NO dice «sin abonos»: la
+ * elegibilidad sin red sale de la FILA (`razonParaNoCobrar`), nunca de [puedeCobrarseDesdeLaLista] sobre este detalle.
+ */
+fun OrderSummary.comoDetalle(): OrderDetail = OrderDetail(
+    id = id, esCuentaDeTarjetas = esCuentaDeTarjetas, esDeMesa = esDeMesa, cobrosConSaldo = cobrosConSaldo,
+    orderNumber = orderNumber, status = status, paymentStatus = paymentStatus, type = type, source = source,
+    subtotal = subtotal, taxAmount = taxAmount, discountAmount = discountAmount, total = total, itemCount = itemCount,
+    staffName = staffName, customerName = customerName, createdAt = createdAt, items = null, payments = null,
+    refundState = refundState, refundedAmount = refundedAmount, deLaCopia = true,
+)
+
+/** D12 (Codex r3 H1): lo que este detalle bueno sabe de la cuenta, para poner la copia al día. */
+fun OrderDetail.comoEvidencia(): com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente =
+    com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente(
+        abierta = estaAbierta(status, paymentStatus, refundState),
+        saldoCents = preBillBalance?.remainingBalanceCents?.takeIf { it >= 0 }, // negativo = raro ⇒ «sin saldo», como la lista
+        pagosCompletados = payments.orEmpty().count { it.status == "COMPLETED" },
+        cobrosConSaldo = cobrosConSaldo ?: 0,
+        esCuentaDeTarjetas = esCuentaDeTarjetas,
+    )
+
+/**
+ * D12 (revisión r1): el saldo del detalle, tolerante como [CentavosTolerantes]. Si viene raro (fraccionario, texto, sin un
+ * campo), es `null` («sin saldo»: gris sin red, nunca cobrable) y el detalle abre igual; antes de D12 este campo se ignoraba.
+ */
+object SaldoTolerante : KSerializer<PreBillBalance?> {
+    override val descriptor: SerialDescriptor = PreBillBalance.serializer().nullable.descriptor
+    override fun deserialize(decoder: Decoder): PreBillBalance? {
+        val json = decoder as JsonDecoder
+        val elemento = json.decodeJsonElement()
+        return runCatching { json.json.decodeFromJsonElement(PreBillBalance.serializer(), elemento) }.getOrNull()
+    }
+    override fun serialize(encoder: Encoder, value: PreBillBalance?) {
+        val json = encoder as JsonEncoder
+        json.encodeJsonElement(value?.let { json.json.encodeToJsonElement(PreBillBalance.serializer(), it) } ?: JsonNull)
+    }
+}
+
 // MARK: - Detail Model
 
 @Serializable
@@ -174,6 +253,13 @@ data class OrderDetail(
     val refundedAmount: Double = 0.0,
     /** IVA que la orden SUMA aparte (servidor, aditivo, plan 7, r2 R2-13). Null = servidor anterior. */
     val addedTaxAmount: Double? = null,
+    /** D12: el saldo que el servidor ya manda en este detalle (el mismo que lee Mesas). Null = no vino o vino raro. */
+    @Serializable(with = SaldoTolerante::class) val preBillBalance: PreBillBalance? = null,
+    /**
+     * Final fix (F2, Codex #3): este detalle lo armó la copia sin red ([comoDetalle]), no el servidor. Nunca viaja en el JSON. Mientras
+     * no llegue el detalle real, la compuerta EN LÍNEA ([puedeCobrarseDesdeLaLista]) no lo juzga: sus `payments` no son los de verdad.
+     */
+    @Transient val deLaCopia: Boolean = false,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {

@@ -11,6 +11,8 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/giftcards/presentation/VentaPorRecuperar.kt:recuperar:restaurarFoto" to 1,
             "com/avoqado/pos/giftcards/domain/FotoDeLaVenta.kt:<fuera>:CartState" to 1,
             "com/avoqado/pos/payment/presentation/CobroDeCuentaScreen.kt:CobroDeCuentaScreen:CartState" to 1,
+            // D12: el cobro en efectivo sin red con la copia de «Pedidos»: el mismo «Saldo pendiente» de la cuenta.
+            "com/avoqado/pos/payment/presentation/CobroDeCuentaScreen.kt:CobroDesdeLaCopia:CartState" to 1,
             "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:CheckoutScreen:restaurarFoto" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:<fuera>:_cartState = MutableStateFlow" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:<fuera>:defaultCartState" to 1,
@@ -49,6 +51,7 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/giftcards/presentation/VentaPorRecuperar.kt:recuperar:restaurarFoto" to "regresa-foto / sin-vinculo / origen-de-foto-T1",
             "com/avoqado/pos/giftcards/domain/FotoDeLaVenta.kt:<fuera>:CartState" to "regresa-foto / sin-vinculo / origen-de-foto-T1",
             "com/avoqado/pos/payment/presentation/CobroDeCuentaScreen.kt:CobroDeCuentaScreen:CartState" to "ninguna / cuenta-del-server / ninguna",
+            "com/avoqado/pos/payment/presentation/CobroDeCuentaScreen.kt:CobroDesdeLaCopia:CartState" to "ninguna / cuenta-del-server / ninguna",
             "com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt:CheckoutScreen:restaurarFoto" to "regresa-foto / sin-vinculo / origen-de-foto-T1",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:<fuera>:_cartState = MutableStateFlow" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:<fuera>:defaultCartState" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",

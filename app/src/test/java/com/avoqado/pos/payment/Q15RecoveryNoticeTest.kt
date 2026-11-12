@@ -95,6 +95,37 @@ class Q15RecoveryNoticeTest {
         }
     }
 
+    // D12 (Codex r1 #1): el cobro hecho con la copia de una cuenta que creció en otra caja: «cobro guardado» no es «cuenta saldada».
+    @Test fun `D12 el aviso dice cuanto quedo debiendo la cuenta`() = runBlocking {
+        SalesNoticeSqlTest.Fixture().use { f ->
+            val row=seed(f)
+            val debe=row.copy(result=JSONObject(row.result!!).put("camposDiferentes",org.json.JSONArray().put("saldoDeLaCuenta"))
+                .put("saldoEsperadoCents",0).put("saldoEnElServidorCents",20000).toString())
+            assertTrue(debe.eligible())
+            val avisos=com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(debe)
+            assertTrue(avisos.toString(),avisos.contains(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.quedoDebiendo(20000)))
+            assertTrue(avisos.toString(),avisos.contains("La cuenta quedó debiendo $200.00"))
+            assertTrue(avisos.toString(),avisos.contains("Campos distintos: saldo de la cuenta"))
+            // Un sobrepago (el saldo quedó en cero en los dos lados) no dice que deba nada.
+            val deMas=row.copy(result=JSONObject(row.result!!).put("camposDiferentes",org.json.JSONArray().put("saldoDeLaCuenta"))
+                .put("saldoEsperadoCents",0).put("saldoEnElServidorCents",0).put("cobradoDeMasCents",10000).toString())
+            assertFalse(com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(deMas).any { it.contains("debiendo") })
+        }
+    }
+
+    // Ronda 1 (Important #1): una MESA cobrada por partes espera un saldo > 0; la diferencia NO es lo que debe. Sin línea «debiendo».
+    @Test fun `D12 una mesa con saldo distinto no dice debiendo`() = runBlocking {
+        SalesNoticeSqlTest.Fixture().use { f ->
+            val row=seed(f)
+            val mesa=row.copy(result=JSONObject(row.result!!).put("camposDiferentes",org.json.JSONArray().put("saldoDeLaMesa"))
+                .put("saldoEsperadoCents",20000).put("saldoEnElServidorCents",25000).toString())
+            assertTrue(mesa.eligible())
+            val avisos=com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(mesa)
+            // La línea «Saldo esperado · saldo en el servidor» es de la mesa sin red (D5, en develop); lo que D12 cuida es que no diga «debiendo».
+            assertEquals(listOf("Campos distintos: saldo de la mesa","Saldo esperado \$200.00 · saldo en el servidor \$250.00"),avisos)
+        }
+    }
+
     @Test fun acknowledged_recovered_payment_message_says_data_kept_and_does_not_call_it_pending() = runTest {
         SalesNoticeSqlTest.Fixture().use { f ->
             seed(f)

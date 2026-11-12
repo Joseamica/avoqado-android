@@ -73,6 +73,26 @@ class OrdersViewModel @Inject constructor(
     val errorMessage = repository.errorMessage
     val hasMore = repository.hasMore
 
+    /** D12: hora de lo que se ve en la lista sin red (null = con red) y la cuenta de la copia que respalda el detalle. */
+    val copiaVistaA = repository.copiaVistaA
+    val detalleDeLaCopia = repository.detalleDeLaCopia
+
+    /**
+     * D12 · frescura (Codex r5 #2, y Menor 3 de la re-revisión): a qué hora se leyó del SERVIDOR lo que se ve en la lista; null = la copia
+     * sin red. Tras un 5xx que conserva las filas sigue siendo la hora de AQUELLA lectura buena (no la del intento fallido): «Cobrada en
+     * <caja>» gana si la entrada CERRADA del registro es más nueva.
+     */
+    val lecturaDelServidorEn = repository.lecturaDelServidorEn
+
+    /** Final fix (F3): el pedido que está SIN RED (la copia sólo cobra mientras lo esté: `copiaParaCobrar`). */
+    val detalleSinRed = repository.detalleSinRed
+
+    /** T12b: el aviso gris de la lista (la copia, la búsqueda sin red o el servidor que contestó mal); null = al día. */
+    val avisoDeLaLista = repository.avisoDeLaLista
+
+    fun lecturaDe(page: Int, append: Boolean, search: String?, status: String?, hasMore: Boolean) =
+        com.avoqado.pos.orders.data.lecturaDe(page, append, search, status, hasMore)
+
     // MARK: - Local State
 
     private val _searchText = MutableStateFlow("")
@@ -103,13 +123,19 @@ class OrdersViewModel @Inject constructor(
         invalidateAndRefresh()
     }
 
+    /** Final fix ronda 2 (R2-3): el «Cargar más» en vuelo; una lectura nueva de la página 1 lo corta. */
+    private var cargandoMas: kotlinx.coroutines.Job? = null
+
     /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
-    suspend fun refreshNow(): Result<Unit> = repository.loadOrders(
-        page = 1,
-        search = _searchText.value.takeIf { it.isNotBlank() },
-        status = _statusFilter.value,
-        append = false,
-    )
+    suspend fun refreshNow(): Result<Unit> {
+        cargandoMas?.cancel() // R2-3: otra búsqueda, filtro o recarga: la página vieja ya no es de lo que se ve
+        return repository.loadOrders(
+            page = 1,
+            search = _searchText.value.takeIf { it.isNotBlank() },
+            status = _statusFilter.value,
+            append = false,
+        )
+    }
 
     // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
     fun autoRefresh() {
@@ -142,7 +168,7 @@ class OrdersViewModel @Inject constructor(
         val hasMore = repository.hasMore.value
         if (!hasMore || repository.isLoadingMore.value) return
 
-        viewModelScope.launch {
+        cargandoMas = viewModelScope.launch {
             repository.loadOrders(
                 page = currentPage + 1,
                 search = _searchText.value.takeIf { it.isNotBlank() },
@@ -322,6 +348,37 @@ class OrdersViewModel @Inject constructor(
                 repository.loadOrderDetail(id, reintento = true)
             }
         }
+    }
+
+    /**
+     * D12 (Codex r3 H4): mientras «Pedidos» se ve, al irse la red DE VERDAD se usa la copia vigente sin otra consulta
+     * ([OrdersRepository.alPerderLaRed]). El detalle se reabre al volver la red en [reabrirAlVolverLaRed].
+     * Final fix (F3, Codex #4 = I-1): de verdad = el aparato sin red, o nadie contesta la salud ([ConnectivityMonitor.nadieContesta]).
+     * `isServerReachable` solo no basta: cualquier 5xx de cualquier pantalla la apaga, y un servidor que contesta (aunque sea mal) no es
+     * «Sin conexión» ni habilita el cobro desde la copia. Se miran las DOS banderas por separado: tras un 5xx, irse el WiFi sí cuenta. Si
+     * la bandera vuelve mientras se pregunta, la pregunta se corta. Ronda 2 (R2-2): «nadie contesta» es también un estado del monitor
+     * ([ConnectivityMonitor.sinRespuesta]) que cada ping vuelve a decidir: tras un 5xx, si el módem pierde internet sin que se caiga el
+     * WiFi, ninguna bandera cambia, pero el ping que se queda sin respuesta sí, y basta.
+     * T12b: y la LISTA que se quedó sin red (la copia, «como estaba» o la búsqueda sin red) se vuelve a pedir al volver: su aviso se
+     * va con la respuesta. El tiempo de espera tras fallos se reinicia (spec de refresco §4.3 inv. 4). Un servidor que contestó mal
+     * no se repite solo (como el detalle, D22).
+     */
+    suspend fun copiaAlPerderLaRed() {
+        val red = red ?: return
+        combine(red.isConnected, red.isServerReachable, red.sinRespuesta) { conectado, alcanzable, sinRespuesta ->
+            Triple(conectado, alcanzable, sinRespuesta)
+        }
+            .distinctUntilChanged()
+            .collectLatest { (conectado, alcanzable, sinRespuesta) ->
+                when {
+                    !conectado -> repository.alPerderLaRed()
+                    !alcanzable -> if (sinRespuesta || red.nadieContesta()) repository.alPerderLaRed()
+                    repository.listaEsperaLaRed -> {
+                        gate.resetCooldown()
+                        invalidateAndRefresh()
+                    }
+                }
+            }
     }
 
     @OptIn(FlowPreview::class)

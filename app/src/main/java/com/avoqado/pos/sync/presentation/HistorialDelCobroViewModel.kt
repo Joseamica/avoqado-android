@@ -153,7 +153,7 @@ class HistorialDelCobroViewModel @Inject constructor(
             text("paymentId")?.let {lines.add("Folio del servidor: $it")}
             if(obj!=null) {
                 lines.add("Método registrado: ${metodoLegible(text("method"),text("splitType"),text("tenderTypeId"))}")
-                val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto","tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden","saldoDeLaMesa" to "saldo de la mesa")
+                val labels=mapOf("amountCents" to "importe","tipCents" to "propina","method" to "método","splitType" to "reparto","tenderTypeId" to "tipo de pago","tenderRevision" to "versión del tipo de pago","totalDeLaOrden" to "total de la orden","saldoDeLaMesa" to "saldo de la mesa","saldoDeLaCuenta" to "saldo de la cuenta")
                 for((key,title) in listOf("camposDiferentes" to "Campos distintos","camposNoComprobados" to "Sin confirmar")) {
                     val fields=(obj[key] as? JsonArray)?.mapNotNull {(it as? JsonPrimitive)?.content?.let(labels::get)} ?: emptyList()
                     if(fields.isNotEmpty()) lines.add("$title: ${fields.joinToString()}")
@@ -164,6 +164,8 @@ class HistorialDelCobroViewModel @Inject constructor(
                 // Mesa cobrada sin red (19-oct): el servidor la valoró con su precio de hoy (mismo texto en iOS).
                 val saldoEsperado=cents("saldoEsperadoCents");val saldoServidor=cents("saldoEnElServidorCents")
                 if(saldoEsperado!=null && saldoServidor!=null) lines.add("Saldo esperado ${money(saldoEsperado)} · saldo en el servidor ${money(saldoServidor)}")
+                // D12: la cuenta cobrada con la copia que creció en otra caja (mismo texto en el aviso de Inicio y en iOS).
+                lineaQuedoDebiendo(obj)?.let(lines::add)
                 cents("cobradoDeMasCents")?.let { lines.add("Se cobró de más: ${money(it)}") }
             }
         }
