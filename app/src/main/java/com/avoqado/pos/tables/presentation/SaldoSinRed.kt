@@ -126,7 +126,8 @@ internal fun saldoDeMesaDelServidor(
     val rondasPosteriores = posteriores.filter { it.tipo == SyncIntentTypes.ADD_ITEMS && it.estado in cuentan }
     // Una ronda posterior sin borrador, vieja (re-encolada, A3) o ya presente en la foto no se puede sumar con certeza.
     if (rondasPosteriores.any { it.id !in rondas || it.id in foto.llavesPrevias || enLaFoto(it.id) }) return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
-    // Codex r4 #3: una ronda del borrador sin fila (la app murió antes de encolarla, o el gerente la descartó) aún no suma.
+    // Codex r4 #3: una ronda del borrador sin fila (la app murió antes de encolarla) aún no suma. La que el gerente marcó resuelta ya
+    // no está en el borrador (D29).
     val conFila = filas.map { it.id }.toSet()
     if (rondas.keys.any { it !in conFila && !enLaFoto(it) }) return SaldoSinRed.EnGris(CUENTA_SE_ACTUALIZA)
     val cobros = posteriores.filter { it.tipo == SyncIntentTypes.PAY_CASH && it.estado in cuentan }

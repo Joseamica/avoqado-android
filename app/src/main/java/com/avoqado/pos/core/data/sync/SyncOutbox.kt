@@ -738,12 +738,26 @@ class SyncOutbox @Inject constructor(
         // deja borrarla, lanza y la fila rechazada se queda (la mesa sigue en gris); apagado, sigue como hoy (la foto queda muerta).
         val fila = dao.findForVenue(venueId, id)
         fotos?.let { f -> fila?.let { f.borrarAntesDe(it.payloadJson) } }
+        // D29 (deuda A4): la ronda sale del borrador de su mesa ANTES que su fila. Sin esto, al reabrir la mesa `restoreDraft` la
+        // volvía a encolar con el mismo id (una ronda del borrador sin fila es la que la app no alcanzó a encolar). Si la app muere
+        // entre los dos pasos, la fila sigue y se vuelve a marcar; si el disco no deja, lanza y la fila se queda.
+        if (fila?.type == SyncIntentTypes.ADD_ITEMS) cuentaDeLaRonda(fila.payloadJson)?.let { cuenta ->
+            withContext(Dispatchers.IO) { tableDrafts.descartarRonda(venueId, cuenta, id) }
+        }
         dao.dismiss(id)
         // D5 · B3 (C3): resolver el «Liberar mesa» que se ve resuelve también sus gemelos escondidos (misma mesa, mismo motivo).
         if (fila?.esMesaConSaldo() == true) dao.rejectedIntents(venueId)
             .filter { it.id != id && it.esMesaConSaldo() && it.payloadJson == fila.payloadJson }.forEach { dao.dismiss(it.id) }
         refreshCounts(venueId)
     }
+
+    /** La cuenta de una ronda encolada: `orderId` (mesa del servidor) o `localOrderId` (abierta sin red; el borrador sigue su alias). */
+    private fun cuentaDeLaRonda(payloadJson: String): String? = runCatching {
+        val payload = Json.parseToJsonElement(payloadJson) as JsonObject
+        listOf("orderId", "localOrderId").firstNotNullOfOrNull { campo ->
+            (payload[campo] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        }
+    }.getOrNull()
 
     /**
      * Lectura persistida usada por las guardas de cerrar sesión y cambiar de venue: lo que falta enviar ([sinEnviarCount]) más

@@ -72,7 +72,8 @@ class MesaDelServidorSinRedTest {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val root = java.nio.file.Files.createTempDirectory("b2b").toFile()
     private val dirFotos = java.io.File(root, "fotos")
-    private val drafts = TableRoundDraftStore(java.io.File(root, "drafts"))
+    // La MISMA carpeta que usa la cola real (`filesDir/table-round-drafts`): marcar resuelta una ronda toca este borrador (D29).
+    private val drafts = TableRoundDraftStore(java.io.File(root, "table-round-drafts"))
     private val session = TableSession()
     private val outbox = mockk<SyncOutbox>(relaxed = true)
     private val acks = MutableSharedFlow<SyncAck>(extraBufferCapacity = 4)
@@ -406,31 +407,110 @@ class MesaDelServidorSinRedTest {
 
     // MARK: - R5-1: una ronda rechazada y descartada no suma, también DESPUÉS de re-encolarse
 
-    @Test fun `R5-1 ronda rechazada, descartada por el gerente y re-encolada al reabrir nunca suma sobre la foto`() = runTest {
+    @Test fun `R5-1 ronda rechazada y descartada por el gerente nunca suma sobre la foto y ya no vuelve a la cola (D29)`() = runTest {
         var subject = mesaConFoto()
         conInternet = false
         ronda(subject, 2000)
         val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
         // Vuelve el internet, la cola sube la ronda y el SERVIDOR la rechaza (producto agotado): la cola REAL guarda el rechazo.
+        val real = rechazar(llave)
+        assertNull("el rechazo mató la foto", fotoEnDisco())
+        // El gerente la marca resuelta: la fila se va y, ANTES, su ronda sale del borrador (D29; antes se quedaba: A4).
+        real.dismissRejected(venue, llave)
+        estado(llave, null)
+
+        conInternet = false
+        subject = reiniciar(subject)
+        leer(subject)
+        assertTrue("D29: el borrador no la vuelve a encolar", cola.none { it.id == llave })
+        assertTrue(subject.queued.value.isEmpty())
+        assertFalse("nunca $45 sobre la foto vieja", subject.preparePagar())
+        assertEquals(SIN_CUENTA_COMPLETA, subject.blockedNotice.value)
+        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+
+        // Con internet la tablet vuelve a ver la cuenta ($25, sin la Corona) y, sin internet, se cobra lo que tiene el servidor.
+        conInternet = true
+        leer(subject)
+        conInternet = false
+        leer(subject)
+        assertTrue(subject.preparePagar())
+        assertEquals("lo que tiene el servidor, sin la ronda rechazada", 2500, session.current()!!.totalCents)
+        assertTrue(cola.none { it.id == llave })
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D29 marcada resuelta con la mesa abierta en pantalla - guardar el borrador desde memoria no la revive`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        val real = rechazar(llave)
+        // La pantalla de la mesa sigue abierta (con la ronda en memoria) mientras el gerente la marca resuelta.
+        real.dismissRejected(venue, llave)
+        estado(llave, null)
+        // Vuelve el internet y la pantalla abierta lee la cuenta: guarda el borrador ENTERO con las rondas que tiene en memoria.
+        conInternet = true
+        leer(subject)
+        assertFalse("la ronda descartada no vuelve al disco", llave in drafts.load(venue, "order-F").rounds)
+
+        conInternet = false
+        subject = reiniciar(subject)
+        leer(subject)
+        assertTrue("no vuelve a la cola", cola.none { it.id == llave })
+        assertTrue(subject.preparePagar())
+        assertEquals(2500, session.current()!!.totalCents)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D29 con el piloto apagado la ronda rechazada y resuelta tampoco vuelve a la cola`() = runTest {
+        piloto = false
+        abrir()
+        var subject = vm()
+        leer(subject)
+        ronda(subject, 2500)
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        rechazar(llave).dismissRejected(venue, llave)
+        estado(llave, null)
+
+        subject = reiniciar(subject)
+        leer(subject)
+        assertTrue("no vuelve a la cola", cola.none { it.id == llave })
+        assertTrue("ni a «por sincronizar»", subject.queued.value.isEmpty())
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D29 Codex r1 marcada resuelta mientras la mesa se esta reabriendo - la recuperacion no la vuelve a encolar`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        rechazar(llave)
+        subject = reiniciar(subject)
+        // `restoreDraft` ya leyó el borrador (con la ronda) y, justo antes de preguntar el estado de su fila, el gerente la marca
+        // resuelta: el borrador la pierde (lo mismo que hace `dismissRejected`, aquí sin cambiar de hilo para que la prueba espere
+        // de verdad) y la fila se va, así que la pregunta contesta «no hay fila».
+        var descartada = false
+        every { outbox.observarEstado(llave) } answers {
+            kotlinx.coroutines.flow.flow { drafts.descartarRonda(venue, "order-F", llave); estado(llave, null); descartada = true; emit(null) }
+        }
+        leer(subject)
+        assertTrue("el cruce sí ocurrió", descartada)
+        assertTrue("no vuelve a la cola", cola.none { it.id == llave })
+        assertFalse(llave in drafts.load(venue, "order-F").rounds)
+        subject.viewModelScope.cancel()
+    }
+
+    /** El SERVIDOR rechaza la ronda (producto agotado) y la cola REAL guarda el rechazo; devuelve esa cola. */
+    private suspend fun rechazar(llave: String): SyncOutbox {
         val dao = mockk<SyncIntentDao>(relaxed = true)
         val fila = SyncIntentEntity(llave, venue, "staff", 2, "ADD_ITEMS", """{"orderId":"order-F","items":[{"externalId":"sync:$llave:0"}]}""")
         coEvery { dao.findForVenue(venue, llave) } returns fila.copy(status = "REJECTED")
         val real = colaReal(dao)
         real.conservarAck(SyncAck(llave, "REJECTED", "BUSINESS_RULE", "Producto agotado"), fila, venue, "d1", "d1")
         estado(llave, "REJECTED")
-        assertNull("el rechazo mató la foto", fotoEnDisco())
-        // El gerente la marca resuelta: la fila se va y el borrador se queda (A4).
-        real.dismissRejected(venue, llave)
-        estado(llave, null)
-
-        conInternet = false
-        subject = reiniciar(subject)
-        leer(subject) // restoreDraft re-encola la ronda como PENDING
-        assertEquals("re-encolada", "PENDING", cola.single { it.id == llave }.estado)
-        assertFalse("nunca $45 sobre la foto vieja", subject.preparePagar())
-        assertEquals(SIN_CUENTA_COMPLETA, subject.blockedNotice.value)
-        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
-        subject.viewModelScope.cancel()
+        return real
     }
 
     @Test fun `Codex b2b-r1 #1 si el disco falla al guardar el rechazo, la mesa queda en gris y nunca cobra la ronda rechazada`() = runTest {
@@ -489,8 +569,8 @@ class MesaDelServidorSinRedTest {
         estado(llave, null)
         piloto = true
         subject = reiniciar(subject)
-        leer(subject) // restoreDraft re-encola la ronda descartada
-        assertEquals("PENDING", cola.single { it.id == llave }.estado)
+        leer(subject)
+        assertTrue("D29: la ronda descartada ya no vuelve a la cola", cola.none { it.id == llave })
         assertFalse("nunca $45: no hay foto", subject.preparePagar())
         assertEquals(SIN_CUENTA_COMPLETA, subject.blockedNotice.value)
         subject.viewModelScope.cancel()
