@@ -311,6 +311,62 @@ class H2H3TenderCaptureTest {
         assertEquals("caja-A-local", payload["cashDrawerSessionId"]?.jsonPrimitive?.content)
     }
 
+    /** La DAO real: el mismo id conserva su fila y su secuencia (`insertWithNextSeqTransactionQ16`, probada en F04SyncSequenceSqlTest). */
+    private fun colaQueConservaElMismoId() {
+        coEvery { intentDao.insertWithNextSeq(any()) } coAnswers {
+            val nuevo = firstArg<SyncIntentEntity>()
+            intents.firstOrNull { it.id == nuevo.id }?.seq ?: (intents.size.toLong() + 1).also { intents += nuevo.copy(seq = it) }
+        }
+    }
+
+    private fun ventasDelCajon() = drawerDao.events.values.filter { it.type == "CASH_SALE" }
+
+    /**
+     * D5 · B0 (Codex r1 #5): el `PAY_CASH` de la mesa provisional se GUARDA y algo posterior de la cola falla (los contadores). La
+     * cajera ve error y toca «Reintentar»: tiene que quedar UN cobro, con la llave del cobro como id, y un solo movimiento de caja.
+     */
+    @Test fun `B0 mesa provisional - reintentar tras fallar despues de guardar deja un solo PAY_CASH con la llave del cobro`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        colaQueConservaElMismoId()
+        var fallarTrasGuardar = true
+        coEvery { intentDao.pendingCount(any()) } coAnswers {
+            if (fallarTrasGuardar && intents.isNotEmpty()) { fallarTrasGuardar = false; throw IllegalStateException("contadores") }
+            intents.size
+        }
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        assertTrue("el primer intento termina en error", viewModel.state.value is PaymentFlowState.Error)
+        assertEquals("el INSERT del primer intento sí entró", 1, intents.size)
+
+        viewModel.retry(); finishCash()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals("un solo cobro en la cola de mesas", 1, intents.size)
+        val cobro = intents.single()
+        assertEquals("PAY_CASH", cobro.type)
+        assertEquals(ColaDelCobro.Outbox(cobro.id), exito.colaDelCobro)
+        val venta = ventasDelCajon().single()
+        assertEquals("el id del cobro es la llave del cobro (la misma del cajón)", CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id), venta.id)
+        assertEquals(4500, venta.amountCents)
+    }
+
+    /** B0, vecina: dos cobros de la misma mesa provisional (dos partes) siguen siendo DOS `PAY_CASH`, cada uno con su llave. */
+    @Test fun `B0 mesa provisional - dos cobros de la misma mesa son dos PAY_CASH con llaves distintas`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        colaQueConservaElMismoId()
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+
+        assertEquals(2, intents.size)
+        assertEquals(listOf("PAY_CASH", "PAY_CASH"), intents.map { it.type })
+        assertNotEquals(intents[0].id, intents[1].id)
+        assertEquals(intents.map { CashDrawerRepository.idDeLaVentaEnEfectivo(it.id) }.toSet(), ventasDelCajon().map { it.id }.toSet())
+    }
+
     @Test fun `provisional legacy manual keeps method without fabricated tender`() = runTest {
         provisional()
         val manual = ManualPaymentMethod.values().first()

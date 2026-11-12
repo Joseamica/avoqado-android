@@ -4250,6 +4250,9 @@ class PaymentFlowViewModel @Inject constructor(
                     // 19-oct (mesa sin red retenida): lo que la mesa debía al empezar el cobro, menos lo cobrado. Al confirmarse, si
                     // el servidor (que valora con el precio de HOY) deja otro saldo, el gerente ve DIFERENCIA.
                     restanteEsperadoCents = mesaDelCobro?.takeIf { it.orderId == orderId }?.let { (it.totalCents - subtotal).coerceAtLeast(0) },
+                    // D5 · B0: el id es la llave del cobro. Si el INSERT entró y algo después falló, «Reintentar» reusa la fila (la
+                    // cola ignora un id repetido) en vez de encolar un segundo cobro; el servidor deduplica por este id.
+                    id = llaveCapturada,
                 )
                 recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
                 if (generacion != paymentGeneration) return // ronda 1 (I2): otra venta en pantalla
