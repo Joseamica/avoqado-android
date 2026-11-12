@@ -105,7 +105,9 @@ class MesaDelServidorSinRedTest {
     init {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-                if (!conInternet) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START)
+                // Sin internet: la petición no se aplica y nunca vuelve respuesta. (DISCONNECT_AT_START no corta una conexión ya
+                // abierta: MockWebServer contestaba 200 vacío y la ronda «se enviaba» sin internet.)
+                if (!conInternet) return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
                 val ruta = request.path.orEmpty()
                 return when {
                     request.method == "GET" && ruta.endsWith("/orders/order-F") ->
