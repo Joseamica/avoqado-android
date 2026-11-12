@@ -554,6 +554,16 @@ fun TableOrderScreen(
                     }
                 }
             }
+        } else if (showSearch && !showCombos) {
+            // D26 (12-nov, hz:e5ee98bc:D26): en pantalla chica el buscador ocupa TODA la cuenta, como en «Cobrar». Metido debajo de la
+            // barra de la mesa y las pestañas, y encima de «Ver cheque», con el teclado abierto y los avisos de arriba («Sin conexión»,
+            // «operaciones por revisar») no cabían ni el campo ni los resultados: el mesero escribía a ciegas (visto en la N86).
+            // Al elegir un producto el campo se vacía (abría con el texto viejo). En tableta NO: ahí la cajera agrega varios de una búsqueda.
+            SearchOverlayView(
+                viewModel = catalogViewModel,
+                onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(""); showSearch = false },
+                onDismiss = { showSearch = false },
+            )
         } else {
             Column(modifier = Modifier.fillMaxSize()) {
                 contextBar()
@@ -568,14 +578,6 @@ fun TableOrderScreen(
                         com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
                             estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
                             onPromotionTap = { selectedCombo = it })
-                    }
-                } else if (showSearch) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        SearchOverlayView(
-                            viewModel = catalogViewModel,
-                            onProductTap = { handleProductTap(it); showSearch = false },
-                            onDismiss = { showSearch = false },
-                        )
                     }
                 } else {
                     TableSearchBar(onSearchTap = { showSearch = true })

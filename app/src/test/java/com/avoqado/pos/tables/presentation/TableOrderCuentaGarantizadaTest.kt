@@ -785,6 +785,16 @@ class TableOrderCuentaGarantizadaTest {
         }
     }
 
+    // D26 (hz:e5ee98bc:D26): en la terminal de mano el buscador de la mesa no cabía con el teclado y los avisos, y abría con el texto viejo.
+    @Test fun `D26 el buscador de la mesa ocupa toda la cuenta en telefono y se vacia al elegir un producto`() {
+        val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt"
+        val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+        assertTrue(source.contains("} else if (showSearch && !showCombos) {"))
+        assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(\"\"); showSearch = false }"))
+        // En tableta el campo conserva el texto a propósito: la cajera agrega varios productos de la misma búsqueda.
+        assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); showSearch = false }"))
+    }
+
     @Test fun `ACK cash completo desde piso invalida solo cuenta pagada y parcial la conserva`() = runTest {
         val a = vm(provisional = true); val f = floor()
         try {
