@@ -746,12 +746,17 @@ class SyncOutbox @Inject constructor(
     }
 
     /**
-     * Lectura persistida usada por las guardas de sesión y cambio de venue. Cuenta PENDING + HELD —
-     * una ronda en vuelo (Task 7 review, 2026-09-28) también bloquea salir, aunque el badge visible
-     * ([pendingCount]) no la muestre.
+     * Lectura persistida usada por las guardas de cerrar sesión y cambiar de venue: lo que falta enviar ([sinEnviarCount]) más
+     * lo rechazado, que tampoco se deja atrás sin resolver.
      */
-    suspend fun blockingWorkCount(venueId: String): Int =
-        dao.pendingCount(venueId) + dao.heldCount(venueId) + dao.rejectedCount(venueId)
+    suspend fun blockingWorkCount(venueId: String): Int = sinEnviarCount(venueId) + dao.rejectedCount(venueId)
+
+    /**
+     * Lo que todavía va a salir con la sesión abierta: PENDING + HELD — una ronda en vuelo (Task 7 review, 2026-09-28) también
+     * cuenta, aunque el badge visible ([pendingCount]) no la muestre. Lo usa el cambio de usuario por PIN (D28): lo REJECTED no
+     * vuelve a salir solo y sólo un gerente lo resuelve en la sesión abierta, así que frenarlo dejaba al mesero sin salida.
+     */
+    suspend fun sinEnviarCount(venueId: String): Int = dao.pendingCount(venueId) + dao.heldCount(venueId)
 
     suspend fun trabajoSinResolverDeLaOrden(venueId: String, ids: Set<String>): TrabajoSinResolver = withContext(Dispatchers.IO) {
         val filas = dao.sinResolver(venueId)
