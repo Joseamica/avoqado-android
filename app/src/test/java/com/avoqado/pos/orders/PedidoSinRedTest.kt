@@ -48,11 +48,16 @@ class PedidoSinRedTest {
     private val disco = mutableMapOf<String, PayloadCache.Cached>()
     private val cache = mockk<PayloadCache> {
         coEvery { load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
-        coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { loadDurable(any(), any()) } coAnswers {
+            // Codex r6 #2: (entró, soltar) detiene la SIGUIENTE lectura de la copia (la de `copia.alLeer`, con su candado y su disco).
+            if (firstArg<String>() == PayloadCache.TYPE_COPIA_DE_PEDIDOS) retenerCopia?.let { (entro, soltar) -> retenerCopia = null; entro.complete(Unit); soltar.await() }
+            disco["${firstArg<String>()}|${secondArg<String>()}"]
+        }
         coEvery { saveDurable(any(), any(), any()) } answers {
             disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
         }
     }
+    @Volatile private var retenerCopia: Pair<kotlinx.coroutines.CompletableDeferred<Unit>, kotlinx.coroutines.CompletableDeferred<Unit>>? = null
     private var reloj = 1_000_000_000L
     private var copia = CopiaDeCuentas(cache).also { it.ahora = { reloj }; it.io = kotlinx.coroutines.Dispatchers.Unconfined }
     private var venue = "v1"
@@ -816,6 +821,16 @@ class PedidoSinRedTest {
     }
     // MARK: - D12 · frescura de «Cobrada en <caja>» (Codex r5 #2)
 
+    /** Esta caja (Caja A) abrió `o1`: su registro, con la hora de pared de la prueba. */
+    private fun duenaDeO1() = com.avoqado.pos.core.data.lan.DuenoDeCuentas(cache,
+        mockk<com.avoqado.pos.orders.data.CuentasAbiertasAqui> { coEvery { todas(any()) } returns setOf("o1") },
+        { _, _, _ -> false }, { _, _ -> false }, { null }, { "caja-a" }, { "Caja A" },
+    ).also {
+        it.reloj = { com.avoqado.pos.core.data.lan.Instante("boot", 1) }
+        it.horaDePared = { reloj }
+        it.io = kotlinx.coroutines.Dispatchers.Unconfined
+    }
+
     /**
      * Gana lo más nuevo entre la lectura buena del SERVIDOR y la entrada CERRADA del registro de la dueña. A leyó la lista (200); Caja B la
      * cobró COMPLETA, la subió y A lo supo; A recarga y el SERVIDOR contesta 500 conservando las filas. Esas filas siguen siendo la lectura
@@ -829,14 +844,7 @@ class PedidoSinRedTest {
         assertEquals("la hora de la lectura buena", reloj, leida)
 
         reloj += 60_000
-        val dueno = com.avoqado.pos.core.data.lan.DuenoDeCuentas(cache,
-            mockk<com.avoqado.pos.orders.data.CuentasAbiertasAqui> { coEvery { todas(any()) } returns setOf("o1") },
-            { _, _, _ -> false }, { _, _ -> false }, { null }, { "caja-a" }, { "Caja A" },
-        ).also {
-            it.reloj = { com.avoqado.pos.core.data.lan.Instante("boot", 1) }
-            it.horaDePared = { reloj }
-            it.io = kotlinx.coroutines.Dispatchers.Unconfined
-        }
+        val dueno = duenaDeO1()
         dueno.cobrada("v1", "o1", com.avoqado.pos.core.data.lan.Solicitud("caja-b", "Caja B", "Ana", "i-b"), subida = true)
         suspend fun etiqueta() = com.avoqado.pos.payment.domain.textoDeLaListaDe(
             dueno.estadoDe("v1", "o1"), r.orders.value.single().saldoPendienteCents, r.lecturaDelServidorEn.value)
@@ -856,6 +864,32 @@ class PedidoSinRedTest {
         lista = sinRed()
         r.loadOrders(1, null, null)
         assertNull(r.lecturaDelServidorEn.value)
+    }
+
+    /**
+     * Codex r6 #2: la lectura se fechaba DESPUÉS de esperar a guardar la copia (`copia.alLeer`: su candado y su disco). Un 200 con saldo
+     * espera ahí; mientras, la dueña se entera de que Caja B la cobró completa y la subió. Al terminar, esa lista vieja quedaba fechada
+     * después de la CERRADA y su saldo escondía «Cobrada en Caja B». La lectura lleva la hora en que LLEGÓ la respuesta.
+     */
+    @Test fun `frescura r6 - la lectura se fecha al llegar la respuesta, no después de guardar la copia`() = runTest {
+        val llego = reloj
+        lista = { http(it, 200, pagina(fila("o1", saldo = "2000"))) }
+        val r = repoConRutas()
+        val entro = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
+        retenerCopia = entro to soltar
+        val lectura = launch { r.loadOrders(1, null, null) }
+        entro.await() // el 200 ya llegó; la copia espera su disco
+        reloj += 60_000
+        val dueno = duenaDeO1()
+        dueno.cobrada("v1", "o1", com.avoqado.pos.core.data.lan.Solicitud("caja-b", "Caja B", "Ana", "i-b"), subida = true)
+        reloj += 60_000
+        soltar.complete(Unit)
+        lectura.join()
+
+        assertEquals("la hora en que llegó la respuesta", llego, r.lecturaDelServidorEn.value)
+        assertEquals("Cobrada en Caja B", com.avoqado.pos.payment.domain.textoDeLaListaDe(
+            dueno.estadoDe("v1", "o1"), r.orders.value.single().saldoPendienteCents, r.lecturaDelServidorEn.value))
     }
 }
 

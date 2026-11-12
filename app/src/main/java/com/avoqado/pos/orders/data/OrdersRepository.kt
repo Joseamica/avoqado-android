@@ -305,6 +305,9 @@ class OrdersRepository @Inject constructor(
         // Revisión r1: la copia sólo sin búsqueda ni otro filtro (no es el resultado de lo que se buscó).
         val conBusqueda = lecturaDe(1, false, search, status, hasMore = false) == Lectura.SUELTA
         val result = fetchOrders(page = page, search = search, status = status)
+        // Codex r6 #2: la lectura lleva la hora en que LLEGÓ la respuesta, no la de después de guardar la copia (su candado y su disco): un
+        // «cobrada» que la dueña supo mientras tanto es más nuevo que esta lista.
+        val llegoEn = ahora()
         val pageData = result.getOrNull()
         if (pageData != null) {
             if (copia != null && venueId != null && turno != null) {
@@ -316,7 +319,7 @@ class OrdersRepository @Inject constructor(
                     _orders.value = _orders.value + pageData.orders
                 } else {
                     _orders.value = pageData.orders
-                    listaVistaA = ahora()
+                    listaVistaA = llegoEn
                     _lecturaDelServidorEn.value = listaVistaA
                     listaConBusqueda = conBusqueda
                 }
