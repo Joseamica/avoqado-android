@@ -2151,11 +2151,13 @@ class PaymentFlowViewModel @Inject constructor(
     private var ultimoCobroConSaldo: CobroConSaldo? = null
     val cuentaDelResultadoDeSaldo: String? get() = ultimoCobroConSaldo?.orderId
     val llaveDeLaSolicitudDeSaldo: String? get() = llaveDelSaldo
+    /** D2: el saldo frenó por el descuento del cliente; el carrito relee su aviso (ofrece «Pedir autorización»). */
+    private var alFrenarPorDescuentoDelCliente: () -> Unit = {}
     fun configurarSaldo(ventaViva: () -> CartState, foto: (() -> com.avoqado.pos.giftcards.domain.FotoDeLaVenta)? = null,
         vaciar: (() -> Unit)? = null, restaurar: ((com.avoqado.pos.giftcards.domain.FotoDeLaVenta) -> CartState?)? = null, desdeCuentas: Boolean = false,
-        alRestaurarSnapshot: (CartState) -> Unit = {}) {
+        alRestaurarSnapshot: (CartState) -> Unit = {}, alFrenarPorDescuento: () -> Unit = {}) {
         ventaVivaDeSaldo = ventaViva; fotoDeSaldo = foto; vaciarDeSaldo = vaciar; restaurarDeSaldo = restaurar; desdeCuentasDeSaldo = desdeCuentas
-        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot
+        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot; alFrenarPorDescuentoDelCliente = alFrenarPorDescuento
     }
     private var desvincularRecuperacionDeFoto: (() -> Unit)? = null
     private var otrosDuenosPermitenCobrar: () -> Boolean = { true }
@@ -2323,6 +2325,14 @@ class PaymentFlowViewModel @Inject constructor(
             val coordinator = cobroConSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
             val anteriores = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).map {it.llave}.toSet()
             val resultado = conTextoDelFolio(if (fila.fila == FilaDeLaCaja.T1) {
+                // 🔴 D2 (spec punto 18): esta entrada CREA la venta. Con el descuento del cliente y sin permiso ni PIN suficiente (un
+                // carrito restaurado por otra sesión), no sale nada: el mismo texto del 403.
+                if (!snapshot.puedeCrearOrdenConDescuentoDelCliente(attachedCustomerId, rolesDeSaldo?.canApplyDiscounts == true)) {
+                    alFrenarPorDescuentoDelCliente()
+                    return DesenlaceDeCobro.NoSalio(
+                        com.avoqado.pos.pos.presentation.cart.textoNoPuedeAplicarDescuentoDelCliente(_attachedCustomerName.value),
+                    ).also { resultadoDeSaldo.value = it }
+                }
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val payload = Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(buildOrderRequest(snapshot),selectedStaffId(),attachedCustomerId,
@@ -6250,6 +6260,9 @@ class PaymentFlowViewModel @Inject constructor(
             reservationId = cart.reservationId,
             orderType = cart.orderType,
             couponCode = cart.couponCode,
+            // D2: la etiqueta y el PIN del descuento del cliente, igual en el cobro, `pay-new-order` y la cola sin red.
+            descuentoDelClienteId = cart.descuentoDelClienteQueViaja,
+            autorizacionDelDescuento = cart.autorizacionQueViaja,
         )
     }
 
@@ -6553,11 +6566,15 @@ class PaymentFlowViewModel @Inject constructor(
     fun cobroDeMesaSinRed(): Boolean = mesaDelCobro?.cobroSinRed == true
 
     /**
-     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden, sin mesa, sin dividir) que un descuento deja en $0.
-     * No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin «Ya pagó
-     * de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la deja
-     * en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
+     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden creada todavía, sin mesa, sin dividir) que un descuento
+     * deja en $0. No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin
+     * «Ya pagó de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la
+     * deja en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
      * (`PaymentFlowViewModel.ventaRapidaEnCero`, mismo texto).
+     *
+     * D2: «sin orden» es la de ANTES de cobrar. Ese efectivo de $0 casi siempre va por `/fast`, pero con el cupón o el descuento del
+     * cliente ([esVentaRapidaDividida]) crea su orden. Con el del cliente es una cortesía y, sin `orders:comp`, pide antes el PIN de un
+     * gerente ([primeroElPinDeCortesia]); el cupón no (lo calcula el SERVIDOR).
      */
     fun ventaRapidaEnCero(): Boolean {
         val cart = cartState ?: return false
@@ -6565,10 +6582,17 @@ class PaymentFlowViewModel @Inject constructor(
             esPagoCompleto() && currentBaseAmount() == 0
     }
 
-    /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
+    /**
+     * ¿La venta de puros importes (sin productos) crea ORDEN en vez de ir por `/fast`? Misma regla que
+     * `OrderRepository.aceptaCrearOrden`, y la usan el cobro con tarjeta, el de efectivo y el PIN de la cortesía. Sí cuando:
+     * - se cobra EN PARTES: la parte 1 crea su orden y las siguientes le abonan (D2 etapa 2);
+     * - lleva cupón (D5): un cobro rápido no tiene orden donde ligarlo y el cupón nunca contaría;
+     * - lleva el descuento del cliente (D2, spec punto 15): `/fast` no lleva descuento, etiqueta ni PIN; tampoco sin red.
+     * El nombre viene del primer caso; no se cambió para no tocar sus llamadas.
+     */
     private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
-        // D5: con cupón también, para que el cupón tenga una orden donde ligarse y contar.
-        cart != null && cart.items.isNotEmpty() && (split != "FULLPAYMENT" || cart.couponCode != null)
+        cart != null && cart.items.isNotEmpty() &&
+            (split != "FULLPAYMENT" || cart.couponCode != null || cart.descuentoDelClienteQueViaja != null)
 
     /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
     private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()

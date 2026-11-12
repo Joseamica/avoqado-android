@@ -3,8 +3,8 @@ import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import com.avoqado.pos.core.util.aCentavos
-import kotlin.math.roundToInt
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 enum class DiscountScope {
     ORDER,    // Applies to entire order subtotal
@@ -104,16 +104,31 @@ data class Discount(
     }
 
     fun calculateDiscount(subtotalCents: Int): Int {
-        // D13: el tope máximo del catálogo, tras calcular el monto y antes de topar a la cuenta (igual que el servidor y que
-        // [descuentoDeLineaCents]).
-        return when (discountType) {
-            // Redondean las dos: truncar le daba al cliente un centavo MENOS de
-            // descuento del que el negocio configuró.
-            DiscountType.PERCENTAGE -> conTopeEnCents((subtotalCents * value / 100.0).roundToInt(), maxDiscountAmount)
-            DiscountType.FIXED -> conTopeEnCents(value.aCentavos(), maxDiscountAmount).coerceAtMost(subtotalCents)
+        // Espejo de `calcularDescuentoExactoCents` del servidor: todo en BigDecimal (con Double, 375¢ × 9.2 % daba 34 por
+        // 3449.9999…), el tope del catálogo (pesos → centavos) ANTES de redondear, centavos half-up al final, y nunca más que la base.
+        val base = BigDecimal(subtotalCents.coerceAtLeast(0))
+        val valor = BigDecimal.valueOf(value)
+        var bruto = when (discountType) {
+            DiscountType.PERCENTAGE -> base.multiply(valor).divide(BigDecimal(100))
+            DiscountType.FIXED -> valor.multiply(BigDecimal(100)).min(base)
         }
+        maxDiscountAmount?.let { bruto = bruto.min(BigDecimal.valueOf(it).multiply(BigDecimal(100))) }
+        return bruto.max(BigDecimal.ZERO).setScale(0, RoundingMode.HALF_UP).toInt().coerceAtMost(subtotalCents.coerceAtLeast(0))
     }
 }
+
+/**
+ * D2 (descuento del cliente): el PIN de un gerente para `discounts:apply`, atado a ESE cliente, ESE descuento y hasta [topeCents]
+ * (el monto que vio el gerente; el servidor lo emitió con `descuento-cliente:<customerId>:<discountId>:<topeCents>`). Vive en el
+ * carrito y viaja con la venta (carrito guardado, foto, cola sin red): el servidor lo acepta 7 días, cada venta hasta su tope.
+ */
+@Serializable
+data class AutorizacionDelDescuento(
+    val token: String,
+    val topeCents: Int,
+    val customerId: String,
+    val discountId: String,
+)
 
 /**
  * D13: recorta el descuento [brutoCents] al descuento máximo del catálogo ([maxPesos], en PESOS; `null` = sin tope):

@@ -335,4 +335,39 @@ class EfectivoSinConfirmarTest {
         assertEquals(SincronizacionDelCobro.PENDIENTE, SincronizacionDelCobro.deIntent("HELD"))
         assertEquals(SincronizacionDelCobro.RECHAZADA, SincronizacionDelCobro.deIntent("REJECTED"))
     }
+
+    /**
+     * D2 · 7c (spec punto 15): importes tecleados con el descuento del cliente NUNCA van por `/fast` (que no lleva descuento ni
+     * etiqueta). Crean la orden; el apartado de antes de la red y la cola sin red guardan ese mismo pedido, con su etiqueta y su PIN.
+     */
+    @Test
+    fun `7c importes con el descuento del cliente crean ORDEN y sin red se apartan y encolan con la etiqueta, nunca FAST`() = runTest {
+        val creados = mutableListOf<com.avoqado.pos.payment.data.model.CreateOrderRequest>()
+        coEvery { orderRepository.createOrder(capture(creados), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(IOException("timeout"))
+        val apartado = slot<com.avoqado.pos.payment.data.model.CreateOrderRequest>()
+        coEvery { cashPaymentRepository.reservarCobro(capture(apartado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any()) } returns Unit
+        val encolado = slot<com.avoqado.pos.payment.data.model.CreateOrderRequest>()
+        coEvery { cashPaymentRepository.queueCashPayment(capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any()) } answers {
+            arg<String?>(8) ?: "sin-llave"
+        }
+        val delCliente = com.avoqado.pos.pos.data.model.Discount(
+            id = "d-10", name = "Cliente frecuente", value = 10.0, source = com.avoqado.pos.pos.presentation.cart.DESCUENTO_DEL_CLIENTE_SOURCE,
+        )
+        val pin = com.avoqado.pos.pos.data.model.AutorizacionDelDescuento("tok-1", 1000, "c-cecilia", "d-10")
+
+        viewModel.startPaymentFlow(otroImporte().copy(orderDiscount = delCliente, autorizacionDelDescuento = pin), customerId = "c-cecilia")
+        viewModel.confirmCashCustom(9_000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        val llave = llaveReservada()
+        coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), "c-cecilia", any(), llave, any(), any(), any(), null) }
+        for (pedido in listOf(creados.single(), apartado.captured, encolado.captured)) {
+            assertEquals(1000, pedido.discount)
+            assertEquals("d-10", pedido.descuentoDelClienteId)
+            assertEquals("tok-1", pedido.autorizacionDelDescuento)
+        }
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+    }
 }

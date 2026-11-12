@@ -29,6 +29,14 @@ data class SavedCart(
      * la sucursal en que estaban, porque cambiar de sucursal los borraba (`SavedCartsRepository.alCambiarLaSesion`).
      */
     val venueId: String? = null,
+    /**
+     * D2 (descuento del cliente): su nombre y el descuento que el negocio le asignó, el PIN del gerente (token y tope) y los
+     * clientes a los que se les quitó en esta venta. Nulos/vacíos en carritos viejos: el cliente vuelve como «Cliente», sin descuento.
+     */
+    val attachedCustomerName: String? = null,
+    val attachedCustomerDescuento: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
+    val autorizacionDelDescuento: AutorizacionDelDescuento? = null,
+    val descuentosDeClienteQuitados: Set<String> = emptySet(),
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }
