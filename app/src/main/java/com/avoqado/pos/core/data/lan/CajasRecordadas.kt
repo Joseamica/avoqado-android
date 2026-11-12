@@ -49,6 +49,10 @@ class CajasRecordadas(
     /** Las que hoy están en la lista por TCP. Las lee el transporte desde cualquier hilo. */
     private val enLista = ConcurrentHashMap<String, LanPeer>()
 
+    init {
+        vigentes[venueId] = this // Codex r3 #3: el encendido nuevo retira al anterior de la misma sucursal (ya no escribe)
+    }
+
     /** Lo que se publica además de lo que ve NSD (lo de NSD manda). */
     fun porTcp(ajenos: List<LanPeer>): List<LanPeer> = enLista.values.filter { p -> ajenos.none { it.deviceId == p.deviceId } }
 
@@ -217,15 +221,31 @@ class CajasRecordadas(
         return r
     }
 
+    /**
+     * Codex r3 #3: sólo escribe la instancia VIGENTE (la del último encendido de esta sucursal), y nunca a la vez que otra. Una tarea de un
+     * encendido anterior que termina tarde (un `quien` retenido) reescribía la fila entera encima de lo que la nueva ya guardó.
+     */
     private suspend fun guardar(r: Map<String, Recordada>?) {
         if (r == null || r == guardadas) return
-        runCatching { cache.saveDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId, json.encodeToString(Disco.serializer(), Disco(r.toMap()))) }
-            .onSuccess { guardadas = r.toMap() }
-            .onFailure { Log.w(TAG, "⚠️ no se pudieron guardar las cajas recordadas: ${it.message}") }
+        escritura.withLock {
+            if (vigentes[venueId] !== this) {
+                Log.i(TAG, "un encendido anterior ya no escribe las cajas recordadas")
+            } else {
+                runCatching { cache.saveDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId, json.encodeToString(Disco.serializer(), Disco(r.toMap()))) }
+                    .onSuccess { guardadas = r.toMap() }
+                    .onFailure { Log.w(TAG, "⚠️ no se pudieron guardar las cajas recordadas: ${it.message}") }
+            }
+        }
     }
 
     companion object {
         private const val TAG = "CajasRecordadas"
+
+        /** Codex r3 #3: la instancia vigente de cada sucursal (la última que se creó: una por encendido de la red de [TransporteLan]). */
+        private val vigentes = ConcurrentHashMap<String, CajasRecordadas>()
+
+        /** ponytail: un candado para toda escritura de cualquier sucursal (una sola red local por aparato); por sucursal si algún día hay más. */
+        private val escritura = Mutex()
 
         /** Fallas seguidas de `quien` para que una caja salga de la lista. */
         const val FALLAS_PARA_SALIR = 2

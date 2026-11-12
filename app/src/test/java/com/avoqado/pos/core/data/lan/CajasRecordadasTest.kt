@@ -265,4 +265,28 @@ class CajasRecordadasTest {
     @Test fun `el es otro de la dirección vieja no borra la nueva`() = runTest { mientrasPreguntaLlegaLaNueva(soy("otra-tablet")) }
 
     @Test fun `el no contesta de la dirección vieja no saca a la nueva`() = runTest { mientrasPreguntaLlegaLaNueva(null) }
+
+    // MARK: - Arreglo final (Codex r3 #3)
+
+    /**
+     * Un encendido anterior no escribe el disco del nuevo. Su `quien` quedó retenido; la red local se reinició dentro del proceso (nació otra
+     * instancia, que aprendió y guardó la dirección nueva); al soltarse, la vieja aplicaba «es otro» con SU mapa y reescribía la fila entera.
+     * Al reiniciar la app, esa caja ya no se recuperaba por TCP.
+     */
+    @Test fun `un encendido viejo con su respuesta retenida no pisa lo que guardó el nuevo`() = runTest {
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val vieja = CajasRecordadas(cache, v, "yo", { retenida.await(); soy("otra-tablet") }, { hora })
+        vieja.recordar(listOf(n86))
+        vieja.sostener(listOf(n86))
+        val confirma = launch { vieja.confirmarPerdidas(listOf(n86)) }
+        runCurrent() // la vieja ya le preguntó a la dirección vieja
+        val nueva = CajasRecordadas(cache, v, "yo", { p -> soy(p.deviceId) }, { hora }) // se reinició la red local
+        nueva.recordar(listOf(vistaPorNsd(n86.deviceId, "192.168.100.153")))
+        retenida.complete(Unit)
+        confirma.join()
+        val preguntadas = mutableListOf<String>()
+        val tercera = CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }) // la app reiniciada
+        tercera.revisar(emptyList())
+        assertEquals("la reconstruida conserva la dirección nueva", listOf("192.168.100.153"), preguntadas.distinct())
+    }
 }
