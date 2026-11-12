@@ -44,6 +44,9 @@ data class TrabajoSinResolver(val intents: Int, val rechazados: Int, val tipos: 
     val enCamino: Int get() = intents - rechazados
 }
 
+/** D5 · B2a: una fila sin resolver de la cola que toca la orden. `importeCents` sólo en el efectivo. */
+data class FilaDeLaOrden(val id: String, val tipo: String, val estado: String, val importeCents: Int?)
+
 /**
  * Offline-first Corte B — el OUTBOX del POS.
  *
@@ -731,10 +734,23 @@ class SyncOutbox @Inject constructor(
 
     suspend fun trabajoSinResolverDeLaOrden(venueId: String, ids: Set<String>): TrabajoSinResolver = withContext(Dispatchers.IO) {
         val filas = dao.sinResolver(venueId)
+        resumirTrabajo(filas, conAlias(venueId, ids, filas.map { it.payloadJson }))
+    }
+
+    /** D5 · B2a: las filas sin resolver de la orden con su id, y el importe de cada efectivo (ilegible ⇒ falla, nunca cero). */
+    suspend fun filasSinResolverDeLaOrden(venueId: String, ids: Set<String>): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
+        val filas = dao.filasSinResolver(venueId)
+        val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
+        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+            FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null)
+        }
+    }
+
+    private fun conAlias(venueId: String, ids: Set<String>, payloads: List<String>): Set<String> {
         val expanded = ids.toMutableSet()
-        val localIds = filas.mapNotNull { fila ->
+        val localIds = payloads.mapNotNull { payloadJson ->
             runCatching {
-                val payload = Json.parseToJsonElement(fila.payloadJson) as? JsonObject
+                val payload = Json.parseToJsonElement(payloadJson) as? JsonObject
                 (payload?.get("localOrderId") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
             }.getOrNull()
         }.toSet()
@@ -742,7 +758,7 @@ class SyncOutbox @Inject constructor(
         for (local in localIds - ids) {
             if (tableDrafts.loadResolved(venueId, local).first in ids) expanded += local
         }
-        resumirTrabajo(filas, expanded)
+        return expanded
     }
 
     companion object {
@@ -756,16 +772,18 @@ class SyncOutbox @Inject constructor(
                 intents++
                 if (fila.status == SyncIntentEntity.STATUS_REJECTED) rechazados++
                 tipos += fila.type
-                if (fila.type == TIPO_PAGO_EN_EFECTIVO) {
-                    val payload = Json.parseToJsonElement(fila.payloadJson) as JsonObject
-                    val amount = payload["amountCents"] as? JsonPrimitive ?: error("Importe de pago ilegible")
-                    require(!amount.isString) { "Importe de pago ilegible" }
-                    val cents = amount.content.toBigDecimal().intValueExact()
-                    require(cents >= 0) { "Importe de pago negativo" }
-                    cobrado = Math.addExact(cobrado, cents)
-                }
+                if (fila.type == TIPO_PAGO_EN_EFECTIVO) cobrado = Math.addExact(cobrado, importeDelEfectivo(fila.payloadJson))
             }
             return TrabajoSinResolver(intents, rechazados, tipos, cobrado)
+        }
+
+        internal fun importeDelEfectivo(payloadJson: String): Int {
+            val payload = Json.parseToJsonElement(payloadJson) as JsonObject
+            val amount = payload["amountCents"] as? JsonPrimitive ?: error("Importe de pago ilegible")
+            require(!amount.isString) { "Importe de pago ilegible" }
+            val cents = amount.content.toBigDecimal().intValueExact()
+            require(cents >= 0) { "Importe de pago negativo" }
+            return cents
         }
 
         internal fun tocaLaOrden(payloadJson: String, ids: Set<String>): Boolean {

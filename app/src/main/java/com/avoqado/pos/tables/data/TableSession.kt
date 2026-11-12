@@ -121,6 +121,16 @@ class TableSession @Inject constructor() {
         revision++
         _active.update { it?.copy(valorRondasSinRedCents = Math.addExact(it.valorRondasSinRedCents, cents.coerceAtLeast(0))) }
     }
+    fun revisionActual(): Long = synchronized(lock) { revision }
+
+    /** D5 · B2a: la mesa abierta sin red toma de disco el valor de sus rondas (manda sobre el de memoria), sólo si nada cambió al leerlo. */
+    fun rehidratarSaldoSinRed(venueId: String, expected: Active, expectedRevision: Long, valorRondasCents: Int): Boolean = synchronized(lock) {
+        if (!acepta(venueId) || (activeVenue != null && activeVenue != venueId) || revision != expectedRevision || _active.value != expected ||
+            !expected.isProvisional || valorRondasCents < 0) return@synchronized false
+        revision++
+        _active.value = expected.copy(valorRondasSinRedCents = valorRondasCents, saldoSinRedConocido = true)
+        true
+    }
     fun updateVersion(version: Int) = synchronized(lock) { revision++; _active.update { it?.copy(version = version) } }
     fun updateRemaining(remainingCents: Int) = synchronized(lock) { revision++; _active.update { it?.copy(totalCents = remainingCents, serviceChargeCents = 0) } }
 

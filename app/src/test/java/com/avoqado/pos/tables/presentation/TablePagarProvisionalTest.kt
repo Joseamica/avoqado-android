@@ -39,7 +39,21 @@ class TablePagarProvisionalTest {
         every { it.venueId } returns "test-table-pagar-provisional"
     }
 
-    private fun orderVm(): TableOrderViewModel {
+    private val raizDisco = java.nio.file.Files.createTempDirectory("pagar-provisional").toFile()
+    @org.junit.After fun limpiarDisco() { raizDisco.deleteRecursively() }
+
+    /** D5 · B2a: la provisional se cobra con lo de disco; esta trae una ronda de 725 guardada y en la cola. */
+    private fun discoConRonda(): com.avoqado.pos.tables.data.TableRoundDraftStore {
+        val disco = com.avoqado.pos.tables.data.TableRoundDraftStore(raizDisco)
+        disco.save("test-table-pagar-provisional", "local-activo", emptyList(), mapOf("r1" to listOf(TableOrderViewModel.PendingLine(
+            com.avoqado.pos.pos.data.model.CartItem(type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount, name = "Ronda", unitPrice = 725), null))))
+        coEvery { outbox.filasSinResolverDeLaOrden(any(), any()) } returns listOf(
+            com.avoqado.pos.core.data.sync.FilaDeLaOrden("open", "OPEN_TABLE", "PENDING", null),
+            com.avoqado.pos.core.data.sync.FilaDeLaOrden("r1", "ADD_ITEMS", "PENDING", null))
+        return disco
+    }
+
+    private fun orderVm(draftStore: com.avoqado.pos.tables.data.TableRoundDraftStore? = null): TableOrderViewModel {
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
         every { outbox.acks } returns MutableSharedFlow()
@@ -53,7 +67,7 @@ class TablePagarProvisionalTest {
             comandaPrinter = mockk(relaxed = true), printerService = mockk(relaxed = true),
             secureStorage = storage, syncOutbox = outbox, productsRepository = mockk(relaxed = true),
             connectivityMonitor = connectivity, timeEntryRepository = mockk(relaxed = true),
-            comandaDispatcher = mockk(relaxed = true), comandasPendientesStore = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true), comandasPendientesStore = mockk(relaxed = true), draftStore = draftStore,
         )
     }
 
@@ -67,7 +81,7 @@ class TablePagarProvisionalTest {
     @Test fun `preparar pago conserva sesion provisional completa`() = runTest {
         val before = provisional(1200)
         session.start(before)
-        val vm = orderVm()
+        val vm = orderVm(discoConRonda())
         try {
             assertTrue(vm.preparePagar())
             val after = requireNotNull(session.current())

@@ -836,9 +836,10 @@ private fun TableCheckSheet(
                     }
                 } else {
                     Text(
-                        text = if (check != null && check.total > 0) {
+                        text = if (check != null && (check.total > 0 || check.isProvisional)) {
                             // Hay cuenta y hay dinero, sólo no llegaron los renglones:
                             // decir "sin productos" sería mentir sobre el saldo.
+                            // A6 (D5 · B2a): la abierta sin internet no trae renglones ni total aquí, aunque tenga rondas.
                             "Cuenta ${check.orderNumber} • ${textoCuentaEnPlano(check)} — ábrela para ver el detalle."
                         } else {
                             "Sin productos todavía — agrega la primera ronda."

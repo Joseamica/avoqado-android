@@ -17,6 +17,16 @@ data class IntentSinResolver(
     @ColumnInfo(name = "payload_json") val payloadJson: String,
 )
 
+/** D5 · B2a: las mismas filas, con su id (la llave de la ronda o del cobro). */
+internal const val FILAS_SIN_RESOLVER_SQL = "SELECT id, type, status, payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND status IN ('PENDING','HELD','REJECTED')"
+
+data class FilaSinResolver(
+    @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "type") val type: String,
+    @ColumnInfo(name = "status") val status: String,
+    @ColumnInfo(name = "payload_json") val payloadJson: String,
+)
+
 /**
  * Offline-first Corte B — el OUTBOX de intents (patrón "Libreta" de la TPV
  * generalizado a mutaciones de orden). Toda acción de mesas hecha sin red se
@@ -213,6 +223,8 @@ interface SyncIntentDao {
 
     @Query(INTENTS_SIN_RESOLVER_SQL)
     suspend fun sinResolver(venueId: String): List<IntentSinResolver>
+    @Query(FILAS_SIN_RESOLVER_SQL)
+    suspend fun filasSinResolver(venueId: String): List<FilaSinResolver>
 
     @Query("SELECT * FROM cached_payloads WHERE venue_id = :venueId AND cache_key IN (:keys) LIMIT 100")
     suspend fun preparationBefore(venueId: String, keys: List<String>): List<CachedPayloadEntity>
