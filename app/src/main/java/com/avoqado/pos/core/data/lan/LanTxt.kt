@@ -18,6 +18,8 @@ object LanTxt {
         hub: Boolean,
         preparationVersion: Int = 0,
         urgencyVersion: Int = 0,
+        /** D12 · Opción D: el nombre de la caja si contesta sus cuentas (`d=1`); null = no participa. */
+        cajaConD: String? = null,
     ): Map<String, String> {
         val txt = linkedMapOf(
             LeaseProtocol.TXT_DEVICE_ID to deviceId,
@@ -29,6 +31,11 @@ object LanTxt {
         if (kdsStations.isNotEmpty()) txt[LeaseProtocol.TXT_KDS] = kdsStations.sorted().joinToString(",")
         if (preparationVersion == 1) txt["prep"] = "1"
         if (preparationVersion == 1 && urgencyVersion == 1) txt["urg"] = "1"
+        if (cajaConD != null) {
+            txt[LeaseProtocol.TXT_D] = "1"
+            // DNS-SD topa cada entrada en 255 bytes: el nombre es una etiqueta y se recorta.
+            cajaConD.trim().take(60).takeIf { it.isNotEmpty() }?.let { txt[LeaseProtocol.TXT_CAJA] = it }
+        }
         return txt
     }
 
@@ -57,6 +64,8 @@ object LanTxt {
             preparationVersion = if (peerVenue == myVenueId && txt["prep"] == "1") 1 else 0,
             urgencyVersion = if (peerVenue == myVenueId && txt["prep"] == "1" && txt["urg"] == "1") 1 else 0,
             venueExplicito = peerVenue == myVenueId && myVenueId.isNotBlank(),
+            participaEnD = peerVenue == myVenueId && myVenueId.isNotBlank() && txt[LeaseProtocol.TXT_D] == "1",
+            nombreCaja = txt[LeaseProtocol.TXT_CAJA]?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
 }

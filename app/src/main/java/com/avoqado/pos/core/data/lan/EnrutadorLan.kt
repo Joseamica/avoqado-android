@@ -15,6 +15,8 @@ object EnrutadorLan {
         receptor: (suspend (KdsComanda) -> Boolean)?,
         preparation: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? = null,
         preparationDisplay: ((com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Set<String>)? = null,
+        /** D12 · Opción D: las ops `cuenta_*` (sólo con el hub Premium encendido aquí). null = «Operación desconocida». */
+        cuentas: (suspend (String) -> String)? = null,
     ): String {
         val op = KdsLanProtocol.opDe(linea)
             ?: return LeaseProtocol.encode(LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Petición ilegible"))
@@ -37,6 +39,10 @@ object EnrutadorLan {
             if (comanda.stationId !in estaciones) return rechazo("Estación no anunciada")
             // 🔴 El receptor GUARDA (commit en disco) y sólo entonces se acusa (D8): «no pude guardar» = sin acuse ⇒ papel.
             return if (r(comanda)) KdsLanProtocol.encode(KdsLanProtocol.acuse(comanda.sourceKey, comanda.preparationVersion)) else rechazo("No se pudo guardar")
+        }
+        if (CuentasPorLaRed.esDeCuenta(op)) {
+            val c = cuentas ?: return LeaseProtocol.encode(LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Operación desconocida: $op"))
+            return c(linea)
         }
         val h = hub ?: return LeaseProtocol.encode(LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Operación desconocida: $op"))
         return LeaseProtocol.encode(h(linea))

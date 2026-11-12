@@ -43,6 +43,10 @@ data class LanPeer(
      * `venue` sigue entrando para Mesas y KDS, pero no cuenta como «otra caja del negocio» para cobrar una cuenta ajena.
      */
     val venueExplicito: Boolean = false,
+    /** D12 · Opción D (R5): anuncia `d=1` en MI sucursal (venue explícito): contesta las cuentas que abrió y sabe pedirlas. */
+    val participaEnD: Boolean = false,
+    /** D12 · Opción D: el nombre visible de la caja (TXT `caja`), o null. */
+    val nombreCaja: String? = null,
 )
 
 object ArbiterElection {

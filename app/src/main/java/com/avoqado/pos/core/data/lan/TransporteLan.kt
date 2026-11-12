@@ -85,6 +85,9 @@ class TransporteLan @Inject constructor(
 
     @Volatile private var venueId: String? = null
     @Volatile private var hub: ((String) -> LeaseResponse)? = null
+    /** D12 · Opción D: las ops `cuenta_*` y el nombre que va en el anuncio. */
+    @Volatile private var cuentas: (suspend (String) -> String)? = null
+    @Volatile private var nombreCaja: String? = null
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
     @Volatile private var preparationReceiver: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? = null
     @Volatile private var preparationDisplay: ((com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Set<String>)? = null
@@ -171,6 +174,18 @@ class TransporteLan @Inject constructor(
     override fun desconectarHub() {
         hub = null
         _hubConectado.value = false
+        reanunciar()
+    }
+
+    override fun conectarCuentas(manejador: suspend (String) -> String, nombreCaja: String) {
+        cuentas = manejador
+        this.nombreCaja = nombreCaja
+        reanunciar()
+    }
+
+    override fun desconectarCuentas() {
+        cuentas = null
+        nombreCaja = null
         reanunciar()
     }
 
@@ -322,7 +337,7 @@ class TransporteLan @Inject constructor(
     }
 
     private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
-        if (preparationReceiver != null) 1 else 0, urgencyVersion)
+        if (preparationReceiver != null) 1 else 0, urgencyVersion, cajaConD = nombreCaja?.takeIf { cuentas != null })
 
     @Synchronized
     private fun publicarPeers() {
@@ -386,7 +401,7 @@ class TransporteLan @Inject constructor(
             val prep = preparationReceiver
             val prepVigente: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? =
                 if (prep == null) null else { command -> prep(command) && generacion == g && venueId == command.venueId }
-            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay)
+            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay, cuentas)
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }
     }

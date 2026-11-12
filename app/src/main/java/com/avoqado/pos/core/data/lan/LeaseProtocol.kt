@@ -50,6 +50,12 @@ object LeaseProtocol {
     /** Etapa 3 del KDS (3.5, D1): `1` si el aparato contesta leases (hub Premium encendido), `0` si no. Ausente = app vieja = sí. */
     const val TXT_HUB = "hub"
 
+    /** D12 · Opción D: `1` si el aparato contesta las cuentas que abrió (R5: sólo se confía en quien lo anuncia). Ausente = no. */
+    const val TXT_D = "d"
+
+    /** D12 · Opción D: el nombre visible de la caja («Caja 1 · Barra»); una etiqueta, nunca la identidad. */
+    const val TXT_CAJA = "caja"
+
     val json = Json {
         ignoreUnknownKeys = true // un peer más nuevo puede mandar campos extra
         encodeDefaults = true
@@ -84,6 +90,15 @@ object LeaseProtocol {
     const val STATUS_ERROR = "error"
     const val STATUS_OK = "ok"
 
+    /** D12 · Opción D (`CuentasPorLaRed`): sólo para llaves `cuenta:<orderId>`, y sólo las contesta la caja que la abrió. */
+    const val OP_CUENTA_APARTAR = "cuenta_apartar"
+    const val OP_CUENTA_COMPROMETER = "cuenta_comprometer"
+    const val OP_CUENTA_SOLTAR = "cuenta_soltar"
+    const val OP_CUENTA_COBRADA = "cuenta_cobrada"
+    const val STATUS_NO_ES_MIA = "no_es_mia"
+    const val STATUS_CERRADA = "cerrada"
+    const val STATUS_RECHAZADA = "rechazada"
+
     /** Rechazo explícito a un peer que habla otra versión del protocolo. */
     const val ERROR_VERSION_MISMATCH = "VERSION_MISMATCH"
 }
@@ -113,6 +128,11 @@ data class LeaseRequest(
     val staffName: String = "",
     /** Solo en renew/release: la época que el emisor CREE tener. */
     val epoch: Long = 0,
+    /** D12 · Opción D (ops `cuenta_*`): la llave del intento, el nombre de la caja que pregunta, si cobra con internet, y si ya subió. */
+    val intento: String = "",
+    val caja: String = "",
+    val enLinea: Boolean = false,
+    val subida: Boolean = false,
 )
 
 @Serializable
@@ -124,4 +144,8 @@ data class LeaseResponse(
     val currentEpoch: Long? = null,
     val leases: List<WireLease>? = null,
     val message: String? = null,
+    /** D12 · Opción D: quién la cobra o la cobró y en qué caja, y si a ese cobro le falta subir. */
+    val quien: String? = null,
+    val caja: String? = null,
+    val faltaSubirla: Boolean? = null,
 )

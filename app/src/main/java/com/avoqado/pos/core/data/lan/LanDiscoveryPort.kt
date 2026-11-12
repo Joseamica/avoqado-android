@@ -14,4 +14,9 @@ interface LanDiscoveryPort {
     fun conectarHub(respondTo: (String) -> LeaseResponse)
 
     fun desconectarHub()
+
+    /** D12 · Opción D: desde aquí el TXT dice `d=1` y `caja=<nombre>`, y las ops `cuenta_*` se contestan con [manejador]. */
+    fun conectarCuentas(manejador: suspend (String) -> String, nombreCaja: String) {}
+
+    fun desconectarCuentas() {}
 }
