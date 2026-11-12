@@ -555,12 +555,21 @@ class CartViewModelDescuentoDelClienteTest {
     }
 
     @Test
-    fun `R1 con una mesa en ronda tampoco`() {
+    fun `R2 con una mesa pidiendo, la venta de mostrador si lleva el descuento y el PIN`() {
+        // La mesa queda abierta en ronda mientras el mostrador vende (la pestaña Cobrar sigue a la mano): no es cobrar la mesa.
         mesa.start(TableSession.Active("t", "1", null, "o", "ORD", 1, 10000, TableSession.Mode.ORDERING))
         val vm = carrito().conPlayeraYCecilia()
 
-        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+        assertEquals(9000, vm.cartState.value.totalCents)
         assertNull(vm.avisoDescuentoDelCliente.value)
+
+        // Sin permiso, en la misma situación: aviso con «Pedir autorización» y el PIN sí se pide (no hay callejón sin salida).
+        permisos = listOf("orders:read")
+        val sinPermiso = carrito().conPlayeraYCecilia()
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, sinPermiso.avisoDescuentoDelCliente.value?.accion)
+        autorizarConPin(sinPermiso)
+        assertEquals("d-10", sinPermiso.cartState.value.orderDiscount?.id)
     }
 
     @Test
@@ -678,7 +687,10 @@ class CartViewModelDescuentoDelClienteTest {
         vm.setSelectedCustomer(cecilia)
 
         val aviso = vm.avisoDescuentoDelCliente.value!!
-        assertEquals("FULLTEST-Cecilia tiene 10 % de descuento. Tu puesto no puede aplicarlo.", aviso.texto)
+        assertEquals(
+            "FULLTEST-Cecilia tiene 10 % de descuento. Tu puesto no puede aplicarlo; con la autorización se quita «Manual 5 %».",
+            aviso.texto,
+        )
         assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, aviso.accion)
 
         // El gerente cancela: la cuenta sigue con el manual (nunca se queda sin ninguno).
@@ -690,6 +702,7 @@ class CartViewModelDescuentoDelClienteTest {
         assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
         assertEquals(AutorizacionDelDescuento("tok-1", 1000, "c-cecilia", "d-10"), vm.cartState.value.autorizacionDelDescuento)
         assertTrue(vm.puedeCrearOrdenConDescuentoDelCliente())
+        assertEquals("Se cambió «Manual 5 %» por el descuento de FULLTEST-Cecilia.", vm.avisoDeDescuento.value)
     }
 
     @Test
@@ -701,11 +714,16 @@ class CartViewModelDescuentoDelClienteTest {
         vm.setPendingStampReward(premio)
         vm.setSelectedCustomer(cecilia)
         assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, vm.avisoDescuentoDelCliente.value?.accion)
+        assertEquals(
+            "FULLTEST-Cecilia tiene 10 % de descuento. Tu puesto no puede aplicarlo; con la autorización se quita el premio «Café gratis».",
+            vm.avisoDescuentoDelCliente.value?.texto,
+        )
 
         autorizarConPin(vm)
 
         assertNull(vm.cartState.value.pendingStampReward)
         assertEquals(9000, vm.cartState.value.totalCents)
+        assertEquals("Se cambió el premio «Café gratis» por el descuento de FULLTEST-Cecilia.", vm.avisoDeDescuento.value)
     }
 
     @Test
@@ -771,5 +789,52 @@ class CartViewModelDescuentoDelClienteTest {
         vm.setSelectedCustomer(ernesto)
 
         assertEquals("FULLTEST-Ernesto tiene $50.00 de descuento. Tu puesto no puede aplicarlo.", vm.avisoDescuentoDelCliente.value?.texto)
+    }
+
+    // MARK: - Ronda 2 de revisión
+
+    @Test
+    fun `R2 con un combo en la cuenta Usar el de no quita el manual ni deja la cuenta sin descuento`() {
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.applyOrderDiscount(manual)
+        vm.aplicarPromocion(dosPorUno, emptyMap())
+        vm.setSelectedCustomer(cecilia)
+        assertEquals("Con combos en la cuenta el descuento de FULLTEST-Cecilia no se pone solo.", vm.avisoDescuentoDelCliente.value?.texto)
+
+        vm.usarDescuentoDelCliente()
+
+        assertEquals("m-5", vm.cartState.value.orderDiscount?.id)
+        assertNull(vm.avisoDeDescuento.value)
+    }
+
+    @Test
+    fun `R2 Pagar despues frenado relee el permiso y el aviso ofrece Pedir autorizacion`() = runTest {
+        val vm = carrito().conPlayeraYCecilia()
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        permisos = listOf("orders:read") // entra otra persona con su PIN; el carrito no cambia
+
+        val texto403 = "Tu puesto no puede aplicar el descuento de FULLTEST-Cecilia. Pide autorización o quítalo."
+        assertEquals(ResultadoPagarDespues.Error(texto403), vm.createPayLaterOrder("c-cecilia"))
+
+        assertEquals(texto403, vm.avisoDescuentoDelCliente.value?.texto)
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, vm.avisoDescuentoDelCliente.value?.accion)
+    }
+
+    @Test
+    fun `R2 el cobro por producto que paga el combo no vuelve a poner el descuento del cliente`() {
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.aplicarPromocion(dosPorUno, emptyMap())
+        vm.setSelectedCustomer(cecilia)
+        assertNull(vm.cartState.value.orderDiscount)
+        val renglonesDelCombo = vm.cartState.value.items.filter { it.isPromotionLine }.map { it.id }.toSet()
+
+        // La parte 1 pagó el combo; su orden ya se creó SIN el descuento del cliente. Queda la playera.
+        vm.aplicarCobroConfirmado(splitType = "BYPRODUCT", paidItemIds = renglonesDelCombo, remainingBalanceCents = 10000)
+
+        assertEquals(listOf("Playera"), vm.cartState.value.items.map { it.name })
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(10000, vm.cartState.value.totalCents)
     }
 }

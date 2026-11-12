@@ -1940,6 +1940,7 @@ fun CheckoutScreen(
                 restaurarVenta = { foto -> if (cartViewModel.restaurarFoto(foto)) cartViewModel.getCartForPayment() else null },
                 registrarRecuperacionDeFoto = cartViewModel::observarRestauracionDeFoto,
                 alRestaurarSnapshot = { paymentCartSnapshot = it.paymentSnapshot() },
+                alFrenarPorDescuentoDelCliente = cartViewModel::releerAvisoDelDescuento,
                 pruebaPreseleccionada = tarjetaPreseleccionada,
                 onCuentaConSaldo = { id ->
                     showPaymentFlow = false; cartViewModel.cerrarCobro(); paymentCartSnapshot = null

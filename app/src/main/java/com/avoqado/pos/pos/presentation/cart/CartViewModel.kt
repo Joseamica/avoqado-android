@@ -470,6 +470,15 @@ internal fun com.avoqado.pos.customers.data.model.DescuentoDelCliente.comoDescue
     maxDiscountAmount = maxDiscountAmount,
 )
 
+/**
+ * D2: lo que el descuento del cliente le quita a la cuenta al ponerse con «Usar el de…» o con el PIN: el otro descuento de cuenta y el
+ * premio, como se dicen en los avisos («Manual 5 %», «el premio «Café gratis»»). null = nada.
+ */
+internal fun CartState.loQueReemplazaElDelCliente(): List<String>? = listOfNotNull(
+    orderDiscount?.takeUnless { descuentoEsDelCliente }?.let { "«${it.name}»" },
+    pendingStampReward?.let { "el premio «${it.etiqueta}»" },
+).takeIf { it.isNotEmpty() }
+
 /** D2: lo que descontaría [d] (el descuento del cliente) en esta cuenta; el de ahora si ya está puesto (con su monto congelado). */
 internal fun CartState.montoDelDescuentoDelCliente(d: Discount): Int =
     if (descuentoEsDelCliente) orderDiscountCents else copy(orderDiscount = d, descuentoDeCuentaCongelado = null).orderDiscountCents
@@ -530,9 +539,11 @@ internal fun avisoDelDescuentoDelCliente(
             "$nombre tiene $valor de descuento.", AvisoDescuentoDelCliente.Accion.USAR_EL_DEL_CLIENTE, "Usar el de $nombre",
         )
         sinRedAlPedir -> sinRed
-        // Sin monto (carrito vacío) no hay nada que autorizar todavía: el botón sale con el primer artículo.
+        // Sin monto (carrito vacío) no hay nada que autorizar todavía: el botón sale con el primer artículo. Si con el PIN se va a
+        // quitar otro descuento o el premio, se dice ANTES de pedirlo.
         else -> AvisoDescuentoDelCliente.pedirAutorizacion(
-            "$nombre tiene $valor de descuento. Tu puesto no puede aplicarlo.",
+            "$nombre tiene $valor de descuento. Tu puesto no puede aplicarlo" +
+                (estado.loQueReemplazaElDelCliente()?.let { "; con la autorización se quita ${it.joinToString(" y ")}." } ?: "."),
             conBoton = pinPrendido && estado.montoDelDescuentoDelCliente(d.comoDescuentoDeCuenta()) > 0,
         )
     }
@@ -1134,8 +1145,11 @@ class CartViewModel @Inject constructor(
     val avisoDescuentoDelCliente: StateFlow<AvisoDescuentoDelCliente?> =
         combine(
             _cartState, _selectedCustomer, _eventosDelAviso, conexionConAvoqado,
-            // Mesas es la fase 3, y una venta a medio cobrar ya decidió su descuento al crear su orden: ahí no se dice nada.
-            combine(tableSession.active, _pendingSplitOrder) { mesa, aMedias -> mesa != null || aMedias != null },
+            // Cobrar una mesa es la fase 3, y una venta a medio cobrar ya decidió su descuento al crear su orden: ahí no se dice nada.
+            // Una mesa PIDIENDO no cuenta: el mostrador sigue vendiendo con la mesa abierta (y la ronda no usa este carrito).
+            combine(tableSession.active, _pendingSplitOrder) { mesa, aMedias ->
+                mesa?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING || aMedias != null
+            },
         ) { estado, cliente, eventos, conectado, fueraDelMostrador ->
             // Casi toda venta no trae descuento del cliente: no se leen los permisos (cifrados) en cada tecla.
             if (fueraDelMostrador || (cliente?.descuentoDelCliente == null && !estado.descuentoEsDelCliente)) {
@@ -2623,13 +2637,23 @@ class CartViewModel @Inject constructor(
     fun detenerCobroPorDescuentoDelCliente(): Boolean {
         if (hayVentaAMedias() || puedeCrearOrdenConDescuentoDelCliente()) return false
         _avisoDeDescuento.value = textoNoPuedeAplicarDescuentoDelCliente(_selectedCustomer.value?.name)
-        // El permiso se leyó ahora; el aviso del carrito lo vuelve a leer para ofrecer «Pedir autorización» de inmediato.
-        _eventosDelAviso.update { it.copy(revision = it.revision + 1) }
+        releerAvisoDelDescuento()
         return true
     }
 
-    /** Mesas es la fase 3 del descuento del cliente: con una mesa en curso (pidiendo o cobrando) no se pone ni se avisa. */
-    private fun hayMesa(): Boolean = tableSession.current() != null
+    /**
+     * Una entrada (cobro, «Pagar después», saldo de tarjeta) frenó por el descuento del cliente: el permiso se leyó ahora, y el aviso
+     * del carrito lo vuelve a leer para ofrecer «Pedir autorización» de inmediato (otra persona pudo entrar sin tocar el carrito).
+     */
+    fun releerAvisoDelDescuento() {
+        _eventosDelAviso.update { it.copy(revision = it.revision + 1) }
+    }
+
+    /**
+     * Cobrar una mesa es la fase 3 del descuento del cliente: ahí no se pone ni se avisa. Una mesa PIDIENDO no cuenta: el mostrador
+     * vende con la mesa abierta (la pestaña Cobrar sigue a la mano) y la ronda de la mesa no pasa por este carrito.
+     */
+    private fun cobrandoUnaMesa(): Boolean = tableSession.current()?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING
 
     /** El PIN del gerente que ya trae el carrito es de ESTE cliente y ESTE descuento. */
     private fun autorizadoPara(e: CartState, clienteId: String, discountId: String): Boolean =
@@ -2643,7 +2667,7 @@ class CartViewModel @Inject constructor(
     private fun ponerDescuentoDelClienteSiToca() {
         val cliente = _selectedCustomer.value ?: return
         val d = cliente.descuentoDelCliente ?: return
-        if (hayVentaAMedias() || hayMesa()) return
+        if (hayVentaAMedias() || cobrandoUnaMesa()) return
         _cartState.update { e ->
             if (e.orderDiscount != null || e.pendingStampReward != null || cliente.id in e.descuentosDeClienteQuitados ||
                 e.items.any { it.isPromotionLine || it.locked } || !(autorizadoPara(e, cliente.id, d.discountId) || puedeAplicarDescuentos())
@@ -2699,9 +2723,15 @@ class CartViewModel @Inject constructor(
         cambiarAlDelCliente(cliente)
     }
 
-    /** El cambio de «Usar el de <Nombre>»: fuera el otro descuento de cuenta y el premio, y se pone el del cliente. */
+    /**
+     * El cambio de «Usar el de <Nombre>» (o el que sigue al PIN): fuera el otro descuento de cuenta y el premio, se pone el del cliente
+     * y se dice qué se cambió. Con combo o vales no se toca nada: ahí el del cliente no se pondría y la cuenta quedaría sin ninguno.
+     */
     private fun cambiarAlDelCliente(cliente: SelectedCustomer) {
-        if (cliente.descuentoDelCliente == null || _cartState.value.items.any { it.locked } || !puedeCambiarPremio() || hayMesa()) return
+        if (cliente.descuentoDelCliente == null || _cartState.value.items.any { it.locked || it.isPromotionLine } ||
+            !puedeCambiarPremio() || cobrandoUnaMesa()
+        ) return
+        val antes = _cartState.value
         _cartState.update { e ->
             e.copy(
                 orderDiscount = e.orderDiscount.takeIf { e.descuentoEsDelCliente },
@@ -2711,6 +2741,10 @@ class CartViewModel @Inject constructor(
             )
         }
         ponerDescuentoDelClienteSiToca()
+        val reemplazado = antes.loQueReemplazaElDelCliente()
+        if (reemplazado != null && _cartState.value.descuentoEsDelCliente) {
+            _avisoDeDescuento.value = "Se cambió ${reemplazado.joinToString(" y ")} por el descuento de ${nombreParaElDescuento(cliente.name)}."
+        }
     }
 
     private var pidiendoAutorizacion = false
@@ -2722,7 +2756,7 @@ class CartViewModel @Inject constructor(
      */
     fun pedirAutorizacionDelDescuento() {
         _eventosDelAviso.update { it.copy(sinRedAlPedir = false) }
-        if (hayMesa()) return
+        if (cobrandoUnaMesa()) return
         val cliente = _selectedCustomer.value ?: return
         val estado = _cartState.value
         val descuento = estado.orderDiscount?.takeIf { estado.descuentoEsDelCliente }
@@ -3205,6 +3239,7 @@ class CartViewModel @Inject constructor(
         // creció) no se manda: ni en línea ni a la fila sin red, donde subiría con el descuento sin nadie que lo autorizara.
         !venta.puedeCrearOrdenConDescuentoDelCliente(customerId, puedeAplicarDescuentos()) ->
             textoNoPuedeAplicarDescuentoDelCliente(_selectedCustomer.value?.takeIf { it.id == customerId }?.name)
+                .also { releerAvisoDelDescuento() }
         customerId.isBlank() -> "Selecciona un cliente para diferir el pago"
         // Lo mismo que pedía `createOrder` antes de mandar nada.
         venta.selectedStaffId.isBlank() -> "No staff"

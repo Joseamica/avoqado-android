@@ -128,7 +128,7 @@ class PaymentFlowConSaldoTest {
         server.shutdown();System.clearProperty("avoqado.test.baseUrl")
     }
     internal fun vm(orderId:String?=null, flags:Set<String> = emptySet(), efectivoReal:Boolean=false,
-        colaDeMesas:com.avoqado.pos.core.data.sync.SyncOutbox=mockk(relaxed=true)):PaymentFlowViewModel {
+        colaDeMesas:com.avoqado.pos.core.data.sync.SyncOutbox=mockk(relaxed=true), alFrenarPorDescuento:() -> Unit = {}):PaymentFlowViewModel {
         coEvery {terminal.fetchOnlineTerminals(any())} returns TerminalListResult.Success(emptyList())
         val tpv=mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository>()
         every {tpv.getCurrentSettings()} returns TpvSettings(showReviewScreen=false,showTipScreen=false)
@@ -168,7 +168,7 @@ class PaymentFlowConSaldoTest {
         },restaurar={photo ->
             restoreSawEmpty=store.delNegocio("a").isEmpty();restored++
             if (!cart.isEmpty) null else photo.aCartState().also {cart=it}
-        },desdeCuentas="lista" in flags)
+        },desdeCuentas="lista" in flags,alFrenarPorDescuento=alFrenarPorDescuento)
         subjects+=result;return result
     }
     private fun response(status:Int=200,body:String=success())=MockResponse().setResponseCode(status).setHeader("Content-Type","application/json").setBody(body)
@@ -234,9 +234,11 @@ class PaymentFlowConSaldoTest {
     @Test fun descuentoDelClienteSinPermisoNiTokenNoCreaLaCuentaConSaldo()=runTest {
         every { roles.canApplyDiscounts } returns false
         cart=cart.copy(orderDiscount=Discount(id="d-10",name="Cliente frecuente",value=10.0,source=DESCUENTO_DEL_CLIENTE_SOURCE))
-        val r=vm().cobrarConSaldo(identified,8000)
+        var avisosReleidos=0
+        val r=vm(alFrenarPorDescuento={ avisosReleidos++ }).cobrarConSaldo(identified,8000)
         assertEquals(DesenlaceDeCobro.NoSalio("Tu puesto no puede aplicar el descuento de este cliente. Pide autorización o quítalo."),r)
         assertEquals(0,server.requestCount);assertEquals(0,cleared);assertFalse(cart.isEmpty)
+        assertEquals("el carrito relee su aviso al frenar",1,avisosReleidos)
 
         every { roles.canApplyDiscounts } returns true
         server.enqueue(response())

@@ -1927,11 +1927,13 @@ class PaymentFlowViewModel @Inject constructor(
     private var ultimoCobroConSaldo: CobroConSaldo? = null
     val cuentaDelResultadoDeSaldo: String? get() = ultimoCobroConSaldo?.orderId
     val llaveDeLaSolicitudDeSaldo: String? get() = llaveDelSaldo
+    /** D2: el saldo frenó por el descuento del cliente; el carrito relee su aviso (ofrece «Pedir autorización»). */
+    private var alFrenarPorDescuentoDelCliente: () -> Unit = {}
     fun configurarSaldo(ventaViva: () -> CartState, foto: (() -> com.avoqado.pos.giftcards.domain.FotoDeLaVenta)? = null,
         vaciar: (() -> Unit)? = null, restaurar: ((com.avoqado.pos.giftcards.domain.FotoDeLaVenta) -> CartState?)? = null, desdeCuentas: Boolean = false,
-        alRestaurarSnapshot: (CartState) -> Unit = {}) {
+        alRestaurarSnapshot: (CartState) -> Unit = {}, alFrenarPorDescuento: () -> Unit = {}) {
         ventaVivaDeSaldo = ventaViva; fotoDeSaldo = foto; vaciarDeSaldo = vaciar; restaurarDeSaldo = restaurar; desdeCuentasDeSaldo = desdeCuentas
-        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot
+        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot; alFrenarPorDescuentoDelCliente = alFrenarPorDescuento
     }
     private var desvincularRecuperacionDeFoto: (() -> Unit)? = null
     private var otrosDuenosPermitenCobrar: () -> Boolean = { true }
@@ -2100,6 +2102,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // 🔴 D2 (spec punto 18): esta entrada CREA la venta. Con el descuento del cliente y sin permiso ni PIN suficiente (un
                 // carrito restaurado por otra sesión), no sale nada: el mismo texto del 403.
                 if (!snapshot.puedeCrearOrdenConDescuentoDelCliente(attachedCustomerId, rolesDeSaldo?.canApplyDiscounts == true)) {
+                    alFrenarPorDescuentoDelCliente()
                     return DesenlaceDeCobro.NoSalio(
                         com.avoqado.pos.pos.presentation.cart.textoNoPuedeAplicarDescuentoDelCliente(_attachedCustomerName.value),
                     ).also { resultadoDeSaldo.value = it }
