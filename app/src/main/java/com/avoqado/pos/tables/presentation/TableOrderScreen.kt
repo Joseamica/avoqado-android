@@ -1094,13 +1094,11 @@ fun TableOrderScreen(
                                 // al plano; la mesa ya quedó libre al confirmar el pago.
                                 exitOnce()
                             }
-                            else -> {
-                                // Ahora sí iniciar el siguiente cobro por el saldo,
-                                // después de que el operador terminó con el recibo.
-                                paymentSeedCents = completion.remainingBalanceCents
-                                pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-                                viewModel.loadCheck()
-                            }
+                            // D17 (12-nov): tras cobrar una parte, «Venta nueva» regresa a la cuenta («Ya pagado / Por pagar») y
+                            // el resto se cobra con «Pagar», que revisa el saldo como cualquier cobro (también sin red). Re-sembrar
+                            // ESTE cobro no arrancaba otro: la pantalla conserva su apertura (29-sep), el recibo se quedaba y el
+                            // segundo toque lo cerraba con la mesa todavía en PAYING.
+                            else -> cerrarCobro()
                         }
                     },
                     onCancel = { cerrarCobro() },
