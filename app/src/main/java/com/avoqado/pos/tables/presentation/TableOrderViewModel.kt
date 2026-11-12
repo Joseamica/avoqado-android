@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -112,10 +113,6 @@ internal fun motivoSinArticulos(cuentaCompletaAqui: Boolean, cargando: Boolean):
     cargando -> "La cuenta se está actualizando. Intenta en un momento."
     else -> "$CUENTA_SIN_LEER: cóbrala cuando vuelva la conexión."
 }
-
-/** PURA: el aviso del botón gris de «Recompensas» al día con su motivo; si el aviso es de otro botón, se queda como está. */
-internal fun avisoDeRecompensasAlDia(aviso: String?, motivoAnterior: String?, motivoNuevo: String?): String? =
-    if (aviso != null && aviso == motivoAnterior) motivoNuevo else aviso
 
 /** Codex r1: no se manda a cobrar «en el aparato donde se tomó la orden»: con una ronda en su cola tampoco puede (27b). */
 internal const val CUENTA_SIN_LEER =
@@ -713,8 +710,9 @@ class TableOrderViewModel @Inject constructor(
             if (generation != checkLoadGeneration) return@launch
             _isLoadingCheck.value = false
             if (tableSession.contextoActual() != contextoDeSesion) return@launch
-            // El saldo de puntos depende del cliente adjunto, que viene en el cheque.
-            loadLoyalty()
+            // El saldo de puntos depende de la clienta de la cuenta: sólo se lee con la cuenta al día. Con la cuenta vieja (la lectura
+            // falló) se leería el saldo de una clienta que otra caja pudo quitar (Codex android r6 #2).
+            if (cuentaAlDiaAqui) loadLoyalty()
         }
     }
 
@@ -1190,18 +1188,31 @@ class TableOrderViewModel @Inject constructor(
 
     fun showBlockedReason(motivo: String) {
         _blockedNotice.value = motivo
+        avisoDeRecompensas = false
     }
 
     fun dismissBlockedNotice() {
         _blockedNotice.value = null
+        avisoDeRecompensas = false
+    }
+
+    /** El aviso en pantalla lo dejó el botón gris de «Recompensas» (se marca aquí, no comparando textos: Codex android r6 #5). */
+    private var avisoDeRecompensas = false
+
+    fun mostrarAvisoDeRecompensas(motivo: String) {
+        _blockedNotice.value = motivo
+        avisoDeRecompensas = true
     }
 
     /**
      * El aviso que dejó un toque al botón gris de «Recompensas» describe un estado: si su motivo cambia (volvió la red, llegó el
-     * saldo), el aviso dice el nuevo, o se va si ya se puede canjear. El aviso de otro botón no se toca (Codex android r5 #2).
+     * saldo), dice el nuevo, o se va si ya se puede canjear. Vive en el VM: se renueva aunque la pantalla se recree. El aviso de otro
+     * botón no se toca (Codex android r5 #2, r6 #5).
      */
-    fun renovarAvisoDeRecompensas(motivoAnterior: String?, motivoNuevo: String?) {
-        _blockedNotice.value = avisoDeRecompensasAlDia(_blockedNotice.value, motivoAnterior, motivoNuevo)
+    fun renovarAvisoDeRecompensas(motivoNuevo: String?) {
+        if (!avisoDeRecompensas || _blockedNotice.value == null) return
+        _blockedNotice.value = motivoNuevo
+        if (motivoNuevo == null) avisoDeRecompensas = false
     }
 
     /**
@@ -1216,6 +1227,7 @@ class TableOrderViewModel @Inject constructor(
      */
     private fun invalidateBlockedNotice() {
         _blockedNotice.value = null
+        avisoDeRecompensas = false
     }
 
     private fun requireOnline(accion: String): Boolean {
@@ -1642,24 +1654,31 @@ class TableOrderViewModel @Inject constructor(
 
     // MARK: - Recompensas (lealtad)
 
-    private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.LealtadLeida?>(null)
-
-    /** El saldo de la cuenta que se ve; el de otra cuenta, otro cliente u otra versión no se ofrece (Codex android r4 #1). */
-    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> =
-        combine(_loyalty, _check) { leida, cuenta -> leida.paraLaCuenta(cuenta) }
-            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
-
-    /** Por qué no se pudo leer el saldo (null = no falló). Decide el motivo del botón gris: sin red no es «agrega el cliente». */
-    private val _loyaltyFallo = MutableStateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?>(null)
-    val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> = _loyaltyFallo.asStateFlow()
+    private val _lectura = MutableStateFlow<com.avoqado.pos.tables.data.LealtadLeida?>(null)
 
     /**
-     * Al volver la red (el WiFi, o sólo el servidor): el saldo pudo gastarse y la clienta de la cuenta pudo cambiar en otra caja.
-     * Se olvida el saldo (y cualquier lectura pendiente) y se relee SIEMPRE la cuenta primero; al llegar, `loadCheck` relee el saldo
-     * de la clienta que tiene ahora (Codex android r3 #2, r4 #1, r5 #1). Una cuenta abierta sin red en este aparato (provisional)
-     * todavía no existe en el servidor: no tiene saldo que leer.
+     * La lectura del saldo que vale AHORA: la de la cuenta que se ve (orden, clienta y versión) y sólo con esa cuenta al día. Mientras
+     * la cuenta se recarga (una mutación, un acuse, tocar «Recompensas») o si no se pudo leer, no se ofrece nada (Codex android r6 #2).
      */
-    fun alVolverLaRed() {
+    private val lecturaVigente: StateFlow<com.avoqado.pos.tables.data.LealtadLeida?> =
+        combine(_lectura, _check, _chequeAlDia) { leida, cuenta, alDia -> if (alDia) leida.paraLaCuenta(cuenta) else null }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /** El saldo que se puede ofrecer (ver [lecturaVigente]). */
+    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> =
+        lecturaVigente.map { it?.lealtad }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /** Por qué falló ESA lectura (null = no falló o todavía no hay). Decide el motivo del botón gris: sin red no es «agrega el cliente». */
+    val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> =
+        lecturaVigente.map { it?.fallo }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /**
+     * Al tocar «Recompensas» y al volver la red (el WiFi, o sólo el servidor): el saldo pudo gastarse y la clienta de la cuenta pudo
+     * cambiar en otra caja. Se olvida el saldo (y cualquier lectura pendiente) y se relee la cuenta primero; al llegar al día, `loadCheck`
+     * relee el saldo de la clienta que tiene ahora. El diálogo sólo pinta esa lectura fresca (Codex android r3 #2, r4 #1, r5 #1, r6 #1).
+     * Una cuenta abierta sin red en este aparato (provisional) todavía no existe en el servidor: no tiene saldo que leer.
+     */
+    fun releerRecompensas() {
         val session = tableSession.current() ?: return
         olvidarLealtad()
         if (!session.isProvisional) loadCheck()
@@ -1667,9 +1686,11 @@ class TableOrderViewModel @Inject constructor(
 
     private fun olvidarLealtad() {
         lecturaDeLealtad++
-        _loyalty.value = null
-        _loyaltyFallo.value = null
+        _lectura.value = null
     }
+
+    /** La cuenta (orden, clienta, versión) que ya se volvió a leer por un «máximo $0» que la contradecía: una sola vez por cuenta. */
+    private var releidaPorMaximoCero: Triple<String, String, Int?>? = null
 
     /** La lectura del saldo más nueva: una respuesta vieja (la que se colgó sin red) no pisa a la que llegó después. */
     private var lecturaDeLealtad = 0
@@ -1682,22 +1703,29 @@ class TableOrderViewModel @Inject constructor(
         val customerId = cuenta?.customerId
         val lectura = ++lecturaDeLealtad
         if (cuenta == null || customerId.isNullOrBlank()) {
-            _loyalty.value = null
-            _loyaltyFallo.value = null
+            _lectura.value = null
             return
         }
+        // Un fallo es de SU lectura: al empezar otra se borra (Codex android r6 #4). Un saldo bueno se queda mientras llega el nuevo.
+        if (_lectura.value?.fallo != null) _lectura.value = null
+        val llave = Triple(session.orderId, customerId, cuenta.version)
         viewModelScope.launch {
             val leido = repository.getCustomerLoyalty(vId, customerId, session.orderId)
             if (lectura != lecturaDeLealtad) return@launch
             leido.fold(
                 onSuccess = {
+                    if (com.avoqado.pos.tables.data.maximoCeroContradiceLaCuenta(it, cuenta) && releidaPorMaximoCero != llave) {
+                        releidaPorMaximoCero = llave
+                        releerRecompensas()
+                        return@launch
+                    }
                     // Etiquetado con la cuenta que se pidió: si para entonces se ve otra, no se ofrece (Codex android r4 #1).
-                    _loyalty.value = com.avoqado.pos.tables.data.LealtadLeida(session.orderId, customerId, cuenta.version, it)
-                    _loyaltyFallo.value = null
+                    _lectura.value = com.avoqado.pos.tables.data.LealtadLeida(session.orderId, customerId, cuenta.version, it)
                 },
                 onFailure = {
-                    _loyalty.value = null
-                    _loyaltyFallo.value = com.avoqado.pos.core.data.network.FalloDeLectura.de(it)
+                    _lectura.value = com.avoqado.pos.tables.data.LealtadLeida(
+                        session.orderId, customerId, cuenta.version, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it),
+                    )
                 },
             )
         }
@@ -1718,7 +1746,7 @@ class TableOrderViewModel @Inject constructor(
             mutarCuenta(vId, session) { mutar { repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points)  }}.fold(
                 onSuccess = {
                     _actionMessage.value = "Recompensa aplicada — $points puntos"
-                    loadLoyalty()
+                    // El saldo nuevo lo relee la recarga de la cuenta que hace `mutar` al terminar (con la versión nueva).
                     repository.refresh(vId)
                 },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")) },

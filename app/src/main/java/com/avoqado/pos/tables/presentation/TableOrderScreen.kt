@@ -189,12 +189,9 @@ fun TableOrderScreen(
     )
     val recompensasSinRed =
         !recompensasEnLinea || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
-    // El aviso que dejó un toque al botón gris se queda en pantalla: si el motivo cambia, dice el nuevo (Codex android r5 #2).
-    var motivoRecompensasVisto by remember { mutableStateOf(motivoRecompensas) }
-    LaunchedEffect(motivoRecompensas) {
-        viewModel.renovarAvisoDeRecompensas(motivoRecompensasVisto, motivoRecompensas)
-        motivoRecompensasVisto = motivoRecompensas
-    }
+    // El aviso que dejó un toque al botón gris se queda en pantalla: si el motivo cambia, dice el nuevo. El VM sabe que el aviso es
+    // de Recompensas, así que también se renueva al recrear la pantalla (Codex android r5 #2, r6 #5).
+    LaunchedEffect(motivoRecompensas) { viewModel.renovarAvisoDeRecompensas(motivoRecompensas) }
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
@@ -253,17 +250,11 @@ fun TableOrderScreen(
     var showTimeClock by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
-    // Cada vez que vuelve la red (el WiFi, o sólo el servidor), el saldo se relee SIEMPRE: el que no se pudo leer y también el que se
-    // leyó bien, que pudo gastarse en otra caja; si la cuenta nunca llegó, primero la cuenta. Mientras llega, «Leyendo…»; el diálogo
-    // abierto se cierra (Codex android r2 #2 y #3, r3 #2).
+    // Cada vez que vuelve la red (el WiFi, o sólo el servidor) se relee la cuenta y después el saldo: el saldo pudo gastarse y la
+    // clienta cambiar en otra caja. Mientras llega, «Leyendo…», también en el diálogo abierto (Codex android r2 #2 y #3, r5 #1).
     LaunchedEffect(Unit) {
         kotlinx.coroutines.flow.combine(viewModel.isConnected, viewModel.isServerReachable) { red, servidor -> red && servidor }
-            .distinctUntilChanged().drop(1).collect { enLinea ->
-                if (enLinea) {
-                    showRewards = false
-                    viewModel.alVolverLaRed()
-                }
-            }
+            .distinctUntilChanged().drop(1).collect { enLinea -> if (enLinea) viewModel.releerRecompensas() }
     }
     var showCheckSwitcher by remember { mutableStateOf(false) }
     var pendingSwitchTarget by remember { mutableStateOf<com.avoqado.pos.tables.data.OpenCheckSummary?>(null) }
@@ -575,13 +566,14 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
-                                onRecompensas = { showRewards = true },
+                                onRecompensas = { showRewards = true; viewModel.releerRecompensas() },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = motivoRecompensas == null,
                                 rewardsBlockedReason = motivoRecompensas,
                                 rewardsBlockedByConnection = recompensasSinRed,
+                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); if (cuentaSinLeer) viewModel.loadCheck() },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -761,13 +753,14 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
-                                onRecompensas = { showRewards = true },
+                                onRecompensas = { showRewards = true; viewModel.releerRecompensas() },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = motivoRecompensas == null,
                                 rewardsBlockedReason = motivoRecompensas,
                                 rewardsBlockedByConnection = recompensasSinRed,
+                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); if (cuentaSinLeer) viewModel.loadCheck() },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -1270,18 +1263,19 @@ fun TableOrderScreen(
     }
 
     if (showRewards) {
-        loyalty?.let { l ->
-            RewardsDialog(
-                loyalty = l,
-                enLinea = recompensasEnLinea,
-                onDismiss = { showRewards = false },
-                onRedeem = { pts ->
-                    showRewards = false
-                    viewModel.redeemPoints(pts)
-                    panelTab = PanelTab.CUENTA
-                },
-            )
-        }
+        // El diálogo pinta sólo la lectura fresca que pidió el toque (cuenta y después saldo); mientras, el motivo («Leyendo…», «Sin
+        // conexión…», «No se pudo leer…»), nunca datos viejos (Codex android r6 #1).
+        RewardsDialog(
+            loyalty = loyalty,
+            motivo = motivoRecompensas,
+            enLinea = recompensasEnLinea,
+            onDismiss = { showRewards = false },
+            onRedeem = { pts ->
+                showRewards = false
+                viewModel.redeemPoints(pts)
+                panelTab = PanelTab.CUENTA
+            },
+        )
     }
 
     if (showSortCartDialog) {
@@ -2453,6 +2447,8 @@ internal fun TableActionsPanel(
     hasLoyalty: Boolean = false,
     rewardsBlockedReason: String? = null,
     rewardsBlockedByConnection: Boolean = false,
+    /** El toque al botón gris de «Recompensas»: su aviso se marca en el VM para renovarse (Codex android r6 #5). */
+    onRewardsBlocked: (String) -> Unit = onBlocked,
     printBlockedReason: String? = null,
 ) {
     val motivoPreCuenta = motivoPreCuentaEnPanel(hasSent,printBlockedReason)
@@ -2627,7 +2623,7 @@ internal fun TableActionsPanel(
                 blockedReason = rewardsBlockedReason
                     ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
                 blockedByConnection = rewardsBlockedByConnection,
-                onBlocked = onBlocked,
+                onBlocked = onRewardsBlocked,
                 onClick = onRecompensas,
                 modifier = Modifier.weight(1f),
             )
@@ -3423,67 +3419,72 @@ private fun ServiceChargesDialog(
 
 @Composable
 private fun RewardsDialog(
-    loyalty: com.avoqado.pos.tables.data.CustomerLoyalty,
+    loyalty: com.avoqado.pos.tables.data.CustomerLoyalty?,
+    motivo: String?,
     enLinea: Boolean,
     onDismiss: () -> Unit,
     onRedeem: (Int) -> Unit,
 ) {
-    // Arranca en el máximo canjeable: es lo que el mesero pide casi siempre.
-    var points by remember { mutableStateOf(loyalty.maxRedeemablePoints) }
-    val step = loyalty.minPointsRedeem.coerceAtLeast(1)
-    val value = loyalty.valorDelCanje(points)
+    // Arranca en el máximo canjeable de ESTA lectura: cada lectura nueva vuelve a empezar ahí.
+    var points by remember(loyalty) { mutableStateOf(loyalty?.maxRedeemablePoints ?: 0) }
+    val step = (loyalty?.minPointsRedeem ?: 0).coerceAtLeast(1)
 
     AvoqadoDialog(
         title = "Recompensas",
-        description = "${loyalty.customerName ?: "Cliente"} · ${loyalty.balance} puntos disponibles, valen ${money(loyalty.balanceValue)}",
+        description = loyalty?.let { "${it.customerName ?: "Cliente"} · ${it.balance} puntos disponibles, valen ${money(it.balanceValue)}" }
+            ?: motivo.orEmpty(),
         onDismiss = onDismiss,
         actionButton = {
             PrimaryButton(
                 text = "Canjear",
                 onClick = { onRedeem(points) },
-                // Sin red se apaga también con el diálogo ya abierto: no ofrece lo que se va a rechazar (Codex android r2 #4).
-                enabled = loyalty.puedeCanjear(points, enLinea),
+                // Sólo con la lectura fresca de ESTA cuenta y sin motivo para no canjear: sin red, programa apagado, pocos puntos…
+                // (Codex android r2 #4, r6 #1 y #3).
+                enabled = motivo == null && loyalty?.puedeCanjear(points, enLinea) == true,
                 fullWidth = true,
             )
         },
     ) {
             Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    IconButton(onClick = { points = (points - step).coerceAtLeast(0) }) {
-                        Icon(Icons.Default.Remove, contentDescription = "Menos puntos")
+                if (loyalty != null && loyalty.canRedeem) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        IconButton(onClick = { points = (points - step).coerceAtLeast(0) }) {
+                            Icon(Icons.Default.Remove, contentDescription = "Menos puntos")
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("$points pts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = "− ${money(loyalty.valorDelCanje(points))} en la cuenta",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = { points = (points + step).coerceAtMost(loyalty.maxRedeemablePoints) }) {
+                            Icon(Icons.Default.Add, contentDescription = "Más puntos")
+                        }
                     }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("$points pts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            text = "− ${money(value)} en la cuenta",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = { points = (points + step).coerceAtMost(loyalty.maxRedeemablePoints) }) {
-                        Icon(Icons.Default.Add, contentDescription = "Más puntos")
-                    }
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                if (!enLinea) {
-                    // Sin red es un estado normal, no un error: mismo color que la nota de abajo, nunca rojo.
+                if (loyalty != null && motivo != null) {
+                    // El motivo de ahora (sin red, pocos puntos…). Sin red es un estado normal: mismo color que la nota, nunca rojo.
                     Text(
-                        text = com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED,
+                        text = motivo,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
                 }
-                Text(
-                    text = "Mínimo ${loyalty.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (loyalty != null) {
+                    Text(
+                        text = "Mínimo ${loyalty.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
     }
 }

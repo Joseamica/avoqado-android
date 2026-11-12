@@ -64,31 +64,34 @@ class TableOrderRecompensasTest {
         )
     }
 
-    private fun cuentaDe(cliente: String, version: Int) {
-        coEvery { repository.getOrderDetail(any(), any()) } returns
-            Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", customerId = cliente, version = version, items = emptyList()))
+    private fun cuentaDe(cliente: String, version: Int, subtotal: Double = 100.0) {
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(cuenta(cliente, version, subtotal))
     }
 
+    private fun cuenta(cliente: String, version: Int, subtotal: Double = 100.0) =
+        OrderDetail(id = "o1", orderNumber = "ORD-1", customerId = cliente, version = version, subtotal = subtotal, items = emptyList())
+
+    private fun saldo(cliente: String, puntos: Int) =
+        CustomerLoyalty(customerId = cliente, active = true, balance = puntos, redemptionRate = 0.10, balanceValue = puntos * 0.10,
+            minPointsRedeem = 10, maxRedeemablePoints = puntos, maxRedeemableValue = puntos * 0.10, canRedeem = true)
+
     private fun saldoDe(cliente: String, puntos: Int) {
-        coEvery { repository.getCustomerLoyalty(any(), cliente, any()) } returns Result.success(
-            CustomerLoyalty(customerId = cliente, active = true, balance = puntos, redemptionRate = 0.10, maxRedeemablePoints = puntos, canRedeem = true),
-        )
+        coEvery { repository.getCustomerLoyalty(any(), cliente, any()) } returns Result.success(saldo(cliente, puntos))
     }
 
     @Test
-    fun `al volver la red se relee la cuenta antes que el saldo - el cambio de clienta de otra caja se ve (Codex android r5 1)`() = runTest {
+    fun `al tocar Recompensas (y al volver la red) se relee la cuenta y DESPUÉS el saldo de su clienta (Codex android r5 1, r6 1)`() = runTest {
         val s = vm()
         cuentaDe("ana", version = 3); saldoDe("ana", 500); saldoDe("beto", 50)
         s.loadCheck(); advanceUntilIdle()
         assertEquals("ana", s.loyalty.value?.customerId)
 
-        // Sin red, otra caja cambió la clienta de la cuenta a Beto. Vuelve la red sin salir de la pantalla.
+        // Otra caja cambió la clienta de la cuenta a Beto (con o sin red). Tocar «Recompensas» relee todo.
         cuentaDe("beto", version = 4)
-        s.alVolverLaRed(); advanceUntilIdle()
+        s.releerRecompensas(); advanceUntilIdle()
 
         assertEquals("beto", s.loyalty.value?.customerId)
         assertEquals(50, s.loyalty.value?.balance)
-        // Los puntos de Ana se leyeron una sola vez (al abrir); al volver la red, primero la cuenta y luego el saldo de Beto.
         coVerify(exactly = 1) { repository.getCustomerLoyalty(any(), "ana", any()) }
         coVerifyOrder {
             repository.getOrderDetail(any(), any())
@@ -98,40 +101,100 @@ class TableOrderRecompensasTest {
     }
 
     @Test
-    fun `al volver la red, mientras llega la cuenta, no se ofrece el saldo viejo`() = runTest {
+    fun `al releer, mientras llega la cuenta, no se ofrece el saldo viejo`() = runTest {
         val s = vm()
         cuentaDe("ana", version = 3); saldoDe("ana", 500)
         s.loadCheck(); advanceUntilIdle()
         assertEquals("ana", s.loyalty.value?.customerId)
-        // La cuenta tarda en llegar al volver la red.
-        coEvery { repository.getOrderDetail(any(), any()) } coAnswers {
-            kotlinx.coroutines.delay(1_000)
-            Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", customerId = "ana", version = 3, items = emptyList()))
-        }
-        s.alVolverLaRed(); runCurrent()
+        coEvery { repository.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.delay(1_000); Result.success(cuenta("ana", 3)) }
+        s.releerRecompensas(); runCurrent()
         assertNull(s.loyalty.value)
         advanceUntilIdle()
         assertEquals("ana", s.loyalty.value?.customerId)
     }
 
     @Test
-    fun `el aviso que dejó el botón gris se renueva con el motivo nuevo (Codex android r5 2)`() {
-        assertEquals("pocos", avisoDeRecompensasAlDia(aviso = "sin red", motivoAnterior = "sin red", motivoNuevo = "pocos"))
-        // Ya se puede canjear: el aviso se va.
-        assertNull(avisoDeRecompensasAlDia(aviso = "sin red", motivoAnterior = "sin red", motivoNuevo = null))
-        // El aviso de OTRO botón no se toca.
-        assertEquals("otro", avisoDeRecompensasAlDia(aviso = "otro", motivoAnterior = "sin red", motivoNuevo = "pocos"))
-        assertNull(avisoDeRecompensasAlDia(aviso = null, motivoAnterior = "sin red", motivoNuevo = "pocos"))
+    fun `cualquier recarga de la cuenta en vuelo (una mutación, un acuse) deja de ofrecer el saldo hasta que llega (Codex android r6 2)`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        assertEquals("ana", s.loyalty.value?.customerId)
+        coEvery { repository.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.delay(1_000); Result.success(cuenta("ana", 4, subtotal = 1.0)) }
+        saldoDe("ana", 10)
+        s.loadCheck(); runCurrent()
+        assertNull(s.loyalty.value)
+        advanceUntilIdle()
+        assertEquals(10, s.loyalty.value?.balance)
     }
 
     @Test
-    fun `el VM renueva sólo el aviso de Recompensas`() = runTest {
+    fun `si la recarga de la cuenta falla no se ofrece saldo ni se lee el de la clienta vieja (Codex android r6 2)`() = runTest {
         val s = vm()
-        s.showBlockedReason("sin red")
-        s.renovarAvisoDeRecompensas(motivoAnterior = "sin red", motivoNuevo = "pocos")
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        s.releerRecompensas(); advanceUntilIdle()
+        assertNull(s.loyalty.value)
+        coVerify(exactly = 1) { repository.getCustomerLoyalty(any(), "ana", any()) }
+    }
+
+    @Test
+    fun `el fallo de una lectura es de esa lectura - se borra al empezar otra y no se muestra en otra cuenta (Codex android r6 4)`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3)
+        coEvery { repository.getCustomerLoyalty(any(), "ana", any()) } returns Result.failure(IllegalStateException("403"))
+        s.loadCheck(); advanceUntilIdle()
+        assertEquals(com.avoqado.pos.core.data.network.FalloDeLectura.SERVIDOR, s.loyaltyFallo.value)
+
+        // Otra cuenta (otra clienta): mientras llega su saldo, no se dice «no se pudo leer».
+        cuentaDe("beto", version = 4)
+        coEvery { repository.getCustomerLoyalty(any(), "beto", any()) } coAnswers { kotlinx.coroutines.delay(1_000); Result.success(saldo("beto", 50)) }
+        s.loadCheck(); runCurrent()
+        assertNull(s.loyaltyFallo.value)
+        advanceUntilIdle()
+        assertEquals("beto", s.loyalty.value?.customerId)
+    }
+
+    @Test
+    fun `máximo 0 sin pagos y con algo que descontar - relee la cuenta UNA vez (Codex android r6 7)`() = runTest {
+        val s = vm()
+        // La GET de puntos llegó cuando otra caja ya había cambiado la clienta: el SERVIDOR (D650) contesta máximo 0.
+        cuentaDe("ana", version = 3)
+        coEvery { repository.getCustomerLoyalty(any(), "ana", any()) } returns Result.success(
+            saldo("ana", 500).copy(maxRedeemablePoints = 0, maxRedeemableValue = 0.0, canRedeem = false),
+        )
+        saldoDe("beto", 50)
+        coEvery { repository.getOrderDetail(any(), any()) } returnsMany listOf(Result.success(cuenta("ana", 3)), Result.success(cuenta("beto", 4)))
+        s.loadCheck(); advanceUntilIdle()
+        assertEquals("beto", s.loyalty.value?.customerId)
+        coVerify(exactly = 2) { repository.getOrderDetail(any(), any()) }
+    }
+
+    @Test
+    fun `si el máximo 0 se repite con la misma cuenta, no relee en ciclo`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3)
+        coEvery { repository.getCustomerLoyalty(any(), "ana", any()) } returns Result.success(
+            saldo("ana", 500).copy(maxRedeemablePoints = 0, maxRedeemableValue = 0.0, canRedeem = false),
+        )
+        s.loadCheck(); advanceUntilIdle()
+        coVerify(exactly = 2) { repository.getOrderDetail(any(), any()) }
+        assertEquals(0, s.loyalty.value?.maxRedeemablePoints)
+    }
+
+    @Test
+    fun `el aviso de Recompensas se marca en el VM y se renueva aunque la pantalla se recree (Codex android r5 2, r6 5)`() = runTest {
+        val s = vm()
+        s.mostrarAvisoDeRecompensas("sin red")
+        // La pantalla se recreó: sólo conoce el motivo de ahora.
+        s.renovarAvisoDeRecompensas("pocos")
         assertEquals("pocos", s.blockedNotice.value)
+        // Ya se puede canjear: el aviso se va.
+        s.renovarAvisoDeRecompensas(null)
+        assertNull(s.blockedNotice.value)
+        // El aviso de OTRO botón no se toca.
         s.showBlockedReason("otro botón")
-        s.renovarAvisoDeRecompensas(motivoAnterior = "pocos", motivoNuevo = null)
+        s.renovarAvisoDeRecompensas("pocos")
         assertEquals("otro botón", s.blockedNotice.value)
     }
 }

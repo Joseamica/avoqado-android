@@ -15,7 +15,7 @@ class RecompensasDeLaCuentaTest {
 
     @Test
     fun `misma cuenta, mismo cliente y misma versión - se ofrece`() {
-        assertEquals(saldo, leidaEnA.paraLaCuenta(OrderDetail(id = "orden-A", customerId = "cli-A", version = 3)))
+        assertEquals(saldo, leidaEnA.paraLaCuenta(OrderDetail(id = "orden-A", customerId = "cli-A", version = 3))?.lealtad)
     }
 
     @Test

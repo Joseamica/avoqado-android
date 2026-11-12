@@ -440,20 +440,38 @@ data class CustomerLoyalty(
      * con red: el canje es sólo en línea, y el diálogo ya abierto al perderla no ofrece lo que se va a rechazar (Codex android r2 #4).
      */
     fun puedeCanjear(points: Int, enLinea: Boolean = true): Boolean =
-        enLinea && points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
+        // Con el programa apagado o si el SERVIDOR dice que no se puede, aunque el rango sea bueno (Codex android r6 #3).
+        enLinea && active && canRedeem &&
+            points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
 }
 
 /**
- * Un saldo de puntos y la cuenta para la que se leyó (orden, cliente y versión de la cuenta). La GET calcula el máximo contra ESA
- * cuenta (subtotal − descuentos, abono, pagada), así que sólo vale para ella: si la cuenta que se ve cambió —otra cuenta de la mesa,
- * otro cliente, otra versión—, no se ofrece y se lee de nuevo (Codex android r4 #1, pasada completa de «saldo de otra cuenta»).
+ * Una lectura del saldo de puntos —el saldo, o por qué falló— y la cuenta para la que se hizo (orden, clienta y versión de la cuenta).
+ * La GET calcula el máximo contra ESA cuenta (subtotal − descuentos, abono, pagada), así que sólo vale para ella: si la cuenta que se
+ * ve cambió —otra cuenta de la mesa, otra clienta, otra versión—, ni el saldo ni el fallo se muestran (Codex android r4 #1, r6 #4).
  */
-data class LealtadLeida(val orderId: String, val customerId: String, val version: Int?, val lealtad: CustomerLoyalty)
+data class LealtadLeida(
+    val orderId: String,
+    val customerId: String,
+    val version: Int?,
+    val lealtad: CustomerLoyalty?,
+    val fallo: com.avoqado.pos.core.data.network.FalloDeLectura? = null,
+)
 
-/** El saldo leído, sólo si es de la cuenta que se ve; si no, null («Leyendo los puntos del cliente…»). */
-fun LealtadLeida?.paraLaCuenta(cuenta: OrderDetail?): CustomerLoyalty? =
+/** La lectura, sólo si es de la cuenta que se ve; si no, null («Leyendo los puntos del cliente…»). */
+fun LealtadLeida?.paraLaCuenta(cuenta: OrderDetail?): LealtadLeida? =
     this?.takeIf { cuenta != null && it.orderId == cuenta.id && it.customerId == cuenta.customerId && it.version == cuenta.version }
-        ?.lealtad
+
+/**
+ * La GET dijo «máximo $0» pero la cuenta, recién leída, dice que no hay abono, ni está pagada o anulada, y queda algo por descontar;
+ * y la clienta tiene puntos que sí valen dinero y llegan al mínimo. Pasa si otra caja cambió la clienta entre la lectura de la cuenta y
+ * la del saldo (el SERVIDOR ya no deja canjear a una clienta que no es la de la cuenta, D650): se vuelve a leer la cuenta una vez
+ * antes de decir «tiene un pago registrado» (Codex android r6 #7). La regla de la cuenta es la del SERVIDOR (`getCustomerLoyalty`).
+ */
+fun maximoCeroContradiceLaCuenta(lealtad: CustomerLoyalty, cuenta: OrderDetail): Boolean =
+    lealtad.maxRedeemableValue <= 0 && lealtad.active && lealtad.balance > 0 && lealtad.balance >= lealtad.minPointsRedeem &&
+        lealtad.balanceValue > 0 && cuenta.payments.isEmpty() && cuenta.paymentStatus != "PAID" && cuenta.paymentStatus != "PARTIAL" &&
+        cuenta.status != "CANCELLED" && cuenta.status != "DELETED" && cuenta.subtotal - cuenta.discountAmount > 0
 
 /** El texto de «Recompensas» sin red: el del botón gris y el del diálogo abierto. */
 const val RECOMPENSAS_SIN_RED = "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
