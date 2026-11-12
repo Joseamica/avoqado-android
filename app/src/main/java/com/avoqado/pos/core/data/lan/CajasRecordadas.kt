@@ -28,16 +28,26 @@ import kotlinx.serialization.json.Json
  *
  * Familia B (Codex r4 #3): el disco es la ÚNICA verdad de la sucursal en el proceso. Toda mutación toma el candado común, lee el disco,
  * aplica sólo su cambio y guarda ([conElDisco]); nada se escribe desde un mapa guardado en memoria. Sólo escribe el encendido vigente.
+ *
+ * Frescura (Codex r5 #1): cada entrada, en disco ([Recordada.vistoEn]) y en la lista ([EnLista.en]), lleva la hora en que se OBSERVÓ esa
+ * dirección (la foto de NSD, la respuesta de `quien`), no la hora en que se escribe. Toda escritura aplica sólo si su observación no es
+ * más vieja que lo guardado de esa caja: un éxito que esperó a otra respuesta, o una foto que esperó a confirmar las perdidas, ya no
+ * reponen una dirección vieja.
  */
 class CajasRecordadas(
     private val cache: PayloadCache,
     private val venueId: String,
     private val yo: String,
     private val preguntarQuien: suspend (LanPeer) -> LeaseResponse? = { LeaseClient().quien(it) },
+    /** Reloj de pared (lo que se guarda sobrevive al reinicio; frescura y «olvidar a las 24 h»). */
     private val ahora: () -> Long = System::currentTimeMillis,
 ) {
+    /** [vistoEn]: cuándo se OBSERVÓ esta dirección (frescura), no cuándo se escribió. */
     @Serializable
     data class Recordada(val host: String, val port: Int, val venue: String, val vistoEn: Long)
+
+    /** Una caja en la lista por TCP y cuándo se observó ([en], frescura). */
+    private data class EnLista(val peer: LanPeer, val en: Long)
 
     @Serializable
     data class Disco(val cajas: Map<String, Recordada> = emptyMap())
@@ -46,18 +56,32 @@ class CajasRecordadas(
     private val fallas = HashMap<String, Int>()
 
     /** Las que hoy están en la lista por TCP. Las lee el transporte desde cualquier hilo. */
-    private val enLista = ConcurrentHashMap<String, LanPeer>()
+    private val enLista = ConcurrentHashMap<String, EnLista>()
 
     init {
         vigentes[venueId] = this // Codex r3 #3: el encendido nuevo retira al anterior de la misma sucursal (ya no escribe)
     }
 
     /** Lo que se publica además de lo que ve NSD (lo de NSD manda). */
-    fun porTcp(ajenos: List<LanPeer>): List<LanPeer> = enLista.values.filter { p -> ajenos.none { it.deviceId == p.deviceId } }
+    fun porTcp(ajenos: List<LanPeer>): List<LanPeer> = enLista.values.map { it.peer }.filter { p -> ajenos.none { it.deviceId == p.deviceId } }
 
-    /** NSD dejó de verlas: siguen en la lista (con lo último que NSD dijo) hasta que [confirmarPerdidas] diga. No espera nada. */
-    fun sostener(perdidas: List<LanPeer>) {
-        for (p in perdidas) if (cuenta(p)) enLista[p.deviceId] = p
+    /**
+     * NSD dejó de verlas: siguen en la lista (con lo último que NSD dijo, observado en [en]) hasta que [confirmarPerdidas] diga. No espera
+     * nada.
+     */
+    fun sostener(perdidas: List<LanPeer>, en: Long = ahora()) {
+        for (p in perdidas) if (cuenta(p)) enLista.merge(p.deviceId, EnLista(p, en)) { viejo, nuevo -> if (esMasVieja(nuevo.en, viejo.en)) viejo else nuevo }
+    }
+
+    /**
+     * Frescura (Codex r5 #1, ingreso de `TransporteLan.alCambiarAjenos`): NSD cambió. Las perdidas se sostienen YA y la foto [lista] queda
+     * fechada AHORA, antes de esperar a confirmar las perdidas: si mientras tanto otra foto más nueva se guarda, ésta ya no la pisa. Regresa
+     * el trabajo que el transporte corre en su scope.
+     */
+    fun alCambiarNsd(perdidas: List<LanPeer>, lista: List<LanPeer>): suspend () -> Unit {
+        val en = ahora()
+        sostener(perdidas, en)
+        return { if (perdidas.isNotEmpty()) confirmarPerdidas(perdidas); recordar(lista, en) }
     }
 
     /**
@@ -76,8 +100,8 @@ class CajasRecordadas(
         }
     }
 
-    /** Lo que NSD ve: recordado (sin red; si el disco no se pudo leer, no se escribe nada). */
-    suspend fun recordar(vistas: List<LanPeer>) = conElDisco { r -> r?.let { anotarVistas(it, vistas) } }
+    /** Lo que NSD ve, observado en [en]: recordado (sin red; si el disco no se pudo leer, no se escribe nada). */
+    suspend fun recordar(vistas: List<LanPeer>, en: Long = ahora()) = conElDisco { r -> r?.let { anotarVistas(it, vistas, en) } }
 
     /**
      * La revisión (≤ 1 min): recuerda lo que NSD ve y pregunta, en paralelo y sin candado, a las que NSD no ve. Ronda 1, Menor 4: a una
@@ -85,15 +109,16 @@ class CajasRecordadas(
      * las mesas de esa caja trabajaban en isla mientras tanto). A una recordada que no está en la lista, una sola pregunta.
      */
     suspend fun revisar(vistas: List<LanPeer>) {
+        val fotoEn = ahora() // la foto de NSD se tomó al llamar, antes de esperar el candado
         val foto = conElDisco { r ->
             if (r != null) {
-                anotarVistas(r, vistas)
+                anotarVistas(r, vistas, fotoEn)
                 val t = ahora()
                 r.entries.removeAll { (did, c) -> (t - c.vistoEn >= OLVIDAR_MS).also { if (it) { enLista.remove(did); fallas.remove(did) } } }
             }
             // La dirección de la lista es la más nueva (lo último que dijo NSD o el `quien`); si no, la del disco.
             val direcciones = LinkedHashMap<String, Pair<LanPeer, Boolean>>()
-            enLista.forEach { (did, p) -> direcciones[did] = p to true }
+            enLista.forEach { (did, e) -> direcciones[did] = e.peer to true }
             r?.forEach { (did, c) -> direcciones.putIfAbsent(did, LanPeer(did, c.host, c.port) to false) }
             direcciones.filterKeys { did -> vistas.none { it.deviceId == did } }
         }
@@ -113,36 +138,53 @@ class CajasRecordadas(
      * Sólo el disco: lo que NSD ve ya lo filtra [porTcp], y [vistas] puede ser una foto vieja (NSD la pudo perder un instante después y
      * [sostener] ya la puso en la lista: quitarla aquí la tiraría hasta la siguiente revisión).
      */
-    private fun anotarVistas(r: MutableMap<String, Recordada>, vistas: List<LanPeer>) {
-        for (p in vistas) if (cuenta(p)) fechar(r, p.deviceId, p.host, p.port)
+    private fun anotarVistas(r: MutableMap<String, Recordada>, vistas: List<LanPeer>, en: Long) {
+        for (p in vistas) if (cuenta(p)) fechar(r, p.deviceId, p.host, p.port, en)
     }
 
-    /** Ronda 1, Menor 5a: se vuelve a escribir sólo si cambió la dirección o la fecha guardada tiene más de [REFECHAR_MS]. */
-    private fun fechar(r: MutableMap<String, Recordada>, did: String, host: String, port: Int) {
-        val t = ahora()
+    /**
+     * Ronda 1, Menor 5a: se vuelve a escribir sólo si cambió la dirección o la fecha guardada tiene más de [REFECHAR_MS]. Frescura: una
+     * observación más vieja que la guardada no escribe nada.
+     */
+    private fun fechar(r: MutableMap<String, Recordada>, did: String, host: String, port: Int, en: Long) {
         val antes = r[did]
-        if (antes == null || antes.host != host || antes.port != port || t - antes.vistoEn > REFECHAR_MS) r[did] = Recordada(host, port, venueId, t)
+        if (antes != null && esMasVieja(en, antes.vistoEn)) return
+        if (antes == null || antes.host != host || antes.port != port || en - antes.vistoEn > REFECHAR_MS) r[did] = Recordada(host, port, venueId, en)
     }
 
+    /**
+     * Frescura: [en] es más vieja que [guardada]. Una hora guardada en el futuro (el reloj del aparato se atrasó después) no frena nada: si
+     * no, ninguna observación nueva aplicaría hasta que el reloj la alcance.
+     */
+    private fun esMasVieja(en: Long, guardada: Long): Boolean = en < guardada && guardada <= ahora()
+
+    /** La observación más nueva que se tiene de esa caja, en la lista o en el disco. */
+    private fun masNueva(did: String, r: Map<String, Recordada>?): Long =
+        maxOf(enLista[did]?.en ?: Long.MIN_VALUE, r?.get(did)?.vistoEn ?: Long.MIN_VALUE)
+
+    /** Lo que contestó una dirección y cuándo ([en]: al llegar la respuesta, o al agotarse su plazo). */
     private sealed interface Sondeo {
-        data class Es(val peer: LanPeer) : Sondeo
-        data object Otra : Sondeo
-        data object NoContesta : Sondeo
+        val en: Long
+        data class Es(val peer: LanPeer, override val en: Long) : Sondeo
+        data class Otra(override val en: Long) : Sondeo
+        data class NoContesta(override val en: Long) : Sondeo
     }
 
     /** Dos `quien` seguidos si el primero no contesta (una respuesta, aunque sea de otro, no se repite: no es la red). */
     private suspend fun hastaDos(did: String, host: String, port: Int): List<Sondeo> {
         val primero = sondear(did, host, port)
-        return if (primero == Sondeo.NoContesta) listOf(primero, sondear(did, host, port)) else listOf(primero)
+        return if (primero is Sondeo.NoContesta) listOf(primero, sondear(did, host, port)) else listOf(primero)
     }
 
     private suspend fun sondear(did: String, host: String, port: Int): Sondeo {
-        val r = preguntarQuien(LanPeer(did, host, port)) ?: return Sondeo.NoContesta
+        val r = preguntarQuien(LanPeer(did, host, port))
+        val en = ahora()
+        if (r == null) return Sondeo.NoContesta(en)
         val txt = r.txt
         // App vieja («Operación desconocida»), otro aparato u otro negocio en esa dirección: no cuenta por TCP.
-        if (r.status != LeaseProtocol.STATUS_OK || txt == null) return Sondeo.Otra
-        if (txt[LeaseProtocol.TXT_DEVICE_ID] != did || txt[LeaseProtocol.TXT_VENUE_ID] != venueId) return Sondeo.Otra
-        return LanTxt.peerDesde(txt, host, port, yo, venueId)?.let { Sondeo.Es(it) } ?: Sondeo.Otra
+        if (r.status != LeaseProtocol.STATUS_OK || txt == null) return Sondeo.Otra(en)
+        if (txt[LeaseProtocol.TXT_DEVICE_ID] != did || txt[LeaseProtocol.TXT_VENUE_ID] != venueId) return Sondeo.Otra(en)
+        return LanTxt.peerDesde(txt, host, port, yo, venueId)?.let { Sondeo.Es(it, en) } ?: Sondeo.Otra(en)
     }
 
     /** Lo que contestó la dirección [en] (su `did`, `host` y `port` son los que se preguntaron). */
@@ -153,7 +195,7 @@ class CajasRecordadas(
      * traer otra (el DHCP le cambió la IP y otro aparato tomó la vieja). Lo que no esté, no protege nada.
      */
     private fun sigueEn(r: Map<String, Recordada>?, en: LanPeer): Boolean {
-        val lista = enLista[en.deviceId]
+        val lista = enLista[en.deviceId]?.peer
         val disco = r?.get(en.deviceId)
         return (lista == null || (lista.host == en.host && lista.port == en.port)) && (disco == null || (disco.host == en.host && disco.port == en.port))
     }
@@ -165,18 +207,21 @@ class CajasRecordadas(
     private fun aplicar(r: MutableMap<String, Recordada>?, en: LanPeer, s: Sondeo) {
         val did = en.deviceId
         if (s !is Sondeo.Es && !sigueEn(r, en)) return
+        // Frescura (Codex r5 #1): lo que se observó ANTES que lo que ya se sabe de esa caja (una foto de NSD o un `quien` más nuevos) no
+        // aplica: un éxito que esperó a otra respuesta ya no repone una dirección vieja.
+        if (esMasVieja(s.en, masNueva(did, r))) return
         when (s) {
             is Sondeo.Es -> {
-                enLista[did] = s.peer
+                enLista[did] = EnLista(s.peer, s.en)
                 fallas.remove(did)
-                r?.let { fechar(it, did, s.peer.host, s.peer.port) }
+                r?.let { fechar(it, did, s.peer.host, s.peer.port, s.en) }
             }
-            Sondeo.Otra -> {
+            is Sondeo.Otra -> {
                 if (enLista.remove(did) != null) Log.i(TAG, "👋 ${did.take(6)}: en su dirección contesta otro aparato o una app vieja")
                 fallas.remove(did)
                 r?.remove(did)
             }
-            Sondeo.NoContesta -> {
+            is Sondeo.NoContesta -> {
                 val n = (fallas[did] ?: 0) + 1
                 fallas[did] = n
                 if (n >= FALLAS_PARA_SALIR && enLista.remove(did) != null) Log.i(TAG, "👋 ${did.take(6)}: no contestó por TCP $n veces seguidas")

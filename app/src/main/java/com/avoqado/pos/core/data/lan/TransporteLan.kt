@@ -350,11 +350,10 @@ class TransporteLan @Inject constructor(
         ajenos = lista
         recordadas?.let { r ->
             // D12 · tubería: la que NSD perdió sigue en la lista mientras conteste por TCP; se confirma y se recuerda en el fondo, nunca
-            // en el hilo de NSD que avisó.
-            r.sostener(perdidas)
+            // en el hilo de NSD que avisó. Frescura (Codex r5 #1): la foto se fecha AQUÍ, al avisar NSD, no al terminar de confirmar.
+            val trabajo = r.alCambiarNsd(perdidas, lista)
             scope.launch {
-                runCatching { if (perdidas.isNotEmpty()) r.confirmarPerdidas(perdidas); r.recordar(lista) }
-                    .onFailure { Log.w(TAG, "⚠️ cajas por TCP: ${it.message}") }
+                runCatching { trabajo() }.onFailure { Log.w(TAG, "⚠️ cajas por TCP: ${it.message}") }
                 publicarSiVigente(r)
             }
         }

@@ -319,4 +319,58 @@ class CajasRecordadasTest {
         CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }).revisar(emptyList()) // la app reiniciada
         assertEquals("la reconstruida tiene P y Q", setOf(n86.host, q.host), preguntadas.toSet())
     }
+
+    // MARK: - Frescura (Codex r5 #1): gana la observación más nueva, dentro del MISMO encendido
+
+    private suspend fun laReconstruidaPregunta(): List<String> {
+        val preguntadas = mutableListOf<String>()
+        CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }).revisar(emptyList()) // la app reiniciada
+        return preguntadas
+    }
+
+    /**
+     * Ingreso 1: una revisión le pregunta a P (en su dirección VIEJA, que todavía contesta) y a Q; el «sí soy yo» de P espera a que termine
+     * Q. Mientras tanto NSD trae la dirección NUEVA de P y se recuerda. Al terminar Q, el éxito viejo de P la reponía.
+     */
+    @Test fun `frescura - el éxito viejo de una revisión no repone la dirección vieja`() = runTest {
+        val q = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p -> if (p.host == q.host) retenida.await(); soy(p.deviceId) }, { hora })
+        c.recordar(listOf(n86, q)) // las dos en disco; NSD ya no las ve
+        val revision = launch { c.revisar(emptyList()) }
+        runCurrent() // P ya contestó desde la vieja; Q sigue
+        hora += 1_000
+        c.recordar(listOf(vistaPorNsd(n86.deviceId, "192.168.100.153"))) // NSD trae la nueva
+        retenida.complete(Unit)
+        revision.join()
+
+        assertEquals("192.168.100.153", enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue("la reconstruida busca la nueva", "192.168.100.153" in preguntadas)
+        assertFalse("y no la vieja", n86.host in preguntadas)
+    }
+
+    /**
+     * Ingreso 2 (`TransporteLan.alCambiarAjenos`): NSD pierde una caja y su foto trae a P en la dirección vieja; la foto se recordaba DESPUÉS
+     * de confirmar la perdida (lenta). Mientras tanto otra foto, más nueva, trae la dirección nueva de P y se guarda. La foto vieja ya no la
+     * pisa: lleva la hora en que NSD la dio, no la hora en que se escribe.
+     */
+    @Test fun `frescura - la foto de NSD que esperó a confirmar las perdidas no repone la dirección vieja`() = runTest {
+        val perdida = vistaPorNsd("otra-cccc", "192.168.100.70")
+        val retenida = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val c = CajasRecordadas(cache, v, "yo", { p -> if (p.host == perdida.host) retenida.await(); soy(p.deviceId) }, { hora })
+        c.recordar(listOf(n86, perdida))
+        val vieja = c.alCambiarNsd(perdidas = listOf(perdida), lista = listOf(n86)) // NSD: se pierde una; P sigue en la vieja
+        val tarea = launch { vieja() }
+        runCurrent() // confirmando la perdida
+        hora += 1_000
+        c.alCambiarNsd(perdidas = emptyList(), lista = listOf(vistaPorNsd(n86.deviceId, "192.168.100.153")))() // la foto nueva
+        retenida.complete(Unit)
+        tarea.join()
+
+        assertEquals("192.168.100.153", enDisco()[n86.deviceId]?.host)
+        val preguntadas = laReconstruidaPregunta()
+        assertTrue("192.168.100.153" in preguntadas)
+        assertFalse(n86.host in preguntadas)
+    }
 }
