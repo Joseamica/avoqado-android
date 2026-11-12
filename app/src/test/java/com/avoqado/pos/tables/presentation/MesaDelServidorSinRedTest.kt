@@ -184,7 +184,7 @@ class MesaDelServidorSinRedTest {
             TrabajoSinResolver(vivas.size, vivas.count { it.estado == "REJECTED" }, vivas.map { it.tipo }.toSet(), vivas.sumOf { it.importeCents ?: 0 })
         }
         every { plan.concedidaPorAvoqado(TableOrderViewModel.CODIGO_PILOTO_SIN_RED) } answers { piloto }
-        coEvery { cobros.hayPendiente(any(), any(), any()) } answers { cobroEnOtraCola }
+        coEvery { cobros.hayPendiente(any(), any(), any(), any()) } answers { cobroEnOtraCola }
         val config = mockk<PrintConfigRepository>(relaxed = true)
         every { config.getCurrentConfig() } returns PrintConfig()
         val connectivity = mockk<ConnectivityMonitor>(relaxed = true)

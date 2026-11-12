@@ -121,7 +121,8 @@ class Q15RecoveryNoticeTest {
                 .put("saldoEsperadoCents",20000).put("saldoEnElServidorCents",25000).toString())
             assertTrue(mesa.eligible())
             val avisos=com.avoqado.pos.sync.presentation.salesNoticeResultWarnings(mesa)
-            assertEquals(listOf("Campos distintos: saldo de la mesa"),avisos)
+            // La línea «Saldo esperado · saldo en el servidor» es de la mesa sin red (D5, en develop); lo que D12 cuida es que no diga «debiendo».
+            assertEquals(listOf("Campos distintos: saldo de la mesa","Saldo esperado \$200.00 · saldo en el servidor \$250.00"),avisos)
         }
     }
 
