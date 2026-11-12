@@ -505,7 +505,7 @@ class TransporteLanLoopbackTest {
         transporte.iniciar("venue-1")
         transporte.conectarHub { LeaseResponse(status = LeaseProtocol.STATUS_LEASES, leases = emptyList()) }
         val puerto = esperarPuerto()
-        val pedido = CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i")
+        val pedido = CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i", venueId = "venue-1")
         val sin = LeaseProtocol.decodeResponse(enviarLinea(puerto, LeaseProtocol.encode(pedido))!!)!!
         assertEquals("Operación desconocida: cuenta_apartar", sin.message)
         transporte.conectarCuentas({ LeaseProtocol.encode(LeaseResponse(status = LeaseProtocol.STATUS_GRANTED, caja = "Caja 1")) }, "Caja 1")

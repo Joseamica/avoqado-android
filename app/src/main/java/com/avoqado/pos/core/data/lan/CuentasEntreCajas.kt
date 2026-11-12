@@ -135,7 +135,7 @@ class CuentasEntreCajas internal constructor(
     private fun soltar(orderId: String, a: Apartado) {
         scope.launch {
             if (a.dueno == dueno.deviceId) runCatching { dueno.soltar(a.venueId, orderId, a.intento) }
-            else peerDe(a.dueno)?.let { p -> client.preguntarCuenta(p, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, orderId, a.intento, a.quien)) }
+            else peerDe(a.dueno)?.let { p -> client.preguntarCuenta(p, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, orderId, a.intento, a.quien, venueId = a.venueId)) }
         }
     }
 
@@ -212,7 +212,7 @@ class CuentasEntreCajas internal constructor(
             Puerta.Pasa(intento, esDueno = false, autorizadoEn = r.enviadoEn)
         } catch (e: Exception) {
             vivos -= intento
-            r.deviceId?.let { soltarAhora(it, orderId, intento, quien) }
+            r.deviceId?.let { soltarAhora(it, venueId, orderId, intento, quien) }
             Puerta.NoPasa(NO_SE_GUARDO)
         }
     }
@@ -270,8 +270,9 @@ class CuentasEntreCajas internal constructor(
 
     private fun peerDe(deviceId: String): LanPeer? = cajasConD().firstOrNull { it.deviceId == deviceId }
 
-    private fun pedido(op: String, orderId: String, intento: String, quien: String, enLinea: Boolean = false, subida: Boolean = false) =
-        CuentasPorLaRed.pedido(op, orderId, dueno.deviceId, dueno.nombreCaja, quien, intento, enLinea, subida)
+    /** Ronda 1 de la tubería (Menor 2): con la sucursal de la cuenta; una caja que hoy está en otra contesta error, nunca «no es mía». */
+    private fun pedido(op: String, orderId: String, intento: String, quien: String, enLinea: Boolean = false, subida: Boolean = false, venueId: String) =
+        CuentasPorLaRed.pedido(op, orderId, dueno.deviceId, dueno.nombreCaja, quien, intento, enLinea, subida, venueId)
 
     /**
      * Le pregunta a la dueña conocida, o a todas las cajas con D en paralelo (≤ 5 s cada una). Gana la primera que contesta por la cuenta;
@@ -283,7 +284,7 @@ class CuentasEntreCajas internal constructor(
         val candidatos = cajasConD().filter { conocida == null || it.deviceId == conocida.deviceId }
         if (!encendida || candidatos.isEmpty()) return DelDueno(null, conocida?.deviceId, conocida?.caja, enviado)
         val primera = CompletableDeferred<Pair<LanPeer, Respuesta>?>()
-        val req = pedido(op, orderId, intento, quien, enLinea)
+        val req = pedido(op, orderId, intento, quien, enLinea, venueId = venueId)
         val todas = candidatos.map { p ->
             scope.launch { CuentasPorLaRed.desdeCable(client.preguntarCuenta(p, req))?.let { primera.complete(p to it) } }
         }
@@ -296,8 +297,8 @@ class CuentasEntreCajas internal constructor(
         return DelDueno(r, peer.deviceId, caja, enviado)
     }
 
-    private fun soltarAhora(duena: String, orderId: String, intento: String, quien: String) {
-        scope.launch { peerDe(duena)?.let { client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, orderId, intento, quien)) } }
+    private fun soltarAhora(duena: String, venueId: String, orderId: String, intento: String, quien: String) {
+        scope.launch { peerDe(duena)?.let { client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, orderId, intento, quien, venueId = venueId)) } }
     }
 
     /** M2: una vuelta a la vez (el lazo de 10 s y el empujón de [terminar] no se pisan). */
@@ -315,7 +316,7 @@ class CuentasEntreCajas internal constructor(
                 continue
             }
             val r = if (a.dueno == dueno.deviceId) dueno.apartar(a.venueId, orden, Solicitud(a.dueno, dueno.nombreCaja, a.quien, a.intento, a.enLinea))
-            else peerDe(a.dueno)?.let { CuentasPorLaRed.desdeCable(client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_APARTAR, orden, a.intento, a.quien, a.enLinea))) }
+            else peerDe(a.dueno)?.let { CuentasPorLaRed.desdeCable(client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_APARTAR, orden, a.intento, a.quien, a.enLinea, venueId = a.venueId))) }
             // Sin respuesta se conserva (la dueña lo vence sola a los 30 s); una negativa explícita lo suelta.
             if (r != null && r != Respuesta.Concedida) apartados.remove(orden, a)
         }
@@ -345,7 +346,7 @@ class CuentasEntreCajas internal constructor(
             var acuso: String? = null
             var todasNoEsMia = true
             for (p in destinos) {
-                val r = client.preguntarCuenta(p, pedido(op, a.orderId, a.intento, a.quien, subida = visto.subida))
+                val r = client.preguntarCuenta(p, pedido(op, a.orderId, a.intento, a.quien, subida = visto.subida, venueId = venueId))
                 if (CuentasPorLaRed.acuso(r)) { acuso = p.deviceId; break }
                 if (r?.status != LeaseProtocol.STATUS_NO_ES_MIA) todasNoEsMia = false
             }

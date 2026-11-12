@@ -139,6 +139,8 @@ data class LeaseRequest(
     val caja: String = "",
     val enLinea: Boolean = false,
     val subida: Boolean = false,
+    /** D12 · tubería, ronda 1 (Menor 2): la sucursal de la cuenta que se pregunta; una caja de otra sucursal contesta error. */
+    val venueId: String = "",
 )
 
 @Serializable

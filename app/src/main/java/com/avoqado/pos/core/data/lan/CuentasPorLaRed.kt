@@ -32,14 +32,21 @@ object CuentasPorLaRed {
     /** El acuse de «suelta» y «cobrada»: sólo un `ok` de la dueña. */
     fun acuso(r: LeaseResponse?): Boolean = r?.status == LeaseProtocol.STATUS_OK
 
-    fun pedido(op: String, orderId: String, yo: String, caja: String, quien: String, intento: String, enLinea: Boolean = false, subida: Boolean = false) =
-        LeaseRequest(op = op, tableId = llave(orderId), deviceId = yo, staffName = quien, intento = intento, caja = caja, enLinea = enLinea, subida = subida)
+    /** [venueId]: la sucursal de la cuenta (ronda 1 de la tubería, Menor 2); sin valor por omisión a propósito. */
+    fun pedido(
+        op: String, orderId: String, yo: String, caja: String, quien: String, intento: String, enLinea: Boolean = false, subida: Boolean = false,
+        venueId: String,
+    ) = LeaseRequest(op = op, tableId = llave(orderId), deviceId = yo, staffName = quien, intento = intento, caja = caja, enLinea = enLinea,
+        subida = subida, venueId = venueId)
 
     /** Lo que contesta ESTA caja a una línea `cuenta_*` de otra, con su registro. Nunca lanza (salvo la cancelación). */
     suspend fun contestar(linea: String, venueId: String?, dueno: DuenoDeCuentas): String {
         val req = LeaseProtocol.decodeRequest(linea) ?: return error("Petición ilegible")
         if (req.version != LeaseProtocol.PROTOCOL_VERSION) return error(LeaseProtocol.ERROR_VERSION_MISMATCH)
         val v = venueId ?: return error("Sin sucursal")
+        // Ronda 1 de la tubería (Menor 2): una caja que HOY está en otra sucursal no sabe de esta cuenta, y su «no es mía» borraría la
+        // «cobrada» de la dueña verdadera. Error, como la red caída: quien pregunta lo conserva. `d=1` es nuevo: no hay app vieja sin el campo.
+        if (req.venueId != v) return error("Otra sucursal")
         if (!req.tableId.startsWith(PREFIJO)) return error("Llave ajena")
         val orden = req.tableId.removePrefix(PREFIJO)
         val s = Solicitud(req.deviceId, req.caja, req.staffName, req.intento, req.enLinea)

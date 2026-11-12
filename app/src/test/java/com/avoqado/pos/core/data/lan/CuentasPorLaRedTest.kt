@@ -74,9 +74,19 @@ class CuentasPorLaRedTest {
     private val dueno = DuenoDeCuentas(cache, abiertas, { _, _, _ -> false }, { _, _ -> false }, { null }, { "caja-1" }, { "Caja 1" })
         .also { it.reloj = { Instante("b", 1_000) }; it.horaDePared = { 1L } }
 
-    private suspend fun preguntar(op: String, orden: String, intento: String = "i-ana", enLinea: Boolean = false, subida: Boolean = false): LeaseResponse =
-        LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(
-            CuentasPorLaRed.pedido(op, orden, "caja-2", "Caja 2", "Ana", intento, enLinea, subida)), "v1", dueno))!!
+    private suspend fun preguntar(
+        op: String, orden: String, intento: String = "i-ana", enLinea: Boolean = false, subida: Boolean = false, sucursal: String = "v1",
+    ): LeaseResponse = LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(
+        CuentasPorLaRed.pedido(op, orden, "caja-2", "Caja 2", "Ana", intento, enLinea, subida, venueId = sucursal)), "v1", dueno))!!
+
+    /** Ronda 1 de la tubería, Menor 2: el pedido lleva la sucursal de quien pregunta; una caja de OTRA contesta error, nunca «no es mía». */
+    @Test fun `una caja de otra sucursal contesta error, nunca no es mía`() = runTest {
+        for (op in listOf(LeaseProtocol.OP_CUENTA_APARTAR, LeaseProtocol.OP_CUENTA_SOLTAR, LeaseProtocol.OP_CUENTA_COBRADA)) {
+            assertEquals(op, LeaseProtocol.STATUS_ERROR, preguntar(op, "o-ajena", sucursal = "otra-sucursal").status)
+            assertEquals(op, LeaseProtocol.STATUS_ERROR, preguntar(op, "o1", sucursal = "otra-sucursal").status)
+        }
+        assertEquals(LeaseProtocol.STATUS_NO_ES_MIA, preguntar(LeaseProtocol.OP_CUENTA_APARTAR, "o-ajena").status)
+    }
 
     @Test fun `la dueña contesta apartar, comprometer, suelta y cobrada, y por una que no abrió dice no_es_mia`() = runTest {
         assertEquals(LeaseProtocol.STATUS_GRANTED, preguntar(LeaseProtocol.OP_CUENTA_APARTAR, "o1").status)
@@ -100,7 +110,7 @@ class CuentasPorLaRedTest {
     }
 
     @Test fun `el enrutador manda cuenta_ al manejador y sin él dice operación desconocida, sin tocar el hub de mesas`() = runTest {
-        val linea = LeaseProtocol.encode(CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i"))
+        val linea = LeaseProtocol.encode(CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i", venueId = "v1"))
         var alHub = 0
         val hub: (String) -> LeaseResponse = { alHub++; LeaseResponse(status = LeaseProtocol.STATUS_OK) }
         assertEquals("CUENTAS", EnrutadorLan.responder(linea, "v1", emptySet(), hub, null, cuentas = { "CUENTAS" }))
@@ -114,7 +124,7 @@ class CuentasPorLaRedTest {
 
     // MARK: - 5 s de verdad (R7), con plazos chicos
 
-    private val pedido = CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i")
+    private val pedido = CuentasPorLaRed.pedido(LeaseProtocol.OP_CUENTA_APARTAR, "o1", "caja-2", "Caja 2", "Ana", "i", venueId = "v1")
 
     private fun servidor(atender: (java.net.Socket) -> Unit): Pair<ServerSocket, AtomicInteger> {
         val ss = ServerSocket(0)

@@ -37,7 +37,7 @@ class CuentasEntreCajasTest {
             retenida?.first?.await()
             val caja = cajas[firstArg<LanPeer>().deviceId]
             val r = if (caja == null || !caja.contesta) null
-            else LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(pedido), v, caja.dueno))
+            else LeaseProtocol.decodeResponse(CuentasPorLaRed.contestar(LeaseProtocol.encode(pedido), caja.sucursal, caja.dueno))
                 .takeUnless { caja.pierdeRespuestas }
             retenida?.second?.complete(Unit)
             r
@@ -50,6 +50,8 @@ class CuentasEntreCajasTest {
         var ms = 1_000L
         var contesta = true
         var pierdeRespuestas = false
+        /** La sucursal en que está HOY esta caja (contesta con ella). */
+        var sucursal = v
         val cache = mockk<PayloadCache> {
             coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
             coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
@@ -343,6 +345,27 @@ class CuentasEntreCajasTest {
         val estado = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
             .decodeFromString(CuentasEntreCajas.Estado.serializer(), c.disco["${PayloadCache.TYPE_CUENTAS_ENTRE_CAJAS}|v1"]!!.json)
         assertEquals("caja-1", estado.avisos.single { it.intento == "llave-c" }.dueno)
+    }
+
+    /**
+     * Ronda 1 de la tubería, Menor 2 (dinero): la dueña, sostenida por TCP, se cambió de sucursal y conserva su IP y su puerto. Antes
+     * contestaba «no es mía» con su sucursal nueva y la «cobrada» se borraba: al regresar podía ofrecer «No se cobró» sobre un cobro real.
+     * Ahora el pedido lleva la sucursal; la de otra contesta error (como la red caída) y el aviso sigue hasta que vuelve y acusa.
+     */
+    @Test fun `la dueña que se cambió de sucursal no borra el aviso cobrada, y al volver lo acusa`() = runTest {
+        red(a, c)
+        val pasa = c.entre.puertaSinRed() as CuentasEntreCajas.Puerta.Pasa
+        a.sucursal = "otra-sucursal"
+        c.entre.terminar(v, "o1", pasa, "Beto", cobrado = true, subida = true)
+        c.entre.unaVuelta()
+        val estado = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(CuentasEntreCajas.Estado.serializer(), c.disco["${PayloadCache.TYPE_CUENTAS_ENTRE_CAJAS}|v1"]!!.json)
+        assertTrue("el aviso «cobrada» sigue vivo", estado.avisos.single { it.intento == pasa.intento }.cobradaVista)
+        assertEquals(EstadoDeCuenta.COMPROMETIDA, a.dueno.estadoDe(v, "o1")?.estado)
+        a.sucursal = v // regresa
+        c.entre.unaVuelta()
+        assertEquals(EstadoDeCuenta.CERRADA, a.dueno.estadoDe(v, "o1")?.estado)
+        assertFalse(a.dueno.estadoDe(v, "o1")!!.faltaSubirla)
     }
 
     @Test fun `M1 - lo que cerró el servidor dice Ya se cobró, nunca el nombre de una caja`() {
