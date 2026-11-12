@@ -25,6 +25,9 @@ import kotlinx.serialization.json.Json
  *
  * Una instancia por encendido de la red de [TransporteLan] (como su `LanDiscovery`), que la usa en su revisión y al perder un peer,
  * siempre en su propio scope: nunca en quien llama. Abajo de Android 14 tampoco toca NSD: es TCP puro.
+ *
+ * Familia B (Codex r4 #3): el disco es la ÚNICA verdad de la sucursal en el proceso. Toda mutación toma el candado común, lee el disco,
+ * aplica sólo su cambio y guarda ([conElDisco]); nada se escribe desde un mapa guardado en memoria. Sólo escribe el encendido vigente.
  */
 class CajasRecordadas(
     private val cache: PayloadCache,
@@ -39,11 +42,7 @@ class CajasRecordadas(
     @Serializable
     data class Disco(val cajas: Map<String, Recordada> = emptyMap())
 
-    private val mutex = Mutex()
-
-    /** Bajo [mutex]. null = todavía no se lee el disco (o la última lectura falló: se vuelve a intentar). */
-    private var recordadas: MutableMap<String, Recordada>? = null
-    private var guardadas: Map<String, Recordada> = emptyMap()
+    /** Bajo [candado]. */
     private val fallas = HashMap<String, Int>()
 
     /** Las que hoy están en la lista por TCP. Las lee el transporte desde cualquier hilo. */
@@ -69,22 +68,16 @@ class CajasRecordadas(
         val porPreguntar = perdidas.filter(::cuenta)
         if (porPreguntar.isEmpty()) return
         val resultados = coroutineScope { porPreguntar.map { p -> async { Contestado(p, hastaDos(p.deviceId, p.host, p.port)) } }.awaitAll() }
-        mutex.withLock {
-            val r = cargar()
+        conElDisco { r ->
             for (c in resultados) {
                 if (sigueEn(r, c.en)) fallas.remove(c.en.deviceId)
                 c.sondeos.forEach { aplicar(r, c.en, it) }
             }
-            guardar(r)
         }
     }
 
     /** Lo que NSD ve: recordado (sin red; si el disco no se pudo leer, no se escribe nada). */
-    suspend fun recordar(vistas: List<LanPeer>) = mutex.withLock {
-        val r = cargar() ?: return@withLock
-        anotarVistas(r, vistas)
-        guardar(r)
-    }
+    suspend fun recordar(vistas: List<LanPeer>) = conElDisco { r -> r?.let { anotarVistas(it, vistas) } }
 
     /**
      * La revisión (≤ 1 min): recuerda lo que NSD ve y pregunta, en paralelo y sin candado, a las que NSD no ve. Ronda 1, Menor 4: a una
@@ -92,13 +85,11 @@ class CajasRecordadas(
      * las mesas de esa caja trabajaban en isla mientras tanto). A una recordada que no está en la lista, una sola pregunta.
      */
     suspend fun revisar(vistas: List<LanPeer>) {
-        val foto = mutex.withLock {
-            val r = cargar()
+        val foto = conElDisco { r ->
             if (r != null) {
                 anotarVistas(r, vistas)
                 val t = ahora()
                 r.entries.removeAll { (did, c) -> (t - c.vistoEn >= OLVIDAR_MS).also { if (it) { enLista.remove(did); fallas.remove(did) } } }
-                guardar(r)
             }
             // La dirección de la lista es la más nueva (lo último que dijo NSD o el `quien`); si no, la del disco.
             val direcciones = LinkedHashMap<String, Pair<LanPeer, Boolean>>()
@@ -113,11 +104,7 @@ class CajasRecordadas(
                 async { Contestado(p, if (sostenida) hastaDos(did, p.host, p.port) else listOf(sondear(did, p.host, p.port))) }
             }.awaitAll()
         }
-        mutex.withLock {
-            val r = cargar()
-            for (c in resultados) c.sondeos.forEach { aplicar(r, c.en, it) }
-            guardar(r)
-        }
+        conElDisco { r -> for (c in resultados) c.sondeos.forEach { aplicar(r, c.en, it) } }
     }
 
     private fun cuenta(p: LanPeer) = p.venueExplicito && p.deviceId.isNotEmpty() && p.deviceId != yo
@@ -200,12 +187,26 @@ class CajasRecordadas(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * Ronda 1, Menor 5b: si LEER falla (Room no contesta), null: no se toma como vacío ni se escribe encima de lo guardado (se perderían
-     * justo las cajas del otro lado de la banda); se vuelve a intentar la siguiente vez, como `CuentasEntreCajas.leer`. Un JSON ilegible
-     * sí cuenta como vacío: sin dirección recordada sólo se pierde el atajo, nunca dinero.
+     * Familia B (Codex r4 #3): TODA mutación del disco, con el candado común de todas las instancias: comprueba que este encendido sigue
+     * vigente, lee el disco, aplica [cambio] y guarda si algo cambió. [cambio] recibe null si este encendido ya no es el vigente o si leer
+     * falló (Ronda 1, Menor 5b: no se toma como vacío ni se escribe encima): la lista en memoria sí cambia, el disco no. Antes la instancia
+     * guardaba el mapa que cargó al nacer: la nueva lo cargaba mientras la vieja terminaba de guardar otra caja, y su escritura la borraba.
      */
-    private suspend fun cargar(): MutableMap<String, Recordada>? {
-        recordadas?.let { return it }
+    private suspend fun <T> conElDisco(cambio: (MutableMap<String, Recordada>?) -> T): T = candado.withLock {
+        val leidas = if (vigentes[venueId] === this) leer() else null
+        val r = leidas?.filter { (did, c) -> did != yo && c.venue == venueId }?.toMutableMap()
+        val t = cambio(r)
+        // Ronda 1, Menor 5a: sólo si cambió algo (una dirección, una fecha de más de 1 h, una que se olvida o sale).
+        if (r != null && r != leidas) {
+            runCatching { cache.saveDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId, json.encodeToString(Disco.serializer(), Disco(r.toMap()))) }
+                .onFailure { Log.w(TAG, "⚠️ no se pudieron guardar las cajas recordadas: ${it.message}") }
+        }
+        if (leidas == null && vigentes[venueId] !== this) Log.i(TAG, "un encendido anterior ya no escribe las cajas recordadas")
+        t
+    }
+
+    /** Lo guardado (null = leer falló). Un JSON ilegible sí cuenta como vacío: sin dirección recordada sólo se pierde el atajo, nunca dinero. */
+    private suspend fun leer(): Map<String, Recordada>? {
         val guardado = try {
             cache.loadDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId)
         } catch (e: CancellationException) {
@@ -214,28 +215,7 @@ class CajasRecordadas(
             Log.w(TAG, "⚠️ no se pudieron leer las cajas recordadas (se reintenta): ${e.message}")
             return null
         }
-        val leidas = guardado?.json?.let { runCatching { json.decodeFromString(Disco.serializer(), it).cajas }.getOrNull() }.orEmpty()
-        val r = leidas.filter { (did, c) -> did != yo && c.venue == venueId }.toMutableMap()
-        guardadas = leidas
-        recordadas = r
-        return r
-    }
-
-    /**
-     * Codex r3 #3: sólo escribe la instancia VIGENTE (la del último encendido de esta sucursal), y nunca a la vez que otra. Una tarea de un
-     * encendido anterior que termina tarde (un `quien` retenido) reescribía la fila entera encima de lo que la nueva ya guardó.
-     */
-    private suspend fun guardar(r: Map<String, Recordada>?) {
-        if (r == null || r == guardadas) return
-        escritura.withLock {
-            if (vigentes[venueId] !== this) {
-                Log.i(TAG, "un encendido anterior ya no escribe las cajas recordadas")
-            } else {
-                runCatching { cache.saveDurable(PayloadCache.TYPE_CAJAS_RECORDADAS, venueId, json.encodeToString(Disco.serializer(), Disco(r.toMap()))) }
-                    .onSuccess { guardadas = r.toMap() }
-                    .onFailure { Log.w(TAG, "⚠️ no se pudieron guardar las cajas recordadas: ${it.message}") }
-            }
-        }
+        return guardado?.json?.let { runCatching { json.decodeFromString(Disco.serializer(), it).cajas }.getOrNull() }.orEmpty()
     }
 
     companion object {
@@ -244,8 +224,11 @@ class CajasRecordadas(
         /** Codex r3 #3: la instancia vigente de cada sucursal (la última que se creó: una por encendido de la red de [TransporteLan]). */
         private val vigentes = ConcurrentHashMap<String, CajasRecordadas>()
 
-        /** ponytail: un candado para toda escritura de cualquier sucursal (una sola red local por aparato); por sucursal si algún día hay más. */
-        private val escritura = Mutex()
+        /**
+         * Familia B: el candado común de toda lectura-cambio-escritura del disco, de todas las instancias (también de encendidos viejos).
+         * ponytail: uno para todas las sucursales (una sola red local por aparato); por sucursal si algún día hay más.
+         */
+        private val candado = Mutex()
 
         /** Fallas seguidas de `quien` para que una caja salga de la lista. */
         const val FALLAS_PARA_SALIR = 2

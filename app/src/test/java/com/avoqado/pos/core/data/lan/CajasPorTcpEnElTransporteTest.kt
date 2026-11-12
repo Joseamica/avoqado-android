@@ -51,8 +51,23 @@ class CajasPorTcpEnElTransporteTest {
             if (puertoIlegible && firstArg<String>() == PayloadCache.TYPE_PUERTO_PROPIO) throw java.io.IOException("Room no contestó")
             disco["${firstArg<String>()}|${secondArg<String>()}"]
         }
-        coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
+        coEvery { saveDurable(any(), any(), any()) } coAnswers {
+            val retenido = retenerPuerto?.takeIf { firstArg<String>() == PayloadCache.TYPE_PUERTO_PROPIO }
+            if (retenido == null) {
+                disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
+            } else {
+                retenerPuerto = null
+                // Como Room: la escritura que ya empezó termina aunque su corrutina se cancele.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    retenido.first.complete(Unit)
+                    retenido.second.await()
+                    disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
+                }
+            }
+        }
     }
+    /** Familia B: (guardando, soltar) detiene a medias la SIGUIENTE escritura del puerto propio. */
+    @Volatile private var retenerPuerto: Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>? = null
     private val busquedas = Collections.synchronizedList(mutableListOf<NsdManager.DiscoveryListener>())
     private val resoluciones = Collections.synchronizedList(mutableListOf<NsdManager.ResolveListener>())
     private val nsd = mockk<NsdManager>(relaxed = true) {
@@ -298,6 +313,36 @@ class CajasPorTcpEnElTransporteTest {
             esperar("la vuelta llegó a la revisión") { PayloadCache.TYPE_CAJAS_RECORDADAS in leidos }
             assertEquals("lo guardado sigue intacto", "40404", disco["${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"]?.json)
         } finally {
+            t.detener()
+        }
+    }
+
+    // MARK: - Pasada por familia (familia B, el puerto propio)
+
+    /**
+     * Familia B, el puerto propio: el guardado del encendido anterior tarda (se reinicia la red local a media escritura). El encendido nuevo
+     * leía el disco sin esperar, abría otro puerto y lo guardaba; luego aterrizaba el guardado viejo y el disco se quedaba para siempre con
+     * un puerto que no es el del socket (la memoria decía que ya estaba guardado). Ahora leer y escribir van bajo el mismo candado, y se
+     * escribe el puerto del socket de ESE momento.
+     */
+    @Test fun `familia B - un guardado del puerto que tarda no deja en disco otro puerto que el del socket`() = runBlocking {
+        val guardando = CompletableDeferred<Unit>()
+        val soltar = CompletableDeferred<Unit>()
+        retenerPuerto = guardando to soltar
+        val t = transporte()
+        try {
+            val llave = "${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"
+            t.iniciar("venue-1")
+            t.conectarHub(LeaseServer()::respondTo)
+            withTimeout(10_000) { guardando.await() } // el primer encendido ya guarda su puerto, y tarda
+            t.detener()
+            t.iniciar("venue-1") // se reinicia la red local dentro del proceso
+            // Antes, el encendido nuevo leía sin esperar y guardaba el suyo enseguida; ahora espera a que termine el guardado viejo.
+            kotlinx.coroutines.withTimeoutOrNull(2_000) { while (!(t.puerto > 0 && disco[llave]?.json == t.puerto.toString())) delay(25) }
+            soltar.complete(Unit)
+            esperar("el disco dice el puerto del socket") { t.puerto > 0 && disco[llave]?.json == t.puerto.toString() }
+        } finally {
+            soltar.complete(Unit)
             t.detener()
         }
     }

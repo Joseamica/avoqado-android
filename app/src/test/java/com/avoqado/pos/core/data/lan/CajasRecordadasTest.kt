@@ -31,11 +31,14 @@ class CajasRecordadasTest {
             if (lecturaFalla) throw java.io.IOException("Room no contestó")
             disco["${firstArg<String>()}|${secondArg<String>()}"]
         }
-        coEvery { saveDurable(any(), any(), any()) } answers {
+        coEvery { saveDurable(any(), any(), any()) } coAnswers {
+            // Familia B: (guardando, soltar) detiene la SIGUIENTE escritura a medio guardar (la de Room puede tardar).
+            retenerGuardado?.let { (guardando, soltar) -> retenerGuardado = null; guardando.complete(Unit); soltar.await() }
             escrituras++
             disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0)
         }
     }
+    @Volatile private var retenerGuardado: Pair<kotlinx.coroutines.CompletableDeferred<Unit>, kotlinx.coroutines.CompletableDeferred<Unit>>? = null
 
     /** host → lo que contesta `quien` (sin entrada o null = no contesta). */
     private val contesta = mutableMapOf<String, LeaseResponse?>()
@@ -288,5 +291,32 @@ class CajasRecordadasTest {
         val tercera = CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }) // la app reiniciada
         tercera.revisar(emptyList())
         assertEquals("la reconstruida conserva la dirección nueva", listOf("192.168.100.153"), preguntadas.distinct())
+    }
+
+    // MARK: - Pasada por familia (Codex r4 #3)
+
+    /**
+     * Familia B: la instancia vieja ya pasó la vigencia y está guardando P (Room tarda); nace el encendido nuevo, lee el disco (todavía sin
+     * P), aprende Q y guarda SU mapa: P desaparecía del disco aunque la escritura vieja terminó bien. Ahora toda mutación toma el candado
+     * común, lee el disco, aplica sólo su cambio y guarda: la nueva lee DESPUÉS de que la vieja termina.
+     */
+    @Test fun `familia B - la escritura vieja y la lectura nueva no se cruzan - la reconstruida tiene P y Q`() = runTest {
+        val q = vistaPorNsd("d3-bbbb", "192.168.100.60")
+        val vieja = cajas()
+        val guardando = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val soltar = kotlinx.coroutines.CompletableDeferred<Unit>()
+        retenerGuardado = guardando to soltar
+        val tareaVieja = launch { vieja.recordar(listOf(n86)) }
+        runCurrent()
+        assertTrue("premisa: la vieja ya pasó la vigencia y está guardando P", guardando.isCompleted)
+        val nueva = cajas() // se reinició la red local dentro del proceso
+        val tareaNueva = launch { nueva.recordar(listOf(q)) }
+        runCurrent()
+        soltar.complete(Unit)
+        joinAll(tareaVieja, tareaNueva)
+
+        val preguntadas = mutableListOf<String>()
+        CajasRecordadas(cache, v, "yo", { p -> preguntadas += p.host; null }, { hora }).revisar(emptyList()) // la app reiniciada
+        assertEquals("la reconstruida tiene P y Q", setOf(n86.host, q.host), preguntadas.toSet())
     }
 }

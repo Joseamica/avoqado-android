@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.io.BufferedInputStream
 import java.net.ServerSocket
 import java.net.Socket
@@ -431,7 +432,18 @@ class TransporteLan @Inject constructor(
     /** Ronda 2: la última lectura del puerto guardado TRONÓ: en esta sesión no se escribe encima del bueno (como el 5b de las cajas). */
     @Volatile private var puertoIlegible = false
 
-    private suspend fun leerPuertoPropio(): Int? {
+    /**
+     * Familia B (el puerto propio): leer y escribir van bajo este candado, y se escribe el puerto del socket de ESE momento. Un guardado del
+     * encendido anterior que tardaba (se reinició la red local a media escritura) aterrizaba después del nuevo y dejaba en disco otro
+     * puerto, mientras la memoria ([puertoEnDisco]) decía que ya estaba guardado.
+     */
+    private val candadoDelPuerto = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun leerPuertoPropio(): Int? = candadoDelPuerto.withLock { leerPuertoPropioYa() }
+
+    private suspend fun guardarPuertoPropio() = candadoDelPuerto.withLock { guardarPuertoPropioYa() }
+
+    private suspend fun leerPuertoPropioYa(): Int? {
         val c = cajasEnDisco ?: return null
         val v = venueId ?: return null
         val leido = try {
@@ -449,11 +461,12 @@ class TransporteLan @Inject constructor(
         return leido
     }
 
-    private suspend fun guardarPuertoPropio() {
+    private suspend fun guardarPuertoPropioYa() {
         val c = cajasEnDisco ?: return
         val v = venueId ?: return
         val p = puerto
         if (p <= 0 || p == puertoEnDisco || puertoIlegible) return
+        puertoEnDisco = null // en duda mientras se escribe: si este guardado se corta (cancelado a medias), la siguiente vuelta lo repite
         try {
             c.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PUERTO_PROPIO, v, p.toString())
             puertoEnDisco = p
