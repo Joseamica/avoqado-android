@@ -6,7 +6,9 @@ import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.tables.data.CanjeRechazado
 import com.avoqado.pos.tables.data.CustomerLoyalty
+import com.avoqado.pos.tables.data.RedeemPointsData
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.TableRoundDraftStore
 import com.avoqado.pos.tables.data.TableServiceRepository
@@ -19,11 +21,14 @@ import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -196,5 +201,92 @@ class TableOrderRecompensasTest {
         s.showBlockedReason("otro botón")
         s.renovarAvisoDeRecompensas("pocos")
         assertEquals("otro botón", s.blockedNotice.value)
+    }
+
+    // MARK: - Codex android r7 y el candado de la oferta (12-nov)
+
+    private fun canjeDa(r: Result<RedeemPointsData>) {
+        coEvery { repository.redeemLoyaltyPoints(any(), any(), any(), any(), any()) } returns r
+    }
+
+    @Test
+    fun `una recarga con la MISMA versión no vuelve a ofrecer el saldo viejo mientras llega el nuevo (Codex android r7 3)`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        assertEquals(500, s.loyalty.value?.balance)
+        // Ana gastó sus puntos en otra venta (esta cuenta no cambia de versión) y el saldo nuevo tarda.
+        coEvery { repository.getCustomerLoyalty(any(), "ana", any()) } coAnswers { kotlinx.coroutines.delay(1_000); Result.success(saldo("ana", 100)) }
+        s.loadCheck(); runCurrent()
+        assertNull(s.loyalty.value)
+        advanceUntilIdle()
+        assertEquals(100, s.loyalty.value?.balance)
+    }
+
+    @Test
+    fun `una respuesta tardía de otra cuenta no relee la cuenta que se ve (Codex android r7 6)`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3)
+        // El saldo de Ana tarda y llega con un máximo $0 que la cuenta de Ana «contradice».
+        coEvery { repository.getCustomerLoyalty(any(), "ana", any()) } coAnswers {
+            kotlinx.coroutines.delay(1_000)
+            Result.success(saldo("ana", 500).copy(maxRedeemablePoints = 0, maxRedeemableValue = 0.0, canRedeem = false))
+        }
+        s.loadCheck(); runCurrent()
+        // Ahora se ve la cuenta de Beto; su detalle tarda más que la respuesta vieja de Ana.
+        coEvery { repository.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.delay(5_000); Result.success(cuenta("beto", 4)) }
+        saldoDe("beto", 50)
+        s.loadCheck()
+        advanceTimeBy(2_000); runCurrent()
+        advanceUntilIdle()
+        assertEquals("beto", s.loyalty.value?.customerId)
+        coVerify(exactly = 2) { repository.getOrderDetail(any(), any()) }
+    }
+
+    @Test
+    fun `Canjear manda lo que mostró el diálogo y el «aplicada» dice lo que aplicó el SERVIDOR, nunca lo pedido`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        s.abrirRecompensas(); advanceUntilIdle()
+        canjeDa(Result.success(RedeemPointsData(pointsRedeemed = 10, discountAmount = 1.0, newBalance = 490)))
+        s.redeemPoints(500, 50.0); advanceUntilIdle()
+        coVerify { repository.redeemLoyaltyPoints("venue-1", "o1", "ana", 500, 50.0) }
+        assertEquals("Recompensa aplicada — 10 puntos por ${'$'}1.00", s.actionMessage.value)
+        assertFalse(s.recompensasAbiertas.value)
+    }
+
+    @Test
+    fun `con 409 LOYALTY_OFFER_CHANGED no canjea solo - relee cuenta y saldo y reabre el diálogo con «La cuenta cambió»`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        s.abrirRecompensas(); advanceUntilIdle()
+        assertTrue(s.recompensasAbiertas.value)
+        // Otra caja descontó la cuenta: ahora sólo caben 10 puntos.
+        cuentaDe("ana", version = 4, subtotal = 1.0); saldoDe("ana", 10)
+        canjeDa(Result.failure(CanjeRechazado("LOYALTY_OFFER_CHANGED", "La cuenta cambió: ahora se canjearían 10 puntos por ${'$'}1.00.")))
+        s.redeemPoints(500, 50.0); advanceUntilIdle()
+        assertTrue(s.recompensasAbiertas.value)
+        assertEquals("La cuenta cambió: revisa los puntos.", s.avisoDelCanje.value)
+        assertEquals(10, s.loyalty.value?.balance)
+        coVerify(exactly = 1) { repository.redeemLoyaltyPoints(any(), any(), any(), any(), any()) }
+        s.cerrarRecompensas()
+        assertFalse(s.recompensasAbiertas.value)
+        assertNull(s.avisoDelCanje.value)
+    }
+
+    @Test
+    fun `otro rechazo del canje - se dice el motivo del SERVIDOR y se relee el saldo, sin reabrir`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        s.abrirRecompensas(); advanceUntilIdle()
+        saldoDe("ana", 400)
+        canjeDa(Result.failure(CanjeRechazado(null, "Puntos insuficientes: el cliente tiene 400")))
+        s.redeemPoints(500, 50.0); advanceUntilIdle()
+        assertFalse(s.recompensasAbiertas.value)
+        assertEquals("Puntos insuficientes: el cliente tiene 400", s.actionMessage.value)
+        assertEquals(400, s.loyalty.value?.balance)
     }
 }

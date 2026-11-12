@@ -181,11 +181,14 @@ fun TableOrderScreen(
     // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
     val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
         // Sin la cuenta al día del servidor no se sabe qué clienta tiene: ni «Agrega el cliente» ni el saldo de una clienta que otra
-        // caja pudo quitar (Codex android r3 #2, r5 #1). Tocar el botón gris vuelve a pedir la cuenta (`onBlocked`).
-        tieneCliente = if (cuentaSinLeer) null else check?.let { !it.customerId.isNullOrBlank() },
+        // caja pudo quitar (Codex android r3 #2, r5 #1). Tocar el botón gris relee cuenta → saldo (`onRewardsBlocked`).
+        tieneCliente = if (!cuentaCompletaAqui) null else check?.let { !it.customerId.isNullOrBlank() },
         lealtad = loyalty,
         fallo = loyaltyFallo,
         enLinea = recompensasEnLinea,
+        // Mientras se relee la cuenta (una mutación propia, un acuse, el toque) el detalle que se ve es viejo (Codex android r7 #4).
+        actualizandoCuenta = !cuentaCompletaAqui && cargandoCuenta,
+        cuentaCancelada = check?.status == "CANCELLED" || check?.status == "DELETED",
     )
     val recompensasSinRed =
         !recompensasEnLinea || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
@@ -249,7 +252,9 @@ fun TableOrderScreen(
     var showCalculator by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
-    var showRewards by remember { mutableStateOf(false) }
+    // El diálogo de Recompensas vive en el VM: un 409 del candado de la oferta lo reabre con la oferta nueva.
+    val recompensasAbiertas by viewModel.recompensasAbiertas.collectAsState()
+    val avisoDelCanje by viewModel.avisoDelCanje.collectAsState()
     // Cada vez que vuelve la red (el WiFi, o sólo el servidor) se relee la cuenta y después el saldo: el saldo pudo gastarse y la
     // clienta cambiar en otra caja. Mientras llega, «Leyendo…», también en el diálogo abierto (Codex android r2 #2 y #3, r5 #1).
     LaunchedEffect(Unit) {
@@ -566,14 +571,15 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
-                                onRecompensas = { showRewards = true; viewModel.releerRecompensas() },
+                                onRecompensas = { viewModel.abrirRecompensas() },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = motivoRecompensas == null,
                                 rewardsBlockedReason = motivoRecompensas,
                                 rewardsBlockedByConnection = recompensasSinRed,
-                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); if (cuentaSinLeer) viewModel.loadCheck() },
+                                // El toque gris también relee cuenta → saldo; el aviso se renueva con el motivo fresco (Codex android r7 #1).
+                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); viewModel.releerRecompensas() },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -753,14 +759,15 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
-                                onRecompensas = { showRewards = true; viewModel.releerRecompensas() },
+                                onRecompensas = { viewModel.abrirRecompensas() },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = motivoRecompensas == null,
                                 rewardsBlockedReason = motivoRecompensas,
                                 rewardsBlockedByConnection = recompensasSinRed,
-                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); if (cuentaSinLeer) viewModel.loadCheck() },
+                                // El toque gris también relee cuenta → saldo; el aviso se renueva con el motivo fresco (Codex android r7 #1).
+                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); viewModel.releerRecompensas() },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -1262,17 +1269,17 @@ fun TableOrderScreen(
         )
     }
 
-    if (showRewards) {
+    if (recompensasAbiertas) {
         // El diálogo pinta sólo la lectura fresca que pidió el toque (cuenta y después saldo); mientras, el motivo («Leyendo…», «Sin
-        // conexión…», «No se pudo leer…»), nunca datos viejos (Codex android r6 #1).
+        // conexión…», «No se pudo leer…»), nunca datos viejos (Codex android r6 #1). Tras un 409, «La cuenta cambió».
         RewardsDialog(
             loyalty = loyalty,
             motivo = motivoRecompensas,
+            aviso = avisoDelCanje,
             enLinea = recompensasEnLinea,
-            onDismiss = { showRewards = false },
-            onRedeem = { pts ->
-                showRewards = false
-                viewModel.redeemPoints(pts)
+            onDismiss = { viewModel.cerrarRecompensas() },
+            onRedeem = { pts, monto ->
+                viewModel.redeemPoints(pts, monto)
                 panelTab = PanelTab.CUENTA
             },
         )
@@ -3421,9 +3428,10 @@ private fun ServiceChargesDialog(
 private fun RewardsDialog(
     loyalty: com.avoqado.pos.tables.data.CustomerLoyalty?,
     motivo: String?,
+    aviso: String?,
     enLinea: Boolean,
     onDismiss: () -> Unit,
-    onRedeem: (Int) -> Unit,
+    onRedeem: (Int, Double) -> Unit,
 ) {
     // Arranca en el máximo canjeable de ESTA lectura: cada lectura nueva vuelve a empezar ahí.
     var points by remember(loyalty) { mutableStateOf(loyalty?.maxRedeemablePoints ?: 0) }
@@ -3437,7 +3445,7 @@ private fun RewardsDialog(
         actionButton = {
             PrimaryButton(
                 text = "Canjear",
-                onClick = { onRedeem(points) },
+                onClick = { onRedeem(points, loyalty?.valorDelCanje(points) ?: 0.0) },
                 // Sólo con la lectura fresca de ESTA cuenta y sin motivo para no canjear: sin red, programa apagado, pocos puntos…
                 // (Codex android r2 #4, r6 #1 y #3).
                 enabled = motivo == null && loyalty?.puedeCanjear(points, enLinea) == true,
@@ -3446,6 +3454,11 @@ private fun RewardsDialog(
         },
     ) {
             Column {
+                if (aviso != null) {
+                    // «La cuenta cambió: revisa los puntos.» (409 del candado de la oferta): lo de abajo ya es la oferta nueva.
+                    Text(text = aviso, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                }
                 if (loyalty != null && loyalty.canRedeem) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

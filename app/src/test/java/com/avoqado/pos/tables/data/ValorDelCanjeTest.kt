@@ -95,4 +95,17 @@ class ValorDelCanjeTest {
         assertEquals(false, maximoCeroContradiceLaCuenta(l.copy(active = false), abierta))
         assertEquals(false, maximoCeroContradiceLaCuenta(l.copy(maxRedeemableValue = 0.01), abierta))
     }
+
+    @Test
+    fun `el rechazo del canje se lee una sola vez - código y mensaje del SERVIDOR (candado de la oferta)`() {
+        val r = canjeRechazadoDe("""{"message":"La cuenta cambió: ahora se canjearían 10 puntos por ${'$'}1.00.","code":"LOYALTY_OFFER_CHANGED"}""")
+        assertEquals("LOYALTY_OFFER_CHANGED", r.code)
+        assertEquals(true, r.ofertaCambio)
+        assertEquals("La cuenta cambió: ahora se canjearían 10 puntos por ${'$'}1.00.", r.message)
+        val otro = canjeRechazadoDe("""{"message":"Puntos insuficientes: el cliente tiene 400"}""")
+        assertEquals(false, otro.ofertaCambio)
+        assertEquals("Puntos insuficientes: el cliente tiene 400", otro.message)
+        assertEquals(false, canjeRechazadoDe(null).ofertaCambio)
+        assertEquals(false, canjeRechazadoDe("<html>").ofertaCambio)
+    }
 }

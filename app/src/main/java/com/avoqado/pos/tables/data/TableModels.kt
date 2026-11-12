@@ -493,12 +493,18 @@ fun motivoSinRecompensas(
     lealtad: CustomerLoyalty?,
     fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
     enLinea: Boolean = true,
+    actualizandoCuenta: Boolean = false,
+    cuentaCancelada: Boolean = false,
 ): String? = when {
     // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea. Va antes
     // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
     !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) -> RECOMPENSAS_SIN_RED
+    // Una mutación propia (asignar la clienta, una ronda…) espera su relectura: el detalle que se ve es viejo (Codex android r7 #4).
+    actualizandoCuenta -> "Actualizando la cuenta…"
     // La cuenta va antes que `canRedeem`: un saldo sólo se ofrece sobre una cuenta con cliente (Codex android r4 #1).
     tieneCliente == null -> "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento."
+    // Anulada: el canje la rechaza; no es «tiene un pago registrado» (Codex android r7 #5).
+    cuentaCancelada -> "La cuenta está cancelada: no se pueden canjear puntos."
     !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
     lealtad?.canRedeem == true -> null
     lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
@@ -528,7 +534,31 @@ data class CustomerLoyaltyResponse(val success: Boolean = true, val data: Custom
 
 /** POST .../orders/:orderId/loyalty/redeem body. */
 @Serializable
-data class RedeemPointsRequest(val customerId: String, val points: Int)
+data class RedeemPointsRequest(val customerId: String, val points: Int, val expectedDiscountAmount: Double? = null)
+
+/** Lo que el SERVIDOR aplicó de verdad: el «aplicada» dice esto, nunca lo pedido. */
+@Serializable
+data class RedeemPointsData(val pointsRedeemed: Int = 0, val discountAmount: Double = 0.0, val newBalance: Int? = null)
+
+@Serializable
+data class RedeemPointsResponse(val success: Boolean = true, val data: RedeemPointsData? = null)
+
+/** 409 del candado de la oferta: la cuenta ya no da lo que enseñó el diálogo; el SERVIDOR no canjeó nada. */
+const val LOYALTY_OFFER_CHANGED = "LOYALTY_OFFER_CHANGED"
+
+/** El rechazo del canje (4xx) con su código y el mensaje del SERVIDOR, leídos una sola vez del cuerpo. */
+class CanjeRechazado(val code: String?, override val message: String) : Exception(message) {
+    val ofertaCambio: Boolean get() = code == LOYALTY_OFFER_CHANGED
+}
+
+private val jsonDelRechazo = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+/** PURA: el cuerpo de un rechazo del canje → su código y mensaje (vacíos si no se puede leer). */
+fun canjeRechazadoDe(cuerpo: String?): CanjeRechazado {
+    val raiz = runCatching { cuerpo?.let { jsonDelRechazo.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject } }.getOrNull()
+    fun texto(llave: String) = (raiz?.get(llave) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    return CanjeRechazado(texto("code"), texto("message").orEmpty())
+}
 
 // MARK: - Cobros por servicio (propina automática por grupo, descorche…)
 

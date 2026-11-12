@@ -161,6 +161,28 @@ class MotivoSinRecompensasTest {
     }
 
     @Test
+    fun `mientras la cuenta se actualiza (una mutación propia esperando su relectura) - «Actualizando la cuenta…», nunca del detalle viejo (Codex android r7 4)`() {
+        // Se acaba de asignar a Ana: el detalle viejo todavía dice «sin cliente».
+        assertEquals(
+            "Actualizando la cuenta…",
+            motivoSinRecompensas(tieneCliente = false, lealtad = null, fallo = null, actualizandoCuenta = true),
+        )
+        // Sin red manda «Sin conexión».
+        assertEquals(
+            RECOMPENSAS_SIN_RED,
+            motivoSinRecompensas(tieneCliente = false, lealtad = null, fallo = null, enLinea = false, actualizandoCuenta = true),
+        )
+    }
+
+    @Test
+    fun `cuenta anulada - dice que está cancelada, no «tiene un pago registrado» (Codex android r7 5)`() {
+        assertEquals(
+            "La cuenta está cancelada: no se pueden canjear puntos.",
+            motivoSinRecompensas(true, lealtad(balance = 500, max = 0), null, cuentaCancelada = true),
+        )
+    }
+
+    @Test
     fun `cuenta con abono, pagada o sin nada que descontar - no dice que falta el cliente`() {
         assertEquals(
             "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar.",
