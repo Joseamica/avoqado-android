@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Descuento que «requiere aprobación» (D4, founder «B», 12-nov).** Un % o fijo del catálogo con «Requiere aprobación» lo
+  aplica directo quien tiene «Aplicar descuentos en TPV» (de fábrica gerente, admin y dueño). A quien no, le sale el teclado del
+  PIN de un gerente sin cambiar de sesión: en Mesas al aplicarlo, en Mostrador al cobrar (antes de crear la venta y de apartar el
+  efectivo). Sin red no entra para nadie y lo dice; nunca se encola ni dice «Descuento aplicado» sin el servidor. Con el PIN de
+  gerente apagado, dice que lo aplica alguien con el permiso. «Pagar después» con ese descuento sólo con el permiso y nunca sin
+  red. Una venta con cortesía y este descuento pide los dos PIN. Necesita el SERVIDOR con D4. iOS: ficha en
+  `docs/proyectos/ios-por-hacer.md`.
 - **El descuento del cliente se pone solo en el carrito (D2, Flautas Coyoacán; founder 11-nov).** Al elegir un cliente con
   descuento asignado, el carrito de Mostrador lo pone solo en su línea con «Quitar» y el total ya sale rebajado (también en
   WINDOWS). Sin el permiso «Aplicar descuentos», aviso y «Pedir autorización»: el gerente ve «Descuento de <Nombre> −$X» y su
