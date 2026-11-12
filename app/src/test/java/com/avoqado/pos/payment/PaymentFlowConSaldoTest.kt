@@ -17,6 +17,7 @@ import com.avoqado.pos.payment.data.*
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.pos.data.model.*
 import com.avoqado.pos.pos.presentation.cart.CartState
+import com.avoqado.pos.pos.presentation.cart.DESCUENTO_DEL_CLIENTE_SOURCE
 import com.avoqado.pos.tables.data.TableSession
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import io.mockk.*
@@ -228,6 +229,19 @@ class PaymentFlowConSaldoTest {
             } else assertTrue(label,r is DesenlaceDeCobro.NoSalio)
             subject.viewModelScope.cancel()
         }
+    }
+    /** D2 · 6g: un carrito con el descuento del cliente, en una sesión sin `discounts:apply` ni PIN, no crea la cuenta con saldo. */
+    @Test fun descuentoDelClienteSinPermisoNiTokenNoCreaLaCuentaConSaldo()=runTest {
+        every { roles.canApplyDiscounts } returns false
+        cart=cart.copy(orderDiscount=Discount(id="d-10",name="Cliente frecuente",value=10.0,source=DESCUENTO_DEL_CLIENTE_SOURCE))
+        val r=vm().cobrarConSaldo(identified,8000)
+        assertEquals(DesenlaceDeCobro.NoSalio("Tu puesto no puede aplicar el descuento de este cliente. Pide autorización o quítalo."),r)
+        assertEquals(0,server.requestCount);assertEquals(0,cleared);assertFalse(cart.isEmpty)
+
+        every { roles.canApplyDiscounts } returns true
+        server.enqueue(response())
+        assertTrue(vm().cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
+        assertTrue(server.takeRequest(1,TimeUnit.SECONDS)!!.path!!.endsWith("/gift-cards/pay-new-order"))
     }
     @Test fun guardarOMarcarFalseNoVaciaNiManda()=runTest {
         val subject=vm();preferences.ok=false

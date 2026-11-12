@@ -2097,6 +2097,13 @@ class PaymentFlowViewModel @Inject constructor(
             val coordinator = cobroConSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
             val anteriores = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).map {it.llave}.toSet()
             val resultado = conTextoDelFolio(if (fila.fila == FilaDeLaCaja.T1) {
+                // 🔴 D2 (spec punto 18): esta entrada CREA la venta. Con el descuento del cliente y sin permiso ni PIN suficiente (un
+                // carrito restaurado por otra sesión), no sale nada: el mismo texto del 403.
+                if (!snapshot.puedeCrearOrdenConDescuentoDelCliente(attachedCustomerId, rolesDeSaldo?.canApplyDiscounts == true)) {
+                    return DesenlaceDeCobro.NoSalio(
+                        com.avoqado.pos.pos.presentation.cart.textoNoPuedeAplicarDescuentoDelCliente(_attachedCustomerName.value),
+                    ).also { resultadoDeSaldo.value = it }
+                }
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val payload = Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(buildOrderRequest(snapshot),selectedStaffId(),attachedCustomerId,

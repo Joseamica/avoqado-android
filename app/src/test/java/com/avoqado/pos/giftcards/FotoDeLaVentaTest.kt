@@ -78,7 +78,7 @@ class FotoDeLaVentaTest {
         val delCarrito = CartState::class.java.declaredFields.filterNot { it.isSynthetic || java.lang.reflect.Modifier.isStatic(it.modifiers) }.map { it.name }.toSet() - "identidadDeVenta" -
             // Sólo pantalla del cobro de un pedido en línea, que nunca ofrece saldo de tarjeta (decisión 5 de ROOT): no se fotografía.
             "renglonesParaVer"
-        val deFoto = FotoDeLaVenta::class.java.declaredFields.filterNot { it.isSynthetic || java.lang.reflect.Modifier.isStatic(it.modifiers) }.map { it.name }.toSet() - setOf("clienteId", "clienteNombre")
+        val deFoto = FotoDeLaVenta::class.java.declaredFields.filterNot { it.isSynthetic || java.lang.reflect.Modifier.isStatic(it.modifiers) }.map { it.name }.toSet() - setOf("clienteId", "clienteNombre", "clienteDescuento")
         assertEquals(delCarrito, deFoto)
     }
 }

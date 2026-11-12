@@ -118,6 +118,19 @@ data class Discount(
 }
 
 /**
+ * D2 (descuento del cliente): el PIN de un gerente para `discounts:apply`, atado a ESE cliente, ESE descuento y hasta [topeCents]
+ * (el monto que vio el gerente; el servidor lo emitió con `descuento-cliente:<customerId>:<discountId>:<topeCents>`). Vive en el
+ * carrito y viaja con la venta (carrito guardado, foto, cola sin red): el servidor lo acepta 7 días, cada venta hasta su tope.
+ */
+@Serializable
+data class AutorizacionDelDescuento(
+    val token: String,
+    val topeCents: Int,
+    val customerId: String,
+    val discountId: String,
+)
+
+/**
  * D13: recorta el descuento [brutoCents] al descuento máximo del catálogo ([maxPesos], en PESOS; `null` = sin tope):
  * `min(bruto, round(maxPesos × 100))`, redondeo half-up como el resto de la aritmética. Un tope en 0 deja el descuento en 0,
  * igual que el servidor. La única fuente del tope: la usan [descuentoDeLineaCents] y [Discount.calculateDiscount].
