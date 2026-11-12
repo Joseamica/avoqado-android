@@ -83,5 +83,8 @@ class PayloadCache @Inject constructor(
 
         /** D12 · Opción D: el registro de la caja DUEÑA de cada cuenta que abrió (`core.data.lan.DuenoDeCuentas`). */
         const val TYPE_REGISTRO_DE_CUENTAS = "registro_de_cuentas"
+
+        /** D12 · Opción D: quién abrió cada cuenta ajena y los avisos «cobrada»/«suelta» pendientes (`core.data.lan.CuentasEntreCajas`). */
+        const val TYPE_CUENTAS_ENTRE_CAJAS = "cuentas_entre_cajas"
     }
 }

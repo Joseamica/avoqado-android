@@ -47,6 +47,29 @@ object TextosDeCuentaSinRed {
     /** Codex r3 H3: la caja ajena perdió el candado antes de recibir el efectivo. */
     const val CANDADO_PERDIDO = "Se perdió el contacto con las otras cajas: esta cuenta no se cobró aquí."
 
+    // MARK: - D12 · Opción D: la caja que abrió la cuenta da el permiso (`opcion-d-brief.md`). <caja> = el nombre de la caja.
+
+    /** Mientras se le pregunta a la caja que la abrió (5 s o menos). */
+    fun avisandoA(caja: String) = "Avisándole a $caja…"
+
+    /** Otra caja la tiene apartada o comprometida. */
+    fun laEstaCobrandoEn(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} la está cobrando en $caja. Espera a que termine."
+
+    /** La caja que la abrió no se ve en la red; sin su nombre, [SE_ABRIO_EN_OTRA_CAJA]. */
+    fun noLaEncuentro(caja: String?) =
+        caja?.let { "Esta cuenta se abrió en $it y no la encuentro en la red. Cóbrala ahí o cuando vuelva la conexión." } ?: SE_ABRIO_EN_OTRA_CAJA
+
+    /** Justo antes del cajón la caja que la abrió no contestó: no se recibe el efectivo. */
+    fun sePerdioElContacto(caja: String) =
+        "Se perdió el contacto con $caja: esta cuenta no se cobró aquí. No recibas el efectivo. Cóbrala en $caja o cuando vuelva la conexión."
+
+    /** En la caja que la abrió, 2 min después de que otra la comprometió sin avisar «cobrada». */
+    fun noConfirmo(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} empezó a cobrarla en $caja y no confirmó. Pregúntale antes de cobrar."
+    const val NO_SE_COBRO_COBRAR_AQUI = "No se cobró: cobrar aquí"
+
+    /** En la lista (y como razón del gris): ya se cobró en esa caja. */
+    fun cobradaEn(caja: String, faltaSubirla: Boolean) = if (faltaSubirla) "Cobrada en $caja · falta subirla" else "Cobrada en $caja"
+
     /** El texto de cada gris que sale de la FILA. */
     fun de(r: RazonSinRed): String = when (r) {
         RazonSinRed.NO_ES_DE_MOSTRADOR, RazonSinRed.SIN_SALDO_DEL_SERVIDOR -> TextosDeTarjetas.COBRAR_CUENTA_SIN_RED

@@ -67,4 +67,14 @@ class LanHubServiceTest {
         assertEquals(LeaseOutcome.NoHub, hub.acquireCoordinado("cuenta:o1", "s1", "Juan"))
         assertFalse(hub.candadoVigente("cuenta:o1"))
     }
+
+    @Test
+    fun `D12 opción D - el hub enciende las cuentas entre cajas con la sucursal y las apaga al parar`() {
+        val cuentas = mockk<CuentasEntreCajas>(relaxed = true)
+        val h = LanHubService(secure, transporte, cuentas)
+        h.start()
+        verify(exactly = 1) { cuentas.encender("venue-a") }
+        h.stop()
+        io.mockk.verifyOrder { cuentas.encender("venue-a"); cuentas.apagar() } // `start` también apaga lo anterior antes de encender
+    }
 }

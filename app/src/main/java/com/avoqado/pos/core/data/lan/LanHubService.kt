@@ -24,6 +24,8 @@ private const val TAG = "LanHubService"
 class LanHubService @Inject constructor(
     private val secureStorage: SecureStorage,
     private val transporte: TransporteLan,
+    /** D12 · Opción D: las cuentas abiertas entre cajas viven con el hub Premium (contesta las suyas y pregunta las ajenas). */
+    private val cuentas: CuentasEntreCajas? = null,
 ) {
     private var coordinator: LanHubCoordinator? = null
     private var venueActivo: String? = null
@@ -53,11 +55,13 @@ class LanHubService @Inject constructor(
         coordinator = hub
         venueActivo = venueId
         hub.start()
+        cuentas?.encender(venueId)
         _enabled.value = true
         Log.i(TAG, "🛰️ Hub LAN enganchado | venue=$venueId device=${transporte.deviceId.take(6)}")
     }
 
     fun stop() {
+        cuentas?.apagar()
         coordinator?.stop()
         coordinator = null
         venueActivo = null

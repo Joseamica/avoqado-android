@@ -64,6 +64,16 @@ class RegistroDeCuentasTest {
         assertEquals(Respuesta.Concedida, Registro().comprometer(beto).respuesta)
     }
 
+    @Test fun `la misma caja reemplaza su propio apartado con otro intento, otra caja no`() {
+        val apartada = Registro().apartar(ana).registro
+        val propia = apartada.comprometer(ana.copy(intento = "llave-ana"))
+        assertEquals(Respuesta.Concedida, propia.respuesta)
+        assertEquals("llave-ana", propia.registro.estado()?.intento)
+        assertEquals(Respuesta.Ocupada("Ana", "Caja 2"), apartada.comprometer(beto).respuesta)
+        // Lo comprometido no lo reemplaza ni la misma caja con otro intento.
+        assertEquals(Respuesta.Ocupada("Ana", "Caja 2"), propia.registro.comprometer(ana.copy(intento = "otra-llave")).respuesta)
+    }
+
     @Test fun `COMPROMETIDA nunca se libera por tiempo`() {
         val reg = Registro().comprometer(ana).registro
         pasan(24 * 60 * 60 * 1000L)

@@ -108,7 +108,8 @@ object RegistroDeCuentas {
             c?.estado == EstadoDeCuenta.CERRADA ->
                 // Con internet manda el saldo vivo del servidor; sólo un cobro que aún no sube lo bloquea. Sin red, siempre (H1).
                 Paso(r, if (s.enLinea && !c.faltaSubirla) Respuesta.Concedida else Respuesta.Cerrada(c.caja, c.faltaSubirla))
-            c != null && c.intento != s.intento -> Paso(r, Respuesta.Ocupada(c.quien, c.caja))
+            // Otro intento ocupa la cuenta, salvo el apartado de la MISMA caja: su cobro compromete con la llave del cobro.
+            c != null && c.intento != s.intento && !(c.estado == EstadoDeCuenta.APARTADA && c.por == s.por) -> Paso(r, Respuesta.Ocupada(c.quien, c.caja))
             // Un apartado no baja un compromiso del mismo intento (la renovación de fondo puede llegar tarde).
             c?.estado == EstadoDeCuenta.COMPROMETIDA && a == EstadoDeCuenta.APARTADA -> Paso(r, Respuesta.Concedida)
             else -> Paso(
