@@ -28,7 +28,10 @@ import javax.inject.Singleton
 data class CobroSinReproducir(
     val orderId: String?,
     val totalCents: Int,
-    /** La llave del cobro de `pending_payments` (null en el outbox): su pareja exacta en el cajón la consume (rediseño r9). */
+    /**
+     * La llave del cobro: el id de `pending_payments` o, desde D5 · T, el del `PAY_CASH` de la cola de mesas (B0). Su pareja exacta en
+     * el cajón la consume (rediseño r9). null = no la trae (intent de antes de B0, o pruebas).
+     */
     val llave: String? = null,
 )
 
@@ -68,7 +71,8 @@ data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: In
  *
  * Las DOS colas cuentan, porque un cobro sin red cae en una o en la otra:
  *  - **outbox de intents** (`PAY_CASH`) cuando la mesa nació provisional; el
- *    `localOrderId` del payload es el MISMO id con el que la venta entró al cajón.
+ *    `localOrderId` del payload (o `orderId`, la mesa del servidor por la cola, B1) es el MISMO id con el que la venta entró
+ *    al cajón, y desde B0 el id del intent es la llave del cobro: tiene pareja exacta como la otra cola (D5 · T).
  *  - **`pending_payments`** cuando la orden ya existía, o cuando fue un cobro de
  *    mostrador y el POST falló.
  *
@@ -179,6 +183,11 @@ class PendingCashSales @Inject constructor(
      * cajón → llave `K`), para cada cobro de efectivo PURO de [cajas] que todavía puede subir ([todaviaPuedeSubir]), sin la ventana de
      * la caja. Cada uno protege EXACTAMENTE su venta (`idDeLaVentaEnEfectivo(K)`) mientras el servidor no la reclame.
      *
+     * 🔴 D5 · T (Codex b1-r1 #2): de las DOS colas. El efectivo de una mesa va como `PAY_CASH` en la cola de mesas, cuyo id ES la
+     * llave del cobro desde B0. Cuenta el PENDING sin retención Q15 (el retenido no sale solo y puede haber aterrizado; el REJECTED,
+     * como el FAILED de la otra cola, no protege: ante la duda, sobrante y nunca faltante), de una de [cajas] según su payload y de
+     * efectivo puro (sin `method` ni `tenderTypeId`). Ningún `PAY_CASH` pasa por HELD.
+     *
      * Arranca de las copias: sin copias no se lee nada. Los ids del cajón son el UUID v3 de la llave y no se pueden invertir, así que se
      * leen los cobros vivos de ESAS cajas, en tandas de [TANDA_DE_COBROS_VIVOS], y se recorren TODAS (antes se truncaba a los 500 más
      * recientes del negocio y una copia vieja quedaba sin pareja: sobrante falso). Sólo se guardan las parejas de las copias.
@@ -202,12 +211,25 @@ class PendingCashSales @Inject constructor(
                 despuesDe = tanda.last().createdAt
                 despuesDeId = tanda.last().id
             }
+            // D5 · T: la cola de mesas, en la MISMA lectura transaccional (el replay no puede subir K entre una cola y otra).
+            if (pares.size < copias.size) for (cobro in intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH)) {
+                val caja = cajaDelPayload(cobro.payloadJson) ?: continue
+                if (cobro.id.isBlank() || cobro.q15Reason != null || caja !in cajas || !esEfectivoPuro(cobro.payloadJson)) continue
+                val venta = CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id)
+                if (venta in copias) pares[venta] = cobro.id
+            }
             pares
         }
     }
 
     private suspend fun <T> enTransaccion(bloque: suspend () -> T): T =
         if (database == null) bloque() else database.withTransaction { bloque() }
+
+    /** Un `PAY_CASH` declarado a mano (`method`) o con un tipo del catálogo (`tenderTypeId`) no es efectivo puro (mismo criterio que la otra cola). */
+    private fun esEfectivoPuro(payloadJson: String): Boolean = runCatching {
+        val obj = json.parseToJsonElement(payloadJson) as JsonObject
+        obj["method"] == null && obj["tenderTypeId"] == null
+    }.getOrDefault(false)
 
     /**
      * El `PAY_CASH` del outbox trae el importe partido en `amountCents` y `tipCents`
@@ -227,8 +249,12 @@ class PendingCashSales @Inject constructor(
                     (obj["tipCents"]?.jsonPrimitive?.intOrNull ?: 0)
                 if (total <= 0) return@runCatching null
                 CobroSinReproducir(
-                    orderId = obj["localOrderId"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                    // D5 · T: la mesa del servidor por la cola (B1) trae `orderId` en vez de `localOrderId`.
+                    orderId = (obj["localOrderId"]?.jsonPrimitive?.contentOrNull ?: obj["orderId"]?.jsonPrimitive?.contentOrNull)
+                        ?.takeIf(String::isNotBlank),
                     totalCents = total,
+                    // D5 · T: su id es la llave (B0). Si la pasada exacta lo usa, lo consume y ya no protege otra fila.
+                    llave = pendiente.id.takeIf(String::isNotBlank),
                 )
             }.getOrNull()
         }

@@ -99,6 +99,12 @@ data class SyncIntentPayload(
     val payloadJson: String,
     @ColumnInfo(name = "created_at")
     val createdAt: Long,
+    /** D5 · T: el id del intent. En un `PAY_CASH` (desde B0) ES la llave del cobro, y su venta del cajón es `idDeLaVentaEnEfectivo(id)`. */
+    @ColumnInfo(name = "id")
+    val id: String = "",
+    /** D5 · T: la retención para revisión (Q15). Un `PAY_CASH` retenido no sale solo (`SyncOutbox`): no protege por pareja exacta. */
+    @ColumnInfo(name = "q15Reason")
+    val q15Reason: String? = null,
 )
 
 
@@ -331,7 +337,7 @@ interface SyncIntentDao {
      * hoy. La consulta sólo TRAE el dato; quién queda dentro de la ventana lo decide
      * `PendingCashSales`, en Kotlin, que es donde los tests lo fijan.
      */
-    @Query("SELECT payload_json, created_at FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
+    @Query("SELECT id, payload_json, created_at, q15Reason FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
     suspend fun pendingPayloads(venueId: String, type: String): List<SyncIntentPayload>
 
     @Query(Q15_HISTORY_COUNT_SQL)
