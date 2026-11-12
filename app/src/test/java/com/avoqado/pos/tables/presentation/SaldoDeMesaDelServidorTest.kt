@@ -22,7 +22,7 @@ class SaldoDeMesaDelServidorTest {
         items = listOf(OrderDetailItem("i0", total = 100.0, externalId = "sync:r0:0"))), seq = 10, llavesPrevias = listOf("r0"), tomadaEn = 1)
 
     private fun saldo(rondas: Map<String, List<CartItem>> = emptyMap(), filas: List<FilaDeLaOrden> = emptyList(), foto: FotoDeMesa? = this.foto,
-        recuperando: Boolean = false, tomadaAqui: Boolean = true, ultima: OrderDetail? = null, fuera: Boolean = false) =
+        recuperando: Boolean = false, tomadaAqui: Boolean = true, ultima: OrderDetail? = foto?.detalle, fuera: Boolean = false) =
         saldoDeMesaDelServidor(foto, rondas, filas, recuperando, tomadaAqui, ultima, fuera)
 
     @Test fun `27b foto mas ronda sin red menos el efectivo`() {
@@ -71,6 +71,24 @@ class SaldoDeMesaDelServidorTest {
         val conDescuento = OrderDetail("order-F", total = 90.0, discounts = listOf(AppliedOrderDiscount("d", "10 %", 10.0)), discountAmount = 10.0)
         assertEquals(SaldoSinRed.EnGris(motivoCuentaNoSimple(conDescuento)!!), saldo(foto = null, ultima = conDescuento))
         assertEquals(SaldoSinRed.EnGris(SIN_CUENTA_COMPLETA), saldo(foto = null, ultima = OrderDetail("order-F", total = 100.0)))
+    }
+
+    @Test fun `decision A la foto solo vale si es la ultima cuenta leida (huella), y una relectura identica no la deja gris`() {
+        val r = mapOf("r1" to listOf(item(2000)))
+        val filas = listOf(fila("r1", "ADD_ITEMS", 11))
+        val conVersion = foto.copy(detalle = foto.detalle.copy(version = 3))
+        // Relectura idéntica (otro objeto, misma versión): vale.
+        assertEquals(SaldoSinRed.Conocido(12000, 0, hayCobro = false), saldo(r, filas, conVersion, ultima = conVersion.detalle.copy(customerName = null)))
+        // Sin versión (servidor viejo): mismos renglones en otro orden, misma huella.
+        val dos = foto.detalle.copy(items = foto.detalle.items + OrderDetailItem("i9", total = 0.0))
+        assertEquals(huellaDeCuenta(dos), huellaDeCuenta(dos.copy(items = dos.items.reversed())))
+        // Codex b2b-r2 #1: después leyó la cuenta con un descuento del panel (versión 4) y no pudo borrar la foto ⇒ gris con su razón.
+        val conDescuento = conVersion.detalle.copy(version = 4, total = 80.0, discounts = listOf(AppliedOrderDiscount("d")), discountAmount = 20.0)
+        assertEquals(SaldoSinRed.EnGris(motivoCuentaNoSimple(conDescuento)!!), saldo(r, filas, conVersion, ultima = conDescuento))
+        // Otra versión aunque siga simple (otra tablet le cambió algo y la lectura no pudo volver a fotografiar) ⇒ gris.
+        assertEquals(SaldoSinRed.EnGris(SIN_CUENTA_COMPLETA), saldo(r, filas, conVersion, ultima = conVersion.detalle.copy(version = 5, total = 130.0)))
+        // Sin la última cuenta guardada, tampoco.
+        assertEquals(SaldoSinRed.EnGris(SIN_CUENTA_COMPLETA), saldo(r, filas, conVersion, ultima = null))
     }
 
     @Test fun `la cuenta simple es la que no tiene abonos, descuento de cuenta, cargo ni IVA aparte`() {

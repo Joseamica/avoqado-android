@@ -50,9 +50,16 @@ class PuertaDeLaFotoTest {
         server.start()
     }
 
-    @After fun cerrar() { server.shutdown(); dir.setWritable(true); dir.deleteRecursively() }
+    @After fun cerrar() { server.shutdown(); dir.walkTopDown().forEach { it.setWritable(true) }; dir.deleteRecursively() }
 
     private fun enDisco(orderId: String) = FotosDeMesas(dir).foto("v1", orderId)
+
+    /** Un error de E/S que impide BORRAR (las carpetas de sucursal no dejan quitar archivos). «Disco lleno» no basta: `delete()` no pide espacio. */
+    private fun <T> sinPoderBorrar(bloque: () -> T): T {
+        val carpetas = dir.listFiles { f -> f.isDirectory }.orEmpty()
+        carpetas.forEach { assertTrue(it.setWritable(false)) }
+        try { return bloque() } finally { carpetas.forEach { it.setWritable(true) } }
+    }
 
     private fun tomar(orderId: String = "order-F", alias: String = "local-F", mesa: String = "table-F") {
         val ids = setOf(orderId, alias, mesa)
@@ -148,13 +155,28 @@ class PuertaDeLaFotoTest {
         assertNull(enDisco("order-F"))
     }
 
-    @Test fun `si borrar el disco falla la peticion no sale`() {
+    @Test fun `F1 piloto prendido si no se puede borrar la foto la peticion no sale`() {
         tomar()
-        assertTrue(dir.setWritable(false))
-        try { post("orders/order-F/pay", """{"amount":1}"""); fail("debió fallar") } catch (_: IOException) {}
-        dir.setWritable(true)
+        sinPoderBorrar { try { post("orders/order-F/pay", """{"amount":1}"""); fail("debió fallar") } catch (_: IOException) {} }
         assertEquals("el servidor nunca la recibió", 0, server.requestCount)
-        assertNotNull("la foto sigue (no se borró a medias)", enDisco("order-F"))
+        assertNotNull("la foto sigue (nada salió)", enDisco("order-F"))
+        assertNotNull("y sigue viva en memoria", fotos.foto("v1", "order-F"))
+    }
+
+    @Test fun `F1 la ronda que vuelve y no puede borrar su foto pasa tal cual (2xx enviada, 4xx rechazo) y la foto queda muerta`() {
+        for (codigo in listOf(201, 400)) {
+            tomar(); respuesta = { MockResponse().setResponseCode(codigo).setBody("{}") }
+            val r = sinPoderBorrar {
+                client.newCall(Request.Builder().url(server.url("/api/v1/mobile/venues/v1/orders/order-F/items"))
+                    .post(json("""{"items":[]}""")).build()).execute().use { it.code }
+            }
+            assertEquals("$codigo: la respuesta llega tal cual, nunca como falla de red", codigo, r)
+            assertNull("$codigo: muerta en memoria (no se usa)", fotos.foto("v1", "order-F"))
+            assertNotNull("$codigo: el archivo sobrevivió (residual de E/S)", enDisco("order-F"))
+            // Ya muerta: la siguiente escritura que la menciona reintenta el borrado.
+            post("orders/order-F/discounts", """{"discountId":"d"}""")
+            assertNull(enDisco("order-F"))
+        }
     }
 
     @Test fun `r4 #1 una orden SIN foto con lectura en curso ensucia la lectura y no nace foto`() {
@@ -202,24 +224,47 @@ class PuertaDeLaFotoTest {
         assertEquals(2, escrito)
     }
 
-    @Test fun `Codex b2b-r1 #2 con el piloto apagado la puerta no lee ni depende del disco aunque hayan quedado fotos`() {
+    @Test fun `Codex b2b-r1 #2 decision A con el piloto apagado una foto que no se puede borrar no frena la peticion`() {
         tomar()
-        var prendido = false
-        var escrito = 0
-        val espia = object : RequestBody() {
-            override fun contentType() = "application/json".toMediaType()
-            override fun contentLength() = 30L
-            override fun writeTo(sink: BufferedSink) { escrito++; sink.writeUtf8("""{"orderId":"order-F","x":"12345"}""".take(30)) }
-        }
-        val apagable = FotosDeMesas(dir, { prendido })
+        val apagable = FotosDeMesas(dir, { false })
         val cliente = OkHttpClient.Builder().addInterceptor(PuertaDeLaFoto(apagable)).build()
-        assertTrue(dir.setWritable(false)) // un disco que falla ya no puede frenar nada
-        cliente.newCall(Request.Builder().url(server.url("/api/v1/mobile/venues/v1/orders/order-F/comp")).post(espia).build()).execute().close()
-        dir.setWritable(true)
-        assertEquals("la petición salió", 1, server.requestCount)
-        assertEquals("y la puerta no leyó el cuerpo", 1, escrito)
-        prendido = true
-        assertNull("las fotos del piloto apagado se olvidaron: no vuelven al prenderlo", apagable.foto("v1", "order-F"))
+        sinPoderBorrar {
+            cliente.newCall(Request.Builder().url(server.url("/api/v1/mobile/venues/v1/orders/order-F/items/i/comp"))
+                .post(json("""{"reason":"x"}""")).build()).execute().close()
+        }
+        assertEquals("la petición salió como hoy", 1, server.requestCount)
+        assertNull("la foto quedó muerta en memoria", apagable.foto("v1", "order-F"))
+        assertNotNull("su archivo sobrevivió: lo reintenta la purga al leer el plan", enDisco("order-F"))
+        apagable.alLeerElPlan("v1")
+        assertNull("la purga lo borró", enDisco("order-F"))
+    }
+
+    @Test fun `apagado por sucursal - leer el plan apagado borra sus fotos y nunca las de otra`() {
+        tomar()                                      // v1
+        val enV2 = FotosDeMesas(dir)
+        val l = enV2.empezarLectura(setOf("order-Q"))
+        assertTrue(enV2.crearSi(FotoDeMesa("v2", "order-Q", emptyList(), "mesa-Q", OrderDetail("order-Q", total = 5.0), 1, emptyList(),
+            System.currentTimeMillis()), l))
+        var actual = "v2"
+        val conInterruptor = FotosDeMesas(dir, { actual == "v1" }) // el piloto está prendido sólo en v1
+        conInterruptor.alLeerElPlan("v2")
+        assertNull("v2 sin piloto: sus fotos se van", FotosDeMesas(dir).foto("v2", "order-Q"))
+        assertNotNull("v1 con piloto: intactas", enDisco("order-F"))
+        actual = "v1"
+        conInterruptor.alLeerElPlan("v1")
+        assertNotNull("prendido: nada", enDisco("order-F"))
+        // Un borrado que falla en la purga deja la foto muerta y se reintenta en la siguiente lectura del plan.
+        actual = "v3"
+        sinPoderBorrar { conInterruptor.alLeerElPlan("v1") }
+        assertNull(conInterruptor.foto("v1", "order-F")); assertNotNull(enDisco("order-F"))
+        conInterruptor.alLeerElPlan("v1")
+        assertNull(enDisco("order-F"))
+    }
+
+    @Test fun `el formato viejo de un archivo por sucursal se descarta`() {
+        java.io.File(dir, "0123abcd.json").writeText("""[{"venueId":"v1","orderId":"order-F","detalle":{"id":"order-F"},"seq":1,"tomadaEn":${System.currentTimeMillis()}}]""")
+        assertNull(FotosDeMesas(dir).foto("v1", "order-F"))
+        assertFalse(java.io.File(dir, "0123abcd.json").exists())
     }
 
     @Test fun `la foto vence a las 24 h y sobrevive a reiniciar mientras tanto`() {

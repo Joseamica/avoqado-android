@@ -73,6 +73,16 @@ internal fun motivoCuentaNoSimple(d: com.avoqado.pos.tables.data.OrderDetail): S
 }
 
 /**
+ * D5 · B2b (decisión A, Codex b2b-r2 #1): la huella de una cuenta leída. Con la versión de la orden (el servidor la sube en cada
+ * cambio), `id#v<versión>`; sin ella, id + total + pagado + renglones ordenados, en centavos. Una relectura idéntica da la misma.
+ */
+internal fun huellaDeCuenta(d: com.avoqado.pos.tables.data.OrderDetail): String = d.version?.let { "${d.id}#v$it" } ?: buildString {
+    fun c(x: Double) = Math.round(x * 100)
+    append(d.id).append('|').append(c(d.total)).append('|').append(d.payments.sumOf { c(it.amount) })
+    d.items.sortedBy { it.id }.forEach { append('|').append(it.id).append(':').append(it.quantity).append(':').append(c(it.total)) }
+}
+
+/**
  * D5 · B2b: el saldo sin red de una mesa del servidor = FOTO limpia + rondas propias posteriores (valoradas con su borrador) −
  * efectivo propio posterior, en cualquier estado de la cola salvo rechazo. Todo lo que no se puede asegurar queda en gris con su
  * razón (promesa v5 y R5-1). [filas]: las de la orden posteriores a la foto (cualquier estado) más las sin resolver, con `seq`.
@@ -98,6 +108,10 @@ internal fun saldoDeMesaDelServidor(
         else -> ultimaCuenta?.let(::motivoCuentaNoSimple) ?: SIN_CUENTA_COMPLETA
     })
     if (!tomadaAqui) return SaldoSinRed.EnGris(TOMADA_EN_OTRA_TABLET)
+    // La foto sólo vale si es la última cuenta que esta tablet leyó con éxito: si después leyó otra (un descuento del panel) y no
+    // pudo borrar la foto, aquí no se usa (no depende del borrado).
+    if (ultimaCuenta == null || huellaDeCuenta(ultimaCuenta) != huellaDeCuenta(foto.detalle))
+        return SaldoSinRed.EnGris(ultimaCuenta?.let(::motivoCuentaNoSimple) ?: SIN_CUENTA_COMPLETA)
     if (recuperando) return SaldoSinRed.EnGris(CUENTA_SE_ACTUALIZA)
     val (posteriores, previas) = filas.partition { it.seq > foto.seq }
     // Algo de antes de la foto sigue sin subir: la foto no lo contiene y no se sabe cuánto suma.

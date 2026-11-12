@@ -127,7 +127,14 @@ class MesaDelServidorSinRedTest {
         server.start()
     }
 
-    @After fun limpiar() { server.shutdown(); root.deleteRecursively() }
+    @After fun limpiar() { server.shutdown(); root.walkTopDown().forEach { it.setWritable(true) }; root.deleteRecursively() }
+
+    /** Un error de E/S que impide BORRAR la foto (su carpeta de sucursal no deja quitar archivos). */
+    private inline fun <T> sinPoderBorrar(bloque: () -> T): T {
+        val carpetas = dirFotos.listFiles { f -> f.isDirectory }.orEmpty()
+        carpetas.forEach { assertTrue(it.setWritable(false)) }
+        try { return bloque() } finally { carpetas.forEach { it.setWritable(true) } }
+    }
 
     private fun url(ruta: String) = server.url("/api/v1/mobile/venues/$venue/$ruta")
 
@@ -136,7 +143,7 @@ class MesaDelServidorSinRedTest {
         runCatching { client.newCall(Request.Builder().url(url(ruta)).post(cuerpo.toRequestBody("application/json".toMediaType())).build()).execute().close() }
 
     private fun vm(): TableOrderViewModel {
-        fotos = FotosDeMesas(dirFotos)
+        fotos = FotosDeMesas(dirFotos, { piloto })
         client = OkHttpClient.Builder().addInterceptor(PuertaDeLaFoto(fotos)).build()
         val repository = mockk<TableServiceRepository>(relaxed = true)
         every { repository.tables } returns MutableStateFlow(emptyList())
@@ -359,14 +366,70 @@ class MesaDelServidorSinRedTest {
         val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
         val dao = mockk<SyncIntentDao>(relaxed = true)
         val fila = SyncIntentEntity(llave, venue, "staff", 2, "ADD_ITEMS", """{"orderId":"order-F","items":[]}""")
-        assertTrue(dirFotos.setWritable(false))
-        try { colaReal(dao).conservarAck(SyncAck(llave, "REJECTED", "BUSINESS_RULE", "Producto agotado"), fila, venue, "d1", "d1") }
-        finally { dirFotos.setWritable(true) }
+        sinPoderBorrar { colaReal(dao).conservarAck(SyncAck(llave, "REJECTED", "BUSINESS_RULE", "Producto agotado"), fila, venue, "d1", "d1") }
         coVerify(exactly = 1) { dao.resolve(llave, "REJECTED", any(), any(), any()) }
         estado(llave, "REJECTED")
         assertNotNull("la foto no se pudo borrar", fotoEnDisco())
         assertFalse("nunca $45 con la ronda rechazada", subject.preparePagar())
         assertEquals(CAMBIOS_SIN_SINCRONIZAR, subject.blockedNotice.value)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `Codex b2b-r2 #1 una lectura con descuento que no pudo borrar la foto deja gris, tambien tras reiniciar`() = runTest {
+        var subject = mesaConFoto()
+        cuenta = cuenta.copy(discounts = listOf(AppliedOrderDiscount("d1", "10 %", 2.5)), discountAmount = 2.5, total = 22.5,
+            version = (cuenta.version ?: 0) + 1)
+        sinPoderBorrar { leer(subject) }
+        assertNotNull("el archivo sobrevivió (error de E/S)", fotoEnDisco())
+        conInternet = false
+        leer(subject)
+        assertFalse(subject.preparePagar())
+        assertTrue(subject.blockedNotice.value!!.contains("descuento de cuenta"))
+        // Tras reiniciar, la foto vuelve a cargarse viva del archivo, pero no es la última cuenta leída: tampoco se usa.
+        subject = reiniciar(subject)
+        leer(subject)
+        assertFalse(subject.preparePagar())
+        assertTrue(subject.blockedNotice.value!!.contains("descuento de cuenta"))
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `Codex b2b-r2 #2 apagar, descartar un rechazo, prender y reiniciar sin red deja gris`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        val dao = mockk<SyncIntentDao>(relaxed = true)
+        val fila = SyncIntentEntity(llave, venue, "staff", 2, "ADD_ITEMS", """{"orderId":"order-F","items":[]}""")
+        coEvery { dao.findForVenue(venue, llave) } returns fila.copy(status = "REJECTED")
+        val real = colaReal(dao)
+        // El rechazo llega y el disco no deja borrar la foto: queda muerta en memoria, el archivo sobrevive.
+        sinPoderBorrar { real.conservarAck(SyncAck(llave, "REJECTED", "BUSINESS_RULE", "Producto agotado"), fila, venue, "d1", "d1") }
+        estado(llave, "REJECTED")
+        assertNotNull(fotoEnDisco())
+        // Avoqado apaga el piloto: al leer el plan, la tablet borra las fotos de ESA sucursal.
+        piloto = false
+        fotos.alLeerElPlan(venue)
+        assertNull("la purga borró el archivo", fotoEnDisco())
+        // El gerente la marca resuelta (apagado nunca frena) y luego se vuelve a prender y se reinicia sin red.
+        real.dismissRejected(venue, llave)
+        estado(llave, null)
+        piloto = true
+        subject = reiniciar(subject)
+        leer(subject) // restoreDraft re-encola la ronda descartada
+        assertEquals("PENDING", cola.single { it.id == llave }.estado)
+        assertFalse("nunca $45: no hay foto", subject.preparePagar())
+        assertEquals(SIN_CUENTA_COMPLETA, subject.blockedNotice.value)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `F1 la ronda vuelve con 2xx y no puede borrar su foto - queda muerta y la mesa no cobra con ella`() = runTest {
+        val subject = mesaConFoto()
+        sinPoderBorrar { ronda(subject, 2000) } // con internet: el servidor la aplica
+        assertTrue("la ronda no quedó pendiente", cola.none { it.tipo == "ADD_ITEMS" })
+        conInternet = false
+        leer(subject)
+        assertFalse(subject.preparePagar())
+        assertEquals(SIN_CUENTA_COMPLETA, subject.blockedNotice.value)
         subject.viewModelScope.cancel()
     }
 

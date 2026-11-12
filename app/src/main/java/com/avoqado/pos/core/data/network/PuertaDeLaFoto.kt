@@ -9,7 +9,8 @@ import okio.Buffer
 /**
  * D5 · B2b, punto de paso ① (piloto `MESAS_SIN_RED`): toda escritura del cliente HTTP principal que mencione en su URL o en su
  * cuerpo una mesa vigilada ([FotosDeMesas]) borra su foto del disco ANTES de salir; si el disco falla, la petición no sale. No
- * cambia ninguna petición ni respuesta y no registra el cuerpo. Sin fotos ni lecturas vigiladas, no lee nada.
+ * cambia ninguna petición ni respuesta y no registra el cuerpo. Sin fotos ni lecturas vigiladas, no lee nada. Con el piloto
+ * apagado nunca frena: una foto que no se pudo borrar queda muerta en memoria (`FotosDeMesas`).
  *
  * Excepciones: la ronda (`POST …/orders/{id}/items`) borra al VOLVER, con 2xx o 4xx (un 4xx descarta la fila aunque un intento
  * anterior quizá se aplicó); sin respuesta, con 409 o 5xx la ronda sigue en la cola y la foto se conserva. Y lo que sólo
@@ -26,7 +27,9 @@ class PuertaDeLaFoto(private val fotos: FotosDeMesas) : Interceptor {
         if (escritura.ids.isNotEmpty()) android.util.Log.d(TAG, "${if (ronda) "Ronda en vuelo sobre" else "Foto borrada por"} ${request.method} $ruta")
         val response = try { chain.proceed(request) } catch (e: Throwable) { fotos.terminarEscritura(escritura); throw e }
         val borrar = ronda && (response.code in 200..299 || (response.code in 400..499 && response.code != 409))
-        try { fotos.terminarEscritura(escritura, borrar) } catch (e: java.io.IOException) { response.close(); throw e }
+        // Lo que ya pasó no se convierte en falla de red: si el disco no deja borrar, la foto queda muerta y la respuesta sigue
+        // tal cual (un 4xx es rechazo y la ronda no queda pendiente sumando).
+        fotos.terminarEscritura(escritura, borrar)
         if (borrar && escritura.ids.isNotEmpty()) android.util.Log.d(TAG, "Foto borrada al volver la ronda (${response.code}) $ruta")
         return response
     }

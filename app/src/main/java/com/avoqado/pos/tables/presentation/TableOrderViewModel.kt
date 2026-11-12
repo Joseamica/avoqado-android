@@ -384,7 +384,7 @@ class TableOrderViewModel @Inject constructor(
     private suspend fun tomarFoto(vId: String, s: TableSession.Active, detail: OrderDetail, pedido: PedidoDeFoto, sigueVigente: () -> Boolean) {
         val fotos = fotos ?: return
         try {
-            if (motivoCuentaNoSimple(detail) != null) { fotos.borrarSiMenciona(s.orderId); return }
+            if (motivoCuentaNoSimple(detail) != null) { fotos.invalidar(s.orderId); return }
             if (!pedido.limpiaAlPedir || !nadaPendiente(vId, s) || !sigueVigente()) return
             val snapshot = draftStore?.loadResolved(vId, s.orderId)?.takeIf { it.first == s.orderId }?.second ?: return
             if (!snapshot.tomadaAqui || tableSession.current()?.mode != TableSession.Mode.ORDERING) return
@@ -680,8 +680,8 @@ class TableOrderViewModel @Inject constructor(
                     if (pedido != null) tomarFoto(vId, session, detail, pedido) {
                         tableSession.contextoActual() == contextoDeSesion && generation == checkLoadGeneration && generacionAlSalir == generacion &&
                             venueId == vId && tableSession.current()?.orderId == session.orderId
-                    // También con el cobro abierto: una cuenta que ya no es simple no deja foto (c).
-                    } else if (pilotoSinRed && motivoCuentaNoSimple(detail) != null) runCatching { fotos?.borrarSiMenciona(session.orderId) }
+                    // También con el cobro abierto o el piloto apagado: una cuenta que ya no es simple no deja foto (c). Sin fotos, no-op.
+                    } else if (motivoCuentaNoSimple(detail) != null) fotos?.invalidar(session.orderId)
                 },
                 onFailure = { e ->
                     if (tableSession.contextoActual() != contextoDeSesion || generation != checkLoadGeneration || generacionAlSalir != generacion || venueId != vId || tableSession.current()?.orderId != session.orderId) return@fold

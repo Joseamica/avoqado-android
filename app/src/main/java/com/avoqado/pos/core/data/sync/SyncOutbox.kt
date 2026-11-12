@@ -315,7 +315,7 @@ class SyncOutbox @Inject constructor(
         // D5 · B2b, punto de paso ②: antes de escribirse. Si el disco falla, no se encola (y el llamador lo dice).
         if (type !in TIPOS_QUE_NO_TOCAN_LA_FOTO) fotos?.let { f ->
             f.conFotoEn(originalPayload).takeIf { it.isNotEmpty() }?.let { Log.d(TAG, "📸 Foto borrada al encolar $type: $it") }
-            f.borrarSiMenciona(originalPayload)
+            f.borrarAntesDe(originalPayload)
         }
         val capture = if(type == SyncIntentTypes.PAY_CASH) com.avoqado.pos.payment.data.ConciliacionDelCobro.capturarIntent(
             venueId,id,originalPayload,cashTenderedCents,changeCents,splitType,restanteEsperadoCents,
@@ -690,10 +690,9 @@ class SyncOutbox @Inject constructor(
     internal suspend fun conservarAck(ack: SyncAck, row: SyncIntentEntity, venueId: String, sentDeviceId: String, currentDeviceId: String) {
         val resultJson = ack.result?.let { json.encodeToString(JsonObject.serializer(), it) }
         // D5 · B2b (R5-1): un rechazo de algo de la mesa (su ronda, sobre todo) mata su foto: si el gerente la descarta y el borrador
-        // la vuelve a encolar, nunca suma sobre la foto. Si el disco falla, el rechazo se guarda igual (Codex b2b-r1 #1): la fila
-        // rechazada pone la mesa en gris, y «Marcar resuelta» no la quita hasta poder borrar la foto (`dismissRejected`).
-        if (!ack.isAcked) runCatching { fotos?.borrarSiMenciona(row.payloadJson) }
-            .onFailure { Log.w(TAG, "📸 No se pudo borrar la foto del rechazo ${row.id}: queda en gris por la fila rechazada") }
+        // la vuelve a encolar, nunca suma sobre la foto. Si el disco no deja borrarla, queda muerta en memoria y el rechazo se guarda
+        // igual (Codex b2b-r1 #1): la fila rechazada pone gris, y con el piloto prendido «Marcar resuelta» no la quita hasta borrarla.
+        if (!ack.isAcked) runCatching { fotos?.invalidar(row.payloadJson) }
         if(ack.status == "REJECTED" && ack.errorCode == "STALE_DEVICE_SEQUENCE") {
             require(row.venueId == venueId && sentDeviceId.isNotBlank() && sentDeviceId == currentDeviceId)
             dao.resolveStaleSequence(ack.id,venueId,row.seq,
@@ -733,9 +732,9 @@ class SyncOutbox @Inject constructor(
 
     /** El gerente resolvió el rechazo a mano y lo descarta de la cuarentena. */
     suspend fun dismissRejected(venueId: String, id: String) {
-        // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Si el disco falla, lanza y la fila
-        // rechazada se queda (la mesa sigue en gris).
-        fotos?.let { f -> dao.findForVenue(venueId, id)?.let { f.borrarSiMenciona(it.payloadJson) } }
+        // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Con el piloto prendido, si el disco no
+        // deja borrarla, lanza y la fila rechazada se queda (la mesa sigue en gris); apagado, sigue como hoy (la foto queda muerta).
+        fotos?.let { f -> dao.findForVenue(venueId, id)?.let { f.borrarAntesDe(it.payloadJson) } }
         dao.dismiss(id)
         refreshCounts(venueId)
     }
