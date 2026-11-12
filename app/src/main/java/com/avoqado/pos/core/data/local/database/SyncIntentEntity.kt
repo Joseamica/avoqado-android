@@ -27,6 +27,17 @@ data class FilaSinResolver(
     @ColumnInfo(name = "payload_json") val payloadJson: String,
 )
 
+/** D5 · B2b: lo que la foto de una mesa necesita de la cola: lo posterior a ella (cualquier estado) y lo que sigue sin resolver. */
+internal const val FILAS_DESDE_SQL = "SELECT id, type, status, seq, payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND (seq > :desde OR status IN ('PENDING','HELD','REJECTED'))"
+
+data class FilaConSecuencia(
+    @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "type") val type: String,
+    @ColumnInfo(name = "status") val status: String,
+    @ColumnInfo(name = "seq") val seq: Long,
+    @ColumnInfo(name = "payload_json") val payloadJson: String,
+)
+
 /**
  * Offline-first Corte B — el OUTBOX de intents (patrón "Libreta" de la TPV
  * generalizado a mutaciones de orden). Toda acción de mesas hecha sin red se
@@ -225,6 +236,8 @@ interface SyncIntentDao {
     suspend fun sinResolver(venueId: String): List<IntentSinResolver>
     @Query(FILAS_SIN_RESOLVER_SQL)
     suspend fun filasSinResolver(venueId: String): List<FilaSinResolver>
+    @Query(FILAS_DESDE_SQL)
+    suspend fun filasDesde(venueId: String, desde: Long): List<FilaConSecuencia>
 
     @Query("SELECT * FROM cached_payloads WHERE venue_id = :venueId AND cache_key IN (:keys) LIMIT 100")
     suspend fun preparationBefore(venueId: String, keys: List<String>): List<CachedPayloadEntity>
