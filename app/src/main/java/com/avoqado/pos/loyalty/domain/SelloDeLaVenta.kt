@@ -26,14 +26,13 @@ object TextosDelSello {
         "✓ +1 sello · $stampsEarned de $stampsRequired"
 
     // MARK: - Tarjetita de sellos (21-oct)
-    const val TITULO_SUMO = "+1 sello"
-
     /** «+1 sello» / «+2 sellos». */
     fun sellos(n: Int): String = if (n == 1) "+1 sello" else "+$n sellos"
 
     /** Servidor nuevo (manda `stampsAdded`): «✓ +2 sellos · Buen Fin sello doble». */
-    fun selloSumadoConPromo(n: Int, promo: String?): String =
-        "✓ ${sellos(n)}" + (promo?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "")
+    fun selloSumadoConPromo(n: Int, promo: String?, earned: Int, required: Int): String =
+        "✓ ${sellos(n)}" + (promo?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "") +
+            (if (earned > 0 && required > 0) " · $earned de $required" else "")
     const val TITULO_COMPLETA = "¡Completó su tarjeta!"
 
     fun cuenta(llenos: Int, total: Int): String = "$llenos de $total"
@@ -123,7 +122,7 @@ fun textoDelSello(outcome: SaleStampOutcome?): String? {
         // pasa a la cartilla nueva, la abierta arranca en 1, no en 0).
         outcome.stampsAdded?.let { n ->
             return if (outcome.saleCard?.completed == true) TextosDelSello.PREMIO_POR_COBRAR
-            else TextosDelSello.selloSumadoConPromo(n, outcome.promotionName)
+            else TextosDelSello.selloSumadoConPromo(n, outcome.promotionName, outcome.stampsEarned, outcome.stampsRequired)
         }
         // Resuelto por el coordinador: la cartilla recién COMPLETADA deja abierta la nueva en 0 (sólo pasa al completar).
         // `rewardReady` puede venir de un premio viejo sin cobrar, así que no decide el texto cuando hay cuenta. Pero con

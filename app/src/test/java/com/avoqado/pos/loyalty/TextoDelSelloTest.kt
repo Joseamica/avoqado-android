@@ -236,8 +236,9 @@ class TextoDelSelloTest {
 
     @Test
     fun `stampsAdded 2 con promo dice cuantos sellos y la promocion`() {
-        assertEquals("✓ +2 sellos · Buen Fin sello doble", textoDelSello(sello(stamped = true, earned = 3, added = 2, promo = "Buen Fin sello doble")))
-        assertEquals("✓ +1 sello", textoDelSello(sello(stamped = true, earned = 3, added = 1)))
+        assertEquals("✓ +2 sellos · Buen Fin sello doble · 5 de 8", textoDelSello(sello(stamped = true, earned = 5, required = 8, added = 2, promo = "Buen Fin sello doble")))
+        assertEquals("✓ +1 sello · 3 de 8", textoDelSello(sello(stamped = true, earned = 3, required = 8, added = 1)))
+        assertEquals(textoDelSello(sello(stamped = true, earned = 3, required = 8)), textoDelSello(sello(stamped = true, earned = 3, required = 8, added = 1)))
         val t = tarjetaDelSello(sello(stamped = true, added = 2, cartilla = SaleStampCard(5, 7)))!!
         assertEquals("+2 sellos", t.titulo)
         assertEquals(2, t.sellosNuevos)

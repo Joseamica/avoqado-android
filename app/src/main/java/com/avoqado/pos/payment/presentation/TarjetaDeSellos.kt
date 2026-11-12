@@ -126,7 +126,8 @@ private fun FilaDeCirculos(tarjeta: TarjetaDelSello, tamano: Dp) {
         for (numero in 1..tarjeta.total) {
             val lleno = numero <= tarjeta.llenos
             // El sello de ESTA venta es el último lleno: entra con un «pop», una sola vez.
-            val escala = remember { Animatable(if (numero > tarjeta.llenos - tarjeta.sellosNuevos && numero <= tarjeta.llenos) 0.3f else 1f) }
+            val esNuevo = numero > tarjeta.llenos - tarjeta.sellosNuevos && numero <= tarjeta.llenos
+            val escala = remember { Animatable(if (esNuevo) 0.3f else 1f) }
             LaunchedEffect(Unit) {
                 if (escala.value < 1f) escala.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
             }
