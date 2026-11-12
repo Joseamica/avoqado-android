@@ -4344,6 +4344,10 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                         // 🔴 La caja de la venta (efectivo sin red en el turno correcto): el servidor saca de ahí el turno.
                         cajaCapturada?.let { put("cashDrawerSessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                        // D5 · B2b (piloto): lo que la tablet creía que debía la cuenta ANTES de este cobro. Si el SERVIDOR tiene otro
+                        // saldo deja `COBRO_SIN_RED_CON_DIFERENCIA` en la bitácora (no cambia ni rechaza el cobro). La provisional no lo manda.
+                        if (conIdDelServidor) mesaCapturada?.mesa?.takeIf { it.orderId == orderId && it.totalCents >= 0 }
+                            ?.let { put("expectedBalanceBeforeCents", kotlinx.serialization.json.JsonPrimitive(it.totalCents)) }
                     },
                     cashTenderedCents = cashReceivedCents, changeCents = changeCents, splitType = splitCapturado,
                     // 19-oct (mesa sin red retenida): lo que la mesa debía al empezar el cobro, menos lo cobrado. Al confirmarse, si

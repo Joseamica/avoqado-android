@@ -113,6 +113,14 @@ class PlanManager @Inject constructor(
         return currentTier.rank >= requiredTier.rank
     }
 
+    /**
+     * D5 · interruptor de un PILOTO que concede Avoqado negocio por negocio (no se vende ni lo trae un plan): sólo la lista
+     * EXACTA que confirmó el servidor. Falla CERRADO, al revés que [hasFeature]: sin plan leído, con una lectura vieja, exento
+     * o demo, está apagado. Al terminar el piloto se quita la lectura (y su código) en el mismo cambio.
+     */
+    fun concedidaPorAvoqado(code: String): Boolean =
+        secureStorage.planSnapshot?.takeIf { it.accessSchemaVersion == 1 }?.grantedFeatureCodes.orEmpty().contains(code)
+
     /** Display label ("Pro"/"Premium") of the tier required for [code], or null if ungated. */
     fun requiredTierLabel(code: String): String? = FEATURE_REQUIRED_TIER[code]?.displayLabel
 

@@ -383,6 +383,8 @@ class H2H3TenderCaptureTest {
         val captura = com.avoqado.pos.payment.data.ConciliacionDelCobro.leerCaptura(cobro.q15CaptureJson, "venue-1", cobro.id)!!
         assertEquals("order-R", captura.orderId)
         assertEquals("el saldo que la tablet espera tras el cobro (4000 − 4000)", 0, captura.restanteEsperadoCents)
+        assertEquals("B2b: lo que la tablet creía que se debía ANTES del cobro (bloque P del SERVIDOR)", 4000,
+            payload.getValue("expectedBalanceBeforeCents").jsonPrimitive.int)
         recordCashPaymentDe("order-R", 0)
         assertTrue("nada en la cola de cobros", rows.isEmpty())
         assertEquals("una venta en el cajón, con la llave del cobro", CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id), ventasDelCajon().single().id)
@@ -425,6 +427,8 @@ class H2H3TenderCaptureTest {
         assertEquals(2, intents.size)
         assertEquals(listOf("PAY_CASH", "PAY_CASH"), intents.map { it.type })
         assertNotEquals(intents[0].id, intents[1].id)
+        // D5 · B2b: la mesa provisional queda como hoy, sin el saldo esperado ANTES del cobro (sólo el piloto lo manda).
+        assertTrue(intents.none { Json.parseToJsonElement(it.payloadJson).jsonObject.containsKey("expectedBalanceBeforeCents") })
         assertEquals(intents.map { CashDrawerRepository.idDeLaVentaEnEfectivo(it.id) }.toSet(), ventasDelCajon().map { it.id }.toSet())
     }
 

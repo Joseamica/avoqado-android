@@ -324,6 +324,36 @@ class PlanManagerTest {
         assertEquals("Pro", planManager.requiredTierLabel("DEVICE_MENUS"))
     }
 
+    // MARK: - D5 · interruptor del piloto «mesas sin red»: lo concede Avoqado y falla CERRADO (al revés que hasFeature)
+
+    @Test fun `concedidaPorAvoqado sin plan leido esta apagada`() {
+        stubPlan(tier = null)
+        assertFalse(planManager.concedidaPorAvoqado("MESAS_SIN_RED"))
+    }
+
+    @Test fun `concedidaPorAvoqado con snapshot viejo sin lista exacta esta apagada aunque sea Premium o exento`() {
+        stubPlan("PREMIUM", exempt = true)
+        every { secureStorage.planSnapshot } returns PlanSnapshot(tier = "PREMIUM", exempt = true)
+        assertFalse(planManager.concedidaPorAvoqado("MESAS_SIN_RED"))
+        every { secureStorage.planSnapshot } returns PlanSnapshot(tier = "PREMIUM", accessSchemaVersion = 2, grantedFeatureCodes = listOf("MESAS_SIN_RED"))
+        assertFalse(planManager.concedidaPorAvoqado("MESAS_SIN_RED"))
+    }
+
+    @Test fun `concedidaPorAvoqado con el codigo ausente esta apagada aunque el negocio sea exento`() {
+        stubPlan("ENTERPRISE", exempt = true)
+        every { secureStorage.planSnapshot } returns PlanSnapshot(tier = "ENTERPRISE", exempt = true, accessSchemaVersion = 1,
+            grantedFeatureCodes = listOf("TABLE_SERVICE", "OFFLINE_LAN_HUB"))
+        assertFalse(planManager.concedidaPorAvoqado("MESAS_SIN_RED"))
+        // hasFeature, que falla abierto, sí lo dejaría pasar: por eso el piloto no lo usa.
+        assertTrue(planManager.hasFeature("MESAS_SIN_RED"))
+    }
+
+    @Test fun `concedidaPorAvoqado prendida solo con el codigo concedido en la lista exacta`() {
+        stubPlan("FREE")
+        every { secureStorage.planSnapshot } returns PlanSnapshot(tier = "FREE", accessSchemaVersion = 1, grantedFeatureCodes = listOf("MESAS_SIN_RED"))
+        assertTrue(planManager.concedidaPorAvoqado("MESAS_SIN_RED"))
+    }
+
     /**
      * Candado estructural: TODO código que la app consulta al plan tiene que estar en el mapa.
      * Un código que falte no truena — `hasFeature` lo deja pasar en cualquier plan (así se

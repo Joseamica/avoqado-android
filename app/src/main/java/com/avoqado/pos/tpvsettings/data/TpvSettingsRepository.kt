@@ -225,6 +225,8 @@ class TpvSettingsRepository internal constructor(
     private val deviceIdProvider: CanonicalDeviceIdProvider,
     private val displayModeAuthorityGate: DisplayModeAuthorityGate,
     private val receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache? = null,
+    /** D5 · B2b: al leer el plan con el piloto apagado, se borran las fotos de mesas de ESA sucursal. */
+    private val fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas? = null,
 ) {
     @Inject
     constructor(
@@ -236,6 +238,7 @@ class TpvSettingsRepository internal constructor(
         syncOutboxProvider: Provider<SyncOutbox>,
         displayModeAuthorityGate: DisplayModeAuthorityGate,
         receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache,
+        fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas,
     ) : this(
         secureStorage = secureStorage,
         client = client,
@@ -245,6 +248,7 @@ class TpvSettingsRepository internal constructor(
         deviceIdProvider = CanonicalDeviceIdProvider { syncOutboxProvider.get().deviceId },
         displayModeAuthorityGate = displayModeAuthorityGate,
         receiptLogoCache = receiptLogoCache,
+        fotosDeMesas = fotosDeMesas,
     )
 
     // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
@@ -613,6 +617,8 @@ class TpvSettingsRepository internal constructor(
             val applied = whileCurrent {
                 // Missing/unsupported/stale responses preserve the last complete snapshot.
                 if (status?.plan != ComponentsStatusDto.FAILED) secureStorage.storePlanSnapshot(venueId, result.data?.plan)
+                // D5 · B2b: con el piloto apagado en el plan guardado, sus fotos de mesas se borran (mejor esfuerzo; nunca frena nada).
+                runCatching { fotosDeMesas?.alLeerElPlan(venueId) }
                 Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
 
                 // PIN de autorización de gerente. Igual que el plan: SÓLO en el camino exitoso. El `catch` de red no lo
