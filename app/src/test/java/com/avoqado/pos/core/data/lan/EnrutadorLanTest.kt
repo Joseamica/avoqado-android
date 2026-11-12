@@ -91,4 +91,14 @@ class EnrutadorLanTest {
         assertFalse(protocol.displayed(EnrutadorLan.responder(encoded, "venue-1", emptySet(), null, null, { true }, { setOf("s") }), command))
     }
 
+    /** D12 · tubería (hz:e5ee98bc:D4): `quien` contesta el TXT del anuncio; sin él (una app vieja) es «Operación desconocida». */
+    @Test fun `quien contesta el TXT del anuncio y una app vieja contesta error`() = runTest {
+        val linea = LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_QUIEN))
+        val txt = LanTxt.construir("tablet-1", "venue-1", false, 1_000, emptySet(), hub = true, cajaConD = "Caja 1")
+        val r = LeaseProtocol.decodeResponse(EnrutadorLan.responder(linea, "venue-1", emptySet(), null, null, quien = txt))
+        assertEquals(LeaseProtocol.STATUS_OK, r?.status)
+        assertEquals(txt, r?.txt)
+        val vieja = LeaseProtocol.decodeResponse(EnrutadorLan.responder(linea, "venue-1", emptySet(), LeaseServer()::respondTo, null))
+        assertEquals(LeaseProtocol.STATUS_ERROR, vieja?.status)
+    }
 }

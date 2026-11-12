@@ -1,0 +1,243 @@
+package com.avoqado.pos.core.data.lan
+
+import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import com.avoqado.pos.core.data.local.PayloadCache
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.PrintConfigRepository
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.just
+import io.mockk.mockk
+import io.mockk.runs
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * D12 · tubería de D (hz:e5ee98bc:D4) en el transporte de verdad: NSD de mentira (se disparan sus callbacks a mano, como en el ensayo
+ * del 11-nov: la D3 vio a la N86 y después NSD dijo «perdido» para siempre) y el `quien` de la N86 inyectado. El socket propio y el
+ * `quien` por loopback son reales.
+ */
+class CajasPorTcpEnElTransporteTest {
+    private val config = MutableStateFlow(PrintConfig())
+    private val printConfig = mockk<PrintConfigRepository> {
+        every { this@mockk.config } returns this@CajasPorTcpEnElTransporteTest.config
+        every { getCurrentConfig() } answers { this@CajasPorTcpEnElTransporteTest.config.value }
+    }
+    private val outbox = mockk<SyncOutbox> { every { deviceId } returns "tablet-prueba" }
+    private val disco = Collections.synchronizedMap(mutableMapOf<String, PayloadCache.Cached>())
+    private val cache = mockk<PayloadCache> {
+        coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
+    }
+    private val busquedas = Collections.synchronizedList(mutableListOf<NsdManager.DiscoveryListener>())
+    private val resoluciones = Collections.synchronizedList(mutableListOf<NsdManager.ResolveListener>())
+    private val nsd = mockk<NsdManager>(relaxed = true) {
+        every { discoverServices(any<String>(), any<Int>(), capture(busquedas)) } just runs
+        every { resolveService(any(), capture(resoluciones)) } just runs
+    }
+
+    private val laN86 = "n86-aaaa"
+    private val n86 = mockk<NsdServiceInfo>(relaxed = true) {
+        every { serviceType } returns "._avoqado-pos._tcp."
+        every { serviceName } returns "Avoqado-POS-n86-aa"
+        every { attributes } returns mapOf("did" to laN86, "venue" to "venue-1", "hub" to "1", "d" to "1", "caja" to "Caja 2")
+            .mapValues { it.value.toByteArray() }
+        every { host } returns InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 100, 152.toByte()))
+        every { port } returns 36056
+    }
+
+    /** Lo que contesta el `quien` en la dirección de la N86 (null = nada); [freno] lo detiene. */
+    @Volatile private var respuesta: LeaseResponse? = null
+    @Volatile private var freno: CompletableDeferred<Unit>? = null
+    private val preguntas = AtomicInteger()
+    private val soyLaN86 = LeaseResponse(
+        status = LeaseProtocol.STATUS_OK,
+        txt = mapOf("did" to laN86, "venue" to "venue-1", "hub" to "1", "d" to "1", "caja" to "Caja 2 · Barra"),
+    )
+
+    private fun transporte() = TransporteLan(mockk<Context>(relaxed = true) { every { getSystemService(Context.NSD_SERVICE) } returns nsd }, outbox, printConfig, cache)
+        .also { t ->
+            t.preguntarQuien = { p ->
+                freno?.await()
+                preguntas.incrementAndGet()
+                if (p.host == "192.168.100.152" && p.port == 36056) respuesta else null
+            }
+        }
+
+    private suspend fun encendido(t: TransporteLan): TransporteLan {
+        t.iniciar("venue-1")
+        t.conectarHub(LeaseServer()::respondTo)
+        withTimeout(10_000) { while (t.puerto <= 0 || t.peers.value.none { it.deviceId == "tablet-prueba" }) delay(25) }
+        return t
+    }
+
+    private fun TransporteLan.laN86(): LanPeer? = peers.value.firstOrNull { it.deviceId == laN86 }
+
+    private suspend fun esperar(que: String, cond: () -> Boolean) = withTimeout(5_000) { while (!cond()) delay(25) }.also { assertTrue(que, cond()) }
+
+    private suspend fun vistaPorNsd(t: TransporteLan) {
+        busquedas.last().onServiceFound(n86)
+        resoluciones.last().onServiceResolved(n86)
+        esperar("NSD la ve") { t.laN86() != null }
+    }
+
+    /** La puerta de D sobre ESTE transporte: la N86 abrió la cuenta y concede; nadie más contesta. */
+    private val clienteDeCuentas = mockk<LeaseClient> {
+        coEvery { preguntarCuenta(any(), any(), any(), any()) } answers {
+            if (firstArg<LanPeer>().deviceId == laN86) LeaseResponse(status = LeaseProtocol.STATUS_GRANTED) else null
+        }
+    }
+
+    private fun cuentasSobre(t: TransporteLan) = CuentasEntreCajas(t, mockk<DuenoDeCuentas>(relaxed = true) {
+        every { deviceId } returns "tablet-prueba"
+        every { nombreCaja } returns "Caja 1"
+        coEvery { apartar(any(), any(), any()) } returns null
+    }, cache) { null }.also { it.client = clienteDeCuentas; it.encender("venue-1") }
+
+    @Test fun `NSD la pierde y su quien contesta - sigue en la lista, D la encuentra como dueña, y con dos fallas sale`() = runBlocking {
+        val t = encendido(transporte())
+        try {
+            vistaPorNsd(t)
+            respuesta = soyLaN86
+            busquedas.last().onServiceLost(n86)
+            assertTrue("no se cae mientras se confirma", t.laN86() != null)
+            esperar("su TXT sale del quien") { t.laN86()?.nombreCaja == "Caja 2 · Barra" }
+
+            val entre = cuentasSobre(t)
+            try {
+                val r = entre.apartar("venue-1", "o1", "i-1", "Beto", enLinea = false)
+                assertEquals(Respuesta.Concedida, r.respuesta)
+                assertEquals(laN86, r.deviceId)
+                assertEquals("Caja 2 · Barra", r.caja)
+            } finally {
+                entre.apagar()
+            }
+
+            respuesta = null
+            t.revisarPorTcp()
+            assertTrue("una falla no la saca", t.laN86() != null)
+            t.revisarPorTcp()
+            assertNull("dos seguidas: fuera", t.laN86())
+            assertEquals("abajo de Android 14 (detalle 7) es TCP puro: ningún resolve más de NSD", 1, resoluciones.size)
+        } finally {
+            t.detener()
+        }
+    }
+
+    @Test fun `misma IP con otro aparato - sale y D no le pregunta nada de una cuenta`() = runBlocking {
+        val t = encendido(transporte())
+        try {
+            vistaPorNsd(t)
+            respuesta = LeaseResponse(status = LeaseProtocol.STATUS_OK, txt = mapOf("did" to "otra-tablet", "venue" to "venue-1", "d" to "1"))
+            busquedas.last().onServiceLost(n86)
+            esperar("fuera") { t.laN86() == null }
+
+            val entre = cuentasSobre(t)
+            try {
+                assertNull(entre.apartar("venue-1", "o1", "i-1", "Beto", enLinea = false).respuesta)
+                coVerify(exactly = 0) { clienteDeCuentas.preguntarCuenta(any(), any(), any(), any()) }
+            } finally {
+                entre.apagar()
+            }
+        } finally {
+            t.detener()
+        }
+    }
+
+    @Test fun `reinicio de la app - la recordada que contesta vuelve a la lista sin NSD`() = runBlocking {
+        val antes = encendido(transporte())
+        try {
+            vistaPorNsd(antes)
+            esperar("quedó en disco") { disco.keys.any { it.startsWith(PayloadCache.TYPE_CAJAS_RECORDADAS) } }
+        } finally {
+            antes.detener()
+        }
+        respuesta = soyLaN86
+        val despues = encendido(transporte()) // NSD nunca la vuelve a ver
+        try {
+            esperar("la primera revisión la trae") { despues.laN86()?.nombreCaja == "Caja 2 · Barra" }
+        } finally {
+            despues.detener()
+        }
+    }
+
+    @Test fun `el sondeo nunca corre en el hilo de quien llama`() = runBlocking {
+        val t = encendido(transporte())
+        try {
+            vistaPorNsd(t)
+            respuesta = soyLaN86
+            freno = CompletableDeferred() // el quien de la N86 tarda lo que tarde
+            val inicio = System.nanoTime()
+            busquedas.last().onServiceLost(n86) // el hilo de NSD
+            t.refrescarPeers() // la entrega de cocina
+            val ms = (System.nanoTime() - inicio) / 1_000_000
+            assertTrue("ni NSD ni la entrega esperan al quien ($ms ms)", ms < 500)
+            assertTrue("y sigue en la lista mientras tanto", t.laN86() != null)
+            freno?.complete(Unit)
+            esperar("ya contestó") { t.laN86()?.nombreCaja == "Caja 2 · Barra" }
+        } finally {
+            freno?.complete(Unit)
+            t.detener()
+        }
+    }
+
+    @Test fun `quien por el socket real contesta el TXT del anuncio`() = runBlocking {
+        val t = encendido(transporte())
+        try {
+            t.conectarCuentas({ "" }, "Caja 1")
+            val r = LeaseClient().quien(LanPeer("x", "127.0.0.1", t.puerto))
+            assertEquals(LeaseProtocol.STATUS_OK, r?.status)
+            val txt = requireNotNull(r?.txt)
+            assertEquals("tablet-prueba", txt["did"])
+            assertEquals("venue-1", txt["venue"])
+            assertEquals("1", txt["hub"])
+            assertEquals("1", txt["d"])
+            assertEquals("Caja 1", txt["caja"])
+            assertTrue(txt.containsKey("boot") && txt.containsKey("wired"))
+        } finally {
+            t.detener()
+        }
+    }
+
+    @Test fun `quien respeta 1_5 s por caja aunque la otra acepte y no conteste`() {
+        ServerSocket(0, 50, InetAddress.getLoopbackAddress()).use { mudo ->
+            val abiertas = Collections.synchronizedList(mutableListOf<Socket>())
+            val aceptar = Thread { runCatching { while (true) abiertas += mudo.accept() } }.apply { isDaemon = true; start() }
+            val inicio = System.nanoTime()
+            val r = runBlocking { LeaseClient().quien(LanPeer("x", "127.0.0.1", mudo.localPort)) }
+            val ms = (System.nanoTime() - inicio) / 1_000_000
+            assertNull(r)
+            assertTrue("≈ 1.5 s, nunca los 3 s de una lectura de mesas ($ms ms)", ms in 1_400..2_300)
+            abiertas.forEach { runCatching { it.close() } }
+            aceptar.interrupt()
+        }
+    }
+
+    @Test fun `una caja que NSD nunca vio no se sondea`() = runBlocking {
+        val t = encendido(transporte())
+        try {
+            t.revisarPorTcp()
+            assertEquals(0, preguntas.get())
+            assertFalse(t.peers.value.any { it.deviceId != "tablet-prueba" })
+        } finally {
+            t.detener()
+        }
+    }
+}

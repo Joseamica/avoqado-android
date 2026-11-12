@@ -47,6 +47,9 @@ mensaje de error.
 
 Misma SSID y mismo rango de IP (por ejemplo, todos en `192.168.1.x`).
 
+Las cajas, en la misma banda del WiFi (2.4 GHz o 5 GHz) o en una red sin separar entre bandas; si no, se encuentran por la
+dirección que ya conocían.
+
 El descubrimiento usa mDNS, que **no cruza routers ni VLANs** por diseño. Si la
 caja está en una red y los meseros en otra, no se ven aunque ambas tengan
 internet.

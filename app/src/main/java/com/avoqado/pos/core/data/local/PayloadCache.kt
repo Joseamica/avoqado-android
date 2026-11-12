@@ -86,5 +86,8 @@ class PayloadCache @Inject constructor(
 
         /** D12 · Opción D: quién abrió cada cuenta ajena y los avisos «cobrada»/«suelta» pendientes (`core.data.lan.CuentasEntreCajas`). */
         const val TYPE_CUENTAS_ENTRE_CAJAS = "cuentas_entre_cajas"
+
+        /** D12 · tubería: las cajas que NSD resolvió en la sucursal, para seguir hablándoles por TCP si NSD las pierde (`core.data.lan.CajasRecordadas`). */
+        const val TYPE_CAJAS_RECORDADAS = "cajas_recordadas"
     }
 }

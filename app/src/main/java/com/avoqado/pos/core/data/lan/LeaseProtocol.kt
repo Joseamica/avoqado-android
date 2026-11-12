@@ -99,6 +99,12 @@ object LeaseProtocol {
     const val STATUS_CERRADA = "cerrada"
     const val STATUS_RECHAZADA = "rechazada"
 
+    /**
+     * D12 · tubería (hz:e5ee98bc:D4): «¿quién eres?» por TCP, para la caja que NSD perdió entre las bandas del WiFi. Contesta
+     * [STATUS_OK] con el MISMO TXT del anuncio en `txt`; una app vieja contesta error y esa caja no cuenta por TCP (`CajasRecordadas`).
+     */
+    const val OP_QUIEN = "quien"
+
     /** Rechazo explícito a un peer que habla otra versión del protocolo. */
     const val ERROR_VERSION_MISMATCH = "VERSION_MISMATCH"
 }
@@ -148,4 +154,6 @@ data class LeaseResponse(
     val quien: String? = null,
     val caja: String? = null,
     val faltaSubirla: Boolean? = null,
+    /** D12 · tubería: la respuesta a [LeaseProtocol.OP_QUIEN], el TXT del anuncio tal cual (`did`, `venue`, `boot`, `hub`, `d`, `caja`…). */
+    val txt: Map<String, String>? = null,
 )

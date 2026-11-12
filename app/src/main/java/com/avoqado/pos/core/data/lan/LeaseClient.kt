@@ -72,6 +72,10 @@ class LeaseClient(
         return null
     }
 
+    /** D12 · tubería (hz:e5ee98bc:D4): «¿quién eres?» con plazo ABSOLUTO de [PLAZO_QUIEN_MS] (conectar, escribir y leer). null = no contestó. */
+    suspend fun quien(peer: LanPeer): LeaseResponse? =
+        preguntarCuenta(peer, LeaseRequest(op = LeaseProtocol.OP_QUIEN), PLAZO_QUIEN_MS, PLAZO_QUIEN_MS)
+
     private suspend fun intentoConVigia(peer: LanPeer, request: LeaseRequest, plazoMs: Long): LeaseResponse? = withContext(Dispatchers.IO) {
         val socket = Socket()
         val vigia = launch { delay(plazoMs); runCatching { socket.close() } }
@@ -117,5 +121,8 @@ class LeaseClient(
 
         /** Cada pregunta espera esto y se reintenta una vez (regla 4 de `opcion-d.md`). */
         const val PLAZO_INTENTO_CUENTA_MS = 2_000L
+
+        /** D12 · tubería: lo más que espera una caja el `quien` de otra (en la misma red, un aparato vivo contesta en milisegundos). */
+        const val PLAZO_QUIEN_MS = 1_500L
     }
 }

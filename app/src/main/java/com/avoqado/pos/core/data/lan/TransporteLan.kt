@@ -50,6 +50,8 @@ class TransporteLan @Inject constructor(
     @ApplicationContext private val context: Context,
     private val syncOutbox: SyncOutbox,
     private val printConfigRepository: PrintConfigRepository,
+    /** D12 · tubería (hz:e5ee98bc:D4): el disco de las cajas recordadas ([CajasRecordadas]); null = no recuerda (pruebas sin disco). */
+    private val cajasEnDisco: com.avoqado.pos.core.data.local.PayloadCache? = null,
 ) : LanDiscoveryPort {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -107,6 +109,12 @@ class TransporteLan @Inject constructor(
     private var configJob: Job? = null
     private var discovery: LanDiscovery? = null
 
+    /** D12 · tubería: las cajas que siguen por TCP cuando NSD las pierde. Vive lo que vive [discovery] (una por encendido de la red). */
+    private var recordadas: CajasRecordadas? = null
+
+    /** El `quien` por TCP (≤ 1.5 s por caja); inyectable en pruebas. */
+    internal var preguntarQuien: suspend (LanPeer) -> LeaseResponse? = { LeaseClient().quien(it) }
+
     /** El nivel de API que ve [LanDiscovery]; inyectable en pruebas (en la JVM vale 0 y abajo de 34 el re-resolve no corre). */
     internal var apiNivel: Int = Build.VERSION.SDK_INT
     private val bootedAtMillis = System.currentTimeMillis() - SystemClock.elapsedRealtime()
@@ -141,6 +149,7 @@ class TransporteLan @Inject constructor(
                 // registros fallida agotada — sin esto un aparato sólo-hub se quedaba invisible hasta el siguiente cambio.
                 while (true) {
                     encender()
+                    revisarPorTcp()
                     delay(REVISION_DE_RED_MS)
                 }
             }
@@ -251,6 +260,7 @@ class TransporteLan @Inject constructor(
         val d = discovery ?: run {
             lateinit var nueva: LanDiscovery
             nueva = LanDiscovery(context, deviceId, v, apiNivel = apiNivel) { lista -> alCambiarAjenos(nueva, lista) }
+            recordadas = cajasEnDisco?.let { CajasRecordadas(it, v, deviceId, preguntarQuien) }
             nueva.also { discovery = it }
         }
         d.anunciar(port, txt(v))
@@ -262,6 +272,7 @@ class TransporteLan @Inject constructor(
     @Synchronized
     private fun apagarRed() {
         discovery?.parar(); discovery = null
+        recordadas = null
         acceptJob?.cancel(); acceptJob = null
         runCatching { serverSocket?.close() }; serverSocket = null
         ajenos = emptyList()
@@ -332,8 +343,42 @@ class TransporteLan @Inject constructor(
     @Synchronized
     private fun alCambiarAjenos(origen: LanDiscovery, lista: List<LanPeer>) {
         if (discovery !== origen) return
+        val perdidas = ajenos.filter { a -> lista.none { it.deviceId == a.deviceId } }
         ajenos = lista
+        recordadas?.let { r ->
+            // D12 · tubería: la que NSD perdió sigue en la lista mientras conteste por TCP; se confirma y se recuerda en el fondo, nunca
+            // en el hilo de NSD que avisó.
+            r.sostener(perdidas)
+            scope.launch {
+                runCatching { if (perdidas.isNotEmpty()) r.confirmarPerdidas(perdidas); r.recordar(lista) }
+                    .onFailure { Log.w(TAG, "⚠️ cajas por TCP: ${it.message}") }
+                publicarSiVigente(r)
+            }
+        }
         publicarPeers()
+    }
+
+    /**
+     * D12 · tubería: en la revisión de cada minuto, en el scope del transporte (nunca en quien llama): recuerda lo que NSD ve y pregunta
+     * `quien` a las recordadas que no ve (≤ 1.5 s cada una, en paralelo).
+     */
+    internal suspend fun revisarPorTcp() {
+        val (r, vistos) = synchronized(this) { recordadas to ajenos }
+        r ?: return
+        try {
+            r.revisar(vistos)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ revisión de cajas por TCP: ${e.message}")
+        }
+        publicarSiVigente(r)
+    }
+
+    /** Lo que llega tarde de un encendido anterior (otra sucursal, la red apagada) no se publica. */
+    @Synchronized
+    private fun publicarSiVigente(r: CajasRecordadas) {
+        if (recordadas === r) publicarPeers()
     }
 
     private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
@@ -345,7 +390,7 @@ class TransporteLan @Inject constructor(
         if (venueId == null || p <= 0) { _peers.value = emptyList(); return }
         val yo = LanPeer(deviceId, "127.0.0.1", p, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
             if (preparationReceiver != null) 1 else 0, urgencyVersion)
-        _peers.value = listOf(yo) + ajenos
+        _peers.value = listOf(yo) + ajenos + recordadas?.porTcp(ajenos).orEmpty()
     }
 
     private fun abrirSocket(): Int? {
@@ -401,7 +446,8 @@ class TransporteLan @Inject constructor(
             val prep = preparationReceiver
             val prepVigente: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? =
                 if (prep == null) null else { command -> prep(command) && generacion == g && venueId == command.venueId }
-            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay, cuentas)
+            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay, cuentas,
+                quien = venueId?.let { txt(it) })
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }
     }
