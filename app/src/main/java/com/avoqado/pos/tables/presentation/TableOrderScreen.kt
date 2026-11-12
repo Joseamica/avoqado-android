@@ -470,6 +470,7 @@ fun TableOrderScreen(
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
+                                cuentaCobradaAqui = viewModel.cuentaCobradaAqui,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -653,6 +654,7 @@ fun TableOrderScreen(
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
+                                cuentaCobradaAqui = viewModel.cuentaCobradaAqui,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -1518,6 +1520,8 @@ internal fun TableCheckPanel(
     cuentaCompletaAqui: Boolean,
     /** Se está leyendo la cuenta o hay un cambio propio en vuelo. */
     cargandoCuenta: Boolean,
+    /** 9b: la mesa abierta sin internet ya se cobró aquí y falta subirla (ver `TableOrderViewModel.cuentaCobradaAqui`). */
+    cuentaCobradaAqui: Boolean = false,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1731,15 +1735,22 @@ internal fun TableCheckPanel(
                 // Se distingue por los artículos, no por el importe.
                 val sinCargos = itemCount <= 0
                 // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
+                // 9b: ya cobrada aquí sin internet, no se ofrece cobrarla otra vez.
+                val motivoParaNoPagar = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos }
+                    ?: CUENTA_COBRADA_AQUI.takeIf { cuentaCobradaAqui }
                 BlockedTapOverlay(
-                    reason = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos },
+                    reason = motivoParaNoPagar,
                     onBlocked = onBlocked,
                     modifier = Modifier.weight(0.5f),
                 ) {
                     PrimaryButton(
-                        text = if (saldoDeMesaConocido) "Pagar ${centsDisplay(subtotalCents)}" else "Pagar",
+                        text = when {
+                            cuentaCobradaAqui -> "Ya pagada"
+                            saldoDeMesaConocido -> "Pagar ${centsDisplay(subtotalCents)}"
+                            else -> "Pagar"
+                        },
                         onClick = onPagar,
-                        enabled = !sinCargos,
+                        enabled = motivoParaNoPagar == null,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
