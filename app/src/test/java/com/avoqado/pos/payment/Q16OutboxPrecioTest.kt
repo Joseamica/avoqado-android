@@ -87,8 +87,8 @@ class Q16OutboxPrecioTest {
             outbox.usarContextoDeSincronizacion(Dispatchers.Unconfined)
             outbox.start(VENUE)
         }
-        fun add(id:String,seq:Int,ref:String="L",type:String=SyncIntentTypes.ADD_ITEMS) {
-            val payload=JSONObject().put("localOrderId",ref).put("items",org.json.JSONArray("""[{"productId":"original-product","quantity":1}]""")).toString()
+        fun add(id:String,seq:Int,ref:String="L",type:String=SyncIntentTypes.ADD_ITEMS,llave:String="localOrderId") {
+            val payload=JSONObject().put(llave,ref).put("items",org.json.JSONArray("""[{"productId":"original-product","quantity":1}]""")).toString()
             disk.sql("INSERT INTO pos_sync_intents(id,venue_id,status,created_at,type,seq,payload_json) VALUES(:id,:v,'PENDING',1,:t,:s,:p)",mapOf("id" to id,"v" to VENUE,"t" to type,"s" to seq,"p" to payload))
         }
         fun pending(venue:String,limit:Int)=disk.query("SELECT * FROM pos_sync_intents WHERE venue_id=:v AND status IN ('PENDING','HELD') ORDER BY seq LIMIT :n",mapOf("v" to venue,"n" to limit)).map {
@@ -415,6 +415,33 @@ class Q16OutboxPrecioTest {
             f.outbox.enqueue(VENUE,SyncIntentTypes.PAY_CASH,Json.parseToJsonElement("""{"localOrderId":"L","amountCents":3000,"tipCents":0}""").jsonObject,
                 id="pay",retenido=true,restanteEsperadoCents=0)
             assertEquals(3,ConciliacionDelCobro.leerCaptura(f.row("pay")["q15CaptureJson"] as String,VENUE,"pay")!!.toleranciaCents)
+        }
+    }
+    // D5 · B1: el cobro de una mesa del SERVIDOR por la cola de mesas lleva `orderId` (no `localOrderId`), igual que sus rondas.
+    @Test fun `B1 la tolerancia del cobro sin red tambien sale de los combos de una mesa del servidor`() = runTest {
+        Fixture().use { f -> f.add("add",1,ref="R",llave="orderId")
+            f.disk.sql("INSERT INTO pos_sync_intents(id,venue_id,status,created_at,type,seq,payload_json) VALUES('combo',:v,'PENDING',1,'ADD_ITEMS',2,:p)",
+                mapOf("v" to VENUE,"p" to """{"orderId":"R","items":[{"quantity":1,"promotionRef":{"selections":[{},{},{}]}}]}"""))
+            f.disk.sql("INSERT INTO pos_sync_intents(id,venue_id,status,created_at,type,seq,payload_json) VALUES('comboL',:v,'PENDING',1,'ADD_ITEMS',3,:p)",
+                mapOf("v" to VENUE,"p" to """{"localOrderId":"L","items":[{"quantity":1,"promotionRef":{"selections":[{},{}]}}]}"""))
+            f.outbox.enqueue(VENUE,SyncIntentTypes.PAY_CASH,Json.parseToJsonElement("""{"orderId":"R","amountCents":3000,"tipCents":0}""").jsonObject,
+                id="pay",retenido=true,restanteEsperadoCents=0)
+            assertEquals("1¢ por componente de los combos de R, nada de otra mesa",3,
+                ConciliacionDelCobro.leerCaptura(f.row("pay")["q15CaptureJson"] as String,VENUE,"pay")!!.toleranciaCents)
+            // La de hoy (provisional, `localOrderId`) no cuenta las rondas de la mesa del servidor.
+            f.outbox.enqueue(VENUE,SyncIntentTypes.PAY_CASH,Json.parseToJsonElement("""{"localOrderId":"L","amountCents":3000,"tipCents":0}""").jsonObject,
+                id="payL",retenido=true,restanteEsperadoCents=0)
+            assertEquals(2,ConciliacionDelCobro.leerCaptura(f.row("payL")["q15CaptureJson"] as String,VENUE,"payL")!!.toleranciaCents)
+        }
+    }
+    @Test fun `B1 mesa del servidor con su cobro en la cola sale en orden y el cobro no retiene la ronda`() = runTest {
+        Fixture().use { f -> f.add("add",1,ref="R",llave="orderId")
+            f.outbox.enqueue(VENUE,SyncIntentTypes.PAY_CASH,Json.parseToJsonElement("""{"orderId":"R","amountCents":3000,"tipCents":0}""").jsonObject,
+                id="pay",restanteEsperadoCents=0)
+            assertEquals("R",f.row("pay")["capturedOrderRef"]);assertNotNull(f.row("pay")["q15CaptureJson"])
+            f.drain()
+            assertNull(f.row("add")["q15Reason"])
+            assertEquals("la ronda sale primero",listOf("add"),f.mandado().take(1))
         }
     }
     companion object { const val VENUE=Q16PrecioCapturadoTest.VENUE }

@@ -126,7 +126,8 @@ class PaymentFlowConSaldoTest {
         runBlocking { withTimeout(5000) { cerrarScopes() } }
         server.shutdown();System.clearProperty("avoqado.test.baseUrl")
     }
-    internal fun vm(orderId:String?=null, flags:Set<String> = emptySet(), efectivoReal:Boolean=false):PaymentFlowViewModel {
+    internal fun vm(orderId:String?=null, flags:Set<String> = emptySet(), efectivoReal:Boolean=false,
+        colaDeMesas:com.avoqado.pos.core.data.sync.SyncOutbox=mockk(relaxed=true)):PaymentFlowViewModel {
         coEvery {terminal.fetchOnlineTerminals(any())} returns TerminalListResult.Success(emptyList())
         val tpv=mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository>()
         every {tpv.getCurrentSettings()} returns TpvSettings(showReviewScreen=false,showTipScreen=false)
@@ -157,7 +158,7 @@ class PaymentFlowConSaldoTest {
             comandaDispatcher=mockk(relaxed=true),comandasPendientesStore=mockk(relaxed=true),replayDeComandas=mockk(relaxed=true),
             customerDisplay=com.avoqado.pos.customerdisplay.CustomerDisplayState(),areaTicketRepository=areas,
             cancelacionDeCobro=mockk(relaxed=true),savedStateHandle=androidx.lifecycle.SavedStateHandle(),tableSession=session,
-            syncOutbox=mockk(relaxed=true),connectivityMonitor=network,cobroConSaldo=coordinator,tarjetasRepository=repo,
+            syncOutbox=colaDeMesas,connectivityMonitor=network,cobroConSaldo=coordinator,tarjetasRepository=repo,
             rolesDeSaldo=roles,cobrosLocalesDeSaldo=local)
         result.startPaymentFlow(cart,resumeOrderId=orderId,cuentaDeTarjetas="regalo" in flags)
         result.configurarSaldo(ventaViva={cart},foto={cart.aFoto(null)},vaciar={
@@ -376,6 +377,53 @@ class PaymentFlowConSaldoTest {
         assertEquals(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR,subject.conductaDeSaldo().motivo)
         subject.selectPaymentMethod(com.avoqado.pos.payment.data.model.PaymentMethod.CASH)
         assertTrue(subject.state.value is com.avoqado.pos.payment.data.model.PaymentFlowState.CollectingCashAmount)
+    }
+    /**
+     * D5 · B1, acuerdo (b) con la dueña de la puerta del efectivo (`docs/audit/2026-11-11-mesas-cobro-sin-red/acuerdos-con-duenas.md`):
+     * un abono en efectivo de una mesa del servidor cobrada por la cola de mesas queda pendiente; después, el saldo de regalo NUNCA
+     * cubre lo que ya cubre la cola: sin red, con la red de vuelta en la misma pantalla, y con la mesa reabierta normal (sin la
+     * bandera) mientras el abono no suba. `conductaDeSaldo` conserva el default de `hayPendiente` (incluye la cola de mesas).
+     */
+    @Test fun b1AbonoEnEfectivoPendienteYDespuesSaldoNuncaCubreLoDeLaCola()=runTest {
+        val cola=mockk<com.avoqado.pos.core.data.sync.SyncOutbox>(relaxed=true)
+        val abonos=mutableListOf<JsonObject>()
+        coEvery { cola.enqueue(any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any()) } answers {
+            if (secondArg<String>()=="PAY_CASH") abonos += thirdArg<JsonObject>(); arg<String>(3) }
+        coEvery { cola.trabajoSinResolverDeLaOrden(any(),any()) } answers {
+            if (abonos.isNotEmpty() && "o" in secondArg<Set<String>>()) com.avoqado.pos.core.data.sync.TrabajoSinResolver(1,0,setOf("PAY_CASH"),4000)
+            else com.avoqado.pos.core.data.sync.TrabajoSinResolver(0,0,emptySet(),0) }
+        local=CobrosLocalesDeLaCuenta(dao,storage,store,cola);coordinator=CobroConSaldoCoordinator(repo,store,storage,local)
+        val mesa=TableSession.Active("t","1",null,"o","ORD",1,10000,TableSession.Mode.PAYING,cobroSinRed=true)
+        session.start(mesa)
+        server.enqueue(response(503,"{}")) // si el abono saliera por /pay (sin B1), que no se quede esperando al servidor
+        fun cuenta(cents:Int)=CartState(items=listOf(CartItem(id="cuenta",type=CartItemType.ProductItem("catalog"),name="Cuenta",unitPrice=cents)))
+        cart=cuenta(4000) // el abono: $40 de una cuenta de $100
+        val abono=vm("o",efectivoReal=true,colaDeMesas=cola)
+        assertEquals("con red, la mesa por la cola de mesas no ofrece saldo",FilaDeLaCaja.T3,abono.conductaDeSaldo().fila)
+        connected.value=false
+        abono.selectPaymentMethod(com.avoqado.pos.payment.data.model.PaymentMethod.CASH)
+        abono.processCashPayment(4000)
+        withContext(Dispatchers.Default) { withTimeoutOrNull(5000) {
+            while (abono.state.value !is com.avoqado.pos.payment.data.model.PaymentFlowState.Success) delay(10) } }
+        assertEquals("el abono es UN PAY_CASH en la cola de mesas, con el id real",listOf("o"),abonos.map { it["orderId"]?.jsonPrimitive?.content })
+        val pedidos=server.requestCount
+
+        // El siguiente cobro de la misma mesa, sin red: saldo en gris y nada sale.
+        session.start(mesa.copy(totalCents=6000))
+        cart=cuenta(6000)
+        val resto=vm("o",colaDeMesas=cola)
+        assertFalse(resto.conductaDeSaldo().habilitada)
+        assertTrue(resto.cobrarConSaldo(identified,6000) is DesenlaceDeCobro.NoSalio)
+        // Vuelve la red con la pantalla abierta: sigue en gris.
+        connected.value=true
+        assertFalse(resto.conductaDeSaldo().habilitada)
+        assertTrue(resto.cobrarConSaldo(identified,6000) is DesenlaceDeCobro.NoSalio)
+        // La mesa reabierta normal (sin la bandera), con red y el abono todavía en la cola: «hay un cobro sin sincronizar».
+        session.start(mesa.copy(totalCents=6000,cobroSinRed=false))
+        val reabierta=vm("o",colaDeMesas=cola)
+        assertEquals(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR,reabierta.conductaDeSaldo().motivo)
+        assertTrue(reabierta.cobrarConSaldo(identified,6000) is DesenlaceDeCobro.NoSalio)
+        assertEquals("ningún cobro con saldo salió al servidor",pedidos,server.requestCount)
     }
     @Test fun entregaSinConfirmarBloqueaEfectivoTerminalYSaldo()=runTest {
         val subject=vm(efectivoReal=true)

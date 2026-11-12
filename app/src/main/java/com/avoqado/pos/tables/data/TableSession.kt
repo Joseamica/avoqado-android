@@ -57,6 +57,12 @@ class TableSession @Inject constructor() {
         val serviceChargeCents: Int = 0,
         /** D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta, aunque cobre otra persona. Null ⇒ la sesión. */
         val meseroNombre: String? = null,
+        /**
+         * D5 · B1: el efectivo de esta mesa del SERVIDOR va por la cola de mesas (`PAY_CASH { orderId }`, detrás de sus rondas), como
+         * una provisional; tarjeta, «otra forma» y saldo de regalo en gris. Sólo la prende `preparePagar` (B2b, piloto) ANTES de abrir el
+         * cobro; la quitan volver al piso y `finalizar`. Un ACK a media pantalla no la quita. Apagada (siempre en B1), todo como antes.
+         */
+        val cobroSinRed: Boolean = false,
     ) {
         val label: String get() = "Mesa $tableNumber" + (areaName?.let { " · $it" } ?: "")
         val idsDeLaOrden: Set<String> get() = setOfNotNull(orderId, localOrderId)
@@ -145,7 +151,7 @@ class TableSession @Inject constructor() {
     fun estacionar(venueId: String, expected: Active): Boolean = synchronized(lock) {
         if (!acepta(venueId) || (activeVenue != null && activeVenue != venueId) || _active.value != expected) return@synchronized false
         revision++
-        val saved = expected.copy(mode = Mode.ORDERING, serviceChargeCents = 0,
+        val saved = expected.copy(mode = Mode.ORDERING, serviceChargeCents = 0, cobroSinRed = false,
             requiereLecturaServidor = expected.requiereLecturaServidor || !expected.isProvisional)
         estacionadas.entries.removeAll { it.key.first == venueId && misma(it.value, saved.idsDeLaOrden) }
         estacionadas[venueId to saved.orderId] = saved
@@ -161,7 +167,7 @@ class TableSession @Inject constructor() {
         val entry = estacionadas.entries.firstOrNull { it.key.first == venueId && it.value.tableId == resumen.tableId && misma(it.value, resumen.idsDeLaOrden) }
         val wasFinalized = resumen.idsDeLaOrden.any { (venueId to it) in finalizadas }
         val restored = (live ?: entry?.value ?: resumen.copy(saldoSinRedConocido = !resumen.isProvisional,
-            requiereLecturaServidor = resumen.requiereLecturaServidor || wasFinalized)).copy(mode = Mode.ORDERING, serviceChargeCents = 0)
+            requiereLecturaServidor = resumen.requiereLecturaServidor || wasFinalized)).copy(mode = Mode.ORDERING, serviceChargeCents = 0, cobroSinRed = false)
         if (entry != null) estacionadas.remove(entry.key)
         _active.value = restored; activeVenue = venueId
         restored

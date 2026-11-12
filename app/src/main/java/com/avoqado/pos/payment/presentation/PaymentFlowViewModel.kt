@@ -2277,7 +2277,8 @@ class PaymentFlowViewModel @Inject constructor(
             connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value,
             rolesDeSaldo?.canRedeemGiftCards == true,cuentaDeTarjetas.value,
             cart.items.any { it.areaTicketId != null },cart.items.any { it.type is CartItemType.CreditPack },
-            id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.isProvisional == true,
+            // D5 · B1: la mesa cobrada por la cola de mesas tampoco ofrece saldo (T3), con o sin red.
+            id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.let { it.isProvisional || it.cobroSinRed } == true,
             cart.creacionIncierta != null,cart.vinoDeCarritoGuardado,cobroConSaldo?.cuentaTrabada(id) == true,
             mesaDelCobro != null,desdeCuentasDeSaldo,id != null,pendiente,
             rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true),
@@ -2737,7 +2738,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
-        if (method == PaymentMethod.CARD && (!origenDelCobro.permiteTarjeta || ventaRapidaEnCero())) return
+        // D5 · B1: la mesa cobrada por la cola de mesas es sólo efectivo, aunque vuelva la red.
+        if (method == PaymentMethod.CARD && (!origenDelCobro.permiteTarjeta || ventaRapidaEnCero() || cobroDeMesaSinRed())) return
         if (bloquearCuentaSinRed()) return
         selectedMethod = method
         val baseAmount = currentBaseAmount()
@@ -3116,8 +3118,9 @@ class PaymentFlowViewModel @Inject constructor(
         // D1: el papel de esta parte, con lo demás capturado (null si no es parte de una venta dividida).
         val papelCapturado = papelDeLaParte()
         val ordenCapturada = createdOrderId
+        // D5 · B1: «por la cola de mesas» = la provisional de hoy o la mesa del servidor con `cobroSinRed` (B2b; en B1 nadie la prende).
         val provisionalCapturada = tableSession.current()?.let {
-            it.isProvisional && it.orderId == ordenCapturada
+            (it.isProvisional || it.cobroSinRed) && it.orderId == ordenCapturada
         } == true
         val valesCapturados = valesDelCobro()
         val permiteColaCapturada = valesCapturados == null
@@ -3673,8 +3676,9 @@ class PaymentFlowViewModel @Inject constructor(
         // D1: el papel de esta parte, con lo demás capturado y ANTES de la reserva (null si no es parte de una venta dividida).
         val papelCapturado = papelDeLaParte()
         val ordenCapturada = createdOrderId
+        // D5 · B1: «por la cola de mesas» = la provisional de hoy o la mesa del servidor con `cobroSinRed` (B2b; en B1 nadie la prende).
         val provisionalCapturada = tableSession.current()?.let {
-            it.isProvisional && it.orderId == ordenCapturada
+            (it.isProvisional || it.cobroSinRed) && it.orderId == ordenCapturada
         } == true
         val valesCapturados = valesDelCobro()
         val permiteColaCapturada = valesCapturados == null
@@ -4324,7 +4328,9 @@ class PaymentFlowViewModel @Inject constructor(
                     vId,
                     com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH,
                     kotlinx.serialization.json.buildJsonObject {
-                        put("localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
+                        // D5 · B1: la mesa del servidor cobrada por la cola de mesas lleva su id real; la provisional, su UUID local.
+                        val conIdDelServidor = mesaCapturada?.mesa?.let { it.cobroSinRed && !it.isProvisional } == true
+                        put(if (conIdDelServidor) "orderId" else "localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
                         put("amountCents", kotlinx.serialization.json.JsonPrimitive(subtotal))
                         put("tipCents", kotlinx.serialization.json.JsonPrimitive(tipCapturado))
                         // Sin esto, un cobro con terminal ajena hecho sin red
@@ -6539,6 +6545,9 @@ class PaymentFlowViewModel @Inject constructor(
         return cart.items.any { it.type is CartItemType.ProductItem }
     }
 
+    /** D5 · B1: la mesa de este cobro va por la cola de mesas (lo prende B2b antes de abrir el cobro). En B1 siempre `false`. */
+    fun cobroDeMesaSinRed(): Boolean = mesaDelCobro?.cobroSinRed == true
+
     /**
      * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden, sin mesa, sin dividir) que un descuento deja en $0.
      * No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin «Ya pagó
@@ -6830,6 +6839,8 @@ class PaymentFlowViewModel @Inject constructor(
 
         /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
         const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."
+        /** D5 · B1: por qué la mesa cobrada por la cola de mesas es sólo efectivo (la prende B2b). */
+        const val TEXTO_MESA_SIN_RED = "Sin internet: se cobra con lo que sabe esta tablet y se sube solo. Sólo efectivo."
 
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
