@@ -3,6 +3,8 @@ package com.avoqado.pos.escritorio.base
 import androidx.room.withTransaction
 import com.avoqado.escritorio.ContextoDeEscritorio
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.di.DatabaseModule
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.SalidaDelApartado
@@ -14,12 +16,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -61,16 +61,19 @@ class AutorizacionDentroDeLaTransaccionRoomTest {
                                 antesDeGuardar = antesDeGuardar)
                         }
                     }
-                    // B ya leyó lo suyo y espera al escritor (si su comprobación corriera ANTES de esa espera, ya habría dicho «vigente»).
-                    withTimeoutOrNull(500) { while (consultas.isEmpty()) delay(10) }
-                    delay(200)
+                    // Codex r5 #3: la señal, no el reloj. B ya hizo todo lo suyo antes del DAO (leer la fila, la caja) y entra a la
+                    // transacción del INSERT, que espera al escritor. Con la comprobación vieja (fuera de la transacción) ya habría dicho
+                    // «vigente» aquí.
+                    withTimeout(10_000) { b.aLaTransaccion.await() }
+                    val alEntrar = consultas.toList()
                     reloj.set(2 * 60_000L) // pasaron los 2 min: en la dueña declararon «No se cobró» y cobraron
                     liberar.complete(Unit)
                     val r = withTimeout(10_000) { holder.join(); reserva.await() }
                     val fila = b.db.pendingPaymentDao().findForVenue(id(90), id(1))
 
-                    laMisma(vencida, r.exceptionOrNull())
+                    assertEquals(emptyList<Boolean>(), alEntrar, "nada se comprobó antes de la transacción (la comprobación vieja decía «vigente» aquí)")
                     assertNull(fila, "B no guardó su efectivo con aquella autorización")
+                    laMisma(vencida, r.exceptionOrNull())
                     assertEquals(listOf(false), consultas.toList(), "se comprobó UNA vez, ya con el escritor y después de la espera")
                 } finally {
                     liberar.complete(Unit)
@@ -118,7 +121,17 @@ class AutorizacionDentroDeLaTransaccionRoomTest {
         val contexto = ContextoDeEscritorio(carpeta)
         val db = DatabaseModule.provideDatabase(contexto)
         private val storage = SecureStorage(contexto).apply { venueId = id(90); userId = id(91) }
-        val cash = CashPaymentRepository(storage, db.pendingPaymentDao(), SalidaDelApartado(db.pendingPaymentDao(), db.cashDrawerDao(), storage, db))
+
+        /** Familia A (Codex r5 #3): la señal determinista de que la reserva llegó al DAO, a la transacción que espera al escritor. */
+        val aLaTransaccion = CompletableDeferred<Unit>()
+        private val dao = db.pendingPaymentDao()
+        private val pagos = object : PendingPaymentDao by dao {
+            override suspend fun insert(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) {
+                aLaTransaccion.complete(Unit)
+                dao.insert(payment, antesDelInsert)
+            }
+        }
+        val cash = CashPaymentRepository(storage, pagos, SalidaDelApartado(dao, db.cashDrawerDao(), storage, db))
         override fun close() {
             db.close()
             carpeta.toFile().deleteRecursively()
