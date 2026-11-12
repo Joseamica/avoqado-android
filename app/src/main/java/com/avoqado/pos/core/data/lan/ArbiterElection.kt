@@ -47,6 +47,8 @@ data class LanPeer(
     val participaEnD: Boolean = false,
     /** D12 · Opción D: el nombre visible de la caja (TXT `caja`), o null. */
     val nombreCaja: String? = null,
+    /** Hub D3: anuncia `pm=1`, habla `estado` (mesa declarada) en vez de acquire/renew/release. */
+    val presencia: Boolean = false,
 )
 
 object ArbiterElection {

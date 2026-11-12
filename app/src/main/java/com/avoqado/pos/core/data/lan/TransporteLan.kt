@@ -384,14 +384,14 @@ class TransporteLan @Inject constructor(
     }
 
     private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
-        if (preparationReceiver != null) 1 else 0, urgencyVersion, cajaConD = nombreCaja?.takeIf { cuentas != null })
+        if (preparationReceiver != null) 1 else 0, urgencyVersion, cajaConD = nombreCaja?.takeIf { cuentas != null }, presencia = hub != null)
 
     @Synchronized
     private fun publicarPeers() {
         val p = puerto
         if (venueId == null || p <= 0) { _peers.value = emptyList(); return }
         val yo = LanPeer(deviceId, "127.0.0.1", p, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
-            if (preparationReceiver != null) 1 else 0, urgencyVersion)
+            if (preparationReceiver != null) 1 else 0, urgencyVersion, presencia = hub != null)
         _peers.value = listOf(yo) + ajenos + recordadas?.porTcp(ajenos).orEmpty()
     }
 
