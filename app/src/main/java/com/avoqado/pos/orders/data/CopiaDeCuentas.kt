@@ -277,7 +277,10 @@ class CopiaDeCuentas @Inject constructor(
             // registro de la dueña. Si no lo pudo guardar, las marcas se quedan para la siguiente lectura.
             val cerradas = antes.keys - filas.keys
             val avisada = (cerradas.isEmpty() && marcas.isEmpty()) || runCatching {
-                dueno?.get()?.alSaberCerradas(venueId, cerradas, marcas.map { it.orderId })
+                // M-1: la última marca de cada cuenta, si es de saldo de regalo y no la pagó (no alcanzó), la deja «con abono». La de tarjeta
+                // no sabe si quedó saldo (`pagada` siempre falso): queda como hoy, y la lista la corrige con el saldo del servidor.
+                dueno?.get()?.alSaberCerradas(venueId, cerradas, marcas.map { it.orderId },
+                    marcas.associateBy { it.orderId }.filterValues { it.conSaldo && !it.pagada }.keys)
             }.onFailure { Log.w(TAG, "⚠️ el registro de la dueña no anotó las cerradas de $venueId: ${it.message}") }.isSuccess
             // R2-1: las marcas se sueltan sólo cuando lo que dicen ya está en el disco de la copia (si no, se vuelven a aplicar).
             if (enDisco && avisada && marcas.isNotEmpty()) runCatching { cuentasCobradas?.olvidar(marcas) }

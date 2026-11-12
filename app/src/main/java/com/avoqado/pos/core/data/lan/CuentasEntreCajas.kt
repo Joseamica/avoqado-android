@@ -104,7 +104,11 @@ class CuentasEntreCajas internal constructor(
      * [respuesta] null = nadie contestó por ella. [deviceId] y [caja] = la dueña si se sabe (contestó o se guardó antes). [enviadoEn] = reloj
      * monotónico de esta caja al ENVIAR (la latencia no alarga la autorización).
      */
-    data class DelDueno(val respuesta: Respuesta?, val deviceId: String?, val caja: String?, val enviadoEn: Long)
+    data class DelDueno(
+        val respuesta: Respuesta?, val deviceId: String?, val caja: String?, val enviadoEn: Long,
+        /** Revisión final I-1: alguna caja preguntada se quedó callada (sin respuesta o con error; «no es mía» no cuenta): quizá era la dueña. */
+        val algunaCallo: Boolean = false,
+    )
 
     /** El nombre de la caja que abrió [orderId], si alguna vez contestó. */
     suspend fun cajaQueLaAbrio(venueId: String, orderId: String): String? = leer(venueId).duenos[orderId]?.caja
@@ -155,8 +159,9 @@ class CuentasEntreCajas internal constructor(
     /**
      * La ÚNICA puerta de un cobro NUEVO sobre una cuenta de Pedidos (R4). La dueña compromete en local y lo deja en disco ANTES de
      * reservar (R2). Otra caja compromete EN VIVO; concedido, guarda su aviso durable ANTES de devolver. [enLinea] = cobra con internet y
-     * el saldo vivo del servidor (regla 8: sin respuesta, como hoy). [esTarjeta]: la tarjeta de otra caja no entra en D.
-     * [esCuentaDePedidos]: la cuenta está en la copia como Mostrador (sólo entonces otra caja pregunta con internet).
+     * el saldo vivo del servidor (regla 8: sin respuesta, como hoy): el SERVIDOR contesta AHORA, no «la pantalla se abrió con red» (Codex
+     * r3 #1). [esTarjeta]: la tarjeta de otra caja no entra en D. [esCuentaDePedidos]: la cuenta está en la copia como Mostrador (sólo
+     * entonces otra caja pregunta).
      */
     suspend fun puerta(
         venueId: String, orderId: String, llave: String, quien: String, enLinea: Boolean, esTarjeta: Boolean, esCuentaDePedidos: Boolean,
@@ -181,6 +186,16 @@ class CuentasEntreCajas internal constructor(
             dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
+        } catch (e: DuenoDeCuentas.RegistroIlegible) {
+            // M-3: el registro de ESTA caja no se deja leer (no se escribe encima). Con red VIVA el SERVIDOR valida su propio cobro en vivo,
+            // salvo que esta caja tenga dinero de la cuenta que aún no sube (R4). Sin red, no. A otra caja nunca le concede (`pedir` calla).
+            Log.e(TAG, "🚨 ${e.message}")
+            return when {
+                !enLinea -> Puerta.NoPasa(NO_SE_GUARDO)
+                dueno.tieneDineroDe(venueId, orderId) ->
+                    Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(dueno.nombreCaja, faltaSubirla = true))
+                else -> Puerta.Libre
+            }
         } catch (e: Exception) {
             return Puerta.NoPasa(NO_SE_GUARDO)
         }
@@ -193,15 +208,18 @@ class CuentasEntreCajas internal constructor(
             return Puerta.NoPasa(textoDe(propia, dueno.nombreCaja))
         }
         if (esTarjeta) return Puerta.Libre
+        // Codex r3 #1: con «en línea» = red viva, una pantalla abierta con internet pregunta sin red: lo que no es de Pedidos (la bandeja, un
+        // pedido web) sigue fuera de D, con o sin red. Desde la copia siempre es de Pedidos.
+        if (!esCuentaDePedidos) return Puerta.Libre
         if (!encendida) return if (enLinea) Puerta.Libre else Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
-        if (enLinea && !esCuentaDePedidos) return Puerta.Libre
         val r = preguntar(venueId, orderId, LeaseProtocol.OP_CUENTA_COMPROMETER, intento, quien, enLinea)
         apartados.remove(orderId)
         val respuesta = r.respuesta
         if (respuesta == null) {
             // Quizá la dueña sí lo anotó y su respuesta se perdió: «suelta» durable hasta su acuse. I2: aunque no se sepa cuál caja es la
-            // dueña (dueña vacía = se le pide a todas las cajas con D; sólo la dueña acusa).
-            runCatching { anotarAviso(venueId, orderId, intento, llave, quien, r.deviceId.orEmpty()) }
+            // dueña (dueña vacía = se le pide a todas las cajas con D; sólo la dueña acusa). I-1: sólo con dueña conocida o si alguna caja
+            // se quedó callada; si todas dijeron «no es mía» (o no hubo a quién preguntar), nadie anotó nada.
+            if (r.deviceId != null || r.algunaCallo) runCatching { anotarAviso(venueId, orderId, intento, llave, quien, r.deviceId.orEmpty()) }
             return if (enLinea) Puerta.Libre
             else Puerta.NoPasa(r.caja?.let { com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto(it) } ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
         }
@@ -224,10 +242,14 @@ class CuentasEntreCajas internal constructor(
      * El cobro de esta caja sobre ESE intento terminó (con o sin dinero). La dueña cierra o reconcilia en local; otra caja suelta el
      * intento a su aviso, que decide por la fila si dice «cobrada» o «suelta». Nunca lanza.
      */
-    suspend fun terminar(venueId: String, orderId: String, p: Puerta.Pasa, quien: String, cobrado: Boolean, subida: Boolean) {
+    suspend fun terminar(
+        venueId: String, orderId: String, p: Puerta.Pasa, quien: String, cobrado: Boolean, subida: Boolean,
+        /** Revisión final M-1: el cobro dejó saldo (una parte, un saldo de regalo que no alcanzó): la dueña la deja «con abono». */
+        conAbono: Boolean = false,
+    ) {
         try {
             when {
-                p.esDueno && cobrado -> dueno.cerrarPropio(venueId, orderId, p.intento, quien, subida)
+                p.esDueno && cobrado -> dueno.cerrarPropio(venueId, orderId, p.intento, quien, subida, conAbono)
                 p.esDueno -> dueno.terminarPropio(venueId, orderId, p.intento)
                 else -> {
                     // El flujo SABE que cobró: el aviso queda «cobrada» aunque su fila se limpie antes de la siguiente vuelta (H4).
@@ -262,8 +284,8 @@ class CuentasEntreCajas internal constructor(
     }
 
     /** [terminar] sin esperar (desde un ViewModel, también al destruirse). */
-    fun terminarEnFondo(venueId: String, orderId: String, p: Puerta.Pasa, quien: String, cobrado: Boolean, subida: Boolean) {
-        scope.launch(NonCancellable) { terminar(venueId, orderId, p, quien, cobrado, subida) }
+    fun terminarEnFondo(venueId: String, orderId: String, p: Puerta.Pasa, quien: String, cobrado: Boolean, subida: Boolean, conAbono: Boolean = false) {
+        scope.launch(NonCancellable) { terminar(venueId, orderId, p, quien, cobrado, subida, conAbono) }
     }
 
     // MARK: - La red
@@ -285,11 +307,16 @@ class CuentasEntreCajas internal constructor(
         if (!encendida || candidatos.isEmpty()) return DelDueno(null, conocida?.deviceId, conocida?.caja, enviado)
         val primera = CompletableDeferred<Pair<LanPeer, Respuesta>?>()
         val req = pedido(op, orderId, intento, quien, enLinea, venueId = venueId)
+        val callo = java.util.concurrent.atomic.AtomicBoolean(false)
         val todas = candidatos.map { p ->
-            scope.launch { CuentasPorLaRed.desdeCable(client.preguntarCuenta(p, req))?.let { primera.complete(p to it) } }
+            scope.launch {
+                val cable = client.preguntarCuenta(p, req)
+                val r = CuentasPorLaRed.desdeCable(cable)
+                if (r != null) primera.complete(p to r) else if (cable?.status != LeaseProtocol.STATUS_NO_ES_MIA) callo.set(true)
+            }
         }
         scope.launch { todas.joinAll(); primera.complete(null) }
-        val (peer, r) = primera.await() ?: return DelDueno(null, conocida?.deviceId, conocida?.caja, enviado)
+        val (peer, r) = primera.await() ?: return DelDueno(null, conocida?.deviceId, conocida?.caja, enviado, algunaCallo = callo.get())
         val caja = peer.nombreCaja ?: conocida?.caja ?: DuenoDeCuentas.nombreDeCaja(null)
         if (conocida?.deviceId != peer.deviceId || conocida.caja != caja) {
             runCatching { cambiar(venueId) { it.copy(duenos = it.duenos + (orderId to DuenoConocido(peer.deviceId, caja, horaDePared()))) } }
@@ -430,9 +457,14 @@ class CuentasEntreCajas internal constructor(
 
         fun textoDe(r: Respuesta, caja: String?): String = when (r) {
             is Respuesta.Ocupada -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja.ifBlank { caja ?: DuenoDeCuentas.nombreDeCaja(null) })
-            // M1: lo que cerró el SERVIDOR no lleva caja: su propio chip, nunca el nombre de una caja.
-            is Respuesta.Cerrada -> if (r.caja.isBlank()) com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.YA_SE_COBRO
-            else com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
+            // M1: lo que cerró el SERVIDOR no lleva caja: su propio chip, nunca el nombre de una caja. M-1: un abono no es «Cobrada»: con
+            // internet se cobra el resto; si el abono aún no sube, se espera a que suba.
+            is Respuesta.Cerrada -> when {
+                r.conAbono && r.faltaSubirla -> com.avoqado.pos.giftcards.domain.TextosDeTarjetas.COBRO_SIN_SINCRONIZAR
+                r.conAbono -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.CON_ABONO
+                r.caja.isBlank() -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.YA_SE_COBRO
+                else -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
+            }
             Respuesta.Rechazada -> caja?.let { com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto(it) } ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA
             Respuesta.Concedida -> ""
         }

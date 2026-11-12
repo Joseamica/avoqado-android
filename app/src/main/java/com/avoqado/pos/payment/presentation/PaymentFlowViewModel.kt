@@ -558,6 +558,8 @@ class PaymentFlowViewModel @Inject constructor(
         papel: PapelDelCobro? = null,
         /** D12: el saldo que la cuenta debe quedar tras este cobro hecho con la copia; el MISMO viaja a la cola. null = no aplica. */
         restanteEsperadoCents: Int? = null,
+        /** Codex r3 #2: lo que corre justo antes del INSERT ([reservarConPermisoVigente]). */
+        antesDeGuardar: (() -> Unit)? = null,
     ): Apartado {
         if (cart == null || pedido == null) return Apartado.NINGUNO
         if (!permiteColaCapturada) return Apartado.NINGUNO
@@ -591,9 +593,12 @@ class PaymentFlowViewModel @Inject constructor(
                 // Si la venta ya cambió, este intento guarda SU captura sin borrar nada.
                 enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
                 restanteEsperadoCents = restanteEsperadoCents,
+                antesDeGuardar = antesDeGuardar,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
+        } catch (e: PermisoVencido) {
+            throw e // no se guardó nada: quien llama vuelve a comprometer
         } catch (e: Exception) {
             // No POST without its original durable capture. The caller presents the error. Los apartados viejos siguen del flujo.
             throw IllegalStateException("No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.", e)
@@ -1021,6 +1026,12 @@ class PaymentFlowViewModel @Inject constructor(
     private var permisoDeLaCuenta: PermisoDeLaCuenta? = null
 
     /**
+     * D12 · Codex r3 #1: ¿el SERVIDOR contesta AHORA, con su base (la salud profunda de [com.avoqado.pos.core.util.ConnectivityMonitor])? Un
+     * 5xx no cuenta: su POST caería a la cola. Seam de prueba, como `PaymentSyncService.servidorContesta`.
+     */
+    internal var servidorContestaAhora: suspend () -> Boolean = { connectivityMonitor?.elServidorContesta() == true }
+
+    /**
      * D12 · Opción D (R4): la ÚNICA puerta de un cobro nuevo que sigue una cuenta ya abierta sin mesa ([continua]: «Cobrar» de Pedidos con
      * y sin red, y el carrito que la continúa). Va JUSTO antes de reservar el efectivo o de mandar la tarjeta. null = sigue; un texto = no
      * se cobra. La dueña compromete en local y en disco (R2); otra caja, en vivo, y su autorización vale 20 s desde el envío (R1): si ya
@@ -1035,10 +1046,18 @@ class PaymentFlowViewModel @Inject constructor(
             copiaDeCuentas?.cuenta(venue, orden)?.cuenta
                 ?.let { com.avoqado.pos.orders.data.razonParaNoCobrar(it) != com.avoqado.pos.orders.data.RazonSinRed.NO_ES_DE_MOSTRADOR }
         }.getOrNull() == true
-        suspend fun una(intentoPrevio: String?) = cuentas.puerta(venue, orden, llave, quien, enLinea = !desdeLaCopia, esTarjeta = esTarjeta,
+        // Codex r3 #1: «en línea» es que el SERVIDOR conteste AHORA (validará el saldo vivo), no que la pantalla se abrió con red: B la abrió
+        // con internet, lo perdió (no el WiFi) y A ya la cobró. La tarjeta no se mide: sin red no sale y nunca cae a la cola.
+        val enLinea = !desdeLaCopia && (esTarjeta || servidorContestaAhora())
+        suspend fun una(intentoPrevio: String?) = cuentas.puerta(venue, orden, llave, quien, enLinea = enLinea, esTarjeta = esTarjeta,
             esCuentaDePedidos = esDePedidos, intentoPrevio = intentoPrevio)
         var p = una(previo)
         if (p is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa && !cuentas.autorizacionVigente(p)) p = una(p.intento)
+        // Codex r3 #2: la segunda respuesta también se comprueba; vencida otra vez no se usa (su intento se suelta sin dinero).
+        if (p is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa && !cuentas.autorizacionVigente(p)) {
+            cuentas.terminarEnFondo(venue, orden, p, quien, cobrado = false, subida = false)
+            return sinContactoCon(venue, orden)
+        }
         return when (p) {
             is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa -> { permisoDeLaCuenta = PermisoDeLaCuenta(venue, orden, p, quien, llave); null }
             is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.NoPasa -> p.texto
@@ -1050,10 +1069,77 @@ class PaymentFlowViewModel @Inject constructor(
      * D12 · Opción D: el cobro de la cuenta terminó ([cobrado]: con dinero, [subida]: ya en el servidor) o el flujo se fue. Lo que no se sabe
      * lo decide lo durable (la fila del efectivo, la lista de tarjetas): la dueña cierra o suelta, otra caja avisa «cobrada» o «suelta».
      */
-    private fun terminarPermiso(cobrado: Boolean, subida: Boolean = false) {
+    private fun terminarPermiso(cobrado: Boolean, subida: Boolean = false, conAbono: Boolean = false) {
         val p = permisoDeLaCuenta ?: return
         permisoDeLaCuenta = null
-        cuentasEntreCajas?.terminarEnFondo(p.venueId, p.orderId, p.pasa, p.quien, cobrado, subida)
+        cuentasEntreCajas?.terminarEnFondo(p.venueId, p.orderId, p.pasa, p.quien, cobrado, subida, conAbono)
+    }
+
+    /** Codex r3 #2: no hay contacto vigente con la caja que abrió la cuenta: el texto oficial «no recibas el efectivo» (con su nombre si se sabe). */
+    private suspend fun sinContactoCon(venue: String, orden: String?): String {
+        val caja = try {
+            orden?.let { cuentasEntreCajas?.cajaQueLaAbrio(venue, it) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        return caja?.let(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed::sePerdioElContacto)
+            ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA
+    }
+
+    /** R1 · Codex r3 #2: la autorización de otra caja venció justo antes del INSERT de la reserva: no se guardó nada. */
+    private class PermisoVencido : IllegalStateException("La autorización de la caja que abrió la cuenta venció antes de guardar el cobro")
+
+    /** Al volver a comprometer, la puerta dijo que no: [texto] es lo que ve la cajera. Nada se guardó. */
+    private class NoPasoAlGuardar(val texto: String) : IllegalStateException(texto)
+
+    /** Lo que la reserva corre JUSTO antes de su INSERT: con permiso de OTRA caja, su vigencia (R1). null = no hay nada que comprobar. */
+    private fun vigenciaDelPermiso(orden: String?): (() -> Unit)? {
+        val cuentas = cuentasEntreCajas ?: return null
+        val p = permisoDeLaCuenta?.takeIf { it.orderId == orden && !it.pasa.esDueno }?.pasa ?: return null
+        return { if (!cuentas.autorizacionVigente(p)) throw PermisoVencido() }
+    }
+
+    /**
+     * R1 · Codex r3 #2: la vigencia se comprobaba en la puerta, ANTES de las esperas de disco de la reserva (o de la app congelada). Ahora
+     * la comprueba la reserva justo antes de su INSERT. Vencida: no se guardó nada; se vuelve a comprometer UNA vez con el MISMO intento (si
+     * la dueña ya lo canceló, no pasa) y se reintenta con la autorización nueva, que también se comprueba. Sin reserva ([Apartado.NINGUNO])
+     * se comprueba al volver, antes del POST. Si la dueña dice que no o vuelve a vencer: [NoPasoAlGuardar], no se recibe el efectivo.
+     * [revisar] falso = el efectivo de esta venta ya está apartado (C1, «Reintentar»): el dinero ya se recibió y no se vuelve a preguntar.
+     */
+    private suspend fun reservarConPermisoVigente(
+        venue: String, orden: String?, llave: String, desdeLaCopia: Boolean, revisar: Boolean,
+        reservar: suspend (antesDeGuardar: (() -> Unit)?) -> Apartado,
+    ): Apartado {
+        if (!revisar) return reservar(null)
+        suspend fun intento(): Apartado {
+            val vigencia = vigenciaDelPermiso(orden)
+            return reservar(vigencia).also { if (it == Apartado.NINGUNO) vigencia?.invoke() }
+        }
+        try {
+            return intento()
+        } catch (e: PermisoVencido) {
+            Log.w("💵", "La autorización de la cuenta venció antes de guardar el efectivo; se vuelve a comprometer")
+        }
+        pasarLaPuerta(venue, orden, llave, continua = true, esTarjeta = false, desdeLaCopia = desdeLaCopia)?.let { throw NoPasoAlGuardar(it) }
+        return try {
+            intento()
+        } catch (e: PermisoVencido) {
+            throw NoPasoAlGuardar(sinContactoCon(venue, orden))
+        }
+    }
+
+    /** La puerta dijo que no ANTES del efectivo: nada se cobra. Desde la copia, el gris de la cuenta; en línea, el aviso neutro (I1). */
+    private fun noSeCobraPorLaPuerta(texto: String, generacion: Int, alNoPasar: ((String) -> Unit)?) {
+        if (generacion != paymentGeneration) return
+        isProcessingPayment = false
+        if (alNoPasar != null) {
+            alNoPasar(texto)
+            salirDelFlujo()
+        } else {
+            noPasoLaPuerta(texto)
+        }
     }
 
     /**
@@ -1245,7 +1331,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // siguen del flujo hasta que la cajera vuelve a cobrar o toca «Cancelar».
                     alCobrarLaVenta(st)
                     ponerAlDiaLaCopia(st)
-                    terminarPermiso(cobrado = true, subida = !st.isQueued)
+                    // M-1: un cobro que deja saldo (una parte, un saldo de regalo que no alcanzó) es un abono, no «Cobrada».
+                    terminarPermiso(cobrado = true, subida = !st.isQueued, conAbono = buildCompletion().remainingBalanceCents > 0)
                 } else if (st !is PaymentFlowState.Processing) {
                     // A5: un «Ya pagó de otra forma» que no se cobró sigue como hoy (se suelta, queda «sin confirmar»).
                     soltarLaReservaNoEfectivo()
@@ -3706,21 +3793,19 @@ class PaymentFlowViewModel @Inject constructor(
                             com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO
                         }
                         if (textoDeLaPuerta != null) {
-                            if (generacion == paymentGeneration) {
-                                isProcessingPayment = false
-                                if (alNoPasarCapturado != null) {
-                                    alNoPasarCapturado(textoDeLaPuerta)
-                                    salirDelFlujo()
-                                } else {
-                                    noPasoLaPuerta(textoDeLaPuerta)
-                                }
-                            }
+                            noSeCobraPorLaPuerta(textoDeLaPuerta, generacion, alNoPasarCapturado)
                             return@launch
                         }
                         try {
-                            reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado, restanteEsperadoCents = restanteEsperadoCapturado)
+                            // Codex r3 #2: la autorización de otra caja se comprueba JUSTO antes del INSERT de la reserva.
+                            reservarConPermisoVigente(venueCapturado, ordenCapturada, llaveCapturada, desdeLaCopia, revisar = anterioresDeEstaVenta.isEmpty()) { vigencia ->
+                                reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado, restanteEsperadoCents = restanteEsperadoCapturado, antesDeGuardar = vigencia)
+                            }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
+                        } catch (e: NoPasoAlGuardar) {
+                            noSeCobraPorLaPuerta(e.texto, generacion, alNoPasarCapturado)
+                            return@launch
                         } catch (e: Exception) {
                             // Una reserva de otra apertura o identidad no modifica la venta vigente.
                             if (generacion == paymentGeneration && secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {

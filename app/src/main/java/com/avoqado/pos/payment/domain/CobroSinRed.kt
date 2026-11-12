@@ -94,6 +94,17 @@ object TextosDeCuentaSinRed {
     const val SOLO_EFECTIVO = "Sin conexión: esta cuenta se cobra sólo en efectivo."
 }
 
+/**
+ * Opción D, en la lista de Pedidos de la caja que la ABRIÓ: «Cobrada en <caja>» (y «· falta subirla») si su registro la da cobrada. null =
+ * nada que decir. [saldoPendienteCents]: lo que la fila dice que falta (null = no se sabe).
+ */
+fun textoDeLaListaDe(r: CuentaEnElRegistro?, saldoPendienteCents: Int?): String? {
+    if (r?.estado != EstadoDeCuenta.CERRADA) return null
+    // Revisión final M-1: un abono no es «Cobrada»: el que hizo esta caja (lo sabe su registro) o uno que el SERVIDOR ya tiene y deja saldo.
+    if (r.conAbono || (!r.faltaSubirla && (saldoPendienteCents ?: 0) > 0)) return null
+    return if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
+}
+
 /** La llave de una cuenta en la red del local (`CuentasPorLaRed`). */
 fun llaveDeCuenta(orderId: String): String = com.avoqado.pos.core.data.lan.CuentasPorLaRed.llave(orderId)
 
@@ -146,7 +157,7 @@ fun decidirCobroSinRed(d: DatosDelCobroSinRed, permiso: CuentasEntreCajas.DelDue
         val r = d.registro
         return when {
             r?.estado == EstadoDeCuenta.CERRADA ->
-                DecisionSinRed.Gris(if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla))
+                DecisionSinRed.Gris(CuentasEntreCajas.textoDe(Respuesta.Cerrada(r.caja, r.faltaSubirla, r.conAbono), r.caja))
             r != null && r.por != d.miDeviceId && d.puedeDeclararNoSeCobro -> DecisionSinRed.NoConfirmo(TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja), saldo)
             r != null && r.por != d.miDeviceId -> DecisionSinRed.Gris(TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja))
             permiso != null -> deLaRespuesta(permiso, saldo)

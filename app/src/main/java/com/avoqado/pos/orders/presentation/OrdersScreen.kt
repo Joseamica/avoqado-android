@@ -1136,8 +1136,8 @@ private fun OrderRow(
             it.venueId == diario.venueActual && it.orderId == order.id && it.porTerminar
         })
     // D12 · Opción D: la cuenta que abrió esta caja y su registro da por cobrada en otra (o aquí): «Cobrada en <caja>».
-    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status) {
-        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id) else null
+    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status, order.saldoPendienteCents) {
+        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id, order.saldoPendienteCents) else null
     }
     Row(
         modifier = Modifier

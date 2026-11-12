@@ -15,6 +15,7 @@ import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -81,6 +82,32 @@ class CobroEnVueloRepositoryTest {
         repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A")
 
         coVerify { dao.insert(match { it.id == "llave-A" && it.syncStatus == PaymentSyncStatus.EN_VUELO.name }) }
+    }
+
+    /**
+     * D12 · Codex r3 #2 (R1): la comprobación de quien llama corre DESPUÉS de las esperas de disco (la lectura de la fila, la caja) y justo
+     * antes del INSERT, sin suspensión de por medio. Si dice que no (la autorización de la caja que abrió la cuenta venció mientras el disco
+     * tardaba), no se guarda nada y la reserva no queda como del flujo.
+     */
+    @Test
+    fun `la comprobacion previa corre justo antes del INSERT y si dice que no no se guarda nada`() = runTest {
+        val disco = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { dao.findForVenue(any(), any()) } coAnswers { disco.await(); null }
+        var vencida = false
+        val reserva = async {
+            runCatching {
+                repository.reservarCobro(venta, "staff-1", 10_000, 0, null, idempotencyKey = "llave-A",
+                    antesDeGuardar = { check(!vencida) { "autorización vencida" } })
+            }
+        }
+        testScheduler.runCurrent() // detenida en la lectura del disco
+        vencida = true // pasaron los 20 s mientras el disco tardaba
+        disco.complete(Unit)
+
+        assertTrue(reserva.await().isFailure)
+        coVerify(exactly = 0) { dao.insert(any()) }
+        coVerify(exactly = 0) { dao.reservarEnLugarDe(any(), any()) }
+        assertFalse("llave-A" in repository.salesNoticeReservedIds())
     }
 
     @Test

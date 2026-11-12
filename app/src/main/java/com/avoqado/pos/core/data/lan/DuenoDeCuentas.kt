@@ -113,9 +113,9 @@ class DuenoDeCuentas internal constructor(
     }
 
     /** El cobro propio terminó con dinero (en línea o en la cola): CERRADA(aquí). Nunca lanza (salvo la cancelación). */
-    suspend fun cerrarPropio(venueId: String, orderId: String, intento: String, quien: String, subida: Boolean) {
+    suspend fun cerrarPropio(venueId: String, orderId: String, intento: String, quien: String, subida: Boolean, conAbono: Boolean = false) {
         try {
-            cobrada(venueId, orderId, Solicitud(deviceId, nombreCaja, quien, intento), subida)
+            cobrada(venueId, orderId, Solicitud(deviceId, nombreCaja, quien, intento), subida, conAbono)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -136,8 +136,17 @@ class DuenoDeCuentas internal constructor(
         conRegistro(venueId, orderId) { reg -> RegistroDeCuentas.soltar(reg, orderId, intento) to true }
 
     /** «Cobrada»: siempre se acepta, también de un intento cancelado. null = no es mía. LANZA si no se pudo guardar (no hay acuse). */
-    suspend fun cobrada(venueId: String, orderId: String, s: Solicitud, subida: Boolean): Boolean? =
-        conRegistro(venueId, orderId) { reg -> RegistroDeCuentas.cobrada(reg, orderId, s, faltaSubirla = !subida, reloj(), horaDePared()) to true }
+    suspend fun cobrada(venueId: String, orderId: String, s: Solicitud, subida: Boolean, conAbono: Boolean = false): Boolean? =
+        conRegistro(venueId, orderId) { reg -> RegistroDeCuentas.cobrada(reg, orderId, s, faltaSubirla = !subida, reloj(), horaDePared(), conAbono) to true }
+
+    /** M-3: ¿esta caja tiene dinero de la cuenta que el SERVIDOR aún no tiene (R4)? Con el registro ilegible es lo único que queda. Si falla, sí. */
+    suspend fun tieneDineroDe(venueId: String, orderId: String): Boolean = try {
+        withContext(io) { dineroDeLaCuenta(venueId, orderId, true) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        true
+    }
 
     /** «No se cobró: cobrar aquí» (una persona en ESTA caja). false = todavía no se puede, no es mía o el disco falló. */
     suspend fun noSeCobro(venueId: String, orderId: String, quienDeclara: String): Boolean = try {
@@ -159,12 +168,16 @@ class DuenoDeCuentas internal constructor(
      * Lo que dijeron las lecturas del SERVIDOR ([porElServidor]: pagadas, canceladas o fuera de la lista) y los cobros con tarjeta de esta
      * caja que ya constan ([cobradasAqui]): CERRADA. Sólo las que abrió esta caja. LANZA si el disco falla (quien llama conserva su prueba).
      */
-    suspend fun alSaberCerradas(venueId: String, porElServidor: Collection<String>, cobradasAqui: Collection<String>) {
+    suspend fun alSaberCerradas(
+        venueId: String, porElServidor: Collection<String>, cobradasAqui: Collection<String>,
+        /** Revisión final M-1: de [cobradasAqui], las que el cobro dejó con saldo (un saldo de regalo que no alcanzó). */
+        conAbono: Collection<String> = emptyList(),
+    ) {
         if (porElServidor.isEmpty() && cobradasAqui.isEmpty()) return
         conRegistroYMias(venueId, orderId = null) { reg, mias ->
             var r = reg
             for (o in cobradasAqui) if (o in mias) {
-                r = RegistroDeCuentas.cobrada(r, o, Solicitud(deviceId, nombreCaja, "", "tarjeta:$o"), faltaSubirla = false, reloj(), horaDePared())
+                r = RegistroDeCuentas.cobrada(r, o, Solicitud(deviceId, nombreCaja, "", "tarjeta:$o"), faltaSubirla = false, reloj(), horaDePared(), o in conAbono)
             }
             for (o in porElServidor) if (o in mias) r = RegistroDeCuentas.servidorLaCerro(r, o, reloj(), horaDePared())
             r to Unit
@@ -219,8 +232,7 @@ class DuenoDeCuentas internal constructor(
                 val mias = abiertas.todas(venueId)
                 if (orderId != null && orderId !in mias) return@withLock null
                 val guardado = cache.loadDurable(PayloadCache.TYPE_REGISTRO_DE_CUENTAS, venueId)
-                val leido = if (guardado == null) Registro() else RegistroDeCuentas.leer(guardado.json)
-                    ?: throw IllegalStateException("registro ilegible de $venueId: no se escribe encima")
+                val leido = if (guardado == null) Registro() else RegistroDeCuentas.leer(guardado.json) ?: throw RegistroIlegible(venueId)
                 val normal = RegistroDeCuentas.normalizar(leido, reloj(), horaDePared())
                 val base = reconciliar(venueId, normal.copy(cuentas = normal.cuentas.filterKeys { it in mias }))
                 val (nuevo, t) = cambio(base, mias)
@@ -276,6 +288,9 @@ class DuenoDeCuentas internal constructor(
         vivos -= if (hecho) viejo else nuevo
         return hecho
     }
+
+    /** M-3: lo guardado no se puede leer (regresión de versión, disco dañado): no se escribe encima. */
+    class RegistroIlegible(venueId: String) : IllegalStateException("registro ilegible de $venueId: no se escribe encima")
 
     companion object {
         private const val TAG = "DuenoDeCuentas"

@@ -450,6 +450,93 @@ class CuentasEntreCajasTest {
         assertFalse(c.entre.tieneApartado("o1"))
     }
 
+    // MARK: - Arreglo final (revisión final I-1, M-1, M-3)
+
+    private fun avisosDe(caja: Caja) = caja.disco["${PayloadCache.TYPE_CUENTAS_ENTRE_CAJAS}|$v"]
+        ?.let { kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(CuentasEntreCajas.Estado.serializer(), it.json).avisos }
+        .orEmpty()
+
+    /**
+     * I-1: con internet, una cuenta que ninguna caja con D abrió (app vieja, iOS, marca podada) se cobra como hoy y NO deja un aviso «sin
+     * dueña»: nadie anotó nada. Antes cada uno duraba 7 días y se mandaba en serie a todas las cajas cada 10 s.
+     */
+    @Test fun `I-1 - con internet una cuenta que ninguna caja abrió se cobra como hoy y no deja aviso`() = runTest {
+        red(b, c) // todas contestan «no es mía»
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o1", "l1", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        c.peers.value = emptyList() // ni otra caja con D a quién preguntar
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o9", "l2", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        assertTrue("ningún aviso sin dueña", avisosDe(c).isEmpty())
+    }
+
+    /**
+     * Codex r3 #1: «en línea» ahora es la red VIVA, así que una pantalla abierta con internet puede preguntar «sin red». Una cuenta que no es
+     * de Pedidos (la bandeja de pedidos en línea, un pedido web) sigue sin pasar por D: se cobra como hoy.
+     */
+    @Test fun `Codex r3 1 - una cuenta que no es de Pedidos no pasa por D aunque se vaya internet`() = runTest {
+        red(b, c)
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o9", "l1", "Beto", enLinea = false, esTarjeta = false, esCuentaDePedidos = false))
+        assertTrue(avisosDe(c).isEmpty())
+    }
+
+    /** I-1 sin romper I2: si alguna caja se queda callada (quizá la dueña, con su respuesta perdida), el aviso sí se guarda. */
+    @Test fun `I-1 - si alguna caja se queda callada el aviso sin dueña sí se guarda`() = runTest {
+        red(a, b, c)
+        a.contesta = false
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o1", "l1", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        assertEquals(listOf("" to "l1"), avisosDe(c).map { it.dueno to it.llave })
+    }
+
+    /**
+     * M-3: el registro de la dueña no se puede leer (regresión de versión, disco dañado). Con red VIVA su propio cobro pasa (el SERVIDOR lo
+     * valida en vivo); sin red no; y a otra caja nunca le concede. Lo ilegible no se escribe encima.
+     */
+    @Test fun `M-3 - con el registro ilegible la dueña cobra lo suyo sólo con red viva y a otras cajas nunca les concede`() = runTest {
+        red(a, c)
+        val llave = "${PayloadCache.TYPE_REGISTRO_DE_CUENTAS}|$v"
+        a.disco[llave] = PayloadCache.Cached("{ilegible", 0)
+        assertEquals(CuentasEntreCajas.Puerta.Libre, a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(CuentasEntreCajas.NO_SE_GUARDO),
+            a.entre.puerta(v, "o1", "llave-a2", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true))
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA), c.entre.puertaSinRed())
+        assertEquals("{ilegible", a.disco[llave]!!.json)
+    }
+
+    /**
+     * M-1: la dueña cobra una PARTE (otra parte de un dividido, un saldo de regalo que no alcanza). La cuenta sigue protegida (sin red nadie
+     * cobra el resto: «cóbrala con internet»), pero no es «Cobrada en Caja 1»: alguien leería «Cobrada» y no cobraría lo que falta.
+     */
+    @Test fun `M-1 - un abono parcial de la dueña no dice Cobrada y sin red pide internet`() = runTest {
+        red(a, c)
+        val p = a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        a.entre.terminar(v, "o1", p, "Yo", cobrado = true, subida = true, conAbono = true)
+        val r = a.dueno.estadoDe(v, "o1")
+        assertEquals("sigue protegida (H1)", EstadoDeCuenta.CERRADA, r?.estado)
+        assertNull("la lista no dice «Cobrada en Caja 1»", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null))
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.CON_ABONO),
+            a.entre.puerta(v, "o1", "llave-a2", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true))
+        assertTrue("con internet, el resto", a.entre.puerta(v, "o1", "llave-a3", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true)
+            is CuentasEntreCajas.Puerta.Pasa)
+    }
+
+    /** M-1: un saldo de regalo de la dueña que no alcanzó (su marca de cobro no dice «pagada») deja la cuenta protegida, no «Cobrada». */
+    @Test fun `M-1 - un saldo de regalo que no alcanzó deja la cuenta protegida pero no Cobrada`() = runTest {
+        red(a, c)
+        a.dueno.alSaberCerradas(v, emptyList(), listOf("o1"), conAbono = listOf("o1"))
+        val r = a.dueno.estadoDe(v, "o1")
+        assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
+        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null))
+    }
+
+    /** M-1, en la lista: una «cobrada» que el SERVIDOR ya tiene y su fila todavía debe es un abono (venga de la caja que venga). */
+    @Test fun `M-1 - la lista dice Cobrada sólo si no queda saldo o si todavía falta subirla`() {
+        val cerrada = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0))
+        assertEquals("Cobrada en Caja 2", com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada, saldoPendienteCents = 0))
+        assertNull("ya subió y el servidor dice que debe", com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada, saldoPendienteCents = 2000))
+        assertEquals("aún no sube: el saldo de la fila no lo sabe", "Cobrada en Caja 2 · falta subirla",
+            com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada.copy(faltaSubirla = true), saldoPendienteCents = 2000))
+        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada.copy(estado = EstadoDeCuenta.COMPROMETIDA), saldoPendienteCents = 0))
+    }
+
     /** Cambio de sucursal: los apartados de la anterior se olvidan (y nada los renueva). */
     @Test fun `ninguna renovación huérfana - cambiar de sucursal olvida los apartados`() = runTest {
         red(a, c)

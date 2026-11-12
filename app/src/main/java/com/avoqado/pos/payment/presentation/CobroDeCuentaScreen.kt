@@ -273,14 +273,12 @@ class CobroDeCuentaViewModel @Inject constructor(
     }
 
     /**
-     * Opción D, en la lista de Pedidos: «Cobrada en <caja>» (y «· falta subirla») si ESTA caja la abrió y su registro la da cobrada en una
-     * caja con nombre. null = nada que decir (o no la abrió aquí, o no se pudo leer).
+     * Opción D, en la lista de Pedidos: «Cobrada en <caja>» (y «· falta subirla») si ESTA caja la abrió y su registro la da cobrada
+     * ([com.avoqado.pos.payment.domain.textoDeLaListaDe]). null = nada que decir (o no la abrió aquí, o no se pudo leer).
      */
-    suspend fun textoDeLaLista(orderId: String): String? {
+    suspend fun textoDeLaLista(orderId: String, saldoPendienteCents: Int?): String? {
         val venue = storage.venueId ?: return null
-        val r = duenoDeCuentas?.estadoDe(venue, orderId) ?: return null
-        if (r.estado != com.avoqado.pos.core.data.lan.EstadoDeCuenta.CERRADA) return null
-        return if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
+        return com.avoqado.pos.payment.domain.textoDeLaListaDe(duenoDeCuentas?.estadoDe(venue, orderId), saldoPendienteCents)
     }
 
     /**

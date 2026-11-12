@@ -209,6 +209,11 @@ class CashPaymentRepository @Inject constructor(
         lineasDelTicket: String? = null,
         /** D12: el saldo que la cuenta debía quedar tras este cobro hecho con la copia. El MISMO que el de [queueCashPayment]. */
         restanteEsperadoCents: Int? = null,
+        /**
+         * D12 · Codex r3 #2 (R1): corre DESPUÉS de las esperas de disco y justo antes del INSERT, sin ninguna suspensión de por medio. Si
+         * lanza, no se guarda nada y la excepción sale tal cual (la autorización de la caja que abrió la cuenta venció mientras tanto).
+         */
+        antesDeGuardar: (() -> Unit)? = null,
     ) {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -233,6 +238,7 @@ class CashPaymentRepository @Inject constructor(
         // 🔴 Un REINTENTO con la misma llave ya era del flujo: si su guardado falla, la fila anterior sigue siendo suya (Codex r7).
         val esNueva = reservasDeEsteProceso.add(entity.id)
         try {
+            antesDeGuardar?.invoke() // D12 · Codex r3 #2: después de toda espera, sin suspensión hasta el INSERT
             if (anteriores.isEmpty()) pendingPaymentDao.insert(entity) else pendingPaymentDao.reservarEnLugarDe(entity, anteriores)
         } catch (e: Exception) {
             if (esNueva) reservasDeEsteProceso -= entity.id

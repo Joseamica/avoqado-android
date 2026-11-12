@@ -38,6 +38,11 @@ data class CuentaEnElRegistro(
     val hora: Long = 0,
     /** CERRADA: el cobro todavía no consta en el servidor. */
     val faltaSubirla: Boolean = false,
+    /**
+     * Revisión final M-1: CERRADA tras un ABONO de esta caja (una parte de un dividido, un saldo de regalo que no alcanzó): la cuenta
+     * todavía debe. Sigue protegida como CERRADA (sin red nadie cobra el resto: «cóbrala con internet»), pero no es «Cobrada en <caja>».
+     */
+    val conAbono: Boolean = false,
 )
 
 @Serializable
@@ -53,7 +58,8 @@ data class Solicitud(val por: String, val caja: String, val quien: String, val i
 sealed interface Respuesta {
     data object Concedida : Respuesta
     data class Ocupada(val quien: String, val caja: String) : Respuesta
-    data class Cerrada(val caja: String, val faltaSubirla: Boolean) : Respuesta
+    /** [conAbono]: la CERRADA de un abono (M-1); no viaja por la red (sólo la contesta la dueña a sí misma). */
+    data class Cerrada(val caja: String, val faltaSubirla: Boolean, val conAbono: Boolean = false) : Respuesta
 
     /** El intento fue cancelado por «No se cobró» en el dueño. */
     data object Rechazada : Respuesta
@@ -107,7 +113,7 @@ object RegistroDeCuentas {
         return when {
             c?.estado == EstadoDeCuenta.CERRADA ->
                 // Con internet manda el saldo vivo del servidor; sólo un cobro que aún no sube lo bloquea. Sin red, siempre (H1).
-                Paso(r, if (s.enLinea && !c.faltaSubirla) Respuesta.Concedida else Respuesta.Cerrada(c.caja, c.faltaSubirla))
+                Paso(r, if (s.enLinea && !c.faltaSubirla) Respuesta.Concedida else Respuesta.Cerrada(c.caja, c.faltaSubirla, c.conAbono))
             // Otro intento ocupa la cuenta, salvo el apartado de la MISMA caja: su cobro compromete con la llave del cobro.
             c != null && c.intento != s.intento && !(c.estado == EstadoDeCuenta.APARTADA && c.por == s.por) -> Paso(r, Respuesta.Ocupada(c.quien, c.caja))
             // Un apartado no baja un compromiso del mismo intento (la renovación de fondo puede llegar tarde).
@@ -137,7 +143,7 @@ object RegistroDeCuentas {
      * «Cobrada» (de otra caja o del dueño mismo). Se acepta siempre, también de un intento cancelado: es dinero que sí entró. El mismo
      * intento sólo puede quitar «falta subirla»; otro cobro la conserva si el anterior aún no subía.
      */
-    fun cobrada(r: Registro, orderId: String, s: Solicitud, faltaSubirla: Boolean, ahora: Instante, hora: Long): Registro {
+    fun cobrada(r: Registro, orderId: String, s: Solicitud, faltaSubirla: Boolean, ahora: Instante, hora: Long, conAbono: Boolean = false): Registro {
         val c = r.cuentas[orderId]
         val falta = when {
             c?.estado != EstadoDeCuenta.CERRADA -> faltaSubirla
@@ -147,13 +153,13 @@ object RegistroDeCuentas {
         if (c?.estado == EstadoDeCuenta.CERRADA && c.intento == s.intento) {
             return if (c.faltaSubirla == falta) r else r.copy(cuentas = r.cuentas + (orderId to c.copy(faltaSubirla = falta)))
         }
-        return r.copy(cuentas = r.cuentas + (orderId to CuentaEnElRegistro(EstadoDeCuenta.CERRADA, s.por, s.caja, s.quien, s.intento, ahora, hora, falta)))
+        return r.copy(cuentas = r.cuentas + (orderId to CuentaEnElRegistro(EstadoDeCuenta.CERRADA, s.por, s.caja, s.quien, s.intento, ahora, hora, falta, conAbono)))
     }
 
     /** Una lectura del servidor la da pagada, cerrada o cancelada: CERRADA y ya nada «falta subirla». */
     fun servidorLaCerro(r: Registro, orderId: String, ahora: Instante, hora: Long): Registro {
         val c = r.cuentas[orderId]
-        val nueva = if (c?.estado == EstadoDeCuenta.CERRADA) c.copy(faltaSubirla = false)
+        val nueva = if (c?.estado == EstadoDeCuenta.CERRADA) c.copy(faltaSubirla = false, conAbono = false)
         else CuentaEnElRegistro(EstadoDeCuenta.CERRADA, SERVIDOR, desde = ahora, hora = hora)
         return if (nueva == c) r else r.copy(cuentas = r.cuentas + (orderId to nueva))
     }

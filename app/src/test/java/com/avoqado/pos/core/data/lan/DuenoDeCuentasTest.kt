@@ -257,6 +257,21 @@ class DuenoDeCuentasTest {
         assertEquals(Respuesta.Cerrada("Caja 1", false), a.apartar(v, "o1", beto))
     }
 
+    /**
+     * Revisión final M-1: un saldo de regalo de esta caja que no alcanzó (su marca no dice «pagada») la deja CERRADA CON ABONO: sigue
+     * protegida, pero la lista no dice «Cobrada en Caja 1».
+     */
+    @Test fun `M-1 - una marca de cobro que no la pagó la deja CERRADA con abono`() = runTest {
+        val a = cajaUno()
+        val copia = copiaDe(a)
+        copia.alLeer(v, listOf(cuenta("o1")), Lectura.LISTA_COMPLETA)
+        marcas.anotar(CuentaCobradaAqui(llave = "saldo:r1", venueId = v, orderId = "o1", pagada = false, saldoCents = 2000, conSaldo = true))
+        copia.cuentas(v)
+        val r = a.estadoDe(v, "o1")
+        assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
+        assertTrue("con abono: no es «Cobrada en Caja 1»", r!!.conAbono)
+    }
+
     // MARK: - Ronda de arreglos 1
 
     /** C1 (dueña): una EN_VUELO es dinero EN DUDA: no la cierra; sigue COMPROMETIDA y, si la cajera la descarta, vuelve a LIBRE. */
