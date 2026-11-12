@@ -277,33 +277,33 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
-     * D5 · B2a (7b): la mesa abierta SIN internet que se reabre tras reiniciar la app rearma de disco lo que esta tablet le
-     * registró (rondas del borrador y efectivo de la cola) y lo guarda en la sesión, sólo si nada cambió mientras se leía.
-     * Devuelve la razón si no se puede asegurar el importe; null si ya se conoce o no aplica.
+     * D5 · B2a: el saldo de la mesa abierta SIN internet leído de disco (rondas del borrador cuya fila sigue en la cola − su
+     * efectivo en la cola). Es el número con el que se cobra, se reinicie o no la app: el de memoria ya no decide. Si se pudo
+     * asegurar y nada cambió mientras se leía (misma cuenta, misma revisión, ninguna ronda mandándose), también queda en la
+     * sesión para que la pantalla diga lo mismo que se va a cobrar.
      */
-    private suspend fun rehidratarSaldoSinRed(): String? {
-        val s = tableSession.current() ?: return null
-        if (!s.isProvisional || s.saldoSinRedConocido) return null
-        val vId = venueId ?: return SALDO_NO_RECUPERADO
-        val store = draftStore ?: return SALDO_NO_RECUPERADO
-        if (hayMutacionEnVuelo) return CUENTA_SE_ACTUALIZA
+    private suspend fun saldoSinRedDeDisco(): SaldoSinRed {
+        val s = tableSession.current()?.takeIf { it.isProvisional } ?: return SaldoSinRed.EnGris(CUENTA_SE_ACTUALIZA)
+        val vId = venueId ?: return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
+        val store = draftStore ?: return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
+        // Una ronda que se está mandando todavía no cuadra entre borrador, cola y memoria.
+        if (hayMutacionEnVuelo) return SaldoSinRed.EnGris(CUENTA_SE_ACTUALIZA)
         val revision = tableSession.revisionActual()
         val epoch = generacion
         val saldo = try {
             val (canonical, snapshot) = store.loadResolved(vId, s.orderId)
             // El servidor ya la conoce (B2b): no se cobra con lo de este aparato.
-            if (canonical != s.orderId) return SALDO_NO_RECUPERADO
+            if (canonical != s.orderId) return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
             val filas = syncOutbox.filasSinResolverDeLaOrden(vId, s.idsDeLaOrden)
             // Codex b2a-r1 #1: el acuse de la apertura guarda la promoción en disco ANTES de avisar; si llegó mientras se leía, ya es B2b.
-            if (store.loadResolved(vId, s.orderId).first != s.orderId) return SALDO_NO_RECUPERADO
+            if (store.loadResolved(vId, s.orderId).first != s.orderId) return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
             saldoDeMesaProvisional(snapshot.rounds.mapValues { (_, lines) -> lines.map { it.item } }, filas)
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { return SALDO_NO_RECUPERADO }
-        if (saldo is SaldoSinRed.EnGris) return saldo.motivo
-        // Una ronda que se está mandando suma por su cuenta: guardar encima la contaría dos veces.
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO) }
+        if (saldo !is SaldoSinRed.Conocido) return saldo
         if (hayMutacionEnVuelo || generacion != epoch || venueId != vId || tableSession.contextoActual() != contextoDeSesion ||
-            !tableSession.rehidratarSaldoSinRed(vId, s, revision, (saldo as SaldoSinRed.Conocido).rondasCents)) return CUENTA_SE_ACTUALIZA
+            !tableSession.rehidratarSaldoSinRed(vId, s, revision, saldo.rondasCents)) return SaldoSinRed.EnGris(CUENTA_SE_ACTUALIZA)
         trabajoParaSaldo = null // la pantalla se entera sola cuando se vuelva a leer la cola
-        return null
+        return saldo
     }
 
     internal suspend fun motivoDePreCuentaAhora(): String? {
@@ -552,7 +552,7 @@ class TableOrderViewModel @Inject constructor(
         // vive de pending + queued hasta que el ack promueva la sesión.
         if (session.isProvisional) {
             _chequeAlDia.value = false
-            viewModelScope.launch { rehidratarSaldoSinRed(); leerTrabajo(session) }
+            viewModelScope.launch { saldoSinRedDeDisco(); leerTrabajo(session) }
             _check.value = null
             _isLoadingCheck.value = false
             return
@@ -838,6 +838,8 @@ class TableOrderViewModel @Inject constructor(
             return
         }
 
+        // A5 (D5 · B2a): ya cobrada aquí sin internet, una ronda más la rechazaría el SERVIDOR por cuenta pagada.
+        if (session.isProvisional && cuentaCobradaAqui) { showBlockedReason(CUENTA_COBRADA_AQUI); alTerminar(false, CUENTA_COBRADA_AQUI); return }
         if (session.isProvisional) {
             try {
                 check(session.valorRondasSinRedCents >= 0)
@@ -2074,13 +2076,17 @@ class TableOrderViewModel @Inject constructor(
             showBlockedReason("Esta cuenta ya no es la que está abierta en este aparato: vuelve a abrir la mesa para cobrarla.")
             return false
         }
-        // D5 · B2a (7b): la mesa abierta sin internet reabierta tras reiniciar rearma su saldo de disco antes de decidir.
-        if (!draftRecoveryFailed) rehidratarSaldoSinRed()?.let { showBlockedReason(it); return false }
+        if (draftRecoveryFailed) { showBlockedReason(SALDO_NO_RECUPERADO); return false }
+        // D5 · B2a: una mesa abierta sin internet se cobra SIEMPRE con el número de disco (borrador ↔ cola), se haya reiniciado
+        // o no la app. El de memoria ya no decide (Codex b2a-r2: un camino que cambia la cola sin avisar lo dejaba viejo).
+        val deDisco = if (tableSession.current()?.isProvisional == true) {
+            when (val saldo = saldoSinRedDeDisco()) {
+                is SaldoSinRed.EnGris -> { showBlockedReason(saldo.motivo); return false }
+                is SaldoSinRed.Conocido -> saldo
+            }
+        } else null
         val session = tableSession.current() ?: return false
-        if (draftRecoveryFailed || (session.isProvisional && !session.saldoSinRedConocido)) {
-            showBlockedReason(SALDO_NO_RECUPERADO)
-            return false
-        }
+        if (session.isProvisional != (deDisco != null)) { showBlockedReason(CUENTA_SE_ACTUALIZA); return false }
         val vId = venueId
         val epoch = generacion
         val read = checkLoadGeneration
@@ -2102,14 +2108,13 @@ class TableOrderViewModel @Inject constructor(
         }
         // 9b (`hz:e5ee98bc:D13`): su efectivo ya está en la cola y no falta nada. Otro «Pagar» (la «cortesía» de $0 de abajo) lo
         // rechazaba el SERVIDOR al subir («Order is already paid») y dejaba una operación por revisar de una cortesía que no hubo.
-        if (session.isProvisional && payableTotalCents <= 0 &&
-            trabajo?.tipos?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true) {
+        if (deDisco != null && deDisco.hayCobro && deDisco.porPagarCents <= 0) {
             showBlockedReason(CUENTA_COBRADA_AQUI)
             return false
         }
         val checkDeLaSesion = _check.value?.takeIf { it.id == session.orderId }
-        // leerTrabajo ya actualizó el saldo scoped; el CTA y el cobro leen la misma fuente.
-        val totalCents = payableTotalCents
+        // La provisional cobra lo de disco; la del servidor, el saldo que ya leyó leerTrabajo (CTA y cobro, la misma fuente).
+        val totalCents = deDisco?.porPagarCents ?: payableTotalCents
         // Sólo el cheque leído aquí, sin abonos, acredita separar su cargo; nunca el respaldo del plano.
         val cargoDeLaCuenta = checkDeLaSesion
             ?.takeIf { !session.isProvisional && cuentaAlDiaAqui && it.payments.none { p -> p.status == "COMPLETED" } }

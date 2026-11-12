@@ -14,13 +14,16 @@ internal const val CUENTA_SE_ACTUALIZA = "La cuenta se está actualizando. Inten
 internal const val CAMBIOS_SIN_SINCRONIZAR = "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
 
 internal sealed interface SaldoSinRed {
-    data class Conocido(val rondasCents: Int, val cobradoCents: Int) : SaldoSinRed
+    /** [hayCobro]: hay al menos un `PAY_CASH` de la orden en la cola (también un cierre de $0). */
+    data class Conocido(val rondasCents: Int, val cobradoCents: Int, val hayCobro: Boolean) : SaldoSinRed {
+        val porPagarCents: Int get() = Math.subtractExact(rondasCents, cobradoCents).coerceAtLeast(0)
+    }
     data class EnGris(val motivo: String) : SaldoSinRed
 }
 
 /**
- * D5 · B2a (7b): el saldo de una mesa abierta SIN internet, rearmado de disco cuando la app se reinició. Todo es de esta
- * tablet: el servidor nunca la vio. Rondas del borrador cuya fila sigue en la cola, valoradas como al mandarlas
+ * D5 · B2a (7b): el saldo de una mesa abierta SIN internet, leído de disco. Es el ÚNICO número con el que se cobra una mesa
+ * provisional (se reinicie o no la app): el que se lleva en memoria no decide. Todo es de esta tablet: el servidor nunca la vio. Rondas del borrador cuya fila sigue en la cola, valoradas como al mandarlas
  * ([valorRondaSinRedComprobado]), y el efectivo que sigue en la cola. Lo que no se puede asegurar queda en gris con su razón.
  */
 internal fun saldoDeMesaProvisional(rondas: Map<String, List<CartItem>>, filas: List<FilaDeLaOrden>): SaldoSinRed {
@@ -35,11 +38,12 @@ internal fun saldoDeMesaProvisional(rondas: Map<String, List<CartItem>>, filas: 
     if (!rondas.keys.containsAll(rondasEnCola)) return SaldoSinRed.EnGris(SALDO_NO_RECUPERADO)
     // Un borrador sin fila (la app murió antes de encolarlo) se vuelve a encolar solo al abrir la cuenta (Codex r4 #3).
     if (!rondasEnCola.containsAll(rondas.keys)) return SaldoSinRed.EnGris(CUENTA_SE_ACTUALIZA)
+    val cobros = filas.filter { it.tipo == SyncIntentTypes.PAY_CASH }
     return try {
         SaldoSinRed.Conocido(
             rondasCents = rondas.values.fold(0) { total, items -> Math.addExact(total, valorRondaSinRedComprobado(items)) },
-            cobradoCents = filas.filter { it.tipo == SyncIntentTypes.PAY_CASH }
-                .fold(0) { total, fila -> Math.addExact(total, requireNotNull(fila.importeCents).also { require(it >= 0) }) },
+            cobradoCents = cobros.fold(0) { total, fila -> Math.addExact(total, requireNotNull(fila.importeCents).also { require(it >= 0) }) },
+            hayCobro = cobros.isNotEmpty(),
         )
     } catch (_: ArithmeticException) { SaldoSinRed.EnGris(SALDO_NO_RECUPERADO) }
       catch (_: IllegalArgumentException) { SaldoSinRed.EnGris(SALDO_NO_RECUPERADO) }

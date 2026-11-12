@@ -25,19 +25,22 @@ class SaldoSinRedTest {
     @Test fun `rondas en la cola menos el efectivo en la cola`() {
         val saldo = saldoDeMesaProvisional(mapOf("r1" to listOf(item(5000, 2, 500)), "r2" to listOf(item(2000))),
             listOf(abierta, fila("r1", "ADD_ITEMS"), fila("r2", "ADD_ITEMS", "HELD"), fila("c1", "PAY_CASH", importe = 3000)))
-        assertEquals(SaldoSinRed.Conocido(13000, 3000), saldo)
+        assertEquals(SaldoSinRed.Conocido(13000, 3000, hayCobro = true), saldo)
     }
 
     @Test fun `abono y resto restan los dos`() {
         val saldo = saldoDeMesaProvisional(mapOf("r1" to listOf(item(10000))),
             listOf(abierta, fila("r1", "ADD_ITEMS"), fila("c1", "PAY_CASH", importe = 4000), fila("c2", "PAY_CASH", importe = 6000)))
-        assertEquals(SaldoSinRed.Conocido(10000, 10000), saldo)
+        assertEquals(SaldoSinRed.Conocido(10000, 10000, hayCobro = true), saldo)
+        assertEquals(0, (saldo as SaldoSinRed.Conocido).porPagarCents)
     }
 
     @Test fun `cortesia vale cero y una mesa sin rondas vale cero`() {
         val gratis = item(2000).apply { isCortesia = true }
-        assertEquals(SaldoSinRed.Conocido(0, 0), saldoDeMesaProvisional(mapOf("r1" to listOf(gratis)), listOf(abierta, fila("r1", "ADD_ITEMS"))))
-        assertEquals(SaldoSinRed.Conocido(0, 0), saldoDeMesaProvisional(emptyMap(), listOf(abierta)))
+        assertEquals(SaldoSinRed.Conocido(0, 0, hayCobro = false), saldoDeMesaProvisional(mapOf("r1" to listOf(gratis)), listOf(abierta, fila("r1", "ADD_ITEMS"))))
+        assertEquals(SaldoSinRed.Conocido(0, 0, hayCobro = true), saldoDeMesaProvisional(mapOf("r1" to listOf(gratis)),
+            listOf(abierta, fila("r1", "ADD_ITEMS"), fila("c1", "PAY_CASH", importe = 0))))
+        assertEquals(SaldoSinRed.Conocido(0, 0, hayCobro = false), saldoDeMesaProvisional(emptyMap(), listOf(abierta)))
     }
 
     @Test fun `rechazo u otro cambio sin red deja la mesa en gris`() {
@@ -97,7 +100,7 @@ class SaldoSinRedTest {
         assertTrue(runCatching { outbox(dao).filasSinResolverDeLaOrden("v1", setOf("L-1")) }.isFailure)
     }
 
-    @Test fun `la sesion sólo guarda el saldo rearmado si nada cambio mientras se leia`() {
+    @Test fun `la sesion sólo guarda el saldo de disco si nada cambio mientras se leia`() {
         val session = TableSession()
         val abiertaSinRed = TableSession.Active("t1", "5", null, "L-1", "LOCAL", 1, 0, TableSession.Mode.ORDERING, isProvisional = true,
             saldoSinRedConocido = false)
@@ -109,7 +112,8 @@ class SaldoSinRedTest {
         assertFalse(session.rehidratarSaldoSinRed("otra", session.current()!!, session.revisionActual(), 3000))
         assertTrue(session.rehidratarSaldoSinRed("v1", session.current()!!, session.revisionActual(), 3000))
         assertEquals(3000, session.current()!!.valorRondasSinRedCents); assertTrue(session.current()!!.saldoSinRedConocido)
-        // Ya conocida: no se vuelve a pisar.
-        assertFalse(session.rehidratarSaldoSinRed("v1", session.current()!!, session.revisionActual(), 1))
+        // Ya conocida: lo de disco manda sobre lo de memoria (Codex b2a-r2).
+        assertTrue(session.rehidratarSaldoSinRed("v1", session.current()!!, session.revisionActual(), 1))
+        assertEquals(1, session.current()!!.valorRondasSinRedCents)
     }
 }

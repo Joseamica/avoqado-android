@@ -123,10 +123,10 @@ class TableSession @Inject constructor() {
     }
     fun revisionActual(): Long = synchronized(lock) { revision }
 
-    /** D5 · B2a (7b): la mesa abierta sin red reabierta recupera de disco el valor de sus rondas, sólo si nada cambió al leerlo. */
+    /** D5 · B2a: la mesa abierta sin red toma de disco el valor de sus rondas (manda sobre el de memoria), sólo si nada cambió al leerlo. */
     fun rehidratarSaldoSinRed(venueId: String, expected: Active, expectedRevision: Long, valorRondasCents: Int): Boolean = synchronized(lock) {
         if (!acepta(venueId) || (activeVenue != null && activeVenue != venueId) || revision != expectedRevision || _active.value != expected ||
-            !expected.isProvisional || expected.saldoSinRedConocido || valorRondasCents < 0) return@synchronized false
+            !expected.isProvisional || valorRondasCents < 0) return@synchronized false
         revision++
         _active.value = expected.copy(valorRondasSinRedCents = valorRondasCents, saldoSinRedConocido = true)
         true
