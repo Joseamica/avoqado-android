@@ -68,7 +68,8 @@ class CuentasEntreCajas internal constructor(
     /** Intentos en curso en este proceso (entre comprometer y el fin del flujo): sus avisos esperan. */
     private val vivos = ConcurrentHashMap.newKeySet<String>()
 
-    private data class Apartado(val venueId: String, val dueno: String, val intento: String, val quien: String, val enLinea: Boolean)
+    /** [desde]: reloj monotónico de esta caja al conceder (la red de seguridad de [APARTADO_SIN_COMPROMETER_MS]). */
+    private data class Apartado(val venueId: String, val dueno: String, val intento: String, val quien: String, val enLinea: Boolean, val desde: Long)
 
     /** Con el hub Premium encendido en esta caja. */
     val encendida: Boolean get() = venueActivo != null
@@ -114,11 +115,11 @@ class CuentasEntreCajas internal constructor(
     suspend fun apartar(venueId: String, orderId: String, intento: String, quien: String, enLinea: Boolean): DelDueno {
         val enviado = reloj()
         dueno.apartar(venueId, orderId, Solicitud(dueno.deviceId, dueno.nombreCaja, quien, intento, enLinea))?.let { r ->
-            if (r == Respuesta.Concedida) apartados[orderId] = Apartado(venueId, dueno.deviceId, intento, quien, enLinea)
+            if (r == Respuesta.Concedida) apartados[orderId] = Apartado(venueId, dueno.deviceId, intento, quien, enLinea, reloj())
             return DelDueno(r, dueno.deviceId, dueno.nombreCaja, enviado)
         }
         val r = preguntar(venueId, orderId, LeaseProtocol.OP_CUENTA_APARTAR, intento, quien, enLinea)
-        if (r.respuesta == Respuesta.Concedida && r.deviceId != null) apartados[orderId] = Apartado(venueId, r.deviceId, intento, quien, enLinea)
+        if (r.respuesta == Respuesta.Concedida && r.deviceId != null) apartados[orderId] = Apartado(venueId, r.deviceId, intento, quien, enLinea, reloj())
         return r
     }
 
@@ -128,6 +129,10 @@ class CuentasEntreCajas internal constructor(
     /** Suelta un apartado que no llegó a comprometerse (salir, cancelar). Nunca espera a la red. */
     fun soltarApartado(orderId: String) {
         val a = apartados.remove(orderId) ?: return
+        soltar(orderId, a)
+    }
+
+    private fun soltar(orderId: String, a: Apartado) {
         scope.launch {
             if (a.dueno == dueno.deviceId) runCatching { dueno.soltar(a.venueId, orderId, a.intento) }
             else peerDe(a.dueno)?.let { p -> client.preguntarCuenta(p, pedido(LeaseProtocol.OP_CUENTA_SOLTAR, orderId, a.intento, a.quien)) }
@@ -303,6 +308,12 @@ class CuentasEntreCajas internal constructor(
 
     private suspend fun unaVueltaSola() {
         for ((orden, a) in apartados.toMap()) {
+            // Ninguna renovación huérfana: lo que nadie comprometió en 2 min ya no se renueva y se suelta (la puerta, si llega, compromete
+            // desde LIBRE). Las salidas normales ya lo sueltan; esto cubre la que no avisó.
+            if (reloj() - a.desde >= APARTADO_SIN_COMPROMETER_MS) {
+                if (apartados.remove(orden, a)) soltar(orden, a)
+                continue
+            }
             val r = if (a.dueno == dueno.deviceId) dueno.apartar(a.venueId, orden, Solicitud(a.dueno, dueno.nombreCaja, a.quien, a.intento, a.enLinea))
             else peerDe(a.dueno)?.let { CuentasPorLaRed.desdeCable(client.preguntarCuenta(it, pedido(LeaseProtocol.OP_CUENTA_APARTAR, orden, a.intento, a.quien, a.enLinea))) }
             // Sin respuesta se conserva (la dueña lo vence sola a los 30 s); una negativa explícita lo suelta.
@@ -409,6 +420,9 @@ class CuentasEntreCajas internal constructor(
     companion object {
         private const val TAG = "CuentasEntreCajas"
         private const val PODA_MS = 7 * 24 * 60 * 60 * 1000L
+
+        /** Un apartado (la cajera teclea lo que recibe) que nadie compromete en este tiempo deja de renovarse. */
+        const val APARTADO_SIN_COMPROMETER_MS = 2 * 60_000L
         const val NO_SE_GUARDO = "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago."
 
         fun textoDe(r: Respuesta, caja: String?): String = when (r) {

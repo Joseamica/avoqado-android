@@ -357,4 +357,48 @@ class CuentasEntreCajasTest {
         c.entre.unaVuelta()
         assertNull(a.dueno.estadoDe(v, "o1"))
     }
+
+    // MARK: - Ninguna renovación huérfana (ronda 1: en aparato, el permiso de MESA se renovaba para siempre)
+
+    private fun sueltaPerdida(orden: String) {
+        retenidas[LeaseProtocol.OP_CUENTA_SOLTAR to "cuenta:$orden"] = kotlinx.coroutines.CompletableDeferred<Unit>() to kotlinx.coroutines.CompletableDeferred()
+    }
+
+    /** Salir de la pantalla y `onCleared` llaman `soltarApartado`: aunque la suelta se pierda, nadie la renueva y vence a los 30 s. */
+    @Test fun `ninguna renovación huérfana - salir sin cobrar con la suelta perdida, la dueña la ve LIBRE a los 30 s`() = runTest {
+        red(a, c)
+        c.entre.apartar(v, "o1", "i-c", "Beto", enLinea = false)
+        sueltaPerdida("o1")
+        c.entre.soltarApartado("o1")
+        repeat(3) { a.ms += 10_000; c.ms += 10_000; c.entre.unaVuelta() }
+        assertNull(a.dueno.estadoDe(v, "o1"))
+    }
+
+    /** Red de seguridad: un apartado que nadie compromete en 2 min deja de renovarse y se suelta, aunque su pantalla no avise. */
+    @Test fun `ninguna renovación huérfana - un apartado sin comprometer en 2 min deja de renovarse`() = runTest {
+        red(a, c)
+        c.entre.apartar(v, "o1", "i-c", "Beto", enLinea = false)
+        sueltaPerdida("o1")
+        repeat(12) { a.ms += 10_000; c.ms += 10_000; c.entre.unaVuelta() } // 2 min tecleando: se renueva
+        repeat(4) { a.ms += 10_000; c.ms += 10_000; c.entre.unaVuelta() }
+        assertFalse(c.entre.tieneApartado("o1"))
+        assertNull(a.dueno.estadoDe(v, "o1"))
+    }
+
+    /** La cuenta la cerró el SERVIDOR (u otra caja la tomó) mientras estaba apartada: la renovación recibe «no» y deja de renovar. */
+    @Test fun `ninguna renovación huérfana - la cuenta cerrada mientras está apartada deja de renovarse`() = runTest {
+        red(a, c)
+        c.entre.apartar(v, "o1", "i-c", "Beto", enLinea = false)
+        a.dueno.alSaberCerradas(v, listOf("o1"), emptyList())
+        c.entre.unaVuelta()
+        assertFalse(c.entre.tieneApartado("o1"))
+    }
+
+    /** Cambio de sucursal: los apartados de la anterior se olvidan (y nada los renueva). */
+    @Test fun `ninguna renovación huérfana - cambiar de sucursal olvida los apartados`() = runTest {
+        red(a, c)
+        c.entre.apartar(v, "o1", "i-c", "Beto", enLinea = false)
+        c.entre.encender("otra-sucursal")
+        assertFalse(c.entre.tieneApartado("o1"))
+    }
 }
