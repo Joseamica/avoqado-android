@@ -49,13 +49,23 @@ class CuentasEntreCajas internal constructor(
         dueno: DuenoDeCuentas,
         cache: PayloadCache,
         pendientes: com.avoqado.pos.core.data.local.database.PendingPaymentDao,
-    ) : this(transporte, dueno, cache, { pendientes.syncStatusOf(it) })
+        monitor: com.avoqado.pos.core.util.ConnectivityMonitor,
+    ) : this(transporte, dueno, cache, { pendientes.syncStatusOf(it) }) {
+        servidorContesta = { monitor.elServidorContestaEn(PLAZO_DE_LA_SALUD_MS) }
+    }
 
     internal var client = LeaseClient()
 
     /** Reloj monotónico de ESTA caja (R1: la autorización de la dueña vale [RegistroDeCuentas.AUTORIZACION_MS] desde el envío). */
     internal var reloj: () -> Long = { SystemClock.elapsedRealtime() }
     internal var horaDePared: () -> Long = System::currentTimeMillis
+
+    /**
+     * Familia C (Codex r4 #2): ¿el SERVIDOR contesta AHORA, con su base? La salud profunda con plazo TOTAL ([PLAZO_DE_LA_SALUD_MS]); «no» al
+     * instante si ya se sabe sin red. Un 5xx no cuenta: su POST caería a la cola. La pregunta [puerta] sólo cuando cambia la respuesta. En
+     * producción la pone el constructor de Hilt; el de pruebas la deja en «sí» (las pruebas eligen con `enLinea`).
+     */
+    internal var servidorContesta: suspend () -> Boolean = { true }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
@@ -158,10 +168,11 @@ class CuentasEntreCajas internal constructor(
 
     /**
      * La ÚNICA puerta de un cobro NUEVO sobre una cuenta de Pedidos (R4). La dueña compromete en local y lo deja en disco ANTES de
-     * reservar (R2). Otra caja compromete EN VIVO; concedido, guarda su aviso durable ANTES de devolver. [enLinea] = cobra con internet y
-     * el saldo vivo del servidor (regla 8: sin respuesta, como hoy): el SERVIDOR contesta AHORA, no «la pantalla se abrió con red» (Codex
-     * r3 #1). [esTarjeta]: la tarjeta de otra caja no entra en D. [esCuentaDePedidos]: la cuenta está en la copia como Mostrador (sólo
-     * entonces otra caja pregunta).
+     * reservar (R2). Otra caja compromete EN VIVO; concedido, guarda su aviso durable ANTES de devolver. [enLinea] = quien llama cobraría
+     * con internet y el saldo vivo del servidor (falso con la copia). Que el SERVIDOR conteste AHORA (Codex r3 #1) lo confirma la puerta
+     * con [servidorContesta], y sólo cuando cambia la respuesta (familia C): una CERRADA, la dueña que no contesta (regla 8), una caja sin
+     * hub, el registro ilegible; nunca en lo que no es de Pedidos, ni con tarjeta (sin red no sale). [esTarjeta]: la tarjeta de otra caja no
+     * entra en D. [esCuentaDePedidos]: la cuenta está en la copia como Mostrador (sólo entonces otra caja pregunta).
      */
     suspend fun puerta(
         venueId: String, orderId: String, llave: String, quien: String, enLinea: Boolean, esTarjeta: Boolean, esCuentaDePedidos: Boolean,
@@ -182,8 +193,14 @@ class CuentasEntreCajas internal constructor(
     ): Puerta {
         // La llave del cobro (o el intento que ya se comprometió en esta venta): reemplaza el apartado de ESTA caja (misma caja).
         val intento = intentoPrevio ?: llave
+        // Familia C: «en línea» de verdad se pregunta UNA vez y sólo si cambia la respuesta. Primero todo va como sin red (lo más estricto);
+        // con la tarjeta (sin red no sale) no se mide, y fuera de Pedidos (la bandeja, Rappi 2b) nunca se pregunta.
+        var vivo: Boolean? = null
+        suspend fun enLineaYa(): Boolean = vivo ?: (enLinea && (esTarjeta || (esCuentaDePedidos && servidorContestaSinLanzar()))).also { vivo = it }
         val propia = try {
-            dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea)
+            val sinRed = dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea = false)
+            // Una CERRADA (o dinero propio que el SERVIDOR ya contestó, I4) sólo se abre con internet de verdad.
+            if (sinRed is Respuesta.Cerrada && enLineaYa()) dueno.comprometerPropio(venueId, orderId, intento, quien, enLinea = true) else sinRed
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: DuenoDeCuentas.RegistroIlegible) {
@@ -191,7 +208,7 @@ class CuentasEntreCajas internal constructor(
             // salvo que esta caja tenga dinero de la cuenta que aún no sube (R4). Sin red, no. A otra caja nunca le concede (`pedir` calla).
             Log.e(TAG, "🚨 ${e.message}")
             return when {
-                !enLinea -> Puerta.NoPasa(NO_SE_GUARDO)
+                !enLineaYa() -> Puerta.NoPasa(NO_SE_GUARDO)
                 dueno.tieneDineroDe(venueId, orderId) ->
                     Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.cobradaEn(dueno.nombreCaja, faltaSubirla = true))
                 else -> Puerta.Libre
@@ -208,11 +225,13 @@ class CuentasEntreCajas internal constructor(
             return Puerta.NoPasa(textoDe(propia, dueno.nombreCaja))
         }
         if (esTarjeta) return Puerta.Libre
-        // Codex r3 #1: con «en línea» = red viva, una pantalla abierta con internet pregunta sin red: lo que no es de Pedidos (la bandeja, un
-        // pedido web) sigue fuera de D, con o sin red. Desde la copia siempre es de Pedidos.
+        // Codex r3 #1: una pantalla abierta con internet puede preguntar sin red: lo que no es de Pedidos (la bandeja, un pedido web, Rappi 2b)
+        // sigue fuera de D, con o sin red. Desde la copia siempre es de Pedidos.
         if (!esCuentaDePedidos) return Puerta.Libre
-        if (!encendida) return if (enLinea) Puerta.Libre else Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
-        val r = preguntar(venueId, orderId, LeaseProtocol.OP_CUENTA_COMPROMETER, intento, quien, enLinea)
+        if (!encendida) return if (enLineaYa()) Puerta.Libre else Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
+        var r = preguntar(venueId, orderId, LeaseProtocol.OP_CUENTA_COMPROMETER, intento, quien, enLinea = false)
+        // Una CERRADA en la dueña sólo se abre con internet de verdad (Ruling duda 2: el saldo VIVO del servidor): se le vuelve a preguntar.
+        if (r.respuesta is Respuesta.Cerrada && enLineaYa()) r = preguntar(venueId, orderId, LeaseProtocol.OP_CUENTA_COMPROMETER, intento, quien, enLinea = true)
         apartados.remove(orderId)
         val respuesta = r.respuesta
         if (respuesta == null) {
@@ -220,7 +239,7 @@ class CuentasEntreCajas internal constructor(
             // dueña (dueña vacía = se le pide a todas las cajas con D; sólo la dueña acusa). I-1: sólo con dueña conocida o si alguna caja
             // se quedó callada; si todas dijeron «no es mía» (o no hubo a quién preguntar), nadie anotó nada.
             if (r.deviceId != null || r.algunaCallo) runCatching { anotarAviso(venueId, orderId, intento, llave, quien, r.deviceId.orEmpty()) }
-            return if (enLinea) Puerta.Libre
+            return if (enLineaYa()) Puerta.Libre
             else Puerta.NoPasa(r.caja?.let { com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto(it) } ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
         }
         if (respuesta != Respuesta.Concedida) return Puerta.NoPasa(textoDe(respuesta, r.caja))
@@ -233,6 +252,15 @@ class CuentasEntreCajas internal constructor(
             r.deviceId?.let { soltarAhora(it, venueId, orderId, intento, quien) }
             Puerta.NoPasa(NO_SE_GUARDO)
         }
+    }
+
+    /** Familia C: la salud nunca truena la puerta; si falla, cuenta como sin red (falla cerrado). */
+    private suspend fun servidorContestaSinLanzar(): Boolean = try {
+        servidorContesta()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        false
     }
 
     /** R1: ¿la autorización de otra caja sigue valiendo para guardar el efectivo? (la dueña: siempre). */
@@ -454,6 +482,9 @@ class CuentasEntreCajas internal constructor(
         /** Un apartado (la cajera teclea lo que recibe) que nadie compromete en este tiempo deja de renovarse. */
         const val APARTADO_SIN_COMPROMETER_MS = 2 * 60_000L
         const val NO_SE_GUARDO = "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago."
+
+        /** Familia C: plazo TOTAL de la salud que pregunta la puerta; al vencer cuenta como sin red. */
+        const val PLAZO_DE_LA_SALUD_MS = 3_000L
 
         fun textoDe(r: Respuesta, caja: String?): String = when (r) {
             is Respuesta.Ocupada -> com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja.ifBlank { caja ?: DuenoDeCuentas.nombreDeCaja(null) })

@@ -6357,7 +6357,6 @@ class PaymentFlowViewModelTest {
     fun `D12 opción D - en línea la puerta que dice no enseña su texto y no cobra`() = runTest {
         conLaCajaDeLaCopia()
         laPuerta(noPasa("Ana la está cobrando en Caja 2. Espera a que termine."))
-        viewModel.servidorContestaAhora = { true } // Codex r3 #1: «en línea» = el SERVIDOR contesta ahora
         viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
         viewModel.confirmCashPreset(tenderedCents = 10000)
         advanceUntilIdle()
@@ -6556,9 +6555,9 @@ class PaymentFlowViewModelTest {
             guardadaEnLaCopia("o1")
             conLaCajaDeLaCopia()
             alCobrarEnEfectivo(Result.failure(java.io.IOException("sin internet"))) // si llegara al POST, caería a la cola
-            viewModel.servidorContestaAhora = { true }
+            cajas.b.servidorContesta = { true }
             viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1") // el cobro normal, con internet
-            viewModel.servidorContestaAhora = { false } // se va internet; el WiFi y la caja A siguen
+            cajas.b.servidorContesta = { false } // se va internet; el WiFi y la caja A siguen (familia C: lo pregunta la puerta)
             assertEquals(com.avoqado.pos.core.data.lan.Respuesta.Concedida,
                 cajas.a.comprometerPropio("venue-1", "o1", "llave-a", "Ana", enLinea = true))
             cajas.a.cerrarPropio("venue-1", "o1", "llave-a", "Ana", subida = true) // A la cobró y ya está en el SERVIDOR
@@ -6685,5 +6684,86 @@ class PaymentFlowViewModelTest {
 
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
         io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", any(), any(), cobrado = true, subida = true, conAbono = true) }
+    }
+
+    // MARK: - D12 · pasada por familia (Codex r4 y re-revisión del arreglo final)
+
+    /**
+     * Familia A · Menor 2 de la re-revisión: B tuvo un permiso (X) y su reserva falló («Reintentar»). Ahora la puerta de ESTE intento dice
+     * `Libre` (con internet la dueña no contesta: regla 8). El permiso viejo se termina sin dinero y se limpia: su autorización vencida ya no
+     * hace fallar el `Libre` con «Se perdió el contacto…».
+     */
+    @Test
+    fun `D12 familia A - un Libre de este intento termina el permiso viejo y cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        laPuerta(pasaDeOtraCaja, com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre)
+        var reservas = 0
+        coEvery {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            reservas++
+            arg<(() -> Unit)?>(20)?.invoke() // lo que corre la transacción del INSERT
+            if (reservas == 1) throw IllegalStateException("disco lleno")
+        }
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returns false // pasaron los 20 s del permiso viejo
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        assertTrue("el Libre cobra", viewModel.state.value is PaymentFlowState.Success)
+        assertNull(viewModel.avisoDeLaPuerta.value)
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = false, subida = false, any()) }
+    }
+
+    /** Familia A · Menor 3: si al volver a comprometer la puerta TRUENA, la cajera ve el texto oficial, nunca la pantalla roja técnica. */
+    @Test
+    fun `D12 familia A - el re-comprometer que truena dice No se pudo guardar el cobro`() = runTest {
+        conLaCajaDeLaCopia()
+        coEvery {
+            cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns pasaDeOtraCaja andThenThrows IllegalStateException("registro ilegible de venue-1: no se escribe encima")
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returnsMany listOf(true, true, false) // vence ya en la reserva
+        coEvery { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { arg<(() -> Unit)?>(20)?.invoke() }
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals(com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO, gris)
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    /**
+     * Familia C (Codex r4 #2): la salud del SERVIDOR sólo se pregunta en una cuenta de Pedidos que continúa, y sólo cuando la respuesta
+     * cambia algo. La bandeja de pedidos en línea (y Rappi 2b, que entra por ella con `resumeOrderId`) nunca la pregunta: cobra como hoy.
+     */
+    @Test
+    fun `D12 familia C - el cobro de la bandeja nunca pregunta la salud del servidor`() = runTest {
+        val cajas = DosCajas()
+        try {
+            var preguntas = 0
+            cajas.b.servidorContesta = { preguntas++; true }
+            viewModel = nuevoViewModel(cajas.b)
+            alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+            viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "web-1",
+                cobroDeLaBandeja = com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(6000L, esFolio = true))
+            viewModel.confirmCashPreset(tenderedCents = 10000)
+            hastaQue { viewModel.state.value is PaymentFlowState.Success || viewModel.state.value is PaymentFlowState.Error }
+
+            assertTrue(viewModel.state.value is PaymentFlowState.Success)
+            assertEquals("nunca se le preguntó la salud al servidor", 0, preguntas)
+        } finally {
+            cajas.b.apagar()
+        }
     }
 }

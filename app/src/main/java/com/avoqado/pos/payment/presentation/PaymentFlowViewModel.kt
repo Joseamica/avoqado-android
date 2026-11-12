@@ -1026,12 +1026,6 @@ class PaymentFlowViewModel @Inject constructor(
     private var permisoDeLaCuenta: PermisoDeLaCuenta? = null
 
     /**
-     * D12 · Codex r3 #1: ¿el SERVIDOR contesta AHORA, con su base (la salud profunda de [com.avoqado.pos.core.util.ConnectivityMonitor])? Un
-     * 5xx no cuenta: su POST caería a la cola. Seam de prueba, como `PaymentSyncService.servidorContesta`.
-     */
-    internal var servidorContestaAhora: suspend () -> Boolean = { connectivityMonitor?.elServidorContesta() == true }
-
-    /**
      * D12 · Opción D (R4): la ÚNICA puerta de un cobro nuevo que sigue una cuenta ya abierta sin mesa ([continua]: «Cobrar» de Pedidos con
      * y sin red, y el carrito que la continúa). Va JUSTO antes de reservar el efectivo o de mandar la tarjeta. null = sigue; un texto = no
      * se cobra. La dueña compromete en local y en disco (R2); otra caja, en vivo, y su autorización vale 20 s desde el envío (R1): si ya
@@ -1046,9 +1040,9 @@ class PaymentFlowViewModel @Inject constructor(
             copiaDeCuentas?.cuenta(venue, orden)?.cuenta
                 ?.let { com.avoqado.pos.orders.data.razonParaNoCobrar(it) != com.avoqado.pos.orders.data.RazonSinRed.NO_ES_DE_MOSTRADOR }
         }.getOrNull() == true
-        // Codex r3 #1: «en línea» es que el SERVIDOR conteste AHORA (validará el saldo vivo), no que la pantalla se abrió con red: B la abrió
-        // con internet, lo perdió (no el WiFi) y A ya la cobró. La tarjeta no se mide: sin red no sale y nunca cae a la cola.
-        val enLinea = !desdeLaCopia && (esTarjeta || servidorContestaAhora())
+        // Codex r3 #1 y familia C (Codex r4 #2): con la copia nunca es «en línea». Si no, que el SERVIDOR conteste AHORA lo pregunta la
+        // puerta (`CuentasEntreCajas.puerta`), sólo en una cuenta de Pedidos y sólo cuando la respuesta cambia algo, con plazo total.
+        val enLinea = !desdeLaCopia
         suspend fun una(intentoPrevio: String?) = cuentas.puerta(venue, orden, llave, quien, enLinea = enLinea, esTarjeta = esTarjeta,
             esCuentaDePedidos = esDePedidos, intentoPrevio = intentoPrevio)
         var p = una(previo)
@@ -1061,7 +1055,12 @@ class PaymentFlowViewModel @Inject constructor(
         return when (p) {
             is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa -> { permisoDeLaCuenta = PermisoDeLaCuenta(venue, orden, p, quien, llave); null }
             is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.NoPasa -> p.texto
-            com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre -> null
+            com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre -> {
+                // Familia A · Menor 2: ESTE intento no tiene nada que coordinar. Un permiso viejo de esta cuenta (de un intento que no guardó
+                // su efectivo) se termina sin dinero —lo decide lo durable— y deja de comprobarse: no puede hacer fallar un `Libre`.
+                if (permisoDeLaCuenta?.orderId == orden) terminarPermiso(cobrado = false)
+                null
+            }
         }
     }
 
@@ -1122,7 +1121,16 @@ class PaymentFlowViewModel @Inject constructor(
         } catch (e: PermisoVencido) {
             Log.w("💵", "La autorización de la cuenta venció antes de guardar el efectivo; se vuelve a comprometer")
         }
-        pasarLaPuerta(venue, orden, llave, continua = true, esTarjeta = false, desdeLaCopia = desdeLaCopia)?.let { throw NoPasoAlGuardar(it) }
+        // Familia A · Menor 3: el re-comprometer traduce sus errores igual que la llamada original (nada se guardó: el texto oficial).
+        val texto = try {
+            pasarLaPuerta(venue, orden, llave, continua = true, esTarjeta = false, desdeLaCopia = desdeLaCopia)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("💵", "La puerta de la cuenta falló al volver a comprometer; no se cobra: ${e.message}")
+            com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO
+        }
+        texto?.let { throw NoPasoAlGuardar(it) }
         return try {
             intento()
         } catch (e: PermisoVencido) {

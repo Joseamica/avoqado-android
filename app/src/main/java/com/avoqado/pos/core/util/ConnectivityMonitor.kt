@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -158,6 +159,43 @@ class ConnectivityMonitor @Inject constructor(
     suspend fun elServidorContesta(): Boolean = consultarSalud() == true
 
     /**
+     * D12 · familia C (Codex r4 #2): [elServidorContesta] con plazo TOTAL [plazoMs] (resolver, conectar, encabezados y cuerpo). «No» al
+     * instante, sin preguntar, si el monitor ya sabe que no hay red ([isConnected] falso o [sinRespuesta]). Al vencer se cierra la conexión
+     * y cuenta como «no» (falla cerrado), sin tocar [sinRespuesta]: un plazo corto propio no prueba que nadie conteste. La consulta corre en
+     * el scope del monitor: quien pregunta no espera a un DNS o un cuerpo que no termina.
+     */
+    suspend fun elServidorContestaEn(plazoMs: Long): Boolean {
+        if (!_isConnected.value || _sinRespuesta.value) return false
+        val plazo = PlazoDeLaSalud()
+        val consulta = scope.async { consultarSalud(plazo) }
+        try {
+            return kotlinx.coroutines.withTimeoutOrNull(plazoMs) { consulta.await() } == true
+        } finally {
+            if (!consulta.isCompleted) {
+                plazo.vencer()
+                consulta.cancel()
+            }
+        }
+    }
+
+    /** La conexión de UNA consulta de la salud con plazo: al vencer se cierra (también si se abre después). */
+    private class PlazoDeLaSalud {
+        @Volatile var vencido = false
+            private set
+        @Volatile private var conexion: HttpURLConnection? = null
+
+        fun abrir(c: HttpURLConnection) {
+            conexion = c
+            if (vencido) c.disconnect()
+        }
+
+        fun vencer() {
+            vencido = true
+            conexion?.disconnect()
+        }
+    }
+
+    /**
      * D12 (final fix, F3): ¿se fue la red DE VERDAD? Sin red del aparato, o nadie contesta la salud (sin datos, DNS, tiempo agotado: un
      * [java.io.IOException]). Si alguien contesta, aunque sea mal (un 5xx), NO es «sin red»: el mismo criterio que `FalloDeLectura`. La
      * bandera [isServerReachable] no lo distingue: cualquier 5xx de cualquier pantalla la apaga. Pone al día [sinRespuesta] (ronda 2);
@@ -166,7 +204,7 @@ class ConnectivityMonitor @Inject constructor(
     suspend fun nadieContesta(): Boolean = consultarSalud() == null
 
     /** La salud profunda: true = nuestra API contestó bien · false = alguien contestó, pero no eso · null = nadie contestó (o sin red). */
-    private suspend fun consultarSalud(): Boolean? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+    private suspend fun consultarSalud(plazo: PlazoDeLaSalud? = null): Boolean? = kotlinx.coroutines.withContext(Dispatchers.IO) {
         if (!_isConnected.value) return@withContext null
         var connection: HttpURLConnection? = null
         try {
@@ -181,6 +219,7 @@ class ConnectivityMonitor @Inject constructor(
                 setRequestProperty("Cache-Control", "no-cache, no-store")
                 setRequestProperty("Pragma", "no-cache")
             }
+            plazo?.abrir(connection)
             val code = connection.responseCode
             _sinRespuesta.value = false // alguien contestó, aunque sea mal
             val cuerpo = if (code == 200) connection.inputStream.bufferedReader().use { it.readText() } else null
@@ -189,7 +228,7 @@ class ConnectivityMonitor @Inject constructor(
             ok
         } catch (e: java.io.IOException) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
-            _sinRespuesta.value = true
+            if (plazo?.vencido != true) _sinRespuesta.value = true // familia C: el cierre por el plazo propio no es «nadie contesta»
             null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")

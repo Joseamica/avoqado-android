@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -61,5 +62,52 @@ class NadieContestaTest {
         assertEquals(true, m.sinRespuesta.value)
         m.reportServerSuccess()
         assertEquals("contestó bien: ya no es «nadie contesta»", false, m.sinRespuesta.value)
+    }
+
+    // MARK: - D12 · familia C (Codex r4 #2): la salud que pregunta la puerta de las cuentas
+
+    /**
+     * Plazo TOTAL: un servidor que contesta los encabezados y gotea el cuerpo (cada lectura llega antes de los 5 s del `readTimeout`) ya no
+     * detiene el cobro lo que tarde el cuerpo. Al vencer cuenta como «no» (falla cerrado) y se cierra la conexión; ese plazo propio no dice
+     * «nadie contesta» (alguien sí contestó).
+     */
+    @Test fun `familia C - con el cuerpo goteando la salud de la puerta dice no al vencer su plazo total`() = runBlocking {
+        val server = MockWebServer().also { it.start() }
+        val m = monitor(server)
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"status":"ok","database":"connected"}""")
+            .throttleBody(1, 250, java.util.concurrent.TimeUnit.MILLISECONDS)) // ~10 s de cuerpo, 1 byte cada 250 ms
+        val antes = System.nanoTime()
+        val contesta = m.elServidorContestaEn(1_000)
+        val tardo = (System.nanoTime() - antes) / 1_000_000
+        assertEquals("venció: cuenta como sin red", false, contesta)
+        assertTrue("plazo total, no lo que tarde el cuerpo: $tardo ms", tardo < 2_500)
+        Thread.sleep(500) // la consulta que se cerró termina en su hilo
+        assertEquals("un plazo propio no prueba que nadie conteste", false, m.sinRespuesta.value)
+        server.shutdown()
+    }
+
+    /** «No» al instante, sin preguntar, si el monitor ya sabe que nadie contesta (el último ping o la última salud). */
+    @Test fun `familia C - si el monitor ya sabe que nadie contesta la puerta no pregunta`() = runBlocking {
+        val muerto = MockWebServer().also { it.start() }
+        val m = monitor(muerto)
+        muerto.shutdown()
+        m.pingServer()
+        assertTrue("premisa: nadie contestó", m.sinRespuesta.value)
+        val vivo = MockWebServer().also { it.start() }
+        vivo.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"status":"ok"}"""))
+        m.urlBase = vivo.url("/api/v1").toString()
+
+        assertEquals(false, m.elServidorContestaEn(1_000))
+        assertEquals("no se le preguntó", 0, vivo.requestCount)
+        vivo.shutdown()
+    }
+
+    /** Con el servidor bien, contesta que sí dentro de su plazo. */
+    @Test fun `familia C - con el servidor bien la puerta oye que si`() = runBlocking {
+        val server = MockWebServer().also { it.start() }
+        val m = monitor(server)
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"status":"ok"}"""))
+        assertEquals(true, m.elServidorContestaEn(1_000))
+        server.shutdown()
     }
 }

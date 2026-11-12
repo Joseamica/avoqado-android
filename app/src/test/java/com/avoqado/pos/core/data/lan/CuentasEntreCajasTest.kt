@@ -544,4 +544,54 @@ class CuentasEntreCajasTest {
         c.entre.encender("otra-sucursal")
         assertFalse(c.entre.tieneApartado("o1"))
     }
+
+    // MARK: - Pasada por familia (Codex r4 y re-revisión del arreglo final)
+
+    /**
+     * Familia C: «en línea» se confirma en la puerta, y la salud del SERVIDOR sólo se pregunta cuando cambia la respuesta: una CERRADA (con
+     * internet se cobra el resto con el saldo vivo). Una cuenta libre, la tarjeta, la copia y lo que no es de Pedidos no la preguntan.
+     */
+    @Test fun `familia C - la salud sólo se pregunta cuando cambia la respuesta`() = runTest {
+        red(a, c)
+        var preguntas = 0
+        var contesta = true
+        listOf(a, c).forEach { it.entre.servidorContesta = { preguntas++; contesta } }
+        val p = c.entre.puerta(v, "o1", "llave-c", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        c.entre.terminar(v, "o1", p, "Beto", cobrado = true, subida = true)
+        c.entre.unaVuelta()
+        assertEquals("una cuenta libre no pregunta", 0, preguntas)
+
+        assertTrue("la dueña, con red de verdad, cobra el resto",
+            a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) is CuentasEntreCajas.Puerta.Pasa)
+        assertEquals(1, preguntas)
+        contesta = false
+        assertEquals("sin respuesta del SERVIDOR, otra caja no", CuentasEntreCajas.Puerta.NoPasa("Cobrada en Caja 3"),
+            c.entre.puerta(v, "o1", "llave-c2", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        assertEquals(2, preguntas)
+
+        assertTrue("la tarjeta no se mide", a.entre.puerta(v, "o1", "llave-a2", "Yo", enLinea = true, esTarjeta = true, esCuentaDePedidos = true)
+            is CuentasEntreCajas.Puerta.Pasa)
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa("Cobrada en Caja 3"), c.entre.puertaSinRed(llave = "llave-c3"))
+        assertEquals(CuentasEntreCajas.Puerta.Libre,
+            c.entre.puerta(v, "o9", "llave-c4", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = false))
+        assertEquals("ni la tarjeta, ni la copia, ni lo que no es de Pedidos", 2, preguntas)
+    }
+
+    /** Familia C: una caja sin hub que no es la dueña (cuenta de Pedidos) y la dueña que no contesta (regla 8): ahí sí cambia la respuesta. */
+    @Test fun `familia C - sin hub o sin respuesta de la dueña la salud decide`() = runTest {
+        red(a, c)
+        var contesta = false
+        c.entre.servidorContesta = { contesta }
+        a.contesta = false
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA),
+            c.entre.puerta(v, "o1", "l1", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        contesta = true
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o1", "l2", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        c.entre.apagar() // sin hub
+        contesta = false
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA),
+            c.entre.puerta(v, "o1", "l3", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        contesta = true
+        assertEquals(CuentasEntreCajas.Puerta.Libre, c.entre.puerta(v, "o1", "l4", "Beto", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+    }
 }
