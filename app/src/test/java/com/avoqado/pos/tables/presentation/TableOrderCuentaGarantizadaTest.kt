@@ -750,6 +750,41 @@ class TableOrderCuentaGarantizadaTest {
         } finally { done.complete(Result.success(Unit)); a.viewModelScope.cancel(); f.viewModelScope.cancel() }
     }
 
+    // D24 (hz:e5ee98bc:D24): con el efectivo de la mesa en la cola de cobros, «liberar mesa» llegaba al servidor antes que su pago.
+    @Test fun `D24 con el cobro en la cola de cobros no se pide liberar la mesa y su sesion se cierra`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(cobroEnCola = true); advanceUntilIdle()
+            coVerify(exactly = 0) { repository.clearTable(any(), any()) }
+            assertNull(session.current())
+            // Pagada aquí y sin subir: al volver a abrirla no se cobra otra vez sin leer la cuenta del servidor.
+            f.startOrdering(table(provisional = false)) {}
+            assertTrue(session.current()!!.requiereLecturaServidor)
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D24 con el cobro confirmado por el servidor la mesa se sigue liberando`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(); advanceUntilIdle()
+            coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1") }
+            assertNull(session.current())
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D24 los dos llamadores reales avisan si el cobro quedo en la cola de cobros`() {
+        for (path in listOf("src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt",
+            "src/main/java/com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt")) {
+            val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+            assertEquals(path, 1, source.componentsCount("finishTableAfterPayment("))
+            assertTrue(path, source.contains("finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)"))
+        }
+    }
+
     @Test fun `ACK cash completo desde piso invalida solo cuenta pagada y parcial la conserva`() = runTest {
         val a = vm(provisional = true); val f = floor()
         try {

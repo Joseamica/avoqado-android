@@ -1074,7 +1074,7 @@ fun TableOrderScreen(
                             // Pagada por completo: liberar la mesa de inmediato. La
                             // pantalla de recibo sigue visible hasta que el operador
                             // pulse "Venta nueva".
-                            tablesViewModel.finishTableAfterPayment()
+                            tablesViewModel.finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)
                         }
                     },
                     onDone = {
