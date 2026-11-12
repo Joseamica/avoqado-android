@@ -5920,6 +5920,9 @@ class PaymentFlowViewModel @Inject constructor(
             reservationId = cart.reservationId,
             orderType = cart.orderType,
             couponCode = cart.couponCode,
+            // D2: la etiqueta y el PIN del descuento del cliente, igual en el cobro, `pay-new-order` y la cola sin red.
+            descuentoDelClienteId = cart.descuentoDelClienteQueViaja,
+            autorizacionDelDescuento = cart.autorizacionQueViaja,
         )
     }
 
@@ -6237,8 +6240,10 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
     private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
-        // D5: con cupón también, para que el cupón tenga una orden donde ligarse y contar.
-        cart != null && cart.items.isNotEmpty() && (split != "FULLPAYMENT" || cart.couponCode != null)
+        // D5: con cupón también, para que el cupón tenga una orden donde ligarse y contar. D2 (spec punto 15): y con el descuento
+        // del cliente: `/fast` no lleva descuento ni etiqueta, así que nunca va por ahí (tampoco sin red).
+        cart != null && cart.items.isNotEmpty() &&
+            (split != "FULLPAYMENT" || cart.couponCode != null || cart.descuentoDelClienteQueViaja != null)
 
     /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
     private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()

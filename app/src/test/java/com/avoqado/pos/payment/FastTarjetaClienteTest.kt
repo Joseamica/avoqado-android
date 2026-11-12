@@ -185,4 +185,40 @@ class FastTarjetaClienteTest {
             )
         }
     }
+
+    /** D2 · 7c (spec punto 15): con el descuento del cliente, la venta de puros importes crea su orden ANTES de la terminal. */
+    @Test
+    fun `7c con tarjeta, importes con el descuento del cliente crean la orden con la etiqueta y la terminal cobra contra ella`() = runTest {
+        val creados = mutableListOf<com.avoqado.pos.payment.data.model.CreateOrderRequest>()
+        coEvery { orderRepository.createOrder(capture(creados), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(
+                com.avoqado.pos.payment.data.model.CreateOrderResponse(
+                    success = true, data = com.avoqado.pos.payment.data.model.OrderData(id = "order-1"),
+                ),
+            )
+        val delCliente = com.avoqado.pos.pos.data.model.Discount(
+            id = "d-10", name = "Cliente frecuente", value = 10.0, source = com.avoqado.pos.pos.presentation.cart.DESCUENTO_DEL_CLIENTE_SOURCE,
+        )
+
+        viewModel.startPaymentFlow(otroImporte().copy(orderDiscount = delCliente), customerId = "cmcustomer123", customerName = "Juan Pérez")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val pedido = creados.single()
+        org.junit.Assert.assertEquals(1000, pedido.discount)
+        org.junit.Assert.assertEquals("d-10", pedido.descuentoDelClienteId)
+        org.junit.Assert.assertNull("sin PIN no viaja token (permiso propio)", pedido.autorizacionDelDescuento)
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1",
+                amountCents = 9_000,
+                tipCents = 0,
+                rating = null,
+                orderId = "order-1",
+                processedByStaffId = "user-456",
+                customerId = any(),
+            )
+        }
+    }
 }

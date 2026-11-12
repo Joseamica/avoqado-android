@@ -128,7 +128,7 @@ class PaymentFlowConSaldoTest {
         server.shutdown();System.clearProperty("avoqado.test.baseUrl")
     }
     internal fun vm(orderId:String?=null, flags:Set<String> = emptySet(), efectivoReal:Boolean=false,
-        colaDeMesas:com.avoqado.pos.core.data.sync.SyncOutbox=mockk(relaxed=true), alFrenarPorDescuento:() -> Unit = {}):PaymentFlowViewModel {
+        colaDeMesas:com.avoqado.pos.core.data.sync.SyncOutbox=mockk(relaxed=true), alFrenarPorDescuento:() -> Unit = {}, cliente:String?=null):PaymentFlowViewModel {
         coEvery {terminal.fetchOnlineTerminals(any())} returns TerminalListResult.Success(emptyList())
         val tpv=mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository>()
         every {tpv.getCurrentSettings()} returns TpvSettings(showReviewScreen=false,showTipScreen=false)
@@ -161,7 +161,7 @@ class PaymentFlowConSaldoTest {
             cancelacionDeCobro=mockk(relaxed=true),savedStateHandle=androidx.lifecycle.SavedStateHandle(),tableSession=session,
             syncOutbox=colaDeMesas,connectivityMonitor=network,cobroConSaldo=coordinator,tarjetasRepository=repo,
             rolesDeSaldo=roles,cobrosLocalesDeSaldo=local)
-        result.startPaymentFlow(cart,resumeOrderId=orderId,cuentaDeTarjetas="regalo" in flags)
+        result.startPaymentFlow(cart,customerId=cliente,resumeOrderId=orderId,cuentaDeTarjetas="regalo" in flags)
         result.configurarSaldo(ventaViva={cart},foto={cart.aFoto(null)},vaciar={
             val rows=store.delNegocio("a");clearSawDurable=rows.size==1 && rows.single().mandado && rows.single().foto!=null
             cleared++;cart=CartState()
@@ -244,6 +244,24 @@ class PaymentFlowConSaldoTest {
         server.enqueue(response())
         assertTrue(vm().cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
         assertTrue(server.takeRequest(1,TimeUnit.SECONDS)!!.path!!.endsWith("/gift-cards/pay-new-order"))
+    }
+    /** D2 · 7b: `pay-new-order` crea la venta con el mismo cuerpo que el cobro: la etiqueta y el PIN en el CUERPO, nunca en el encabezado. */
+    @Test fun descuentoDelClienteViajaConSuEtiquetaYSuTokenAPayNewOrder()=runTest {
+        every { roles.canApplyDiscounts } returns false
+        cart=cart.copy(orderDiscount=Discount(id="d-10",name="Cliente frecuente",value=10.0,source=DESCUENTO_DEL_CLIENTE_SOURCE),
+            autorizacionDelDescuento=AutorizacionDelDescuento("tok-1",1000,"c-cecilia","d-10"))
+        server.enqueue(response())
+        assertTrue(vm(cliente="c-cecilia").cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
+        val req=server.takeRequest(1,TimeUnit.SECONDS)!!
+        assertTrue(req.path!!.endsWith("/gift-cards/pay-new-order"))
+        assertNull(req.getHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER))
+        val body=Json.parseToJsonElement(req.body.readUtf8()).jsonObject
+        assertEquals("c-cecilia",body.getValue("customerId").jsonPrimitive.content)
+        assertEquals(1000,body.getValue("discount").jsonPrimitive.int)
+        val etiqueta=body.getValue("descuentoDelCliente").jsonObject
+        assertEquals("d-10",etiqueta.getValue("discountId").jsonPrimitive.content)
+        assertEquals(1000,etiqueta.getValue("montoCents").jsonPrimitive.int)
+        assertEquals("tok-1",body.getValue("autorizacionDelDescuento").jsonPrimitive.content)
     }
     @Test fun guardarOMarcarFalseNoVaciaNiManda()=runTest {
         val subject=vm();preferences.ok=false

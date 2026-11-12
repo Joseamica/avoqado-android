@@ -173,6 +173,13 @@ data class CartState(
             orderDiscountCents <= autorizacion.topeCents
     }
 
+    /** D2: el `discountId` del descuento del cliente que viaja con la venta (con monto); null si la venta no lo lleva. */
+    val descuentoDelClienteQueViaja: String? get() = orderDiscount?.id?.takeIf { descuentoEsDelCliente && orderDiscountCents > 0 }
+
+    /** D2: el token del PIN de ESE descuento, si lo hay. Va en el cuerpo de la venta, nunca en el encabezado ni en la llave. */
+    val autorizacionQueViaja: String?
+        get() = autorizacionDelDescuento?.takeIf { it.discountId == descuentoDelClienteQueViaja }?.token
+
     /**
      * 🔴 DINERO. Las líneas con el precio que decidió el servidor ([aplicarCambiosDePrecio]). Con [cambios] vacío devuelve el
      * MISMO estado: no corrige ni congela nada.
@@ -3280,6 +3287,8 @@ class CartViewModel @Inject constructor(
                 note = venta.orderNote,
                 splitType = "FULLPAYMENT",
                 couponCode = venta.couponCode,
+                descuentoDelClienteId = venta.descuentoDelClienteQueViaja,
+                autorizacionDelDescuento = venta.autorizacionQueViaja,
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")

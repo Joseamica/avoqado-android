@@ -511,6 +511,34 @@ class CartViewModelDescuentoDelClienteTest {
         assertNull(vm.avisoDeDescuento.value)
     }
 
+    // MARK: - 7b · «Pagar después» manda el mismo cuerpo que el cobro
+
+    @Test
+    fun `7b Pagar despues manda la etiqueta y el token en linea y en la fila de reenvio, con la misma llave`() = runTest {
+        permisos = listOf("orders:read")
+        val vm = carrito().conPlayeraYCecilia()
+        autorizarConPin(vm)
+        val fila = io.mockk.slot<com.avoqado.pos.payment.data.PayLaterRow>()
+        val enLinea = io.mockk.slot<String>()
+        coEvery { cola.guardar(capture(fila)) } returns true
+        coEvery { cola.mandar(any(), capture(enLinea)) } returns com.avoqado.pos.payment.data.DesenlacePagarDespues.SinRespuesta
+
+        vm.createPayLaterOrder("c-cecilia")
+
+        val cuerpos = listOf(enLinea.captured to false, fila.captured.cuerpo to true).map { (texto, reenvio) ->
+            org.json.JSONObject(texto).also { c ->
+                assertEquals("PAY_LATER", c.getString("paymentMethod"))
+                assertEquals("c-cecilia", c.getString("customerId"))
+                assertEquals(1000, c.getInt("discount"))
+                assertEquals("d-10", c.getJSONObject("descuentoDelCliente").getString("discountId"))
+                assertEquals(1000, c.getJSONObject("descuentoDelCliente").getInt("montoCents"))
+                assertEquals("tok-1", c.getString("autorizacionDelDescuento"))
+                assertEquals(reenvio, c.optBoolean("isOfflineReplay", false))
+            }
+        }
+        assertEquals("el token no cambia la llave", cuerpos[0].getString("externalId"), cuerpos[1].getString("externalId"))
+    }
+
     // MARK: - 6h · sin red
 
     @Test
