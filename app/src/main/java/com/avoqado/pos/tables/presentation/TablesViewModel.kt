@@ -457,6 +457,10 @@ class TablesViewModel @Inject constructor(
      * one "Cuenta Mesa N" line for the order total and the NORMAL payment flow
      * (tip screen, cash/terminal, split) pays the EXISTING order — see the
      * PaymentFlowViewModel seam. On completion the table is released.
+     *
+     * 🔴 D8 (12-nov, hz:e5ee98bc:D8): hoy NADIE la llama (el plano no tiene «Cobrar»; tocar una mesa ocupada entra a su cuenta, que
+     * sí resta los abonos). Si algún día se le pone ese botón: aquí se cobra `order.total` SIN restar abonos. Antes de conectarla,
+     * el importe tiene que salir del saldo leído de la cuenta (como `TableOrderViewModel.preparePagar`), o mandar a abrirla.
      */
     fun startCobrar(table: DiningTable, onReady: () -> Unit) {
         val order = table.primaryCheck ?: return
