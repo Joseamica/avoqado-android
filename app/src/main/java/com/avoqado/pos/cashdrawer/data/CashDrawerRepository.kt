@@ -1504,10 +1504,9 @@ class CashDrawerRepository @Inject constructor(
             // server cuenta en la de hoy tiene que venirse, o lo perderíamos.
             // 🔴 D23: la venta que escribe el servidor no se llama como mi copia (`srv-cash-sale:<pago>` contra
             // `idDeLaVentaEnEfectivo(K)`), pero trae la llave K del cobro que la originó: mi copia de ESE cobro adopta su id, también
-            // cuando la escribí DESPUÉS de que un refresco ya trajo la venta (F1). Sin el campo = el servidor no lo sabe (de antes, o
-            // no pudo leer las llaves); con `null` = el pago no tiene llave.
+            // cuando la escribí DESPUÉS de que un refresco ya trajo la venta (F1). Sin llave (el campo no viene, o viene `null`) no se
+            // sabe de quién es: se adivina como antes.
             val esVenta = event.type == CashDrawerEventType.CASH_SALE.name
-            val identificada = esVenta && obj.containsKey(CAMPO_LLAVE_DEL_COBRO)
             val llaveDelCobro = obj[CAMPO_LLAVE_DEL_COBRO]?.jsonPrimitive?.contentOrNull?.takeIf { esVenta && it.isNotBlank() }
             val adoptada = promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id) != null ||
                 (llaveDelCobro != null && promoteEvent(idDeLaVentaEnEfectivo(llaveDelCobro), event.id) != null)
@@ -1518,7 +1517,7 @@ class CashDrawerRepository @Inject constructor(
                     ventasNuevasDelServer += VentaConfirmadaPorPrimeraVez(
                         orderId = event.orderId,
                         totalCents = event.amountCents,
-                        deOtroCobro = identificada,
+                        deOtroCobro = llaveDelCobro != null,
                     )
                 }
             }

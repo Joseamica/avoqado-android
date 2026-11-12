@@ -124,14 +124,15 @@ class FusionPorLaLlaveDelCobroTest {
     }
 
     @Test
-    fun `F2 - tampoco una venta del servidor cuyo pago no tiene llave (dashboard)`() = runTest {
+    fun `una venta cuyo pago no tiene llave (null) no se da por ajena - igual que hoy (Codex r2)`() = runTest {
+        // `null` no prueba que la venta sea de otro: un camino que no guardara la llave dejaría la copia sin dueño (doble conteo).
         val dao = caja(Triple(venta("K"), 30_000, null))
         val cajon = cajon(dao, listOf(cobro("K", 30_000)), ventaDelServidorSinLlave("srv-ev-dash", "300.00"))
 
         cajon.syncFromApi()
 
-        assertTrue("todo cobro de este aparato lleva su llave: una venta sin llave no es suya", dao.events.containsKey(venta("K")))
-        assertEquals(FONDO_CENTS + 60_000, cajon.computeExpectedAmount("srv-1", FONDO_CENTS))
+        assertFalse(dao.events.containsKey(venta("K")))
+        assertEquals(FONDO_CENTS + 30_000, cajon.computeExpectedAmount("srv-1", FONDO_CENTS))
     }
 
     @Test
