@@ -118,6 +118,24 @@ internal suspend fun prepararPagoDeMesa(viewModel: TableOrderViewModel, onReady:
     if (viewModel.preparePagar()) onReady()
 }
 
+/**
+ * D39 (ensayo 11 y 12-nov): «Ver productos» del cobro de una mesa decía «(1)» con 3 productos: el cobro lleva UN renglón «Cuenta
+ * Mesa N» por el importe. Esto es SÓLO para la pantalla (`CartState.renglonesParaVer`, como los pedidos en línea); el ticket sigue en
+ * «Cuenta Mesa N» (D4 de mesas40, 15-oct). Los renglones de la cuenta leída (los mismos de la pre-cuenta) y los de sus rondas en cola,
+ * sólo si suman al centavo el subtotal del cobro: con un abono, un cargo por servicio o una cuenta que cambió, vacío y queda el renglón
+ * de la cuenta. La lista nunca dice algo distinto de lo que se cobra. PURA.
+ */
+internal fun renglonesDeLaMesaParaVer(cuenta: List<OrderDetailItem>, enCola: List<com.avoqado.pos.pos.data.model.CartItem>,
+    subtotalCents: Int): List<com.avoqado.pos.payment.data.model.PaymentItem> {
+    val renglones = renglonesDePreCuenta(cuenta).map {
+        com.avoqado.pos.payment.data.model.PaymentItem(it.name, it.quantity, it.unitPrice, it.totalPrice, it.modifiers.orEmpty(), it.note, it.isCortesia)
+    } + enCola.map {
+        com.avoqado.pos.payment.data.model.PaymentItem(it.name, it.quantity, it.effectiveUnitPrice + it.selectedModifiers.sumOf { m -> m.priceInCents },
+            it.grossPrice, it.selectedModifiers.map { m -> m.modifierName }, it.itemNote, it.isCortesia)
+    }
+    return if (renglones.isNotEmpty() && renglones.sumOf { it.lineTotal } == subtotalCents) renglones else emptyList()
+}
+
 @Composable
 fun TableOrderScreen(
     isTablet: Boolean,
@@ -1000,14 +1018,17 @@ fun TableOrderScreen(
             // cobrar. En un pago parcial/split la semilla es menor que el
             // cheque completo y desglosarlo daría un total equivocado.
             val desglosable = descuentoCents > 0 && descuentoCents < cobrable
+            val subtotal = if (desglosable) cobrable + descuentoCents else cobrable
             com.avoqado.pos.pos.presentation.cart.CartState(
                 items = listOf(
                     com.avoqado.pos.pos.data.model.CartItem(
                         type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
                         name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
-                        unitPrice = if (desglosable) cobrable + descuentoCents else cobrable,
+                        unitPrice = subtotal,
                     ),
                 ),
+                renglonesParaVer = renglonesDeLaMesaParaVer(check?.takeIf { it.id == session?.orderId }?.items.orEmpty(),
+                    queuedLines.map { it.item }, subtotal),
                 orderDiscount = if (desglosable) {
                     com.avoqado.pos.pos.data.model.Discount(
                         id = "order-discount",
