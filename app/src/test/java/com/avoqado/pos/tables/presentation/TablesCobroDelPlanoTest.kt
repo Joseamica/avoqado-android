@@ -144,6 +144,46 @@ class TablesCobroDelPlanoTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    /** D5 · B2b (piloto): sin red o con trabajo sin subir, el plano manda a la cuenta (donde vive el saldo sin red, A1). Apagado, como hoy. */
+    @Test fun `B2b con el piloto el plano sin red o con trabajo sin subir manda a abrir la cuenta`() = runTest {
+        every { repository.tables } returns MutableStateFlow(listOf(table))
+        every { repository.isLoading } returns MutableStateFlow(false)
+        val storage = mockk<SecureStorage>(relaxed = true)
+        every { storage.venueId } returns "v-plano"
+        val plan = mockk<com.avoqado.pos.core.domain.PlanManager>(relaxed = true)
+        val red = mockk<com.avoqado.pos.core.util.ConnectivityMonitor>()
+        val conectado = MutableStateFlow(false)
+        every { red.isConnected } returns conectado
+        every { red.isServerReachable } returns MutableStateFlow(true)
+        fun floor() = TablesViewModel(repository, plan, session, mockk(relaxed = true), storage, outbox, mockk(relaxed = true),
+            FloorPlanRepository(mockk(relaxed = true), mockk(relaxed = true)), mockk(relaxed = true), mockk<ApiFuenteDeVersiones>(relaxed = true),
+            mockk(relaxed = true), red)
+        var navigation = 0
+        coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+        every { plan.concedidaPorAvoqado("MESAS_SIN_RED") } returns true
+        val conPiloto = floor()
+        try {
+            conPiloto.startCobrar(table) { navigation++ }; advanceUntilIdle()
+            assertEquals(0, navigation); assertNull(session.current())
+            assertEquals(TableActionState.Error(TablesViewModel.ABRE_PARA_COBRAR), conPiloto.actionState.value)
+            conectado.value = true
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(1, 0, setOf("ADD_ITEMS"), 0)
+            conPiloto.startCobrar(table) { navigation++ }; advanceUntilIdle()
+            assertEquals(TableActionState.Error(TablesViewModel.ABRE_PARA_COBRAR), conPiloto.actionState.value)
+        } finally { conPiloto.viewModelScope.cancel() }
+        // Apagado: el plano se comporta como hoy (sin red, cobra desde el plano; con trabajo, «cambios sin sincronizar»).
+        every { plan.concedidaPorAvoqado("MESAS_SIN_RED") } returns false
+        val apagado = floor()
+        try {
+            apagado.startCobrar(table) { navigation++ }; advanceUntilIdle()
+            assertEquals(TableActionState.Error("Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."), apagado.actionState.value)
+            conectado.value = false
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+            apagado.startCobrar(table) { navigation++ }; advanceUntilIdle()
+            assertEquals(1, navigation); assertFalse(session.current()!!.cobroSinRed)
+        } finally { apagado.viewModelScope.cancel() }
+    }
+
     @Test fun `plano limpio conserva saldo parcial existente al navegar`() = runTest {
         val subject = vm()
         session.start(TableSession.Active("t1", "5", null, "o1", "ORD-1", 3, 6000, TableSession.Mode.PAYING))
