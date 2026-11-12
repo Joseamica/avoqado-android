@@ -481,6 +481,27 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    @Test fun `D29 Codex r1 marcada resuelta mientras la mesa se esta reabriendo - la recuperacion no la vuelve a encolar`() = runTest {
+        var subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        rechazar(llave)
+        subject = reiniciar(subject)
+        // `restoreDraft` ya leyó el borrador (con la ronda) y, justo antes de preguntar el estado de su fila, el gerente la marca
+        // resuelta: el borrador la pierde (lo mismo que hace `dismissRejected`, aquí sin cambiar de hilo para que la prueba espere
+        // de verdad) y la fila se va, así que la pregunta contesta «no hay fila».
+        var descartada = false
+        every { outbox.observarEstado(llave) } answers {
+            kotlinx.coroutines.flow.flow { drafts.descartarRonda(venue, "order-F", llave); estado(llave, null); descartada = true; emit(null) }
+        }
+        leer(subject)
+        assertTrue("el cruce sí ocurrió", descartada)
+        assertTrue("no vuelve a la cola", cola.none { it.id == llave })
+        assertFalse(llave in drafts.load(venue, "order-F").rounds)
+        subject.viewModelScope.cancel()
+    }
+
     /** El SERVIDOR rechaza la ronda (producto agotado) y la cola REAL guarda el rechazo; devuelve esa cola. */
     private suspend fun rechazar(llave: String): SyncOutbox {
         val dao = mockk<SyncIntentDao>(relaxed = true)

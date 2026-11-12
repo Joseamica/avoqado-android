@@ -30,6 +30,8 @@ class TableRoundDraftStore(private val directory: File) {
         val originalOrderIdsQ16: List<String>? = null,
         /** D5 · B2b: esta tablet le mandó al menos una ronda a la cuenta (sólo ella la cobra sin internet). Nunca se apaga. */
         val tomadaAqui: Boolean = false,
+        /** D29: rondas rechazadas que el gerente marcó resueltas. Nunca se vuelven a escribir (tampoco desde una pantalla abierta). */
+        val descartadas: Set<String> = emptySet(),
     )
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private fun file(venueId: String, orderId: String): File {
@@ -81,13 +83,27 @@ class TableRoundDraftStore(private val directory: File) {
         require(cachedCheck == null || cachedCheck.id == orderId || cachedCheck.id == targetOrder) { "La cuenta no pertenece a este pedido" }
         require(preparationRouting.keys.all { it in rounds }) { "Primero guarda la ronda en este pedido" }
         val stagedIds = rounds.values.flatten().map { it.item.id }.toSet()
+        // D29: la pantalla reescribe el borrador entero con las rondas de su MEMORIA; una ya descartada no regresa al disco.
+        val vivas = rounds - previous.descartadas
         val now = System.currentTimeMillis()
-        val snapshot = Snapshot(pending.filterNot { it.item.id in stagedIds }, rounds,
-            rounds.keys.associateWith { previous.createdAtLocal[it] ?: now }, cachedCheck?.copy(id = targetOrder) ?: previous.cachedCheck,
-            preparationRouting = (preparationRouting + previous.preparationRouting).filterKeys { it in rounds },
-            originalOrderIdsQ16 = previous.originalOrderIdsQ16, tomadaAqui = previous.tomadaAqui || tomadaAqui)
+        val snapshot = Snapshot(pending.filterNot { it.item.id in stagedIds }, vivas,
+            vivas.keys.associateWith { previous.createdAtLocal[it] ?: now }, cachedCheck?.copy(id = targetOrder) ?: previous.cachedCheck,
+            preparationRouting = (preparationRouting + previous.preparationRouting).filterKeys { it in vivas },
+            originalOrderIdsQ16 = previous.originalOrderIdsQ16, tomadaAqui = previous.tomadaAqui || tomadaAqui, descartadas = previous.descartadas)
         write(venueId, targetOrder, snapshot)
         snapshot
+    }
+
+    /**
+     * D29 (deuda A4 del D5): el gerente marcó resuelta la ronda que el servidor rechazó. Sale del borrador y su llave queda
+     * descartada: `restoreDraft` ya no la vuelve a encolar al reabrir la mesa (una ronda sin fila es la que la app no alcanzó a
+     * encolar) y ningún guardado posterior la revive. Si el disco no deja escribir, lanza (la fila rechazada se queda).
+     */
+    fun descartarRonda(venueId: String, orderId: String, roundKey: String) = synchronized(diskLock) {
+        val (targetOrder, snapshot) = resolved(venueId, orderId)
+        if (roundKey !in snapshot.rounds) return@synchronized
+        write(venueId, targetOrder, snapshot.copy(rounds = snapshot.rounds - roundKey, createdAtLocal = snapshot.createdAtLocal - roundKey,
+            preparationRouting = snapshot.preparationRouting - roundKey, descartadas = snapshot.descartadas + roundKey))
     }
 
     /** Destination is durable BEFORE the alias and the terminal OPEN_TABLE acknowledgement. */
@@ -104,7 +120,8 @@ class TableRoundDraftStore(private val directory: File) {
         val inverse = if (source.originalOrderIdsQ16 != null && target.originalOrderIdsQ16 != null)
             (source.originalOrderIdsQ16 + target.originalOrderIdsQ16 + localOrderId).distinct() else null
         require(inverse == null || inverse.size <= 98) { "No se pudo comprobar la identidad completa del pedido" }
-        val rounds = source.rounds + target.rounds
+        val descartadas = source.descartadas + target.descartadas
+        val rounds = source.rounds + target.rounds - descartadas
         val stagedIds = rounds.values.flatten().map { it.item.id }.toSet()
         val pending = (source.pending + target.pending).associateBy { it.item.id }.values.filterNot { it.item.id in stagedIds }
         val dates = rounds.keys.associateWith { key ->
@@ -112,7 +129,8 @@ class TableRoundDraftStore(private val directory: File) {
         }
         val routing = (source.preparationRouting + target.preparationRouting).filterKeys { it in rounds }
         write(venueId, targetOrder, Snapshot(pending, rounds, dates, target.cachedCheck ?: source.cachedCheck?.copy(id = targetOrder),
-            preparationRouting = routing, originalOrderIdsQ16 = inverse, tomadaAqui = source.tomadaAqui || target.tomadaAqui))
+            preparationRouting = routing, originalOrderIdsQ16 = inverse, tomadaAqui = source.tomadaAqui || target.tomadaAqui,
+            descartadas = descartadas))
         write(venueId, localOrderId, Snapshot(redirectOrderId = targetOrder))
         } } finally { com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.end(venueId) }
     }

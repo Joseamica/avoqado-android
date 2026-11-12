@@ -271,7 +271,7 @@ class QuarantineViewModel @Inject constructor(
                 _errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."
                 return@launch
             }
-            // D5 · B2b (R5-1): si no se pudo borrar la foto de su mesa, la operación se queda (la mesa sigue en gris).
+            // D5 · B2b (R5-1) y D29: si no se pudo borrar la foto de su mesa o sacar la ronda de su borrador, la operación se queda.
             try { syncOutbox.dismissRejected(venueId,id) }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { _errorMessage.value = "No se pudo marcar como resuelta. Libera espacio en el aparato e intenta de nuevo."; return@launch }

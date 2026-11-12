@@ -56,6 +56,47 @@ class RondaDescartadaNoVuelveTest {
         return SyncOutbox(dao, mockk(relaxed = true), connectivity, storage, mockk(relaxed = true), context, mockk(relaxed = true))
     }
 
+    // MARK: - El borrador
+
+    @Test fun `una pantalla con la ronda descartada todavia en memoria no la revive al guardar`() {
+        store().save("v", "o", emptyList(), mapOf("buena" to listOf(linea("a")), "rechazada" to listOf(linea("b"))), tomadaAqui = true)
+        store().descartarRonda("v", "o", "rechazada")
+        assertEquals(setOf("buena"), store().load("v", "o").rounds.keys)
+
+        // La pantalla abierta guarda el borrador ENTERO (agregar un producto, leer la cuenta) con las rondas de su memoria.
+        store().save("v", "o", listOf(linea("c")), mapOf("buena" to listOf(linea("a")), "rechazada" to listOf(linea("b")),
+            "nueva" to listOf(linea("d"))))
+
+        val frio = store().load("v", "o")
+        assertEquals("la nueva sí, la descartada no", setOf("buena", "nueva"), frio.rounds.keys)
+        assertFalse("rechazada" in frio.createdAtLocal)
+        assertEquals("sus productos tampoco vuelven a «sin mandar»", listOf("c"), frio.pending.map { it.item.id })
+        assertTrue(frio.tomadaAqui)
+        assertEquals(setOf("rechazada"), frio.descartadas)
+    }
+
+    @Test fun `al promover el id local la ronda descartada sigue fuera y se puede descartar por cualquiera de los dos ids`() {
+        store().save("v", "local", emptyList(), mapOf("r1" to listOf(linea("a")), "r2" to listOf(linea("b"))))
+        store().descartarRonda("v", "local", "r2")
+        store().promote("v", "local", "real")
+        // Una pantalla vieja todavía con las dos rondas en memoria.
+        store().save("v", "real", emptyList(), mapOf("r1" to listOf(linea("a")), "r2" to listOf(linea("b"))))
+        assertEquals(setOf("r1"), store().load("v", "real").rounds.keys)
+
+        store().descartarRonda("v", "local", "r1") // sigue la redirección del id local
+        assertTrue(store().load("v", "real").rounds.isEmpty())
+        assertEquals(setOf("r1", "r2"), store().load("v", "real").descartadas)
+    }
+
+    @Test fun `descartar una ronda que no esta en el borrador no escribe nada`() {
+        store().descartarRonda("v", "sin-borrador", "x")
+        assertTrue("no crea archivos", dir.listFiles().orEmpty().isEmpty())
+        store().save("v", "o", emptyList(), mapOf("r1" to listOf(linea("a"))))
+        store().descartarRonda("v", "o", "otra")
+        assertEquals(setOf("r1"), store().load("v", "o").rounds.keys)
+        assertTrue(store().load("v", "o").descartadas.isEmpty())
+    }
+
     // MARK: - El descarte del gerente (la cola)
 
     @Test fun `marcar resuelta la ronda rechazada la saca del borrador ANTES de quitar su fila`() = runTest {
