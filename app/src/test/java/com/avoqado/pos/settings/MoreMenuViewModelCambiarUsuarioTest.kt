@@ -153,8 +153,29 @@ class MoreMenuViewModelCambiarUsuarioTest {
 
             coVerify(exactly = 0) { auth.switchVenue(any()) }
             assertEquals(
-                "Hay 2 operaciones pendientes: 1 sin enviar y 1 rechazada por revisar. Espera a que se sincronice lo pendiente y " +
+                "Hay 2 operaciones pendientes: 1 operación rechazada por revisar y 1 más. Sincroniza o resuelve lo demás y " +
                     "resuelve lo rechazado en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cambiar de establecimiento.",
+                vm.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    /**
+     * Codex r2 #2: un cobro fallido de OTRA sucursal frena (el freno es de todo el aparato), pero el gerente no lo vería en la pantalla
+     * de ésta: no se cuenta como «rechazada por revisar» aquí; queda en «lo demás».
+     */
+    @Test
+    fun `P1 un cobro fallido de otra sucursal no se manda a resolver en esta`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido().copy(venueId = "otra-sucursal"))
+            val vm = construir(cola(rechazadas = 1), f.service)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            assertEquals(
+                "Hay 2 operaciones pendientes: 1 operación rechazada por revisar y 1 más. Sincroniza o resuelve lo demás y " +
+                    "pídele a un gerente que resuelva lo rechazado: Más › Cambiar usuario.",
                 vm.sessionGuardMessage.value,
             )
         }

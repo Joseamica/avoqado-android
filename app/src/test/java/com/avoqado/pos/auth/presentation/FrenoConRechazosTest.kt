@@ -40,14 +40,15 @@ class FrenoConRechazosTest {
         )
     }
 
-    @Test fun `P1 con algo sin enviar ademas, primero se espera y luego el gerente`() {
+    /** Codex r2 #1: «lo demás» puede no subir solo (un vale por imprimir): no se promete que se sincroniza. */
+    @Test fun `P1 con algo mas pendiente, se pide sincronizar o resolverlo y luego el gerente`() {
         assertEquals(
-            "Hay 3 operaciones pendientes: 2 sin enviar y 1 rechazada por revisar. Espera a que se sincronice lo pendiente y " +
+            "Hay 3 operaciones pendientes: 1 operación rechazada por revisar y 2 más. Sincroniza o resuelve lo demás y " +
                 "pídele a un gerente que resuelva lo rechazado: Más › Cambiar usuario.",
             textoDelFrenoConRechazos(total = 3, rechazadas = 1, puedeResolver = false, antesDe = "cerrar sesión"),
         )
         assertEquals(
-            "Hay 2 operaciones pendientes: 1 sin enviar y 1 rechazada por revisar. Espera a que se sincronice lo pendiente y " +
+            "Hay 2 operaciones pendientes: 1 operación rechazada por revisar y 1 más. Sincroniza o resuelve lo demás y " +
                 "resuelve lo rechazado en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cambiar de establecimiento.",
             textoDelFrenoConRechazos(total = 2, rechazadas = 1, puedeResolver = true, antesDe = "cambiar de establecimiento"),
         )
@@ -56,7 +57,7 @@ class FrenoConRechazosTest {
     // MARK: - Qué cuenta como rechazado (Codex r1)
 
     private fun pagos(porRevisar: Int, bloqueantes: Int = porRevisar, sinEnviar: Int = 0) = mockk<PaymentSyncService> {
-        coEvery { porRevisarCount() } returns porRevisar
+        coEvery { porRevisarCount("v-1") } returns porRevisar
         coEvery { blockingWorkCount() } returns bloqueantes
         coEvery { sinEnviarCount() } returns sinEnviar
     }

@@ -545,7 +545,7 @@ class AppStateVenueRecoveryTest {
             every { failedCount } returns MutableStateFlow(0)
             every { start() } answers { onPaymentStart() }
             coEvery { blockingWorkCount() } returns cobrosRechazados
-            coEvery { porRevisarCount() } returns cobrosRechazados
+            coEvery { porRevisarCount(any()) } returns cobrosRechazados
             coEvery { sinEnviarCount() } returns 0
         }
         val syncOutbox = mockk<SyncOutbox>(relaxed = true) {

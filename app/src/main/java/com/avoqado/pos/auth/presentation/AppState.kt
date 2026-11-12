@@ -615,15 +615,16 @@ class AppState @Inject constructor(
 /**
  * D34: lo rechazado que frena cerrar sesión o cambiar de sucursal y que no vuelve a salir solo: lo resuelve un gerente en
  * «Operaciones por revisar». Los cobros fallidos sin revisar, lo que el servidor rechazó de la cola de mesas (el cambio de usuario por
- * PIN ya no los cuenta, D28) y los paquetes por revisar de esta sucursal. Se cuenta DIRECTO, nunca restando dos lecturas (Codex r1
- * #1: un acuse entre las dos inventaba un rechazo).
+ * PIN ya no los cuenta, D28) y los paquetes por revisar, todo de ESTA sucursal: lo que el gerente encuentra en su pantalla (Codex r2
+ * #2; lo de otra sucursal queda en «lo demás»). Se cuenta DIRECTO, nunca restando dos lecturas (Codex r1 #1: un acuse entre las dos
+ * inventaba un rechazo).
  */
 internal suspend fun rechazadasPorRevisar(
     pagos: PaymentSyncService,
     cola: com.avoqado.pos.core.data.sync.SyncOutbox,
     paquetes: com.avoqado.pos.customers.data.PendingGrantQueue?,
     venueId: String?,
-): Int = pagos.porRevisarCount() + (venueId?.let { cola.rechazadasCount(it) } ?: 0) +
+): Int = (venueId?.let { pagos.porRevisarCount(it) + cola.rechazadasCount(it) } ?: 0) +
     (paquetes?.filas?.value?.count { it.venueId == venueId && it.porRevisar } ?: 0)
 
 /**
@@ -642,7 +643,8 @@ internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver
             "Hay $rechazo. Pídele a un gerente que ${if (rechazadas == 1) "la" else "las"} resuelva: Más › Cambiar usuario."
         }
     }
-    val cabeza = "Hay $total operaciones pendientes: $sinEnviar sin enviar y $rechazo. Espera a que se sincronice lo pendiente y"
+    // Codex r2 #1: «lo demás» no siempre sube solo (un vale por imprimir se recupera a mano): se dice «sincroniza o resuelve».
+    val cabeza = "Hay $total operaciones pendientes: $rechazo y $sinEnviar más. Sincroniza o resuelve lo demás y"
     return if (puedeResolver) {
         "$cabeza resuelve lo rechazado en $DONDE_SE_RESUELVE antes de $antesDe."
     } else {
