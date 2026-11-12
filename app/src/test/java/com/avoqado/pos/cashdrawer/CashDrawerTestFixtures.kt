@@ -413,12 +413,15 @@ internal fun eventoJson(
     localId: String? = null,
     orderId: String? = null,
     createdAt: Long = haceMinutos(30),
+    /** D23: la llave del cobro de una venta que escribió el servidor. `null` = el campo NO viene (servidor de antes de D23). */
+    paymentIdempotencyKey: String? = null,
 ) = """
     {"id":"$id","type":"$type","amount":$amount,
      "note":${note?.let { "\"$it\"" } ?: "null"},
      "staffId":"staff-1","staffName":"Ana Ruiz",
      "orderId":${orderId?.let { "\"$it\"" } ?: "null"},
      "localId":${localId?.let { "\"$it\"" } ?: "null"},
+     ${paymentIdempotencyKey?.let { "\"paymentIdempotencyKey\":\"$it\"," } ?: ""}
      "createdAt":"${isoDe(createdAt)}"}
 """.trimIndent()
 
