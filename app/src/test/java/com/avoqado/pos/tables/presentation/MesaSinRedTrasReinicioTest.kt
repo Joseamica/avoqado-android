@@ -46,6 +46,8 @@ class MesaSinRedTrasReinicioTest {
     private val drafts = TableRoundDraftStore(root)
     /** La cola de esta tablet. La mesa se abrió sin internet: su `OPEN_TABLE` ya está. */
     private val cola = mutableListOf(FilaDeLaOrden("open", "OPEN_TABLE", "PENDING", null))
+    private val productos = mockk<com.avoqado.pos.pos.data.ProductsRepository>(relaxed = true)
+    private val despachador = mockk<com.avoqado.pos.core.domain.printing.ComandaDispatcher>(relaxed = true)
 
     @After fun limpiar() { root.deleteRecursively() }
 
@@ -73,7 +75,7 @@ class MesaSinRedTrasReinicioTest {
         if (!keepSession) session.start(TableSession.Active("t1", "5", "Patio", "local-1", "LOCAL", 1, 0, TableSession.Mode.ORDERING,
             isProvisional = true, localOrderId = "local-1"))
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
-            outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts)
+            outbox, productos, connectivity, mockk(relaxed = true), despachador, mockk(relaxed = true), draftStore = drafts)
     }
 
     /** El cobro en efectivo lo guarda el flujo de pago (B0): aquí sólo su fila en la cola. */
@@ -329,16 +331,205 @@ class MesaSinRedTrasReinicioTest {
         val subject = vm()
         try {
             ronda(subject, 3000)
-            // La fila entra a la cola y algo después del INSERT falla (p. ej. contar pendientes): el borrador la suelta.
+            // La fila entra a la cola y algo después del INSERT falla (p. ej. contar pendientes).
             coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
                 cola += FilaDeLaOrden(arg(3), arg(1), "PENDING", null); error("refreshCounts")
             }
             var enviada: Boolean? = null
             subject.addCustomAmount("Segunda", 2000); subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
-            assertEquals(false, enviada)
+            // D16: la fila ya está en la cola, así que la ronda está guardada (antes decía error y el borrador la soltaba).
+            assertEquals(true, enviada)
             subject.clearPending()
-            assertFalse(subject.preparePagar())
-            assertEquals(noRecuperado, subject.blockedNotice.value)
+            assertTrue(subject.preparePagar()); assertEquals("se cobra CON la segunda ronda", 5000, session.current()!!.totalCents)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // MARK: - D16 (`hz:e5ee98bc:D16`): una ronda que ya entró a la cola nunca vuelve a «por enviar»
+
+    private fun rondasEnCola() = cola.filter { it.tipo == "ADD_ITEMS" }
+    private fun cafe(subject: TableOrderViewModel) =
+        subject.addProductWithModifiers(Product(id = "p", name = "Café", priceValue = 30.0), 1, emptyList(), null)
+
+    @Test fun `D16 la ronda que entro a la cola y luego fallo no se manda dos veces`() = runTest {
+        val subject = vm()
+        try {
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+                if (cola.none { it.id == arg<String>(3) }) cola += FilaDeLaOrden(arg(3), arg(1), "PENDING", null); error("refreshCounts")
+            }
+            var enviada: Boolean? = null
+            cafe(subject); subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
+            assertEquals("la fila está en la cola: la ronda está guardada", true, enviada)
+            assertTrue("sus renglones ya no están por enviar", subject.pending.value.isEmpty())
+            assertEquals(1, subject.queued.value.size)
+            subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
+            assertEquals("una sola ronda en la cola", 1, rondasEnCola().size)
+            verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+            assertTrue(subject.preparePagar()); assertEquals(3000, session.current()!!.totalCents)
+            val b = reiniciar(subject)
+            try {
+                b.loadCheck(); advanceUntilIdle()
+                assertTrue(b.pending.value.isEmpty())
+                assertEquals(1, rondasEnCola().size)
+            } finally { b.viewModelScope.cancel() }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D16 si la ronda no entro a la cola vuelve a por enviar y sube una vez`() = runTest {
+        val subject = vm()
+        try {
+            var fallar = true
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+                if (fallar) { fallar = false; error("disco lleno") }
+                arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+            }
+            var enviada: Boolean? = null
+            cafe(subject); subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
+            assertEquals(false, enviada)
+            assertEquals("los productos siguen por enviar", 1, subject.pending.value.size)
+            assertEquals(0, rondasEnCola().size)
+            subject.sendRound { ok, _ -> enviada = ok }; advanceUntilIdle()
+            assertEquals(true, enviada)
+            assertEquals(1, rondasEnCola().size)
+            assertTrue(subject.preparePagar()); assertEquals(3000, session.current()!!.totalCents)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D16 la mesa cambio mientras se guardaba la ronda queda guardada y no se repite`() = runTest {
+        val subject = vm()
+        try {
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+                cola += FilaDeLaOrden(arg(3), arg(1), "PENDING", null)
+                // A media escritura llega el acuse de la apertura (TableSyncCoordinator): la sesión ya no es la misma.
+                session.confirmarCambio("v-b2a", setOf("local-1"), 2, null, session.contextoActual())
+                arg(3)
+            }
+            var texto: String? = null
+            cafe(subject); subject.sendRound { _, t -> texto = t }; advanceUntilIdle()
+            assertTrue("no se dice que hay que reenviar: $texto", texto!!.startsWith("Ronda guardada"))
+            assertTrue(subject.pending.value.isEmpty())
+            assertEquals(1, subject.queued.value.size)
+            subject.sendRound(); advanceUntilIdle()
+            assertEquals(1, rondasEnCola().size)
+            verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+            assertFalse("el dinero de una mesa que cambió no se suma en memoria", session.current()!!.saldoSinRedConocido)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D16 si el disco no deja deshacer la ronda no se queda por enviar`() = runTest {
+        val subject = vm()
+        try {
+            var fallar = true
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+                if (fallar) { fallar = false; root.setWritable(false); error("disco lleno") }
+                arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+            }
+            var enviada: Boolean? = null
+            var texto: String? = null
+            try { cafe(subject); subject.sendRound { ok, t -> enviada = ok; texto = t }; advanceUntilIdle() } finally { root.setWritable(true) }
+            assertEquals(false, enviada)
+            assertFalse("no pide reenviar: $texto", texto!!.contains("intenta de nuevo"))
+            assertTrue("la ronda sigue en el borrador: no puede estar también por enviar", subject.pending.value.isEmpty())
+            subject.sendRound(); advanceUntilIdle()
+            val b = reiniciar(subject)
+            try {
+                b.loadCheck(); advanceUntilIdle() // el borrador la encola con SU llave
+                assertEquals("una sola ronda", 1, rondasEnCola().size)
+                assertTrue(b.pending.value.isEmpty())
+            } finally { b.viewModelScope.cancel() }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D16 cerrar la pantalla mientras la ronda entra a la cola no la deja por enviar al reabrir`() = runTest {
+        val subject = vm()
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+            cola += FilaDeLaOrden(arg(3), arg(1), "PENDING", null); throw kotlinx.coroutines.CancellationException("se cerró la pantalla")
+        }
+        cafe(subject); subject.sendRound(); advanceUntilIdle()
+        verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+            arg<String>(3).also { id -> if (cola.none { it.id == id }) cola += FilaDeLaOrden(id, arg(1), "PENDING", null) }
+        }
+        val b = reiniciar(subject)
+        try {
+            b.loadCheck(); advanceUntilIdle()
+            assertTrue("al reabrir no hay nada por enviar", b.pending.value.isEmpty())
+            b.sendRound(); advanceUntilIdle()
+            assertEquals(1, rondasEnCola().size)
+            assertTrue(b.preparePagar()); assertEquals(3000, session.current()!!.totalCents)
+        } finally { b.viewModelScope.cancel() }
+    }
+
+    /** La apertura se confirma A MEDIA ronda: el acuse recarga el borrador y su recuperación vuelve a encolar la misma ronda. */
+    private fun TestScope.aperturaConfirmadaAMediaRonda(recuperacionEscribe: Boolean): CompletableDeferred<Unit> {
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        val recuperando = CompletableDeferred<Unit>()
+        val compuerta = CompletableDeferred<Unit>()
+        var llamadas = 0
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } coAnswers {
+            val id = arg<String>(3)
+            if (llamadas++ == 0) {
+                drafts.promote("v-b2a", "local-1", "real-1") // el replay guarda la promoción ANTES de avisar
+                acks.emit(SyncAck("open", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+                    put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-1"))
+                    put("orderId", kotlinx.serialization.json.JsonPrimitive("real-1"))
+                }))
+                recuperando.await()
+                error("disco") // la escritura de «Enviar» falla
+            }
+            recuperando.complete(Unit)
+            compuerta.await()
+            if (!recuperacionEscribe) error("disco")
+            id.also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+        }
+        return compuerta
+    }
+
+    /** Codex r1 #1: «no está en la cola» no basta si la recuperación de la recarga la está escribiendo en ese momento. */
+    @Test fun `D16 si la recarga del borrador encola la ronda mientras la primera escritura falla queda una sola`() = runTest {
+        val subject = vm()
+        try {
+            val compuerta = aperturaConfirmadaAMediaRonda(recuperacionEscribe = true)
+            var texto: String? = null
+            cafe(subject); subject.sendRound { _, t -> texto = t }; runCurrent()
+            assertNotNull(texto)
+            assertFalse("no pide reenviar: $texto", texto!!.contains("intenta de nuevo"))
+            compuerta.complete(Unit); advanceUntilIdle()
+            assertTrue(subject.pending.value.isEmpty())
+            subject.sendRound(); advanceUntilIdle()
+            assertEquals("una sola ronda", 1, rondasEnCola().size)
+            verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    /** Codex r0 #1: si la recuperación también falla, la ronda no se pierde: sigue en el borrador y sube al reabrir la mesa. */
+    @Test fun `D16 si tambien falla la recuperacion la ronda sigue en el borrador y sube al reabrir`() = runTest {
+        val subject = vm()
+        val compuerta = aperturaConfirmadaAMediaRonda(recuperacionEscribe = false)
+        cafe(subject); subject.sendRound(); runCurrent()
+        compuerta.complete(Unit); advanceUntilIdle()
+        assertTrue(subject.pending.value.isEmpty())
+        assertEquals(0, rondasEnCola().size)
+        assertEquals("la ronda sigue guardada en el borrador", 1, drafts.load("v-b2a", "real-1").rounds.size)
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+            arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+        }
+        val b = reiniciar(subject)
+        try {
+            b.loadCheck(); advanceUntilIdle()
+            assertEquals("sube una vez, con su llave", 1, rondasEnCola().size)
+            assertTrue(b.pending.value.isEmpty())
+        } finally { b.viewModelScope.cancel() }
+    }
+
+    @Test fun `D16 si falla descontar el stock local la ronda sigue guardada`() = runTest {
+        val subject = vm()
+        try {
+            coEvery { productos.applyLocalSale(any()) } throws IllegalStateException("disco")
+            val avisos = mutableListOf<Boolean>()
+            cafe(subject); subject.sendRound { ok, _ -> avisos += ok }; advanceUntilIdle()
+            assertEquals(listOf(true), avisos)
+            assertEquals(1, drafts.load("v-b2a", "local-1").rounds.size)
+            assertTrue(subject.preparePagar()); assertEquals(3000, session.current()!!.totalCents)
         } finally { subject.viewModelScope.cancel() }
     }
 

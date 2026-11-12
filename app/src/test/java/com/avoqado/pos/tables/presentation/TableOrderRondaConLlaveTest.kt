@@ -631,4 +631,47 @@ class TableOrderRondaConLlaveTest {
         // El aviso en pantalla SÍ sale — la mesa que sigue abierta no tiene por qué mentir del todo.
         assertEquals("No salió la comanda de: Barra", vm.actionMessage.value)
     }
+
+    // MARK: - D16 (`hz:e5ee98bc:D16`): una ronda guardada nunca vuelve a «por enviar»
+
+    @Test
+    fun `D16 la mesa del servidor cambio durante el envio y la ronda encolada no vuelve a por enviar`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } coAnswers {
+            // Mientras la ronda viaja, el acuse de OTRA ronda de esta cuenta cambia la sesión (TableSyncCoordinator).
+            tableSession.confirmarCambio("venue-1", setOf("o1"), 4, null, tableSession.contextoActual())
+            Result.failure(IOException("sin red"))
+        }
+        var texto: String? = null
+        val vm = vm()
+        try {
+            vm.sendRound { _, t -> texto = t }
+            advanceUntilIdle()
+            org.junit.Assert.assertTrue("no pide reenviar: $texto", texto!!.startsWith("Ronda guardada"))
+            org.junit.Assert.assertTrue("ya no está por enviar", vm.pending.value.isEmpty())
+            assertEquals(ids.single().let { listOf("sync:$it:0", "sync:$it:1") }, vm.queued.value.map { it.externalId })
+            vm.sendRound()
+            advanceUntilIdle()
+            assertEquals("una sola red de seguridad", 1, ids.size)
+            coVerify(exactly = 1) { repository.addRound(any(), any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `D16 enviada con el disco fallando no deja la ronda por enviar`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("d16-enviada").toFile()
+        try {
+            coEvery { repository.addRound(any(), any(), any(), any()) } coAnswers {
+                root.setWritable(false) // el servidor ya la tiene; el borrador ya no se puede guardar
+                Result.success(UpdatedOrder(id = "o1", version = 4))
+            }
+            val vm = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
+            try {
+                vm.sendRound(); advanceUntilIdle()
+                root.setWritable(true)
+                org.junit.Assert.assertTrue("ya está en el servidor: no puede seguir por enviar", vm.pending.value.isEmpty())
+                vm.sendRound(); advanceUntilIdle()
+                coVerify(exactly = 1) { repository.addRound(any(), any(), any(), any()) }
+            } finally { vm.viewModelScope.cancel() }
+        } finally { root.setWritable(true); root.deleteRecursively() }
+    }
 }

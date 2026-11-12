@@ -337,7 +337,11 @@ class SyncOutbox @Inject constructor(
             )
         val seq = if (preparationSnapshots == null) dao.insertWithNextSeq(entity)
             else dao.insertPreparationWithNextSeq(entity, preparationSnapshots)
-        refreshCounts(venueId)
+        // D16: la fila YA está escrita. Si esto lanzara, el llamador leería «no se guardó» y la repetiría con otra llave (el
+        // SERVIDOR la sumaría dos veces). Un contador viejo se corrige solo con el siguiente refresco.
+        try { refreshCounts(venueId) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { Log.w(TAG, "No se pudo refrescar el contador tras encolar $id: ${e.message}") }
         Log.d(TAG, "📥 Encolado $type seq=$seq id=$id${if (retenido) " (retenido)" else ""}")
         if (!retenido) scope.launch { replayNow(venueId) }
         return id
