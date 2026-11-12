@@ -436,6 +436,30 @@ data class CustomerLoyalty(
     fun valorDelCanje(points: Int): Double = Math.round(points * redemptionRate * 100) / 100.0
 }
 
+/**
+ * Por qué «Recompensas» está gris, siempre con la causa verdadera; null = se puede canjear. Antes había UN texto para todo
+ * («Agrega el cliente…»), que mentía sin red y en una cuenta con abono, donde la clienta sí está (nube, 12-nov; el SERVIDOR
+ * apaga `canRedeem` en cuentas con abono, pagadas o anuladas desde el PR #391).
+ *
+ * [fallo] es por qué no se pudo leer el saldo (null = no falló: todavía se está leyendo, o se leyó bien).
+ */
+fun motivoSinRecompensas(
+    tieneCliente: Boolean,
+    lealtad: CustomerLoyalty?,
+    fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
+): String? = when {
+    !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
+    lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED ->
+        "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
+    lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
+    lealtad == null -> "Leyendo los puntos del cliente…"
+    lealtad.canRedeem -> null
+    !lealtad.active -> "El programa de lealtad está apagado en esta sucursal. Se prende desde el panel web."
+    lealtad.balance < lealtad.minPointsRedeem ->
+        "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos; se necesitan al menos ${lealtad.minPointsRedeem} para canjear."
+    else -> "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar."
+}
+
 @Serializable
 data class CustomerLoyaltyResponse(val success: Boolean = true, val data: CustomerLoyalty? = null)
 

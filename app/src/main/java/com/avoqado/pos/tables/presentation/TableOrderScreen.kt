@@ -171,6 +171,7 @@ fun TableOrderScreen(
     val isSending by viewModel.isSending.collectAsState()
     val actionMessage by viewModel.actionMessage.collectAsState()
     val loyalty by viewModel.loyalty.collectAsState()
+    val loyaltyFallo by viewModel.loyaltyFallo.collectAsState()
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
@@ -541,6 +542,13 @@ fun TableOrderScreen(
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
+                                rewardsBlockedReason = com.avoqado.pos.tables.data.motivoSinRecompensas(
+                                    tieneCliente = !check?.customerId.isNullOrBlank(),
+                                    lealtad = loyalty,
+                                    fallo = loyaltyFallo,
+                                ),
+                                rewardsBlockedByConnection = loyalty == null &&
+                                    loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -725,6 +733,13 @@ fun TableOrderScreen(
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
+                                rewardsBlockedReason = com.avoqado.pos.tables.data.motivoSinRecompensas(
+                                    tieneCliente = !check?.customerId.isNullOrBlank(),
+                                    lealtad = loyalty,
+                                    fallo = loyaltyFallo,
+                                ),
+                                rewardsBlockedByConnection = loyalty == null &&
+                                    loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -2407,6 +2422,8 @@ internal fun TableActionsPanel(
     onMenus: () -> Unit = {},
     onFusionar: () -> Unit = {},
     hasLoyalty: Boolean = false,
+    rewardsBlockedReason: String? = null,
+    rewardsBlockedByConnection: Boolean = false,
     printBlockedReason: String? = null,
 ) {
     val motivoPreCuenta = motivoPreCuentaEnPanel(hasSent,printBlockedReason)
@@ -2576,9 +2593,11 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Recompensas",
                 enabled = hasLoyalty,
-                // Único ActionPill que se quedó sin motivo: el mesero lo tocaba
-                // y no pasaba NADA. El resto ya explicaba por qué estaba gris.
-                blockedReason = "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
+                // El motivo verdadero (motivoSinRecompensas): sin red, sin cliente, programa apagado, pocos puntos o cuenta con
+                // abono. Un solo texto para todo mentía (nube, 12-nov).
+                blockedReason = rewardsBlockedReason
+                    ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
+                blockedByConnection = rewardsBlockedByConnection,
                 onBlocked = onBlocked,
                 onClick = onRecompensas,
                 modifier = Modifier.weight(1f),

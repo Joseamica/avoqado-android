@@ -1514,6 +1514,10 @@ class TableOrderViewModel @Inject constructor(
     private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?>(null)
     val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> = _loyalty.asStateFlow()
 
+    /** Por qué no se pudo leer el saldo (null = no falló). Decide el motivo del botón gris: sin red no es «agrega el cliente». */
+    private val _loyaltyFallo = MutableStateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?>(null)
+    val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> = _loyaltyFallo.asStateFlow()
+
     /** Carga el saldo del cliente adjunto al cheque (null si no hay cliente). */
     fun loadLoyalty() {
         val session = tableSession.current() ?: return
@@ -1521,12 +1525,19 @@ class TableOrderViewModel @Inject constructor(
         val customerId = _check.value?.customerId
         if (customerId.isNullOrBlank()) {
             _loyalty.value = null
+            _loyaltyFallo.value = null
             return
         }
         viewModelScope.launch {
             repository.getCustomerLoyalty(vId, customerId, session.orderId).fold(
-                onSuccess = { _loyalty.value = it },
-                onFailure = { _loyalty.value = null },
+                onSuccess = {
+                    _loyalty.value = it
+                    _loyaltyFallo.value = null
+                },
+                onFailure = {
+                    _loyalty.value = null
+                    _loyaltyFallo.value = com.avoqado.pos.core.data.network.FalloDeLectura.de(it)
+                },
             )
         }
     }
