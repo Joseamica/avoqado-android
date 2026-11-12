@@ -42,8 +42,15 @@ class CajasPorTcpEnElTransporteTest {
     }
     private val outbox = mockk<SyncOutbox> { every { deviceId } returns "tablet-prueba" }
     private val disco = Collections.synchronizedMap(mutableMapOf<String, PayloadCache.Cached>())
+    /** Qué tipos se leyeron del disco, en orden; y si leer el puerto propio truena (ronda 2). */
+    private val leidos = Collections.synchronizedList(mutableListOf<String>())
+    @Volatile private var puertoIlegible = false
     private val cache = mockk<PayloadCache> {
-        coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { loadDurable(any(), any()) } answers {
+            leidos += firstArg<String>()
+            if (puertoIlegible && firstArg<String>() == PayloadCache.TYPE_PUERTO_PROPIO) throw java.io.IOException("Room no contestó")
+            disco["${firstArg<String>()}|${secondArg<String>()}"]
+        }
         coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
     }
     private val busquedas = Collections.synchronizedList(mutableListOf<NsdManager.DiscoveryListener>())
@@ -252,6 +259,8 @@ class CajasPorTcpEnElTransporteTest {
     @Test fun `la caja que reinicia la app conserva su puerto y vuelve a contestar quien en la dirección recordada`() = runBlocking {
         val antes = encendido(transporte())
         val recordado = antes.puerto
+        // Ronda 2: `encendido` regresa al ver el puerto, pero se guarda justo después; sin esperar, una nube cargada lo pierde al azar.
+        esperar("guardó su puerto") { disco["${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"]?.json == recordado.toString() }
         antes.detener() // la app se cierra (actualización, cierre de sesión, reinicio nocturno)
         esperarQueSeLibere(recordado)
         val despues = encendido(transporte()) // la misma tablet: mismo disco
@@ -275,6 +284,21 @@ class CajasPorTcpEnElTransporteTest {
             } finally {
                 t.detener()
             }
+        }
+    }
+
+    /** Ronda 2: si LEER el puerto guardado truena, se abre uno efímero como hoy, pero en esa sesión no se escribe encima del bueno. */
+    @Test fun `si leer el puerto guardado falla, abre otro pero no pisa el guardado`() = runBlocking {
+        disco["${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"] = PayloadCache.Cached("40404", 0)
+        puertoIlegible = true
+        val t = encendido(transporte())
+        try {
+            assertTrue(t.puerto > 0)
+            // En la vuelta, guardar el puerto va antes de la revisión de cajas: ésta lee su disco DESPUÉS.
+            esperar("la vuelta llegó a la revisión") { PayloadCache.TYPE_CAJAS_RECORDADAS in leidos }
+            assertEquals("lo guardado sigue intacto", "40404", disco["${PayloadCache.TYPE_PUERTO_PROPIO}|venue-1"]?.json)
+        } finally {
+            t.detener()
         }
     }
 }

@@ -428,6 +428,9 @@ class TransporteLan @Inject constructor(
     /** Lo que hay en disco del puerto propio de esta sucursal (null = sin disco, nada guardado o no se pudo leer). */
     @Volatile private var puertoEnDisco: Int? = null
 
+    /** Ronda 2: la última lectura del puerto guardado TRONÓ: en esta sesión no se escribe encima del bueno (como el 5b de las cajas). */
+    @Volatile private var puertoIlegible = false
+
     private suspend fun leerPuertoPropio(): Int? {
         val c = cajasEnDisco ?: return null
         val v = venueId ?: return null
@@ -436,9 +439,12 @@ class TransporteLan @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "⚠️ no se pudo leer el puerto propio: ${e.message}")
-            null
+            Log.w(TAG, "⚠️ no se pudo leer el puerto propio (se abre otro y no se guarda): ${e.message}")
+            puertoIlegible = true
+            puertoEnDisco = null
+            return null
         }
+        puertoIlegible = false
         puertoEnDisco = leido
         return leido
     }
@@ -447,7 +453,7 @@ class TransporteLan @Inject constructor(
         val c = cajasEnDisco ?: return
         val v = venueId ?: return
         val p = puerto
-        if (p <= 0 || p == puertoEnDisco) return
+        if (p <= 0 || p == puertoEnDisco || puertoIlegible) return
         try {
             c.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PUERTO_PROPIO, v, p.toString())
             puertoEnDisco = p
