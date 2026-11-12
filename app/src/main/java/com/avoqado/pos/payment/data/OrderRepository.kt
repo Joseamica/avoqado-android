@@ -507,11 +507,17 @@ class OrderRepository @Inject constructor(
             hasProductItems(request) ||
                 (request.items.isNotEmpty() && !request.couponCode.isNullOrBlank()) ||
                 (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT") ||
-                (request.items.isNotEmpty() && llevaDescuentoDelCliente(request))
+                (request.items.isNotEmpty() && llevaDescuentoDelCliente(request)) ||
+                // D4: `/fast` no lleva descuento ni etiqueta: con un descuento que pide aprobación, la venta crea su orden.
+                (request.items.isNotEmpty() && llevaDescuentoDeCatalogo(request))
 
         /** D2: la etiqueta del descuento del cliente sólo viaja con monto (el SERVIDOR exige `montoCents == discount`). */
         private fun llevaDescuentoDelCliente(request: CreateOrderRequest): Boolean =
             request.discount > 0 && !request.descuentoDelClienteId.isNullOrBlank()
+
+        /** D4: la etiqueta del descuento de cuenta que pide aprobación sólo viaja con importe (y nunca con la del cliente). */
+        private fun llevaDescuentoDeCatalogo(request: CreateOrderRequest): Boolean =
+            request.discount > 0 && !request.descuentoDeCatalogoId.isNullOrBlank() && !llevaDescuentoDelCliente(request)
 
         /**
          * El cuerpo EXACTO que viaja en `POST /mobile/venues/:id/fast`.
@@ -763,6 +769,9 @@ class OrderRepository @Inject constructor(
                     })
                     request.autorizacionDelDescuento?.takeIf { it.isNotBlank() }?.let { put("autorizacionDelDescuento", it) }
                 }
+                // D4: el descuento de cuenta del catálogo que pide aprobación. Sólo etiqueta: el importe sigue siendo `discount`.
+                // ADITIVO: sin él el cuerpo queda byte a byte igual.
+                if (llevaDescuentoDeCatalogo(request)) put("descuentoDeCatalogoId", request.descuentoDeCatalogoId)
                 // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
                 request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }

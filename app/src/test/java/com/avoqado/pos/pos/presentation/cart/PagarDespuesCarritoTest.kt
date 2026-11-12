@@ -180,6 +180,38 @@ class PagarDespuesCarritoTest {
     }
 
     @Test
+    fun `D4 un descuento que pide aprobacion, sin el permiso - no se deja para despues ni se guarda`() = runTest {
+        every { secureStorage.venuePermissions } returns listOf("orders:create", "discounts:apply")
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        vm.applyOrderDiscount(Discount(id = "d-gerente", name = "10% gerencial", value = 10.0, requiresApproval = true))
+        responde(201, creada(90.0))
+
+        assertEquals(ResultadoPagarDespues.Error(APROBACION_NO_PAGAR_DESPUES), vm.createPayLaterOrder("cli-1"))
+        assertTrue("no sale nada", enviados.isEmpty())
+        assertTrue("no se guarda nada", fila.filas.value.isEmpty())
+    }
+
+    @Test
+    fun `D4 con el permiso sale con la etiqueta y nunca entra a la fila - sin red se queda en el carrito y lo dice`() = runTest {
+        every { secureStorage.venuePermissions } returns listOf("orders:create", "discounts:apply", "tpv-orders:discount")
+        val vm = createViewModel()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        vm.applyOrderDiscount(Discount(id = "d-gerente", name = "10% gerencial", value = 10.0, requiresApproval = true))
+        sinRed()
+
+        assertEquals(
+            ResultadoPagarDespues.Error(com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED),
+            vm.createPayLaterOrder("cli-1"),
+        )
+        assertTrue("el cuerpo lleva la etiqueta", enviados.single().contains("\"descuentoDeCatalogoId\":\"d-gerente\""))
+        assertTrue("nada en la fila de reenvío", fila.filas.value.isEmpty())
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
     fun `D2 con permiso de cortesia la cuenta en 0 sigue como hoy`() = runTest {
         every { secureStorage.venuePermissions } returns listOf("orders:create", "discounts:apply", "orders:comp")
         val vm = createViewModel()

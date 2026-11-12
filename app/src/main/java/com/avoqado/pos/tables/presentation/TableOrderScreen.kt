@@ -1298,7 +1298,8 @@ fun TableOrderScreen(
         OrderDiscountsDialog(
             available = allDiscounts.filter { it.scope == "ORDER" && it.active },
             applied = check?.discounts ?: emptyList(),
-            onApply = { id -> viewModel.applyDiscount(id) },
+            // D4: el que pide la aprobación de un gerente no se encola sin red y abre el PIN si hace falta.
+            onApply = { id -> viewModel.applyDiscount(id, pideAprobacion = allDiscounts.firstOrNull { it.id == id }?.pideAprobacion == true) },
             onRemove = { id -> viewModel.removeDiscount(id) },
             onDismiss = { showDiscountsDialog = false },
         )
@@ -3117,6 +3118,14 @@ private fun OrderDiscountsDialog(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // D4: se dice antes de tocarlo, no hasta que salga el teclado.
+                            if (d.pideAprobacion) {
+                                Text(
+                                    "Pide la aprobación de un gerente",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                         Text("Aplicar", color = MaterialTheme.colorScheme.primary)
                     }
