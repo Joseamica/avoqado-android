@@ -447,13 +447,15 @@ fun motivoSinRecompensas(
     tieneCliente: Boolean,
     lealtad: CustomerLoyalty?,
     fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
+    enLinea: Boolean = true,
 ): String? = when {
-    !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
-    lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED ->
+    lealtad?.canRedeem == true -> null
+    // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea.
+    !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) ->
         "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
+    !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
     lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
     lealtad == null -> "Leyendo los puntos del cliente…"
-    lealtad.canRedeem -> null
     !lealtad.active -> "El programa de lealtad está apagado en esta sucursal. Se prende desde el panel web."
     lealtad.balance < lealtad.minPointsRedeem ->
         "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos; se necesitan al menos ${lealtad.minPointsRedeem} para canjear."

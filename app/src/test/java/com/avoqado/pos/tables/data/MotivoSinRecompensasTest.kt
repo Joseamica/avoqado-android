@@ -43,6 +43,22 @@ class MotivoSinRecompensasTest {
     }
 
     @Test
+    fun `sin red y sin la cuenta completa (no se sabe si hay cliente) - dice sin red, no «agrega el cliente»`() {
+        assertEquals(
+            "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red.",
+            motivoSinRecompensas(tieneCliente = false, lealtad = null, fallo = null, enLinea = false),
+        )
+    }
+
+    @Test
+    fun `sin red con un saldo viejo que no alcanza - dice sin red`() {
+        assertEquals(
+            "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red.",
+            motivoSinRecompensas(true, lealtad(max = 0), null, enLinea = false),
+        )
+    }
+
+    @Test
     fun `el servidor contestó mal`() {
         assertEquals(
             "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo.",

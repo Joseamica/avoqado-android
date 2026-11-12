@@ -546,9 +546,11 @@ fun TableOrderScreen(
                                     tieneCliente = !check?.customerId.isNullOrBlank(),
                                     lealtad = loyalty,
                                     fallo = loyaltyFallo,
+                                    enLinea = isConnected,
                                 ),
-                                rewardsBlockedByConnection = loyalty == null &&
-                                    loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED,
+                                rewardsBlockedByConnection = !isConnected || (
+                                    loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED
+                                ),
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -737,9 +739,11 @@ fun TableOrderScreen(
                                     tieneCliente = !check?.customerId.isNullOrBlank(),
                                     lealtad = loyalty,
                                     fallo = loyaltyFallo,
+                                    enLinea = isConnected,
                                 ),
-                                rewardsBlockedByConnection = loyalty == null &&
-                                    loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED,
+                                rewardsBlockedByConnection = !isConnected || (
+                                    loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED
+                                ),
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
