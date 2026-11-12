@@ -121,7 +121,7 @@ internal const val CUENTA_SIN_LEER_ESPERA = CUENTA_SIN_LEER + ": espera a que vu
 private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda excede el límite de la cuenta. Ajusta la ronda antes de enviarla."
 
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
-private fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
+internal fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
     val line = if (item.isCortesia) 0 else {
         val mods = item.selectedModifiers.fold(0) { sum, modifier -> Math.addExact(sum, modifier.priceInCents) }
         Math.multiplyExact(Math.addExact(item.effectiveUnitPrice, mods), item.quantity)
@@ -274,6 +274,36 @@ class TableOrderViewModel @Inject constructor(
             trabajoParaSaldo = result?.let { Triple(vId, s.idsDeLaOrden, it) }
         }
         return result
+    }
+
+    /**
+     * D5 · B2a (7b): la mesa abierta SIN internet que se reabre tras reiniciar la app rearma de disco lo que esta tablet le
+     * registró (rondas del borrador y efectivo de la cola) y lo guarda en la sesión, sólo si nada cambió mientras se leía.
+     * Devuelve la razón si no se puede asegurar el importe; null si ya se conoce o no aplica.
+     */
+    private suspend fun rehidratarSaldoSinRed(): String? {
+        val s = tableSession.current() ?: return null
+        if (!s.isProvisional || s.saldoSinRedConocido) return null
+        val vId = venueId ?: return SALDO_NO_RECUPERADO
+        val store = draftStore ?: return SALDO_NO_RECUPERADO
+        if (hayMutacionEnVuelo) return CUENTA_SE_ACTUALIZA
+        val revision = tableSession.revisionActual()
+        val epoch = generacion
+        val saldo = try {
+            val (canonical, snapshot) = store.loadResolved(vId, s.orderId)
+            // El servidor ya la conoce (B2b): no se cobra con lo de este aparato.
+            if (canonical != s.orderId) return SALDO_NO_RECUPERADO
+            val filas = syncOutbox.filasSinResolverDeLaOrden(vId, s.idsDeLaOrden)
+            // Codex b2a-r1 #1: el acuse de la apertura guarda la promoción en disco ANTES de avisar; si llegó mientras se leía, ya es B2b.
+            if (store.loadResolved(vId, s.orderId).first != s.orderId) return SALDO_NO_RECUPERADO
+            saldoDeMesaProvisional(snapshot.rounds.mapValues { (_, lines) -> lines.map { it.item } }, filas)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { return SALDO_NO_RECUPERADO }
+        if (saldo is SaldoSinRed.EnGris) return saldo.motivo
+        // Una ronda que se está mandando suma por su cuenta: guardar encima la contaría dos veces.
+        if (hayMutacionEnVuelo || generacion != epoch || venueId != vId || tableSession.contextoActual() != contextoDeSesion ||
+            !tableSession.rehidratarSaldoSinRed(vId, s, revision, (saldo as SaldoSinRed.Conocido).rondasCents)) return CUENTA_SE_ACTUALIZA
+        trabajoParaSaldo = null // la pantalla se entera sola cuando se vuelva a leer la cola
+        return null
     }
 
     internal suspend fun motivoDePreCuentaAhora(): String? {
@@ -522,7 +552,7 @@ class TableOrderViewModel @Inject constructor(
         // vive de pending + queued hasta que el ack promueva la sesión.
         if (session.isProvisional) {
             _chequeAlDia.value = false
-            viewModelScope.launch { leerTrabajo(session) }
+            viewModelScope.launch { rehidratarSaldoSinRed(); leerTrabajo(session) }
             _check.value = null
             _isLoadingCheck.value = false
             return
@@ -832,7 +862,12 @@ class TableOrderViewModel @Inject constructor(
             // red) nunca toca el server directo — su orden aún no existe allá.
             if (session.isProvisional) {
                 try { enqueueRoundOffline(vId, session, lines, requests, roundKey, onDone) }
-                catch (_: Exception) { finishDraftRound(roundKey, keepPending = true); _isSending.value = false; onDone(false, "No se pudo guardar la ronda sin conexión — intenta de nuevo") }
+                catch (_: Exception) {
+                    // D5 · B2a (Codex b2a-r1 #2): la fila pudo quedar en la cola sin su borrador; el saldo en memoria ya no se
+                    // asegura y el siguiente «Pagar» lo rearma de disco (fila sin borrador ⇒ gris).
+                    tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
+                    finishDraftRound(roundKey, keepPending = true); _isSending.value = false; onDone(false, "No se pudo guardar la ronda sin conexión — intenta de nuevo")
+                }
                 return@launch
             }
 
@@ -2012,8 +2047,9 @@ class TableOrderViewModel @Inject constructor(
                 }
             } ?: SaldoDeMesa.soloSaldo(0)
             if (session?.isProvisional == true) {
-                if (!session.saldoSinRedConocido) return SaldoDeMesa.soloSaldo(0)
+                // Se lee ANTES de salir: así la pantalla se entera sola cuando el saldo se rearma de disco (B2a).
                 val work = trabajoParaSaldo?.takeIf { it.first == venueId && it.second == session.idsDeLaOrden }?.third
+                if (!session.saldoSinRedConocido) return SaldoDeMesa.soloSaldo(0)
                 // Antes de leer disco se conserva el último saldo conocido; el toque siempre vuelve a consultar.
                 return work?.let {
                     SaldoDeMesa(session.valorRondasSinRedCents, it.cobradoEnColaCents,
@@ -2025,14 +2061,24 @@ class TableOrderViewModel @Inject constructor(
 
     val payableTotalCents: Int get() = saldoDeMesa.porPagarCents
 
+    /** 9b (`hz:e5ee98bc:D13`): la mesa abierta sin internet ya se cobró aquí y su efectivo espera en la cola: no se ofrece «Pagar». */
+    internal val cuentaCobradaAqui: Boolean get() = tableSession.current()?.let { s ->
+        s.isProvisional && saldoDeMesaConocido && saldoDeMesa.porPagarCents <= 0 &&
+            trabajoParaSaldo?.takeIf { it.first == venueId && it.second == s.idsDeLaOrden }?.third?.tipos
+                ?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true
+    } == true
+
     suspend fun preparePagar(): Boolean {
-        val session = tableSession.current() ?: return false
+        if (tableSession.current() == null) return false
         if (tableSession.contextoActual() != contextoDeSesion || venueId != venueDeSesion) {
             showBlockedReason("Esta cuenta ya no es la que está abierta en este aparato: vuelve a abrir la mesa para cobrarla.")
             return false
         }
+        // D5 · B2a (7b): la mesa abierta sin internet reabierta tras reiniciar rearma su saldo de disco antes de decidir.
+        if (!draftRecoveryFailed) rehidratarSaldoSinRed()?.let { showBlockedReason(it); return false }
+        val session = tableSession.current() ?: return false
         if (draftRecoveryFailed || (session.isProvisional && !session.saldoSinRedConocido)) {
-            showBlockedReason("No se pudo recuperar el saldo completo de esta cuenta. Conéctate y reabre la cuenta antes de cobrar; tus productos siguen guardados.")
+            showBlockedReason(SALDO_NO_RECUPERADO)
             return false
         }
         val vId = venueId
@@ -2052,6 +2098,13 @@ class TableOrderViewModel @Inject constructor(
         }
         if (session.isProvisional && session.valorRondasSinRedCents < 0) {
             showBlockedReason(IMPORTE_RONDA_FUERA_DE_LIMITE)
+            return false
+        }
+        // 9b (`hz:e5ee98bc:D13`): su efectivo ya está en la cola y no falta nada. Otro «Pagar» (la «cortesía» de $0 de abajo) lo
+        // rechazaba el SERVIDOR al subir («Order is already paid») y dejaba una operación por revisar de una cortesía que no hubo.
+        if (session.isProvisional && payableTotalCents <= 0 &&
+            trabajo?.tipos?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true) {
+            showBlockedReason(CUENTA_COBRADA_AQUI)
             return false
         }
         val checkDeLaSesion = _check.value?.takeIf { it.id == session.orderId }
