@@ -472,7 +472,8 @@ fun TableOrderScreen(
                                 cargandoCuenta = cargandoCuenta,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
-                                onBlocked = { viewModel.showBlockedReason(it) },
+                                // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
+                                onBlocked = { viewModel.showBlockedReason(it); if (cuentaSinLeer) viewModel.loadCheck() },
                                 printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
@@ -495,7 +496,7 @@ fun TableOrderScreen(
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
                                 isOffline = !isConnected,
-                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo); if (cuentaSinLeer) viewModel.loadCheck() },
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
@@ -654,7 +655,8 @@ fun TableOrderScreen(
                                 cargandoCuenta = cargandoCuenta,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
-                                onBlocked = { viewModel.showBlockedReason(it) },
+                                // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
+                                onBlocked = { viewModel.showBlockedReason(it); if (cuentaSinLeer) viewModel.loadCheck() },
                                 printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
@@ -677,7 +679,7 @@ fun TableOrderScreen(
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
                                 isOffline = !isConnected,
-                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo); if (cuentaSinLeer) viewModel.loadCheck() },
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
@@ -2453,6 +2455,8 @@ internal fun TableActionsPanel(
                 enabled = hasSent,
                 blockedReason = if (isOffline) {
                     "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
+                } else if (cuentaSinLeer) {
+                    CUENTA_SIN_LEER_ESPERA
                 } else {
                     "Primero envía la ronda a cocina."
                 },
@@ -2505,7 +2509,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
                 enabled = hasSent && !isReprinting,
-                blockedReason = if (isReprinting) null else "Aún no se ha enviado ningún pedido a cocina.",
+                blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                    else "Aún no se ha enviado ningún pedido a cocina.",
                 onBlocked = onBlocked,
                 onClick = onReprintComandas,
                 modifier = Modifier.weight(1f),

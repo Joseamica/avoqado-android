@@ -1067,6 +1067,11 @@ class TableOrderCuentaGarantizadaTest {
             assertFalse(subject.preparePagar())
             assertEquals(sinLeer, subject.blockedNotice.value)
             assertEquals("Mismo texto en el botón Pagar de la pantalla", sinLeer, motivoSinArticulos(subject.cuentaCompletaAqui, cargando = false))
+            // Codex r2 #3: vuelve la red y se lee la cuenta (el toque bloqueado la vuelve a pedir): el aviso deja de ser cierto.
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(25.0))
+            subject.loadCheck(); advanceUntilIdle()
+            assertTrue(subject.cuentaCompletaAqui)
+            assertNull(subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 
@@ -1107,6 +1112,10 @@ class TableOrderCuentaGarantizadaTest {
             acks.emit(SyncAck("ronda", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
             assertNull(subject.blockedNotice.value)
             assertTrue(subject.preparePagar())
+            subject.showBlockedReason("No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.")
+            acks.emit(SyncAck("otra-ronda", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertEquals("Codex r2: el acuse sólo quita su propio aviso",
+                "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.", subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 

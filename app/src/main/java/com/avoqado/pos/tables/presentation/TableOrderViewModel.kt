@@ -338,9 +338,10 @@ class TableOrderViewModel @Inject constructor(
                     }
                     // The ack triggers a refresh; only matching lines in the full check retire the local amount.
                     loadCheck()
-                    // 27c (11-nov): «cambios sin sincronizar» se quedaba junto a «Pagar $90.00» ya sincronizado. Se quita cuando
-                    // ESTA cuenta ya no tiene nada en la cola (la fila se guarda antes del acuse); un acuse parcial no basta.
-                    if (_blockedNotice.value != null && tableSession.current()?.let { leerTrabajo(it) }?.intents == 0) invalidateBlockedNotice()
+                    // 27c (11-nov): «cambios sin sincronizar» se quedaba junto a «Pagar $90.00» ya sincronizado. Se quita ESE aviso
+                    // (no otro, Codex r2) cuando ESTA cuenta ya no tiene nada en la cola (la fila se guarda antes del acuse).
+                    if (_blockedNotice.value?.startsWith("Esta mesa tiene cambios sin sincronizar") == true &&
+                        tableSession.current()?.let { leerTrabajo(it) }?.intents == 0) invalidateBlockedNotice()
                 }
             }
         }
@@ -541,6 +542,8 @@ class TableOrderViewModel @Inject constructor(
                     _check.value = detail
                     chequeLeidoEn = vId to detail.id
                     _chequeAlDia.value = true
+                    // Ya se leyó: «no se puede leer la cuenta» dejó de ser cierto (Codex r2 #3).
+                    if (_blockedNotice.value?.startsWith(CUENTA_SIN_LEER) == true) invalidateBlockedNotice()
                     reconcileDraftRounds(detail)
                     // Toda acción del panel incrementa Order.version en el server;
                     // sin refrescarla, el siguiente Enviar da 409 (auditoría).
