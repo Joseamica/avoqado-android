@@ -427,7 +427,14 @@ data class CustomerLoyalty(
     val maxRedeemablePoints: Int = 0,
     val maxRedeemableValue: Double = 0.0,
     val canRedeem: Boolean = false,
-)
+) {
+    /**
+     * Lo que el canje descuenta por [points], redondeado como el SERVIDOR (`Math.round(x * 100) / 100` sobre el binario). Pintar
+     * `points × redemptionRate` con `%.2f` redondea distinto en los empates de medio centavo (0.005 × 29 → «$0.15», y se descuentan
+     * $0.14).
+     */
+    fun valorDelCanje(points: Int): Double = Math.round(points * redemptionRate * 100) / 100.0
+}
 
 @Serializable
 data class CustomerLoyaltyResponse(val success: Boolean = true, val data: CustomerLoyalty? = null)

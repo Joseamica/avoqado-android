@@ -3382,7 +3382,7 @@ private fun RewardsDialog(
     // Arranca en el máximo canjeable: es lo que el mesero pide casi siempre.
     var points by remember { mutableStateOf(loyalty.maxRedeemablePoints) }
     val step = loyalty.minPointsRedeem.coerceAtLeast(1)
-    val value = points * loyalty.redemptionRate
+    val value = loyalty.valorDelCanje(points)
 
     AvoqadoDialog(
         title = "Recompensas",
