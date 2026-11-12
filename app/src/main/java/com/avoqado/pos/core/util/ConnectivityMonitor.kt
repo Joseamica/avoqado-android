@@ -81,12 +81,24 @@ class ConnectivityMonitor @Inject constructor(
      * HTTP del cliente principal), en reloj monotónico (ms). Sólo se escribe; no cambia [sinRespuesta] ni [isServerReachable]. Sirve
      * para que el recuerdo de «la última marcada se quedó sin respuesta» caduque en cuanto alguien contesta.
      */
-    @Volatile var ultimaRespuestaMs: Long = 0L
+    @Volatile var ultimaRespuestaMs: Long = Long.MIN_VALUE
         private set
 
     /** Alguien contestó (cualquier código). Ver [ultimaRespuestaMs]. */
     fun anotarRespuesta() {
         ultimaRespuestaMs = System.nanoTime() / 1_000_000
+    }
+
+    /**
+     * D12 · `RendirseRapido` (Codex r2 #1): cuándo se quedó SIN respuesta el último ping o la última consulta de la salud (los mismos
+     * casos que ponen [sinRespuesta]). Comparado con [ultimaRespuestaMs] dice qué pasó DESPUÉS: una respuesta de cualquier pantalla,
+     * aunque sea un 5xx, gana a un ping sin respuesta anterior. Sólo se escribe; no cambia [sinRespuesta].
+     */
+    @Volatile var ultimaSinRespuestaMs: Long = Long.MIN_VALUE
+        private set
+
+    private fun anotarSinRespuesta() {
+        ultimaSinRespuestaMs = System.nanoTime() / 1_000_000
     }
 
     /** Seam de pruebas: la URL del servidor para el ping y la salud. En producción, [ApiConstants.BASE_URL]. */
@@ -234,7 +246,10 @@ class ConnectivityMonitor @Inject constructor(
             ok
         } catch (e: java.io.IOException) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
-            if (plazo == null) _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
+            if (plazo == null) {
+                anotarSinRespuesta()
+                _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
+            }
             null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
@@ -281,6 +296,7 @@ class ConnectivityMonitor @Inject constructor(
             }
         } catch (e: java.io.IOException) {
             Log.d("📡", "Ping sin respuesta: ${e.message}")
+            anotarSinRespuesta()
             _sinRespuesta.value = true // R2-2: nadie contestó
         } catch (e: Exception) {
             Log.d("📡", "Ping failed: ${e.message}")

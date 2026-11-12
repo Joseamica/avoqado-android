@@ -19,8 +19,8 @@ import java.util.concurrent.TimeUnit
  * Actúa sólo sobre las peticiones con la marca [HEADER] (el cliente del dinero de `OrderRepository` y `ApiService.openTable`; la
  * marca no llega al servidor):
  * 1. **Plazo corto:** 5 s para conectar y 10 s para leer o escribir, aunque el cliente traiga 30 s.
- * 2. **Recordar que nadie contesta:** si la última marcada se quedó SIN respuesta (o el ping de cada 10 s tampoco tuvo, D12
- *    `sinRespuesta`) y el servidor sigue sin contestar, la siguiente no toca la red: sale al instante con [SinRespuestaReciente], un
+ * 2. **Recordar que nadie contesta:** si la última marcada se quedó SIN respuesta (o el ping de cada 10 s tampoco tuvo) y nadie ha
+ *    contestado desde entonces, la siguiente no toca la red: sale al instante con [SinRespuestaReciente], un
  *    `ConnectException` («no se conectó»), que cada camino ya trata como sin red (el efectivo se encola con su llave, la mesa se
  *    abre sin red, la tarjeta dice «Sin conexión» y conserva su llave). Como nada sale por el cable, nada se puede duplicar.
  *
@@ -28,8 +28,8 @@ import java.util.concurrent.TimeUnit
  * `isServerReachable`, pero no deja el recuerdo, y ahí se intenta como siempre. El recuerdo caduca en cuanto alguien contesta (el ping
  * de cada 10 s con cualquier código, o cualquier respuesta HTTP) y vence a [VENTANA_MS].
  *
- * ponytail: un DNS colgado no lo acota el plazo de conectar; en la ruta del dinero lo acota el plazo total de 15 s del cliente, y
- * abrir mesa (sin plazo total) dependería del resolver del sistema. Si se ve en un aparato, un plazo total por petición.
+ * Un DNS colgado no lo acota el plazo de conectar: en la ruta del dinero lo acota el plazo total de 15 s del cliente, y abrir mesa
+ * tiene su propio plazo total (`TableServiceRepository.openTable`, Codex r2 #2).
  */
 class RendirseRapido(
     private val conectividad: ConnectivityMonitor,
@@ -60,14 +60,16 @@ class RendirseRapido(
     }
 
     /**
-     * Codex r1 #2: el recuerdo vale sólo si NADIE contestó después (el ping de cada 10 s con cualquier código, o cualquier respuesta
-     * HTTP: `ConnectivityMonitor.ultimaRespuestaMs`). Un 500 del ping dice que el servidor contesta: se vuelve a intentar.
+     * La última noticia, la más reciente de dos: «la última marcada se quedó sin respuesta» (este recuerdo) o «el último ping se quedó
+     * sin respuesta» (`ConnectivityMonitor.ultimaSinRespuestaMs`, cada 10 s mientras el servidor no contesta). Vale sólo si NADIE
+     * contestó después (Codex r1 #2 y r2 #1: el ping, la salud o cualquier petición del cliente principal, con el código que sea,
+     * `ultimaRespuestaMs`) y si es de hace menos de [VENTANA_MS].
      */
     private fun nadieContestaAhora(): Boolean {
         if (conectividad.isServerReachable.value) return false
-        val en = sinRespuestaEnMs
-        val recuerdoVigente = en != null && en > conectividad.ultimaRespuestaMs && ahoraMs() - en < VENTANA_MS
-        return recuerdoVigente || conectividad.sinRespuesta.value
+        // `Long.MIN_VALUE` = nunca (el reloj monotónico puede ser negativo en la JVM: no se usa 0 como «nunca»).
+        val noticia = maxOf(sinRespuestaEnMs ?: Long.MIN_VALUE, conectividad.ultimaSinRespuestaMs)
+        return noticia != Long.MIN_VALUE && noticia > conectividad.ultimaRespuestaMs && ahoraMs() - noticia < VENTANA_MS
     }
 
     /**

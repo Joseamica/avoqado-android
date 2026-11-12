@@ -47,7 +47,8 @@ class RendirseRapidoTest {
     private val alcanzable = MutableStateFlow(true)
     private val sinRespuestaDelPing = MutableStateFlow(false)
     private var ahora = 1_000_000L
-    private var ultimaRespuesta = 0L
+    private var ultimaRespuesta = Long.MIN_VALUE
+    private var ultimaSinRespuesta = Long.MIN_VALUE
 
     /**
      * Como el real: cualquier falla de transporte apaga «alcanzable» (lo hace `ConnectivityInterceptor`), y cualquier respuesta —del
@@ -60,6 +61,7 @@ class RendirseRapidoTest {
         every { it.reportServerSuccess() } answers { alcanzable.value = true }
         every { it.ultimaRespuestaMs } answers { ultimaRespuesta }
         every { it.anotarRespuesta() } answers { ultimaRespuesta = ahora }
+        every { it.ultimaSinRespuestaMs } answers { ultimaSinRespuesta }
     }
 
     private val rendirse = RendirseRapido(monitor, ahoraMs = { ahora }, conectarMs = 300, leerMs = 300)
@@ -203,11 +205,39 @@ class RendirseRapidoTest {
     @Test fun `P1 el ping sin respuesta tambien ahorra la espera`() {
         alcanzable.value = false
         sinRespuestaDelPing.value = true
+        ultimaSinRespuesta = ahora
 
         val (_, falla) = mandar()
 
         assertTrue(falla is RendirseRapido.SinRespuestaReciente)
         assertEquals(0, server.requestCount)
+    }
+
+    /** Codex r2 #1: el ping se quedó sin respuesta, pero DESPUÉS otra pantalla recibió un 500: el servidor contesta, se intenta. */
+    @Test fun `P1 una respuesta de otra pantalla despues del ping sin respuesta gana`() {
+        alcanzable.value = false
+        sinRespuestaDelPing.value = true
+        ultimaSinRespuesta = ahora
+        ahora += 3_000
+        server.enqueue(MockResponse().setResponseCode(500))
+        mandar(marcada = false) // el catálogo: 500, alguien contesta
+        server.enqueue(MockResponse().setBody("{}"))
+
+        val (_, falla) = mandar()
+
+        assertNull(falla)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `el ping sin respuesta de hace mas de un minuto ya no frena`() {
+        alcanzable.value = false
+        ultimaSinRespuesta = ahora
+        ahora += 61_000
+        server.enqueue(MockResponse().setBody("{}"))
+
+        val (_, falla) = mandar()
+
+        assertNull(falla)
     }
 
     @Test fun `un servidor marcado caido por un 5xx de otra pantalla no frena nada`() {
@@ -307,5 +337,21 @@ class RendirseRapidoTest {
 
         assertTrue("debía rendirse por tiempo: $falla", falla is SocketTimeoutException)
         assertTrue("abrir mesa tardó $ms ms", ms < 5_000)
+    }
+
+    /**
+     * Codex r2 #2: un DNS colgado no lo acota el plazo de conectar. Abrir mesa tiene su plazo TOTAL (12 s) y al vencer sale como sin red
+     * (`SocketTimeoutException`): quien llama la abre sin red. Tiempo virtual: la petición nunca contesta.
+     */
+    @Test fun `P1 abrir mesa tiene plazo total y sale como sin red`() = kotlinx.coroutines.test.runTest {
+        val api = mockk<ApiService> { io.mockk.coEvery { openTable(any(), any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() } }
+        val repo = com.avoqado.pos.tables.data.TableServiceRepository(
+            api, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true),
+        )
+
+        val resultado = repo.openTable("v-1", "mesa-8", 2)
+
+        assertTrue("debía salir como sin red: ${resultado.exceptionOrNull()}", resultado.exceptionOrNull() is SocketTimeoutException)
+        assertEquals(com.avoqado.pos.tables.data.PLAZO_ABRIR_MESA_MS, testScheduler.currentTime)
     }
 }
