@@ -142,6 +142,12 @@ fun TableOrderScreen(
     val isConnected by viewModel.isConnected.collectAsState()
     val blockedNotice by viewModel.blockedNotice.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
+    val cuentaCompletaAqui = chequeAlDia.let { viewModel.cuentaCompletaAqui }
+    // Un cambio propio en curso (asignar, comensales…) baja `chequeAlDia` un momento: es «actualizando», no «no se puede leer».
+    // `cargaPedida`: el primer cuadro se pinta antes de que `loadCheck` arranque; sin esto saldría la línea de «sin leer».
+    var cargaPedida by remember { mutableStateOf(false) }
+    val cargandoCuenta = !cargaPedida || isLoadingCheck || chequeAlDia.let { viewModel.hayMutacionEnVuelo }
+    val cuentaSinLeer = !cuentaCompletaAqui && !cargandoCuenta
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
     val selectedCourse by viewModel.selectedCourse.collectAsState()
@@ -249,7 +255,7 @@ fun TableOrderScreen(
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
     var showPhoneCheck by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { viewModel.loadCheck() }
+    LaunchedEffect(Unit) { viewModel.loadCheck(); cargaPedida = true }
     // TODOS los avisos de esta pantalla pasan por aquí: por qué no se puede mover
     // una cuenta, que un producto está agotado, que la cuenta no tiene cargos.
     //
@@ -462,9 +468,12 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
+                                cuentaCompletaAqui = cuentaCompletaAqui,
+                                cargandoCuenta = cargandoCuenta,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
-                                onBlocked = { viewModel.showBlockedReason(it) },
+                                // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
+                                onBlocked = { viewModel.showBlockedReason(it); if (cuentaSinLeer) viewModel.loadCheck() },
                                 printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
@@ -480,13 +489,14 @@ fun TableOrderScreen(
                                 // el botón quedaba gris justo cuando más se necesita.
                                 // Hacen falta 2: uno se va y otro se queda.
                                 canSeparar = splittableItems.size >= 2,
+                                cuentaSinLeer = cuentaSinLeer,
                                 separarBlockedReason = if (splittableItems.isEmpty()) {
-                                    "Primero envía a cocina lo que quieras separar."
+                                    if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA else "Primero envía a cocina lo que quieras separar."
                                 } else {
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
                                 isOffline = !isConnected,
-                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo); if (cuentaSinLeer) viewModel.loadCheck() },
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
@@ -641,9 +651,12 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
+                                cuentaCompletaAqui = cuentaCompletaAqui,
+                                cargandoCuenta = cargandoCuenta,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
-                                onBlocked = { viewModel.showBlockedReason(it) },
+                                // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
+                                onBlocked = { viewModel.showBlockedReason(it); if (cuentaSinLeer) viewModel.loadCheck() },
                                 printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
@@ -659,13 +672,14 @@ fun TableOrderScreen(
                                 // el botón quedaba gris justo cuando más se necesita.
                                 // Hacen falta 2: uno se va y otro se queda.
                                 canSeparar = splittableItems.size >= 2,
+                                cuentaSinLeer = cuentaSinLeer,
                                 separarBlockedReason = if (splittableItems.isEmpty()) {
-                                    "Primero envía a cocina lo que quieras separar."
+                                    if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA else "Primero envía a cocina lo que quieras separar."
                                 } else {
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
                                 isOffline = !isConnected,
-                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo); if (cuentaSinLeer) viewModel.loadCheck() },
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
@@ -1500,6 +1514,10 @@ internal fun TableCheckPanel(
     pendingTotalCents: Int,
     saldo: TableOrderViewModel.SaldoDeMesa,
     saldoDeMesaConocido: Boolean,
+    /** Lo que se ve es toda la cuenta (ver `TableOrderViewModel.cuentaCompletaAqui`). */
+    cuentaCompletaAqui: Boolean,
+    /** Se está leyendo la cuenta o hay un cambio propio en vuelo. */
+    cargandoCuenta: Boolean,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1534,6 +1552,17 @@ internal fun TableCheckPanel(
                     modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
                     horizontalArrangement = Arrangement.Center,
                 ) { CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp) }
+            }
+            // D3 (11-nov): sin leer la cuenta, aquí no se ve lo que pidió otro aparato; «Subtotal (0)» la hacía parecer vacía
+            // y la cajera recapturó todo. Se dice, y que lo que se agregue SE SUMA. También con una copia vieja vacía (Codex r1).
+            if (!cuentaCompletaAqui && sentItems.isEmpty() && !cargandoCuenta) {
+                Text(
+                    text = "La cuenta todavía no se puede leer del servidor, así que aquí no se ve lo que ya tiene. " +
+                        "Lo que agregues se suma a esa cuenta.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.md),
+                )
             }
 
             // ── Gray card: what the kitchen already has ──────────────────
@@ -1701,9 +1730,9 @@ internal fun TableCheckPanel(
                 //
                 // Se distingue por los artículos, no por el importe.
                 val sinCargos = itemCount <= 0
+                // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
                 BlockedTapOverlay(
-                    reason = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
-                        .takeIf { sinCargos },
+                    reason = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos },
                     onBlocked = onBlocked,
                     modifier = Modifier.weight(0.5f),
                 ) {
@@ -2329,6 +2358,8 @@ internal fun TableActionsPanel(
     canSeparar: Boolean = hasSent,
     /** Por qué no se puede separar: distingue "nada enviado" de "un solo artículo". */
     separarBlockedReason: String = "Primero envía a cocina lo que quieras separar.",
+    /** No se pudo leer la cuenta: «primero envía…» invitaría a recapturar lo que ya tiene (D3, 11-nov). */
+    cuentaSinLeer: Boolean = false,
     /** Sin conexión: cambia el motivo del bloqueo y pinta el ícono de nube. */
     isOffline: Boolean = false,
     /** Se dispara al tocar un botón gris, con el motivo en lenguaje de mesero. */
@@ -2413,7 +2444,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Cortesía en la cuenta",
                 enabled = hasSent,
-                blockedReason = "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
+                blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                    else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
                 onBlocked = onBlocked,
                 onClick = onCompWhole,
                 modifier = Modifier.weight(1f),
@@ -2423,6 +2455,8 @@ internal fun TableActionsPanel(
                 enabled = hasSent,
                 blockedReason = if (isOffline) {
                     "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
+                } else if (cuentaSinLeer) {
+                    CUENTA_SIN_LEER_ESPERA
                 } else {
                     "Primero envía la ronda a cocina."
                 },
@@ -2475,7 +2509,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
                 enabled = hasSent && !isReprinting,
-                blockedReason = if (isReprinting) null else "Aún no se ha enviado ningún pedido a cocina.",
+                blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                    else "Aún no se ha enviado ningún pedido a cocina.",
                 onBlocked = onBlocked,
                 onClick = onReprintComandas,
                 modifier = Modifier.weight(1f),
