@@ -4,6 +4,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.CreateCustomerRequest
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.customers.data.model.DescuentoDelCliente
 import com.avoqado.pos.customers.data.model.PaginaDeClientes
 import com.avoqado.pos.customers.data.model.UpdateCustomerRequest
 import io.mockk.every
@@ -85,6 +86,28 @@ class CustomersRepositoryHttpTest {
         repository.fetchCustomers(search = "n")
 
         assertEquals(listOf("c1", "c2", "c3"), repository.clientesGuardados().map { it.id })
+    }
+
+    @Test
+    fun `5a el cliente trae su descuento (o no), con campos desconocidos, y la lista en memoria lo conserva`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"data":[
+                {"id":"c1","firstName":"Cecilia","campoNuevo":1,
+                 "descuentoDelCliente":{"discountId":"d1","name":"Socia","type":"FIXED_AMOUNT","value":10,"maxDiscountAmount":null,"otro":true}},
+                {"id":"c2","firstName":"Sin","descuentoDelCliente":null},
+                {"id":"c3","firstName":"Viejo"}
+                ],"meta":{"totalCount":3}}""",
+            ),
+        )
+
+        val recibidos = repository.fetchCustomers().getOrThrow()
+        val guardados = repository.clientesGuardados().associateBy { it.id }
+
+        assertEquals(DescuentoDelCliente("d1", "Socia", "FIXED_AMOUNT", 10.0, null), recibidos[0].descuentoDelCliente)
+        assertNull(recibidos[1].descuentoDelCliente)
+        assertNull(recibidos[2].descuentoDelCliente)
+        assertEquals("d1", guardados.getValue("c1").descuentoDelCliente?.discountId)
     }
 
     @Test
