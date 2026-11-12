@@ -96,12 +96,15 @@ object TextosDeCuentaSinRed {
 
 /**
  * Opción D, en la lista de Pedidos de la caja que la ABRIÓ: «Cobrada en <caja>» (y «· falta subirla») si su registro la da cobrada. null =
- * nada que decir. [saldoPendienteCents]: lo que la fila dice que falta (null = no se sabe).
+ * nada que decir. [saldoPendienteCents]: lo que la fila dice que falta (null = no se sabe). [delServidor]: la lista es la respuesta del
+ * SERVIDOR a lo que se pidió (`OrdersViewModel.copiaVistaA` nulo); si no, es la copia (o la última lectura buena) y su saldo es viejo.
  */
-fun textoDeLaListaDe(r: CuentaEnElRegistro?, saldoPendienteCents: Int?): String? {
+fun textoDeLaListaDe(r: CuentaEnElRegistro?, saldoPendienteCents: Int?, delServidor: Boolean): String? {
     if (r?.estado != EstadoDeCuenta.CERRADA) return null
-    // Revisión final M-1: un abono no es «Cobrada»: el que hizo esta caja (lo sabe su registro) o uno que el SERVIDOR ya tiene y deja saldo.
-    if (r.conAbono || (!r.faltaSubirla && (saldoPendienteCents ?: 0) > 0)) return null
+    // M-1 y familia D: un abono no es «Cobrada». Con la lista del SERVIDOR y el cobro ya subido, su saldo dice si queda algo (venga de la
+    // caja que venga). Con la copia su saldo es de ANTES del cobro (caso 3 de opcion-d: otra caja la cobró con internet): manda el registro.
+    val debe = if (delServidor && !r.faltaSubirla && saldoPendienteCents != null) saldoPendienteCents > 0 else r.conAbono
+    if (debe) return null
     return if (r.caja.isBlank()) TextosDeCuentaSinRed.YA_SE_COBRO else TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
 }
 

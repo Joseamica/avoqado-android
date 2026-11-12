@@ -104,9 +104,10 @@ class DuenoDeCuentasTest {
         // La app murió y su efectivo ya pasó a la cola: al volver, su fila manda.
         filas["llave-1"] = "PENDING"
         val tras = cajaUno()
-        assertEquals(CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-1", "Caja 1", "Yo", "llave-1", Instante(arranque, ms), hora, faltaSubirla = true),
-            tras.estadoDe(v, "o1"))
-        assertEquals(Respuesta.Cerrada("Caja 1", true), tras.apartar(v, "o1", ana))
+        // Familia D: la reconciliación no sabe si ese cobro dejó saldo (pudo ser un abono): no la da por «Cobrada» (conAbono).
+        assertEquals(CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-1", "Caja 1", "Yo", "llave-1", Instante(arranque, ms), hora, faltaSubirla = true,
+            conAbono = true), tras.estadoDe(v, "o1"))
+        assertEquals(Respuesta.Cerrada("Caja 1", true, conAbono = true), tras.apartar(v, "o1", ana))
     }
 
     @Test fun `R2 - sin fila, una tarjeta en curso lo sostiene y sin nada se suelta`() = runTest {
@@ -254,7 +255,8 @@ class DuenoDeCuentasTest {
         fallaElTipo = null
         copia.cuentas(v)
         assertEquals(0, marcas.marcasDe(v).size)
-        assertEquals(Respuesta.Cerrada("Caja 1", false), a.apartar(v, "o1", beto))
+        // Familia D: la marca de tarjeta no sabe si quedó saldo y no había nada antes: protegida, pero no «Cobrada» (conAbono).
+        assertEquals(Respuesta.Cerrada("Caja 1", false, conAbono = true), a.apartar(v, "o1", beto))
     }
 
     /**
@@ -292,8 +294,8 @@ class DuenoDeCuentasTest {
         a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = false)
         filas["llave-1"] = "FAILED"
         a.terminarPropio(v, "o1", "llave-1")
-        assertEquals(CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-1", "Caja 1", "Yo", "llave-1", Instante(arranque, ms), hora, faltaSubirla = false),
-            a.estadoDe(v, "o1"))
+        assertEquals(CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-1", "Caja 1", "Yo", "llave-1", Instante(arranque, ms), hora, faltaSubirla = false,
+            conAbono = true), a.estadoDe(v, "o1")) // familia D: la reconciliación no sabe si quedó saldo
     }
 
     /** I4: con la parte 1 de una venta dividida rechazada por el SERVIDOR (FAILED), quien pregunta CON red no queda bloqueado; sin red, sí. */
@@ -384,5 +386,40 @@ class DuenoDeCuentasTest {
         folios.anotar(com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta(orderId = "o3", montoCents = 6000, saldoAntesCents = 6000,
             enMs = 1L, venueId = v, requestId = "r3", esFolio = false, fueraDeLaBandeja = true))
         assertEquals(Respuesta.Cerrada("Caja 1", true), a.apartar(v, "o3", ana))
+    }
+
+    // MARK: - Familia D: quién escribe CERRADA y si sabe que quedó saldo
+
+    /**
+     * Familia D: una marca de cobro con otra llave («tarjeta:<orden>», la de tarjeta no sabe si quedó saldo) que llega DESPUÉS conserva lo
+     * que el registro ya sabía (el abono del cobro, o que se cobró todo); sin nada antes no se sabe, y no es «Cobrada». La de saldo de regalo
+     * que el servidor dio por pagada sí lo sabe.
+     */
+    @Test fun `familia D - una marca que llega despues conserva lo que se sabia, y sin nada antes no dice Cobrada`() = runTest {
+        mias = setOf("o1", "o2", "o3", "o4")
+        val a = cajaUno()
+        a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = true)
+        a.cerrarPropio(v, "o1", "llave-1", "Yo", subida = true, conAbono = true) // el cobro dejó saldo
+        a.comprometerPropio(v, "o2", "llave-2", "Yo", enLinea = true)
+        a.cerrarPropio(v, "o2", "llave-2", "Yo", subida = true) // se cobró todo
+        a.alSaberCerradas(v, emptyList(), listOf("o1", "o2", "o3"))
+        a.alSaberCerradas(v, emptyList(), listOf("o4"), pagadas = listOf("o4"))
+
+        assertTrue("el abono sigue", a.estadoDe(v, "o1")!!.conAbono)
+        assertFalse("lo cobrado completo sigue «Cobrada»", a.estadoDe(v, "o2")!!.conAbono)
+        assertTrue("sin nada antes no se sabe: no es «Cobrada»", a.estadoDe(v, "o3")!!.conAbono)
+        assertFalse("el SERVIDOR la dio por pagada", a.estadoDe(v, "o4")!!.conAbono)
+    }
+
+    /** Familia D: la app de la dueña murió tras cobrar (quizá un abono): al reconciliar no se sabe si quedó saldo, y no la deja «Cobrada». */
+    @Test fun `familia D - la reconciliacion tras morir la app no dice Cobrada sin saber si quedo saldo`() = runTest {
+        cajaUno().comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = false)
+        filas["llave-1"] = "SYNCED" // su efectivo ya subió
+        val r = cajaUno().estadoDe(v, "o1")
+        assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
+        assertFalse(r!!.faltaSubirla)
+        assertTrue(r.conAbono)
+        assertEquals("sin red: «cóbrala con internet», nunca «Cobrada»", Respuesta.Cerrada("Caja 1", false, conAbono = true),
+            cajaUno().comprometerPropio(v, "o1", "llave-2", "Yo", enLinea = false))
     }
 }

@@ -142,8 +142,12 @@ object RegistroDeCuentas {
     /**
      * «Cobrada» (de otra caja o del dueño mismo). Se acepta siempre, también de un intento cancelado: es dinero que sí entró. El mismo
      * intento sólo puede quitar «falta subirla»; otro cobro la conserva si el anterior aún no subía.
+     *
+     * [conAbono]: el cobro dejó saldo (true), lo cobró todo (false) o no se sabe (null: la marca de una tarjeta, la reconciliación tras morir
+     * la app). Familia D: lo que no se sabe conserva lo que la cuenta ya decía; sin nada antes, abono: nunca «Cobrada» sin saberlo (alguien
+     * lo leería y no cobraría lo que falta).
      */
-    fun cobrada(r: Registro, orderId: String, s: Solicitud, faltaSubirla: Boolean, ahora: Instante, hora: Long, conAbono: Boolean = false): Registro {
+    fun cobrada(r: Registro, orderId: String, s: Solicitud, faltaSubirla: Boolean, ahora: Instante, hora: Long, conAbono: Boolean? = false): Registro {
         val c = r.cuentas[orderId]
         val falta = when {
             c?.estado != EstadoDeCuenta.CERRADA -> faltaSubirla
@@ -153,7 +157,8 @@ object RegistroDeCuentas {
         if (c?.estado == EstadoDeCuenta.CERRADA && c.intento == s.intento) {
             return if (c.faltaSubirla == falta) r else r.copy(cuentas = r.cuentas + (orderId to c.copy(faltaSubirla = falta)))
         }
-        return r.copy(cuentas = r.cuentas + (orderId to CuentaEnElRegistro(EstadoDeCuenta.CERRADA, s.por, s.caja, s.quien, s.intento, ahora, hora, falta, conAbono)))
+        val abono = conAbono ?: (c?.estado != EstadoDeCuenta.CERRADA || c.conAbono)
+        return r.copy(cuentas = r.cuentas + (orderId to CuentaEnElRegistro(EstadoDeCuenta.CERRADA, s.por, s.caja, s.quien, s.intento, ahora, hora, falta, abono)))
     }
 
     /** Una lectura del servidor la da pagada, cerrada o cancelada: CERRADA y ya nada «falta subirla». */

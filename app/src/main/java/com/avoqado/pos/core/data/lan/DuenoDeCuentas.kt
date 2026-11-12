@@ -172,12 +172,15 @@ class DuenoDeCuentas internal constructor(
         venueId: String, porElServidor: Collection<String>, cobradasAqui: Collection<String>,
         /** Revisión final M-1: de [cobradasAqui], las que el cobro dejó con saldo (un saldo de regalo que no alcanzó). */
         conAbono: Collection<String> = emptyList(),
+        /** Familia D: de [cobradasAqui], las que el SERVIDOR dio por pagadas. Las demás (la tarjeta) no saben si quedó saldo. */
+        pagadas: Collection<String> = emptyList(),
     ) {
         if (porElServidor.isEmpty() && cobradasAqui.isEmpty()) return
         conRegistroYMias(venueId, orderId = null) { reg, mias ->
             var r = reg
             for (o in cobradasAqui) if (o in mias) {
-                r = RegistroDeCuentas.cobrada(r, o, Solicitud(deviceId, nombreCaja, "", "tarjeta:$o"), faltaSubirla = false, reloj(), horaDePared(), o in conAbono)
+                val abono = when (o) { in conAbono -> true; in pagadas -> false; else -> null }
+                r = RegistroDeCuentas.cobrada(r, o, Solicitud(deviceId, nombreCaja, "", "tarjeta:$o"), faltaSubirla = false, reloj(), horaDePared(), abono)
             }
             for (o in porElServidor) if (o in mias) r = RegistroDeCuentas.servidorLaCerro(r, o, reloj(), horaDePared())
             r to Unit
@@ -261,10 +264,12 @@ class DuenoDeCuentas internal constructor(
             val fila = estadoDeLaFila(c.intento)
             r = when {
                 fila == EN_VUELO -> r
-                fila != null -> RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = fila !in CONTESTADA, reloj(), horaDePared())
+                // Familia D: el flujo que sabía si quedó saldo ya no vive (la app murió tras el cobro, quizá un abono): no se sabe.
+                fila != null -> RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = fila !in CONTESTADA, reloj(), horaDePared(),
+                    conAbono = null)
                 tarjetaEnCurso(venueId, orden) -> r
                 tarjetaCobrada(venueId, orden) ->
-                    RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = false, reloj(), horaDePared())
+                    RegistroDeCuentas.cobrada(r, orden, Solicitud(yo, c.caja, c.quien, c.intento), faltaSubirla = false, reloj(), horaDePared(), conAbono = null)
                 else -> RegistroDeCuentas.soltar(r, orden, c.intento)
             }
         }

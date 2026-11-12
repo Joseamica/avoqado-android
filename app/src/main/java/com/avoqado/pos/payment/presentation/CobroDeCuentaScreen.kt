@@ -276,9 +276,9 @@ class CobroDeCuentaViewModel @Inject constructor(
      * Opción D, en la lista de Pedidos: «Cobrada en <caja>» (y «· falta subirla») si ESTA caja la abrió y su registro la da cobrada
      * ([com.avoqado.pos.payment.domain.textoDeLaListaDe]). null = nada que decir (o no la abrió aquí, o no se pudo leer).
      */
-    suspend fun textoDeLaLista(orderId: String, saldoPendienteCents: Int?): String? {
+    suspend fun textoDeLaLista(orderId: String, saldoPendienteCents: Int?, delServidor: Boolean): String? {
         val venue = storage.venueId ?: return null
-        return com.avoqado.pos.payment.domain.textoDeLaListaDe(duenoDeCuentas?.estadoDe(venue, orderId), saldoPendienteCents)
+        return com.avoqado.pos.payment.domain.textoDeLaListaDe(duenoDeCuentas?.estadoDe(venue, orderId), saldoPendienteCents, delServidor)
     }
 
     /**

@@ -50,13 +50,15 @@ class CuentasEntreCajasTest {
         var ms = 1_000L
         var contesta = true
         var pierdeRespuestas = false
+        /** R4: esta caja tiene dinero de la cuenta que el SERVIDOR aún no tiene (cola, tarjeta en duda, marca). */
+        var dinero = false
         /** La sucursal en que está HOY esta caja (contesta con ella). */
         var sucursal = v
         val cache = mockk<PayloadCache> {
             coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
             coEvery { saveDurable(any(), any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] = PayloadCache.Cached(thirdArg(), 0) }
         }
-        val dueno = DuenoDeCuentas(cache, mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns mias }, { _, _, _ -> false }, { _, _ -> false },
+        val dueno = DuenoDeCuentas(cache, mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns mias }, { _, _, _ -> dinero }, { _, _ -> false },
             { filas[it] }, { id }, { nombre }).also { it.reloj = { Instante("boot-$id", ms) }; it.horaDePared = { hora } }
         val peers = MutableStateFlow<List<LanPeer>>(emptyList())
         private val red = object : LanDiscoveryPort {
@@ -511,7 +513,7 @@ class CuentasEntreCajasTest {
         a.entre.terminar(v, "o1", p, "Yo", cobrado = true, subida = true, conAbono = true)
         val r = a.dueno.estadoDe(v, "o1")
         assertEquals("sigue protegida (H1)", EstadoDeCuenta.CERRADA, r?.estado)
-        assertNull("la lista no dice «Cobrada en Caja 1»", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null))
+        assertNull("la lista no dice «Cobrada en Caja 1»", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null, delServidor = false))
         assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.CON_ABONO),
             a.entre.puerta(v, "o1", "llave-a2", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true))
         assertTrue("con internet, el resto", a.entre.puerta(v, "o1", "llave-a3", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true)
@@ -524,17 +526,23 @@ class CuentasEntreCajasTest {
         a.dueno.alSaberCerradas(v, emptyList(), listOf("o1"), conAbono = listOf("o1"))
         val r = a.dueno.estadoDe(v, "o1")
         assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
-        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null))
+        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = null, delServidor = false))
     }
 
-    /** M-1, en la lista: una «cobrada» que el SERVIDOR ya tiene y su fila todavía debe es un abono (venga de la caja que venga). */
-    @Test fun `M-1 - la lista dice Cobrada sólo si no queda saldo o si todavía falta subirla`() {
+    /**
+     * M-1 y familia D, en la lista: con la lista del SERVIDOR (y el cobro ya subido) su saldo dice si queda algo: lo que todavía debe es un
+     * abono, venga de la caja que venga. Con la COPIA (sin red), su saldo es de antes del cobro: manda el registro (`conAbono`).
+     */
+    @Test fun `M-1 - la lista dice Cobrada según el saldo sólo si viene del SERVIDOR, y con la copia según el registro`() {
         val cerrada = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0))
-        assertEquals("Cobrada en Caja 2", com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada, saldoPendienteCents = 0))
-        assertNull("ya subió y el servidor dice que debe", com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada, saldoPendienteCents = 2000))
-        assertEquals("aún no sube: el saldo de la fila no lo sabe", "Cobrada en Caja 2 · falta subirla",
-            com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada.copy(faltaSubirla = true), saldoPendienteCents = 2000))
-        assertNull(com.avoqado.pos.payment.domain.textoDeLaListaDe(cerrada.copy(estado = EstadoDeCuenta.COMPROMETIDA), saldoPendienteCents = 0))
+        fun texto(c: CuentaEnElRegistro, saldo: Int?, delServidor: Boolean) = com.avoqado.pos.payment.domain.textoDeLaListaDe(c, saldo, delServidor)
+        assertEquals("Cobrada en Caja 2", texto(cerrada, 0, delServidor = true))
+        assertNull("ya subió y el SERVIDOR dice que debe: un abono", texto(cerrada, 2000, delServidor = true))
+        assertEquals("con la copia el saldo es de antes del cobro: manda el registro", "Cobrada en Caja 2", texto(cerrada, 2000, delServidor = false))
+        assertNull("un abono que el registro sabe, con la copia", texto(cerrada.copy(conAbono = true), 2000, delServidor = false))
+        assertEquals("aún no sube: el saldo del SERVIDOR no lo sabe", "Cobrada en Caja 2 · falta subirla",
+            texto(cerrada.copy(faltaSubirla = true), 2000, delServidor = true))
+        assertNull(texto(cerrada.copy(estado = EstadoDeCuenta.COMPROMETIDA), 0, delServidor = true))
     }
 
     /** Cambio de sucursal: los apartados de la anterior se olvidan (y nada los renueva). */
@@ -546,6 +554,30 @@ class CuentasEntreCajasTest {
     }
 
     // MARK: - Pasada por familia (Codex r4 y re-revisión del arreglo final)
+
+    /**
+     * Familia D · caso (3) de `opcion-d.md`: A (la dueña) sin internet; Caja 2, con internet, la cobra con su permiso y la sube. Sin red la
+     * lista de A viene de la copia, guardada ANTES de ese cobro (su saldo es viejo): manda el registro y dice «Cobrada en Caja 2».
+     */
+    @Test fun `familia D - caso 3 - sin red la lista de la dueña dice Cobrada en Caja 2`() = runTest {
+        red(a, b)
+        val p = b.entre.puerta(v, "o1", "llave-b", "Ana", enLinea = true, esTarjeta = false, esCuentaDePedidos = true) as CuentasEntreCajas.Puerta.Pasa
+        b.entre.terminar(v, "o1", p, "Ana", cobrado = true, subida = true)
+        b.entre.unaVuelta() // el «cobrada» (ya subida) llega a la dueña
+        val r = a.dueno.estadoDe(v, "o1")
+        assertEquals(EstadoDeCuenta.CERRADA, r?.estado)
+        assertFalse("ya subió", r!!.faltaSubirla)
+        assertEquals("Cobrada en Caja 2", com.avoqado.pos.payment.domain.textoDeLaListaDe(r, saldoPendienteCents = 2000, delServidor = false))
+    }
+
+    /** M-3 (la prueba que faltaba): con el registro ilegible y dinero de esta caja que aún no sube (R4), ni con red viva se cobra otra vez. */
+    @Test fun `M-3 - registro ilegible con dinero propio sin subir - ni con red viva se cobra`() = runTest {
+        red(a, c)
+        a.disco["${PayloadCache.TYPE_REGISTRO_DE_CUENTAS}|$v"] = PayloadCache.Cached("{ilegible", 0)
+        a.dinero = true
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa("Cobrada en Caja 1 · falta subirla"),
+            a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+    }
 
     /**
      * Familia C: «en línea» se confirma en la puerta, y la salud del SERVIDOR sólo se pregunta cuando cambia la respuesta: una CERRADA (con

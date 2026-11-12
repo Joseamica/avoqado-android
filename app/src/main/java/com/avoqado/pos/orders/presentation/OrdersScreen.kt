@@ -397,6 +397,8 @@ private fun OrderListView(
     val statusFilter by viewModel.statusFilter.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val avisoDeLaLista by viewModel.avisoDeLaLista.collectAsState()
+    // Familia D: la lista es la respuesta del SERVIDOR sólo sin hora de copia; si no, el saldo de sus filas es viejo.
+    val copiaVistaA by viewModel.copiaVistaA.collectAsState()
 
     val grouped = remember(orders) { viewModel.groupOrdersByDate(orders) }
 
@@ -492,6 +494,7 @@ private fun OrderListView(
                             OrderRow(
                                 order = order,
                                 isSelected = isSelected,
+                                listaDelServidor = copiaVistaA == null,
                                 onClick = { viewModel.selectOrder(order.id) },
                             )
 
@@ -1127,6 +1130,8 @@ private fun DetailSectionHeader(title: String) {
 private fun OrderRow(
     order: OrderSummary,
     isSelected: Boolean = false,
+    /** Familia D: la lista es la respuesta del SERVIDOR (su saldo es de ahora); falso = la copia sin red. */
+    listaDelServidor: Boolean,
     onClick: () -> Unit,
 ) {
     val diario: com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel = hiltViewModel(key = "diario-cuentas-abiertas")
@@ -1136,8 +1141,8 @@ private fun OrderRow(
             it.venueId == diario.venueActual && it.orderId == order.id && it.porTerminar
         })
     // D12 · Opción D: la cuenta que abrió esta caja y su registro da por cobrada en otra (o aquí): «Cobrada en <caja>».
-    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status, order.saldoPendienteCents) {
-        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id, order.saldoPendienteCents) else null
+    val cobradaEn by androidx.compose.runtime.produceState<String?>(null, order.id, order.status, order.saldoPendienteCents, listaDelServidor) {
+        value = if (order.orderStatus == OrderStatus.PENDING) diario.textoDeLaLista(order.id, order.saldoPendienteCents, listaDelServidor) else null
     }
     Row(
         modifier = Modifier
