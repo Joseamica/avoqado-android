@@ -116,6 +116,8 @@ class TerminalPaymentService @Inject constructor(
         /** R100: llaves del contexto durable de un cobro que salió de la bandeja «Pedidos en línea». */
         const val BANDEJA_SALDO = "bandejaSaldoAntesCents"
         const val BANDEJA_FOLIO = "bandejaEsFolio"
+        /** D14: el cobro con tarjeta salió de otra pantalla que cobra una cuenta que ya existía; igual deja su marca. */
+        const val BANDEJA_FUERA = "bandejaFuera"
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
@@ -234,7 +236,8 @@ class TerminalPaymentService @Inject constructor(
             desdeMillis = if (datos.has("creadoEn")) datos.optLong("creadoEn") else entrada.cobradoEn,
             cobrado = entrada.cobrado,
             deLaBandeja = if (datos.has(BANDEJA_SALDO)) {
-                com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(datos.optLong(BANDEJA_SALDO), datos.optBoolean(BANDEJA_FOLIO))
+                com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(datos.optLong(BANDEJA_SALDO), datos.optBoolean(BANDEJA_FOLIO),
+                    fueraDeLaBandeja = datos.optBoolean(BANDEJA_FUERA))
             } else {
                 null
             },
@@ -321,6 +324,7 @@ class TerminalPaymentService @Inject constructor(
             venueId = contexto.venueId,
             requestId = entrada.requestId,
             esFolio = bandeja.esFolio,
+            fueraDeLaBandeja = bandeja.fueraDeLaBandeja,
         )
     }
 
@@ -665,7 +669,12 @@ class TerminalPaymentService @Inject constructor(
             .put("terminalId", terminalId).put("orderId", orderId)
             .put("amountCents", amountCents).put("tipCents", tipCents)
             .put("creadoEn", System.currentTimeMillis())
-            .apply { deLaBandeja?.let { put(BANDEJA_SALDO, it.saldoAntesCents).put(BANDEJA_FOLIO, it.esFolio) } }
+            .apply {
+                deLaBandeja?.let {
+                    put(BANDEJA_SALDO, it.saldoAntesCents).put(BANDEJA_FOLIO, it.esFolio)
+                    if (it.fueraDeLaBandeja) put(BANDEJA_FUERA, true)
+                }
+            }
         synchronized(attemptLock) {
             // Otra vez BAJO EL CANDADO, junto con la escritura: dos «Cobrar» de la misma venta a la vez no
             // salen los dos. La llave única lo impedía con su «ya hay llave»; la lista acepta varias.

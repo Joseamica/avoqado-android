@@ -13,6 +13,16 @@ import javax.inject.Singleton
     private val store: SolicitudesDeTarjetaStore,
     private val outbox: com.avoqado.pos.core.data.sync.SyncOutbox? = null,
 ) {
+    /**
+     * 🔴 D13: la foto de la puerta del efectivo para «Pedidos → detalle → Cobrar», tomada ANTES de leer la cuenta del SERVIDOR: lo que ya
+     * consta que el servidor cuenta (efectivo ya subido y marcas que se soltaron). Lo que se confirme después es nuevo para la puerta.
+     */
+    suspend fun dineroConocido(venueId: String, orderId: String): com.avoqado.pos.payment.domain.DineroConocido {
+        val soltadasHasta = com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.secuencia()
+        return com.avoqado.pos.payment.domain.DineroConocido.antesDeLeerElSaldo(
+            pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map { com.avoqado.pos.payment.data.dineroDeLaFila(it) }, soltadasHasta)
+    }
+
     suspend fun hayPendiente(venueId: String, orderId: String): Boolean {
         if (pendingPaymentDao.forVenue(venueId).any { it.orderId == orderId && it.syncStatus != "SYNCED" }) return true
         if (PendientesDeTarjeta.leer(secureStorage.pendingCardChargesJson).any {

@@ -201,7 +201,7 @@ class SplitMostradorContinuidadTest {
     fun `parte 2 con tarjeta manda a la terminal la orden de la parte 1`() = runTest {
         val orderIdSlot = slot<String>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(orderIdSlot), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(orderIdSlot), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         viewModel.startPaymentFlow(carritoDeSaldo(5000), resumeOrderId = "order-parte-1")

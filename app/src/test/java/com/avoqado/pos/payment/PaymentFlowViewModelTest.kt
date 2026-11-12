@@ -3364,10 +3364,16 @@ class PaymentFlowViewModelTest {
         verify(exactly = 1) { terminalPaymentService.reconocerCobro("req-folio") }
     }
 
+    /**
+     * D14 (`hz:ce654971:D14`, 11-nov): antes un cobro con tarjeta que no salía de la bandeja no mandaba contexto y su positivo no dejaba
+     * la marca «aquí ya se cobró». Ahora la tarjeta de una cuenta que YA EXISTÍA (no mesa) lleva el contexto «fuera de la bandeja» con lo
+     * que esta pantalla creyó que faltaba; una venta nueva sigue sin contexto.
+     */
     @Test
-    fun `a card charge that is not from the tray sends no tray context`() = runTest {
+    fun `D14 a card charge outside the tray of an existing account sends the outside context, a new sale none`() = runTest {
+        val contextos = mutableListOf<com.avoqado.pos.onlineorders.data.CobroDeLaBandeja?>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), null)
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), captureNullable(contextos))
         } returns TerminalPaymentResult.Success(paymentId = "pay-web", requestId = "req-web")
         coEvery { orderRepository.saldoDeLaOrden(any()) } returns OrderRepository.SaldoDeLaOrden(remainingCents = 0, paymentStatus = "PAID")
 
@@ -3378,7 +3384,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
-        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), null) }
+        assertEquals(listOf(com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(13400, esFolio = false, fueraDeLaBandeja = true)), contextos)
     }
 
     private fun mesaCobrando() = com.avoqado.pos.tables.data.TableSession.Active(
@@ -3564,7 +3570,7 @@ class PaymentFlowViewModelTest {
         // Con la terminal: la orden que viaja es la del pedido web.
         val ordenALaTerminal = slot<String>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
@@ -3602,7 +3608,7 @@ class PaymentFlowViewModelTest {
         // Con la terminal, igual: la orden que viaja es la del pedido web.
         val ordenALaTerminal = slot<String>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
@@ -5731,7 +5737,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `D7 tras una parte con tarjeta el saldo se le pregunta al servidor antes del exito`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
         coEvery { orderRepository.saldoDeLaOrden("orden-1") } returns OrderRepository.SaldoDeLaOrden(remainingCents = 2000, paymentStatus = "PARTIAL")
 
@@ -5747,7 +5753,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `D7 si no se puede leer el saldo tras la tarjeta el exito lo dice y no repite el cargo`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
         coEvery { orderRepository.saldoDeLaOrden(any()) } returns null
 
@@ -5763,13 +5769,13 @@ class PaymentFlowViewModelTest {
         val completion = viewModel.consumeCompletion()!!
         assertEquals("orden-1", completion.orderId)
         assertFalse(completion.saldoDelServidor)
-        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `D7 una consulta de saldo lenta no detiene el exito mas de 5 segundos`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
         coEvery { orderRepository.saldoDeLaOrden(any()) } coAnswers {
             kotlinx.coroutines.delay(60_000)
@@ -5790,7 +5796,7 @@ class PaymentFlowViewModelTest {
     fun `D7 una venta NO partida pagada con tarjeta no le pregunta el saldo a nadie`() = runTest {
         stubOrderCreation()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
 
         viewModel.startPaymentFlow(cardCart())

@@ -76,6 +76,7 @@ import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -940,6 +941,72 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** R100: el cobro salió de la bandeja «Pedidos en línea» ([startPaymentFlow]); viaja con la tarjeta. null = otro cobro. */
     private var cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null
+
+    /**
+     * 🔴 D13: la foto de la puerta del efectivo de ESTE cobro ([startPaymentFlow]): la orden que ya existía, lo que la pantalla creyó que
+     * faltaba ([FotoDelCobro.saldoCents], R0) y el dinero que ese saldo ya contaba. La traen la bandeja y «Pedidos → detalle», que fijan
+     * su saldo con el SERVIDOR (o con la copia) en un momento conocido. null = sin puerta, como hoy: la mesa y las partes 2..N calculan su
+     * saldo en el aparato a partir de lecturas de otros momentos, y una foto al arrancar no diría qué contó (Codex r1 #1 de la puerta).
+     */
+    private var fotoDelCobro: FotoDelCobro? = null
+
+    private class FotoDelCobro(val orderId: String, val saldoCents: Long, val conocido: com.avoqado.pos.payment.domain.DineroConocido)
+
+    /** D14: la orden y lo que faltaba al arrancar este cobro (el total de su carrito), para el contexto de una tarjeta fuera de la bandeja. */
+    private var saldoAlArrancar: Pair<String, Long>? = null
+
+    /**
+     * D13: TODO el dinero de [orderId] que tiene este aparato, en cualquier estado. Primero la cola (UNA lectura de Room, la única espera)
+     * y DESPUÉS, sin ninguna espera hasta decidir, lo de tarjeta (Codex r2 #1: una tarjeta que se confirma mientras se lee Room se ve):
+     * la lista, sus marcas y las marcas soltadas desde la foto ([desde]), en ese orden, porque un cobro sólo avanza lista → marca →
+     * soltada y así nunca se pierde entre dos lecturas.
+     */
+    private suspend fun dineroDeLaOrden(venueId: String, orderId: String, desde: Long): List<com.avoqado.pos.payment.domain.DineroDeLaOrden> {
+        val efectivo = cashPaymentRepository.cobrosDelPedido(orderId, venueId)
+        val tarjetas = terminalPaymentService.cobrosConTarjetaDelNegocio(venueId).filter { it.orderId == orderId && it.cobrado }.map {
+            // Sin importe en su contexto no se adivina: cuenta como todo (falla cerrado).
+            com.avoqado.pos.payment.domain.DineroDeLaOrden(com.avoqado.pos.payment.domain.PuertaDelEfectivo.llaveDeTarjeta(it.requestId),
+                it.amountCents?.toLong() ?: (Long.MAX_VALUE / 4), esTarjeta = true)
+        }
+        val marcas = com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta(secureStorage).marcasDe(venueId)
+            .filter { it.orderId == orderId }.mapNotNull { com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.dineroDe(it) }
+        val soltadas = com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.liberadasDe(orderId, desde)
+        return efectivo + tarjetas + marcas + soltadas
+    }
+
+    /**
+     * 🔴 D13, la puerta del efectivo (se llama bajo `PuertaDelEfectivo.candadoDe(orden)`, junto con el apartado).
+     * null = puede apartar; si no, el texto de por qué no. Sólo para una orden que ya existe: en una venta nueva nadie más pudo cobrarla.
+     * [foto] y [propias] son las del INTENTO, fotografiadas antes de su primera espera (Codex r4 #1: si otra venta arranca en esta
+     * pantalla mientras tanto, su foto no le quita la puerta a este efectivo). [propias] = las llaves de ESTE intento (su apartado y
+     * los anteriores de esta venta, que reemplaza: es el mismo dinero).
+     */
+    private suspend fun frenoDeLaPuerta(foto: FotoDelCobro?, orderId: String?, venueId: String, efectivoCents: Int, propias: Collection<String>): String? {
+        if (orderId.isNullOrBlank() || foto == null || foto.orderId != orderId) return null
+        return try {
+            com.avoqado.pos.payment.domain.PuertaDelEfectivo.decidir(foto.conocido, dineroDeLaOrden(venueId, orderId, foto.conocido.soltadasHasta),
+                propias.map(com.avoqado.pos.payment.domain.PuertaDelEfectivo::llaveDeEfectivo).toSet(), foto.saldoCents, efectivoCents.toLong())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("💵", "D13: no se pudo revisar el dinero de la orden $orderId: ${e.message}")
+            com.avoqado.pos.payment.domain.PuertaDelEfectivo.TEXTO_NO_SE_PUDO
+        }
+    }
+
+    /** D13: [accion] bajo [candado] si hay puerta; si no, como antes. Inline: un `return@launch` de adentro suelta el candado. */
+    private suspend inline fun <T> conCandado(candado: kotlinx.coroutines.sync.Mutex?, accion: () -> T): T =
+        if (candado == null) accion() else candado.withLock { accion() }
+
+    /**
+     * D14: la tarjeta de una cuenta que ya existía y no es mesa, cobrada FUERA de la bandeja («Pedidos → detalle», partes 2..N): su
+     * contexto lleva lo que esta pantalla creyó que faltaba, y su positivo deja la marca «aquí ya se cobró» igual que la de la bandeja.
+     */
+    private fun cobroFueraDeLaBandeja(): com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? {
+        if (!continuaVentaPartida || createdOrderId.isNullOrBlank()) return null
+        val saldo = saldoAlArrancar?.takeIf { it.first == createdOrderId }?.second ?: return null
+        return com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(saldo, esFolio = false, fueraDeLaBandeja = true)
+    }
 
     /**
      * A3 (m3): el 400 de cuenta cancelada llegó pero su apartado NO se pudo borrar. La pantalla dice «No se pudo cancelar el cobro»
@@ -2167,6 +2234,11 @@ class PaymentFlowViewModel @Inject constructor(
          * cobró» en el mismo commit, y la bandeja ya no ofrece efectivo encima con una lista vieja. null = otro cobro (como siempre).
          */
         cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
+        /**
+         * 🔴 D13: la foto de la puerta del efectivo tomada por quien fijó el saldo ANTES de leerlo (bandeja, «Pedidos → detalle»). null =
+         * sin puerta, como antes (mesa, partes 2..N: su saldo se arma en el aparato y una foto al arrancar no diría qué contó).
+         */
+        dineroConocido: com.avoqado.pos.payment.domain.DineroConocido? = null,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -2307,6 +2379,14 @@ class PaymentFlowViewModel @Inject constructor(
         // every retail/quick flow is byte-identical.
         mesaDelCobro?.let { createdOrderId = it.orderId }
         continuaVentaPartida = mesaDelCobro == null && !resumeOrderId.isNullOrBlank()
+        // 🔴 D13: la foto de la puerta del efectivo, con el saldo que esta pantalla cree que falta (sólo si la trae quien fijó el saldo).
+        val ordenAlArrancar = createdOrderId
+        saldoAlArrancar = ordenAlArrancar?.let { it to cart.totalCents.toLong() }
+        fotoDelCobro = if (dineroConocido != null && !ordenAlArrancar.isNullOrBlank()) {
+            FotoDelCobro(ordenAlArrancar, cart.totalCents.toLong(), dineroConocido)
+        } else {
+            null
+        }
         saldoSinConfirmar = false
         // Regla 9 (vales, r7): el apartado que cobra ESTE cobro; terminar, soltar y salir actúan sobre él, nunca sobre el vigente.
         sesionDelCobro = areaTicketRepository.session.current()?.id?.takeIf { esCobroDeVales() }
@@ -3137,7 +3217,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // del camino de EFECTIVO (`recordFastCashPayment`).
                     customerId = attachedCustomerId,
                     // R100: un cobro de la bandeja lleva su saldo; su positivo deja la marca «aquí ya se cobró» al reconocerse.
-                    deLaBandeja = cobroDeLaBandeja,
+                    // D14: también la de una cuenta que ya existía cobrada fuera de la bandeja.
+                    deLaBandeja = cobroDeLaBandeja ?: cobroFueraDeLaBandeja(),
                 )
                 recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
@@ -3345,6 +3426,9 @@ class PaymentFlowViewModel @Inject constructor(
         val venta = ventaEnCurso
         val anterioresDeEstaVenta = apartadosDeEstaVenta.toList()
         val mesaCapturada = mesaCapturada(venueCapturado)
+        // 🔴 D13 (Codex r4 #1): la foto de la puerta y lo propio de ESTE intento, antes de la primera espera.
+        val fotoCapturada = fotoDelCobro
+        val propiasCapturadas = anterioresDeEstaVenta + listOfNotNull(llaveCapturada, reservaNoEfectivo)
 
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
             is CashPaymentResult.Success -> {
@@ -3391,19 +3475,37 @@ class PaymentFlowViewModel @Inject constructor(
                     }
                     // 🔴 Antes de la primera llamada de red (crear la orden o registrar el cobro).
                     // Rediseño r9: con apartado de efectivo puro, la venta en el cajón la anota su salida de `EN_VUELO`, no este intento.
-                    val apartadoDelCobro = try {
-                        reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado)
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // Una reserva de otra apertura o identidad no modifica la venta vigente.
-                        if (generacion == paymentGeneration && secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
-                            _state.value = PaymentFlowState.Error(
-                                message = e.message ?: "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
-                                source = PaymentErrorSource.UNKNOWN,
-                            )
+                    // 🔴 D13, la puerta del efectivo: la revisión del otro dinero de la orden y el apartado van bajo el MISMO candado (el de
+                    // esa orden), sin nada de por medio. Una revisión antes (en la bandeja) y un apartado después dejaban una rendija (r8).
+                    // TODO apartado de una orden que ya existe lo toma, tenga foto o no (Codex r6 #1): uno sin puerta (mesa, partes 2..N)
+                    // no se cuela entre la lectura y el apartado de otro que sí la tiene. Una venta nueva no tiene orden: no lo toma.
+                    val candado = ordenCapturada?.takeIf { it.isNotBlank() }?.let(com.avoqado.pos.payment.domain.PuertaDelEfectivo::candadoDe)
+                    val apartadoDelCobro = conCandado(candado) {
+                        val freno = frenoDeLaPuerta(fotoCapturada, ordenCapturada, venueCapturado, total - tipCapturado, propiasCapturadas)
+                        if (freno != null) {
+                            // Codex r4 #2: sólo si sigue siendo ESTA venta; la bandera y la pantalla de otra que empezó no son de este intento.
+                            if (generacion == paymentGeneration) {
+                                isProcessingPayment = false
+                                if (secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
+                                    _state.value = PaymentFlowState.Error(message = freno, source = PaymentErrorSource.UNKNOWN)
+                                }
+                            }
+                            return@launch
                         }
-                        return@launch
+                        try {
+                            reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // Una reserva de otra apertura o identidad no modifica la venta vigente.
+                            if (generacion == paymentGeneration && secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
+                                _state.value = PaymentFlowState.Error(
+                                    message = e.message ?: "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
+                                    source = PaymentErrorSource.UNKNOWN,
+                                )
+                            }
+                            return@launch
+                        }
                     }
                     // Con apartado de efectivo puro, su venta la anota la salida de `EN_VUELO`; con CUALQUIER apartado, su orden no se cancela.
                     val apartado = apartadoDelCobro == Apartado.EFECTIVO
@@ -3571,10 +3673,15 @@ class PaymentFlowViewModel @Inject constructor(
                                     val papelNuevo = papelDeLaParte()
                                     if (reservado) {
                                         try {
-                                            cashPaymentRepository.actualizarApartado(
-                                                llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId,
-                                                lineasDelTicket = papelNuevo?.copia(totalFinal - tipCapturado),
-                                            )
+                                            // 🔴 D13 (Codex r8 #1): ligar el apartado a la orden recién nacida la hace aparecer en su cola; va
+                                            // bajo el candado de ESA orden, así no se cuela entre la lectura y el apartado de otra pantalla que
+                                            // ya la cobra con foto («Pedidos → detalle»).
+                                            com.avoqado.pos.payment.domain.PuertaDelEfectivo.candadoDe(orderId).withLock {
+                                                cashPaymentRepository.actualizarApartado(
+                                                    llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId,
+                                                    lineasDelTicket = papelNuevo?.copia(totalFinal - tipCapturado),
+                                                )
+                                            }
                                         } catch (e: kotlinx.coroutines.CancellationException) {
                                             throw e
                                         } catch (e: Exception) {
