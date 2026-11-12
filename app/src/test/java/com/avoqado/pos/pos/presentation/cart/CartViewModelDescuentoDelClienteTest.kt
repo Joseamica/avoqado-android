@@ -42,6 +42,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
@@ -952,5 +953,31 @@ class CartViewModelDescuentoDelClienteTest {
 
         assertNull(vm.cartState.value.orderDiscount)
         assertEquals(10000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `R5 un PIN que llega tarde para el descuento viejo se descarta y no quita el manual`() {
+        permisos = listOf("orders:read")
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.applyOrderDiscount(manual)
+        vm.setSelectedCustomer(cecilia)
+        val gerente = CompletableDeferred<Boolean>()
+        coEvery { coordinador.preauthorize("discounts:apply", llaveCecilia, any()) } coAnswers { gerente.await() }
+        every { coordinador.tomarPreautorizado("discounts:apply", llaveCecilia) } returns "tok-viejo"
+        vm.usarDescuentoDelCliente() // el teclado del PIN queda abierto para el d-10
+
+        vm.setSelectedCustomer(ceciliaCon(DescuentoDelCliente("d-15", "Socio", "PERCENTAGE", 15.0)))
+        gerente.complete(true) // el gerente autoriza el d-10, que ya no es el de Cecilia
+
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertEquals("m-5", vm.cartState.value.orderDiscount?.id)
+        assertNull(vm.avisoDeDescuento.value)
+        val aviso = vm.avisoDescuentoDelCliente.value!!
+        assertEquals(
+            "FULLTEST-Cecilia tiene 15 % de descuento. Tu puesto no puede aplicarlo; con la autorización se quita «Manual 5 %».",
+            aviso.texto,
+        )
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, aviso.accion)
     }
 }

@@ -2815,8 +2815,9 @@ class CartViewModel @Inject constructor(
             } finally {
                 pidiendoAutorizacion = false
             }
-            // Canceló o venció; o llegó tarde y ya es otro cliente: no se guarda nada.
-            if (token == null || _selectedCustomer.value?.id != cliente.id) return@launch
+            // Canceló o venció; o llegó tarde y ya es otro cliente u otro descuento (Codex r5): no se guarda ni se cambia nada.
+            val ahora = _selectedCustomer.value
+            if (token == null || ahora?.id != cliente.id || ahora?.descuentoDelCliente?.discountId != descuento.id) return@launch
             _cartState.update {
                 it.copy(autorizacionDelDescuento = com.avoqado.pos.pos.data.model.AutorizacionDelDescuento(token, monto, cliente.id, descuento.id))
             }
