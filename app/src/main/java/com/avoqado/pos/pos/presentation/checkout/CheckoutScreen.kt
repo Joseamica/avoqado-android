@@ -1667,6 +1667,17 @@ fun CheckoutScreen(
         )
     }
 
+    // D2: el descuento del cliente se quitó por otro, o el cobro se frenó sin permiso ni PIN suficiente (texto del 403).
+    val avisoDeDescuento by cartViewModel.avisoDeDescuento.collectAsState()
+    avisoDeDescuento?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Descuento del cliente",
+            subtitle = aviso,
+            durationMs = 6000L,
+            onDismiss = cartViewModel::consumeAvisoDeDescuento,
+        )
+    }
+
     // D13 (IVA por producto, plan 7a): un carrito guardado que sumaba impuesto aparte se restauró sin él. Aviso ámbar, nunca bloqueo.
     val avisoDelCarrito by cartViewModel.avisoDelCarrito.collectAsState()
     avisoDelCarrito?.let { aviso ->

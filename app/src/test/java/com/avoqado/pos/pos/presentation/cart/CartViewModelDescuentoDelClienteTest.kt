@@ -1,9 +1,16 @@
 package com.avoqado.pos.pos.presentation.cart
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.areatickets.data.AreaTicket
+import com.avoqado.pos.areatickets.data.AreaTicketArea
+import com.avoqado.pos.areatickets.data.AreaTicketCheckout
+import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
+import com.avoqado.pos.areatickets.data.AreaTicketLine
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
+import com.avoqado.pos.areatickets.data.AreaTicketSession
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
@@ -12,6 +19,7 @@ import com.avoqado.pos.customers.data.model.DescuentoDelCliente
 import com.avoqado.pos.giftcards.domain.FotoDeLaVenta
 import com.avoqado.pos.loyalty.data.PremioPorAplicar
 import com.avoqado.pos.payment.data.OrderRepository
+import com.avoqado.pos.payment.data.PayLaterQueue
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.data.DiscountsRepository
@@ -26,6 +34,8 @@ import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
+import com.avoqado.pos.tables.data.TableSession
+import com.avoqado.pos.referrals.domain.model.ValidationResult as ReferralValidationResult
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import io.mockk.coEvery
@@ -66,6 +76,9 @@ class CartViewModelDescuentoDelClienteTest {
     private val coordinador = mockk<ManagerOverrideCoordinator>(relaxed = true)
     private val conectado = MutableStateFlow(true)
     private val monitor = mockk<ConnectivityMonitor>(relaxed = true)
+    private val cola = mockk<PayLaterQueue>(relaxed = true)
+    private val validarReferido = mockk<ValidateReferralUseCase>(relaxed = true)
+    private val mesa = TableSession()
 
     /** Los permisos efectivos de la sesión: cada prueba decide si trae `discounts:apply`. */
     private var permisos: List<String> = listOf("discounts:apply")
@@ -93,7 +106,10 @@ class CartViewModelDescuentoDelClienteTest {
         coEvery { staffRepository.getActiveStaff() } returns Result.success(listOf(StaffMember(id = "staff-99", firstName = "Jose", lastName = "Tester")))
     }
 
-    private fun carrito(repo: SavedCartsRepository = SavedCartsRepository(PrefsDeDosCapas().context)): CartViewModel = CartViewModel(
+    private fun carrito(
+        repo: SavedCartsRepository = SavedCartsRepository(PrefsDeDosCapas().context),
+        vales: AreaTicketRepository = areaTicketRepository,
+    ): CartViewModel = CartViewModel(
         productsRepository = productsRepository,
         discountsRepository = discountsRepository,
         savedCartsRepository = repo,
@@ -103,14 +119,15 @@ class CartViewModelDescuentoDelClienteTest {
         orderRepository = orderRepository,
         staffRepository = staffRepository,
         classCheckoutSeed = classCheckoutSeed,
-        validateReferralUseCase = mockk<ValidateReferralUseCase>(relaxed = true),
+        validateReferralUseCase = validarReferido,
         captureReferralUseCase = mockk<CaptureReferralUseCase>(relaxed = true),
         planManager = PlanManager(secureStorage),
-        tableSession = com.avoqado.pos.tables.data.TableSession(),
+        tableSession = mesa,
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
-        areaTicketRepository = areaTicketRepository,
+        areaTicketRepository = vales,
         walletScanRepository = mockk(relaxed = true),
         connectivityMonitor = monitor,
+        payLaterQueue = cola,
         managerOverrideCoordinator = coordinador,
     )
 
@@ -287,7 +304,7 @@ class CartViewModelDescuentoDelClienteTest {
 
         assertEquals("m-5", vm.cartState.value.orderDiscount?.id)
         assertTrue("c-cecilia" in vm.cartState.value.descuentosDeClienteQuitados)
-        assertTrue(vm.avisoDeVales.value!!.startsWith("Se quitó el descuento de FULLTEST-Cecilia"))
+        assertTrue(vm.avisoDeDescuento.value!!.startsWith("Se quitó el descuento de FULLTEST-Cecilia"))
         // Y quitar el manual no lo regresa: se quitó en esta venta.
         vm.applyOrderDiscount(null)
         assertNull(vm.cartState.value.orderDiscount)
@@ -470,12 +487,20 @@ class CartViewModelDescuentoDelClienteTest {
         assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, vm.avisoDescuentoDelCliente.value?.accion)
 
         assertTrue(vm.detenerCobroPorDescuentoDelCliente())
-        assertEquals(texto403, vm.avisoDeVales.value)
+        assertEquals(texto403, vm.avisoDeDescuento.value)
 
         val diferida = vm.createPayLaterOrder("c-cecilia")
         assertEquals(ResultadoPagarDespues.Error(texto403), diferida)
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cola.guardar(any()) }
+        coVerify(exactly = 0) { cola.mandar(any(), any()) }
         assertEquals(1, vm.cartState.value.items.size)
+
+        // Control: con el mismo carrito de prueba y una sesión CON permiso, «Pagar después» sí llega a escribir la cuenta en la fila
+        // (que aquí no se guarda): el freno de arriba es el del descuento, no el de la prueba.
+        permisos = listOf("discounts:apply")
+        val conPermisoAhora = carrito().conPlayeraYCecilia()
+        assertEquals(ResultadoPagarDespues.Error(PAGAR_DESPUES_NO_SE_GUARDO), conPermisoAhora.createPayLaterOrder("c-cecilia"))
+        coVerify(exactly = 1) { cola.guardar(any()) }
     }
 
     @Test
@@ -483,7 +508,7 @@ class CartViewModelDescuentoDelClienteTest {
         val vm = carrito().conPlayeraYCecilia()
 
         assertFalse(vm.detenerCobroPorDescuentoDelCliente())
-        assertNull(vm.avisoDeVales.value)
+        assertNull(vm.avisoDeDescuento.value)
     }
 
     // MARK: - 6h · sin red
@@ -511,5 +536,240 @@ class CartViewModelDescuentoDelClienteTest {
 
         assertEquals(1000, vm.cartState.value.orderDiscountCents)
         assertTrue(vm.puedeCrearOrdenConDescuentoDelCliente())
+    }
+
+    // MARK: - Ronda 1 de revisión
+
+    @Test
+    fun `R1 con una mesa cobrandose el descuento del cliente no se pone ni se avisa`() {
+        mesa.start(TableSession.Active("t", "1", null, "o", "ORD", 1, 10000, TableSession.Mode.PAYING))
+        val vm = carrito()
+        vm.consumePendingTableCobrar()
+        vm.setSelectedCustomer(cecilia)
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(10000, vm.cartState.value.totalCents)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        vm.pedirAutorizacionDelDescuento()
+        coVerify(exactly = 0) { coordinador.preauthorize(any(), any(), any()) }
+    }
+
+    @Test
+    fun `R1 con una mesa en ronda tampoco`() {
+        mesa.start(TableSession.Active("t", "1", null, "o", "ORD", 1, 10000, TableSession.Mode.ORDERING))
+        val vm = carrito().conPlayeraYCecilia()
+
+        assertNull(vm.cartState.value.orderDiscount)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+    }
+
+    @Test
+    fun `R1 al quitar el combo que lo bloqueaba el descuento del cliente se pone solo`() {
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.aplicarPromocion(dosPorUno, emptyMap())
+        vm.setSelectedCustomer(cecilia)
+        assertNull(vm.cartState.value.orderDiscount)
+
+        val renglonDelCombo = vm.cartState.value.items.first { it.isPromotionLine }.id
+        assertTrue(vm.quitarPorElCajero(renglonDelCombo))
+
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+        assertEquals(1000, vm.cartState.value.orderDiscountCents)
+        assertNull(vm.avisoDescuentoDelCliente.value)
+    }
+
+    @Test
+    fun `R1 quitar el combo con la confirmacion de la pantalla tambien lo pone`() {
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.aplicarPromocion(dosPorUno, emptyMap())
+        vm.setSelectedCustomer(cecilia)
+
+        vm.quitarPromocion(vm.cartState.value.items.first { it.isPromotionLine }.promotionInstanceId!!)
+
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+    }
+
+    @Test
+    fun `R1 al soltarse los vales que lo bloqueaban el descuento del cliente se pone solo`() {
+        val sesion = AreaTicketSession(secureStorage)
+        val vales = AreaTicketRepository(api = mockk<ApiService>(), secureStorage = secureStorage, session = sesion, payloadCache = mockk(relaxed = true))
+        val vm = carrito(vales = vales)
+        vm.addProduct(playera)
+        sesion.update("venue-1", sesionDeVales())
+        vm.traerValesDeLaSesion()
+        vm.setSelectedCustomer(cecilia)
+        assertTrue(vm.cartState.value.items.any { it.locked })
+        assertNull(vm.cartState.value.orderDiscount)
+
+        sesion.clear()
+
+        assertTrue(vm.cartState.value.items.none { it.locked })
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+        assertEquals(1000, vm.cartState.value.orderDiscountCents)
+    }
+
+    private fun sesionDeVales() = AreaTicketCheckout(
+        id = "sesion-1", status = "OPEN", version = 1, expiresAt = "2999-01-01T00:00:00Z", createdAt = "2026-11-12T10:00:00Z",
+        tickets = listOf(
+            AreaTicket(
+                id = "v1", code = "V-1", status = "OPEN", fulfillmentArea = AreaTicketArea("area-1", "Barra", "PICKUP"),
+                subtotal = "50.00", total = "50.00", issuedAt = "2026-11-12T10:00:00Z",
+                lines = listOf(AreaTicketLine(id = "l-1", clientLineId = "c-1", productNameSnapshot = "Café", quantity = "1", unitPrice = "50.00", total = "50.00")),
+            ),
+        ),
+        totals = AreaTicketCheckoutTotals("50.00", "0.00", "50.00"),
+    )
+
+    @Test
+    fun `R1 al quitarse el referido que lo bloqueaba el descuento del cliente se pone solo`() {
+        coEvery { validarReferido("venue-1", "PEPE15", "c-cecilia") } returns
+            Result.success(ReferralValidationResult.Valid("Pepe", 15, "c-pepe"))
+        val vm = carrito()
+        vm.addProduct(playera)
+        // La tarjeta escaneada liga a Cecilia (sin su descuento); el referido entra; luego llega de la lista con su descuento.
+        vm.setSelectedCustomer("c-cecilia", "FULLTEST-Cecilia")
+        vm.onReferralCodeChange("PEPE15")
+        vm.validateReferralCode()
+        vm.setSelectedCustomer(cecilia)
+        assertTrue(vm.cartState.value.orderDiscount?.id?.startsWith("referral_") == true)
+        assertEquals(AvisoDescuentoDelCliente.Accion.USAR_EL_DEL_CLIENTE, vm.avisoDescuentoDelCliente.value?.accion)
+
+        vm.clearReferral()
+
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+    }
+
+    @Test
+    fun `R1 el referido que llega encima del descuento del cliente lo quita y queda quitado`() {
+        coEvery { validarReferido("venue-1", "PEPE15", "c-cecilia") } returns
+            Result.success(ReferralValidationResult.Valid("Pepe", 15, "c-pepe"))
+        val vm = carrito().conPlayeraYCecilia()
+
+        vm.onReferralCodeChange("PEPE15")
+        vm.validateReferralCode()
+
+        assertEquals(1500, vm.cartState.value.orderDiscountCents)
+        assertFalse(vm.cartState.value.descuentoEsDelCliente)
+        assertTrue("c-cecilia" in vm.cartState.value.descuentosDeClienteQuitados)
+        assertTrue(vm.avisoDeDescuento.value!!.startsWith("Se quitó el descuento de FULLTEST-Cecilia"))
+    }
+
+    @Test
+    fun `R1 respaldo con permiso el aviso ofrece Usar el de cuando el descuento no esta y nada lo bloquea`() {
+        permisos = listOf("orders:read")
+        val vm = carrito().conPlayeraYCecilia()
+        // Entra alguien con permiso (cambio de usuario) y la cuenta se mueve: el descuento todavía no se pone solo, pero se ofrece.
+        permisos = listOf("discounts:apply")
+        vm.addProduct(gorra)
+
+        assertEquals(AvisoDescuentoDelCliente.Accion.USAR_EL_DEL_CLIENTE, vm.avisoDescuentoDelCliente.value?.accion)
+        vm.usarDescuentoDelCliente()
+        assertEquals(1200, vm.cartState.value.orderDiscountCents)
+    }
+
+    @Test
+    fun `R1 sin permiso con un manual puesto no se ofrece Usar, se pide el PIN y el cambio se hace hasta que autoriza`() {
+        permisos = listOf("orders:read")
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.applyOrderDiscount(manual)
+        vm.setSelectedCustomer(cecilia)
+
+        val aviso = vm.avisoDescuentoDelCliente.value!!
+        assertEquals("FULLTEST-Cecilia tiene 10 % de descuento. Tu puesto no puede aplicarlo.", aviso.texto)
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, aviso.accion)
+
+        // El gerente cancela: la cuenta sigue con el manual (nunca se queda sin ninguno).
+        coEvery { coordinador.preauthorize("discounts:apply", llaveCecilia, any()) } returns false
+        vm.usarDescuentoDelCliente()
+        assertEquals("m-5", vm.cartState.value.orderDiscount?.id)
+
+        autorizarConPin(vm)
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+        assertEquals(AutorizacionDelDescuento("tok-1", 1000, "c-cecilia", "d-10"), vm.cartState.value.autorizacionDelDescuento)
+        assertTrue(vm.puedeCrearOrdenConDescuentoDelCliente())
+    }
+
+    @Test
+    fun `R1 sin permiso con el premio puesto el cambio quita el premio hasta que el gerente autoriza`() {
+        permisos = listOf("orders:read")
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.setSelectedCustomer("c-cecilia", "FULLTEST-Cecilia")
+        vm.setPendingStampReward(premio)
+        vm.setSelectedCustomer(cecilia)
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, vm.avisoDescuentoDelCliente.value?.accion)
+
+        autorizarConPin(vm)
+
+        assertNull(vm.cartState.value.pendingStampReward)
+        assertEquals(9000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `R1 sin permiso y con el PIN apagado Usar no quita nada`() {
+        permisos = listOf("orders:read")
+        pinPrendido = false
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.applyOrderDiscount(manual)
+        vm.setSelectedCustomer(cecilia)
+        assertNull(vm.avisoDescuentoDelCliente.value?.accion)
+
+        vm.usarDescuentoDelCliente()
+
+        assertEquals("m-5", vm.cartState.value.orderDiscount?.id)
+        coVerify(exactly = 0) { coordinador.preauthorize(any(), any(), any()) }
+    }
+
+    @Test
+    fun `R1 el aviso sin red se va cuando vuelve la red`() {
+        permisos = listOf("orders:read")
+        conectado.value = false
+        val vm = carrito().conPlayeraYCecilia()
+        vm.pedirAutorizacionDelDescuento()
+        assertTrue(vm.avisoDescuentoDelCliente.value!!.texto.startsWith("Sin conexión"))
+
+        conectado.value = true
+
+        assertEquals("FULLTEST-Cecilia tiene 10 % de descuento. Tu puesto no puede aplicarlo.", vm.avisoDescuentoDelCliente.value?.texto)
+    }
+
+    @Test
+    fun `R1 tras un cambio de usuario sin permiso el cobro frenado pone de inmediato el aviso con Pedir autorizacion`() {
+        val vm = carrito().conPlayeraYCecilia()
+        assertNull(vm.avisoDescuentoDelCliente.value)
+        permisos = listOf("orders:read") // entra otra persona con su PIN; el carrito no cambia
+
+        assertTrue(vm.detenerCobroPorDescuentoDelCliente())
+
+        val aviso = vm.avisoDescuentoDelCliente.value!!
+        assertEquals("Tu puesto no puede aplicar el descuento de FULLTEST-Cecilia. Pide autorización o quítalo.", aviso.texto)
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, aviso.accion)
+    }
+
+    @Test
+    fun `R1 una venta nueva vuelve a poner el descuento que se quito en la anterior`() {
+        val vm = carrito().conPlayeraYCecilia()
+        vm.quitarDescuentoDelCliente()
+        assertTrue("c-cecilia" in vm.cartState.value.descuentosDeClienteQuitados)
+
+        vm.finalizarVenta()
+        assertTrue(vm.cartState.value.descuentosDeClienteQuitados.isEmpty())
+        vm.conPlayeraYCecilia()
+
+        assertEquals("d-10", vm.cartState.value.orderDiscount?.id)
+    }
+
+    @Test
+    fun `R1 el aviso de un descuento de monto fijo dice el monto en pesos`() {
+        permisos = listOf("orders:read")
+        val vm = carrito()
+        vm.addProduct(playera)
+        vm.setSelectedCustomer(ernesto)
+
+        assertEquals("FULLTEST-Ernesto tiene $50.00 de descuento. Tu puesto no puede aplicarlo.", vm.avisoDescuentoDelCliente.value?.texto)
     }
 }
