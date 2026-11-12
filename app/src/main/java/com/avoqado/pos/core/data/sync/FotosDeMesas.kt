@@ -123,6 +123,11 @@ class FotosDeMesas(
         Unit
     }
 
+    /** Para la bitácora (B3: «cada borrado de foto con su ruta»): las órdenes con foto que [texto] menciona. No toca nada. */
+    fun conFotoEn(texto: String): Set<String> = synchronized(lock) {
+        fotos().values.flatMap { it.values }.filter { f -> f.ids.any { it in texto } }.map { it.orderId }.toSet()
+    }
+
     /**
      * Hay algo que vigilar y el piloto sigue prendido. Apagado, se tiran las fotos que quedaron (si el disco falla, igual se olvidan en
      * memoria: con el piloto apagado nadie las usa) y ninguna escritura vuelve a depender de este almacén.

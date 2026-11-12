@@ -22,9 +22,12 @@ class PuertaDeLaFoto(private val fotos: FotosDeMesas) : Interceptor {
         if (request.method == "GET" || request.method == "HEAD" || EXCEPCIONES.any { ruta.endsWith(it) }) return chain.proceed(request)
         val ronda = request.method == "POST" && RONDA.matches(ruta)
         val escritura = fotos.empezarEscritura(diferida = ronda) { textoDe(request) }
+        // B3: la ruta (nunca el cuerpo) de cada escritura que tocó una mesa vigilada.
+        if (escritura.ids.isNotEmpty()) android.util.Log.d(TAG, "${if (ronda) "Ronda en vuelo sobre" else "Foto borrada por"} ${request.method} $ruta")
         val response = try { chain.proceed(request) } catch (e: Throwable) { fotos.terminarEscritura(escritura); throw e }
         val borrar = ronda && (response.code in 200..299 || (response.code in 400..499 && response.code != 409))
         try { fotos.terminarEscritura(escritura, borrar) } catch (e: java.io.IOException) { response.close(); throw e }
+        if (borrar && escritura.ids.isNotEmpty()) android.util.Log.d(TAG, "Foto borrada al volver la ronda (${response.code}) $ruta")
         return response
     }
 
@@ -37,6 +40,7 @@ class PuertaDeLaFoto(private val fotos: FotosDeMesas) : Interceptor {
     }
 
     private companion object {
+        const val TAG = "📸 PuertaDeLaFoto"
         val RONDA = Regex(".*/orders/[^/]+/items/?")
         val EXCEPCIONES = listOf("/sync/intents", "/sync/recovery", "/print-jobs/sync")
         const val LIMITE = 1L * 1024 * 1024

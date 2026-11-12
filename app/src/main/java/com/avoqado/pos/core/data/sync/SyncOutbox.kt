@@ -313,7 +313,10 @@ class SyncOutbox @Inject constructor(
         } else require(preparationSnapshots == null)
         val originalPayload = json.encodeToString(JsonObject.serializer(), payload)
         // D5 · B2b, punto de paso ②: antes de escribirse. Si el disco falla, no se encola (y el llamador lo dice).
-        if (type !in TIPOS_QUE_NO_TOCAN_LA_FOTO) fotos?.borrarSiMenciona(originalPayload)
+        if (type !in TIPOS_QUE_NO_TOCAN_LA_FOTO) fotos?.let { f ->
+            f.conFotoEn(originalPayload).takeIf { it.isNotEmpty() }?.let { Log.d(TAG, "📸 Foto borrada al encolar $type: $it") }
+            f.borrarSiMenciona(originalPayload)
+        }
         val capture = if(type == SyncIntentTypes.PAY_CASH) com.avoqado.pos.payment.data.ConciliacionDelCobro.capturarIntent(
             venueId,id,originalPayload,cashTenderedCents,changeCents,splitType,restanteEsperadoCents,
             restanteEsperadoCents?.let { toleranciaSinRedQ16(venueId, payload) }) else null
@@ -690,6 +693,7 @@ class SyncOutbox @Inject constructor(
         // la vuelve a encolar, nunca suma sobre la foto. Si el disco falla, el rechazo se guarda igual (Codex b2b-r1 #1): la fila
         // rechazada pone la mesa en gris, y «Marcar resuelta» no la quita hasta poder borrar la foto (`dismissRejected`).
         if (!ack.isAcked) runCatching { fotos?.borrarSiMenciona(row.payloadJson) }
+            .onFailure { Log.w(TAG, "📸 No se pudo borrar la foto del rechazo ${row.id}: queda en gris por la fila rechazada") }
         if(ack.status == "REJECTED" && ack.errorCode == "STALE_DEVICE_SEQUENCE") {
             require(row.venueId == venueId && sentDeviceId.isNotBlank() && sentDeviceId == currentDeviceId)
             dao.resolveStaleSequence(ack.id,venueId,row.seq,

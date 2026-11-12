@@ -389,8 +389,9 @@ class TableOrderViewModel @Inject constructor(
             val snapshot = draftStore?.loadResolved(vId, s.orderId)?.takeIf { it.first == s.orderId }?.second ?: return
             if (!snapshot.tomadaAqui || tableSession.current()?.mode != TableSession.Mode.ORDERING) return
             val llaves = snapshot.rounds.keys + detail.items.mapNotNull { it.externalId?.split(":")?.takeIf { p -> p.size >= 3 && p[0] == "sync" }?.get(1) }
-            fotos.crearSi(com.avoqado.pos.core.data.sync.FotoDeMesa(vId, s.orderId, listOfNotNull(s.localOrderId), s.tableId, detail,
+            val tomada = fotos.crearSi(com.avoqado.pos.core.data.sync.FotoDeMesa(vId, s.orderId, listOfNotNull(s.localOrderId), s.tableId, detail,
                 pedido.seq, llaves.toList(), System.currentTimeMillis()), pedido.lectura)
+            android.util.Log.d("📸 TableOrder", if (tomada) "Foto tomada de ${s.orderId} (seq ${pedido.seq})" else "Sin foto de ${s.orderId}: algo la ensució")
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         // Sin foto la mesa queda en gris sin internet: nunca se inventa un saldo.
         catch (e: Exception) { android.util.Log.w("🍽️ TableOrder", "No se pudo guardar la cuenta para cobrarla sin internet: ${e.message}") }
