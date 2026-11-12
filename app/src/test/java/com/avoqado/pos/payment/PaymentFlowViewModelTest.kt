@@ -6441,6 +6441,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("orden-de-la-mesa"), cobradas)
+        // La garantía de no revalidar la copia vive en la pantalla de la mesa, que nunca pasa `antesDeRecibirEfectivo`.
         coVerify(exactly = 0) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { cuentasEntreCajas.apartar(any(), any(), any(), any(), any()) }
         io.mockk.verify(exactly = 0) { cuentasEntreCajas.autorizacionVigente(any()) }
