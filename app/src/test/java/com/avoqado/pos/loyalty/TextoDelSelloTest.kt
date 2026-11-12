@@ -258,4 +258,19 @@ class TextoDelSelloTest {
         assertEquals("✓ +1 sello · 3 de 7", textoDelSello(sello(stamped = true, earned = 3)))
         assertEquals("+1 sello", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(1, 7)))!!.titulo)
     }
+
+    @Test
+    fun `tarjeta lleva el nombre de la promo en el titulo`() {
+        val t = tarjetaDelSello(sello(stamped = true, added = 2, promo = " Buen Fin sello doble ", cartilla = SaleStampCard(2, 7)))!!
+        assertEquals("+2 sellos · Buen Fin sello doble", t.titulo)
+        assertEquals("+1 sello", tarjetaDelSello(sello(stamped = true, cartilla = SaleStampCard(2, 7)))!!.titulo)
+    }
+
+    @Test
+    fun `stampsAdded con cartilla llena y premio ya cobrado dice Gano y no por cobrar`() {
+        val cobrada = SaleStampCard(7, 7, completed = true, rewardPending = false)
+        assertEquals("Ganó su premio", textoDelSello(sello(stamped = true, earned = 1, required = 8, added = 2, cartilla = cobrada)))
+        val pendiente = SaleStampCard(7, 7, completed = true, rewardPending = true)
+        assertEquals(TextosDelSello.PREMIO_POR_COBRAR, textoDelSello(sello(stamped = true, earned = 1, required = 8, added = 2, cartilla = pendiente)))
+    }
 }

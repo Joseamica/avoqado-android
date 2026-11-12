@@ -61,8 +61,12 @@ data class TarjetaDelSello(
     val porCobrar: Boolean = false,
     /** Sellos que dio ESTA venta (para animar los últimos N círculos); 1 si el servidor no lo dice. */
     val sellosNuevos: Int = 1,
+    /** Nombre de la promoción que dio estos sellos («Buen Fin sello doble»), si el servidor lo manda. */
+    val promocion: String? = null,
 ) {
-    val titulo: String get() = if (completa) TextosDelSello.TITULO_COMPLETA else TextosDelSello.sellos(sellosNuevos)
+    val titulo: String
+        get() = (if (completa) TextosDelSello.TITULO_COMPLETA else TextosDelSello.sellos(sellosNuevos)) +
+            (promocion?.let { " · $it" } ?: "")
     val cuenta: String get() = TextosDelSello.cuenta(llenos, total)
     val pie: String
         get() = when {
@@ -92,6 +96,7 @@ fun tarjetaDelSello(outcome: SaleStampOutcome?): TarjetaDelSello? {
         premio = cartilla.rewardLabel?.trim()?.takeIf { it.isNotEmpty() },
         porCobrar = completa && cartilla.rewardPending,
         sellosNuevos = (outcome.stampsAdded ?: 1).coerceAtLeast(1),
+        promocion = outcome.promotionName?.trim()?.takeIf { it.isNotEmpty() },
     )
 }
 
@@ -121,8 +126,12 @@ fun textoDelSello(outcome: SaleStampOutcome?): String? {
         // Servidor nuevo: dice cuántos sellos dio la venta y `saleCard.completed` decide «Completó» (con un sello que
         // pasa a la cartilla nueva, la abierta arranca en 1, no en 0).
         outcome.stampsAdded?.let { n ->
-            return if (outcome.saleCard?.completed == true) TextosDelSello.PREMIO_POR_COBRAR
-            else TextosDelSello.selloSumadoConPromo(n, outcome.promotionName, outcome.stampsEarned, outcome.stampsRequired)
+            val llena = outcome.saleCard?.takeIf { it.completed }
+            return if (llena != null) {
+                // Premio ya cobrado en otro aparato: no se promete «por cobrar» (Codex r2, 21-oct).
+                if (llena.rewardPending) TextosDelSello.PREMIO_POR_COBRAR
+                else TextosDelSello.premioGanado(llena.rewardLabel?.trim())
+            } else TextosDelSello.selloSumadoConPromo(n, outcome.promotionName, outcome.stampsEarned, outcome.stampsRequired)
         }
         // Resuelto por el coordinador: la cartilla recién COMPLETADA deja abierta la nueva en 0 (sólo pasa al completar).
         // `rewardReady` puede venir de un premio viejo sin cobrar, así que no decide el texto cuando hay cuenta. Pero con
