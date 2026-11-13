@@ -16,15 +16,31 @@ package com.avoqado.pos.core.data.lan
  *   leases se pierden y las mesas se liberan solas — que es el mismo efecto
  *   que su TTL. Persistirlos daría la ilusión de una verdad que el server ya
  *   posee de todos modos.
+ * - Hub D3 (mesa declarada): `estado` lo decide [Presencias], bajo este mismo `lock` y con el reloj MONOTÓNICO
+ *   ([monoMillis]); la hora de pared ([nowMillis]) sólo sigue en los `expiresAtMillis` de los permisos viejos.
  */
 class LeaseServer(
     private val registry: LeaseRegistry = LeaseRegistry(),
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
+    /** Va en `arbitro` de cada respuesta a `estado`: la caja descarta lo que conteste otro árbitro. */
+    private val deviceId: String = "",
+    private val monoMillis: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val lock = Any()
+    private val presencias = Presencias()
 
     /** Leases vivos — el coordinador los publica para pintar el plano. */
     fun activeLeases(): List<TableLease> = synchronized(lock) { registry.activeLeases(nowMillis()) }
+
+    /** Esta tablet empieza a arbitrar: lo que sabía de antes ya no vale y las aperturas esperan a oír a [esperados] (o 12 s). */
+    fun asumirArbitraje(esperados: Set<String>) {
+        synchronized(lock) { presencias.asumirArbitraje(esperados, monoMillis()) }
+    }
+
+    /** Deja de arbitrar: toda apertura que no estuviera ya concedida contesta «esperar» 1 s. */
+    fun dejarArbitraje() {
+        synchronized(lock) { presencias.dejarArbitraje() }
+    }
 
     /** Puro salvo por el reloj: es lo que se prueba sin abrir sockets. */
     fun respondTo(line: String): LeaseResponse {
@@ -61,6 +77,7 @@ class LeaseServer(
                     status = LeaseProtocol.STATUS_LEASES,
                     leases = registry.activeLeases(now).map { it.toWire() },
                 )
+                LeaseProtocol.OP_ESTADO -> presencias.estado(request, monoMillis(), deviceId)
                 else -> LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Operación desconocida: ${request.op}")
             }
         }
