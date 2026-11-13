@@ -95,7 +95,8 @@ object PermissionLabels {
         "orders:merge" to "fusionar cuentas",
         "tpv-orders:comp" to "dar una cortesía",
         "tpv-orders:void" to "anular artículos",
-        "tpv-orders:discount" to "aplicar un descuento",
+        // D4: el SERVIDOR sólo lo pide para un descuento con «Requiere aprobación» (lo de siempre es `discounts:apply`).
+        "tpv-orders:discount" to "aprobar un descuento que pide autorización",
 
         // MARK: - Mesas y plano del salón
         "tables:read" to "ver las mesas",

@@ -564,8 +564,17 @@ class OnlineOrdersRepository @Inject constructor(
                 saldo, if (sinPagos) runCatching { precios(orden) }.getOrNull() else null,
                 estadoDeLaCuenta = orden.textoONulo("status"),
                 pagadoA = runCatching { ultimoCobro(orden) }.getOrNull(),
+                pagos = runCatching { pagosCompletados(orden) }.getOrNull(),
             )
         }
+    }
+
+    /** D13: los ids de los pagos `COMPLETED` de la orden (los que su saldo ya cuenta); null si la respuesta no trae la lista. */
+    private fun pagosCompletados(orden: JSONObject): Set<String>? {
+        val pagos = orden.optJSONArray("payments") ?: return null
+        return (0 until pagos.length()).mapNotNull { i ->
+            pagos.getJSONObject(i).takeIf { it.optString("status") == "COMPLETED" }?.textoONulo("id")
+        }.toSet()
     }
 
     /** La hora del último cobro que entró (`COMPLETED` y positivo: un reembolso o un intento fallido no cuentan); null si no hay. */

@@ -58,6 +58,22 @@ class MesaSinRedSaldoTest {
         assertEquals(ConciliacionDelCobro.RESULTADO_NO_COMPROBADO, e.motivo); assertTrue("saldoDeLaMesa" in e.camposNoComprobados)
     }
 
+    // D5 · B1: el cobro de una mesa del SERVIDOR por la cola de mesas lleva `orderId`; la conciliación avisa igual.
+    private fun capturaDelServidor(restante: Int?) = ConciliacionDelCobro.capturarIntent(venue, "pay",
+        """{"orderId":"R","amountCents":3000,"tipCents":0}""", restanteEsperadoCents = restante)!!
+
+    @Test fun `B1 mesa del servidor por la cola que quedo debiendo, el gerente lo ve`() {
+        val e = ConciliacionDelCobro.evaluar(capturaDelServidor(0), venue, "pay", CanalDelCobro.ACK, ack(2000, total = 5000))
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, e.motivo); assertTrue("saldoDeLaMesa" in e.camposDiferentes)
+        assertEquals(2000, JSONObject(e.resultadoJson!!).getInt("saldoEnElServidorCents"))
+    }
+
+    @Test fun `B1 mesa del servidor por la cola que se cobro de mas guarda cuanto`() {
+        val e = ConciliacionDelCobro.evaluar(capturaDelServidor(0), venue, "pay", CanalDelCobro.ACK, ack(0, total = 2500, pagado = 3000))
+        assertEquals(ConciliacionDelCobro.DIFERENCIA, e.motivo)
+        assertEquals(500, JSONObject(e.resultadoJson!!).getInt("cobradoDeMasCents"))
+    }
+
     @Test fun `sin saldo en el ACK (servidor que no lo resolvio) queda como antes`() {
         val e = ConciliacionDelCobro.evaluar(captura(4500), venue, "pay", CanalDelCobro.ACK, ack(null))
         assertNull(e.motivo); assertTrue("saldoDeLaMesa" in e.camposNoComprobados)

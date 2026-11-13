@@ -97,6 +97,30 @@ class PlanManager @Inject constructor(
      */
     fun requiresUpgrade(code: String): Boolean = !hasFeature(code)
 
+    /**
+     * D12 (paso 2): como [hasFeature] pero falla CERRADO — un plan desconocido, sin observar o un código fuera del mapa NO
+     * dan el permiso. Sólo para dejar que OTRA caja cobre sin red una cuenta ajena; encender el hub sigue con
+     * [hasFeature] (falla abierto, como Mesas).
+     */
+    fun tieneAcreditada(code: String): Boolean {
+        val snapshot = secureStorage.planSnapshot
+        if (snapshot?.exempt ?: isExempt) return true
+        snapshot?.takeIf { it.accessSchemaVersion == 1 }?.let {
+            return code in it.grantedFeatureCodes.orEmpty()
+        }
+        val requiredTier = FEATURE_REQUIRED_TIER[code] ?: return false
+        val currentTier = PlanTier.fromStorage(snapshot?.tier) ?: tier ?: return false
+        return currentTier.rank >= requiredTier.rank
+    }
+
+    /**
+     * D5 · interruptor de un PILOTO que concede Avoqado negocio por negocio (no se vende ni lo trae un plan): sólo la lista
+     * EXACTA que confirmó el servidor. Falla CERRADO, al revés que [hasFeature]: sin plan leído, con una lectura vieja, exento
+     * o demo, está apagado. Al terminar el piloto se quita la lectura (y su código) en el mismo cambio.
+     */
+    fun concedidaPorAvoqado(code: String): Boolean =
+        secureStorage.planSnapshot?.takeIf { it.accessSchemaVersion == 1 }?.grantedFeatureCodes.orEmpty().contains(code)
+
     /** Display label ("Pro"/"Premium") of the tier required for [code], or null if ungated. */
     fun requiredTierLabel(code: String): String? = FEATURE_REQUIRED_TIER[code]?.displayLabel
 

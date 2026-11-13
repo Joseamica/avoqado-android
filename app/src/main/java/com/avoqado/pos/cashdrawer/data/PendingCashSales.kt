@@ -28,7 +28,10 @@ import javax.inject.Singleton
 data class CobroSinReproducir(
     val orderId: String?,
     val totalCents: Int,
-    /** La llave del cobro de `pending_payments` (null en el outbox): su pareja exacta en el cajón la consume (rediseño r9). */
+    /**
+     * La llave del cobro: el id de `pending_payments` o, desde D5 · T, el del `PAY_CASH` de la cola de mesas (B0). Su pareja exacta en
+     * el cajón la consume (rediseño r9). null = no la trae (intent de antes de B0, o pruebas).
+     */
     val llave: String? = null,
 )
 
@@ -46,8 +49,12 @@ data class CobroSinReproducir(
  *   mostrador es la orden que creó ÉL, un id que este aparato nunca vio.
  * @param totalCents el importe con propina, el mismo número que escribe el cajón
  *   (`postCashSaleToDrawer` suma `amount + tipAmount`).
+ * @param deOtroCobro D23: la venta trae la llave de su cobro (`paymentIdempotencyKey`) y ninguna copia de este aparato la adoptó por
+ *   esa llave. Toda copia `idDeLaVentaEnEfectivo(K)` es del cobro K, cuyo pago lleva K; así que esta venta no es ninguna de ellas y no
+ *   puede reclamarlas. `false` = sin llave (servidor de antes de D23, no pudo leer el pago, o el pago no tiene llave): se adivina como
+ *   siempre. Un `null` no prueba nada: un camino que no guardara K dejaría la copia sin dueño (Codex r2).
  */
-data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: Int)
+data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: Int, val deOtroCobro: Boolean = false)
 
 /**
  * Los cobros en efectivo que este aparato YA cobró y que el server TODAVÍA no ha
@@ -68,7 +75,8 @@ data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: In
  *
  * Las DOS colas cuentan, porque un cobro sin red cae en una o en la otra:
  *  - **outbox de intents** (`PAY_CASH`) cuando la mesa nació provisional; el
- *    `localOrderId` del payload es el MISMO id con el que la venta entró al cajón.
+ *    `localOrderId` del payload (o `orderId`, la mesa del servidor por la cola, B1) es el MISMO id con el que la venta entró
+ *    al cajón, y desde B0 el id del intent es la llave del cobro: tiene pareja exacta como la otra cola (D5 · T).
  *  - **`pending_payments`** cuando la orden ya existía, o cuando fue un cobro de
  *    mostrador y el POST falló.
  *
@@ -179,6 +187,11 @@ class PendingCashSales @Inject constructor(
      * cajón → llave `K`), para cada cobro de efectivo PURO de [cajas] que todavía puede subir ([todaviaPuedeSubir]), sin la ventana de
      * la caja. Cada uno protege EXACTAMENTE su venta (`idDeLaVentaEnEfectivo(K)`) mientras el servidor no la reclame.
      *
+     * 🔴 D5 · T (Codex b1-r1 #2): de las DOS colas. El efectivo de una mesa va como `PAY_CASH` en la cola de mesas, cuyo id ES la
+     * llave del cobro desde B0. Cuenta el PENDING sin retención Q15 (el retenido no sale solo y puede haber aterrizado; el REJECTED,
+     * como el FAILED de la otra cola, no protege: ante la duda, sobrante y nunca faltante), de una de [cajas] según su payload y de
+     * efectivo puro (sin `method` ni `tenderTypeId`). Ningún `PAY_CASH` pasa por HELD.
+     *
      * Arranca de las copias: sin copias no se lee nada. Los ids del cajón son el UUID v3 de la llave y no se pueden invertir, así que se
      * leen los cobros vivos de ESAS cajas, en tandas de [TANDA_DE_COBROS_VIVOS], y se recorren TODAS (antes se truncaba a los 500 más
      * recientes del negocio y una copia vieja quedaba sin pareja: sobrante falso). Sólo se guardan las parejas de las copias.
@@ -202,12 +215,25 @@ class PendingCashSales @Inject constructor(
                 despuesDe = tanda.last().createdAt
                 despuesDeId = tanda.last().id
             }
+            // D5 · T: la cola de mesas, en la MISMA lectura transaccional (el replay no puede subir K entre una cola y otra).
+            if (pares.size < copias.size) for (cobro in intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH)) {
+                val caja = cajaDelPayload(cobro.payloadJson) ?: continue
+                if (cobro.id.isBlank() || cobro.q15Reason != null || caja !in cajas || !esEfectivoPuro(cobro.payloadJson)) continue
+                val venta = CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id)
+                if (venta in copias) pares[venta] = cobro.id
+            }
             pares
         }
     }
 
     private suspend fun <T> enTransaccion(bloque: suspend () -> T): T =
         if (database == null) bloque() else database.withTransaction { bloque() }
+
+    /** Un `PAY_CASH` declarado a mano (`method`) o con un tipo del catálogo (`tenderTypeId`) no es efectivo puro (mismo criterio que la otra cola). */
+    private fun esEfectivoPuro(payloadJson: String): Boolean = runCatching {
+        val obj = json.parseToJsonElement(payloadJson) as JsonObject
+        obj["method"] == null && obj["tenderTypeId"] == null
+    }.getOrDefault(false)
 
     /**
      * El `PAY_CASH` del outbox trae el importe partido en `amountCents` y `tipCents`
@@ -227,8 +253,12 @@ class PendingCashSales @Inject constructor(
                     (obj["tipCents"]?.jsonPrimitive?.intOrNull ?: 0)
                 if (total <= 0) return@runCatching null
                 CobroSinReproducir(
-                    orderId = obj["localOrderId"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                    // D5 · T: la mesa del servidor por la cola (B1) trae `orderId` en vez de `localOrderId`.
+                    orderId = (obj["localOrderId"]?.jsonPrimitive?.contentOrNull ?: obj["orderId"]?.jsonPrimitive?.contentOrNull)
+                        ?.takeIf(String::isNotBlank),
                     totalCents = total,
+                    // D5 · T: su id es la llave (B0). Si la pasada exacta lo usa, lo consume y ya no protege otra fila.
+                    llave = pendiente.id.takeIf(String::isNotBlank),
                 )
             }.getOrNull()
         }
@@ -406,17 +436,23 @@ class PendingCashSales @Inject constructor(
             // las que no encontraron orden compiten por monto — el mismo orden con el
             // que se decide la protección, para que las dos listas no se contradigan.
             val reclamadas = mutableSetOf<String>()
+            // 🔴 D23 (F2): una venta con la llave de su cobro que ninguna copia adoptó no es la copia de ningún cobro de este
+            // aparato: la venta de otro aparato del mismo importe (o de la misma mesa) ya no se lleva la copia de un cobro mío que
+            // sigue en la cola, tenga o no pareja exacta. Las filas que no son copia de un cobro (sin llave, de antes) y las ventas
+            // sin llave siguen como siempre.
+            fun puedeReclamar(confirmada: VentaConfirmadaPorPrimeraVez, copia: CashDrawerEventEntity) = copia.id !in reclamadas &&
+                !(confirmada.deOtroCobro && CashDrawerRepository.esCopiaDeUnCobro(copia.id))
             val sinOrdenQueParear = mutableListOf<VentaConfirmadaPorPrimeraVez>()
             for (confirmada in ventasConfirmadasPorPrimeraVez) {
                 val orderId = confirmada.orderId?.takeIf(String::isNotBlank)
                 val porOrden = orderId?.let { buscada ->
-                    deLaMasViejaHaciaAdelante.firstOrNull { it.id !in reclamadas && it.orderId == buscada }
+                    deLaMasViejaHaciaAdelante.firstOrNull { puedeReclamar(confirmada, it) && it.orderId == buscada }
                 }
                 if (porOrden != null) reclamadas += porOrden.id else sinOrdenQueParear += confirmada
             }
             for (confirmada in sinOrdenQueParear) {
                 val porMonto = deLaMasViejaHaciaAdelante.firstOrNull {
-                    it.id !in reclamadas && it.amountCents == confirmada.totalCents
+                    puedeReclamar(confirmada, it) && it.amountCents == confirmada.totalCents
                 }
                 if (porMonto != null) reclamadas += porMonto.id
             }

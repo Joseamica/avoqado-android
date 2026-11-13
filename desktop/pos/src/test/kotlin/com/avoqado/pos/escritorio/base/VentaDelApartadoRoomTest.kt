@@ -325,9 +325,9 @@ class VentaDelApartadoRoomTest {
         ventaEnLaCaja("cmh0servidorcafeanterior01", 10_000, orden = null, hora = System.currentTimeMillis() - 60_000)
         var fallar = true
         val discoQueFallaUnaVez = object : PendingPaymentDao by pagos {
-            override suspend fun insert(payment: PendingPaymentEntity) {
+            override suspend fun insert(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) {
                 if (fallar) { fallar = false; throw java.io.IOException("disco de prueba") }
-                pagos.insert(payment)
+                pagos.insert(payment, antesDelInsert)
             }
         }
         val repo = CashPaymentRepository(storage, discoQueFallaUnaVez, inyector.getInstance(SalidaDelApartado::class.java))
@@ -360,6 +360,42 @@ class VentaDelApartadoRoomTest {
         fusionarConOtraVenta(abrio, inyector.getInstance(PendingCashSales::class.java))
 
         assertTrue(cajon.getEvent(det("K")) != null, "la copia de K no se borra: K sigue por subir")
+    }
+
+    /**
+     * D5 · T (Codex b1-r1 #2), con la base REAL: el `PAY_CASH` de la cola de mesas (id = llave del cobro, B0) protege su venta por
+     * pareja exacta, sin la ventana de 5 minutos. El SQL trae los PENDING de ESTE negocio y de ese tipo, con su id y su retención; caja,
+     * efectivo puro y retención los filtra Kotlin. Lo rechazado, lo ya subido, lo retenido, lo de otra caja, lo declarado a mano y lo de
+     * otro negocio no protegen (todas sus copias están en los primeros 5 minutos: sin pareja, se van, como hoy).
+     */
+    @Test fun `el cobro de una mesa en la cola de mesas protege su venta por pareja exacta`() = runBlocking {
+        val abrio = System.currentTimeMillis() - 120 * 60_000
+        cajon.insertSession(CashDrawerSessionEntity("srv-1", VENUE, "PC", "staff-1", "Ana Ruiz", abrio, 50_000))
+        val intents = inyector.getInstance(com.avoqado.pos.core.data.local.database.SyncIntentDao::class.java)
+        suspend fun mesaCobrada(llave: String, estado: String = "PENDING", q15: String? = null, caja: String = "srv-1", extra: String = "", venue: String = VENUE) {
+            intents.insertWithNextSeq(
+                com.avoqado.pos.core.data.local.database.SyncIntentEntity(
+                    id = llave, venueId = venue, seq = 0, type = "PAY_CASH", status = estado, q15Reason = q15, createdAt = abrio + 2 * 60_000,
+                    payloadJson = """{"localOrderId":"mesa-$llave","amountCents":30000,"tipCents":0,"cashDrawerSessionId":"$caja"$extra}""",
+                ),
+            )
+            cajon.insertEvent(CashDrawerEventEntity(det(llave), "srv-1", VENUE, "CASH_SALE", 30_000, null, "staff-1", "Ana Ruiz", "mesa-$llave", abrio + 2 * 60_000))
+        }
+        mesaCobrada("K")
+        mesaCobrada("rechazado", estado = "REJECTED")
+        mesaCobrada("subido", estado = "ACKED")
+        mesaCobrada("retenido", q15 = "CAPTURA_SIN_EVIDENCIA")
+        mesaCobrada("de-otra-caja", caja = "srv-vieja")
+        mesaCobrada("a-mano", extra = ""","method":"CARD"""")
+        mesaCobrada("de-otro-negocio", venue = "OTRO-VENUE")
+
+        fusionarConOtraVenta(abrio, inyector.getInstance(PendingCashSales::class.java))
+
+        assertEquals(
+            setOf(det("K"), "cmh0servidorotraventa00001"),
+            cajon.getSessionEvents("srv-1").filter { it.type == "CASH_SALE" }.map { it.id }.toSet(),
+            "sólo la venta de K (su cobro sigue en la cola de mesas) sobrevive junto a la del servidor",
+        )
     }
 
     /**

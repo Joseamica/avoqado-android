@@ -148,14 +148,14 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
     @Test fun `Q14 terminal de cuenta propia recibe propina cero y Q34 terminal no sale sin red`() = runTest {
         try {
             val m = vm()
-            coEvery { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) } returns
+            coEvery { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) } returns
                 TerminalPaymentResult.Error("Rechazo de prueba")
             m.startPaymentFlow(cart, resumeOrderId = "orden", cuentaDeTarjetas = true)
             m.submitTip(3000)
             m.selectPaymentMethod(PaymentMethod.CARD)
             m.selectTerminalAndPay("terminal")
             runCurrent()
-            coVerify(exactly = 1) { terminal.sendPaymentToTerminal("terminal", 50000, 0, any(), "orden", any(), any()) }
+            coVerify(exactly = 1) { terminal.sendPaymentToTerminal("terminal", 50000, 0, any(), "orden", any(), any(), any()) }
             clearMocks(terminal, answers = false)
             conectado.value = false
             m.startPaymentFlow(cart, resumeOrderId = "orden", cuentaDeTarjetas = true)
@@ -163,7 +163,7 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
             m.selectTerminalAndPay("terminal")
             runCurrent()
             sinRed(m)
-            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
         } finally { almacen.clear() }
     }
 

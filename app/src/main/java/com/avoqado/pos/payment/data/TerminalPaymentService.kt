@@ -33,6 +33,11 @@ import javax.inject.Singleton
 class TerminalPaymentService @Inject constructor(
     private val secureStorage: SecureStorage,
     baseClient: OkHttpClient,
+    /**
+     * D12 (final fix ronda 2, R2-1): la marca «aquí ya se cobró» de la copia de «Pedidos», que deja [quitar]. Hilt (y Guice) siempre la
+     * pasan; null sólo en las pruebas que no tratan de la copia (entonces un positivo sale como antes).
+     */
+    private val cuentasCobradas: com.avoqado.pos.orders.data.CuentasCobradasAqui? = null,
 ) {
     // Terminal payments need extended timeout since the server waits through TPV retries.
     private val client = baseClient.newBuilder()
@@ -116,6 +121,8 @@ class TerminalPaymentService @Inject constructor(
         /** R100: llaves del contexto durable de un cobro que salió de la bandeja «Pedidos en línea». */
         const val BANDEJA_SALDO = "bandejaSaldoAntesCents"
         const val BANDEJA_FOLIO = "bandejaEsFolio"
+        /** D14: el cobro con tarjeta salió de otra pantalla que cobra una cuenta que ya existía; igual deja su marca. */
+        const val BANDEJA_FUERA = "bandejaFuera"
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
@@ -234,7 +241,8 @@ class TerminalPaymentService @Inject constructor(
             desdeMillis = if (datos.has("creadoEn")) datos.optLong("creadoEn") else entrada.cobradoEn,
             cobrado = entrada.cobrado,
             deLaBandeja = if (datos.has(BANDEJA_SALDO)) {
-                com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(datos.optLong(BANDEJA_SALDO), datos.optBoolean(BANDEJA_FOLIO))
+                com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(datos.optLong(BANDEJA_SALDO), datos.optBoolean(BANDEJA_FOLIO),
+                    fueraDeLaBandeja = datos.optBoolean(BANDEJA_FUERA))
             } else {
                 null
             },
@@ -294,11 +302,27 @@ class TerminalPaymentService @Inject constructor(
         marcasSinGuardar.remove(entrada.requestId)
         synchronized(soltados) { soltados[entrada.requestId] = entrada }
         val marca = marcaDeLaBandeja(entrada)
-        if (marca == null) {
-            secureStorage.removePendingCardCharge(entrada.requestId)
-        } else if (!secureStorage.quitarCobroYAnotarFolio(entrada.requestId) { com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.agregar(it, marca) }) {
-            Log.e("💳", "❌ No se pudo guardar en disco que ${entrada.orderId} se cobró con tarjeta (${entrada.requestId})")
+        // D12 (final fix ronda 2, R2-1): un positivo con orden deja, en el MISMO commit, la marca «aquí ya se cobró» de la copia de
+        // «Pedidos» (la bandeja ya tiene la suya; sus pedidos nunca se cobran desde la copia).
+        val cuenta = if (marca == null) cuentaCobradaAqui(entrada) else null
+        when {
+            marca != null -> if (!secureStorage.quitarCobroYAnotarFolio(entrada.requestId) { com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.agregar(it, marca) }) {
+                Log.e("💳", "❌ No se pudo guardar en disco que ${entrada.orderId} se cobró con tarjeta (${entrada.requestId})")
+            }
+            cuenta != null && cuentasCobradas != null -> if (!cuentasCobradas.quitarTarjetaYAnotar(entrada.requestId, cuenta)) {
+                // Sigue en la lista (también gris para la copia) y se reintenta al vencer su ventana.
+                Log.e("💳", "❌ No se pudo guardar en disco que la cuenta ${cuenta.orderId} se cobró con tarjeta (${entrada.requestId})")
+            }
+            else -> secureStorage.removePendingCardCharge(entrada.requestId)
         }
+    }
+
+    /** R2-1: la marca de la copia de «Pedidos» de un positivo con orden (null = no era un positivo o no se sabe de qué orden). */
+    private fun cuentaCobradaAqui(entrada: CobroPendiente): com.avoqado.pos.orders.data.CuentaCobradaAqui? {
+        if (!entrada.cobrado) return null
+        val contexto = contextoDeEntrada(entrada)
+        val orden = contexto?.orderId ?: entrada.orderId ?: return null
+        return com.avoqado.pos.orders.data.CuentaCobradaAqui(llave = "tarjeta:${entrada.requestId}", venueId = contexto?.venueId, orderId = orden)
     }
 
     /**
@@ -321,6 +345,7 @@ class TerminalPaymentService @Inject constructor(
             venueId = contexto.venueId,
             requestId = entrada.requestId,
             esFolio = bandeja.esFolio,
+            fueraDeLaBandeja = bandeja.fueraDeLaBandeja,
         )
     }
 
@@ -665,7 +690,12 @@ class TerminalPaymentService @Inject constructor(
             .put("terminalId", terminalId).put("orderId", orderId)
             .put("amountCents", amountCents).put("tipCents", tipCents)
             .put("creadoEn", System.currentTimeMillis())
-            .apply { deLaBandeja?.let { put(BANDEJA_SALDO, it.saldoAntesCents).put(BANDEJA_FOLIO, it.esFolio) } }
+            .apply {
+                deLaBandeja?.let {
+                    put(BANDEJA_SALDO, it.saldoAntesCents).put(BANDEJA_FOLIO, it.esFolio)
+                    if (it.fueraDeLaBandeja) put(BANDEJA_FUERA, true)
+                }
+            }
         synchronized(attemptLock) {
             // Otra vez BAJO EL CANDADO, junto con la escritura: dos «Cobrar» de la misma venta a la vez no
             // salen los dos. La llave única lo impedía con su «ya hay llave»; la lista acepta varias.

@@ -70,6 +70,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -118,6 +120,24 @@ internal suspend fun prepararPagoDeMesa(viewModel: TableOrderViewModel, onReady:
     if (viewModel.preparePagar()) onReady()
 }
 
+/**
+ * D39 (ensayo 11 y 12-nov): «Ver productos» del cobro de una mesa decía «(1)» con 3 productos: el cobro lleva UN renglón «Cuenta
+ * Mesa N» por el importe. Esto es SÓLO para la pantalla (`CartState.renglonesParaVer`, como los pedidos en línea); el ticket sigue en
+ * «Cuenta Mesa N» (D4 de mesas40, 15-oct). Los renglones de la cuenta leída (los mismos de la pre-cuenta) y los de sus rondas en cola,
+ * sólo si suman al centavo el subtotal del cobro: con un abono, un cargo por servicio o una cuenta que cambió, vacío y queda el renglón
+ * de la cuenta. La lista nunca dice algo distinto de lo que se cobra. PURA.
+ */
+internal fun renglonesDeLaMesaParaVer(cuenta: List<OrderDetailItem>, enCola: List<com.avoqado.pos.pos.data.model.CartItem>,
+    subtotalCents: Int): List<com.avoqado.pos.payment.data.model.PaymentItem> {
+    val renglones = renglonesDePreCuenta(cuenta).map {
+        com.avoqado.pos.payment.data.model.PaymentItem(it.name, it.quantity, it.unitPrice, it.totalPrice, it.modifiers.orEmpty(), it.note, it.isCortesia)
+    } + enCola.map {
+        com.avoqado.pos.payment.data.model.PaymentItem(it.name, it.quantity, it.effectiveUnitPrice + it.selectedModifiers.sumOf { m -> m.priceInCents },
+            it.grossPrice, it.selectedModifiers.map { m -> m.modifierName }, it.itemNote, it.isCortesia)
+    }
+    return if (renglones.isNotEmpty() && renglones.sumOf { it.lineTotal } == subtotalCents) renglones else emptyList()
+}
+
 @Composable
 fun TableOrderScreen(
     isTablet: Boolean,
@@ -142,6 +162,12 @@ fun TableOrderScreen(
     val isConnected by viewModel.isConnected.collectAsState()
     val blockedNotice by viewModel.blockedNotice.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
+    val cuentaCompletaAqui = chequeAlDia.let { viewModel.cuentaCompletaAqui }
+    // Un cambio propio en curso (asignar, comensales…) baja `chequeAlDia` un momento: es «actualizando», no «no se puede leer».
+    // `cargaPedida`: el primer cuadro se pinta antes de que `loadCheck` arranque; sin esto saldría la línea de «sin leer».
+    var cargaPedida by remember { mutableStateOf(false) }
+    val cargandoCuenta = !cargaPedida || isLoadingCheck || chequeAlDia.let { viewModel.hayMutacionEnVuelo }
+    val cuentaSinLeer = !cuentaCompletaAqui && !cargandoCuenta
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
     val selectedCourse by viewModel.selectedCourse.collectAsState()
@@ -165,6 +191,29 @@ fun TableOrderScreen(
     val isSending by viewModel.isSending.collectAsState()
     val actionMessage by viewModel.actionMessage.collectAsState()
     val loyalty by viewModel.loyalty.collectAsState()
+    val loyaltyFallo by viewModel.loyaltyFallo.collectAsState()
+    // El canje es sólo en línea: hace falta red Y que el servidor conteste (WiFi sin internet deja `isConnected` en true). Es lo
+    // mismo que prende la franja de «Sin conexión» de la app (`AppState.showOfflineBanner`).
+    val servidorAlcanzable by viewModel.isServerReachable.collectAsState()
+    val recompensasEnLinea = isConnected && servidorAlcanzable
+    // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
+    val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
+        // Sin la cuenta al día del servidor no se sabe qué clienta tiene: ni «Agrega el cliente» ni el saldo de una clienta que otra
+        // caja pudo quitar (Codex android r3 #2, r5 #1). Tocar el botón gris relee cuenta → saldo (`onRewardsBlocked`).
+        tieneCliente = if (!cuentaCompletaAqui) null else check?.let { !it.customerId.isNullOrBlank() },
+        lealtad = loyalty,
+        fallo = loyaltyFallo,
+        enLinea = recompensasEnLinea,
+        // Mientras se relee la cuenta (una mutación propia, un acuse, el toque) el detalle que se ve es viejo (Codex android r7 #4).
+        actualizandoCuenta = !cuentaCompletaAqui && cargandoCuenta,
+        cuentaCancelada = check?.status == "CANCELLED" || check?.status == "DELETED",
+        cuentaCambioAlLeer = loyalty?.let { l -> check?.let { com.avoqado.pos.tables.data.maximoCeroContradiceLaCuenta(l, it) } } == true,
+    )
+    val recompensasSinRed =
+        !recompensasEnLinea || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)
+    // El aviso que dejó un toque al botón gris se queda en pantalla: si el motivo cambia, dice el nuevo. El VM sabe que el aviso es
+    // de Recompensas, así que también se renueva al recrear la pantalla (Codex android r5 #2, r6 #5).
+    LaunchedEffect(motivoRecompensas) { viewModel.renovarAvisoDeRecompensas(motivoRecompensas) }
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val menus by viewModel.menus.collectAsState()
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
@@ -222,7 +271,15 @@ fun TableOrderScreen(
     var showCalculator by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
-    var showRewards by remember { mutableStateOf(false) }
+    // El diálogo de Recompensas vive en el VM: un 409 del candado de la oferta lo reabre con la oferta nueva.
+    val recompensasAbiertas by viewModel.recompensasAbiertas.collectAsState()
+    val avisoDelCanje by viewModel.avisoDelCanje.collectAsState()
+    // Cada vez que vuelve la red (el WiFi, o sólo el servidor) se relee la cuenta y después el saldo: el saldo pudo gastarse y la
+    // clienta cambiar en otra caja. Mientras llega, «Leyendo…», también en el diálogo abierto (Codex android r2 #2 y #3, r5 #1).
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.flow.combine(viewModel.isConnected, viewModel.isServerReachable) { red, servidor -> red && servidor }
+            .distinctUntilChanged().drop(1).collect { enLinea -> if (enLinea) viewModel.releerRecompensas() }
+    }
     var showCheckSwitcher by remember { mutableStateOf(false) }
     var pendingSwitchTarget by remember { mutableStateOf<com.avoqado.pos.tables.data.OpenCheckSummary?>(null) }
     var showServiceCharges by remember { mutableStateOf(false) }
@@ -249,7 +306,7 @@ fun TableOrderScreen(
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
     var showPhoneCheck by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { viewModel.loadCheck() }
+    LaunchedEffect(Unit) { viewModel.loadCheck(); cargaPedida = true }
     // TODOS los avisos de esta pantalla pasan por aquí: por qué no se puede mover
     // una cuenta, que un producto está agotado, que la cuenta no tiene cargos.
     //
@@ -297,6 +354,9 @@ fun TableOrderScreen(
         }
     }
     BackHandler { requestExit() }
+    // B3 (visto 1): su cobro y su liberación subieron con la pantalla abierta (fuera del cobro): se dice y «atrás» regresa al plano.
+    val activa by viewModel.tableSession.active.collectAsState()
+    LaunchedEffect(activa == null, showPayment) { if (activa == null && !showPayment) viewModel.showBlockedReason(CUENTA_CERRADA) }
 
     /** Read-only por propiedad de mesa: avisa y bloquea la acción de EDITAR. */
     fun blockIfReadOnly(): Boolean {
@@ -387,7 +447,16 @@ fun TableOrderScreen(
         if (isTablet) {
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    // hz:cc708532:D3 (12-nov): mientras se busca, el buscador ocupa TODO el panel izquierdo. Debajo de la barra de la mesa,
+                    // las pestañas y el aviso de tiempos, el teclado en pantalla no dejaba espacio para los resultados (visto en la D3).
+                    // El campo NO se vacía al elegir: la cajera agrega varios productos de la misma búsqueda. La cuenta (derecha) no cambia.
+                    if (showSearch && !showCombos) {
+                        SearchOverlayView(
+                            viewModel = catalogViewModel,
+                            onProductTap = { handleProductTap(it); showSearch = false },
+                            onDismiss = { showSearch = false },
+                        )
+                    } else Column(modifier = Modifier.fillMaxSize()) {
                         contextBar()
                         HorizontalDivider()
                         Row(modifier = Modifier.fillMaxWidth()) {
@@ -400,12 +469,6 @@ fun TableOrderScreen(
                                 com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
                                     estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
                                     onPromotionTap = { selectedCombo = it })
-                            } else if (showSearch) {
-                                SearchOverlayView(
-                                    viewModel = catalogViewModel,
-                                    onProductTap = { handleProductTap(it); showSearch = false },
-                                    onDismiss = { showSearch = false },
-                                )
                             } else {
                                 Column(modifier = Modifier.fillMaxSize()) {
                                     TableSearchBar(onSearchTap = { showSearch = true })
@@ -462,9 +525,13 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
+                                cuentaCompletaAqui = cuentaCompletaAqui,
+                                cargandoCuenta = cargandoCuenta,
+                                motivoCobradaAqui = viewModel.motivoCobradaAqui,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
-                                onBlocked = { viewModel.showBlockedReason(it) },
+                                // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
+                                onBlocked = { viewModel.showBlockedReason(it); if (cuentaSinLeer) viewModel.loadCheck() },
                                 printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
@@ -480,13 +547,14 @@ fun TableOrderScreen(
                                 // el botón quedaba gris justo cuando más se necesita.
                                 // Hacen falta 2: uno se va y otro se queda.
                                 canSeparar = splittableItems.size >= 2,
+                                cuentaSinLeer = cuentaSinLeer,
                                 separarBlockedReason = if (splittableItems.isEmpty()) {
-                                    "Primero envía a cocina lo que quieras separar."
+                                    if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA else "Primero envía a cocina lo que quieras separar."
                                 } else {
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
                                 isOffline = !isConnected,
-                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo); if (cuentaSinLeer) viewModel.loadCheck() },
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
@@ -525,11 +593,15 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
-                                onRecompensas = { showRewards = true },
+                                onRecompensas = { viewModel.abrirRecompensas() },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
-                                hasLoyalty = loyalty?.canRedeem == true,
+                                hasLoyalty = motivoRecompensas == null,
+                                rewardsBlockedReason = motivoRecompensas,
+                                rewardsBlockedByConnection = recompensasSinRed,
+                                // El toque gris también relee cuenta → saldo; el aviso se renueva con el motivo fresco (Codex android r7 #1).
+                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); viewModel.releerRecompensas() },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -540,6 +612,16 @@ fun TableOrderScreen(
                     }
                 }
             }
+        } else if (showSearch && !showCombos) {
+            // D26 (12-nov, hz:e5ee98bc:D26): en pantalla chica el buscador ocupa TODA la cuenta, como en «Cobrar». Metido debajo de la
+            // barra de la mesa y las pestañas, y encima de «Ver cheque», con el teclado abierto y los avisos de arriba («Sin conexión»,
+            // «operaciones por revisar») no cabían ni el campo ni los resultados: el mesero escribía a ciegas (visto en la N86).
+            // Al elegir un producto el campo se vacía (abría con el texto viejo). En tableta NO: ahí la cajera agrega varios de una búsqueda.
+            SearchOverlayView(
+                viewModel = catalogViewModel,
+                onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(""); showSearch = false },
+                onDismiss = { showSearch = false },
+            )
         } else {
             Column(modifier = Modifier.fillMaxSize()) {
                 contextBar()
@@ -554,14 +636,6 @@ fun TableOrderScreen(
                         com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
                             estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
                             onPromotionTap = { selectedCombo = it })
-                    }
-                } else if (showSearch) {
-                    Box(modifier = Modifier.weight(1f)) {
-                        SearchOverlayView(
-                            viewModel = catalogViewModel,
-                            onProductTap = { handleProductTap(it); showSearch = false },
-                            onDismiss = { showSearch = false },
-                        )
                     }
                 } else {
                     TableSearchBar(onSearchTap = { showSearch = true })
@@ -641,9 +715,13 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 saldo = viewModel.saldoDeMesa,
                                 saldoDeMesaConocido = viewModel.saldoDeMesaConocido,
+                                cuentaCompletaAqui = cuentaCompletaAqui,
+                                cargandoCuenta = cargandoCuenta,
+                                motivoCobradaAqui = viewModel.motivoCobradaAqui,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
-                                onBlocked = { viewModel.showBlockedReason(it) },
+                                // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
+                                onBlocked = { viewModel.showBlockedReason(it); if (cuentaSinLeer) viewModel.loadCheck() },
                                 printBlockedReason = preCuentaBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
@@ -659,13 +737,14 @@ fun TableOrderScreen(
                                 // el botón quedaba gris justo cuando más se necesita.
                                 // Hacen falta 2: uno se va y otro se queda.
                                 canSeparar = splittableItems.size >= 2,
+                                cuentaSinLeer = cuentaSinLeer,
                                 separarBlockedReason = if (splittableItems.isEmpty()) {
-                                    "Primero envía a cocina lo que quieras separar."
+                                    if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA else "Primero envía a cocina lo que quieras separar."
                                 } else {
                                     "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
                                 },
                                 isOffline = !isConnected,
-                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo); if (cuentaSinLeer) viewModel.loadCheck() },
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
@@ -704,11 +783,15 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
-                                onRecompensas = { showRewards = true },
+                                onRecompensas = { viewModel.abrirRecompensas() },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(menusDelAparatoIds); showMenus = true },
                                 onFusionar = { showMerge = true },
-                                hasLoyalty = loyalty?.canRedeem == true,
+                                hasLoyalty = motivoRecompensas == null,
+                                rewardsBlockedReason = motivoRecompensas,
+                                rewardsBlockedByConnection = recompensasSinRed,
+                                // El toque gris también relee cuenta → saldo; el aviso se renueva con el motivo fresco (Codex android r7 #1).
+                                onRewardsBlocked = { viewModel.mostrarAvisoDeRecompensas(it); viewModel.releerRecompensas() },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -976,14 +1059,17 @@ fun TableOrderScreen(
             // cobrar. En un pago parcial/split la semilla es menor que el
             // cheque completo y desglosarlo daría un total equivocado.
             val desglosable = descuentoCents > 0 && descuentoCents < cobrable
+            val subtotal = if (desglosable) cobrable + descuentoCents else cobrable
             com.avoqado.pos.pos.presentation.cart.CartState(
                 items = listOf(
                     com.avoqado.pos.pos.data.model.CartItem(
                         type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
                         name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
-                        unitPrice = if (desglosable) cobrable + descuentoCents else cobrable,
+                        unitPrice = subtotal,
                     ),
                 ),
+                renglonesParaVer = renglonesDeLaMesaParaVer(check?.takeIf { it.id == session?.orderId }?.items.orEmpty(),
+                    queuedLines.map { it.item }, subtotal),
                 orderDiscount = if (desglosable) {
                     com.avoqado.pos.pos.data.model.Discount(
                         id = "order-discount",
@@ -1055,7 +1141,7 @@ fun TableOrderScreen(
                             // Pagada por completo: liberar la mesa de inmediato. La
                             // pantalla de recibo sigue visible hasta que el operador
                             // pulse "Venta nueva".
-                            tablesViewModel.finishTableAfterPayment()
+                            tablesViewModel.finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)
                         }
                     },
                     onDone = {
@@ -1070,13 +1156,11 @@ fun TableOrderScreen(
                                 // al plano; la mesa ya quedó libre al confirmar el pago.
                                 exitOnce()
                             }
-                            else -> {
-                                // Ahora sí iniciar el siguiente cobro por el saldo,
-                                // después de que el operador terminó con el recibo.
-                                paymentSeedCents = completion.remainingBalanceCents
-                                pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-                                viewModel.loadCheck()
-                            }
+                            // D17 (12-nov): tras cobrar una parte, «Venta nueva» regresa a la cuenta («Ya pagado / Por pagar») y
+                            // el resto se cobra con «Pagar», que revisa el saldo como cualquier cobro (también sin red). Re-sembrar
+                            // ESTE cobro no arrancaba otro: la pantalla conserva su apertura (29-sep), el recibo se quedaba y el
+                            // segundo toque lo cerraba con la mesa todavía en PAYING.
+                            else -> cerrarCobro()
                         }
                     },
                     onCancel = { cerrarCobro() },
@@ -1210,18 +1294,20 @@ fun TableOrderScreen(
         )
     }
 
-    if (showRewards) {
-        loyalty?.let { l ->
-            RewardsDialog(
-                loyalty = l,
-                onDismiss = { showRewards = false },
-                onRedeem = { pts ->
-                    showRewards = false
-                    viewModel.redeemPoints(pts)
-                    panelTab = PanelTab.CUENTA
-                },
-            )
-        }
+    if (recompensasAbiertas) {
+        // El diálogo pinta sólo la lectura fresca que pidió el toque (cuenta y después saldo); mientras, el motivo («Leyendo…», «Sin
+        // conexión…», «No se pudo leer…»), nunca datos viejos (Codex android r6 #1). Tras un 409, «La cuenta cambió».
+        RewardsDialog(
+            loyalty = loyalty,
+            motivo = motivoRecompensas,
+            aviso = avisoDelCanje,
+            enLinea = recompensasEnLinea,
+            onDismiss = { viewModel.cerrarRecompensas() },
+            onRedeem = { pts, monto ->
+                viewModel.redeemPoints(pts, monto)
+                panelTab = PanelTab.CUENTA
+            },
+        )
     }
 
     if (showSortCartDialog) {
@@ -1274,7 +1360,8 @@ fun TableOrderScreen(
         OrderDiscountsDialog(
             available = allDiscounts.filter { it.scope == "ORDER" && it.active },
             applied = check?.discounts ?: emptyList(),
-            onApply = { id -> viewModel.applyDiscount(id) },
+            // D4: el que pide la aprobación de un gerente no se encola sin red y abre el PIN si hace falta.
+            onApply = { id -> viewModel.applyDiscount(id, pideAprobacion = allDiscounts.firstOrNull { it.id == id }?.pideAprobacion == true) },
             onRemove = { id -> viewModel.removeDiscount(id) },
             onDismiss = { showDiscountsDialog = false },
         )
@@ -1500,6 +1587,12 @@ internal fun TableCheckPanel(
     pendingTotalCents: Int,
     saldo: TableOrderViewModel.SaldoDeMesa,
     saldoDeMesaConocido: Boolean,
+    /** Lo que se ve es toda la cuenta (ver `TableOrderViewModel.cuentaCompletaAqui`). */
+    cuentaCompletaAqui: Boolean,
+    /** Se está leyendo la cuenta o hay un cambio propio en vuelo. */
+    cargandoCuenta: Boolean,
+    /** 9b / B2b: ya se cobró aquí y falta subirla; el aviso del toque (ver `TableOrderViewModel.motivoCobradaAqui`). Null = no. */
+    motivoCobradaAqui: String? = null,
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1534,6 +1627,17 @@ internal fun TableCheckPanel(
                     modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
                     horizontalArrangement = Arrangement.Center,
                 ) { CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp) }
+            }
+            // D3 (11-nov): sin leer la cuenta, aquí no se ve lo que pidió otro aparato; «Subtotal (0)» la hacía parecer vacía
+            // y la cajera recapturó todo. Se dice, y que lo que se agregue SE SUMA. También con una copia vieja vacía (Codex r1).
+            if (!cuentaCompletaAqui && sentItems.isEmpty() && !cargandoCuenta) {
+                Text(
+                    text = "La cuenta todavía no se puede leer del servidor, así que aquí no se ve lo que ya tiene. " +
+                        "Lo que agregues se suma a esa cuenta.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.md),
+                )
             }
 
             // ── Gray card: what the kitchen already has ──────────────────
@@ -1701,16 +1805,23 @@ internal fun TableCheckPanel(
                 //
                 // Se distingue por los artículos, no por el importe.
                 val sinCargos = itemCount <= 0
+                // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
+                // 9b: ya cobrada aquí sin internet, no se ofrece cobrarla otra vez.
+                val motivoParaNoPagar = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos }
+                    ?: motivoCobradaAqui
                 BlockedTapOverlay(
-                    reason = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
-                        .takeIf { sinCargos },
+                    reason = motivoParaNoPagar,
                     onBlocked = onBlocked,
                     modifier = Modifier.weight(0.5f),
                 ) {
                     PrimaryButton(
-                        text = if (saldoDeMesaConocido) "Pagar ${centsDisplay(subtotalCents)}" else "Pagar",
+                        text = when {
+                            motivoCobradaAqui != null -> "Ya pagada"
+                            saldoDeMesaConocido -> "Pagar ${centsDisplay(subtotalCents)}"
+                            else -> "Pagar"
+                        },
                         onClick = onPagar,
-                        enabled = !sinCargos,
+                        enabled = motivoParaNoPagar == null,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -2329,6 +2440,8 @@ internal fun TableActionsPanel(
     canSeparar: Boolean = hasSent,
     /** Por qué no se puede separar: distingue "nada enviado" de "un solo artículo". */
     separarBlockedReason: String = "Primero envía a cocina lo que quieras separar.",
+    /** No se pudo leer la cuenta: «primero envía…» invitaría a recapturar lo que ya tiene (D3, 11-nov). */
+    cuentaSinLeer: Boolean = false,
     /** Sin conexión: cambia el motivo del bloqueo y pinta el ícono de nube. */
     isOffline: Boolean = false,
     /** Se dispara al tocar un botón gris, con el motivo en lenguaje de mesero. */
@@ -2365,6 +2478,10 @@ internal fun TableActionsPanel(
     onMenus: () -> Unit = {},
     onFusionar: () -> Unit = {},
     hasLoyalty: Boolean = false,
+    rewardsBlockedReason: String? = null,
+    rewardsBlockedByConnection: Boolean = false,
+    /** El toque al botón gris de «Recompensas»: su aviso se marca en el VM para renovarse (Codex android r6 #5). */
+    onRewardsBlocked: (String) -> Unit = onBlocked,
     printBlockedReason: String? = null,
 ) {
     val motivoPreCuenta = motivoPreCuentaEnPanel(hasSent,printBlockedReason)
@@ -2413,7 +2530,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Cortesía en la cuenta",
                 enabled = hasSent,
-                blockedReason = "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
+                blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                    else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
                 onBlocked = onBlocked,
                 onClick = onCompWhole,
                 modifier = Modifier.weight(1f),
@@ -2423,6 +2541,8 @@ internal fun TableActionsPanel(
                 enabled = hasSent,
                 blockedReason = if (isOffline) {
                     "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
+                } else if (cuentaSinLeer) {
+                    CUENTA_SIN_LEER_ESPERA
                 } else {
                     "Primero envía la ronda a cocina."
                 },
@@ -2475,7 +2595,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
                 enabled = hasSent && !isReprinting,
-                blockedReason = if (isReprinting) null else "Aún no se ha enviado ningún pedido a cocina.",
+                blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                    else "Aún no se ha enviado ningún pedido a cocina.",
                 onBlocked = onBlocked,
                 onClick = onReprintComandas,
                 modifier = Modifier.weight(1f),
@@ -2530,10 +2651,12 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Recompensas",
                 enabled = hasLoyalty,
-                // Único ActionPill que se quedó sin motivo: el mesero lo tocaba
-                // y no pasaba NADA. El resto ya explicaba por qué estaba gris.
-                blockedReason = "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
-                onBlocked = onBlocked,
+                // El motivo verdadero (motivoSinRecompensas): sin red, sin cliente, programa apagado, pocos puntos o cuenta con
+                // abono. Un solo texto para todo mentía (nube, 12-nov).
+                blockedReason = rewardsBlockedReason
+                    ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
+                blockedByConnection = rewardsBlockedByConnection,
+                onBlocked = onRewardsBlocked,
                 onClick = onRecompensas,
                 modifier = Modifier.weight(1f),
             )
@@ -3063,6 +3186,14 @@ private fun OrderDiscountsDialog(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // D4: se dice antes de tocarlo, no hasta que salga el teclado.
+                            if (d.pideAprobacion) {
+                                Text(
+                                    "Pide la aprobación de un gerente",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                         Text("Aplicar", color = MaterialTheme.colorScheme.primary)
                     }
@@ -3329,56 +3460,78 @@ private fun ServiceChargesDialog(
 
 @Composable
 private fun RewardsDialog(
-    loyalty: com.avoqado.pos.tables.data.CustomerLoyalty,
+    loyalty: com.avoqado.pos.tables.data.CustomerLoyalty?,
+    motivo: String?,
+    aviso: String?,
+    enLinea: Boolean,
     onDismiss: () -> Unit,
-    onRedeem: (Int) -> Unit,
+    onRedeem: (Int, Double) -> Unit,
 ) {
-    // Arranca en el máximo canjeable: es lo que el mesero pide casi siempre.
-    var points by remember { mutableStateOf(loyalty.maxRedeemablePoints) }
-    val step = loyalty.minPointsRedeem.coerceAtLeast(1)
-    val value = points * loyalty.redemptionRate
+    // Arranca en el máximo canjeable de ESTA lectura: cada lectura nueva vuelve a empezar ahí.
+    var points by remember(loyalty) { mutableStateOf(loyalty?.maxRedeemablePoints ?: 0) }
+    val step = (loyalty?.minPointsRedeem ?: 0).coerceAtLeast(1)
 
     AvoqadoDialog(
         title = "Recompensas",
-        description = "${loyalty.customerName ?: "Cliente"} · ${loyalty.balance} puntos disponibles, valen ${money(loyalty.balanceValue)}",
+        description = loyalty?.let { "${it.customerName ?: "Cliente"} · ${it.balance} puntos disponibles, valen ${money(it.balanceValue)}" }
+            ?: motivo.orEmpty(),
         onDismiss = onDismiss,
         actionButton = {
             PrimaryButton(
                 text = "Canjear",
-                onClick = { onRedeem(points) },
-                enabled = points >= loyalty.minPointsRedeem && points <= loyalty.maxRedeemablePoints,
+                onClick = { onRedeem(points, loyalty?.valorDelCanje(points) ?: 0.0) },
+                // Sólo con la lectura fresca de ESTA cuenta y sin motivo para no canjear: sin red, programa apagado, pocos puntos…
+                // (Codex android r2 #4, r6 #1 y #3).
+                enabled = motivo == null && loyalty?.puedeCanjear(points, enLinea) == true,
                 fullWidth = true,
             )
         },
     ) {
             Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    IconButton(onClick = { points = (points - step).coerceAtLeast(0) }) {
-                        Icon(Icons.Default.Remove, contentDescription = "Menos puntos")
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("$points pts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            text = "− ${money(value)} en la cuenta",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = { points = (points + step).coerceAtMost(loyalty.maxRedeemablePoints) }) {
-                        Icon(Icons.Default.Add, contentDescription = "Más puntos")
-                    }
+                if (aviso != null) {
+                    // «La cuenta cambió: revisa los puntos.» (409 del candado de la oferta): lo de abajo ya es la oferta nueva.
+                    Text(text = aviso, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                Text(
-                    text = "Mínimo ${loyalty.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (loyalty != null && loyalty.canRedeem) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        IconButton(onClick = { points = (points - step).coerceAtLeast(0) }) {
+                            Icon(Icons.Default.Remove, contentDescription = "Menos puntos")
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("$points pts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = "− ${money(loyalty.valorDelCanje(points))} en la cuenta",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = { points = (points + step).coerceAtMost(loyalty.maxRedeemablePoints) }) {
+                            Icon(Icons.Default.Add, contentDescription = "Más puntos")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                }
+                if (loyalty != null && motivo != null) {
+                    // El motivo de ahora (sin red, pocos puntos…). Sin red es un estado normal: mismo color que la nota, nunca rojo.
+                    Text(
+                        text = motivo,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                }
+                if (loyalty != null) {
+                    Text(
+                        text = "Mínimo ${loyalty.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
     }
 }

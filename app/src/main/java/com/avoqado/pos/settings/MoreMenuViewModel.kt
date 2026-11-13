@@ -248,7 +248,8 @@ class MoreMenuViewModel @Inject constructor(
         if (venue.id == secureStorage.venueId) return
         viewModelScope.launch {
             val currentVenueId = secureStorage.venueId
-            val blocking = paymentSyncService.blockingWorkCount() +
+            // D52: sólo frena lo de la sucursal que se deja: lo de otra ya espera a la suya, y cambiar hacia ella es la salida.
+            val blocking = (currentVenueId?.let { paymentSyncService.bloqueantesDeLaSucursal(it) } ?: paymentSyncService.blockingWorkCount()) +
                 (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
                 secureStorage.areaTicketRecoveryCount(currentVenueId) +
                 // Cada llegada guarda su sucursal y sólo se manda con esa sucursal activa: cambiar la dejaría esperando.
@@ -262,6 +263,19 @@ class MoreMenuViewModel @Inject constructor(
                 // Retiro con gerente (H6): la cola del cajón sólo se manda con SU sucursal activa; cambiar dejaría el retiro atrás y,
                 // tras un cambio de persona, saldría a nombre de otra.
                 (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
+            // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
+            val rechazadas = if (blocking > 0) {
+                com.avoqado.pos.auth.presentation.rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, currentVenueId)
+            } else {
+                null
+            }
+            val conRechazo = rechazadas?.coerceAtMost(blocking) ?: 0
+            if (conRechazo > 0) {
+                _sessionGuardMessage.value = com.avoqado.pos.auth.presentation.textoDelFrenoConRechazos(
+                    blocking, conRechazo, roleManager.canResolveQuarantine, "cambiar de establecimiento",
+                )
+                return@launch
+            }
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."
@@ -305,15 +319,19 @@ class MoreMenuViewModel @Inject constructor(
      * Devuelve el resultado tal cual para que la hoja pinte el error INLINE: alguien que teclea
      * mal su PIN no merece una pantalla de error — va a volver a teclear.
      *
-     * 🔴 Con trabajo offline pendiente NO se cambia, y se reusa la MISMA guarda que el cambio de
-     * establecimiento (`blockingWorkCount`), no una nueva: el servidor rechaza una venta cuyo
-     * autor no coincide con la sesión (`ACTOR_MISMATCH`), así que relevar con cosas en la cola las
-     * dejaría trabadas y sin dueño. Es el mismo riesgo, y ya estaba resuelto aquí al lado.
+     * 🔴 Con trabajo offline SIN ENVIAR NO se cambia: el servidor rechaza una venta cuyo autor no
+     * coincide con la sesión (`ACTOR_MISMATCH`), así que relevar con cosas en la cola las dejaría
+     * trabadas y sin dueño.
+     *
+     * Lo rechazado («Operaciones por revisar») NO frena (D28): no vuelve a salir solo, y sólo un
+     * gerente lo resuelve EN la sesión abierta, así que frenarlo dejaba al mesero sin poder dejarlo
+     * entrar. Su reintento manda al autor original. Cerrar sesión y cambiar de sucursal sí lo cuentan.
      */
     suspend fun switchUser(pin: String): SwitchUserResult {
         val currentVenueId = secureStorage.venueId
-        val blocking = paymentSyncService.blockingWorkCount() +
-            (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
+        // D53: los cobros que esperan a una persona («Ya pagó de otra forma» a medias) no frenan: no salen solos y el gerente entra a resolverlos.
+        val blocking = paymentSyncService.sinEnviarParaElRelevo() +
+            (currentVenueId?.let { syncOutbox.sinEnviarCount(it) } ?: 0) +
             secureStorage.areaTicketRecoveryCount(currentVenueId) +
             // Codex r3 #12: el replay del cajón usa la sesión vigente; con un retiro sin subir, saldría a nombre de quien entra.
             (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)

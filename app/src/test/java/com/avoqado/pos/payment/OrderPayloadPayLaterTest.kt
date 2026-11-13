@@ -44,4 +44,26 @@ class OrderPayloadPayLaterTest {
     fun `un cobro en efectivo manda CASH`() {
         assertEquals("CASH", metodoEnElCable("CASH"))
     }
+
+    /** D2 · 7b: la cuenta de «Pagar después» lleva el descuento del cliente con su etiqueta y su PIN, igual que el cobro. */
+    @Test
+    fun `7b Pagar despues con el descuento del cliente manda PAY_LATER con la etiqueta y su token`() {
+        val body = json.parseToJsonElement(
+            OrderRepository.buildCreateOrderPayload(
+                request = CreateOrderRequest(
+                    items = emptyList(), subtotal = 10000, discount = 1000, total = 9000, paymentMethod = "PAY_LATER",
+                    descuentoDelClienteId = "d-10", autorizacionDelDescuento = "tok-1",
+                ),
+                staffId = "staff-1",
+                customerId = "cliente-1",
+                externalId = "pay-later:venta-1",
+            ),
+        ).jsonObject
+        assertEquals("PAY_LATER", body["paymentMethod"]?.jsonPrimitive?.content)
+        assertEquals("1000", body["discount"]?.jsonPrimitive?.content)
+        assertEquals("d-10", body["descuentoDelCliente"]?.jsonObject?.get("discountId")?.jsonPrimitive?.content)
+        assertEquals("1000", body["descuentoDelCliente"]?.jsonObject?.get("montoCents")?.jsonPrimitive?.content)
+        assertEquals("tok-1", body["autorizacionDelDescuento"]?.jsonPrimitive?.content)
+        assertEquals("pay-later:venta-1", body["externalId"]?.jsonPrimitive?.content)
+    }
 }

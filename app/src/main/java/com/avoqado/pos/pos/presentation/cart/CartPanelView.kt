@@ -50,6 +50,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
@@ -74,6 +75,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.DiscountText
+import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.presentation.product.FotoConRespaldo
 import com.avoqado.pos.pos.presentation.product.inicialesDeTile
@@ -132,6 +134,12 @@ fun CartPanelView(
     onRemoveStampReward: () -> Unit,
     /** false con una venta a medio cobrar: el premio ya quedó en su orden y no se quita (sin X). */
     premioEditable: Boolean = true,
+    /** D2: por qué el descuento del cliente no está (o no alcanza); null = nada que decir. */
+    avisoDescuentoDelCliente: AvisoDescuentoDelCliente?,
+    /** D2: «Quitar» de la línea del descuento del cliente. SIN default, por la misma lección que [onSplitPayment]. */
+    onQuitarDescuentoDelCliente: () -> Unit,
+    /** D2: el botón del aviso («Pedir autorización» o «Usar el de <Nombre>»). SIN default, igual. */
+    onAccionDescuentoDelCliente: (AvisoDescuentoDelCliente.Accion) -> Unit,
     /** Cumplimiento de la venta (header de la sección, antes fijo "En tienda"). */
     onOrderTypeChange: (String) -> Unit = {},
     // Referral capture (Plan 5B) — optional, the cart still works without it.
@@ -385,6 +393,9 @@ fun CartPanelView(
                             displayValue = cartState.orderDiscount.displayValue,
                             amount = "-${cartState.orderDiscountDisplay}",
                             useDenseTabletLayout = useDenseTabletLayout,
+                            // D2: el del cliente lleva «Quitar» en su propia línea (vale para esta venta y este cliente). Con
+                            // una venta a medio cobrar (`premioEditable` false) su orden ya lo lleva: sin botón, como el premio.
+                            onQuitar = onQuitarDescuentoDelCliente.takeIf { cartState.descuentoEsDelCliente && premioEditable },
                         )
                     }
 
@@ -402,6 +413,11 @@ fun CartPanelView(
                             onQuitar = onRemoveStampReward.takeIf { premioEditable },
                             useDenseTabletLayout = useDenseTabletLayout,
                         )
+                    }
+
+                    // D2: el aviso del descuento del cliente (sin permiso, otro descuento, combo, tope o sin red), bajo los descuentos.
+                    avisoDescuentoDelCliente?.let { aviso ->
+                        AvisoDescuentoDelClienteRow(aviso = aviso, onAccion = onAccionDescuentoDelCliente)
                     }
 
                     // Referral capture (Plan 5B) — placed after the discount/tax
@@ -948,6 +964,8 @@ private fun DiscountItemRow(
     displayValue: String,
     amount: String,
     useDenseTabletLayout: Boolean = false,
+    /** D2: «Quitar» (sólo el descuento del cliente lo trae); null = sin botón, como siempre. */
+    onQuitar: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -998,6 +1016,41 @@ private fun DiscountItemRow(
             },
             color = DiscountText,
         )
+        // TextButton ya respeta el área táctil mínima de 48dp (igual que la línea del descuento del cliente de la TPV).
+        if (onQuitar != null) {
+            TextButton(onClick = onQuitar) { Text("Quitar") }
+        }
+    }
+}
+
+/**
+ * D2: por qué el descuento que el negocio le asignó al cliente no está (o ya no alcanza) en la cuenta. Ámbar, nunca rojo: no es un
+ * error, es algo que la cajera puede resolver con el botón (o quitando el descuento).
+ */
+@Composable
+private fun AvisoDescuentoDelClienteRow(
+    aviso: AvisoDescuentoDelCliente,
+    onAccion: (AvisoDescuentoDelCliente.Accion) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.sm)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(Warning.copy(alpha = 0.15f))
+            .padding(AvoqadoTheme.spacing.md),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Text(
+            text = aviso.texto,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        val accion = aviso.accion
+        val boton = aviso.boton
+        if (accion != null && boton != null) {
+            OutlinedButton(onClick = { onAccion(accion) }) { Text(boton) }
+        }
     }
 }
 

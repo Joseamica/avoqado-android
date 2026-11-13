@@ -44,7 +44,8 @@ fun ManagerOverrideSheet(
      */
     title: String = "Se necesita autorización",
     /** El texto bajo el título. Por omisión, «Para <acción>…»; el retiro pasa el suyo («Retiro de $X · concepto…»). */
-    description: String = "Para ${prompt.actionLabel}. Pide a un encargado su código.",
+    description: String = prompt.contexto?.let { "$it. Pide a un encargado su código." }
+        ?: "Para ${prompt.actionLabel}. Pide a un encargado su código.",
 ) {
     // 🔴 Keyed por el teclado, no por el slot de composición.
     //

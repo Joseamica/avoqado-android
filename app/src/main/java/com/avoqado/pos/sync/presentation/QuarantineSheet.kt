@@ -94,6 +94,7 @@ fun QuarantineSheet(
     val retryingPaymentId by viewModel.retryingPaymentId.collectAsState()
     val revisionCancelada by viewModel.revisionCancelada.collectAsState()
     val cobrosInterrumpidos by viewModel.cobrosInterrumpidos.collectAsState()
+    val deOtrasSucursales by viewModel.deOtrasSucursales.collectAsState()
     val cuentasPagarDespues by viewModel.cuentasPagarDespues.collectAsState()
     val paquetesPorRevisar by viewModel.paquetesPorRevisar.collectAsState()
     val entregandoPaquete by viewModel.entregandoPaquete.collectAsState()
@@ -167,7 +168,7 @@ fun QuarantineSheet(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = AvoqadoTheme.spacing.xxl, vertical = AvoqadoTheme.spacing.lg),
                 ) {
-                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty()))) {
+                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty() && deOtrasSucursales.isEmpty()))) {
                         item {
                             Text(
                                 if (revisadas) "No hay cobros revisados." else "No hay operaciones pendientes de revisión.",
@@ -223,7 +224,7 @@ fun QuarantineSheet(
                         items(cobrosInterrumpidos, key = { "interrumpido-${it.id}" }) { cobro ->
                             var abierto by rememberSaveable("interrumpido-${cobro.id}") { mutableStateOf(false) }
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                                Text("Cobro en efectivo", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(tituloDelCobroInterrumpido(cobro.method, cobro.tenderTypeId), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatMoney(cobro.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 ReferenciaDeRevision("Folio ${cobro.id.take(8)}", formatTime(cobro.createdAt), abierto, { abierto = !abierto })
                                 Text("La app se cerró mientras registraba este cobro.", style = MaterialTheme.typography.bodyMedium)
@@ -310,6 +311,17 @@ fun QuarantineSheet(
                             }
                             HorizontalDivider()
                         }
+                        // D52: lo de otras sucursales, sin acciones: se resuelve con su sucursal abierta.
+                        if (deOtrasSucursales.isNotEmpty()) item { SeccionDeRevision("De otras sucursales") }
+                        items(deOtrasSucursales, key = { "otra-sucursal-${it.cobro.id}" }) { pendiente ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                                Text(tituloDelCobroInterrumpido(pendiente.cobro.method, pendiente.cobro.tenderTypeId), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(formatMoney(pendiente.cobro.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                Text("Folio ${pendiente.cobro.id.take(8)} · ${formatTime(pendiente.cobro.createdAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(textoDeCobroDeOtraSucursal(pendiente.sucursal), style = MaterialTheme.typography.bodyMedium)
+                            }
+                            HorizontalDivider()
+                        }
                         if (failedPayments.isNotEmpty()) item { SeccionDeRevision("Cobros sin confirmar") }
                         items(failedPayments, key = { "payment-${it.id}" }) { payment ->
                             var abierto by rememberSaveable("payment-${payment.id}") { mutableStateOf(false) }
@@ -388,8 +400,8 @@ fun QuarantineSheet(
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 Text(viewModel.describeType(item.type), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatTime(item.createdAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                item.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                                Text(viewModel.resolutionHint(item.errorCode, item.type), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                viewModel.describeMessage(item.type, item.message)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                                Text(viewModel.resolutionHint(item.errorCode, item.type, item.message), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (viewModel.canResolve && item.type != "PAY_CASH") {
                                     AccionDeRevision(text = "Marcar resuelta", onClick = { viewModel.dismiss(item.id) })
                                 }
@@ -604,4 +616,14 @@ private fun DecisionesDelCobro(onConservar: () -> Unit, onConfirmar: () -> Unit)
             }
         }
     }
+}
+
+/**
+ * D53 (Codex r1 #3): el título de un cobro interrumpido dice CÓMO se cobró. Antes decía «Cobro en efectivo» siempre, también con una
+ * transferencia o una tarjeta de otra terminal, y el gerente decidía «¿el cliente pagó?» con el dato equivocado. PURA.
+ */
+internal fun tituloDelCobroInterrumpido(metodo: String, tipoDelCatalogo: String?): String {
+    if (tipoDelCatalogo != null) return "Cobro con otro tipo de pago"
+    val manual = runCatching { com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(metodo) }.getOrNull()
+    return if (manual != null) "Cobro con ${manual.label.lowercase()}" else "Cobro en efectivo"
 }

@@ -22,6 +22,8 @@ class ConnectivityInterceptor(
             throw e
         }
 
+        // D12 · RendirseRapido: alguien contestó, con el código que sea (un 5xx también).
+        connectivityMonitor.anotarRespuesta()
         if (isServerDown(response)) {
             connectivityMonitor.reportServerError()
         } else if (response.isSuccessful) {

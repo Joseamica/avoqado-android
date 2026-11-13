@@ -3,8 +3,8 @@ import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import com.avoqado.pos.core.util.aCentavos
-import kotlin.math.roundToInt
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 enum class DiscountScope {
     ORDER,    // Applies to entire order subtotal
@@ -47,7 +47,16 @@ data class Discount(
      * liga la fila, y el uso cuenta al quedar pagada. Sin él se quedaba como un descuento libre y el cupón nunca contaba.
      */
     val couponCode: String? = null,
+    /**
+     * D4 (hz:f34960c5:D4): «Requiere aprobación» del catálogo (en un % o fijo; una cortesía la cubre su propio permiso). Lo aplica
+     * quien tiene «Aplicar descuentos en TPV» (`tpv-orders:discount`) o, sin él, con el PIN de un gerente; sin red no entra. El
+     * SERVIDOR lo vuelve a revisar. Ausente = false (servidor viejo, carrito guardado de antes).
+     */
+    val requiresApproval: Boolean = false,
 ) {
+    /** D4: un % o fijo que pide aprobación de un gerente (una cortesía la decide `orders:comp`). */
+    val pideAprobacion: Boolean get() = requiresApproval && !type.equals("COMP", ignoreCase = true)
+
     val discountScope: DiscountScope
         get() = when (scope.uppercase()) {
             "ITEM" -> DiscountScope.ITEM
@@ -104,16 +113,31 @@ data class Discount(
     }
 
     fun calculateDiscount(subtotalCents: Int): Int {
-        // D13: el tope máximo del catálogo, tras calcular el monto y antes de topar a la cuenta (igual que el servidor y que
-        // [descuentoDeLineaCents]).
-        return when (discountType) {
-            // Redondean las dos: truncar le daba al cliente un centavo MENOS de
-            // descuento del que el negocio configuró.
-            DiscountType.PERCENTAGE -> conTopeEnCents((subtotalCents * value / 100.0).roundToInt(), maxDiscountAmount)
-            DiscountType.FIXED -> conTopeEnCents(value.aCentavos(), maxDiscountAmount).coerceAtMost(subtotalCents)
+        // Espejo de `calcularDescuentoExactoCents` del servidor: todo en BigDecimal (con Double, 375¢ × 9.2 % daba 34 por
+        // 3449.9999…), el tope del catálogo (pesos → centavos) ANTES de redondear, centavos half-up al final, y nunca más que la base.
+        val base = BigDecimal(subtotalCents.coerceAtLeast(0))
+        val valor = BigDecimal.valueOf(value)
+        var bruto = when (discountType) {
+            DiscountType.PERCENTAGE -> base.multiply(valor).divide(BigDecimal(100))
+            DiscountType.FIXED -> valor.multiply(BigDecimal(100)).min(base)
         }
+        maxDiscountAmount?.let { bruto = bruto.min(BigDecimal.valueOf(it).multiply(BigDecimal(100))) }
+        return bruto.max(BigDecimal.ZERO).setScale(0, RoundingMode.HALF_UP).toInt().coerceAtMost(subtotalCents.coerceAtLeast(0))
     }
 }
+
+/**
+ * D2 (descuento del cliente): el PIN de un gerente para `discounts:apply`, atado a ESE cliente, ESE descuento y hasta [topeCents]
+ * (el monto que vio el gerente; el servidor lo emitió con `descuento-cliente:<customerId>:<discountId>:<topeCents>`). Vive en el
+ * carrito y viaja con la venta (carrito guardado, foto, cola sin red): el servidor lo acepta 7 días, cada venta hasta su tope.
+ */
+@Serializable
+data class AutorizacionDelDescuento(
+    val token: String,
+    val topeCents: Int,
+    val customerId: String,
+    val discountId: String,
+)
 
 /**
  * D13: recorta el descuento [brutoCents] al descuento máximo del catálogo ([maxPesos], en PESOS; `null` = sin tope):
@@ -185,6 +209,8 @@ data class CouponCode(
     val estimatedSavings: Double? = null,
     /** Descuento máximo del catálogo, en pesos: sin él, la caja cobraría de menos (como [Discount.maxDiscountAmount]). */
     val maxDiscountAmount: Double? = null,
+    /** D4: el descuento del cupón pide la aprobación de un gerente ([Discount.requiresApproval]). */
+    val requiresApproval: Boolean = false,
 ) {
     /** Misma razón que en [Discount.discountType]: el server dice `FIXED_AMOUNT`. */
     val discountType: DiscountType
@@ -209,6 +235,7 @@ data class CouponCode(
         scope = "ORDER",
         maxDiscountAmount = maxDiscountAmount,
         couponCode = code,
+        requiresApproval = requiresApproval,
     )
 }
 
@@ -245,6 +272,8 @@ data class CuponDelServidor(
         type = if (discount.type.equals("COMP", ignoreCase = true)) "PERCENTAGE" else discount.type,
         value = if (discount.type.equals("COMP", ignoreCase = true)) 100.0 else discount.value,
         maxDiscountAmount = discount.maxDiscountAmount,
+        // D4: una cortesía la decide su propio permiso; un % o fijo con «Requiere aprobación» pide la de un gerente.
+        requiresApproval = discount.requiresApproval && !discount.type.equals("COMP", ignoreCase = true),
     )
 }
 
@@ -256,6 +285,8 @@ data class DescuentoDelCupon(
     val value: Double,
     val scope: String = "ORDER",
     val maxDiscountAmount: Double? = null,
+    /** D4: el SERVIDOR lo manda al validar el cupón (`coupon.dashboard.service`). */
+    val requiresApproval: Boolean = false,
 )
 
 // MARK: - Create Product response

@@ -119,6 +119,11 @@ class CashPaymentRepository @Inject constructor(
         cajaDelCobro: String? = null,
         /** D1: la copia del papel de esta parte (`CopiaDelTicket`), para el reenvío. null = no viaja (venta de un solo cobro). */
         lineasDelTicket: String? = null,
+        /**
+         * D12: el saldo que la cuenta debía quedar tras este cobro hecho con la copia (`ConciliacionDelCobro`, «quedó debiendo»).
+         * 🔴 El MISMO que el de [reservarCobro] con esta llave: `PendingPaymentDao.insert` exige la captura de la reserva.
+         */
+        restanteEsperadoCents: Int? = null,
     ): String {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -128,7 +133,7 @@ class CashPaymentRepository @Inject constructor(
             orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId ?: original?.orderId,
             orderExternalId ?: original?.externalOriginal(),
             customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING, amountCents, tipCents, splitType, venue, hora,
-            cajaDelCobro, lineasDelTicket = lineasDelTicket,
+            cajaDelCobro, lineasDelTicket = lineasDelTicket, restanteEsperadoCents = restanteEsperadoCents,
         )
         // REPLACE: si este cobro se había reservado (`reservarCobro`, misma llave) la reserva se
         // vuelve la fila de la cola, con los datos finales del intento. 🔴 Rediseño r9: si esa reserva seguía `EN_VUELO`, su
@@ -202,6 +207,14 @@ class CashPaymentRepository @Inject constructor(
         enLugarDe: Collection<String> = emptyList(),
         /** D1: la copia del papel de esta parte, guardada con la reserva ANTES de la red (la cola la reenvía si la app muere). */
         lineasDelTicket: String? = null,
+        /** D12: el saldo que la cuenta debía quedar tras este cobro hecho con la copia. El MISMO que el de [queueCashPayment]. */
+        restanteEsperadoCents: Int? = null,
+        /**
+         * D12 · familia A (R1, Codex r4 #1): viaja a la transacción de Room que guarda la reserva y corre ya con el escritor, justo antes
+         * del INSERT, sin ninguna espera de por medio (ni la cola de Room). Si lanza, no se guarda nada y la excepción sale tal cual (la
+         * autorización de la caja que abrió la cuenta venció mientras tanto).
+         */
+        antesDeGuardar: (() -> Unit)? = null,
     ) {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -218,7 +231,7 @@ class CashPaymentRepository @Inject constructor(
             // D15: lo que la caja ya trae ANTES del POST no puede ser la gemela de este cobro. Un reintento conserva la foto del primero;
             // una llave que ya se apartó (Codex r19: «Cancelar» y volver a cobrar) no toma otra.
             ventasYaEnLaCaja = if (primeraVez) salida?.ventasDelServidorEnLaCaja(cajaDelCobro, venue, hora) else null,
-            lineasDelTicket = lineasDelTicket,
+            lineasDelTicket = lineasDelTicket, restanteEsperadoCents = restanteEsperadoCents,
         )
         val anteriores = enLugarDe.filter { it != entity.id }
         // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
@@ -226,7 +239,9 @@ class CashPaymentRepository @Inject constructor(
         // 🔴 Un REINTENTO con la misma llave ya era del flujo: si su guardado falla, la fila anterior sigue siendo suya (Codex r7).
         val esNueva = reservasDeEsteProceso.add(entity.id)
         try {
-            if (anteriores.isEmpty()) pendingPaymentDao.insert(entity) else pendingPaymentDao.reservarEnLugarDe(entity, anteriores)
+            // D12 · familia A: la comprobación corre DENTRO de la transacción, después de toda espera (también la del escritor de Room).
+            if (anteriores.isEmpty()) pendingPaymentDao.insert(entity, antesDeGuardar)
+            else pendingPaymentDao.reservarEnLugarDe(entity, anteriores, antesDeGuardar)
         } catch (e: Exception) {
             if (esNueva) reservasDeEsteProceso -= entity.id
             throw e
@@ -296,12 +311,46 @@ class CashPaymentRepository @Inject constructor(
     suspend fun darPorCobradasLasAbandonadas(): Int {
         val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
         return pendingPaymentDao.enVueloDelVenue(venueId).count { fila ->
-            fila.id !in reservasDeEsteProceso && fila.q15Reason == null &&
-                fila.method == "CASH" && fila.tenderTypeId == null &&
-                // 🔴 Sólo lo que apartó la app nueva: las «sin confirmar» que dejó la de antes se quedan como hoy.
-                ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, venueId, fila.id)?.daPorCobradaAlAbandonar == true &&
+            fila.id !in reservasDeEsteProceso && seDaPorCobrada(fila, venueId) &&
                 // Rediseño r9: pasar a la cola y anotar su venta en el cajón son UNA escritura ([SalidaDelApartado]).
                 pasarALaCola(fila.id, conDosXx = false, delFlujo = false)
+        }
+    }
+
+    /**
+     * La regla del barrido, sin mirar si la fila es de un flujo vivo: efectivo PURO, sin motivo Q15 y con la marca de la app nueva.
+     * 🔴 «Ya pagó de otra forma» NO entra, por dinero (D53 lo comprobó): su apartado nunca lo borra la cajera; tras un rechazo, o si
+     * cobró esa venta de otra forma, se SUELTA sin borrarse, y desde aquí es idéntico al que dejó una app muerta. Darlo por cobrado
+     * podría cobrar la venta dos veces.
+     */
+    private fun seDaPorCobrada(fila: PendingPaymentEntity, venueId: String): Boolean =
+        fila.q15Reason == null && fila.method == "CASH" && fila.tenderTypeId == null &&
+            // 🔴 Sólo lo que apartó la app nueva: las «sin confirmar» que dejó la de antes se quedan como hoy.
+            ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, venueId, fila.id)?.daPorCobradaAlAbandonar == true
+
+    /**
+     * D53: los apartados `EN_VUELO` del local actual que se resuelven SOLOS: los de un flujo vivo de este proceso (su cobro va en camino
+     * y la venta en pantalla decide) y los que el barrido da por cobrados ([seDaPorCobrada]). Éstos sí frenan «Cambiar usuario» (D28).
+     */
+    suspend fun enVueloQueSeResuelveSolo(): Int {
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
+        return pendingPaymentDao.enVueloDelVenue(venueId).count { it.id in reservasDeEsteProceso || seDaPorCobrada(it, venueId) }
+    }
+
+    /**
+     * D53: los del local actual que esperan a una PERSONA y que ella puede resolver: los «Cobros interrumpidos» de «Operaciones por
+     * revisar» («Sí se cobró» / «Conservar para revisión»), o sea [cobrosSinConfirmar] menos lo que el barrido da por cobrado: «Ya pagó de
+     * otra forma» a medias y los de la app de antes. El aviso de cerrar sesión los cuenta como «por revisar». Codex D53 r1 #1 y #2: lo ya
+     * revisado o retenido con motivo Q15, y (r2) lo que no tiene captura, no se cuenta aquí (en la hoja no tiene salida; queda en «lo
+     * demás»). Conservan el
+     * `staffId` de quien cobró.
+     */
+    suspend fun enVueloPorRevisar(): Int {
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
+        return pendingPaymentDao.enVueloDelVenue(venueId).count {
+            it.id !in reservasDeEsteProceso && RevisionCanceladoCero.mostrarFallido(it) && !seDaPorCobrada(it, venueId) &&
+                // Codex D53 r2: sin captura, «Sí se cobró» sólo la retiene (`confirmarQueSeCobro`): tampoco tiene salida en la hoja.
+                ConciliacionDelCobro.leerCaptura(it.q15CaptureJson, venueId, it.id) != null
         }
     }
 
@@ -450,6 +499,16 @@ class CashPaymentRepository @Inject constructor(
         return pendingPaymentDao.forVenue(venueId).any { it.orderId == orderId && it.syncStatus == PaymentSyncStatus.SYNCED.name }
     }
 
+    /**
+     * 🔴 D13 (la puerta del efectivo): de UNA lectura, cada cobro de la orden [orderId] que este aparato tiene, en CUALQUIER estado (en
+     * cola, en vuelo, por revisar o ya subido), por su llave. Una fila que cambia de estado entre dos lecturas sigue siendo la misma. La
+     * ya subida trae el id del pago que dio su 2xx (`paymentId` del resultado), para saber si el saldo del servidor ya la contaba.
+     */
+    suspend fun cobrosDelPedido(orderId: String, venueId: String? = secureStorage.venueId): List<com.avoqado.pos.payment.domain.DineroDeLaOrden> {
+        if (venueId == null || orderId.isBlank()) return emptyList()
+        return pendingPaymentDao.forVenue(venueId).filter { it.orderId == orderId }.map(::dineroDeLaFila)
+    }
+
     /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
     fun observarEstado(id: String): Flow<String?> = pendingPaymentDao.observarEstado(id)
 
@@ -508,6 +567,8 @@ class CashPaymentRepository @Inject constructor(
         ventasYaEnLaCaja: List<String>? = null,
         /** D1: la copia del papel de esta parte; columna propia, nunca `itemsJson` (ése es de `/fast`). */
         lineasDelTicket: String? = null,
+        /** D12: sólo viaja en la captura (no hay columna): la conciliación lo compara con el saldo del servidor. */
+        restanteEsperadoCents: Int? = null,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         // La misma regla que crear la orden en línea: una venta rápida DIVIDIDA también es ORDER (D2 etapa 2), así su parte
@@ -576,7 +637,8 @@ class CashPaymentRepository @Inject constructor(
             daPorCobradaAlAbandonar = true.takeIf { estado == PaymentSyncStatus.EN_VUELO },
             // Codex r11 #1: la hora de ESTE intento; si ya había captura en disco, `filaAlReemplazar` conserva la del primero.
             primeraCapturaEn = capturadaEn,
-            ventasYaEnLaCaja = ventasYaEnLaCaja)
+            ventasYaEnLaCaja = ventasYaEnLaCaja,
+            restanteEsperadoCents = restanteEsperadoCents)
         return entity.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(capture),
             capturedOrderRef = entity.orderId ?: if (hasOrderItems) orderExternalId ?: "offline-order:$localId" else null)
     }
@@ -630,6 +692,17 @@ internal fun estadoDeParte(fila: PendingPaymentEntity?): EstadoDeParte {
         else -> EstadoDeParte.PorRevisar
     }
 }
+
+/** D13: una fila de la cola, para la puerta del efectivo (`CashPaymentRepository.cobrosDelPedido`). PURA. */
+internal fun dineroDeLaFila(fila: PendingPaymentEntity) = com.avoqado.pos.payment.domain.DineroDeLaOrden(
+    llave = com.avoqado.pos.payment.domain.PuertaDelEfectivo.llaveDeEfectivo(fila.id),
+    montoCents = fila.amountCents.toLong(),
+    esTarjeta = false,
+    confirmado = fila.syncStatus == PaymentSyncStatus.SYNCED.name,
+    pagoDelServidor = fila.takeIf { it.syncStatus == PaymentSyncStatus.SYNCED.name }?.q15ResultJson?.let { crudo ->
+        runCatching { (Json.parseToJsonElement(crudo).jsonObject["paymentId"] as? JsonPrimitive)?.takeIf { it.isString }?.content }.getOrNull()
+    }?.takeIf { it.isNotBlank() },
+)
 
 /** Lo que este aparato tiene guardado de una orden, para «Cobrar» de la bandeja. Ver `CashPaymentRepository.efectivoDelPedido`. */
 enum class EfectivoDelPedido {

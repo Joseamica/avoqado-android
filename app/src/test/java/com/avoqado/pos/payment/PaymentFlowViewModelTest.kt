@@ -45,6 +45,8 @@ import com.avoqado.pos.customerdisplay.CustomerContent
 import com.avoqado.pos.payment.presentation.AVISO_SALDO_SIN_CONFIRMAR
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.payment.presentation.cobraLosValesDeLaSesion
+import com.avoqado.pos.payment.presentation.evidenciaDelCobro
+import com.avoqado.pos.payment.presentation.PaymentCompletion
 import com.avoqado.pos.payment.presentation.tipCentsForPercent
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -147,6 +149,21 @@ class PaymentFlowViewModelTest {
 
     private lateinit var viewModel: PaymentFlowViewModel
 
+    /** Final fix (F1, I-2): la copia de «Pedidos», REAL sobre un disco de memoria. Sin filas, ninguna venta la reescribe. */
+    private val discoDeLaCopia = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
+    /** D12 · Opción D: la puerta de la cuenta; por default no hay cuenta que coordinar (como hoy). */
+    private val cuentasEntreCajas = mockk<com.avoqado.pos.core.data.lan.CuentasEntreCajas>(relaxed = true).also {
+        coEvery { it.puerta(any(), any(), any(), any(), any(), any(), any(), any()) } returns com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre
+        every { it.autorizacionVigente(any()) } returns true
+    }
+
+    private val copiaDeCuentas = com.avoqado.pos.orders.data.CopiaDeCuentas(mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+        coEvery { loadDurable(any(), any()) } answers { discoDeLaCopia["${firstArg<String>()}|${secondArg<String>()}"] }
+        coEvery { saveDurable(any(), any(), any()) } answers {
+            discoDeLaCopia["${firstArg<String>()}|${secondArg<String>()}"] = com.avoqado.pos.core.data.local.PayloadCache.Cached(thirdArg(), 0)
+        }
+    }).also { it.io = kotlinx.coroutines.Dispatchers.Unconfined }
+
     /** La sesión de mesa REAL que ve el ViewModel (A5: una mesa en PAYING no puede capturar el cobro de un pedido web). */
     private val sesionDeMesa = com.avoqado.pos.tables.data.TableSession()
 
@@ -244,7 +261,12 @@ class PaymentFlowViewModelTest {
             esperasDeSondeo = listOf(1_000L, 2_000L),
         )
 
-        viewModel = PaymentFlowViewModel(
+        viewModel = nuevoViewModel()
+    }
+
+    /** D12 · arreglo final: el MISMO ViewModel, con otra puerta de cuentas (la REAL, en las pruebas de dos cajas). */
+    private fun nuevoViewModel(cuentas: com.avoqado.pos.core.data.lan.CuentasEntreCajas = cuentasEntreCajas) =
+        PaymentFlowViewModel(
             orderRepository = orderRepository,
             cashPaymentRepository = cashPaymentRepository,
             tenderTypeRepository = mockk(relaxed = true),
@@ -281,8 +303,9 @@ class PaymentFlowViewModelTest {
             areaTicketRepository = areaTicketRepository,
             cancelacionDeCobro = cancelacionDeCobro,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
+            copiaDeCuentas = copiaDeCuentas,
+            cuentasEntreCajas = cuentas,
         )
-    }
 
     @Test
     fun `mixed cart includes custom amount in create order request`() = runTest {
@@ -3364,10 +3387,16 @@ class PaymentFlowViewModelTest {
         verify(exactly = 1) { terminalPaymentService.reconocerCobro("req-folio") }
     }
 
+    /**
+     * D14 (`hz:ce654971:D14`, 11-nov): antes un cobro con tarjeta que no salía de la bandeja no mandaba contexto y su positivo no dejaba
+     * la marca «aquí ya se cobró». Ahora la tarjeta de una cuenta que YA EXISTÍA (no mesa) lleva el contexto «fuera de la bandeja» con lo
+     * que esta pantalla creyó que faltaba; una venta nueva sigue sin contexto.
+     */
     @Test
-    fun `a card charge that is not from the tray sends no tray context`() = runTest {
+    fun `D14 a card charge outside the tray of an existing account sends the outside context, a new sale none`() = runTest {
+        val contextos = mutableListOf<com.avoqado.pos.onlineorders.data.CobroDeLaBandeja?>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), null)
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), captureNullable(contextos))
         } returns TerminalPaymentResult.Success(paymentId = "pay-web", requestId = "req-web")
         coEvery { orderRepository.saldoDeLaOrden(any()) } returns OrderRepository.SaldoDeLaOrden(remainingCents = 0, paymentStatus = "PAID")
 
@@ -3378,7 +3407,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
-        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), null) }
+        assertEquals(listOf(com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(13400, esFolio = false, fueraDeLaBandeja = true)), contextos)
     }
 
     private fun mesaCobrando() = com.avoqado.pos.tables.data.TableSession.Active(
@@ -3564,7 +3593,7 @@ class PaymentFlowViewModelTest {
         // Con la terminal: la orden que viaja es la del pedido web.
         val ordenALaTerminal = slot<String>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
@@ -3602,7 +3631,7 @@ class PaymentFlowViewModelTest {
         // Con la terminal, igual: la orden que viaja es la del pedido web.
         val ordenALaTerminal = slot<String>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), capture(ordenALaTerminal), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
         viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "web-1",
             origen = com.avoqado.pos.payment.domain.OrigenDelCobro.PEDIDO_EN_LINEA)
@@ -5266,6 +5295,58 @@ class PaymentFlowViewModelTest {
         assertTrue("de otra venta: «Cobro anterior sin confirmar»", viewModel.revisaCobroDeOtraVenta())
     }
 
+    /**
+     * D37 (ensayo general F2, D3 12-nov): una mesa abierta con internet, el cobro abierto con internet, se corta y «Cobrar con
+     * terminal» dice «Cobra en efectivo…». «Cancelar» (o Esc) cerraba TODO el cobro; al volver a «Pagar» sin internet la cuenta ya
+     * no se podía leer al día y el efectivo se negaba. Ahora regresa a elegir método con el MISMO cobro, donde está el efectivo.
+     */
+    @Test
+    fun `P1 sin red Cancelar en la lista de terminales regresa a elegir metodo con el mismo cobro`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Error("Error de conexión", sinRed = true)
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns cobroRegistrado(amount = 30000, retenido = null)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "mesa-5", type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 30000),
+        )))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals(PaymentFlowViewModel.TARJETA_SIN_RED, (viewModel.state.value as PaymentFlowState.SelectingTerminal).sinLista)
+
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        assertFalse("no sale del cobro", viewModel.debeSalir.value)
+        assertEquals(PaymentFlowState.SelectingPaymentMethod(30000), viewModel.state.value)
+        // Y el efectivo de la pantalla sale a la cuenta de la mesa, como si nunca se hubiera tocado la terminal.
+        viewModel.confirmCashPreset(tenderedCents = 30000)
+        advanceUntilIdle()
+        assertEquals(listOf("orden-de-la-mesa"), cobradas)
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    /** D37: con red, un error del SERVIDOR al traer la lista no promete efectivo: «Cancelar» sale del cobro como siempre. */
+    @Test
+    fun `D37 con un error del servidor en la lista Cancelar sigue saliendo del cobro`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Error("Error al buscar terminales (503)")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "mesa-5", type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 30000),
+        )))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+
+        assertTrue("regresa a la cuenta", viewModel.debeSalir.value)
+    }
+
     @Test
     fun `B7b-5 sin red la seleccion de terminal dice que la tarjeta necesita internet y conserva el aviso`() = runTest {
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
@@ -5731,7 +5812,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `D7 tras una parte con tarjeta el saldo se le pregunta al servidor antes del exito`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
         coEvery { orderRepository.saldoDeLaOrden("orden-1") } returns OrderRepository.SaldoDeLaOrden(remainingCents = 2000, paymentStatus = "PARTIAL")
 
@@ -5747,7 +5828,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `D7 si no se puede leer el saldo tras la tarjeta el exito lo dice y no repite el cargo`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
         coEvery { orderRepository.saldoDeLaOrden(any()) } returns null
 
@@ -5763,13 +5844,13 @@ class PaymentFlowViewModelTest {
         val completion = viewModel.consumeCompletion()!!
         assertEquals("orden-1", completion.orderId)
         assertFalse(completion.saldoDelServidor)
-        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
     fun `D7 una consulta de saldo lenta no detiene el exito mas de 5 segundos`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
         coEvery { orderRepository.saldoDeLaOrden(any()) } coAnswers {
             kotlinx.coroutines.delay(60_000)
@@ -5790,7 +5871,7 @@ class PaymentFlowViewModelTest {
     fun `D7 una venta NO partida pagada con tarjeta no le pregunta el saldo a nadie`() = runTest {
         stubOrderCreation()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(paymentId = "pay-t", requestId = "req-t")
 
         viewModel.startPaymentFlow(cardCart())
@@ -5873,5 +5954,868 @@ class PaymentFlowViewModelTest {
         assertEquals(listOf(tacos), ctx.items)
         assertEquals("lo que se cobra no cambia", 7900, ctx.totalCents)
     }
-}
 
+    // MARK: - D12: el cobro de una cuenta abierta hecho con la copia (sólo efectivo, captura previa y caja desde el primer envío)
+
+    private val desdeLaCopia = com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA
+
+    private fun carritoDeLaCopia() = CartState(items = listOf(CartItem(type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 6000)))
+
+    private fun cajaAbierta(id: String) = com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity(
+        id = id, venueId = "venue-1", deviceName = null, openedByStaffId = "s", openedByName = "S", openedAt = 0, startingAmountCents = 0,
+    )
+
+    /** La caja abierta al confirmar es local y el servidor la conoce con otro id. */
+    private fun conLaCajaDeLaCopia() {
+        coEvery { cashDrawerRepository.getOpenSession() } returns cajaAbierta("caja-local")
+        every { cashDrawerRepository.idDeCajaParaElServidor("caja-local", "venue-1") } returns "caja-servidor"
+        every { cashDrawerRepository.cajasQueEsperanSuApertura() } returns emptySet()
+    }
+
+    private fun alCobrarEnEfectivo(resultado: Result<OrderRepository.CashPayResult>) = coEvery {
+        orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(),
+            importeAceptadoCents = any(), capturaPrevia = any(), lineasDelTicket = any(), cashDrawerSessionId = any())
+    } returns resultado
+
+    @Test
+    fun `D12 desde la copia el efectivo va como captura previa con su caja y su saldo esperado`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = 10000, changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = null, tenderType = null, amountCents = 6000,
+                tipCents = 0, splitType = any(), venueId = "venue-1", capturadaEn = any(), cajaDelCobro = "caja-local", enLugarDe = any(),
+                lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 0, any(), any(), null, null, capturedVenueId = any(),
+                capturaPrevia = true, lineasDelTicket = any(), cashDrawerSessionId = "caja-servidor")
+        }
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    @Test
+    fun `D12 sin red se encola con el mismo saldo esperado`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        // El MISMO saldo esperado en la reserva y en la cola: `PendingPaymentDao.insert` compara las dos capturas.
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = any(), tipCents = any(), splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                enLugarDe = any(), lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = null, tenderType = null,
+                amountCents = 6000, tipCents = 0, splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = "caja-local",
+                lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+    }
+
+    @Test
+    fun `D12 el primer envio que si llega con la cuenta crecida deja lo pendiente del servidor`() = runTest {
+        // Tras confirmar, la caja abierta ya es otra: el envío conserva la que se leyó al confirmar.
+        coEvery { cashDrawerRepository.getOpenSession() } returnsMany listOf(cajaAbierta("caja-local"), cajaAbierta("otra-caja"))
+        every { cashDrawerRepository.idDeCajaParaElServidor("caja-local", "venue-1") } returns "caja-servidor"
+        every { cashDrawerRepository.idDeCajaParaElServidor("otra-caja", any()) } returns "otra-servidor"
+        every { cashDrawerRepository.cajasQueEsperanSuApertura() } returns emptySet()
+        alCobrarEnEfectivo(
+            Result.success(
+                OrderRepository.CashPayResult(
+                    paymentId = "pay-copia", receiptAccessKey = null, recordedAmountCents = 6000, recordedTipCents = 0,
+                    authoritativeChangeCents = 0, remainingBalanceCents = 20000, orderPaymentStatus = "PARTIAL", cashRetainedCents = 6000,
+                ),
+            ),
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        val cierre = requireNotNull(viewModel.consumeCompletion())
+        assertEquals("otra caja la hizo crecer: lo pendiente lo dice el servidor", 20000, cierre.remainingBalanceCents)
+        assertTrue(cierre.saldoDelServidor)
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 0, any(), any(), null, null, capturedVenueId = any(),
+                capturaPrevia = true, lineasDelTicket = any(), cashDrawerSessionId = "caja-servidor")
+        }
+    }
+
+    @Test
+    fun `D12 si la revalidacion previa falla no se reserva ni se cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { "La está cobrando Ana" })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertTrue("el flujo se cierra y la cuenta enseña su gris", viewModel.debeSalir.value)
+        assertTrue("sale del flujo, no se queda «Procesando»", viewModel.state.value is PaymentFlowState.Loading)
+    }
+
+    /** Ronda 1 (Important 1): la revalidación que truena es un «no se cobra»: nada se aparta ni se manda y no hay error rojo. */
+    private fun TestScope.revalidacionQueTruena(truena: suspend () -> String?) {
+        conLaCajaDeLaCopia()
+        var preguntas = 0
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { preguntas++; truena() })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertTrue("sale del flujo sin error ni «Procesando»", viewModel.state.value is PaymentFlowState.Loading)
+        assertTrue(viewModel.debeSalir.value)
+        // Sin el candado de «procesando» puesto: otro toque vuelve a intentarlo (y vuelve a preguntar).
+        viewModel.consumirSalida()
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertEquals(2, preguntas)
+    }
+
+    @Test
+    fun `D12 si la revalidacion previa truena no se cobra y se sale sin error`() = runTest {
+        revalidacionQueTruena { throw IllegalStateException("la red local no contestó") }
+    }
+
+    @Test
+    fun `D12 si la revalidacion previa vence por tiempo no se cobra y se sale sin error`() = runTest {
+        revalidacionQueTruena { kotlinx.coroutines.withTimeout(1) { kotlinx.coroutines.awaitCancellation() } }
+    }
+
+    /** Ronda 1 (Minor 1a): la copia sólo cobra la cuenta que vio; sin su orden no se aparta ni se manda nada. */
+    @Test
+    fun `D12 desde la copia sin orden no se cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        viewModel.startPaymentFlow(carritoDeLaCopia(), origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        coVerify(exactly = 0) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any())
+        }
+        assertTrue(viewModel.debeSalir.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.Loading)
+    }
+
+    /** Ronda 1 (Minor 3a): con propina, lo esperado sigue en 0 y la propina viaja aparte del importe. */
+    @Test
+    fun `D12 desde la copia con propina el saldo esperado sigue en cero`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.submitTip(1000)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 1000, any(), any(), null, null, capturedVenueId = any(),
+                importeAceptadoCents = any(), capturaPrevia = true, lineasDelTicket = any(), cashDrawerSessionId = "caja-servidor")
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = 6000, tipCents = 1000, splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                enLugarDe = any(), lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = 6000, tipCents = 1000, splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                lineasDelTicket = any(), restanteEsperadoCents = 0,
+            )
+        }
+    }
+
+    @Test
+    fun `D12 ya reservado el dinero no se vuelve a revalidar`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        var preguntas = 0
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { preguntas++; if (preguntas == 1) null else "La está cobrando Ana" })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any())
+        }
+        assertEquals(1, preguntas)
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+    }
+
+    /** El reintento de una venta con su efectivo ya apartado (un rechazo del servidor) no vuelve a preguntar: se cobra con lo apartado. */
+    @Test
+    fun `D12 un reintento con el efectivo ya apartado no vuelve a revalidar`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(OrderRepository.ServerException(422, "Algo no cuadró")))
+        var preguntas = 0
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia,
+            antesDeRecibirEfectivo = { preguntas++; if (preguntas == 1) null else "La está cobrando Ana" })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        assertEquals(1, preguntas)
+        assertFalse(viewModel.debeSalir.value)
+        coVerify(exactly = 2) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `D12 desde la copia no hay otra forma de pago`() = runTest {
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.entries.first()))
+        advanceUntilIdle()
+        assertEquals("«Ya pagó de otra forma» no cobra", antes, viewModel.state.value)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals("tarjeta no se ofrece", antes, viewModel.state.value)
+        viewModel.retry()
+        advanceUntilIdle()
+        assertFalse("reintentar no abre la terminal", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertFalse(com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA.permiteTarjeta)
+        assertTrue(com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA.esPedidoEnLinea)
+    }
+
+    @Test
+    fun `D12 desde la copia un tipo de pago del negocio no cobra`() = runTest {
+        val uber = TenderTypeOption(
+            id = "t-uber", revision = 1, name = "Uber Eats", isSystem = false,
+            baseMethod = "OTHER", captureTip = false, posSection = "PRIMARY", displayOrder = 1,
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.confirmManualChoice(ManualPaymentChoice.Tender(uber))
+        advanceUntilIdle()
+
+        assertEquals(antes, viewModel.state.value)
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `D12 desde la copia la terminal no recibe nada`() = runTest {
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals(antes, viewModel.state.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+    }
+
+    @Test
+    fun `un cobro NORMAL no manda caja en el primer envio`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            orderRepository.recordCashPayment("o1", 6000, any(), 0, any(), any(), null, null, capturedVenueId = any(),
+                capturaPrevia = false, lineasDelTicket = any(), cashDrawerSessionId = null)
+        }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(
+                orderRequest = any(), staffId = any(), cashTenderedCents = any(), changeCents = any(), rating = any(), orderId = "o1",
+                orderExternalId = any(), customerId = any(), idempotencyKey = any(), manualMethod = any(), tenderType = any(),
+                amountCents = any(), tipCents = any(), splitType = any(), venueId = any(), capturadaEn = any(), cajaDelCobro = any(),
+                enLugarDe = any(), lineasDelTicket = any(), restanteEsperadoCents = null,
+            )
+        }
+        verify(exactly = 0) { cashDrawerRepository.idDeCajaParaElServidor(any(), any()) }
+    }
+
+    // MARK: - Final fix (F1, I-2): el cobro CON RED de este aparato pone al día la copia de «Pedidos»
+
+    private fun cuentaGuardada(id: String) = com.avoqado.pos.orders.data.model.OrderSummary(id = id, esDeMesa = false,
+        source = "AVOQADO_ANDROID", status = "PENDING", paymentStatus = "PENDING", createdAt = "2026-11-10T18:00:00Z",
+        saldoPendienteCents = 6000, pagosCompletados = 0)
+
+    private suspend fun guardadaEnLaCopia(id: String) =
+        copiaDeCuentas.alLeer("venue-1", listOf(cuentaGuardada(id)), com.avoqado.pos.orders.data.Lectura.SUELTA)
+
+    private suspend fun razonEnLaCopia(id: String) =
+        copiaDeCuentas.cuenta("venue-1", id)?.cuenta?.let { com.avoqado.pos.orders.data.razonParaNoCobrar(it) }
+
+    @Test
+    fun `I-2 un cobro con tarjeta de una cuenta guardada la saca de la copia`() = runTest {
+        guardadaEnLaCopia("o1")
+        coEvery {
+            // Merge #199 (D14): la tarjeta de una cuenta que continúa lleva su contexto fuera de la bandeja (8.º argumento).
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-1", requestId = "req-1")
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue("estado: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.Success)
+        assertNull("sin red ya no se ofrece cobrarla otra vez en efectivo", copiaDeCuentas.cuenta("venue-1", "o1"))
+    }
+
+    @Test
+    fun `I-2 un cobro con red que deja saldo marca el abono en la copia`() = runTest {
+        guardadaEnLaCopia("o1")
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(
+            Result.success(
+                OrderRepository.CashPayResult(
+                    paymentId = "pay-1", receiptAccessKey = null, recordedAmountCents = 4000, recordedTipCents = 0,
+                    authoritativeChangeCents = 0, remainingBalanceCents = 2000, orderPaymentStatus = "PARTIAL", cashRetainedCents = 4000,
+                ),
+            ),
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals(com.avoqado.pos.orders.data.RazonSinRed.CON_ABONO, razonEnLaCopia("o1"))
+    }
+
+    @Test
+    fun `I-2 un cobro en efectivo con red que la pago la saca de la copia`() = runTest {
+        guardadaEnLaCopia("o1")
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNull(copiaDeCuentas.cuenta("venue-1", "o1"))
+    }
+
+    @Test
+    fun `I-2 un cobro encolado no toca la copia porque su marca local ya la deja en gris`() = runTest {
+        guardadaEnLaCopia("o1")
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+        assertNotNull("sigue en la copia (gris por «sin sincronizar», no por la copia)", copiaDeCuentas.cuenta("venue-1", "o1"))
+    }
+
+    @Test
+    fun `I-2 que sabe la copia de cada cobro`() {
+        val c = PaymentCompletion(splitType = "FULLPAYMENT", remainingBalanceCents = 0, orderId = "o1")
+        assertNull("encolado: lo dice su marca local", evidenciaDelCobro(c, encolado = true))
+        assertNull("sin orden no hay cuenta", evidenciaDelCobro(c.copy(orderId = null), encolado = false))
+        assertEquals(com.avoqado.pos.orders.data.EvidenciaDelDetalle.NoExiste, evidenciaDelCobro(c, encolado = false))
+        assertEquals(com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(2000, conSaldo = false),
+            evidenciaDelCobro(c.copy(remainingBalanceCents = 2000, saldoDelServidor = true), encolado = false))
+        assertEquals("sin el saldo del servidor no se inventa uno", com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(null, conSaldo = true),
+            evidenciaDelCobro(c.copy(remainingBalanceCents = 2000, conSaldo = true), encolado = false))
+    }
+
+    // MARK: - D12 · Opción D: la puerta única (la caja que abrió la cuenta da el permiso)
+
+    private val pasaDeOtraCaja = com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa("i-1", esDueno = false, autorizadoEn = 0L)
+    private fun noPasa(texto: String) = com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.NoPasa(texto)
+    private fun laPuerta(vararg r: com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta) = coEvery {
+        cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any())
+    } returnsMany r.toList()
+
+    private fun nadaSeReservaNiSeCobra() {
+        coVerify(exactly = 0) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `D12 opción D - desde la copia la puerta que dice no, no reserva, le pasa el texto a la cuenta y cierra el flujo`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(noPasa("Se perdió el contacto con Caja 1"))
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        nadaSeReservaNiSeCobra()
+        assertEquals("Se perdió el contacto con Caja 1", gris)
+        assertTrue(viewModel.debeSalir.value)
+        coVerify(exactly = 1) {
+            cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = false, esTarjeta = false, esCuentaDePedidos = true, intentoPrevio = null)
+        }
+    }
+
+    @Test
+    fun `D12 opción D - en línea la puerta que dice no enseña su texto y no cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(noPasa("Ana la está cobrando en Caja 2. Espera a que termine."))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        nadaSeReservaNiSeCobra()
+        // I1: en línea, el «no» va con el texto neutro, nunca la pantalla roja de error.
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        assertEquals("Ana la está cobrando en Caja 2. Espera a que termine.", viewModel.avisoDeLaPuerta.value)
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = true, esTarjeta = false, any(), intentoPrevio = null) }
+    }
+
+    @Test
+    fun `D12 opción D - pasa ANTES de reservar y al cobrar termina con dinero`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        laPuerta(pasaDeOtraCaja)
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        io.mockk.coVerifyOrder {
+            cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), any(), any(), any(), any())
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = true, subida = true) }
+    }
+
+    @Test
+    fun `D12 opción D - R1 con la autorización vencida vuelve a comprometer con el MISMO intento`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(pasaDeOtraCaja, noPasa("Se perdió el contacto con Caja 1"))
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returns false
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), false, false, true, intentoPrevio = "i-1") }
+        nadaSeReservaNiSeCobra()
+        assertEquals("Se perdió el contacto con Caja 1", gris)
+    }
+
+    @Test
+    fun `D12 opción D - salir sin cobrar termina el permiso sin dinero`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(pasaDeOtraCaja)
+        coEvery {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any())
+        } throws IllegalStateException("disco lleno")
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        viewModel.alSalirDeLaPantalla()
+
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = false, subida = false) }
+    }
+
+    @Test
+    fun `D12 opción D - una venta nueva no pasa por la puerta`() = runTest {
+        conLaCajaDeLaCopia()
+        viewModel.startPaymentFlow(carritoDeLaCopia())
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * Acordado con «Arquitectura» (D5 de mesas sin red, su B0/B1): el efectivo de una MESA nunca pasa por la puerta de D. La mesa no
+     * «continúa» una cuenta de Pedidos (continua=false aunque llegue con otra orden ligada), no le pregunta a ninguna caja y no revalida la
+     * copia (la pantalla de la mesa no pasa `antesDeRecibirEfectivo`: `TableOrderScreen`). El cobro va a la orden de la mesa, como hoy.
+     */
+    @Test
+    fun `D12 opción D - el efectivo de una mesa nunca pasa por la puerta de D`() = runTest {
+        sesionDeMesa.start(mesaCobrando())
+        val cobradas = mutableListOf<String>()
+        coEvery {
+            orderRepository.recordCashPayment(capture(cobradas), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns cobroRegistrado(amount = 10000, retenido = 10000)
+        viewModel.startPaymentFlow(carritoDelPedidoWeb(10000), resumeOrderId = "orden-parte-1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals(listOf("orden-de-la-mesa"), cobradas)
+        // La garantía de no revalidar la copia vive en la pantalla de la mesa, que nunca pasa `antesDeRecibirEfectivo`.
+        coVerify(exactly = 0) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cuentasEntreCajas.apartar(any(), any(), any(), any(), any()) }
+        io.mockk.verify(exactly = 0) { cuentasEntreCajas.autorizacionVigente(any()) }
+        io.mockk.verify(exactly = 0) { cuentasEntreCajas.terminarEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D12 opción D - la tarjeta de una cuenta abierta pasa por la puerta y si dice no, no sale a la terminal`() = runTest {
+        laPuerta(noPasa("Cobrada en Caja 1 · falta subirla"))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta("venue-1", "o1", any(), any(), enLinea = true, esTarjeta = true, any(), intentoPrevio = null) }
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        assertEquals("Cobrada en Caja 1 · falta subirla", viewModel.avisoDeLaPuerta.value)
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+    }
+
+    /** C1: la pantalla se fue en `Error` con el efectivo apartado: el permiso sigue (lo termina su desenlace, no el cambio de pestaña). */
+    @Test
+    fun `D12 opción D - C1 salir de la pantalla con el efectivo apartado no termina el permiso`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(OrderRepository.ServerException(422, "Algo no cuadró")))
+        laPuerta(pasaDeOtraCaja)
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+
+        viewModel.alSalirDeLaPantalla()
+
+        io.mockk.verify(exactly = 0) { cuentasEntreCajas.terminarEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    // MARK: - D12 · arreglo final de D (Codex r3 #1 y #2, revisión final M-1)
+
+    /**
+     * Dos cajas de verdad (registro, disco y el cable JSON de `CuentasPorLaRed`; sin sockets): A abrió «o1» y da el permiso; B cobra en
+     * este ViewModel. Las dos comparten el reloj monotónico [reloj] (avanzan juntas).
+     */
+    private inner class DosCajas {
+        val reloj = longArrayOf(1_000L)
+        private fun disco() = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>().let { d ->
+            mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+                coEvery { loadDurable(any(), any()) } answers { d["${firstArg<String>()}|${secondArg<String>()}"] }
+                coEvery { saveDurable(any(), any(), any()) } answers {
+                    d["${firstArg<String>()}|${secondArg<String>()}"] = com.avoqado.pos.core.data.local.PayloadCache.Cached(thirdArg(), 0)
+                }
+            }
+        }
+        private fun dueno(id: String, nombre: String, mias: Set<String>, cache: com.avoqado.pos.core.data.local.PayloadCache) =
+            com.avoqado.pos.core.data.lan.DuenoDeCuentas(cache, mockk<com.avoqado.pos.orders.data.CuentasAbiertasAqui> {
+                coEvery { todas(any()) } returns mias
+            }, { _, _, _ -> false }, { _, _ -> false }, { null }, { id }, { nombre }).also {
+                it.reloj = { com.avoqado.pos.core.data.lan.Instante("boot", reloj[0]) }
+                it.io = kotlinx.coroutines.Dispatchers.Unconfined
+            }
+        val a = dueno("caja-a", "Caja 1", setOf("o1"), disco())
+        private val cliente = mockk<com.avoqado.pos.core.data.lan.LeaseClient> {
+            coEvery { preguntarCuenta(any(), any(), any(), any()) } coAnswers {
+                com.avoqado.pos.core.data.lan.LeaseProtocol.decodeResponse(com.avoqado.pos.core.data.lan.CuentasPorLaRed.contestar(
+                    com.avoqado.pos.core.data.lan.LeaseProtocol.encode(secondArg<com.avoqado.pos.core.data.lan.LeaseRequest>()), "venue-1", a))
+            }
+        }
+        private val red = object : com.avoqado.pos.core.data.lan.LanDiscoveryPort {
+            override val peers = kotlinx.coroutines.flow.MutableStateFlow(listOf(com.avoqado.pos.core.data.lan.LanPeer(
+                "caja-a", "10.0.0.1", 9000, venueExplicito = true, participaEnD = true, nombreCaja = "Caja 1")))
+            override fun conectarHub(respondTo: (String) -> com.avoqado.pos.core.data.lan.LeaseResponse) {}
+            override fun desconectarHub() {}
+        }
+        private val discoB = disco()
+        val b = com.avoqado.pos.core.data.lan.CuentasEntreCajas(red, dueno("caja-b", "Caja 2", emptySet(), discoB), discoB) { null }.also {
+            it.client = cliente
+            it.reloj = { reloj[0] }
+            it.encender("venue-1")
+        }
+    }
+
+    /** La red de las cajas corre en hilos de verdad: se espera (≤ 10 s) a que el cobro llegue a donde la prueba lo necesita. */
+    private suspend fun kotlinx.coroutines.test.TestScope.hastaQue(cond: () -> Boolean) {
+        val limite = System.currentTimeMillis() + 10_000
+        while (!cond() && System.currentTimeMillis() < limite) {
+            advanceUntilIdle()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { kotlinx.coroutines.delay(10) }
+        }
+        advanceUntilIdle()
+    }
+
+    private fun nadaSeEncola() = coVerify(exactly = 0) {
+        cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+            any(), any(), any(), any(), any(), any())
+    }
+
+    /**
+     * Codex r3 #1: «en línea» era el ORIGEN de la pantalla, no la red. B abre el cobro normal con internet; se va internet (el WiFi y la
+     * caja A siguen); A la cobra y la sube; B confirma el efectivo. B pasaba la puerta como «en línea» (A concede una CERRADA ya subida
+     * con el saldo vivo del SERVIDOR), el POST fallaba y su efectivo se encolaba: dos cobros. Ahora «en línea» es que el SERVIDOR conteste
+     * en ese momento.
+     */
+    @Test
+    fun `D12 Codex r3 1 - B abrió el cobro con internet, lo perdió y A ya la cobró - B no recibe efectivo ni lo encola`() = runTest {
+        val cajas = DosCajas()
+        try {
+            viewModel = nuevoViewModel(cajas.b)
+            guardadaEnLaCopia("o1")
+            conLaCajaDeLaCopia()
+            alCobrarEnEfectivo(Result.failure(java.io.IOException("sin internet"))) // si llegara al POST, caería a la cola
+            cajas.b.servidorContesta = { true }
+            viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1") // el cobro normal, con internet
+            cajas.b.servidorContesta = { false } // se va internet; el WiFi y la caja A siguen (familia C: lo pregunta la puerta)
+            assertEquals(com.avoqado.pos.core.data.lan.Respuesta.Concedida,
+                cajas.a.comprometerPropio("venue-1", "o1", "llave-a", "Ana", enLinea = true))
+            cajas.a.cerrarPropio("venue-1", "o1", "llave-a", "Ana", subida = true) // A la cobró y ya está en el SERVIDOR
+            viewModel.confirmCashPreset(tenderedCents = 10000)
+            hastaQue { viewModel.avisoDeLaPuerta.value != null || viewModel.state.value is PaymentFlowState.Success }
+
+            nadaSeReservaNiSeCobra()
+            nadaSeEncola()
+            assertEquals("Cobrada en Caja 1", viewModel.avisoDeLaPuerta.value)
+        } finally {
+            cajas.b.apagar()
+        }
+    }
+
+    /**
+     * Codex r3 #2 (R1): la autorización se comprobaba en la puerta, ANTES de las esperas de disco de la reserva. A compromete para B; B se
+     * detiene en el disco antes del INSERT; pasan 2 min; en A declaran (con razón) «No se cobró» y A la cobra; B se reanuda. Ahora la
+     * vigencia se comprueba justo antes del INSERT: vencida, se vuelve a comprometer con el MISMO intento, que A ya canceló.
+     */
+    @Test
+    fun `D12 Codex r3 2 - B detenido antes del INSERT, No se cobró y cobro en A - B no guarda con aquella autorización`() = runTest {
+        val cajas = DosCajas()
+        try {
+            viewModel = nuevoViewModel(cajas.b)
+            conLaCajaDeLaCopia()
+            val disco = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var enLaReserva = false
+            var insertado = false
+            coEvery {
+                cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                    any(), any(), any(), any(), any(), any(), any(), any())
+            } coAnswers {
+                enLaReserva = true
+                disco.await() // la lectura del disco tarda
+                arg<(() -> Unit)?>(20)?.invoke() // lo que hace el repositorio justo antes del INSERT (`CobroEnVueloRepositoryTest`)
+                insertado = true
+            }
+            var gris: String? = null
+            viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+            viewModel.confirmCashPreset(tenderedCents = 10000)
+            hastaQue { enLaReserva }
+            assertTrue(enLaReserva)
+
+            cajas.reloj[0] += com.avoqado.pos.core.data.lan.RegistroDeCuentas.NO_CONFIRMO_MS
+            assertTrue("en A, con razón: B no guardó nada", cajas.a.noSeCobro("venue-1", "o1", "Gerente"))
+            assertEquals(com.avoqado.pos.core.data.lan.Respuesta.Concedida,
+                cajas.a.comprometerPropio("venue-1", "o1", "llave-a", "Ana", enLinea = false))
+            cajas.a.cerrarPropio("venue-1", "o1", "llave-a", "Ana", subida = false)
+            disco.complete(Unit)
+            hastaQue { gris != null || viewModel.state.value is PaymentFlowState.Success }
+
+            assertFalse("B no guardó su efectivo con aquella autorización", insertado)
+            coVerify(exactly = 0) {
+                orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            }
+            nadaSeEncola()
+            assertEquals(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto("Caja 1"), gris)
+        } finally {
+            cajas.b.apagar()
+        }
+    }
+
+    /** Codex r3 #2: si la primera autorización venció, la SEGUNDA respuesta también se comprueba; vencida otra vez, no se cobra. */
+    @Test
+    fun `D12 Codex r3 2 - la segunda autorización también vencida no se usa y se suelta sin dinero`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(pasaDeOtraCaja, pasaDeOtraCaja)
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returns false
+        coEvery { cuentasEntreCajas.cajaQueLaAbrio(any(), any()) } returns "Caja 1"
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        nadaSeReservaNiSeCobra()
+        assertEquals(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.sePerdioElContacto("Caja 1"), gris)
+        io.mockk.verify(atLeast = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = false, subida = false, any()) }
+    }
+
+    /**
+     * C1 con el arreglo de Codex r3 #2: «Reintentar» con el efectivo de esta venta ya apartado (el dinero ya se recibió) no vuelve a comprobar
+     * la autorización: si lo hiciera, una «No se cobró» posterior diría «no recibas el efectivo» sobre un billete que ya está en el cajón.
+     */
+    @Test
+    fun `D12 Codex r3 2 - Reintentar con el efectivo ya apartado no vuelve a comprobar la autorización`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(OrderRepository.ServerException(422, "Algo no cuadró")))
+        laPuerta(pasaDeOtraCaja)
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returns false // ya pasaron los 20 s
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), antesDeGuardar = isNull())
+        }
+        coVerify(exactly = 2) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    /** Revisión final M-1: un abono parcial de la dueña (aquí, con red y saldo que queda) cierra su permiso CON abono: no es «Cobrada». */
+    @Test
+    fun `D12 M-1 - un cobro que deja saldo termina el permiso con abono`() = runTest {
+        conLaCajaDeLaCopia()
+        laPuerta(com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa("i-1", esDueno = true, autorizadoEn = null))
+        alCobrarEnEfectivo(
+            Result.success(
+                OrderRepository.CashPayResult(
+                    paymentId = "pay-1", receiptAccessKey = null, recordedAmountCents = 4000, recordedTipCents = 0,
+                    authoritativeChangeCents = 0, remainingBalanceCents = 2000, orderPaymentStatus = "PARTIAL", cashRetainedCents = 4000,
+                ),
+            ),
+        )
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", any(), any(), cobrado = true, subida = true, conAbono = true) }
+    }
+
+    // MARK: - D12 · pasada por familia (Codex r4 y re-revisión del arreglo final)
+
+    /**
+     * Familia A · Menor 2 de la re-revisión: B tuvo un permiso (X) y su reserva falló («Reintentar»). Ahora la puerta de ESTE intento dice
+     * `Libre` (con internet la dueña no contesta: regla 8). El permiso viejo se termina sin dinero y se limpia: su autorización vencida ya no
+     * hace fallar el `Libre` con «Se perdió el contacto…».
+     */
+    @Test
+    fun `D12 familia A - un Libre de este intento termina el permiso viejo y cobra`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+        laPuerta(pasaDeOtraCaja, com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre)
+        var reservas = 0
+        coEvery {
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            reservas++
+            arg<(() -> Unit)?>(20)?.invoke() // lo que corre la transacción del INSERT
+            if (reservas == 1) throw IllegalStateException("disco lleno")
+        }
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returns false // pasaron los 20 s del permiso viejo
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        assertTrue("el Libre cobra", viewModel.state.value is PaymentFlowState.Success)
+        assertNull(viewModel.avisoDeLaPuerta.value)
+        io.mockk.verify(exactly = 1) { cuentasEntreCajas.terminarEnFondo("venue-1", "o1", pasaDeOtraCaja, any(), cobrado = false, subida = false, any()) }
+    }
+
+    /** Familia A · Menor 3: si al volver a comprometer la puerta TRUENA, la cajera ve el texto oficial, nunca la pantalla roja técnica. */
+    @Test
+    fun `D12 familia A - el re-comprometer que truena dice No se pudo guardar el cobro`() = runTest {
+        conLaCajaDeLaCopia()
+        coEvery {
+            cuentasEntreCajas.puerta(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns pasaDeOtraCaja andThenThrows IllegalStateException("registro ilegible de venue-1: no se escribe encima")
+        every { cuentasEntreCajas.autorizacionVigente(any()) } returnsMany listOf(true, true, false) // vence ya en la reserva
+        coEvery { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { arg<(() -> Unit)?>(20)?.invoke() }
+        var gris: String? = null
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", origen = desdeLaCopia, alNoPasarLaPuerta = { gris = it })
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        assertEquals(com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO, gris)
+        assertFalse(viewModel.state.value is PaymentFlowState.Error)
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    /**
+     * Familia C (Codex r4 #2): la salud del SERVIDOR sólo se pregunta en una cuenta de Pedidos que continúa, y sólo cuando la respuesta
+     * cambia algo. La bandeja de pedidos en línea (y Rappi 2b, que entra por ella con `resumeOrderId`) nunca la pregunta: cobra como hoy.
+     */
+    @Test
+    fun `D12 familia C - el cobro de la bandeja nunca pregunta la salud del servidor`() = runTest {
+        val cajas = DosCajas()
+        try {
+            var preguntas = 0
+            cajas.b.servidorContesta = { preguntas++; true }
+            viewModel = nuevoViewModel(cajas.b)
+            alCobrarEnEfectivo(cobroRegistrado(amount = 6000, retenido = 6000))
+            viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "web-1",
+                cobroDeLaBandeja = com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(6000L, esFolio = true))
+            viewModel.confirmCashPreset(tenderedCents = 10000)
+            hastaQue { viewModel.state.value is PaymentFlowState.Success || viewModel.state.value is PaymentFlowState.Error }
+
+            assertTrue(viewModel.state.value is PaymentFlowState.Success)
+            assertEquals("nunca se le preguntó la salud al servidor", 0, preguntas)
+        } finally {
+            cajas.b.apagar()
+        }
+    }
+}

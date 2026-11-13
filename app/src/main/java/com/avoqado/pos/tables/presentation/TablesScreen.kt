@@ -169,6 +169,7 @@ fun TablesScreen(
     val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
 
     val layout by viewModel.layout.collectAsState()
+    val avisoDeIsla by viewModel.avisoDeIsla.collectAsState()
     val rememberedTab by viewModel.rememberedTab.collectAsState()
     // Tablet con plano ⇒ el lienzo; tablet sin plano y teléfono ⇒ la lista con pestañas (spec 2026-10-09 §4.2-4.3).
     val showPlan = isTablet && layout.hasPlan
@@ -249,6 +250,16 @@ fun TablesScreen(
                     modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
                 )
             }
+        }
+
+        // D6: gris y sin botones (estado normal del WiFi, no un error); nunca frena nada. Mismo estilo que «Arma el plano…».
+        if (avisoDeIsla) {
+            Text(
+                text = AvisoDeIsla.TEXTO,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
+            )
         }
 
         if (tables.isEmpty() && !isLoading) {
@@ -836,9 +847,10 @@ private fun TableCheckSheet(
                     }
                 } else {
                     Text(
-                        text = if (check != null && check.total > 0) {
+                        text = if (check != null && (check.total > 0 || check.isProvisional)) {
                             // Hay cuenta y hay dinero, sólo no llegaron los renglones:
                             // decir "sin productos" sería mentir sobre el saldo.
+                            // A6 (D5 · B2a): la abierta sin internet no trae renglones ni total aquí, aunque tenga rondas.
                             "Cuenta ${check.orderNumber} • ${textoCuentaEnPlano(check)} — ábrela para ver el detalle."
                         } else {
                             "Sin productos todavía — agrega la primera ronda."

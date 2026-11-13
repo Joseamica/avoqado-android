@@ -1,7 +1,11 @@
 package com.avoqado.pos.core.data.lan
 
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -106,6 +110,50 @@ class LanHubCoordinatorTest {
         assertTrue(coordinator.myTables.value.isEmpty())
         // Y en el árbitro ya no aparece ocupada.
         assertTrue(server.activeLeases().none { it.tableId == "mesa-5" })
+    }
+
+    // MARK: - La renovación de fondo (revisión D12 T10): una respuesta tardía no revive ni borra lo que cambió mientras viajaba.
+
+    private val arbitroB = LanPeer("tablet-b", "10.0.0.2", 9000, isWired = true, bootedAtMillis = 1, venueExplicito = true)
+    private val client = mockk<LeaseClient> {
+        coEvery { acquire(any(), any(), any(), any(), any()) } returns null
+        coEvery { renew(any(), any(), any(), any()) } returns null
+        coEvery { release(any(), any(), any(), any()) } returns null
+    }
+    private val red = FakeDiscovery(emptyList())
+
+    private fun concedidaMesa(epoch: Long) = LeaseResponse(
+        status = LeaseProtocol.STATUS_GRANTED,
+        lease = WireLease("mesa-5", me, "s1", "Juan", epoch, Long.MAX_VALUE),
+    )
+
+    @Test
+    fun `un STALE de la época vieja no borra la concesión nueva de la mesa`() = runTest {
+        red.peers.value = listOf(LanPeer(me, "127.0.0.1", 9999), arbitroB)
+        val c = LanHubCoordinator(red, LeaseServer(nowMillis = { clock }), client, me) { clock }
+        coEvery { client.acquire(arbitroB, "mesa-5", me, any(), any()) } returnsMany listOf(concedidaMesa(1), concedidaMesa(2))
+        assertTrue(c.acquire("mesa-5", "s1", "Juan") is LeaseOutcome.Granted)
+        coEvery { client.renew(arbitroB, "mesa-5", me, 1) } coAnswers {
+            // Mientras la renovación de la época 1 va en camino, la mesa se vuelve a pedir y se concede con la época 2.
+            assertTrue(c.acquire("mesa-5", "s1", "Juan") is LeaseOutcome.Granted)
+            LeaseResponse(status = LeaseProtocol.STATUS_STALE, currentEpoch = 2)
+        }
+        c.renovarUnaVez()
+        assertEquals(setOf("mesa-5"), c.myTables.value)
+    }
+
+    @Test
+    fun `una mesa soltada mientras su renovación viajaba no revive`() = runTest {
+        red.peers.value = listOf(LanPeer(me, "127.0.0.1", 9999), arbitroB)
+        val c = LanHubCoordinator(red, LeaseServer(nowMillis = { clock }), client, me) { clock }
+        coEvery { client.acquire(arbitroB, "mesa-5", me, any(), any()) } returns concedidaMesa(1)
+        assertTrue(c.acquire("mesa-5", "s1", "Juan") is LeaseOutcome.Granted)
+        coEvery { client.renew(arbitroB, "mesa-5", me, 1) } coAnswers {
+            c.release("mesa-5")
+            concedidaMesa(1)
+        }
+        c.renovarUnaVez()
+        assertTrue(c.myTables.value.isEmpty())
     }
 }
 

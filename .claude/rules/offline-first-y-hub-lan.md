@@ -101,6 +101,9 @@ el mismo POS se ve como dos peers y la elección de árbitro deja de ser estable
   seguía "bien" pero sin internet. NO aplicar al resto: la terminal espera 310 s
   a propósito (alguien tiene que pasar la tarjeta) y el catálogo en red lenta sí
   tarda y no tiene cola que lo salve.
+  Android (D12, 12-nov): abrir mesa también, y `RendirseRapido` recuerda que la
+  última marcada se quedó SIN respuesta: con el servidor sin contestar, la siguiente
+  no toca la red y sale como `ConnectException` (directo a la cola, con su llave).
 - La creación EN LÍNEA también viaja con `externalId` (Android
   `sessionIdempotencyKey()`, iOS `sessionOrderExternalId()`): si el intento
   lento SÍ aterrizó, el reintento — vivo o del outbox — deduplica en vez de
@@ -377,7 +380,8 @@ marcado LISTO sin red no aparece en «Recientes» y «Deshacer» sigue sólo en 
   persistir `lastLeaseEpoch` por mesa. Sin eso el sistema ya es seguro
   (ADD_ITEMS fusiona, PAY_CASH es idempotente, la propiedad de mesa rechaza
   cruces), pero es la capa que falta.
-- Indicador visual de árbitro/isla en el plano.
+- Indicador visual de árbitro en el plano. (El de **isla** ya está: D6, 12-nov-2026, `tables/presentation/AvisoDeIsla.kt`: con
+  el Hub, si falta una caja que el aparato recuerda y no ve a ninguna que coordine mesas, una línea gris en el plano; nunca bloquea.)
 - El fix de impresión offline de **iOS** se hizo por paridad y lectura de código:
   **no se ha probado con un iPad y una impresora físicos.**
 - ~~Alta manual de impresora por IP~~ — HECHO 2026-08-04 en ambas.

@@ -192,6 +192,9 @@ class QuarantineViewModel @Inject constructor(
     private val _items = MutableStateFlow<List<SyncOutbox.QuarantinedIntent>>(emptyList())
     val items: StateFlow<List<SyncOutbox.QuarantinedIntent>> = _items.asStateFlow()
 
+    private val _deOtrasSucursales = MutableStateFlow<List<CobroDeOtraSucursal>>(emptyList())
+    val deOtrasSucursales: StateFlow<List<CobroDeOtraSucursal>> = _deOtrasSucursales.asStateFlow()
+
     private val _failedPayments = MutableStateFlow<List<PendingPaymentEntity>>(emptyList())
     val failedPayments: StateFlow<List<PendingPaymentEntity>> = _failedPayments.asStateFlow()
 
@@ -254,11 +257,15 @@ class QuarantineViewModel @Inject constructor(
             val items = syncOutbox.rejectedIntents(venueId)
             val failed = paymentSyncService.failedPayments().filter {it.venueId==venueId}
             val reservations = reservationRepository.quarantinedActions()
+            // D52: lo pendiente de OTRAS sucursales de este aparato, con su nombre; se resuelve sólo con su sucursal abierta.
+            val nombres = secureStorage.venuesList.associate { it.id to it.name }
+            val deOtras = paymentSyncService.pendientesDeOtrasSucursales(venueId).map { CobroDeOtraSucursal(it, nombres[it.venueId]) }
             if (secureStorage.venueId != venueId || secureStorage.userId != actor ||
                 secureStorage.userRole != role || syncOutbox.contextoDeSesionQ15() != epoch) return@launch
             _items.value = items
             _failedPayments.value = failed
             _failedReservationActions.value = reservations
+            _deOtrasSucursales.value = deOtras
         }
     }
 
@@ -271,7 +278,10 @@ class QuarantineViewModel @Inject constructor(
                 _errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."
                 return@launch
             }
-            syncOutbox.dismissRejected(venueId,id)
+            // D5 · B2b (R5-1) y D29: si no se pudo borrar la foto de su mesa o sacar la ronda de su borrador, la operación se queda.
+            try { syncOutbox.dismissRejected(venueId,id) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { _errorMessage.value = "No se pudo marcar como resuelta. Libera espacio en el aparato e intenta de nuevo."; return@launch }
             _successMessage.value="Operación marcada como resuelta"
             load()
         }
@@ -513,8 +523,22 @@ class QuarantineViewModel @Inject constructor(
         else -> type
     }
 
+    /**
+     * D5 · B3 (C3): el servidor rechaza «Liberar mesa» con un código genérico (`BUSINESS_RULE`) y el texto en inglés
+     * «Cannot clear table with unpaid order ORD-…» (sin el saldo): se traduce por tipo y texto. Lo demás pasa igual.
+     */
+    fun describeMessage(type: String, message: String?): String? {
+        if (!mesaConSaldo(type, message)) return message
+        val cuenta = message!!.removePrefix(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO).trim()
+        return "La mesa sigue ocupada: la cuenta ${if (cuenta.isEmpty()) "" else "$cuenta "}todavía debe."
+    }
+
+    private fun mesaConSaldo(type: String, message: String?) = type == "CLEAR_TABLE" && message?.startsWith(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO) == true
+
     /** Guía de resolución según la razón del rechazo. */
-    fun resolutionHint(errorCode: String?, type: String): String = if(type=="PAY_CASH" && errorCode!="STALE_DEVICE_SEQUENCE") {
+    fun resolutionHint(errorCode: String?, type: String, message: String? = null): String = if (mesaConSaldo(type, message)) {
+        "Si ya se cobró, la mesa se libera sola al subir el cobro. Si sigue ocupada en el plano, cobra lo que falta y libérala."
+    } else if(type=="PAY_CASH" && errorCode!="STALE_DEVICE_SEQUENCE") {
         "El resultado de este pago no está confirmado. Conserva su folio y el efectivo registrado. No vuelvas a cobrar."
     } else when (errorCode) {
         // 🔴 Esta cuenta NO se puede anular ni fusionar hasta que su cobro con tarjeta termine:
@@ -581,3 +605,11 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 }
+
+/** D52: un cobro pendiente de otra sucursal de este aparato; [sucursal] = su nombre si esta persona la tiene, si no null. */
+data class CobroDeOtraSucursal(val cobro: PendingPaymentEntity, val sucursal: String?)
+
+/** D52: qué hacer con un cobro de otra sucursal. Sin botones: los permisos son por sucursal. PURA. */
+fun textoDeCobroDeOtraSucursal(sucursal: String?): String =
+    if (sucursal != null) "Es de $sucursal. Cambia a $sucursal para resolverla (Más › Cambiar de establecimiento)."
+    else "Es de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal."

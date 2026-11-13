@@ -22,6 +22,10 @@ import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
+import com.avoqado.pos.onlineorders.presentation.tarjetasConfirmadasPorLaCopia
+import com.avoqado.pos.payment.domain.PuertaDelEfectivo
+import org.json.JSONObject
+import java.util.UUID
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -484,5 +488,120 @@ class FolioCobradoConTarjetaTest {
         assertEquals(mapOf("f1" to 13400L), vm.cobradosConTarjeta.value)
         val pantalla = conLoCobradoEnElAparato(vm.porPagar.value!!, vm.cobradosConTarjeta.value.keys)
         assertEquals(listOf("f1"), pantalla.porEntregar.map { it.orderId })
+    }
+
+    // MARK: - D13 y D14 (puerta del efectivo, 11-nov): la marca de la ORDEN venga de donde venga y la foto de la bandeja.
+    // Una orden por prueba: las marcas soltadas viven en el proceso (`FoliosCobradosConTarjeta.liberadasDe`).
+    private val ordenD14 = "f-${java.util.UUID.randomUUID()}"
+
+    private fun armarConFoto() = OnlineOrdersViewModel(
+        repositorio = repo, permisoActualizar = { true }, permisoCancelar = { true }, tienePlan = { true }, hayPedidosAbiertos = { true },
+        ventanaALaVista = MutableStateFlow(true),
+        efectivoDelPedido = CashPaymentRepository(secureStorage, dao)::efectivoDelPedido,
+        efectivoYaSubido = CashPaymentRepository(secureStorage, dao)::huboEfectivoSubido,
+        cobrosEnEfectivo = { CashPaymentRepository(secureStorage, dao).cobrosDelPedido(it) },
+        leerPorPagar = { _, _, _ -> Result.failure(IOException("sin red")) }, foliosGuardados = { guardada },
+        foliosConTarjeta = marcas, cobrosConTarjeta = servicio::cobrosConTarjetaDelNegocio, venueActual = { venue },
+    )
+
+    private fun folioD14(falta: Long = 13_400) = OnlineOrder(
+        orderId = ordenD14, onlineOrderId = "oo-$ordenD14", orderNumber = "W7K3P", status = OnlineOrderStatus.PENDING_ACCEPTANCE,
+        paymentMode = "PAY_AT_PICKUP", paymentStatus = "PENDING", customerName = "Ana", customerPhone = null, note = null,
+        createdAt = Instant.parse("2026-11-06T18:00:00Z"), acceptDeadlineAt = Instant.parse("2099-11-06T18:30:00Z"), estimatedReadyAt = null,
+        totalCents = 13_400, remainingCents = falta, needsPrint = false, items = emptyList(), requiresAcceptance = false, channel = "QR",
+    )
+
+    private fun copiaD14(porPagar: List<OnlineOrder> = emptyList(), porEntregar: List<OnlineOrder> = emptyList()) =
+        ListaPorPagar(true, true, 30, ConteosPorPagar(porPagar.size, porEntregar.size), porPagar, porEntregar, CursoresPorPagar(null, null), numero = 1)
+
+    /** La tarjeta como la manda `PaymentFlowViewModel` desde «Pedidos → detalle» (D14): contexto «fuera de la bandeja». */
+    private fun cobroDesdeElDetalle(requestId: String, monto: Int = 13_400) {
+        val contexto = JSONObject().put("requestId", requestId).put("venueId", venue).put("terminalId", "t1").put("orderId", ordenD14)
+            .put("amountCents", monto).put("tipCents", 0).put("creadoEn", System.currentTimeMillis())
+            .put("bandejaSaldoAntesCents", monto).put("bandejaEsFolio", false).put("bandejaFuera", true).toString()
+        pendientes = PendientesDeTarjeta.agregar(pendientes, requestId, ordenD14, contexto)
+    }
+
+    // MARK: - D14: la marca de la orden, venga de donde venga
+
+    @Test
+    fun `D14 folio cobrado con tarjeta desde el detalle deja su marca y la bandeja sin red no abre efectivo`() = runTest(dispatcher) {
+        cobroDesdeElDetalle("req-1")
+        servicio.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1"))
+        servicio.reconocerCobro("req-1") // el detalle lo adopta como su pago: sale de la lista
+
+        val marca = marcas.marcas().single()
+        assertTrue("es una marca de fuera de la bandeja", marca.fueraDeLaBandeja)
+        assertEquals(ordenD14, marca.orderId)
+
+        guardada = copiaD14(porPagar = listOf(folioD14())) // se fue la red antes de releer «Por pagar»
+        val vm = armarConFoto()
+        vm.cobrarFolio(folioD14())
+        advanceUntilIdle()
+        assertNull("no se cobra dos veces", vm.cobroAbierto.value)
+        assertEquals(TextosPedidosEnLinea.FOLIO_COBRADO_CON_TARJETA, vm.aviso.value)
+    }
+
+    @Test
+    fun `D14b la solicitud del detalle que un negativo saco de la lista y vuelve cobrada tambien deja su marca`() {
+        cobroDesdeElDetalle("req-1")
+        servicio.soltarLlaveSiEs("req-1") // «no se cobró» (cancelación): sale de la lista
+        assertTrue(PendientesDeTarjeta.leer(pendientes).isEmpty())
+
+        servicio.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1")) // pero SÍ pasó
+        servicio.reconocerCobro("req-1")
+
+        assertTrue(marcas.marcas().single().fueraDeLaBandeja)
+    }
+
+    @Test
+    fun `D14c la copia suelta la marca fuera si ve el folio pagado o en Por entregar y no la suelta si no lo ve`() {
+        val marca = FolioCobradoConTarjeta(ordenD14, 13_400, 13_400, System.currentTimeMillis(), venueId = venue, requestId = "req-1",
+            esFolio = false, fueraDeLaBandeja = true)
+        assertEquals(listOf(marca), tarjetasConfirmadasPorLaCopia(listOf(marca), venue, copiaD14(porEntregar = listOf(folioD14(falta = 0)))))
+        assertEquals(listOf(marca), tarjetasConfirmadasPorLaCopia(listOf(marca), venue, copiaD14(porPagar = listOf(folioD14(falta = 0)))))
+        assertTrue("debe todo: se queda", tarjetasConfirmadasPorLaCopia(listOf(marca), venue, copiaD14(porPagar = listOf(folioD14()))).isEmpty())
+        assertTrue("no la ve: se queda (pudo ser de «Mi equipo»)", tarjetasConfirmadasPorLaCopia(listOf(marca), venue, copiaD14()).isEmpty())
+    }
+
+    @Test
+    fun `D14c la marca fuera que nadie suelta vive 7 dias en disco y se cae al escribir otra`() {
+        val haceOcho = System.currentTimeMillis() - FoliosCobradosConTarjeta.VIDA_DE_LA_MARCA_FUERA_MS - 1
+        val haceDos = System.currentTimeMillis() - 2 * 24 * 60 * 60 * 1000L
+        val vieja = FolioCobradoConTarjeta(ordenD14, 13_400, 13_400, haceOcho, venueId = venue, requestId = "req-vieja", fueraDeLaBandeja = true)
+        val reciente = FolioCobradoConTarjeta(ordenD14, 100, 100, haceDos, venueId = venue, requestId = "req-reciente", fueraDeLaBandeja = true)
+        val deBandeja = FolioCobradoConTarjeta("o-${UUID.randomUUID()}", 100, 100, haceOcho, venueId = venue, requestId = "req-bandeja")
+        marcasEnDisco = FoliosCobradosConTarjeta.agregar(FoliosCobradosConTarjeta.agregar(null, vieja), reciente)
+        assertEquals("leerla no la tira", 1, FoliosCobradosConTarjeta.leer(marcasEnDisco).count { it.requestId == "req-reciente" })
+
+        marcasEnDisco = FoliosCobradosConTarjeta.agregar(marcasEnDisco, deBandeja) // se escribe otra marca
+
+        val quedan = FoliosCobradosConTarjeta.leer(marcasEnDisco).map { it.requestId }.toSet()
+        assertEquals("la de fuera de más de 7 días se cayó; la de 2 días y la de la bandeja no", setOf("req-reciente", "req-bandeja"), quedan)
+    }
+
+    // MARK: - D13: la foto de la bandeja, antes de leer el saldo
+
+    private fun filaD14(id: String, estado: String, monto: Int = 6_600) = PendingPaymentEntity(
+        id = id, venueId = venue, staffId = "staff-1", amountCents = monto, tipCents = 0, method = "CASH", paymentType = "ORDER",
+        orderId = ordenD14, syncStatus = estado,
+    )
+
+    @Test
+    fun `D13 la bandeja toma su foto antes de leer el saldo - lo subido antes esta, lo que llega durante la espera no`() = runTest(dispatcher) {
+        filas = listOf(filaD14("antes", "SYNCED"))
+        coEvery { repo.saldoDelPedido(ordenD14) } coAnswers {
+            filas = filas + filaD14("durante", "SYNCED") // otra pantalla cobra y sube mientras la bandeja espera el saldo
+            Result.success(SaldoDelPedido(6_800L, estadoDeLaCuenta = "PENDING", pagos = setOf("pago-antes", "pago-durante")))
+        }
+        val vm = armarConFoto()
+
+        vm.cobrarFolio(folioD14(falta = 6_800))
+        advanceUntilIdle()
+
+        val conocido = vm.cobroAbierto.value!!.dineroConocido
+        assertEquals(setOf(PuertaDelEfectivo.llaveDeEfectivo("antes")), conocido.llaves)
+        assertEquals("lo soltado se fija al abrir", FoliosCobradosConTarjeta.secuencia(), conocido.soltadasHasta)
+        assertEquals("y los pagos que trajo la MISMA respuesta del saldo", setOf("pago-antes", "pago-durante"), conocido.pagosContados)
     }
 }

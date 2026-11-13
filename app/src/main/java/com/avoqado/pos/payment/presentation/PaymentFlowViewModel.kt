@@ -47,6 +47,9 @@ import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_PIDE_PIN
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_SIN_RED
+import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE
+import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_PIDE_PIN
+import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED
 import com.avoqado.pos.payment.data.model.MENSAJE_CUPON_SIN_RED
 import com.avoqado.pos.payment.data.model.MENSAJE_PREMIO_SIN_RED
 import com.avoqado.pos.payment.data.model.avisoDeEfectivoCortoPorCupon
@@ -76,6 +79,7 @@ import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -88,6 +92,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
@@ -158,6 +164,17 @@ internal fun cobraLosValesDeLaSesion(items: List<CartItem>, checkout: AreaTicket
         checkout.tickets.flatMap { it.lines }.map { it.id to it.total.moneyToCents() }.sortedBy { it.first }
 
 /**
+ * D12 (final fix, I-2): lo que la copia de «Pedidos» debe saber de un cobro de ESTE aparato. Uno encolado no la toca: su marca local
+ * (cobro sin sincronizar, luego «esta caja ya subió un cobro») ya la deja en gris. Uno que el servidor registró: pagada ⇒ sale de la
+ * copia; con saldo ⇒ «ya tiene un abono» con el saldo del servidor (sin él, «sin saldo»). Sin orden (venta rápida) no hay cuenta.
+ */
+internal fun evidenciaDelCobro(c: PaymentCompletion, encolado: Boolean): com.avoqado.pos.orders.data.EvidenciaDelDetalle? = when {
+    encolado || c.orderId == null -> null
+    c.remainingBalanceCents <= 0 -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.NoExiste
+    else -> com.avoqado.pos.orders.data.EvidenciaDelDetalle.Abono(c.remainingBalanceCents.takeIf { c.saldoDelServidor }, c.conSaldo)
+}
+
+/**
  * El aviso de un cobro con tarjeta de OTRA venta que quedó sin confirmar, o que SÍ pasó. 🔴 Founder, 25-sep: esa duda ya no
  * frena la tarjeta de esta venta; se DICE en la selección de terminal.
  *
@@ -224,6 +241,10 @@ class PaymentFlowViewModel @Inject constructor(
     val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository? = null,
     /** D4 (5-nov): lo que depende de este cobro. Cada intento se anota ANTES de salir. Default por el mismo patrón que [refrescoDelCatalogo]. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** D12 (final fix, I-2): la copia de «Pedidos», que cada cobro con red pone al día. Default por el mismo patrón que [refrescoDelCatalogo]. */
+    private val copiaDeCuentas: com.avoqado.pos.orders.data.CopiaDeCuentas? = null,
+    /** D12 · Opción D: la puerta única de un cobro nuevo sobre una cuenta de Pedidos (la caja que la abrió da el permiso). */
+    private val cuentasEntreCajas: com.avoqado.pos.core.data.lan.CuentasEntreCajas? = null,
     /**
      * hz:e0b12f00:D2: el PIN de gerente (el teclado de siempre) para un «Descuento de la cuenta» que deja los productos en $0, pedido
      * ANTES de crear la venta. Default por el mismo patrón que [refrescoDelCatalogo]: Hilt y Guice inyectan siempre el singleton.
@@ -538,6 +559,10 @@ class PaymentFlowViewModel @Inject constructor(
         nombreActorCapturado: String,
         /** D1: el papel de esta parte ([papelDeLaParte]). Null = la reserva no lleva copia. */
         papel: PapelDelCobro? = null,
+        /** D12: el saldo que la cuenta debe quedar tras este cobro hecho con la copia; el MISMO viaja a la cola. null = no aplica. */
+        restanteEsperadoCents: Int? = null,
+        /** Codex r3 #2: lo que corre justo antes del INSERT ([reservarConPermisoVigente]). */
+        antesDeGuardar: (() -> Unit)? = null,
     ): Apartado {
         if (cart == null || pedido == null) return Apartado.NINGUNO
         if (!permiteColaCapturada) return Apartado.NINGUNO
@@ -570,9 +595,13 @@ class PaymentFlowViewModel @Inject constructor(
                 lineasDelTicket = papel?.copia(total - tipCapturado),
                 // Si la venta ya cambió, este intento guarda SU captura sin borrar nada.
                 enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
+                restanteEsperadoCents = restanteEsperadoCents,
+                antesDeGuardar = antesDeGuardar,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
+        } catch (e: PermisoVencido) {
+            throw e // no se guardó nada: quien llama vuelve a comprometer
         } catch (e: Exception) {
             // No POST without its original durable capture. The caller presents the error. Los apartados viejos siguen del flujo.
             throw IllegalStateException("No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.", e)
@@ -664,6 +693,26 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** El POST del efectivo viaja (punto 5 de D2 v6): la pantalla no ofrece «Cancelar» y el ViewModel lo ignora. */
     private fun efectivoEnVuelo(): Boolean = (_state.value as? PaymentFlowState.Processing)?.efectivoEnVuelo == true
+
+    /**
+     * D12 (final fix, I-2): un cobro de este aparato (tarjeta, saldo de regalo, efectivo, «Ya pagó de otra forma»; desde «Pedidos», el
+     * carrito, Mesas o la bandeja) pone al día la copia de «Pedidos»: si no, al irse la red se volvía a ofrecer «Cobrar $X en efectivo»
+     * de una cuenta recién pagada. Todos los cobros terminan en este `Success`; sólo toca filas que ya están en la copia.
+     */
+    private fun ponerAlDiaLaCopia(st: PaymentFlowState.Success) {
+        val copia = copiaDeCuentas ?: return
+        val c = buildCompletion()
+        val evidencia = evidenciaDelCobro(c, encolado = st.isQueued) ?: return
+        val orderId = c.orderId ?: return
+        val venue = secureStorage.venueId ?: return
+        // El turno de AHORA: una lectura que salió antes del cobro ya no la regresa a cobrable. Menor 3 (ronda 2): se anota en el acto (no
+        // suspende) y en orden, y leer, decodificar y guardar la copia va fuera del hilo principal.
+        copia.anotarYa(venue, orderId, evidencia, copia.abrirLectura())
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            runCatching { copia.aplicarAnotado(venue) }
+                .onFailure { Log.w("💵", "No se pudo guardar en la copia de «Pedidos» el cobro de $orderId: ${it.message}") }
+        }
+    }
 
     /**
      * La venta se cobró (D2 v5, punto 2). El apartado del intento que cobró sólo se suelta (ya subió, se encoló o se da por
@@ -803,37 +852,62 @@ class PaymentFlowViewModel @Inject constructor(
         _state.value = PaymentFlowState.SelectingPaymentMethod(nuevo)
     }
 
-    /** hz:e0b12f00:D2: el token del PIN de gerente de ESTE intento (un uso; vale 60 s en el servidor). Nunca se guarda en disco. */
-    private var permisoDeCortesiaDeCuenta: String? = null
+    /**
+     * hz:e0b12f00:D2 y D4: los tokens del PIN de gerente de ESTE intento, por permiso (un uso; valen 60 s en el servidor). Nunca se
+     * guardan en disco. Viajan juntos en `X-Permission-Override`, separados por coma: cada revisión del SERVIDOR gasta sólo el suyo.
+     */
+    private val permisosDeGerente = linkedMapOf<String, String>()
     private var pidiendoPinDeCortesia = false
 
     /** hz:e0b12f00:D2 (Codex r1 #1): el SERVIDOR dijo que el descuento de esta venta regala aunque la app no lo esperaba. */
     private var pideCortesiaPorElServidor = false
 
+    /** D4: el SERVIDOR pidió aprobar un descuento aunque la app no lo esperaba (catálogo o permisos guardados de otro momento). */
+    private var pideAprobacionPorElServidor = false
+
     /**
-     * hz:e0b12f00:D2 (igual que la TPV, D1): un «Descuento de la cuenta» que deja en $0 lo que queda de los productos, de alguien sin
-     * `orders:comp`, pide el PIN de un gerente ANTES de crear la venta y de apartar el efectivo. El cobro es `FAIL_FAST`: ahí el teclado
-     * no se abre solo con el 403. true = este toque se detiene aquí: se dijo por qué (PIN apagado, sin red), o espera el PIN y [seguir]
-     * reanuda el cobro con el token ya guardado. Cancelar el teclado no manda ni guarda nada.
+     * Los permisos de gerente que le faltan a esta venta para crearse, en orden. Codex r2 #2: si el SERVIDOR ya dijo que no (permisos
+     * guardados viejos), manda él, no la lista del aparato.
+     * - hz:e0b12f00:D2: un «Descuento de la cuenta» que deja en $0 los productos (`orders:comp`).
+     * - D4 (hz:f34960c5:D4): un % o fijo con «Requiere aprobación» (`tpv-orders:discount`).
+     */
+    private fun permisosQueFaltan(cart: CartState, roles: com.avoqado.pos.core.domain.RoleManager): List<String> = buildList {
+        if ((cart.descuentoDeCuentaRegala || pideCortesiaPorElServidor) && (!roles.canCompOrders || pideCortesiaPorElServidor)) {
+            add(PERMISO_DE_CORTESIA)
+        }
+        if ((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && (!roles.canApproveDiscounts || pideAprobacionPorElServidor)) {
+            add(PERMISO_DE_APROBACION)
+        }
+    }
+
+    /**
+     * hz:e0b12f00:D2 (igual que la TPV, D1) y D4: lo que esta venta necesita de un gerente se pide ANTES de crear la venta y de apartar
+     * el efectivo, un PIN por permiso. El cobro es `FAIL_FAST`: ahí el teclado no se abre solo con el 403. true = este toque se detiene
+     * aquí: se dijo por qué (PIN apagado, sin red), o espera el PIN y [seguir] reanuda el cobro con el token ya guardado. Cancelar el
+     * teclado no manda ni guarda nada. D4: un descuento que pide aprobación no se cobra sin red para nadie (lo subiría la cola sin aprobar).
      */
     private fun primeroElPinDeCortesia(seguir: () -> Unit): Boolean {
         if (pidiendoPinDeCortesia) return true
-        if (permisoDeCortesiaDeCuenta != null) return false
         val cart = cartState ?: return false
         // Con la orden ya creada (mesa, parte siguiente de una venta dividida) su descuento ya lo decidió el servidor al crearla.
         if (!createdOrderId.isNullOrBlank()) return false
         // Codex r2 #3: sólo si este cobro CREA la venta con su descuento. La venta rápida de puros importes libres (`/fast`) y los
-        // vales no lo mandan al servidor (fuera de la promesa, como en la TPV).
+        // vales no lo mandan al servidor (fuera de la promesa, como en la TPV). D4: con un descuento que pide aprobación la venta
+        // rápida sí crea su orden (`esVentaRapidaDividida`); los vales los decide el SERVIDOR (sin PIN).
         if (valesDelCobro() != null || !(hasProductItems(cart) || esVentaRapidaDividida(cart, _splitType.value))) return false
-        if (!cart.descuentoDeCuentaRegala && !pideCortesiaPorElServidor) return false
+        val sinRed = connectivityMonitor?.let { !(it.isConnected.value && it.isServerReachable.value) } == true
+        if (cart.pideAprobacionDeGerente && sinRed) {
+            _state.value = PaymentFlowState.Error(DESCUENTO_CON_APROBACION_SIN_RED, PaymentErrorSource.NETWORK)
+            return true
+        }
         // Sin quien sepa los permisos (pruebas viejas) decide el servidor, como hoy.
         val roles = rolesDeSaldo ?: return false
-        // Codex r2 #2: si el SERVIDOR ya dijo que no (permisos guardados viejos), manda él, no la lista del aparato.
-        if (roles.canCompOrders && !pideCortesiaPorElServidor) return false
-        val sinRed = connectivityMonitor?.let { !(it.isConnected.value && it.isServerReachable.value) } == true
+        val permiso = permisosQueFaltan(cart, roles).firstOrNull { it !in permisosDeGerente } ?: return false
         val coordinador = managerOverrideCoordinator
+        val esCortesia = permiso == PERMISO_DE_CORTESIA
         val motivo = when {
-            !tpvSettingsRepository.managerPinOverrideEnabled.value || coordinador == null -> CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
+            !tpvSettingsRepository.managerPinOverrideEnabled.value || coordinador == null ->
+                if (esCortesia) CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE else DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE
             sinRed -> CORTESIA_DE_CUENTA_SIN_RED
             else -> null
         }
@@ -846,26 +920,40 @@ class PaymentFlowViewModel @Inject constructor(
         }
         pidiendoPinDeCortesia = true
         val venta = ventaEnCurso
+        // D4: el gerente ve qué aprueba («Descuento: 10% gerencial»).
+        val contexto = if (esCortesia) null else nombresQuePidenAprobacion(cart)?.let { "Descuento: $it" }
         viewModelScope.launch {
             val token = try {
-                if (coordinador.preauthorize(PERMISO_DE_CORTESIA)) coordinador.tomarPreautorizado(PERMISO_DE_CORTESIA) else null
+                val autorizo = if (contexto == null) coordinador.preauthorize(permiso) else coordinador.preauthorize(permiso, contexto = contexto)
+                if (autorizo) coordinador.tomarPreautorizado(permiso) else null
             } finally {
                 pidiendoPinDeCortesia = false
             }
             // Canceló, venció o ya es otra venta: no sale nada.
             if (token == null || otraVenta(venta)) return@launch
-            permisoDeCortesiaDeCuenta = token
+            permisosDeGerente[permiso] = token
             seguir()
         }
         return true
     }
 
-    /** El token de este intento: lo toma la venta que sale ahora y nadie más. */
-    private fun tomarPermisoDeCortesia(): String? = permisoDeCortesiaDeCuenta.also { permisoDeCortesiaDeCuenta = null }
+    /** D4: los nombres de los descuentos de esta venta que piden aprobación, para el teclado del gerente. */
+    private fun nombresQuePidenAprobacion(cart: CartState): String? =
+        (listOfNotNull(cart.orderDiscount?.takeIf { it.pideAprobacion }?.name) +
+            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName })
+            .distinct().joinToString(" · ").takeIf { it.isNotBlank() }
 
-    /** hz:e0b12f00:D2: el 403 de `orders:comp` al crear la venta (la app no esperaba que regalara, o su PIN no alcanzó). */
+    /** Los tokens de este intento: los toma la venta que sale ahora y nadie más. */
+    private fun tomarPermisoDeCortesia(): String? =
+        permisosDeGerente.values.joinToString(",").takeIf { it.isNotEmpty() }.also { permisosDeGerente.clear() }
+
+    /**
+     * hz:e0b12f00:D2 y D4: el 403 de `orders:comp` o de `tpv-orders:discount` al crear la venta (la app no lo esperaba, o su PIN no
+     * alcanzó).
+     */
     private fun esCortesiaQuePideGerente(error: Throwable): Boolean =
-        error is OrderRepository.ServerException && error.code == 403 && error.requerido == PERMISO_DE_CORTESIA
+        error is OrderRepository.ServerException && error.code == 403 &&
+            (error.requerido == PERMISO_DE_CORTESIA || error.requerido == PERMISO_DE_APROBACION)
 
     /**
      * hz:e0b12f00:D2 (Codex r1 #1): el rechazo es definitivo y la venta NO se creó. Sus apartados de efectivo se borran ANTES de
@@ -876,14 +964,18 @@ class PaymentFlowViewModel @Inject constructor(
      * persona; el disco tampoco la deja borrar). Por eso la LLAVE NO se estrena tras este 403: el reintento con el PIN reusa esa misma
      * reserva y esa misma orden, y un «Sí, se cobró» posterior no puede subir una segunda venta (el servidor deduplica por la llave).
      */
-    private suspend fun alPedirCortesiaElServidor() {
-        pideCortesiaPorElServidor = true
+    private suspend fun alPedirCortesiaElServidor(error: Throwable) {
+        val esAprobacion = (error as? OrderRepository.ServerException)?.requerido == PERMISO_DE_APROBACION
+        if (esAprobacion) pideAprobacionPorElServidor = true else pideCortesiaPorElServidor = true
         val llaves = apartadosDeEstaVenta.toList()
         if (llaves.isNotEmpty() && descartar(llaves)) {
             apartadosDeEstaVenta.removeAll(llaves.toSet())
             if (apartadoDelIntento in llaves) apartadoDelIntento = null
         }
-        _state.value = PaymentFlowState.Error(CORTESIA_DE_CUENTA_PIDE_PIN, PaymentErrorSource.SERVER)
+        _state.value = PaymentFlowState.Error(
+            if (esAprobacion) DESCUENTO_CON_APROBACION_PIDE_PIN else CORTESIA_DE_CUENTA_PIDE_PIN,
+            PaymentErrorSource.SERVER,
+        )
     }
 
     /**
@@ -938,8 +1030,249 @@ class PaymentFlowViewModel @Inject constructor(
     /** A3: el texto del folio para el 400 de cuenta cancelada ([startPaymentFlow]); null = como siempre. */
     private var siLaCuentaSeCancelo: (() -> String?)? = null
 
+    /** D12 (Codex r3 H3): la revalidación en vivo justo antes de recibir el efectivo ([startPaymentFlow]); null = como siempre. */
+    private var antesDeRecibirEfectivo: (suspend () -> String?)? = null
+
+    /** D12 · Opción D: a quién decirle que la puerta dijo que no (la cuenta enseña ese gris); null = el flujo lo enseña como error. */
+    private var alNoPasarLaPuerta: ((String) -> Unit)? = null
+
+    private data class PermisoDeLaCuenta(
+        val venueId: String, val orderId: String, val pasa: com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa, val quien: String,
+        /** La llave del cobro con que se pasó (la fila que decide «cobrada» o «suelta»). */
+        val llave: String,
+    )
+
+    private val _avisoDeLaPuerta = MutableStateFlow<String?>(null)
+
+    /**
+     * I1: el «no» de la puerta EN LÍNEA (Pedidos con red, el carrito, la tarjeta de la dueña), con su texto neutro: nunca la pantalla roja
+     * de error. La pantalla lo enseña y, al cerrarlo, sale del cobro. null = nada.
+     */
+    val avisoDeLaPuerta: StateFlow<String?> = _avisoDeLaPuerta.asStateFlow()
+
+    fun cerrarAvisoDeLaPuerta() {
+        _avisoDeLaPuerta.value = null
+    }
+
+    /** I1: la puerta dijo que no, con red: sin cobrar y sin rojo. */
+    private fun noPasoLaPuerta(texto: String) {
+        isProcessingPayment = false
+        _avisoDeLaPuerta.value = texto
+        _state.value = PaymentFlowState.Loading
+    }
+
+    /** C1: «Reintentar» con otra llave y el efectivo ya apartado: el permiso sigue, con la llave nueva (la fila que lo decide). */
+    private suspend fun renovarLlaveDelPermiso(orden: String?, llave: String) {
+        val p = permisoDeLaCuenta?.takeIf { it.orderId == orden && it.llave != llave } ?: return
+        val nuevo = runCatching { cuentasEntreCajas?.cambiarLlave(p.venueId, p.orderId, p.pasa, llave) }.getOrNull() ?: return
+        permisoDeLaCuenta = p.copy(pasa = nuevo, llave = llave)
+    }
+
+    /** D12 · Opción D: el permiso de la cuenta que cobra esta venta (null = ninguno). Termina con el cobro, otra venta o al salir. */
+    private var permisoDeLaCuenta: PermisoDeLaCuenta? = null
+
+    /**
+     * D12 · Opción D (R4): la ÚNICA puerta de un cobro nuevo que sigue una cuenta ya abierta sin mesa ([continua]: «Cobrar» de Pedidos con
+     * y sin red, y el carrito que la continúa). Va JUSTO antes de reservar el efectivo o de mandar la tarjeta. null = sigue; un texto = no
+     * se cobra. La dueña compromete en local y en disco (R2); otra caja, en vivo, y su autorización vale 20 s desde el envío (R1): si ya
+     * pasaron, vuelve a comprometer con el MISMO intento. «Revisar» y la cola no pasan por aquí.
+     */
+    private suspend fun pasarLaPuerta(venue: String, orden: String?, llave: String, continua: Boolean, esTarjeta: Boolean, desdeLaCopia: Boolean): String? {
+        val cuentas = cuentasEntreCajas ?: return null
+        if (!continua || orden.isNullOrBlank() || venue.isBlank()) return null
+        val quien = secureStorage.selectedStaffNameForCurrentVenue ?: secureStorage.userFirstName.orEmpty()
+        val previo = permisoDeLaCuenta?.takeIf { it.orderId == orden }?.pasa?.intento
+        val esDePedidos = desdeLaCopia || runCatching {
+            copiaDeCuentas?.cuenta(venue, orden)?.cuenta
+                ?.let { com.avoqado.pos.orders.data.razonParaNoCobrar(it) != com.avoqado.pos.orders.data.RazonSinRed.NO_ES_DE_MOSTRADOR }
+        }.getOrNull() == true
+        // Codex r3 #1 y familia C (Codex r4 #2): con la copia nunca es «en línea». Si no, que el SERVIDOR conteste AHORA lo pregunta la
+        // puerta (`CuentasEntreCajas.puerta`), sólo en una cuenta de Pedidos y sólo cuando la respuesta cambia algo, con plazo total.
+        val enLinea = !desdeLaCopia
+        suspend fun una(intentoPrevio: String?) = cuentas.puerta(venue, orden, llave, quien, enLinea = enLinea, esTarjeta = esTarjeta,
+            esCuentaDePedidos = esDePedidos, intentoPrevio = intentoPrevio)
+        var p = una(previo)
+        if (p is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa && !cuentas.autorizacionVigente(p)) p = una(p.intento)
+        // Codex r3 #2: la segunda respuesta también se comprueba; vencida otra vez no se usa (su intento se suelta sin dinero).
+        if (p is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa && !cuentas.autorizacionVigente(p)) {
+            cuentas.terminarEnFondo(venue, orden, p, quien, cobrado = false, subida = false)
+            return sinContactoCon(venue, orden)
+        }
+        return when (p) {
+            is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Pasa -> { permisoDeLaCuenta = PermisoDeLaCuenta(venue, orden, p, quien, llave); null }
+            is com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.NoPasa -> p.texto
+            com.avoqado.pos.core.data.lan.CuentasEntreCajas.Puerta.Libre -> {
+                // Familia A · Menor 2: ESTE intento no tiene nada que coordinar. Un permiso viejo de esta cuenta (de un intento que no guardó
+                // su efectivo) se termina sin dinero —lo decide lo durable— y deja de comprobarse: no puede hacer fallar un `Libre`.
+                if (permisoDeLaCuenta?.orderId == orden) terminarPermiso(cobrado = false)
+                null
+            }
+        }
+    }
+
+    /**
+     * D12 · Opción D: el cobro de la cuenta terminó ([cobrado]: con dinero, [subida]: ya en el servidor) o el flujo se fue. Lo que no se sabe
+     * lo decide lo durable (la fila del efectivo, la lista de tarjetas): la dueña cierra o suelta, otra caja avisa «cobrada» o «suelta».
+     */
+    private fun terminarPermiso(cobrado: Boolean, subida: Boolean = false, conAbono: Boolean = false) {
+        val p = permisoDeLaCuenta ?: return
+        permisoDeLaCuenta = null
+        cuentasEntreCajas?.terminarEnFondo(p.venueId, p.orderId, p.pasa, p.quien, cobrado, subida, conAbono)
+    }
+
+    /** Codex r3 #2: no hay contacto vigente con la caja que abrió la cuenta: el texto oficial «no recibas el efectivo» (con su nombre si se sabe). */
+    private suspend fun sinContactoCon(venue: String, orden: String?): String {
+        val caja = try {
+            orden?.let { cuentasEntreCajas?.cajaQueLaAbrio(venue, it) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        return caja?.let(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed::sePerdioElContacto)
+            ?: com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA
+    }
+
+    /** R1 · Codex r3 #2: la autorización de otra caja venció justo antes del INSERT de la reserva: no se guardó nada. */
+    private class PermisoVencido : IllegalStateException("La autorización de la caja que abrió la cuenta venció antes de guardar el cobro")
+
+    /** Al volver a comprometer, la puerta dijo que no: [texto] es lo que ve la cajera. Nada se guardó. */
+    private class NoPasoAlGuardar(val texto: String) : IllegalStateException(texto)
+
+    /** Lo que la reserva corre JUSTO antes de su INSERT: con permiso de OTRA caja, su vigencia (R1). null = no hay nada que comprobar. */
+    private fun vigenciaDelPermiso(orden: String?): (() -> Unit)? {
+        val cuentas = cuentasEntreCajas ?: return null
+        val p = permisoDeLaCuenta?.takeIf { it.orderId == orden && !it.pasa.esDueno }?.pasa ?: return null
+        return { if (!cuentas.autorizacionVigente(p)) throw PermisoVencido() }
+    }
+
+    /**
+     * R1 · Codex r3 #2: la vigencia se comprobaba en la puerta, ANTES de las esperas de disco de la reserva (o de la app congelada). Ahora
+     * la comprueba la reserva justo antes de su INSERT. Vencida: no se guardó nada; se vuelve a comprometer UNA vez con el MISMO intento (si
+     * la dueña ya lo canceló, no pasa) y se reintenta con la autorización nueva, que también se comprueba. Sin reserva ([Apartado.NINGUNO])
+     * se comprueba al volver, antes del POST. Si la dueña dice que no o vuelve a vencer: [NoPasoAlGuardar], no se recibe el efectivo.
+     * [revisar] falso = el efectivo de esta venta ya está apartado (C1, «Reintentar»): el dinero ya se recibió y no se vuelve a preguntar.
+     */
+    private suspend fun reservarConPermisoVigente(
+        venue: String, orden: String?, llave: String, desdeLaCopia: Boolean, revisar: Boolean,
+        reservar: suspend (antesDeGuardar: (() -> Unit)?) -> Apartado,
+    ): Apartado {
+        if (!revisar) return reservar(null)
+        suspend fun intento(): Apartado {
+            val vigencia = vigenciaDelPermiso(orden)
+            return reservar(vigencia).also { if (it == Apartado.NINGUNO) vigencia?.invoke() }
+        }
+        try {
+            return intento()
+        } catch (e: PermisoVencido) {
+            Log.w("💵", "La autorización de la cuenta venció antes de guardar el efectivo; se vuelve a comprometer")
+        }
+        // Familia A · Menor 3: el re-comprometer traduce sus errores igual que la llamada original (nada se guardó: el texto oficial).
+        val texto = try {
+            pasarLaPuerta(venue, orden, llave, continua = true, esTarjeta = false, desdeLaCopia = desdeLaCopia)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("💵", "La puerta de la cuenta falló al volver a comprometer; no se cobra: ${e.message}")
+            com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO
+        }
+        texto?.let { throw NoPasoAlGuardar(it) }
+        return try {
+            intento()
+        } catch (e: PermisoVencido) {
+            throw NoPasoAlGuardar(sinContactoCon(venue, orden))
+        }
+    }
+
+    /** La puerta dijo que no ANTES del efectivo: nada se cobra. Desde la copia, el gris de la cuenta; en línea, el aviso neutro (I1). */
+    private fun noSeCobraPorLaPuerta(texto: String, generacion: Int, alNoPasar: ((String) -> Unit)?) {
+        if (generacion != paymentGeneration) return
+        isProcessingPayment = false
+        if (alNoPasar != null) {
+            alNoPasar(texto)
+            salirDelFlujo()
+        } else {
+            noPasoLaPuerta(texto)
+        }
+    }
+
+    /**
+     * D12 · Opción D: la pantalla del cobro se fue (sin `onCleared`: el ViewModel puede seguir vivo). Con un cobro en curso no: su
+     * desenlace (o la siguiente venta) lo termina.
+     */
+    fun alSalirDeLaPantalla() {
+        // C1: con efectivo de esta venta apartado tampoco: lo termina su desenlace («Cancelar», el cobro, otra venta o `onCleared`).
+        if (!isProcessingPayment && apartadosDeEstaVenta.isEmpty()) terminarPermiso(cobrado = false)
+    }
+
     /** R100: el cobro salió de la bandeja «Pedidos en línea» ([startPaymentFlow]); viaja con la tarjeta. null = otro cobro. */
     private var cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null
+
+    /**
+     * 🔴 D13: la foto de la puerta del efectivo de ESTE cobro ([startPaymentFlow]): la orden que ya existía, lo que la pantalla creyó que
+     * faltaba ([FotoDelCobro.saldoCents], R0) y el dinero que ese saldo ya contaba. La traen la bandeja y «Pedidos → detalle», que fijan
+     * su saldo con el SERVIDOR (o con la copia) en un momento conocido. null = sin puerta, como hoy: la mesa y las partes 2..N calculan su
+     * saldo en el aparato a partir de lecturas de otros momentos, y una foto al arrancar no diría qué contó (Codex r1 #1 de la puerta).
+     */
+    private var fotoDelCobro: FotoDelCobro? = null
+
+    private class FotoDelCobro(val orderId: String, val saldoCents: Long, val conocido: com.avoqado.pos.payment.domain.DineroConocido)
+
+    /** D14: la orden y lo que faltaba al arrancar este cobro (el total de su carrito), para el contexto de una tarjeta fuera de la bandeja. */
+    private var saldoAlArrancar: Pair<String, Long>? = null
+
+    /**
+     * D13: TODO el dinero de [orderId] que tiene este aparato, en cualquier estado. Primero la cola (UNA lectura de Room, la única espera)
+     * y DESPUÉS, sin ninguna espera hasta decidir, lo de tarjeta (Codex r2 #1: una tarjeta que se confirma mientras se lee Room se ve):
+     * la lista, sus marcas y las marcas soltadas desde la foto ([desde]), en ese orden, porque un cobro sólo avanza lista → marca →
+     * soltada y así nunca se pierde entre dos lecturas.
+     */
+    private suspend fun dineroDeLaOrden(venueId: String, orderId: String, desde: Long): List<com.avoqado.pos.payment.domain.DineroDeLaOrden> {
+        val efectivo = cashPaymentRepository.cobrosDelPedido(orderId, venueId)
+        val tarjetas = terminalPaymentService.cobrosConTarjetaDelNegocio(venueId).filter { it.orderId == orderId && it.cobrado }.map {
+            // Sin importe en su contexto no se adivina: cuenta como todo (falla cerrado).
+            com.avoqado.pos.payment.domain.DineroDeLaOrden(com.avoqado.pos.payment.domain.PuertaDelEfectivo.llaveDeTarjeta(it.requestId),
+                it.amountCents?.toLong() ?: (Long.MAX_VALUE / 4), esTarjeta = true)
+        }
+        val marcas = com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta(secureStorage).marcasDe(venueId)
+            .filter { it.orderId == orderId }.mapNotNull { com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.dineroDe(it) }
+        val soltadas = com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta.liberadasDe(orderId, desde)
+        return efectivo + tarjetas + marcas + soltadas
+    }
+
+    /**
+     * 🔴 D13, la puerta del efectivo (se llama bajo `PuertaDelEfectivo.candadoDe(orden)`, junto con el apartado).
+     * null = puede apartar; si no, el texto de por qué no. Sólo para una orden que ya existe: en una venta nueva nadie más pudo cobrarla.
+     * [foto] y [propias] son las del INTENTO, fotografiadas antes de su primera espera (Codex r4 #1: si otra venta arranca en esta
+     * pantalla mientras tanto, su foto no le quita la puerta a este efectivo). [propias] = las llaves de ESTE intento (su apartado y
+     * los anteriores de esta venta, que reemplaza: es el mismo dinero).
+     */
+    private suspend fun frenoDeLaPuerta(foto: FotoDelCobro?, orderId: String?, venueId: String, efectivoCents: Int, propias: Collection<String>): String? {
+        if (orderId.isNullOrBlank() || foto == null || foto.orderId != orderId) return null
+        return try {
+            com.avoqado.pos.payment.domain.PuertaDelEfectivo.decidir(foto.conocido, dineroDeLaOrden(venueId, orderId, foto.conocido.soltadasHasta),
+                propias.map(com.avoqado.pos.payment.domain.PuertaDelEfectivo::llaveDeEfectivo).toSet(), foto.saldoCents, efectivoCents.toLong())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("💵", "D13: no se pudo revisar el dinero de la orden $orderId: ${e.message}")
+            com.avoqado.pos.payment.domain.PuertaDelEfectivo.TEXTO_NO_SE_PUDO
+        }
+    }
+
+    /** D13: [accion] bajo [candado] si hay puerta; si no, como antes. Inline: un `return@launch` de adentro suelta el candado. */
+    private suspend inline fun <T> conCandado(candado: kotlinx.coroutines.sync.Mutex?, accion: () -> T): T =
+        if (candado == null) accion() else candado.withLock { accion() }
+
+    /**
+     * D14: la tarjeta de una cuenta que ya existía y no es mesa, cobrada FUERA de la bandeja («Pedidos → detalle», partes 2..N): su
+     * contexto lleva lo que esta pantalla creyó que faltaba, y su positivo deja la marca «aquí ya se cobró» igual que la de la bandeja.
+     */
+    private fun cobroFueraDeLaBandeja(): com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? {
+        if (!continuaVentaPartida || createdOrderId.isNullOrBlank()) return null
+        val saldo = saldoAlArrancar?.takeIf { it.first == createdOrderId }?.second ?: return null
+        return com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(saldo, esFolio = false, fueraDeLaBandeja = true)
+    }
 
     /**
      * A3 (m3): el 400 de cuenta cancelada llegó pero su apartado NO se pudo borrar. La pantalla dice «No se pudo cancelar el cobro»
@@ -1051,6 +1384,9 @@ class PaymentFlowViewModel @Inject constructor(
                     // 🔴 D2 v7: sólo el COBRO termina los apartados de la venta. Un rechazo, un error o un 409 ya no los sueltan:
                     // siguen del flujo hasta que la cajera vuelve a cobrar o toca «Cancelar».
                     alCobrarLaVenta(st)
+                    ponerAlDiaLaCopia(st)
+                    // M-1: un cobro que deja saldo (una parte, un saldo de regalo que no alcanzó) es un abono, no «Cobrada».
+                    terminarPermiso(cobrado = true, subida = !st.isQueued, conAbono = buildCompletion().remainingBalanceCents > 0)
                 } else if (st !is PaymentFlowState.Processing) {
                     // A5: un «Ya pagó de otra forma» que no se cobró sigue como hoy (se suelta, queda «sin confirmar»).
                     soltarLaReservaNoEfectivo()
@@ -1061,6 +1397,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        terminarPermiso(cobrado = false)
         desvincularRecuperacionDeFoto?.invoke()
         desvincularRecuperacionDeFoto = null
         destruido = true
@@ -1860,11 +2197,13 @@ class PaymentFlowViewModel @Inject constructor(
     private var ultimoCobroConSaldo: CobroConSaldo? = null
     val cuentaDelResultadoDeSaldo: String? get() = ultimoCobroConSaldo?.orderId
     val llaveDeLaSolicitudDeSaldo: String? get() = llaveDelSaldo
+    /** D2: el saldo frenó por el descuento del cliente; el carrito relee su aviso (ofrece «Pedir autorización»). */
+    private var alFrenarPorDescuentoDelCliente: () -> Unit = {}
     fun configurarSaldo(ventaViva: () -> CartState, foto: (() -> com.avoqado.pos.giftcards.domain.FotoDeLaVenta)? = null,
         vaciar: (() -> Unit)? = null, restaurar: ((com.avoqado.pos.giftcards.domain.FotoDeLaVenta) -> CartState?)? = null, desdeCuentas: Boolean = false,
-        alRestaurarSnapshot: (CartState) -> Unit = {}) {
+        alRestaurarSnapshot: (CartState) -> Unit = {}, alFrenarPorDescuento: () -> Unit = {}) {
         ventaVivaDeSaldo = ventaViva; fotoDeSaldo = foto; vaciarDeSaldo = vaciar; restaurarDeSaldo = restaurar; desdeCuentasDeSaldo = desdeCuentas
-        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot
+        alRestaurarSnapshotDeSaldo = alRestaurarSnapshot; alFrenarPorDescuentoDelCliente = alFrenarPorDescuento
     }
     private var desvincularRecuperacionDeFoto: (() -> Unit)? = null
     private var otrosDuenosPermitenCobrar: () -> Boolean = { true }
@@ -1974,6 +2313,8 @@ class PaymentFlowViewModel @Inject constructor(
         if (it == "null") EstadoDeAjustes.NoDisponible else runCatching { EstadoDeAjustes.Disponible(GiftCardsApi.parsearAjustes(it)) }.getOrNull()
     } ?: EstadoDeAjustes.Desconocido
     suspend fun conductaDeSaldo(): ConductaDeTarjeta {
+        // D12: sólo efectivo puro: el saldo de regalo no se ofrece, no se abre y no se cobra (abrir, cobrar y reintentar pasan por aquí).
+        if (origenDelCobro.soloEfectivoPuro) return ConductaDeTarjeta(FilaDeLaCaja.T12,false,false,null)
         val cart = ventaVivaDeSaldo?.invoke() ?: cartState ?: return ConductaDeTarjeta(FilaDeLaCaja.T12,false,false,null)
         val id = createdOrderId
         val venue = secureStorage.venueId
@@ -1984,7 +2325,8 @@ class PaymentFlowViewModel @Inject constructor(
             connectivityMonitor?.isConnected?.value == true && connectivityMonitor.isServerReachable.value,
             rolesDeSaldo?.canRedeemGiftCards == true,cuentaDeTarjetas.value,
             cart.items.any { it.areaTicketId != null },cart.items.any { it.type is CartItemType.CreditPack },
-            id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.isProvisional == true,
+            // D5 · B1: la mesa cobrada por la cola de mesas tampoco ofrece saldo (T3), con o sin red.
+            id != null || cart.items.any { it.type is CartItemType.ProductItem },mesaDelCobro?.let { it.isProvisional || it.cobroSinRed } == true,
             cart.creacionIncierta != null,cart.vinoDeCarritoGuardado,cobroConSaldo?.cuentaTrabada(id) == true,
             mesaDelCobro != null,desdeCuentasDeSaldo,id != null,pendiente,
             rolesDeSaldo?.canReadGiftCards == true,rolesDeSaldo?.hasVenuePermission("orders:create") == true),
@@ -2029,6 +2371,14 @@ class PaymentFlowViewModel @Inject constructor(
             val coordinator = cobroConSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
             val anteriores = SolicitudesDeTarjeta.leer(secureStorage.giftCardRequestsJson).map {it.llave}.toSet()
             val resultado = conTextoDelFolio(if (fila.fila == FilaDeLaCaja.T1) {
+                // 🔴 D2 (spec punto 18): esta entrada CREA la venta. Con el descuento del cliente y sin permiso ni PIN suficiente (un
+                // carrito restaurado por otra sesión), no sale nada: el mismo texto del 403.
+                if (!snapshot.puedeCrearOrdenConDescuentoDelCliente(attachedCustomerId, rolesDeSaldo?.canApplyDiscounts == true)) {
+                    alFrenarPorDescuentoDelCliente()
+                    return DesenlaceDeCobro.NoSalio(
+                        com.avoqado.pos.pos.presentation.cart.textoNoPuedeAplicarDescuentoDelCliente(_attachedCustomerName.value),
+                    ).also { resultadoDeSaldo.value = it }
+                }
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val payload = Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(buildOrderRequest(snapshot),selectedStaffId(),attachedCustomerId,
@@ -2167,6 +2517,20 @@ class PaymentFlowViewModel @Inject constructor(
          * cobró» en el mismo commit, y la bandeja ya no ofrece efectivo encima con una lista vieja. null = otro cobro (como siempre).
          */
         cobroDeLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
+        /**
+         * D12 (Codex r3 H3): se corre en [processCashPayment] JUSTO ANTES de apartar el efectivo, antes de cualquier llamada de red.
+         * null = sigue; un texto = no se aparta ni se manda nada y el flujo se cierra ([debeSalir]): la cuenta enseña su gris. Con
+         * efectivo de esta venta ya apartado (`EN_VUELO`) no se vuelve a preguntar: se conserva y se concilia como siempre.
+         * null = como siempre.
+         */
+        antesDeRecibirEfectivo: (suspend () -> String?)? = null,
+        /** D12 · Opción D: la puerta de la cuenta dijo que no; se le pasa el texto y el flujo se cierra. null = el flujo lo enseña como error. */
+        alNoPasarLaPuerta: ((String) -> Unit)? = null,
+        /**
+         * 🔴 D13: la foto de la puerta del efectivo tomada por quien fijó el saldo ANTES de leerlo (bandeja, «Pedidos → detalle»). null =
+         * sin puerta, como antes (mesa, partes 2..N: su saldo se arma en el aparato y una foto al arrancar no diría qué contó).
+         */
+        dineroConocido: com.avoqado.pos.payment.domain.DineroConocido? = null,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -2183,9 +2547,13 @@ class PaymentFlowViewModel @Inject constructor(
         this.cuentaDeTarjetas.value = cuentaDeTarjetas
         origenDelCobro = origen
         siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
+        this.antesDeRecibirEfectivo = antesDeRecibirEfectivo
+        this.alNoPasarLaPuerta = alNoPasarLaPuerta
+        terminarPermiso(cobrado = false) // otra venta: el permiso de la anterior lo decide lo durable
         // hz:e0b12f00:D2: el PIN y la marca del servidor son de UNA venta.
-        permisoDeCortesiaDeCuenta = null
+        permisosDeGerente.clear()
         pideCortesiaPorElServidor = false
+        pideAprobacionPorElServidor = false
         this.cobroDeLaBandeja = cobroDeLaBandeja
         textoDeFolioPorBorrar = null
         // Después del corte de «misma apertura» (volver de otra pestaña conserva la copia) y antes de `enterInitialState`.
@@ -2307,6 +2675,14 @@ class PaymentFlowViewModel @Inject constructor(
         // every retail/quick flow is byte-identical.
         mesaDelCobro?.let { createdOrderId = it.orderId }
         continuaVentaPartida = mesaDelCobro == null && !resumeOrderId.isNullOrBlank()
+        // 🔴 D13: la foto de la puerta del efectivo, con el saldo que esta pantalla cree que falta (sólo si la trae quien fijó el saldo).
+        val ordenAlArrancar = createdOrderId
+        saldoAlArrancar = ordenAlArrancar?.let { it to cart.totalCents.toLong() }
+        fotoDelCobro = if (dineroConocido != null && !ordenAlArrancar.isNullOrBlank()) {
+            FotoDelCobro(ordenAlArrancar, cart.totalCents.toLong(), dineroConocido)
+        } else {
+            null
+        }
         saldoSinConfirmar = false
         // Regla 9 (vales, r7): el apartado que cobra ESTE cobro; terminar, soltar y salir actúan sobre él, nunca sobre el vigente.
         sesionDelCobro = areaTicketRepository.session.current()?.id?.takeIf { esCobroDeVales() }
@@ -2419,7 +2795,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
-        if (method == PaymentMethod.CARD && (!origenDelCobro.permiteTarjeta || ventaRapidaEnCero())) return
+        // D5 · B1: la mesa cobrada por la cola de mesas es sólo efectivo, aunque vuelva la red.
+        if (method == PaymentMethod.CARD && (!origenDelCobro.permiteTarjeta || ventaRapidaEnCero() || cobroDeMesaSinRed())) return
         if (bloquearCuentaSinRed()) return
         selectedMethod = method
         val baseAmount = currentBaseAmount()
@@ -2480,8 +2857,8 @@ class PaymentFlowViewModel @Inject constructor(
         tenderTypeRepository.tenderTypes
 
     fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
-        // Un pedido de plataforma se cobra SÓLO en efectivo: el SERVIDOR rechaza otro método (la pantalla ni lo ofrece).
-        if (origenDelCobro.esDePlataforma) return
+        // Un pedido de plataforma o una cuenta cobrada con la copia (D12) se cobran SÓLO en efectivo puro (la pantalla ni lo ofrece).
+        if (origenDelCobro.soloEfectivoPuro) return
         if (isProcessingPayment || bloquearCuentaSinRed()) return
         when (choice) {
             is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
@@ -2753,6 +3130,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun confirmPayment() {
+        // D12: un cobro sólo de efectivo puro nunca manda nada a la terminal (su efectivo va por `processCashPayment`).
+        if (origenDelCobro.soloEfectivoPuro) return
         if (isProcessingPayment) return
         if (descartandoApartados) return
         if (bloquearCuentaSinRed()) return
@@ -2796,8 +3175,9 @@ class PaymentFlowViewModel @Inject constructor(
         // D1: el papel de esta parte, con lo demás capturado (null si no es parte de una venta dividida).
         val papelCapturado = papelDeLaParte()
         val ordenCapturada = createdOrderId
+        // D5 · B1: «por la cola de mesas» = la provisional de hoy o la mesa del servidor con `cobroSinRed` (B2b; en B1 nadie la prende).
         val provisionalCapturada = tableSession.current()?.let {
-            it.isProvisional && it.orderId == ordenCapturada
+            (it.isProvisional || it.cobroSinRed) && it.orderId == ordenCapturada
         } == true
         val valesCapturados = valesDelCobro()
         val permiteColaCapturada = valesCapturados == null
@@ -2805,6 +3185,7 @@ class PaymentFlowViewModel @Inject constructor(
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
         val mesaCapturada = mesaCapturada(venueCapturado)
+        val continuaCapturada = continuaVentaPartida
         // Ronda 1 (M1): el `/pay` legado de «Confirmar» en efectivo también es un POST de efectivo: sin «Cancelar» mientras viaja.
         _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = metodoCapturado == PaymentMethod.CASH && valesCapturados == null)
         // 🔴 La generación con la que entró este cobro. Crear la orden tarda, y en ese rato el
@@ -2832,6 +3213,21 @@ class PaymentFlowViewModel @Inject constructor(
                     if (!otraVenta(venta) && conBilleteEnMano) _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = true)
                     processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenDeLosVales, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, mesaCapturada, papelCapturado)
                     return@launch
+                }
+                // D12 · Opción D: la tarjeta de la DUEÑA (y el `/pay` en efectivo) de una cuenta ya abierta pasa por la misma puerta. La
+                // tarjeta de otra caja no entra en D (puede durar 330 s y quedar en duda): sigue como hoy.
+                if (!ordenCapturada.isNullOrBlank() && continuaCapturada) {
+                    val texto = try {
+                        pasarLaPuerta(venueCapturado, ordenCapturada, llaveCapturada, continua = true, esTarjeta = metodoCapturado == PaymentMethod.CARD, desdeLaCopia = false)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO
+                    }
+                    if (texto != null) {
+                        if (!otraVenta(venta)) noPasoLaPuerta(texto)
+                        return@launch
+                    }
                 }
                 val hasRealProducts = hasProductItems(cart)
 
@@ -2926,7 +3322,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 }
                                 // hz:e0b12f00:D2: nada se creó; la siguiente vez se pide el PIN, con la MISMA llave.
                                 if (!otra && esCortesiaQuePideGerente(error)) {
-                                    alPedirCortesiaElServidor()
+                                    alPedirCortesiaElServidor(error)
                                     return@fold
                                 }
                                 // For CASH payments: queue offline if network/server error
@@ -2948,6 +3344,14 @@ class PaymentFlowViewModel @Inject constructor(
                                         if (otra) return@fold
                                         _state.value = PaymentFlowState.Error(
                                             message = MENSAJE_CUPON_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable && (cart.pideAprobacionDeGerente || pideAprobacionPorElServidor)) {
+                                        // 🔴 D4 (Codex r2 #1): la red cayó al crear la venta. Un descuento que pide aprobación no
+                                        // entra sin red para nadie: encolado subiría sin el PIN (el token es de un uso y 60 s).
+                                        if (otra) return@fold
+                                        _state.value = PaymentFlowState.Error(
+                                            message = DESCUENTO_CON_APROBACION_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
@@ -3137,7 +3541,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // del camino de EFECTIVO (`recordFastCashPayment`).
                     customerId = attachedCustomerId,
                     // R100: un cobro de la bandeja lleva su saldo; su positivo deja la marca «aquí ya se cobró» al reconocerse.
-                    deLaBandeja = cobroDeLaBandeja,
+                    // D14: también la de una cuenta que ya existía cobrada fuera de la bandeja.
+                    deLaBandeja = cobroDeLaBandeja ?: cobroFueraDeLaBandeja(),
                 )
                 recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
@@ -3305,6 +3710,12 @@ class PaymentFlowViewModel @Inject constructor(
         if (bloquearCuentaSinRed()) return
         if (primeroDescartarLosPendientes { processCashPayment(cashReceivedCents) }) return
         if (detenerSiHayValesSinApartado(cartState)) return
+        // D12 (ronda 1): la copia sólo cobra la cuenta que vio. Sin su orden no hay saldo que conciliar (la reserva diría 0 y la cola
+        // nada): no se aparta ni se manda nada, y el flujo se cierra.
+        if (origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA && createdOrderId.isNullOrBlank()) {
+            salirDelFlujo()
+            return
+        }
         if (primeroElPinDeCortesia { processCashPayment(cashReceivedCents) }) return
         isProcessingPayment = true
         val permisoCapturado = tomarPermisoDeCortesia()
@@ -3330,8 +3741,9 @@ class PaymentFlowViewModel @Inject constructor(
         // D1: el papel de esta parte, con lo demás capturado y ANTES de la reserva (null si no es parte de una venta dividida).
         val papelCapturado = papelDeLaParte()
         val ordenCapturada = createdOrderId
+        // D5 · B1: «por la cola de mesas» = la provisional de hoy o la mesa del servidor con `cobroSinRed` (B2b; en B1 nadie la prende).
         val provisionalCapturada = tableSession.current()?.let {
-            it.isProvisional && it.orderId == ordenCapturada
+            (it.isProvisional || it.cobroSinRed) && it.orderId == ordenCapturada
         } == true
         val valesCapturados = valesDelCobro()
         val permiteColaCapturada = valesCapturados == null
@@ -3345,6 +3757,17 @@ class PaymentFlowViewModel @Inject constructor(
         val venta = ventaEnCurso
         val anterioresDeEstaVenta = apartadosDeEstaVenta.toList()
         val mesaCapturada = mesaCapturada(venueCapturado)
+        // D12: quién abrió el cobro, su revalidación y el saldo que la cuenta debe quedar, ANTES de la primera suspensión (viajan en
+        // la reserva, que se escribe antes del POST). Con la copia, el carrito es el saldo de la cuenta: lo esperado tras cobrarlo es 0.
+        val origenCapturado = origenDelCobro
+        val revalidarCapturado = antesDeRecibirEfectivo
+        val alNoPasarCapturado = alNoPasarLaPuerta
+        val continuaCapturada = continuaVentaPartida
+        val desdeLaCopia = origenCapturado == com.avoqado.pos.payment.domain.OrigenDelCobro.CUENTA_ABIERTA_DESDE_LA_COPIA
+        val restanteEsperadoCapturado = if (desdeLaCopia) cart?.let { (it.totalCents - (total - tipCapturado)).coerceAtLeast(0) } else null
+        // 🔴 D13 (Codex r4 #1): la foto de la puerta y lo propio de ESTE intento, antes de la primera espera.
+        val fotoCapturada = fotoDelCobro
+        val propiasCapturadas = anterioresDeEstaVenta + listOfNotNull(llaveCapturada, reservaNoEfectivo)
 
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
             is CashPaymentResult.Success -> {
@@ -3353,6 +3776,11 @@ class PaymentFlowViewModel @Inject constructor(
                     // 🔴 D2 v6 punto 5: mientras el efectivo viaja no hay «Cancelar» (como iOS en `.processing`).
                     _state.value = PaymentFlowState.Processing(total, efectivoEnVuelo = valesCapturados == null)
                     val cajaCapturada = cajaAbiertaAlConfirmar()
+                    // D12 (Codex r1 #4): la caja va con el id del servidor desde el PRIMER envío, traducida UNA vez. Leerla nunca detiene
+                    // el cobro: si falla, va sin caja.
+                    val cajaParaElServidor = if (desdeLaCopia) {
+                        runCatching { cashDrawerRepository.idDeCajaParaElServidor(cajaCapturada, venueCapturado) }.getOrNull()
+                    } else null
 
                     if (cart != null && valesCapturados != null) {
                         // Corrección del agregado 4: con el billete en la mano, la orden de ESTOS vales se cobra aunque ya haya otra venta.
@@ -3386,24 +3814,85 @@ class PaymentFlowViewModel @Inject constructor(
                             conApartado = false, // vales: su cobro no se encola ni se aparta
                             mesaCapturada = mesaCapturada,
                             papel = papelCapturado,
+                            capturaPrevia = origenCapturado.esCapturaPrevia,
+                            cajaParaElServidor = cajaParaElServidor,
+                            restanteEsperadoCents = restanteEsperadoCapturado,
                         )
+                        return@launch
+                    }
+                    // D12 (Codex r3 H3): la otra caja se revalida en vivo JUSTO ANTES de recibir el efectivo. Con efectivo de esta venta ya
+                    // apartado no se vuelve a preguntar: el dinero ya se recibió y se concilia como siempre. Ronda 1: si la revalidación
+                    // truena (también un `withTimeout` suyo, que no es la cancelación de este cobro) es un «no se cobra», nunca un error.
+                    val negado = revalidarCapturado != null && anterioresDeEstaVenta.isEmpty() && try {
+                        revalidarCapturado() != null
+                    } catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        Log.w("💵", "La revalidación previa falló; no se cobra: ${e.message}")
+                        true
+                    }
+                    if (negado) {
+                        if (generacion == paymentGeneration) {
+                            isProcessingPayment = false
+                            salirDelFlujo()
+                        }
                         return@launch
                     }
                     // 🔴 Antes de la primera llamada de red (crear la orden o registrar el cobro).
                     // Rediseño r9: con apartado de efectivo puro, la venta en el cajón la anota su salida de `EN_VUELO`, no este intento.
-                    val apartadoDelCobro = try {
-                        reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado)
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // Una reserva de otra apertura o identidad no modifica la venta vigente.
-                        if (generacion == paymentGeneration && secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
-                            _state.value = PaymentFlowState.Error(
-                                message = e.message ?: "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
-                                source = PaymentErrorSource.UNKNOWN,
-                            )
+                    // 🔴 D13, la puerta del efectivo: la revisión del otro dinero de la orden y el apartado van bajo el MISMO candado (el de
+                    // esa orden), sin nada de por medio. Una revisión antes (en la bandeja) y un apartado después dejaban una rendija (r8).
+                    // TODO apartado de una orden que ya existe lo toma, tenga foto o no (Codex r6 #1): uno sin puerta (mesa, partes 2..N)
+                    // no se cuela entre la lectura y el apartado de otro que sí la tiene. Una venta nueva no tiene orden: no lo toma.
+                    val candado = ordenCapturada?.takeIf { it.isNotBlank() }?.let(com.avoqado.pos.payment.domain.PuertaDelEfectivo::candadoDe)
+                    val apartadoDelCobro = conCandado(candado) {
+                        val freno = frenoDeLaPuerta(fotoCapturada, ordenCapturada, venueCapturado, total - tipCapturado, propiasCapturadas)
+                        if (freno != null) {
+                            // Codex r4 #2: sólo si sigue siendo ESTA venta; la bandera y la pantalla de otra que empezó no son de este intento.
+                            if (generacion == paymentGeneration) {
+                                isProcessingPayment = false
+                                if (secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
+                                    _state.value = PaymentFlowState.Error(message = freno, source = PaymentErrorSource.UNKNOWN)
+                                }
+                            }
+                            return@launch
                         }
-                        return@launch
+                        // D12 · Opción D (merge #199): DESPUÉS de la lectura local de D13 (barata) y bajo el mismo candado, la red: el
+                        // permiso de la caja que abrió la cuenta, JUSTO antes de reservar. Con efectivo de esta venta ya apartado no se
+                        // vuelve a preguntar.
+                        val textoDeLaPuerta = if (anterioresDeEstaVenta.isNotEmpty()) {
+                            renovarLlaveDelPermiso(ordenCapturada, llaveCapturada) // C1: «Reintentar» con otra llave
+                            null
+                        } else try {
+                            pasarLaPuerta(venueCapturado, ordenCapturada, llaveCapturada, continuaCapturada, esTarjeta = false, desdeLaCopia = desdeLaCopia)
+                        } catch (e: Exception) {
+                            currentCoroutineContext().ensureActive()
+                            Log.w("💵", "La puerta de la cuenta falló; no se cobra: ${e.message}")
+                            com.avoqado.pos.core.data.lan.CuentasEntreCajas.NO_SE_GUARDO
+                        }
+                        if (textoDeLaPuerta != null) {
+                            noSeCobraPorLaPuerta(textoDeLaPuerta, generacion, alNoPasarCapturado)
+                            return@launch
+                        }
+                        try {
+                            // Codex r3 #2: la autorización de otra caja se comprueba JUSTO antes del INSERT de la reserva.
+                            reservarConPermisoVigente(venueCapturado, ordenCapturada, llaveCapturada, desdeLaCopia, revisar = anterioresDeEstaVenta.isEmpty()) { vigencia ->
+                                reservarEfectivo(generacion, anterioresDeEstaVenta, cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada, cajaCapturada, actorCapturado, nombreActorCapturado, papelCapturado, restanteEsperadoCents = restanteEsperadoCapturado, antesDeGuardar = vigencia)
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: NoPasoAlGuardar) {
+                            noSeCobraPorLaPuerta(e.texto, generacion, alNoPasarCapturado)
+                            return@launch
+                        } catch (e: Exception) {
+                            // Una reserva de otra apertura o identidad no modifica la venta vigente.
+                            if (generacion == paymentGeneration && secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
+                                _state.value = PaymentFlowState.Error(
+                                    message = e.message ?: "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
+                                    source = PaymentErrorSource.UNKNOWN,
+                                )
+                            }
+                            return@launch
+                        }
                     }
                     // Con apartado de efectivo puro, su venta la anota la salida de `EN_VUELO`; con CUALQUIER apartado, su orden no se cancela.
                     val apartado = apartadoDelCobro == Apartado.EFECTIVO
@@ -3443,6 +3932,9 @@ class PaymentFlowViewModel @Inject constructor(
                                 conApartado = apartado,
                                 mesaCapturada = mesaCapturada,
                                 papel = papelCapturado,
+                                capturaPrevia = origenCapturado.esCapturaPrevia,
+                                cajaParaElServidor = cajaParaElServidor,
+                                restanteEsperadoCents = restanteEsperadoCapturado,
                             )
                         } else {
                             val orderExternalId = llaveCapturada
@@ -3500,6 +3992,9 @@ class PaymentFlowViewModel @Inject constructor(
                                                 conApartado = false,
                                                 mesaCapturada = mesaCapturada,
                                                 papel = papelCapturado,
+                                                capturaPrevia = origenCapturado.esCapturaPrevia,
+                                                cajaParaElServidor = cajaParaElServidor,
+                                                restanteEsperadoCents = restanteEsperadoCapturado,
                                             )
                                         }
                                         return@fold
@@ -3571,10 +4066,15 @@ class PaymentFlowViewModel @Inject constructor(
                                     val papelNuevo = papelDeLaParte()
                                     if (reservado) {
                                         try {
-                                            cashPaymentRepository.actualizarApartado(
-                                                llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId,
-                                                lineasDelTicket = papelNuevo?.copia(totalFinal - tipCapturado),
-                                            )
+                                            // 🔴 D13 (Codex r8 #1): ligar el apartado a la orden recién nacida la hace aparecer en su cola; va
+                                            // bajo el candado de ESA orden, así no se cuela entre la lectura y el apartado de otra pantalla que
+                                            // ya la cobra con foto («Pedidos → detalle»).
+                                            com.avoqado.pos.payment.domain.PuertaDelEfectivo.candadoDe(orderId).withLock {
+                                                cashPaymentRepository.actualizarApartado(
+                                                    llaveCapturada, venueCapturado, totalFinal - tipCapturado, orderId,
+                                                    lineasDelTicket = papelNuevo?.copia(totalFinal - tipCapturado),
+                                                )
+                                            }
                                         } catch (e: kotlinx.coroutines.CancellationException) {
                                             throw e
                                         } catch (e: Exception) {
@@ -3619,6 +4119,9 @@ class PaymentFlowViewModel @Inject constructor(
                                         papel = papelNuevo,
                                         // Founder 18-oct («A»): con red, el aviso ya se lo dijo al cajero; sin red sí es alerta.
                                         precioAceptadoEnPantalla = cambios.isNotEmpty() && totalFinal != total,
+                                        capturaPrevia = origenCapturado.esCapturaPrevia,
+                                        cajaParaElServidor = cajaParaElServidor,
+                                        restanteEsperadoCents = restanteEsperadoCapturado,
                                     )
                                 },
                                 onFailure = { error ->
@@ -3636,7 +4139,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     }
                                     // hz:e0b12f00:D2: nada se creó; su apartado se borra y la siguiente vez se pide el PIN, con la MISMA llave.
                                     if (esCortesiaQuePideGerente(error)) {
-                                        alPedirCortesiaElServidor()
+                                        alPedirCortesiaElServidor(error)
                                         return@fold
                                     }
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
@@ -3653,6 +4156,12 @@ class PaymentFlowViewModel @Inject constructor(
                                         // 🔴 D5: el cupón, igual: necesita validarse, y encolado se subiría como un descuento libre.
                                         _state.value = PaymentFlowState.Error(
                                             message = MENSAJE_CUPON_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable && (cart.pideAprobacionDeGerente || pideAprobacionPorElServidor)) {
+                                        // 🔴 D4 (Codex r2 #1): igual que el cupón: sin red este descuento no entra, ni a la cola.
+                                        _state.value = PaymentFlowState.Error(
+                                            message = DESCUENTO_CON_APROBACION_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
@@ -3867,6 +4376,12 @@ class PaymentFlowViewModel @Inject constructor(
         precioAceptadoEnPantalla: Boolean = false,
         /** D1: el papel de esta parte ([papelDeLaParte]); su copia viaja en el `/pay` y en la cola. Null = no viaja. */
         papel: PapelDelCobro? = null,
+        /** El efectivo ya se recibió: el `/pay` va con `isOfflineReplay`. Quien lo llama lo captura antes de la primera suspensión. */
+        capturaPrevia: Boolean = origenDelCobro.esCapturaPrevia,
+        /** D12 (Codex r1 #4): la caja ya traducida al id del servidor; viaja en el PRIMER envío de una captura previa. */
+        cajaParaElServidor: String? = null,
+        /** D12: el saldo que la cuenta debe quedar; el MISMO que el de la reserva ([reservarEfectivo]). null = no aplica. */
+        restanteEsperadoCents: Int? = null,
     ) {
         // Send amount WITHOUT tip, tip separately
         val subtotal = total - tipCapturado
@@ -3884,7 +4399,9 @@ class PaymentFlowViewModel @Inject constructor(
                     vId,
                     com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH,
                     kotlinx.serialization.json.buildJsonObject {
-                        put("localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
+                        // D5 · B1: la mesa del servidor cobrada por la cola de mesas lleva su id real; la provisional, su UUID local.
+                        val conIdDelServidor = mesaCapturada?.mesa?.let { it.cobroSinRed && !it.isProvisional } == true
+                        put(if (conIdDelServidor) "orderId" else "localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
                         put("amountCents", kotlinx.serialization.json.JsonPrimitive(subtotal))
                         put("tipCents", kotlinx.serialization.json.JsonPrimitive(tipCapturado))
                         // Sin esto, un cobro con terminal ajena hecho sin red
@@ -3898,11 +4415,18 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                         // 🔴 La caja de la venta (efectivo sin red en el turno correcto): el servidor saca de ahí el turno.
                         cajaCapturada?.let { put("cashDrawerSessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                        // D5 · B2b (piloto): lo que la tablet creía que debía la cuenta ANTES de este cobro. Si el SERVIDOR tiene otro
+                        // saldo deja `COBRO_SIN_RED_CON_DIFERENCIA` en la bitácora (no cambia ni rechaza el cobro). La provisional no lo manda.
+                        if (conIdDelServidor) mesaCapturada?.mesa?.takeIf { it.orderId == orderId && it.totalCents >= 0 }
+                            ?.let { put("expectedBalanceBeforeCents", kotlinx.serialization.json.JsonPrimitive(it.totalCents)) }
                     },
                     cashTenderedCents = cashReceivedCents, changeCents = changeCents, splitType = splitCapturado,
                     // 19-oct (mesa sin red retenida): lo que la mesa debía al empezar el cobro, menos lo cobrado. Al confirmarse, si
                     // el servidor (que valora con el precio de HOY) deja otro saldo, el gerente ve DIFERENCIA.
                     restanteEsperadoCents = mesaDelCobro?.takeIf { it.orderId == orderId }?.let { (it.totalCents - subtotal).coerceAtLeast(0) },
+                    // D5 · B0: el id es la llave del cobro. Si el INSERT entró y algo después falló, «Reintentar» reusa la fila (la
+                    // cola ignora un id repetido) en vez de encolar un segundo cobro; el servidor deduplica por este id.
+                    id = llaveCapturada,
                 )
                 recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
                 if (generacion != paymentGeneration) return // ronda 1 (I2): otra venta en pantalla
@@ -3929,9 +4453,10 @@ class PaymentFlowViewModel @Inject constructor(
             tenderType = tenderCapturado,
             capturedVenueId = venueCapturado,
             importeAceptadoCents = subtotal.takeIf { precioAceptadoEnPantalla },
-            capturaPrevia = origenDelCobro.esCapturaPrevia,
+            capturaPrevia = capturaPrevia,
             // D1: la copia del papel de esta parte. Nunca en el intent PAY_CASH de arriba (mesa provisional): queda fuera de la promesa.
             lineasDelTicket = papel?.copia(subtotal),
+            cashDrawerSessionId = cajaParaElServidor,
         )
         payResult.fold(
             onSuccess = { result ->
@@ -4024,6 +4549,7 @@ class PaymentFlowViewModel @Inject constructor(
                         venueId = venueCapturado,
                         cajaDelCobro = cajaCapturada,
                         lineasDelTicket = papel?.copia(total - tipCapturado),
+                        restanteEsperadoCents = restanteEsperadoCents,
                     )
                     recordCashSale(cobrado, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, llaveCapturada, conApartado = conApartado)
                     if (generacion != paymentGeneration) return@fold // ronda 1 (I2): otra venta en pantalla
@@ -4806,6 +5332,14 @@ class PaymentFlowViewModel @Inject constructor(
                 empezarACancelar(intencion.id)
             }
 
+            // D37 (ensayo general F2, D3 12-nov): la lista dijo «Sin conexión… Cobra en efectivo»: «Cancelar» regresa a elegir
+            // método con ESTE cobro, donde está el efectivo. Salir del cobro tiraba la lectura al día de una mesa abierta con
+            // internet y, sin red, ya no se podía volver a cobrar.
+            estado is PaymentFlowState.SelectingTerminal && estado.sinLista == TARJETA_SIN_RED -> {
+                selectedMethod = null
+                _state.value = PaymentFlowState.SelectingPaymentMethod(currentBaseAmount() + currentTipCents)
+            }
+
             else -> {
                 // Nada que cancelar en el servidor: se sale como siempre. Con vales se suelta su apartado (D1, 20-oct).
                 paymentGeneration++
@@ -5216,6 +5750,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun salirDelFlujo() {
+        terminarPermiso(cobrado = false)
         _state.value = PaymentFlowState.Loading
         _debeSalir.value = true
     }
@@ -5794,6 +6329,12 @@ class PaymentFlowViewModel @Inject constructor(
             reservationId = cart.reservationId,
             orderType = cart.orderType,
             couponCode = cart.couponCode,
+            // D2: la etiqueta y el PIN del descuento del cliente, igual en el cobro, `pay-new-order` y la cola sin red.
+            descuentoDelClienteId = cart.descuentoDelClienteQueViaja,
+            autorizacionDelDescuento = cart.autorizacionQueViaja,
+            // D4: la etiqueta del descuento de cuenta del catálogo (el importe sigue en `discount`).
+            descuentoDeCatalogoId = cart.descuentoDeCatalogoQueViaja,
+            descuentoDeCatalogoPideAprobacion = cart.orderDiscount?.pideAprobacion == true,
         )
     }
 
@@ -6093,12 +6634,19 @@ class PaymentFlowViewModel @Inject constructor(
         return cart.items.any { it.type is CartItemType.ProductItem }
     }
 
+    /** D5 · B1: la mesa de este cobro va por la cola de mesas (lo prende B2b antes de abrir el cobro). En B1 siempre `false`. */
+    fun cobroDeMesaSinRed(): Boolean = mesaDelCobro?.cobroSinRed == true
+
     /**
-     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden, sin mesa, sin dividir) que un descuento deja en $0.
-     * No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin «Ya pagó
-     * de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la deja
-     * en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
+     * D15 (28-oct): venta rápida NUEVA (importe sin productos, sin orden creada todavía, sin mesa, sin dividir) que un descuento
+     * deja en $0. No hay nada que mandarle a la terminal (el SERVIDOR rechaza un cobro de terminal ≤ 0): sólo efectivo de $0, sin
+     * «Ya pagó de otra forma» ni «Dividir importe». Mira la BASE, no base + propina (Codex plan r1 #4). Con orden (un premio que la
+     * deja en $0) la tarjeta sigue: ya cierra como efectivo de $0 en `processPaymentMethod`. Espejo de iOS
      * (`PaymentFlowViewModel.ventaRapidaEnCero`, mismo texto).
+     *
+     * D2: «sin orden» es la de ANTES de cobrar. Ese efectivo de $0 casi siempre va por `/fast`, pero con el cupón o el descuento del
+     * cliente ([esVentaRapidaDividida]) crea su orden. Con el del cliente es una cortesía y, sin `orders:comp`, pide antes el PIN de un
+     * gerente ([primeroElPinDeCortesia]); el cupón no (lo calcula el SERVIDOR).
      */
     fun ventaRapidaEnCero(): Boolean {
         val cart = cartState ?: return false
@@ -6106,10 +6654,19 @@ class PaymentFlowViewModel @Inject constructor(
             esPagoCompleto() && currentBaseAmount() == 0
     }
 
-    /** Importe sin productos cobrado EN PARTES: la parte 1 crea su orden (misma regla que `OrderRepository.aceptaCrearOrden`). */
+    /**
+     * ¿La venta de puros importes (sin productos) crea ORDEN en vez de ir por `/fast`? Misma regla que
+     * `OrderRepository.aceptaCrearOrden`, y la usan el cobro con tarjeta, el de efectivo y el PIN de la cortesía. Sí cuando:
+     * - se cobra EN PARTES: la parte 1 crea su orden y las siguientes le abonan (D2 etapa 2);
+     * - lleva cupón (D5): un cobro rápido no tiene orden donde ligarlo y el cupón nunca contaría;
+     * - lleva el descuento del cliente (D2, spec punto 15): `/fast` no lleva descuento, etiqueta ni PIN; tampoco sin red.
+     * El nombre viene del primer caso; no se cambió para no tocar sus llamadas.
+     */
     private fun esVentaRapidaDividida(cart: CartState?, split: String): Boolean =
-        // D5: con cupón también, para que el cupón tenga una orden donde ligarse y contar.
-        cart != null && cart.items.isNotEmpty() && (split != "FULLPAYMENT" || cart.couponCode != null)
+        cart != null && cart.items.isNotEmpty() &&
+            (split != "FULLPAYMENT" || cart.couponCode != null || cart.descuentoDelClienteQueViaja != null ||
+                // D4: `/fast` no lleva el descuento que pide aprobación ni su PIN: la venta crea su orden.
+                (cart.orderDiscount?.pideAprobacion == true && cart.descuentoDeCatalogoQueViaja != null))
 
     /** Esta apertura del cobro: una orden de vales armada sólo se reusa dentro de ella (regla 4, `AreaTicketSession.cobroQueLaArmo`). */
     private var cobroDeValesId: String = java.util.UUID.randomUUID().toString()
@@ -6381,9 +6938,13 @@ class PaymentFlowViewModel @Inject constructor(
     companion object {
         /** hz:e0b12f00:D2: el permiso de cortesía, el mismo que pide el SERVIDOR (`orders:comp`). */
         private const val PERMISO_DE_CORTESIA = "orders:comp"
+        /** D4: el que aprueba un % o fijo con «Requiere aprobación» («Aplicar descuentos en TPV»). */
+        private const val PERMISO_DE_APROBACION = "tpv-orders:discount"
 
         /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
         const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."
+        /** D5 · B1: por qué la mesa cobrada por la cola de mesas es sólo efectivo (la prende B2b). */
+        const val TEXTO_MESA_SIN_RED = "Sin internet: se cobra con lo que sabe esta tablet y se sube solo. Sólo efectivo."
 
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"

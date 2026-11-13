@@ -17,6 +17,38 @@ data class IntentSinResolver(
     @ColumnInfo(name = "payload_json") val payloadJson: String,
 )
 
+/** D5 · B2a: las mismas filas, con su id (la llave de la ronda o del cobro). */
+internal const val FILAS_SIN_RESOLVER_SQL = "SELECT id, type, status, payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND status IN ('PENDING','HELD','REJECTED')"
+
+data class FilaSinResolver(
+    @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "type") val type: String,
+    @ColumnInfo(name = "status") val status: String,
+    @ColumnInfo(name = "payload_json") val payloadJson: String,
+)
+
+/** D5 · B2b: lo que la foto de una mesa necesita de la cola: lo posterior a ella (cualquier estado) y lo que sigue sin resolver. */
+/** D5 · B3 (C3): el rechazo de «Liberar mesa» porque la cuenta debe (código genérico `BUSINESS_RULE`, texto del SERVIDOR). */
+internal const val RECHAZO_MESA_CON_SALDO = "Cannot clear table with unpaid order"
+/**
+ * El mismo «Liberar mesa» rechazado varias veces porque la cuenta debe (misma mesa) cuenta una vez, como se ve en la lista. Un rechazo
+ * con otro motivo cuenta aparte (Codex b2b-r4).
+ */
+internal const val REJECTED_COUNT_SQL = "SELECT COUNT(*) FROM (SELECT 1 FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' AND q15Reason IS NULL GROUP BY CASE WHEN type = 'CLEAR_TABLE' AND error_code = 'BUSINESS_RULE' AND message LIKE '$RECHAZO_MESA_CON_SALDO%' THEN 'CLEAR_TABLE|' || payload_json ELSE id END)"
+
+/** El «Liberar mesa» rechazado porque la cuenta debe: sus gemelos (misma mesa, mismo motivo) se ven y se resuelven juntos. */
+internal fun SyncIntentEntity.esMesaConSaldo() =
+    type == "CLEAR_TABLE" && errorCode == "BUSINESS_RULE" && message?.startsWith(RECHAZO_MESA_CON_SALDO) == true
+internal const val FILAS_DESDE_SQL = "SELECT id, type, status, seq, payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND (seq > :desde OR status IN ('PENDING','HELD','REJECTED'))"
+
+data class FilaConSecuencia(
+    @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "type") val type: String,
+    @ColumnInfo(name = "status") val status: String,
+    @ColumnInfo(name = "seq") val seq: Long,
+    @ColumnInfo(name = "payload_json") val payloadJson: String,
+)
+
 /**
  * Offline-first Corte B — el OUTBOX de intents (patrón "Libreta" de la TPV
  * generalizado a mutaciones de orden). Toda acción de mesas hecha sin red se
@@ -89,6 +121,12 @@ data class SyncIntentPayload(
     val payloadJson: String,
     @ColumnInfo(name = "created_at")
     val createdAt: Long,
+    /** D5 · T: el id del intent. En un `PAY_CASH` (desde B0) ES la llave del cobro, y su venta del cajón es `idDeLaVentaEnEfectivo(id)`. */
+    @ColumnInfo(name = "id")
+    val id: String = "",
+    /** D5 · T: la retención para revisión (Q15). Un `PAY_CASH` retenido no sale solo (`SyncOutbox`): no protege por pareja exacta. */
+    @ColumnInfo(name = "q15Reason")
+    val q15Reason: String? = null,
 )
 
 
@@ -213,6 +251,10 @@ interface SyncIntentDao {
 
     @Query(INTENTS_SIN_RESOLVER_SQL)
     suspend fun sinResolver(venueId: String): List<IntentSinResolver>
+    @Query(FILAS_SIN_RESOLVER_SQL)
+    suspend fun filasSinResolver(venueId: String): List<FilaSinResolver>
+    @Query(FILAS_DESDE_SQL)
+    suspend fun filasDesde(venueId: String, desde: Long): List<FilaConSecuencia>
 
     @Query("SELECT * FROM cached_payloads WHERE venue_id = :venueId AND cache_key IN (:keys) LIMIT 100")
     suspend fun preparationBefore(venueId: String, keys: List<String>): List<CachedPayloadEntity>
@@ -319,13 +361,13 @@ interface SyncIntentDao {
      * hoy. La consulta sólo TRAE el dato; quién queda dentro de la ventana lo decide
      * `PendingCashSales`, en Kotlin, que es donde los tests lo fijan.
      */
-    @Query("SELECT payload_json, created_at FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
+    @Query("SELECT id, payload_json, created_at, q15Reason FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
     suspend fun pendingPayloads(venueId: String, type: String): List<SyncIntentPayload>
 
     @Query(Q15_HISTORY_COUNT_SQL)
     fun observarRevisionesQ15(venueId:String,revisadas:Boolean,busqueda:String):kotlinx.coroutines.flow.Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' AND q15Reason IS NULL")
+    @Query(REJECTED_COUNT_SQL)
     suspend fun rejectedCount(venueId: String): Int
 
     /** Cuarentena: intents rechazados, más recientes primero, para la pantalla de resolución. */

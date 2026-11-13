@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import com.avoqado.pos.core.data.sync.FilaDeLaOrden
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -46,6 +48,11 @@ class TableOrderCuentaGarantizadaTest {
     private val printer = mockk<PrinterService>(relaxed = true)
     private val storage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } returns "v-cuenta-garantizada" }
     private val empty = TrabajoSinResolver(0, 0, emptySet(), 0)
+    /** D5 · B2a: una mesa provisional se cobra con lo de disco. Borrador real y la cola de esta tablet (lo que se encoló + su apertura). */
+    private val raizDisco = java.nio.file.Files.createTempDirectory("cuenta-garantizada").toFile()
+    private val disco = TableRoundDraftStore(raizDisco)
+    private val cola = mutableListOf<FilaDeLaOrden>()
+    @After fun limpiarDisco() { raizDisco.deleteRecursively() }
     private fun detail(total: Double = 100.0, id: String = "o1") = OrderDetail(id = id, orderNumber = "ORD-1", total = total, items = emptyList(), version = 3)
 
     private fun vm(provisional: Boolean = false, keepSession: Boolean = false, drafts: TableRoundDraftStore? = null): TableOrderViewModel {
@@ -53,7 +60,10 @@ class TableOrderCuentaGarantizadaTest {
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
         every { outbox.acks } returns acks
         every { outbox.pendingCount } returns MutableStateFlow(0)
-        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers { arg<String>(3) }
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+            arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+        }
+        coEvery { outbox.filasSinResolverDeLaOrden(any(), any()) } answers { listOf(FilaDeLaOrden("open", "OPEN_TABLE", "PENDING", null)) + cola }
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns empty
         every { printer.getDefaultPrinter(PrinterRole.RECEIPT) } returns mockk(relaxed = true)
         val config = mockk<PrintConfigRepository>(relaxed = true)
@@ -395,7 +405,7 @@ class TableOrderCuentaGarantizadaTest {
     }
 
     @Test fun `provisional suma total real con modificadores y conserva valor al recrear VM`() = runTest {
-        val subject = vm(provisional = true)
+        val subject = vm(provisional = true, drafts = disco)
         try {
             subject.addProductWithModifiers(Product(id = "p", name = "Artículo", priceValue = 50.0), 2,
                 listOf(SelectedModifier("g", "Opciones", "m", "Extra", 500)), null)
@@ -403,8 +413,9 @@ class TableOrderCuentaGarantizadaTest {
             assertEquals(11000, session.current()!!.valorRondasSinRedCents)
             coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(2, 0, setOf("OPEN_TABLE", "ADD_ITEMS"), 0)
             assertTrue(subject.preparePagar()); assertEquals(11000, session.current()!!.totalCents)
-            val recreated = vm(keepSession = true)
+            val recreated = vm(keepSession = true, drafts = disco)
             try {
+                cola += FilaDeLaOrden("cobro", "PAY_CASH", "PENDING", 3300)
                 coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(3, 0, setOf("OPEN_TABLE", "ADD_ITEMS", "PAY_CASH"), 3300)
                 assertTrue(recreated.preparePagar()); assertEquals(7700, session.current()!!.totalCents)
                 assertTrue(session.current()!!.isProvisional)
@@ -462,7 +473,7 @@ class TableOrderCuentaGarantizadaTest {
     }
 
     @Test fun `cortesia enviada vale cero y permite registrar cierre de cero`() = runTest {
-        val subject = vm(provisional = true)
+        val subject = vm(provisional = true, drafts = disco)
         try {
             subject.addProductWithModifiers(Product(id = "p", name = "Artículo", priceValue = 50.0), 2, emptyList(), null,
                 isCortesia = true, cortesiaReason = "Cortesía autorizada")
@@ -528,7 +539,7 @@ class TableOrderCuentaGarantizadaTest {
     }
 
     @Test fun `caller real de Pagar usa saldo con modificadores y deja borrador separado`() = runTest {
-        val subject = vm(provisional = true)
+        val subject = vm(provisional = true, drafts = disco)
         try {
             subject.addProductWithModifiers(Product(id = "p", name = "Artículo", priceValue = 50.0), 2,
                 listOf(SelectedModifier("g", "Opciones", "m", "Extra", 500)), null)
@@ -543,7 +554,7 @@ class TableOrderCuentaGarantizadaTest {
     }
 
     @Test fun `caller real de Pagar llega al cierre cero por cortesia enviada`() = runTest {
-        val subject = vm(provisional = true)
+        val subject = vm(provisional = true, drafts = disco)
         try {
             subject.addProductWithModifiers(Product(id = "p", name = "Artículo", priceValue = 50.0), 2, emptyList(), null,
                 isCortesia = true, cortesiaReason = "Cortesía autorizada")
@@ -683,10 +694,11 @@ class TableOrderCuentaGarantizadaTest {
     }
 
     @Test fun `abono de outbox se resta una vez despues de reabrir contador bruto`() = runTest {
-        val a = vm(provisional = true); val f = floor()
+        val a = vm(provisional = true, drafts = disco); val f = floor()
         try {
             a.addCustomAmount("Ronda", 11000); a.sendRound(); advanceUntilIdle()
             assertTrue(a.exitToFloor()); f.startOrdering(table()) {}
+            cola += FilaDeLaOrden("abono", "PAY_CASH", "PENDING", 5000)
             coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(1, 0, setOf("PAY_CASH"), 5000)
             assertTrue(a.preparePagar()); assertEquals(6000, session.current()!!.totalCents)
             assertEquals(11000, session.current()!!.valorRondasSinRedCents)
@@ -738,6 +750,54 @@ class TableOrderCuentaGarantizadaTest {
         } finally { done.complete(Result.success(Unit)); a.viewModelScope.cancel(); f.viewModelScope.cancel() }
     }
 
+    // D24 (hz:e5ee98bc:D24): con el efectivo de la mesa en la cola de cobros, «liberar mesa» llegaba al servidor antes que su pago.
+    @Test fun `D24 con el cobro en la cola de cobros no se pide liberar la mesa y su sesion se cierra`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(cobroEnCola = true); advanceUntilIdle()
+            coVerify(exactly = 0) { repository.clearTable(any(), any()) }
+            assertNull(session.current())
+            // Pagada aquí y sin subir: al volver a abrirla no se cobra otra vez sin leer la cuenta del servidor.
+            f.startOrdering(table(provisional = false)) {}
+            assertTrue(session.current()!!.requiereLecturaServidor)
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D24 con el cobro confirmado por el servidor la mesa se sigue liberando`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(); advanceUntilIdle()
+            coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1") }
+            assertNull(session.current())
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D24 los dos llamadores reales avisan si el cobro quedo en la cola de cobros`() {
+        for (path in listOf("src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt",
+            "src/main/java/com/avoqado/pos/pos/presentation/checkout/CheckoutScreen.kt")) {
+            val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+            assertEquals(path, 1, source.componentsCount("finishTableAfterPayment("))
+            assertTrue(path, source.contains("finishTableAfterPayment(cobroEnCola = completion.parteEnCola != null)"))
+        }
+    }
+
+    // D26 (hz:e5ee98bc:D26): en la terminal de mano el buscador de la mesa no cabía con el teclado y los avisos, y abría con el texto viejo.
+    @Test fun `D26 el buscador de la mesa ocupa toda la cuenta en telefono y se vacia al elegir un producto`() {
+        val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt"
+        val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+        assertTrue(source.contains("} else if (showSearch && !showCombos) {"))
+        assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); catalogViewModel.updateSearchQuery(\"\"); showSearch = false }"))
+        // En tableta el campo conserva el texto a propósito: la cajera agrega varios productos de la misma búsqueda.
+        assertEquals(1, source.componentsCount("onProductTap = { handleProductTap(it); showSearch = false }"))
+        // hz:cc708532:D3: también en tableta el buscador ocupa todo su panel (ya no va metido debajo de la barra y las pestañas).
+        assertEquals(2, source.componentsCount("if (showSearch && !showCombos) {"))
+        assertEquals(0, source.componentsCount("} else if (showSearch) {"))
+    }
+
     @Test fun `ACK cash completo desde piso invalida solo cuenta pagada y parcial la conserva`() = runTest {
         val a = vm(provisional = true); val f = floor()
         try {
@@ -772,11 +832,19 @@ class TableOrderCuentaGarantizadaTest {
         try {
             a.addCustomAmount("Ronda", 11000); a.sendRound(); advanceUntilIdle()
             session.clear(); f.startOrdering(table()) {}
-            reopened = vm(keepSession = true, drafts = drafts); reopened.loadCheck(); advanceUntilIdle()
+            reopened = vm(keepSession = true, drafts = drafts)
+            // D5 · B2a (7b): sin la evidencia en la cola no hay número: gris, nunca cero ni «cortesía».
+            val enLaCola = cola.toList(); cola.clear()
+            coEvery { outbox.filasSinResolverDeLaOrden(any(), any()) } returns emptyList()
+            reopened.loadCheck(); advanceUntilIdle()
             assertFalse(session.current()!!.saldoSinRedConocido)
             var enteredPayment = false; prepararPagoDeMesa(reopened) { enteredPayment = true }
             assertFalse(reopened.saldoDeMesaConocido); assertFalse(enteredPayment)
             assertEquals("No se pudo recuperar el saldo completo de esta cuenta. Conéctate y reabre la cuenta antes de cobrar; tus productos siguen guardados.", reopened.blockedNotice.value)
+            // Con su apertura y su ronda en la cola, el número sale de disco: 11000, no cero (antes de B2a quedaba en gris).
+            coEvery { outbox.filasSinResolverDeLaOrden(any(), any()) } returns listOf(FilaDeLaOrden("open", "OPEN_TABLE", "PENDING", null)) + enLaCola
+            var cobro: Int? = null; prepararPagoDeMesa(reopened) { cobro = session.current()!!.totalCents }
+            assertEquals(11000, cobro)
         } finally { a.viewModelScope.cancel(); reopened?.viewModelScope?.cancel(); f.viewModelScope.cancel(); root.deleteRecursively() }
     }
 
@@ -1012,8 +1080,10 @@ class TableOrderCuentaGarantizadaTest {
     }
 
     @Test fun `T4 la cuenta provisional conserva saldo sin inventar cargo de un cheque inexistente`() = runTest {
-        val subject = vm(provisional = true)
-        session.start(session.current()!!.copy(totalCents = 11500, valorRondasSinRedCents = 11500, serviceChargeCents = 1500))
+        val subject = vm(provisional = true, drafts = disco)
+        // D5 · B2a: el saldo de la provisional sale de disco (una ronda real), no de un número puesto en memoria.
+        subject.addCustomAmount("Ronda", 11500); subject.sendRound(); advanceUntilIdle()
+        session.start(session.current()!!.copy(serviceChargeCents = 1500))
         try {
             assertNull(subject.check.value); assertFalse(subject.chequeAlDia.value)
             assertTrue(subject.preparePagar())
@@ -1048,6 +1118,74 @@ class TableOrderCuentaGarantizadaTest {
                 assertTrue(subject.preparePagar()); assertEquals(11500, session.current()!!.totalCents)
                 assertEquals(0, session.current()!!.serviceChargeCents)
             }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // D3 (11-nov, ensayo 27): sin internet, la caja abrió una mesa que tomó otro aparato. Sin poder leer su cuenta decía
+    // «no tiene cargos. Agrega productos…»; la cajera recapturó y al volver la red el SERVIDOR sumó las dos rondas ($90 por $45).
+    private val sinLeer = "La cuenta todavía no se puede leer del servidor, así que este aparato no ve lo que ya tiene. " +
+        "No vuelvas a capturar lo que ya se pidió: cóbrala cuando vuelva la conexión."
+    private val sinCargos = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
+
+    @Test fun `P1 sin leer la cuenta del servidor no dice que no tiene cargos ni invita a recapturar`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(totalCents = 0))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            assertFalse(subject.cuentaCompletaAqui)
+            assertFalse(subject.preparePagar())
+            assertEquals(sinLeer, subject.blockedNotice.value)
+            assertEquals("Mismo texto en el botón Pagar de la pantalla", sinLeer, motivoSinArticulos(subject.cuentaCompletaAqui, cargando = false))
+            // Codex r2 #3: vuelve la red y se lee la cuenta (el toque bloqueado la vuelve a pedir): el aviso deja de ser cierto.
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(25.0))
+            subject.loadCheck(); advanceUntilIdle()
+            assertTrue(subject.cuentaCompletaAqui)
+            assertNull(subject.blockedNotice.value)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `cuenta vacia leida al dia o abierta sin red aqui sigue diciendo que no tiene cargos`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(totalCents = 0))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            assertTrue(subject.cuentaCompletaAqui)
+            assertFalse(subject.preparePagar())
+            assertEquals(sinCargos, subject.blockedNotice.value)
+        } finally { subject.viewModelScope.cancel() }
+        val provisional = vm(provisional = true)
+        try { assertTrue("La mesa abierta sin red en este aparato es toda local", provisional.cuentaCompletaAqui) }
+        finally { provisional.viewModelScope.cancel() }
+        assertEquals(sinCargos, motivoSinArticulos(cuentaCompletaAqui = true, cargando = true))
+        assertEquals("La cuenta se está actualizando. Intenta en un momento.", motivoSinArticulos(cuentaCompletaAqui = false, cargando = true))
+    }
+
+    // 27c (11-nov): ya sincronizado todo, la caja seguía mostrando «cambios sin sincronizar: cóbrala cuando se sincronicen»
+    // junto a «Pagar $90.00». El acuse de ESTA cuenta cambia ese estado; el siguiente toque vuelve a decidir.
+    @Test fun `acuse de la ronda de esta cuenta quita el aviso viejo de cambios sin sincronizar`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail())
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(1, 0, setOf("ADD_ITEMS"), 0)
+            assertFalse(subject.preparePagar())
+            val aviso = "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
+            assertEquals(aviso, subject.blockedNotice.value)
+            acks.emit(SyncAck("ajena", "ACKED", result = buildJsonObject { put("orderId", "otra") })); advanceUntilIdle()
+            acks.emit(SyncAck("rechazada", "REJECTED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertEquals("Un acuse ajeno o un rechazo no lo quitan", aviso, subject.blockedNotice.value)
+            acks.emit(SyncAck("primera", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertEquals("Codex r1: con otra ronda todavía en la cola, el aviso sigue siendo cierto", aviso, subject.blockedNotice.value)
+            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns empty
+            acks.emit(SyncAck("ronda", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertNull(subject.blockedNotice.value)
+            assertTrue(subject.preparePagar())
+            subject.showBlockedReason("No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.")
+            acks.emit(SyncAck("otra-ronda", "ACKED", result = buildJsonObject { put("orderId", "o1") })); advanceUntilIdle()
+            assertEquals("Codex r2: el acuse sólo quita su propio aviso",
+                "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.", subject.blockedNotice.value)
         } finally { subject.viewModelScope.cancel() }
     }
 

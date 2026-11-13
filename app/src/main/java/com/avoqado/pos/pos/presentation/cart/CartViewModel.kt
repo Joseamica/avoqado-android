@@ -150,7 +150,56 @@ data class CartState(
      * qué entrega. Nunca entra al dinero, a la orden ni al ticket.
      */
     val renglonesParaVer: List<com.avoqado.pos.payment.data.model.PaymentItem> = emptyList(),
+    /**
+     * 🔴 DINERO (D2). El PIN del gerente para el descuento del cliente, atado a cliente, descuento y tope. Sin permiso propio, la
+     * venta con el descuento del cliente sólo se crea con éste ([puedeCrearOrdenConDescuentoDelCliente]). Muere con la venta.
+     */
+    val autorizacionDelDescuento: com.avoqado.pos.pos.data.model.AutorizacionDelDescuento? = null,
+    /** D2: clientes (por id) a los que en ESTA venta se les quitó su descuento («Quitar» u otro descuento encima): no vuelve solo. */
+    val descuentosDeClienteQuitados: Set<String> = emptySet(),
 ) {
+    /** D2: el descuento de cuenta es el que el negocio le asignó al cliente ([DESCUENTO_DEL_CLIENTE_SOURCE]). */
+    val descuentoEsDelCliente: Boolean get() = orderDiscount?.source == DESCUENTO_DEL_CLIENTE_SOURCE
+
+    /**
+     * 🔴 DINERO (D2, spec punto 18). ¿Esta venta puede crearse con el descuento del cliente que trae? Sin él, siempre. Con él: con
+     * `discounts:apply` ([conPermiso]), o con el PIN de un gerente del MISMO cliente ([clienteId]) y descuento cuyo tope alcanza el
+     * monto de ahora. Lo revisan las tres entradas (cobro, «Pagar después», saldo de tarjeta); el SERVIDOR vuelve a decidirlo.
+     */
+    fun puedeCrearOrdenConDescuentoDelCliente(clienteId: String?, conPermiso: Boolean): Boolean {
+        if (!descuentoEsDelCliente || conPermiso) return true
+        val autorizacion = autorizacionDelDescuento ?: return false
+        return autorizacion.customerId == clienteId && autorizacion.discountId == orderDiscount?.id &&
+            orderDiscountCents <= autorizacion.topeCents
+    }
+
+    /** D2: el `discountId` del descuento del cliente que viaja con la venta (con monto); null si la venta no lo lleva. */
+    val descuentoDelClienteQueViaja: String? get() = orderDiscount?.id?.takeIf { descuentoEsDelCliente && orderDiscountCents > 0 }
+
+    /**
+     * D4 (hz:f34960c5:D4): la venta lleva un descuento que pide la aprobación de un gerente (de cuenta, cupón o renglón). Sin
+     * «Aplicar descuentos en TPV», el PIN se pide al COBRAR, antes de crear la venta y de apartar el efectivo; sin red no se cobra
+     * con él. El SERVIDOR lo vuelve a revisar.
+     */
+    val pideAprobacionDeGerente: Boolean
+        get() = (orderDiscount?.pideAprobacion == true && orderDiscountCents > 0) ||
+            items.any { it.itemDiscountPideAprobacion && !it.itemDiscountId.isNullOrBlank() && !it.isCortesia }
+
+    /**
+     * D4: el id del descuento de CUENTA del catálogo. Viaja como etiqueta junto al importe (`discount`, que no cambia) para que el
+     * SERVIDOR revise con SU catálogo si pide aprobación y guarde quién la dio. Codex r2 #2: también cuando la foto del carrito dice
+     * que no la pide (el catálogo pudo cambiar después): manda el SERVIDOR. No para cupón (el servidor lo busca por su código),
+     * referido, descuento del cliente, cortesía ni manual (traen `source` o un id que no es del catálogo).
+     */
+    val descuentoDeCatalogoQueViaja: String?
+        get() = orderDiscount?.takeIf {
+            it.couponCode == null && it.source == null && orderDiscountCents > 0 && (it.pideAprobacion || ID_DEL_CATALOGO.matches(it.id))
+        }?.id
+
+    /** D2: el token del PIN de ESE descuento, si lo hay. Va en el cuerpo de la venta, nunca en el encabezado ni en la llave. */
+    val autorizacionQueViaja: String?
+        get() = autorizacionDelDescuento?.takeIf { it.discountId == descuentoDelClienteQueViaja }?.token
+
     /**
      * 🔴 DINERO. Las líneas con el precio que decidió el servidor ([aplicarCambiosDePrecio]). Con [cambios] vacío devuelve el
      * MISMO estado: no corrige ni congela nada.
@@ -356,6 +405,12 @@ const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no 
 /** hz:e0b12f00:D2: el «Descuento de la cuenta» deja los productos en $0 y quien cobra no puede dar cortesías. */
 const val CORTESIA_NO_PAGAR_DESPUES =
     "Este descuento deja la cuenta en \$0: es una cortesía. Cóbrala para que un gerente la autorice con su PIN, o quita el descuento."
+/** D4: el id de una fila del catálogo (cuid v1 del SERVIDOR). Los descuentos que arma la caja llevan prefijo (`manual_`, `cortesia_`…). */
+private val ID_DEL_CATALOGO = Regex("^c[a-z0-9]{24}$")
+
+/** D4: «Pagar después» con un descuento que pide aprobación, sin el permiso. */
+const val APROBACION_NO_PAGAR_DESPUES =
+    "Este descuento necesita la aprobación de un gerente. Cobra la venta para que la autorice con su PIN, o quita el descuento."
 fun pagarDespuesGuardadaSinRed(cliente: String) = "Sin conexión: la cuenta de $cliente quedó guardada en el aparato y se sube sola."
 fun pagarDespuesOtroImporte(cliente: String, registradoCents: Int, esperadoCents: Int) =
     "La cuenta de $cliente quedó por ${com.avoqado.pos.core.util.formatMoneyFromCents(registradoCents)}, " +
@@ -411,6 +466,122 @@ fun parteSinRedSaldoDistinto(carritoCents: Int, servidorCents: Int): String =
 /** Regla 10: una venta de vales con abono que el carrito no trae. Lo pinta el aviso fijo «Cobrar saldo». */
 data class SaldoDeVales(val orderId: String, val saldoCents: Int)
 
+// MARK: - D2 · el descuento del cliente (spec 2026-11-11, «Bloque C v3»)
+
+/**
+ * La marca (`Discount.source`) del descuento de cuenta que el negocio le asignó al cliente. Es la hermana de
+ * `REFERRAL_NEW_CUSTOMER` (el referido): cambiar o quitar al cliente quita sólo lo que lleva esta marca.
+ */
+const val DESCUENTO_DEL_CLIENTE_SOURCE = "DESCUENTO_DEL_CLIENTE"
+
+/** El permiso que pide el descuento del cliente (y su PIN). */
+const val PERMISO_DESCUENTO_DEL_CLIENTE = "discounts:apply"
+
+/** `<Nombre>` de los textos: el del cliente, o «este cliente» si no se sabe. */
+private fun nombreParaElDescuento(nombre: String?): String = nombre?.trim()?.takeIf { it.isNotEmpty() } ?: "este cliente"
+
+/** El 403 del SERVIDOR, y lo que dicen las tres entradas al frenar una venta sin permiso ni PIN suficiente. */
+fun textoNoPuedeAplicarDescuentoDelCliente(nombre: String?): String =
+    "Tu puesto no puede aplicar el descuento de ${nombreParaElDescuento(nombre)}. Pide autorización o quítalo."
+
+/** `10 %`, `12.5 %` (sin ceros de más) o `$50.00`, como en la TPV. */
+internal fun textoDelValor(d: com.avoqado.pos.customers.data.model.DescuentoDelCliente): String =
+    if (d.type.uppercase() == "PERCENTAGE") {
+        java.math.BigDecimal.valueOf(d.value).stripTrailingZeros().toPlainString() + " %"
+    } else {
+        formatMoney(d.value)
+    }
+
+/** El descuento del cliente como descuento de la cuenta, con su marca. */
+internal fun com.avoqado.pos.customers.data.model.DescuentoDelCliente.comoDescuentoDeCuenta(): Discount = Discount(
+    id = discountId,
+    name = name,
+    value = value,
+    type = type,
+    scope = "ORDER",
+    source = DESCUENTO_DEL_CLIENTE_SOURCE,
+    maxDiscountAmount = maxDiscountAmount,
+)
+
+/**
+ * D2: lo que el descuento del cliente le quita a la cuenta al ponerse con «Usar el de…» o con el PIN: el otro descuento de cuenta y el
+ * premio, como se dicen en los avisos («Manual 5 %», «el premio «Café gratis»»). null = nada.
+ */
+internal fun CartState.loQueReemplazaElDelCliente(): List<String>? = listOfNotNull(
+    orderDiscount?.takeUnless { descuentoEsDelCliente }?.let { "«${it.name}»" },
+    pendingStampReward?.let { "el premio «${it.etiqueta}»" },
+).takeIf { it.isNotEmpty() }
+
+/** D2: lo que descontaría [d] (el descuento del cliente) en esta cuenta; el de ahora si ya está puesto (con su monto congelado). */
+internal fun CartState.montoDelDescuentoDelCliente(d: Discount): Int =
+    if (descuentoEsDelCliente) orderDiscountCents else copy(orderDiscount = d, descuentoDeCuentaCongelado = null).orderDiscountCents
+
+/**
+ * D2: por qué el descuento del cliente no está (o no alcanza) en la cuenta. Se pinta en el carrito bajo los descuentos; [boton]
+ * dispara [accion]. null en el carrito = nada que decir.
+ */
+data class AvisoDescuentoDelCliente(val texto: String, val accion: Accion? = null, val boton: String? = null) {
+    enum class Accion { PEDIR_AUTORIZACION, USAR_EL_DEL_CLIENTE }
+
+    companion object {
+        fun pedirAutorizacion(texto: String, conBoton: Boolean) =
+            AvisoDescuentoDelCliente(texto, Accion.PEDIR_AUTORIZACION.takeIf { conBoton }, "Pedir autorización".takeIf { conBoton })
+    }
+}
+
+/**
+ * D2: el aviso que toca, de puro estado (sin red sólo cuenta si [sinRedAlPedir]: el último «Pedir autorización» no salió).
+ * - Puesto: con permiso nada; sin PIN válido de ESTE cliente, el texto del 403 (un carrito restaurado por otra sesión); con PIN
+ *   cuyo tope ya no alcanza, «subió a $X».
+ * - Sin poner (y no quitado): combo ⇒ no se pone solo; con permiso o PIN ⇒ «Usar el de <Nombre>»; sin ellos ⇒ PIN (con otro
+ *   descuento o premio también: el cambio se hace hasta que el gerente autoriza). Mesas: ni se pone ni se avisa (fase 3).
+ */
+internal fun avisoDelDescuentoDelCliente(
+    estado: CartState,
+    cliente: CartViewModel.SelectedCustomer?,
+    conPermiso: Boolean,
+    pinPrendido: Boolean,
+    sinRedAlPedir: Boolean,
+): AvisoDescuentoDelCliente? {
+    val nombre = nombreParaElDescuento(cliente?.name)
+    val sinRed = AvisoDescuentoDelCliente.pedirAutorizacion(
+        "Sin conexión: pedir la autorización del descuento de $nombre necesita internet.", conBoton = true,
+    )
+    if (estado.descuentoEsDelCliente) {
+        if (estado.puedeCrearOrdenConDescuentoDelCliente(cliente?.id, conPermiso)) return null
+        if (sinRedAlPedir) return sinRed
+        val autorizacion = estado.autorizacionDelDescuento
+            ?.takeIf { it.customerId == cliente?.id && it.discountId == estado.orderDiscount?.id }
+        val texto = if (autorizacion == null) {
+            textoNoPuedeAplicarDescuentoDelCliente(cliente?.name)
+        } else {
+            "El descuento de $nombre subió a ${formatCents(estado.orderDiscountCents)}: pide autorización otra vez."
+        }
+        return AvisoDescuentoDelCliente.pedirAutorizacion(texto, conBoton = pinPrendido)
+    }
+    val d = cliente?.descuentoDelCliente ?: return null
+    if (cliente.id in estado.descuentosDeClienteQuitados || estado.items.any { it.locked }) return null
+    val valor = textoDelValor(d)
+    val autorizado = estado.autorizacionDelDescuento?.let { it.customerId == cliente.id && it.discountId == d.discountId } == true
+    return when {
+        estado.items.any { it.isPromotionLine } ->
+            AvisoDescuentoDelCliente("Con combos en la cuenta el descuento de $nombre no se pone solo.")
+        // Lo puede poner el puesto (o el PIN que ya trae): con otro descuento o premio en la cuenta, se ofrece cambiarlo; sin
+        // nada que lo bloquee es sólo el respaldo (se pone solo), y nunca se queda la cajera sin saber que el cliente tiene uno.
+        conPermiso || autorizado -> AvisoDescuentoDelCliente(
+            "$nombre tiene $valor de descuento.", AvisoDescuentoDelCliente.Accion.USAR_EL_DEL_CLIENTE, "Usar el de $nombre",
+        )
+        sinRedAlPedir -> sinRed
+        // Sin monto (carrito vacío) no hay nada que autorizar todavía: el botón sale con el primer artículo. Si con el PIN se va a
+        // quitar otro descuento o el premio, se dice ANTES de pedirlo.
+        else -> AvisoDescuentoDelCliente.pedirAutorizacion(
+            "$nombre tiene $valor de descuento. Tu puesto no puede aplicarlo" +
+                (estado.loQueReemplazaElDelCliente()?.let { "; con la autorización se quita ${it.joinToString(" y ")}." } ?: "."),
+            conBoton = pinPrendido && estado.montoDelDescuentoDelCliente(d.comoDescuentoDeCuenta()) > 0,
+        )
+    }
+}
+
 @HiltViewModel
 class CartViewModel @Inject constructor(
     val productsRepository: ProductsRepository,
@@ -444,6 +615,8 @@ class CartViewModel @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** D4 (5-nov): la obligación de entregar un paquete vendido, en disco antes de cobrar. Default para las pruebas que no la usan. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** D2: el PIN del gerente para el descuento del cliente. Default para las pruebas que no lo usan; sin él no se ofrece el PIN. */
+    private val managerOverrideCoordinator: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -955,8 +1128,15 @@ class CartViewModel @Inject constructor(
     val referralPlanAllowed: Boolean
         get() = planManager.hasFeature("REFERRAL_PROGRAM")
 
-    /** Cliente atado a la venta: el `id` es lo que viaja al server, `name` lo que se pinta. */
-    data class SelectedCustomer(val id: String, val name: String)
+    /**
+     * Cliente atado a la venta: el `id` es lo que viaja al server, `name` lo que se pinta. D2: [descuentoDelCliente] es el que el
+     * negocio le asignó, tal como llegó en el cliente que se eligió (nunca se vuelve a buscar en la memoria de clientes).
+     */
+    data class SelectedCustomer(
+        val id: String,
+        val name: String,
+        val descuentoDelCliente: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
+    )
 
     /**
      * 🔴 El cliente de esta venta. Vive en el ViewModel —y no en un `remember` de
@@ -985,6 +1165,40 @@ class CartViewModel @Inject constructor(
      */
     private val _selectedCustomer = MutableStateFlow<SelectedCustomer?>(null)
     val selectedCustomer: StateFlow<SelectedCustomer?> = _selectedCustomer.asStateFlow()
+
+    /**
+     * D2: lo que el aviso del descuento del cliente no puede leer del carrito. [sinRedAlPedir]: el último «Pedir autorización» no
+     * salió por falta de red (se limpia al volver a pedir o al cambiar de cliente; con la red de vuelta ya no se dice).
+     * [revision]: sube cuando el cobro se frenó, para releer el permiso (otra persona pudo entrar con su PIN sin tocar el carrito).
+     */
+    private data class EventosDelAviso(val sinRedAlPedir: Boolean = false, val revision: Int = 0)
+    private val _eventosDelAviso = MutableStateFlow(EventosDelAviso())
+
+    /** D2: el aviso del descuento del cliente, siempre derivado del carrito, el cliente, la red y la mesa (nunca se queda viejo). */
+    val avisoDescuentoDelCliente: StateFlow<AvisoDescuentoDelCliente?> =
+        combine(
+            _cartState, _selectedCustomer, _eventosDelAviso, conexionConAvoqado,
+            // Cobrar una mesa es la fase 3, y una venta a medio cobrar ya decidió su descuento al crear su orden: ahí no se dice nada.
+            // Una mesa PIDIENDO no cuenta: el mostrador sigue vendiendo con la mesa abierta (y la ronda no usa este carrito).
+            combine(tableSession.active, _pendingSplitOrder) { mesa, aMedias ->
+                mesa?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING || aMedias != null
+            },
+        ) { estado, cliente, eventos, conectado, fueraDelMostrador ->
+            // Casi toda venta no trae descuento del cliente: no se leen los permisos (cifrados) en cada tecla.
+            if (fueraDelMostrador || (cliente?.descuentoDelCliente == null && !estado.descuentoEsDelCliente)) {
+                null
+            } else {
+                avisoDelDescuentoDelCliente(estado, cliente, puedeAplicarDescuentos(), pinPrendido(), eventos.sinRedAlPedir && !conectado)
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** D2: lo que se dijo al quitar el descuento del cliente por otro, o al frenar el cobro (toast ámbar «Descuento del cliente»). */
+    private val _avisoDeDescuento = MutableStateFlow<String?>(null)
+    val avisoDeDescuento: StateFlow<String?> = _avisoDeDescuento.asStateFlow()
+
+    fun consumeAvisoDeDescuento() {
+        _avisoDeDescuento.value = null
+    }
 
     /**
      * 🔴 El premio de cartilla no quedó como lo anunció el carrito al diferir la venta («pagar
@@ -1019,6 +1233,8 @@ class CartViewModel @Inject constructor(
             .onEach { apartado ->
                 if (habiaApartado && apartado == null) {
                     _cartState.update { state -> state.copy(items = state.items.filter { it.areaTicketId == null }) }
+                    // D2: sin vales, el descuento del cliente que bloqueaban vuelve a ponerse solo (si no se quitó).
+                    ponerDescuentoDelClienteSiToca()
                 }
                 habiaApartado = apartado != null
             }
@@ -1386,6 +1602,7 @@ class CartViewModel @Inject constructor(
             itemDiscountValue = discount?.value,
             itemDiscountName = discount?.name,
             itemDiscountMax = discount?.maxDiscountAmount,
+            itemDiscountPideAprobacion = discount?.pideAprobacion == true,
             serviceCourse = immediateServiceCourse(),
             catalogAt = product.catalogAt,
         )
@@ -1507,6 +1724,8 @@ class CartViewModel @Inject constructor(
                 serviceCourse = times[elegida.grupo.id],
             )
         }
+        // D2: con un combo el descuento del cliente no se queda (spec punto 9: la app no lo pone con combos).
+        quitarElDelClientePorOtro()
         _cartState.update { it.copy(items = it.items + nuevas) }
         freezePreparationForPendingProducts()
         Log.d("🎁", "Promoción aplicada: ${promotion.name} (${nuevas.size} líneas, instancia $instanceId)")
@@ -1519,6 +1738,13 @@ class CartViewModel @Inject constructor(
      * y el cajero no tendría cómo notarlo.
      */
     fun quitarPromocion(instanceId: String) {
+        quitarLineasDePromocion(instanceId)
+        // D2: sin el combo, el descuento del cliente que bloqueaba vuelve a ponerse solo (si no se quitó). Sólo aquí, en lo que
+        // quita el cajero: el cobro por producto quita renglones pagados con [removeItem] y su orden ya decidió su descuento.
+        ponerDescuentoDelClienteSiToca()
+    }
+
+    private fun quitarLineasDePromocion(instanceId: String) {
         _cartState.update { state ->
             val restantes = state.items.filterNot { it.promotionInstanceId == instanceId }
             state.copy(
@@ -1536,7 +1762,7 @@ class CartViewModel @Inject constructor(
         // impide que quede media promoción aunque alguien no lo pregunte.
         val promotionInstanceId = _cartState.value.items.firstOrNull { it.id == itemId }?.promotionInstanceId
         if (promotionInstanceId != null) {
-            quitarPromocion(promotionInstanceId)
+            quitarLineasDePromocion(promotionInstanceId)
             return
         }
         val areaTicketId = _cartState.value.items.firstOrNull { it.id == itemId }?.areaTicketId
@@ -1590,6 +1816,8 @@ class CartViewModel @Inject constructor(
             return false
         }
         removeItem(itemId)
+        // D2: lo que quitó el cajero (un combo, un vale sin apartado) pudo ser lo que bloqueaba el descuento del cliente.
+        ponerDescuentoDelClienteSiToca()
         return true
     }
 
@@ -1656,8 +1884,12 @@ class CartViewModel @Inject constructor(
 
     fun applyOrderDiscount(discount: Discount?) {
         if (_cartState.value.items.any { it.locked }) return
+        // D2: quitar el del cliente desde la hoja de descuentos es su «Quitar»; otro descuento encima lo quita y lo dice.
+        if (discount == null) quitarDescuentoDelCliente() else quitarElDelClientePorOtro()
         // Otro descuento es otra cuenta: el monto fijo del anterior ya no aplica.
         _cartState.update { it.copy(orderDiscount = discount, descuentoDeCuentaCongelado = null) }
+        // D2: quitar un manual (o cupón) que estaba antes deja lugar al del cliente, si no se le quitó en esta venta.
+        if (discount == null) ponerDescuentoDelClienteSiToca()
     }
 
     fun setOrderNote(note: String?) {
@@ -1730,7 +1962,7 @@ class CartViewModel @Inject constructor(
             com.avoqado.pos.core.util.VenueTimeZone.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         }"
-        if (!savedCartsRepository.saveCart(comoCarritoGuardado(state, cartName, _selectedCustomer.value?.id))) return false
+        if (!savedCartsRepository.saveCart(comoCarritoGuardado(state, cartName, _selectedCustomer.value))) return false
         // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
         // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
         // venta siguiente nace con él.
@@ -1743,7 +1975,7 @@ class CartViewModel @Inject constructor(
     private fun comoCarritoGuardado(
         state: CartState,
         cartName: String,
-        customerId: String?,
+        cliente: SelectedCustomer?,
         // D8: la sucursal del intento cuando se sabe (ponerASalvo); null = la pone el almacén al guardar (Codex r2 #1).
         venueId: String? = null,
     ): SavedCart =
@@ -1801,7 +2033,12 @@ class CartViewModel @Inject constructor(
             orderNote = state.orderNote,
             orderTaxPercent = state.orderTaxPercent,
             reservationId = state.reservationId,
-            attachedCustomerId = customerId,
+            attachedCustomerId = cliente?.id,
+            // D2: el nombre y el descuento del cliente, el PIN del gerente y los «quitados» viajan con la venta.
+            attachedCustomerName = cliente?.name,
+            attachedCustomerDescuento = cliente?.descuentoDelCliente,
+            autorizacionDelDescuento = state.autorizacionDelDescuento,
+            descuentosDeClienteQuitados = state.descuentosDeClienteQuitados,
             llavePagarDespues = state.llavePagarDespues,
             // D8: el carrito se enseña sólo en su sucursal.
             venueId = venueId,
@@ -2325,12 +2562,14 @@ class CartViewModel @Inject constructor(
                 orderTaxPercent = null,
             )
         }
+        // D2: si ya no queda vale, el descuento del cliente vuelve a ponerse solo (con vales no se pone).
+        ponerDescuentoDelClienteSiToca()
         return true
     }
 
     // MARK: - Referral capture (Plan 5B)
 
-    /** Constant tag for the order discount when it came from a referral. */
+    /** Constant tag for the order discount when it came from a referral. Su hermana: [DESCUENTO_DEL_CLIENTE_SOURCE] (D2). */
     private val REFERRAL_DISCOUNT_SOURCE = "REFERRAL_NEW_CUSTOMER"
 
     /**
@@ -2360,29 +2599,257 @@ class CartViewModel @Inject constructor(
         // ella sin volver a crearla, así que un premio nuevo (o quitarlo) cambiaría lo cobrado sin
         // canjearse (hallazgo P1 de Codex, ronda 2).
         if (!puedeCambiarPremio()) return false
-        _cartState.update { it.copy(pendingStampReward = premio?.takeIf { p -> p.id.isNotBlank() }) }
+        val nuevo = premio?.takeIf { p -> p.id.isNotBlank() }
+        // D2: el premio y el descuento del cliente nunca suman: el premio que llega después lo quita.
+        if (nuevo != null) quitarElDelClientePorOtro()
+        _cartState.update { it.copy(pendingStampReward = nuevo) }
+        if (nuevo == null) ponerDescuentoDelClienteSiToca()
         return true
     }
 
     /** false mientras la venta se cobra por partes contra una orden que ya existe. */
     fun puedeCambiarPremio(): Boolean = _pendingSplitOrder.value == null
 
-    fun setSelectedCustomer(customerId: String?, customerName: String? = null) {
-        val previous = _selectedCustomer.value?.id
+    /**
+     * D2: la lista de clientes pasa el cliente que recibió, con su descuento (spec r4 #1: nunca se vuelve a buscar en memoria). Es la
+     * lectura más nueva del cliente: su descuento —o su `null`— manda aunque sea el mismo cliente (C10, Codex r5 #2).
+     */
+    fun setSelectedCustomer(customer: com.avoqado.pos.customers.data.model.Customer) =
+        elegirCliente(customer.id, customer.fullName, customer.descuentoDelCliente, traeSuDescuento = true)
+
+    /** Tarjeta escaneada, alta nueva, quitar al cliente: sin descuento, el MISMO cliente conserva el que ya se sabía. */
+    fun setSelectedCustomer(
+        customerId: String?,
+        customerName: String? = null,
+        descuentoDelCliente: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
+    ) = elegirCliente(customerId, customerName, descuentoDelCliente, traeSuDescuento = false)
+
+    private fun elegirCliente(
+        customerId: String?,
+        customerName: String?,
+        descuentoDelCliente: com.avoqado.pos.customers.data.model.DescuentoDelCliente?,
+        traeSuDescuento: Boolean,
+    ) {
+        val anterior = _selectedCustomer.value
+        val previous = anterior?.id
         val id = customerId?.trim()?.takeIf { it.isNotEmpty() }
-        val nuevo = id?.let { SelectedCustomer(it, customerName?.trim()?.takeIf { n -> n.isNotEmpty() } ?: "Cliente") }
+        // D2: la tarjeta escaneada del MISMO cliente no trae su descuento; se conserva el que ya se sabía.
+        val descuento = if (traeSuDescuento) descuentoDelCliente else descuentoDelCliente ?: anterior?.descuentoDelCliente?.takeIf { previous == id }
+        val nuevo = id?.let { SelectedCustomer(it, customerName?.trim()?.takeIf { n -> n.isNotEmpty() } ?: "Cliente", descuento) }
         if (_selectedCustomer.value == nuevo) return
         _selectedCustomer.value = nuevo
-        if (previous == id) return
-        // 🔴 El premio es de UN cliente: con otro, el servidor no lo aplica y el carrito ya
-        // habría bajado el total por un descuento que no existe.
-        if (_cartState.value.pendingStampReward != null) {
-            _cartState.update { it.copy(pendingStampReward = null) }
+        if (previous != id) {
+            _eventosDelAviso.update { it.copy(sinRedAlPedir = false) }
+            // D2: el descuento del cliente (y su PIN) es de ESE cliente: con otro, o sin cliente, se va sólo lo marcado.
+            _cartState.update { e ->
+                e.copy(
+                    orderDiscount = e.orderDiscount.takeUnless { e.descuentoEsDelCliente },
+                    descuentoDeCuentaCongelado = e.descuentoDeCuentaCongelado.takeUnless { e.descuentoEsDelCliente },
+                    autorizacionDelDescuento = e.autorizacionDelDescuento?.takeIf { it.customerId == id },
+                )
+            }
+            // 🔴 El premio es de UN cliente: con otro, el servidor no lo aplica y el carrito ya
+            // habría bajado el total por un descuento que no existe.
+            if (_cartState.value.pendingStampReward != null) {
+                _cartState.update { it.copy(pendingStampReward = null) }
+            }
+            if (previous != null) {
+                // Customer changed (incl. switch-to-null). Any cached referral
+                // state is for the previous customer, drop it.
+                clearReferral()
+            }
+        } else if (anterior?.descuentoDelCliente != descuento && !hayVentaAMedias() && !cobrandoUnaMesa()) {
+            // D2 (C10, Codex r5 #2): el MISMO cliente volvió con otro descuento (el panel lo cambió o se lo quitó). Lo marcado con los
+            // datos viejos se va y abajo se vuelve a poner con los nuevos (un «Quitar» de esta venta se respeta). El PIN de OTRO
+            // descuento se va; si sólo cambió el monto, el tope del PIN decide.
+            _cartState.update { e ->
+                val marcado = e.orderDiscount?.takeIf { e.descuentoEsDelCliente }
+                val viejo = marcado != null && (
+                    descuento == null || marcado.id != descuento.discountId || marcado.type != descuento.type ||
+                        marcado.value != descuento.value || marcado.maxDiscountAmount != descuento.maxDiscountAmount
+                    )
+                e.copy(
+                    orderDiscount = e.orderDiscount.takeUnless { viejo },
+                    descuentoDeCuentaCongelado = e.descuentoDeCuentaCongelado.takeUnless { viejo },
+                    autorizacionDelDescuento = e.autorizacionDelDescuento?.takeIf { it.discountId == descuento?.discountId },
+                )
+            }
         }
-        if (previous != null) {
-            // Customer changed (incl. switch-to-null). Any cached referral
-            // state is for the previous customer, drop it.
-            clearReferral()
+        ponerDescuentoDelClienteSiToca()
+    }
+
+    // MARK: - D2 · el descuento del cliente
+
+    /** ¿Esta sesión puede aplicar descuentos a la cuenta? Se lee al momento: otra persona pudo entrar con su PIN. */
+    private fun puedeAplicarDescuentos(): Boolean = com.avoqado.pos.core.domain.RoleManager(secureStorage).canApplyDiscounts
+
+    /** El negocio tiene prendido el PIN de autorización de gerente (y hay quién lo pida). */
+    private fun pinPrendido(): Boolean = managerOverrideCoordinator != null && secureStorage.managerPinOverrideEnabled
+
+    /** 🔴 DINERO (D2). [CartState.puedeCrearOrdenConDescuentoDelCliente] con el cliente y la sesión de ahora. */
+    fun puedeCrearOrdenConDescuentoDelCliente(): Boolean =
+        _cartState.value.puedeCrearOrdenConDescuentoDelCliente(_selectedCustomer.value?.id, puedeAplicarDescuentos())
+
+    /**
+     * 🔴 DINERO (D2, spec punto 18). La entrada del cobro («Cobrar», F12, upsell, dividir): una venta con el descuento del cliente
+     * sin permiso ni PIN suficiente (un carrito restaurado por otra sesión, una cuenta que creció) no se manda; se dice con el texto
+     * del 403. Una venta a medio cobrar ya tiene su orden: no se vuelve a crear. true = detenerse.
+     */
+    fun detenerCobroPorDescuentoDelCliente(): Boolean {
+        if (hayVentaAMedias() || puedeCrearOrdenConDescuentoDelCliente()) return false
+        _avisoDeDescuento.value = textoNoPuedeAplicarDescuentoDelCliente(_selectedCustomer.value?.name)
+        releerAvisoDelDescuento()
+        return true
+    }
+
+    /**
+     * Una entrada (cobro, «Pagar después», saldo de tarjeta) frenó por el descuento del cliente: el permiso se leyó ahora, y el aviso
+     * del carrito lo vuelve a leer para ofrecer «Pedir autorización» de inmediato (otra persona pudo entrar sin tocar el carrito).
+     */
+    fun releerAvisoDelDescuento() {
+        _eventosDelAviso.update { it.copy(revision = it.revision + 1) }
+    }
+
+    /**
+     * Cobrar una mesa es la fase 3 del descuento del cliente: ahí no se pone ni se avisa. Una mesa PIDIENDO no cuenta: el mostrador
+     * vende con la mesa abierta (la pestaña Cobrar sigue a la mano) y la ronda de la mesa no pasa por este carrito.
+     */
+    private fun cobrandoUnaMesa(): Boolean = tableSession.current()?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING
+
+    /** El PIN del gerente que ya trae el carrito es de ESTE cliente y ESTE descuento. */
+    private fun autorizadoPara(e: CartState, clienteId: String, discountId: String): Boolean =
+        e.autorizacionDelDescuento?.let { it.customerId == clienteId && it.discountId == discountId } == true
+
+    /**
+     * D2 (spec punto 11): pone el descuento del cliente elegido si toca. No toca si la cuenta ya trae otro descuento de cuenta, un
+     * premio, un combo o vales, si se le quitó en esta venta, o con una venta a medio cobrar (su orden ya existe). Se pone con
+     * `discounts:apply` o con el PIN de un gerente de ESTE cliente y descuento; si no, lo dice el aviso.
+     */
+    private fun ponerDescuentoDelClienteSiToca() {
+        val cliente = _selectedCustomer.value ?: return
+        val d = cliente.descuentoDelCliente ?: return
+        if (hayVentaAMedias() || cobrandoUnaMesa()) return
+        _cartState.update { e ->
+            if (e.orderDiscount != null || e.pendingStampReward != null || cliente.id in e.descuentosDeClienteQuitados ||
+                e.items.any { it.isPromotionLine || it.locked } || !(autorizadoPara(e, cliente.id, d.discountId) || puedeAplicarDescuentos())
+            ) {
+                e
+            } else {
+                e.copy(orderDiscount = d.comoDescuentoDeCuenta(), descuentoDeCuentaCongelado = null)
+            }
+        }
+    }
+
+    /**
+     * D2 (spec punto 12): llega otro descuento de cuenta, un premio o un combo con el del cliente puesto: el del cliente se va,
+     * queda «quitado» en esta venta y se dice. Nunca conviven dos.
+     */
+    private fun quitarElDelClientePorOtro() {
+        if (!_cartState.value.descuentoEsDelCliente) return
+        val cliente = _selectedCustomer.value
+        _cartState.update { e ->
+            e.copy(
+                orderDiscount = null,
+                descuentoDeCuentaCongelado = null,
+                descuentosDeClienteQuitados = e.descuentosDeClienteQuitados + listOfNotNull(cliente?.id),
+            )
+        }
+        _avisoDeDescuento.value =
+            "Se quitó el descuento de ${nombreParaElDescuento(cliente?.name)}: no se suma con otro descuento ni con un premio o un combo."
+    }
+
+    /** «Quitar» en la línea del descuento del cliente: vale para esta venta y este cliente (aunque lo vuelvan a elegir). */
+    fun quitarDescuentoDelCliente() {
+        // Con una venta a medio cobrar su orden ya lleva el descuento: quitarlo aquí cobraría distinto de lo registrado.
+        if (hayVentaAMedias()) return
+        val id = _selectedCustomer.value?.id ?: return
+        _cartState.update { e ->
+            if (!e.descuentoEsDelCliente) e
+            else e.copy(orderDiscount = null, descuentoDeCuentaCongelado = null, descuentosDeClienteQuitados = e.descuentosDeClienteQuitados + id)
+        }
+    }
+
+    /**
+     * «Usar el de <Nombre>»: quita el otro descuento de cuenta y el premio, y pone el del cliente. Sólo si el puesto puede ponerlo
+     * (permiso o PIN de este cliente); si no, pide el PIN primero y el cambio se hace hasta que el gerente autoriza: nunca se queda la
+     * cuenta sin ninguno de los dos.
+     */
+    fun usarDescuentoDelCliente() {
+        val cliente = _selectedCustomer.value ?: return
+        val d = cliente.descuentoDelCliente ?: return
+        if (!autorizadoPara(_cartState.value, cliente.id, d.discountId) && !puedeAplicarDescuentos()) {
+            pedirAutorizacionDelDescuento()
+            return
+        }
+        cambiarAlDelCliente(cliente)
+    }
+
+    /**
+     * El cambio de «Usar el de <Nombre>» (o el que sigue al PIN): fuera el otro descuento de cuenta y el premio, se pone el del cliente
+     * y se dice qué se cambió. Con combo o vales no se toca nada: ahí el del cliente no se pondría y la cuenta quedaría sin ninguno.
+     */
+    private fun cambiarAlDelCliente(cliente: SelectedCustomer) {
+        if (cliente.descuentoDelCliente == null || _cartState.value.items.any { it.locked || it.isPromotionLine } ||
+            !puedeCambiarPremio() || cobrandoUnaMesa()
+        ) return
+        val antes = _cartState.value
+        _cartState.update { e ->
+            e.copy(
+                orderDiscount = e.orderDiscount.takeIf { e.descuentoEsDelCliente },
+                descuentoDeCuentaCongelado = e.descuentoDeCuentaCongelado.takeIf { e.descuentoEsDelCliente },
+                pendingStampReward = null,
+                descuentosDeClienteQuitados = e.descuentosDeClienteQuitados - cliente.id,
+            )
+        }
+        ponerDescuentoDelClienteSiToca()
+        val reemplazado = antes.loQueReemplazaElDelCliente()
+        if (reemplazado != null && _cartState.value.descuentoEsDelCliente) {
+            _avisoDeDescuento.value = "Se cambió ${reemplazado.joinToString(" y ")} por el descuento de ${nombreParaElDescuento(cliente.name)}."
+        }
+    }
+
+    private var pidiendoAutorizacion = false
+
+    /**
+     * «Pedir autorización» (spec puntos 11 y 14): el PIN de un gerente para `discounts:apply`, atado a este cliente, este descuento y
+     * el monto de AHORA (lo que ve el gerente en el teclado). El token y su tope se guardan en el carrito y el descuento se pone; si la
+     * cuenta crece después y pasa el tope, el aviso pide otro. Necesita red: sin ella se dice y no se abre el teclado.
+     */
+    fun pedirAutorizacionDelDescuento() {
+        _eventosDelAviso.update { it.copy(sinRedAlPedir = false) }
+        if (cobrandoUnaMesa()) return
+        val cliente = _selectedCustomer.value ?: return
+        val estado = _cartState.value
+        val descuento = estado.orderDiscount?.takeIf { estado.descuentoEsDelCliente }
+            ?: cliente.descuentoDelCliente?.comoDescuentoDeCuenta() ?: return
+        if (!hayConexionConAvoqado()) {
+            _eventosDelAviso.update { it.copy(sinRedAlPedir = true) }
+            return
+        }
+        val coordinador = managerOverrideCoordinator?.takeIf { pinPrendido() } ?: return
+        if (pidiendoAutorizacion) return
+        val monto = estado.montoDelDescuentoDelCliente(descuento)
+        if (monto <= 0) return
+        val llave = "descuento-cliente:${cliente.id}:${descuento.id}:$monto"
+        pidiendoAutorizacion = true
+        viewModelScope.launch {
+            val token = try {
+                if (coordinador.preauthorize(PERMISO_DESCUENTO_DEL_CLIENTE, llave, "Descuento de ${cliente.name} −${formatCents(monto)}")) {
+                    coordinador.tomarPreautorizado(PERMISO_DESCUENTO_DEL_CLIENTE, llave)
+                } else {
+                    null
+                }
+            } finally {
+                pidiendoAutorizacion = false
+            }
+            // Canceló o venció; o llegó tarde y ya es otro cliente u otro descuento (Codex r5): no se guarda ni se cambia nada.
+            val ahora = _selectedCustomer.value
+            if (token == null || ahora?.id != cliente.id || ahora?.descuentoDelCliente?.discountId != descuento.id) return@launch
+            _cartState.update {
+                it.copy(autorizacionDelDescuento = com.avoqado.pos.pos.data.model.AutorizacionDelDescuento(token, monto, cliente.id, descuento.id))
+            }
+            // Con el PIN, el descuento del cliente se pone; si la cuenta traía otro o un premio, el cambio se hace hasta AHORA.
+            cambiarAlDelCliente(cliente)
         }
     }
 
@@ -2478,7 +2945,7 @@ class CartViewModel @Inject constructor(
      * Leaves a manual/coupon discount alone — the cashier may have applied
      * one independently before the referral validation kicked in.
      */
-    private fun clearReferralDiscountOnly() {
+    private fun clearReferralDiscountOnly(reponerElDelCliente: Boolean = true) {
         _cartState.update { state ->
             if (state.orderDiscount?.source == REFERRAL_DISCOUNT_SOURCE) {
                 state.copy(orderDiscount = null, descuentoDeCuentaCongelado = null)
@@ -2486,6 +2953,9 @@ class CartViewModel @Inject constructor(
                 state
             }
         }
+        // D2: sin el referido, el descuento del cliente que bloqueaba vuelve a ponerse solo (si no se quitó). No tras el cobro
+        // (la captura que falla corre cuando la venta ya cerró o sigue a medias: su orden ya decidió).
+        if (reponerElDelCliente) ponerDescuentoDelClienteSiToca()
     }
 
     /**
@@ -2507,6 +2977,8 @@ class CartViewModel @Inject constructor(
             scope = "ORDER",
             source = REFERRAL_DISCOUNT_SOURCE,
         )
+        // D2: el referido tampoco se suma al descuento del cliente.
+        quitarElDelClientePorOtro()
         _cartState.update { it.copy(orderDiscount = discount, descuentoDeCuentaCongelado = null) }
     }
 
@@ -2582,7 +3054,7 @@ class CartViewModel @Inject constructor(
             onFailure = { e ->
                 (e as? ReferralValidationException)?.let { ex ->
                     _referralValidation.value = ReferralCaptureUiState.Invalid(ex.reason)
-                    clearReferralDiscountOnly()
+                    clearReferralDiscountOnly(reponerElDelCliente = false)
                 }
                 Log.e("🎁", "captureReferralOnPayment failed", e)
                 false
@@ -2700,6 +3172,8 @@ class CartViewModel @Inject constructor(
                 itemDiscountName = vivo?.name ?: savedItem.itemDiscountName,
                 // Con el descuento vivo a la mano su tope manda aunque sea null (el dueño pudo quitarlo).
                 itemDiscountMax = if (vivo != null) vivo.maxDiscountAmount else savedItem.itemDiscountMax,
+                // D4: lo dice el catálogo vivo; sin él (borrado o sin cargar) decide el SERVIDOR al crear la venta.
+                itemDiscountPideAprobacion = vivo?.pideAprobacion == true,
                 // El combo vuelve como combo: mismo `promotionInstanceId` y las
                 // mismas elecciones, o el carrito restaurado cobraría el 2x1
                 // como dos productos a precio de lista.
@@ -2730,6 +3204,8 @@ class CartViewModel @Inject constructor(
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
             llavePagarDespues = savedCart.llavePagarDespues,
+            autorizacionDelDescuento = savedCart.autorizacionDelDescuento,
+            descuentosDeClienteQuitados = savedCart.descuentosDeClienteQuitados,
         )
         // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
         // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior
@@ -2747,7 +3223,15 @@ class CartViewModel @Inject constructor(
         // "Agregar cliente" sobre una venta que sí lo lleva — y para que ese
         // cliente llegue al cobro, que antes se perdía por el mismo motivo que el
         // bug de rotación: la pantalla tenía su propia copia y ésta no la tocaba.
-        setSelectedCustomer(savedCart.attachedCustomerId)
+        //
+        // D2: directo, como `volverAlCarrito`: `setSelectedCustomer` le quitaría al carrito restaurado el descuento del cliente y
+        // su PIN (son «del cliente anterior» para él). El referido ya se limpió arriba y lo restaurado no trae premio. Después se
+        // revisa con ESTA sesión: lo que quedó sin poner se pone si ahora se puede; lo puesto sin permiso ni PIN lo frena el cobro.
+        _eventosDelAviso.update { it.copy(sinRedAlPedir = false) }
+        _selectedCustomer.value = savedCart.attachedCustomerId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            SelectedCustomer(it, savedCart.attachedCustomerName?.trim()?.takeIf { n -> n.isNotEmpty() } ?: "Cliente", savedCart.attachedCustomerDescuento)
+        }
+        ponerDescuentoDelClienteSiToca()
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
         return Restauracion.Hecha
     }
@@ -2815,6 +3299,14 @@ class CartViewModel @Inject constructor(
         // hz:e0b12f00:D2: una cuenta que queda en $0 es una cortesía; sin permiso la autoriza un gerente con su PIN al COBRAR (una deuda
         // de $0 no tiene nada que diferir, y su reenvío sin red se registraría sin PIN).
         venta.descuentoDeCuentaRegala && !com.avoqado.pos.core.domain.RoleManager(secureStorage).canCompOrders -> CORTESIA_NO_PAGAR_DESPUES
+        // D4: un descuento que pide aprobación, sin el permiso: el PIN del gerente no viaja en «Pagar después» (se pide al COBRAR).
+        venta.pideAprobacionDeGerente && !com.avoqado.pos.core.domain.RoleManager(secureStorage).canApproveDiscounts ->
+            APROBACION_NO_PAGAR_DESPUES
+        // 🔴 D2 (spec punto 18): el descuento del cliente sin permiso ni PIN suficiente (carrito restaurado por otra sesión, cuenta que
+        // creció) no se manda: ni en línea ni a la fila sin red, donde subiría con el descuento sin nadie que lo autorizara.
+        !venta.puedeCrearOrdenConDescuentoDelCliente(customerId, puedeAplicarDescuentos()) ->
+            textoNoPuedeAplicarDescuentoDelCliente(_selectedCustomer.value?.takeIf { it.id == customerId }?.name)
+                .also { releerAvisoDelDescuento() }
         customerId.isBlank() -> "Selecciona un cliente para diferir el pago"
         // Lo mismo que pedía `createOrder` antes de mandar nada.
         venta.selectedStaffId.isBlank() -> "No staff"
@@ -2855,6 +3347,10 @@ class CartViewModel @Inject constructor(
                 note = venta.orderNote,
                 splitType = "FULLPAYMENT",
                 couponCode = venta.couponCode,
+                descuentoDelClienteId = venta.descuentoDelClienteQueViaja,
+                autorizacionDelDescuento = venta.autorizacionQueViaja,
+                descuentoDeCatalogoId = venta.descuentoDeCatalogoQueViaja,
+                descuentoDeCatalogoPideAprobacion = venta.orderDiscount?.pideAprobacion == true,
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")
@@ -2862,7 +3358,8 @@ class CartViewModel @Inject constructor(
             // El carrito ya enseñó el total con el premio: la cuenta que queda abierta tiene que ser ésa (se canjea al crearla).
             val premio = venta.pendingStampRewardId?.takeIf { venta.premioAplica }
             // D5: el cupón, igual que el premio, sólo se aplica con el SERVIDOR enfrente: nunca a la fila de reenvío.
-            val sinFila = premio != null || venta.couponCode != null
+            // D4 (Codex r1 #5): igual un descuento que pide aprobación: sin red no entra para nadie.
+            val sinFila = premio != null || venta.couponCode != null || venta.pideAprobacionDeGerente
             val llave = venta.llavePagarDespues ?: "pay-later:${UUID.randomUUID()}"
             // La llave es de la venta desde ya: cualquier intento siguiente de ESTA venta la reusa (R2-2).
             _cartState.update { if (it.identidadDeVenta == venta.identidadDeVenta) it.copy(llavePagarDespues = llave) else it }
@@ -2895,7 +3392,7 @@ class CartViewModel @Inject constructor(
                 // D9: la venta viaja con su fila, con el id de su copia y el cliente elegido: si el SERVIDOR rechaza el REENVÍO
                 // y cierra su llave, vuelve a «Carritos guardados» (`PayLaterQueue.trasElRechazo`).
                 venta = comoCarritoGuardado(venta.copy(carritoGuardadoId = idDeLaCopia, llavePagarDespues = llave), cliente.name,
-                    cliente.id, venueId),
+                    cliente, venueId),
             )
             _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents)
             // Codex A-5: la copia guardada lleva la llave y la marca de cobro iniciado ANTES de mandar nada. Con premio (sin fila
@@ -3025,7 +3522,12 @@ class CartViewModel @Inject constructor(
                         }
                     }
                     is DesenlacePagarDespues.SesionVencida -> d.mensaje
-                    else -> if (s.venta.pendingStampReward != null) PAGAR_DESPUES_PREMIO_SIN_RED else PAGAR_DESPUES_CUPON_SIN_RED
+                    else -> when {
+                        s.venta.pendingStampReward != null -> PAGAR_DESPUES_PREMIO_SIN_RED
+                        s.venta.couponCode != null -> PAGAR_DESPUES_CUPON_SIN_RED
+                        // D4: el descuento que pide aprobación tampoco se deja en la fila sin red.
+                        else -> com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED
+                    }
                 },
             )
         }
@@ -3078,7 +3580,7 @@ class CartViewModel @Inject constructor(
         motivo: String,
     ): ResultadoPagarDespues.Error? {
         // D8: con la sucursal del intento, no la de ahora: la respuesta pudo llegar después de cambiar de sucursal.
-        val captura = comoCarritoGuardado(s.venta.copy(carritoGuardadoId = fila.carritoGuardadoId), s.cliente.name, s.cliente.id, venueId)
+        val captura = comoCarritoGuardado(s.venta.copy(carritoGuardadoId = fila.carritoGuardadoId), s.cliente.name, s.cliente, venueId)
         val recuperable = cola.cambiar(fila.id) {
             it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.RECUPERAR, motivo = motivo, venta = captura)
         }
@@ -3128,7 +3630,8 @@ class CartViewModel @Inject constructor(
         val duenos = duenosDeLaFoto.values.toList()
         if (duenos.any { !it.first() }) return false
         duenos.forEach { it.third() }
-        setSelectedCustomer(foto.clienteId, foto.clienteNombre)
+        // El cliente primero (sus efectos tocan el carrito vacío de ahora) y luego la venta tal como era: marca, PIN y «quitados» (D2).
+        setSelectedCustomer(foto.clienteId, foto.clienteNombre, foto.clienteDescuento)
         _cartState.value = foto.aCartState()
         _pendingSplitOrder.value = null
         return true

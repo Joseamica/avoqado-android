@@ -121,6 +121,8 @@ class OnlineOrdersViewModel internal constructor(
     private val reimprimirPedido: suspend (OnlineOrder) -> ResultadoImpresion = { ResultadoImpresion.NoSalio },
     private val efectivoDelPedido: suspend (orderId: String) -> EfectivoDelPedido = { EfectivoDelPedido.NINGUNO },
     private val efectivoYaSubido: suspend (orderId: String) -> Boolean = { false },
+    /** D13: los cobros en efectivo de la orden que tiene este aparato, en cualquier estado (`CashPaymentRepository.cobrosDelPedido`). */
+    private val cobrosEnEfectivo: suspend (orderId: String) -> List<com.avoqado.pos.payment.domain.DineroDeLaOrden> = { emptyList() },
     private val permisoCobrar: () -> Boolean = { true },
     // Rappi 2b: «Rappi · por cobrar». Por omisión, sin reparto (las pruebas de la tienda web no cambian).
     private val leerPorCobrar: suspend (cursor: String?) -> Result<ListaPorCobrar> = { Result.success(LISTA_NO_DISPONIBLE) },
@@ -173,6 +175,7 @@ class OnlineOrdersViewModel internal constructor(
         reimprimirPedido = { pedido -> impresion.reimprimir(pedido) },
         efectivoDelPedido = cashPaymentRepository::efectivoDelPedido,
         efectivoYaSubido = cashPaymentRepository::huboEfectivoSubido,
+        cobrosEnEfectivo = { cashPaymentRepository.cobrosDelPedido(it) },
         leerPorCobrar = { cursor -> repositorio.porCobrar(cursor) },
         porCobrarGuardado = { repositorio.porCobrarGuardado() },
         tieneCanalDeReparto = { planManager.hasFeature("DELIVERY_CHANNELS") },
@@ -567,7 +570,8 @@ class OnlineOrdersViewModel internal constructor(
         val venue = venueDeLaLectura ?: return
         if (venueActual() != venue) return
         try {
-            val deMiEquipo = foliosConTarjeta.marcas().filter { !it.esFolio }
+            // D14: la de fuera de la bandeja no: pudo ser de un folio, y la de un folio sólo la suelta la copia (R104) o sus 24 h.
+            val deMiEquipo = foliosConTarjeta.marcas().filter { !it.esFolio && !it.fueraDeLaBandeja }
             foliosConTarjeta.olvidar(tarjetasConfirmadas(deMiEquipo, venue, vistos, null))
         } catch (e: Exception) {
             Log.w(TAG, "No se pudieron soltar los cobros con tarjeta ya confirmados: ${e.message}")
@@ -1020,6 +1024,18 @@ class OnlineOrdersViewModel internal constructor(
                 val venue = venueActual()
                 // Codex r3 #1: una marca «aquí ya se cobró» que nace y se suelta durante la espera no deja rastro; se cuenta antes.
                 val soltadasAlEmpezar = foliosConTarjeta.vecesSoltada(orderId)
+                // 🔴 D13: la foto de la puerta del efectivo, ANTES de revisar y de leer el saldo: lo que el saldo ya cuenta es lo confirmado
+                // hasta aquí. Todo lo que llegue después (en la espera, al leer la copia o con el cobro ya abierto) lo frena la puerta del
+                // efectivo de la pantalla de cobro, donde se aparta. Si no se puede leer, la foto queda vacía: frena de más, nunca de menos.
+                val conocido = try {
+                    // Las marcas soltadas se fijan al abrir (abajo): antes, una soltada durante la espera ya la frena `vecesSoltada`.
+                    com.avoqado.pos.payment.domain.DineroConocido.antesDeLeerElSaldo(cobrosEnEfectivo(orderId), soltadasHasta = 0L)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "No se pudo tomar la foto del dinero de $orderNumber: ${e.message}")
+                    com.avoqado.pos.payment.domain.DineroConocido.NADA
+                }
                 val dinero = dineroSinConfirmar(venue, orderId, esFolio = folio != null)
                 if (dinero.bloquea) {
                     _aviso.value = dinero.aviso
@@ -1143,7 +1159,10 @@ class OnlineOrdersViewModel internal constructor(
                 _cobroAbierto.value = CobroDePedido(orderId = orderId, orderNumber = orderNumber, saldoCents = saldo.toInt(),
                     origen = if (leido.isSuccess) origenConSaldo else origenSinSaldo, plataforma = plataforma,
                     renglones = leido.getOrNull()?.let { renglonesParaVer(productos, it.precios, it.saldoCents) }.orEmpty(),
-                    esFolio = folio != null, venceA = folio?.acceptDeadlineAt)
+                    esFolio = folio != null, venceA = folio?.acceptDeadlineAt,
+                    // D13: lo soltado hasta este instante ya lo contaba quien lo soltó (la copia o el servidor); lo de después, no. Y los
+                    // pagos que trajo la MISMA respuesta del saldo (con red): un efectivo subido que esté ahí ya lo cuenta el saldo.
+                    dineroConocido = conocido.copy(soltadasHasta = FoliosCobradosConTarjeta.secuencia(), pagosContados = leido.getOrNull()?.pagos))
             } finally {
                 _ocupados.value = _ocupados.value - orderId
             }
@@ -1332,6 +1351,8 @@ data class CobroDePedido(
     val esFolio: Boolean = false,
     /** A3: la hora en que vence el folio, para decir «venció» o «se canceló» cuando el SERVIDOR rechaza el efectivo. */
     val venceA: java.time.Instant? = null,
+    /** 🔴 D13: la foto de la puerta del efectivo, tomada antes de leer el saldo (`abrirCobro`). */
+    val dineroConocido: com.avoqado.pos.payment.domain.DineroConocido = com.avoqado.pos.payment.domain.DineroConocido.NADA,
 ) {
     /**
      * Lo que dice el cobro si el SERVIDOR rechaza el efectivo en vivo porque la cuenta ya se canceló, calculado AL FALLAR ([ahora]):

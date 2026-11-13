@@ -89,7 +89,8 @@ class RecargaDeLaMismaCuentaR5Test {
             .replace(Regex("""//[^\n]*"""), "").replace(Regex("""\s+"""), "")
         assertTrue(limpio.contains("valsolicitudesPropias=solicitudesDeLaCuenta(solicitudes,viewModel.venueActual,order.id)"))
         // D14: el efecto primero anota que ya pidió la consulta (primer cuadro «Consultando…»), luego consulta.
-        assertTrue(limpio.contains("LaunchedEffect(order,solicitudesPropias){consultaPedida=trueif(enLinea)viewModel.ofertaParaCobrar(order.id,"))
+        // D12 (ronda 1, I1): con red y SIN un cobro abierto (pedirla a medio cobro vaciaba la foto del cobro en línea).
+        assertTrue(limpio.contains("LaunchedEffect(order,solicitudesPropias){consultaPedida=trueif(pideOfertaAlRecargar(enLinea,cobroAbierto=abierta||cobroSinRed!=null))viewModel.ofertaParaCobrar(order.id,"))
         assertFalse(limpio.contains("LaunchedEffect(order,solicitudes)"))
     }
 }

@@ -111,6 +111,14 @@ class F04SyncSequenceSqlTest {
         override suspend fun pendingFifoLane(venueId: String, preparationLane: Boolean, limit: Int): List<SyncIntentEntity> = error("Not used")
         // No son parte del algoritmo probado por este fixture. Room se prueba en androidTest.
         override suspend fun sinResolver(venueId: String): List<IntentSinResolver> = error("Not used")
+        override suspend fun filasSinResolver(venueId: String): List<com.avoqado.pos.core.data.local.database.FilaSinResolver> = error("Not used")
+        /** D5 · B2b: el SQL real de la lectura de la foto (lo posterior a la foto, en cualquier estado, y lo sin resolver). */
+        override suspend fun filasDesde(venueId: String, desde: Long): List<FilaConSecuencia> =
+            db.prepareStatement(FILAS_DESDE_SQL.replace(":venueId", "?").replace(":desde", "?")).use {
+                it.setString(1, venueId); it.setLong(2, desde)
+                it.executeQuery().use { r -> buildList { while (r.next()) add(FilaConSecuencia(r.getString("id"), r.getString("type"),
+                    r.getString("status"), r.getLong("seq"), r.getString("payload_json"))) } }
+            }
         override suspend fun pendingFifo(venueId: String, limit: Int): List<SyncIntentEntity> = error("Not used")
         override suspend fun soltar(id: String): Int = error("Not used")
         override suspend fun descartar(id: String): Int = error("Not used")
@@ -118,7 +126,11 @@ class F04SyncSequenceSqlTest {
         override suspend fun pendingCount(venueId: String): Int = error("Not used")
         override suspend fun heldCount(venueId: String): Int = error("Not used")
         override suspend fun pendingPayloads(venueId: String, type: String): List<SyncIntentPayload> = error("Not used")
-        override suspend fun rejectedCount(venueId: String): Int = error("Not used")
+        /** D5 · B3 (C3): el SQL real del conteo de rechazos (el mismo «Liberar mesa» cuenta una vez). */
+        override suspend fun rejectedCount(venueId: String): Int =
+            db.prepareStatement(REJECTED_COUNT_SQL.replace(":venueId", "?")).use {
+                it.setString(1, venueId); it.executeQuery().use { r -> r.next(); r.getInt(1) }
+            }
         override suspend fun rejectedIntents(venueId: String): List<SyncIntentEntity> = error("Not used")
         override suspend fun dismiss(id: String) = error("Not used")
         override fun observarEstado(id: String): Flow<String?> = error("Not used")
@@ -129,6 +141,32 @@ class F04SyncSequenceSqlTest {
         id = id, venueId = venue, staffId = "original-actor", seq = seq, type = "PAY_CASH", payloadJson = "{\"amountCents\":500}",
         status = status, createdAt = 1,
     )
+
+    @Test fun `B2b la lectura de la foto trae lo posterior en cualquier estado y lo anterior sin resolver, de su sucursal`() = runBlocking {
+        Fixture().use { f ->
+            for ((id, status) in listOf("viejo-ok" to "ACKED", "viejo-pendiente" to "PENDING", "viejo-rechazo" to "REJECTED",
+                "nuevo-ok" to "ACKED", "nuevo-retenido" to "HELD")) f.write { f.dao.insertWithNextSeq(intent(id, status = status)) }
+            f.write { f.dao.insertWithNextSeq(intent("otra-sucursal", venue = "v2")) }
+            val filas = f.dao.filasDesde("v1", 3)
+            assertEquals(setOf("viejo-pendiente", "viejo-rechazo", "nuevo-ok", "nuevo-retenido"), filas.map { it.id }.toSet())
+            assertEquals(4L, filas.single { it.id == "nuevo-ok" }.seq)
+            assertEquals("sin foto: sólo lo sin resolver", setOf("viejo-pendiente", "viejo-rechazo", "nuevo-retenido"),
+                f.dao.filasDesde("v1", Long.MAX_VALUE).map { it.id }.toSet())
+        }
+    }
+
+    @Test fun `B3 C3 el mismo Liberar mesa rechazado dos veces cuenta una, de su sucursal`() = runBlocking {
+        Fixture().use { f ->
+            fun liberar(id: String, mesa: String, venue: String = "v1") = intent(id, venue, "REJECTED").copy(type = "CLEAR_TABLE",
+                payloadJson = """{"tableId":"$mesa"}""", errorCode = "BUSINESS_RULE", message = "Cannot clear table with unpaid order ORD-$id")
+            for (fila in listOf(liberar("c6", "t-6"), liberar("c14", "t-6"), liberar("c15", "t-7"), intent("cobro", status = "REJECTED"),
+                intent("ronda-a", status = "REJECTED").copy(type = "ADD_ITEMS"), intent("ronda-b", status = "REJECTED").copy(type = "ADD_ITEMS"),
+                liberar("otra", "t-6", "v2"), liberar("ok", "t-6").copy(status = "ACKED"),
+                liberar("otro-motivo", "t-6").copy(errorCode = "TABLE_OWNED_BY_OTHER", message = "Table owned by another waiter"))) f.write { f.dao.insertWithNextSeq(fila) }
+            assertEquals("t-6 una vez, t-6 por otro motivo, t-7, el cobro y las dos rondas", 6, f.dao.rejectedCount("v1"))
+            assertEquals(1, f.dao.rejectedCount("v2"))
+        }
+    }
 
     @Test fun cleanupAndReopenNeverRecycleTheHighestSequence() = runBlocking {
         val file = Files.createTempFile("f04-sequence-", ".sqlite").toFile()

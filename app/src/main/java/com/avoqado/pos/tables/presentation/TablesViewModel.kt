@@ -61,6 +61,12 @@ class TablesViewModel @Inject constructor(
      * lleva para que la cuenta nazca en el turno de esa caja aunque suba tarde. Ver [openTableOffline].
      */
     private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
+    /** D5 · B2b (piloto): sin red, una mesa del servidor se cobra desde su cuenta (la foto vive ahí), no desde el plano. */
+    private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
+    /** D6: las cajas que se ven por el WiFi (sólo lectura, para [avisoDeIsla]). */
+    private val transporteLan: com.avoqado.pos.core.data.lan.TransporteLan? = null,
+    /** D6: el disco de las cajas recordadas del D12 (sólo lectura, para [avisoDeIsla]). */
+    private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache? = null,
 ) : ViewModel() {
 
     private var generacion = 0L
@@ -154,6 +160,24 @@ class TablesViewModel @Inject constructor(
                 SharingStarted.WhileSubscribed(5_000),
                 FloorLayoutBuilder.build(repository.tables.value, floorPlanRepository.plan.value, repository.floorPlanVersionFromTables),
             )
+    }
+
+    /**
+     * D6 (hz:e5ee98bc:D6): «este aparato no ve a las otras cajas por el WiFi» ([AvisoDeIsla]). Sólo lo pinta el plano: ningún botón
+     * lo lee. Perezoso y sólo mientras alguien lo mira, como [layout] (Cobrar y la cuenta también crean este ViewModel).
+     */
+    val avisoDeIsla: StateFlow<Boolean> by lazy {
+        val transporte = transporteLan
+        val cache = payloadCache
+        if (transporte == null || cache == null) return@lazy MutableStateFlow(false).asStateFlow()
+        // Codex r1 #5: `replayExpirationMillis = 0` ⇒ al detenerse vuelve a «sin línea»; al regresar al plano no se entrega el `true`
+        // de la visita anterior.
+        AvisoDeIsla.flujo(
+            peers = transporte.peers,
+            yo = { transporte.deviceId },
+            hubDelNegocio = { planManager.hasFeature("OFFLINE_LAN_HUB") },
+            recordadas = { venueId?.let { AvisoDeIsla.recordadas(cache, it, transporte.deviceId, System.currentTimeMillis()) }.orEmpty() },
+        ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), false)
     }
 
     private val _rememberedTab = MutableStateFlow<String?>(null)
@@ -455,6 +479,10 @@ class TablesViewModel @Inject constructor(
      * one "Cuenta Mesa N" line for the order total and the NORMAL payment flow
      * (tip screen, cash/terminal, split) pays the EXISTING order — see the
      * PaymentFlowViewModel seam. On completion the table is released.
+     *
+     * 🔴 D8 (12-nov, hz:e5ee98bc:D8): hoy NADIE la llama (el plano no tiene «Cobrar»; tocar una mesa ocupada entra a su cuenta, que
+     * sí resta los abonos). Si algún día se le pone ese botón: aquí se cobra `order.total` SIN restar abonos. Antes de conectarla,
+     * el importe tiene que salir del saldo leído de la cuenta (como `TableOrderViewModel.preparePagar`), o mandar a abrirla.
      */
     fun startCobrar(table: DiningTable, onReady: () -> Unit) {
         val order = table.primaryCheck ?: return
@@ -472,6 +500,10 @@ class TablesViewModel @Inject constructor(
             val reason = when {
                 tableSession.contextoActual() != contextoAlSalir || venueId != vId || tableSession.current() != sessionAlSalir || generacion != epoch || mutacionesEnVuelo > 0 || repository.tables.value.firstOrNull { it.id == table.id }?.primaryCheck?.id != order.id -> "La cuenta se está actualizando. Intenta en un momento."
                 work == null -> "No se pudo revisar si esta mesa tiene cambios sin sincronizar. Intenta de nuevo."
+                // D5 · B2b (piloto): con trabajo sin subir o sin red, el saldo sin red se arma en la cuenta (y el plano ya no cobra su
+                // total sin restar abonos, A1).
+                !order.isProvisional && (work.intents > 0 || connectivityMonitor?.let { !(it.isConnected.value && it.isServerReachable.value) } == true) &&
+                    planManager.concedidaPorAvoqado(TableOrderViewModel.CODIGO_PILOTO_SIN_RED) -> ABRE_PARA_COBRAR
                 work.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
                 order.isProvisional || tableSession.requiereRevisarSaldo(vId, existingForIds?.idsDeLaOrden ?: setOf(order.id)) -> "Abre esta cuenta para revisar el saldo antes de cobrar."
                 else -> null
@@ -595,8 +627,17 @@ class TablesViewModel @Inject constructor(
 
     // MARK: - After payment (called from the Checkout completion in PAYING mode)
 
-    /** Releases the table once its order was fully paid through the normal flow. */
-    fun finishTableAfterPayment() {
+    /**
+     * Releases the table once its order was fully paid through the normal flow.
+     *
+     * @param cobroEnCola D24 (12-nov): el cobro quedó en la cola de COBROS (`pending_payments`) y todavía no sube. Pedir «liberar
+     *   mesa» ahora llega al servidor ANTES que su pago (`CLEAR_TABLE` por la otra cola, o `/clear` en línea si la red volvió) y
+     *   sale rechazado: una «operación por revisar» falsa. La mesa la libera el SERVIDOR al saldarse su última cuenta
+     *   (`releaseTableIfSettled`); si ese cobro no la salda, sigue ocupada con su saldo. Aquí sólo se cierra la sesión del aparato.
+     *   ponytail: sin segundo intento desde el aparato si al SERVIDOR le falla esa liberación (pasajero; Codex r1 #1). No toca
+     *   dinero y el plano pinta libre una mesa sin cuenta viva ([DiningTable.isAvailable]). Si duele: que el SERVIDOR reintente.
+     */
+    fun finishTableAfterPayment(cobroEnCola: Boolean = false) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session.idsDeLaOrden)?.let { _actionState.value = TableActionState.Error(it); return }
@@ -605,7 +646,7 @@ class TablesViewModel @Inject constructor(
             // Server-driven settle check: clearTable succeeds ONLY when the
             // order is fully PAID. If it's still PARTIAL (split-the-bill),
             // keep the session alive so the next payment stays routed to it.
-            val cleared = mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId) }.isSuccess
+            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId) }.isSuccess
             repository.refresh(vId)
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
@@ -821,5 +862,7 @@ class TablesViewModel @Inject constructor(
 
     companion object {
         private const val POLL_MS = 10_000L
+        /** D5 · B2b (piloto): el plano manda a la cuenta, que es donde se arma el saldo sin red. */
+        const val ABRE_PARA_COBRAR = "Abre esta cuenta para cobrarla."
     }
 }

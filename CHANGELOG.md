@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Added
+- **Descuento que «requiere aprobación» (D4, founder «B», 12-nov).** Un % o fijo del catálogo con «Requiere aprobación» lo
+  aplica directo quien tiene «Aplicar descuentos en TPV» (de fábrica gerente, admin y dueño). A quien no, le sale el teclado del
+  PIN de un gerente sin cambiar de sesión: en Mesas al aplicarlo, en Mostrador al cobrar (antes de crear la venta y de apartar el
+  efectivo). Sin red no entra para nadie y lo dice; nunca se encola ni dice «Descuento aplicado» sin el servidor. Con el PIN de
+  gerente apagado, dice que lo aplica alguien con el permiso. «Pagar después» con ese descuento sólo con el permiso y nunca sin
+  red. Una venta con cortesía y este descuento pide los dos PIN. Necesita el SERVIDOR con D4. iOS: ficha en
+  `docs/proyectos/ios-por-hacer.md`.
+- **El descuento del cliente se pone solo en el carrito (D2, Flautas Coyoacán; founder 11-nov).** Al elegir un cliente con
+  descuento asignado, el carrito de Mostrador lo pone solo en su línea con «Quitar» y el total ya sale rebajado (también en
+  WINDOWS). Sin el permiso «Aplicar descuentos», aviso y «Pedir autorización»: el gerente ve «Descuento de <Nombre> −$X» y su
+  PIN vale hasta ese monto (si la cuenta crece, se pide otra vez). Nunca se suma a otro descuento de cuenta, cupón, referido,
+  premio de sellos ni combo; no se pone al cobrar una mesa. Una venta con este descuento siempre crea orden (nunca el cobro
+  rápido) y sin red sube con el monto que se cobró. El descuento de cuenta se calcula al centavo exacto (375 ¢ al 9.2 % = 35 ¢).
+  Necesita el SERVIDOR con D2. iOS: ficha en `docs/proyectos/ios-por-hacer.md`.
 - **POS de Windows: F12 = «Agregar» en la hoja de venta por peso (founder, 4-nov, cremería).** Con la hoja abierta, F12 hace lo mismo que el botón «Agregar • $X» y la tecla se ve en chiquito junto a él; sin un peso válido no hace nada. Mientras la hoja está abierta F12 nunca cobra el carrito; cerrada, F12 sigue siendo Cobrar. Dos F12 seguidos agregan una sola línea (también dos clics). Con un aviso encima de la hoja, F12 espera. Sólo Windows; Android sin cambios. iOS: no aplica (atajo de teclado de Windows).
 - **Nota por artículo en Mesas («sin aceite»).** En la ronda que todavía no se manda, tocar el nombre de un artículo abre «Nota del artículo»; la nota se ve en naranja bajo el artículo, viaja a cocina con la ronda (`ADD_ITEMS.items[].notes`) y se guarda en el aparato antes de tocar la red, así que sobrevive a cerrar la app y a no tener internet. Un mismo producto con nota y sin nota quedan en líneas separadas. No aplica a líneas de combo/promoción ni mientras la ronda se está enviando. iOS: pendiente (fase iOS de Mesas).
 

@@ -89,8 +89,10 @@ class H2H3TenderCaptureTest {
     private val sql = mockk<PendingPaymentDao>(relaxed = true)
     // Los defaults suspendidos son reales: callOriginal de MockK puede perder la espera de un retorno Unit.
     private val dao = object : PendingPaymentDao by sql {
-        override suspend fun insert(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insert(payment)
-        override suspend fun insertTransactionQ16(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insertTransactionQ16(payment)
+        override suspend fun insert(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) =
+            super<PendingPaymentDao>.insert(payment, antesDelInsert)
+        override suspend fun insertTransactionQ16(payment: PendingPaymentEntity, antesDelInsert: (() -> Unit)?) =
+            super<PendingPaymentDao>.insertTransactionQ16(payment, antesDelInsert)
         override suspend fun insertRaw(payment: PendingPaymentEntity) = super<PendingPaymentDao>.insertRaw(payment)
     }
     private val rows = linkedMapOf<String, PendingPaymentEntity>()
@@ -309,6 +311,125 @@ class H2H3TenderCaptureTest {
         viewModel.processCashPayment(4500); finishCash()
         val payload = Json.parseToJsonElement(intents.single().payloadJson).jsonObject
         assertEquals("caja-A-local", payload["cashDrawerSessionId"]?.jsonPrimitive?.content)
+    }
+
+    /** La DAO real: el mismo id conserva su fila y su secuencia (`insertWithNextSeqTransactionQ16`, probada en F04SyncSequenceSqlTest). */
+    private fun colaQueConservaElMismoId() {
+        coEvery { intentDao.insertWithNextSeq(any()) } coAnswers {
+            val nuevo = firstArg<SyncIntentEntity>()
+            intents.firstOrNull { it.id == nuevo.id }?.seq ?: (intents.size.toLong() + 1).also { intents += nuevo.copy(seq = it) }
+        }
+    }
+
+    private fun ventasDelCajon() = drawerDao.events.values.filter { it.type == "CASH_SALE" }
+
+    /**
+     * D5 · B0 (Codex r1 #5): el `PAY_CASH` de la mesa provisional se GUARDA y algo posterior de la cola falla (los contadores). La
+     * cajera ve error y toca «Reintentar»: tiene que quedar UN cobro, con la llave del cobro como id, y un solo movimiento de caja.
+     */
+    @Test fun `B0 mesa provisional - reintentar tras fallar despues de guardar deja un solo PAY_CASH con la llave del cobro`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        colaQueConservaElMismoId()
+        var fallarTrasGuardar = true
+        coEvery { intentDao.pendingCount(any()) } coAnswers {
+            if (fallarTrasGuardar && intents.isNotEmpty()) { fallarTrasGuardar = false; throw IllegalStateException("contadores") }
+            intents.size
+        }
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        assertTrue("el primer intento termina en error", viewModel.state.value is PaymentFlowState.Error)
+        assertEquals("el INSERT del primer intento sí entró", 1, intents.size)
+
+        viewModel.retry(); finishCash()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertEquals("un solo cobro en la cola de mesas", 1, intents.size)
+        val cobro = intents.single()
+        assertEquals("PAY_CASH", cobro.type)
+        assertEquals(ColaDelCobro.Outbox(cobro.id), exito.colaDelCobro)
+        val venta = ventasDelCajon().single()
+        assertEquals("el id del cobro es la llave del cobro (la misma del cajón)", CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id), venta.id)
+        assertEquals(4500, venta.amountCents)
+    }
+
+    /** D5 · B1: una mesa nacida en el SERVIDOR (id real). Sin la bandera es la mesa de hoy; con `cobroSinRed` (la prende B2b) va por la cola de mesas. */
+    private fun mesaDelServidor(cobroSinRed: Boolean) {
+        tableSession.start(TableSession.Active("table-A", "5", null, "order-R", "R-7", 3, 4000,
+            TableSession.Mode.PAYING, cobroSinRed = cobroSinRed))
+        open(orderId = "order-R")
+    }
+
+    private fun recordCashPaymentDe(orderId: String, veces: Int) = coVerify(exactly = veces) {
+        orderRepository.recordCashPayment(orderId, any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+    }
+
+    @Test fun `B1 mesa del servidor con cobroSinRed sale por la cola de mesas con su orderId real`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        mesaDelServidor(cobroSinRed = true)
+        assertTrue(viewModel.cobroDeMesaSinRed())
+        viewModel.processCashPayment(4500); finishCash()
+
+        val exito = viewModel.state.value as PaymentFlowState.Success
+        assertTrue("el éxito es «se sube solo»", exito.isQueued)
+        val cobro = intents.single()
+        assertEquals("PAY_CASH", cobro.type)
+        assertEquals(ColaDelCobro.Outbox(cobro.id), exito.colaDelCobro)
+        val payload = Json.parseToJsonElement(cobro.payloadJson).jsonObject
+        assertEquals("el id real de la orden", "order-R", payload["orderId"]?.jsonPrimitive?.content)
+        assertFalse(payload.containsKey("localOrderId"))
+        assertEquals(4000, payload.getValue("amountCents").jsonPrimitive.int)
+        assertEquals(500, payload.getValue("tipCents").jsonPrimitive.int)
+        assertEquals("la caja de la venta", "drawer-A", payload["cashDrawerSessionId"]?.jsonPrimitive?.content)
+        val captura = com.avoqado.pos.payment.data.ConciliacionDelCobro.leerCaptura(cobro.q15CaptureJson, "venue-1", cobro.id)!!
+        assertEquals("order-R", captura.orderId)
+        assertEquals("el saldo que la tablet espera tras el cobro (4000 − 4000)", 0, captura.restanteEsperadoCents)
+        assertEquals("B2b: lo que la tablet creía que se debía ANTES del cobro (bloque P del SERVIDOR)", 4000,
+            payload.getValue("expectedBalanceBeforeCents").jsonPrimitive.int)
+        recordCashPaymentDe("order-R", 0)
+        assertTrue("nada en la cola de cobros", rows.isEmpty())
+        assertEquals("una venta en el cajón, con la llave del cobro", CashDrawerRepository.idDeLaVentaEnEfectivo(cobro.id), ventasDelCajon().single().id)
+    }
+
+    /** B1, lo más importante: sin la bandera, la mesa del servidor cobra EXACTAMENTE como hoy (por `/pay`; sin red, su apartado). */
+    @Test fun `B1 sin la bandera la mesa del servidor cobra como hoy y no toca la cola de mesas`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        mesaDelServidor(cobroSinRed = false)
+        assertFalse(viewModel.cobroDeMesaSinRed())
+        viewModel.processCashPayment(4500); finishCash()
+
+        assertTrue("la cola de mesas no se toca", intents.isEmpty())
+        recordCashPaymentDe("order-R", 1)
+        assertEquals("su apartado en la cola de cobros, como hoy", 1, rows.size)
+    }
+
+    @Test fun `B1 con cobroSinRed la tarjeta no se ofrece aunque haya red, sin la bandera si`() = runTest {
+        online.value = true
+        mesaDelServidor(cobroSinRed = true)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD); advanceUntilIdle()
+        assertTrue("sigue en efectivo", viewModel.state.value is PaymentFlowState.CollectingCashAmount)
+
+        mesaDelServidor(cobroSinRed = false)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD); advanceUntilIdle()
+        assertFalse("hoy la tarjeta sí se intenta", viewModel.state.value is PaymentFlowState.CollectingCashAmount)
+    }
+
+    /** B0, vecina: dos cobros de la misma mesa provisional (dos partes) siguen siendo DOS `PAY_CASH`, cada uno con su llave. */
+    @Test fun `B0 mesa provisional - dos cobros de la misma mesa son dos PAY_CASH con llaves distintas`() = runTest {
+        coEvery { cashDrawerRepository.getOpenSession() } returns sesionLocal("drawer-A", openedAt = 1L)
+        colaQueConservaElMismoId()
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        provisional()
+        viewModel.processCashPayment(4500); finishCash()
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+
+        assertEquals(2, intents.size)
+        assertEquals(listOf("PAY_CASH", "PAY_CASH"), intents.map { it.type })
+        assertNotEquals(intents[0].id, intents[1].id)
+        // D5 · B2b: la mesa provisional queda como hoy, sin el saldo esperado ANTES del cobro (sólo el piloto lo manda).
+        assertTrue(intents.none { Json.parseToJsonElement(it.payloadJson).jsonObject.containsKey("expectedBalanceBeforeCents") })
+        assertEquals(intents.map { CashDrawerRepository.idDeLaVentaEnEfectivo(it.id) }.toSet(), ventasDelCajon().map { it.id }.toSet())
     }
 
     @Test fun `provisional legacy manual keeps method without fabricated tender`() = runTest {

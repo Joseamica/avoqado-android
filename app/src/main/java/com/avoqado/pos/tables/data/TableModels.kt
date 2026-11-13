@@ -360,6 +360,19 @@ data class PreBillBalance(
     val tipAmountCents: Int = 0,
 )
 
+/**
+ * D12 (Codex r3 H1): lo que el detalle que se consulta para cobrar sabe de la cuenta, para poner al día la copia de «Pedidos». Espejo de
+ * `orders.data.model.OrderDetail.comoEvidencia` (este modelo no trae `refundState`: un reembolso implica un pago, que ya cuenta).
+ */
+fun OrderDetail.comoEvidencia(): com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente =
+    com.avoqado.pos.orders.data.EvidenciaDelDetalle.Vigente(
+        abierta = com.avoqado.pos.orders.data.model.estaAbierta(status, paymentStatus, null),
+        saldoCents = preBillBalance?.remainingBalanceCents?.takeIf { it >= 0 }, // negativo = raro ⇒ «sin saldo», como la lista
+        pagosCompletados = payments.count { it.status == "COMPLETED" },
+        cobrosConSaldo = cobrosConSaldo ?: 0,
+        esCuentaDeTarjetas = esCuentaDeTarjetas,
+    )
+
 fun restanteCents(detalle: OrderDetail): Int? {
     detalle.preBillBalance?.let { return it.remainingBalanceCents }
     if (detalle.payments.any { it.status == "COMPLETED" }) return null
@@ -427,14 +440,144 @@ data class CustomerLoyalty(
     val maxRedeemablePoints: Int = 0,
     val maxRedeemableValue: Double = 0.0,
     val canRedeem: Boolean = false,
+) {
+    /**
+     * Lo que el canje descuenta por [points], redondeado como el SERVIDOR (`Math.round(x * 100) / 100` sobre el binario). Pintar
+     * `points × redemptionRate` con `%.2f` redondea distinto en los empates de medio centavo (0.005 × 29 → «$0.15», y se descuentan
+     * $0.14).
+     */
+    fun valorDelCanje(points: Int): Double = Math.round(points * redemptionRate * 100) / 100.0
+
+    /**
+     * «Canjear» sólo con un número que el canje acepta: entero positivo, desde el mínimo, hasta el máximo y con descuento > $0, y
+     * con red: el canje es sólo en línea, y el diálogo ya abierto al perderla no ofrece lo que se va a rechazar (Codex android r2 #4).
+     */
+    fun puedeCanjear(points: Int, enLinea: Boolean = true): Boolean =
+        // Con el programa apagado o si el SERVIDOR dice que no se puede, aunque el rango sea bueno (Codex android r6 #3).
+        enLinea && active && canRedeem &&
+            points >= maxOf(minPointsRedeem, 1) && points <= maxRedeemablePoints && valorDelCanje(points) > 0
+}
+
+/**
+ * Una lectura del saldo de puntos —el saldo, o por qué falló— y la cuenta para la que se hizo (orden, clienta y versión de la cuenta).
+ * La GET calcula el máximo contra ESA cuenta (subtotal − descuentos, abono, pagada), así que sólo vale para ella: si la cuenta que se
+ * ve cambió —otra cuenta de la mesa, otra clienta, otra versión—, ni el saldo ni el fallo se muestran (Codex android r4 #1, r6 #4).
+ */
+data class LealtadLeida(
+    val orderId: String,
+    val customerId: String,
+    val version: Int?,
+    val lealtad: CustomerLoyalty?,
+    val fallo: com.avoqado.pos.core.data.network.FalloDeLectura? = null,
 )
+
+/** La lectura, sólo si es de la cuenta que se ve; si no, null («Leyendo los puntos del cliente…»). */
+fun LealtadLeida?.paraLaCuenta(cuenta: OrderDetail?): LealtadLeida? =
+    this?.takeIf { cuenta != null && it.orderId == cuenta.id && it.customerId == cuenta.customerId && it.version == cuenta.version }
+
+/**
+ * La GET dijo «máximo $0» pero la cuenta, recién leída, dice que no hay abono, ni está pagada o anulada, y queda algo por descontar;
+ * y la clienta tiene puntos que sí valen dinero y llegan al mínimo. Pasa si otra caja cambió la clienta entre la lectura de la cuenta y
+ * la del saldo (el SERVIDOR ya no deja canjear a una clienta que no es la de la cuenta, D650): se vuelve a leer la cuenta una vez
+ * antes de decir «tiene un pago registrado» (Codex android r6 #7). La regla de la cuenta es la del SERVIDOR (`getCustomerLoyalty`).
+ */
+fun maximoCeroContradiceLaCuenta(lealtad: CustomerLoyalty, cuenta: OrderDetail): Boolean =
+    lealtad.maxRedeemableValue <= 0 && lealtad.active && lealtad.balance > 0 && lealtad.balance >= lealtad.minPointsRedeem &&
+        // Lo que dice si hubo abono es `paymentStatus`, como en el SERVIDOR: un intento de pago fallido en `payments` no lo es (Codex
+        // android r10 #2).
+        lealtad.balanceValue > 0 && cuenta.paymentStatus != "PAID" && cuenta.paymentStatus != "PARTIAL" &&
+        cuenta.status != "CANCELLED" && cuenta.status != "DELETED" && cuenta.subtotal - cuenta.discountAmount > 0
+
+/** El texto de «Recompensas» sin red: el del botón gris y el del diálogo abierto. */
+const val RECOMPENSAS_SIN_RED = "Sin conexión: canjear puntos necesita internet. Se puede en cuanto vuelva la red."
+
+/**
+ * Por qué «Recompensas» está gris, siempre con la causa verdadera; null = se puede canjear. Antes había UN texto para todo
+ * («Agrega el cliente…»), que mentía sin red y en una cuenta con abono, donde la clienta sí está (nube, 12-nov; el SERVIDOR
+ * apaga `canRedeem` en cuentas con abono, pagadas o anuladas desde el PR #391).
+ *
+ * [tieneCliente] null = la cuenta todavía no llega del servidor: no se sabe si tiene cliente (Codex android r3 #2).
+ * [fallo] es por qué no se pudo leer el saldo (null = no falló: todavía se está leyendo, o se leyó bien).
+ *
+ * Con el programa prendido y el saldo en el mínimo, el SERVIDOR (`getCustomerLoyalty`) apaga `canRedeem` sólo si no cabe ni un punto
+ * (`maxRedeemablePoints == 0`). Cada causa de eso tiene su texto (pasada completa, Codex android r3 #1): sin puntos, puntos que valen
+ * $0.00, lo que queda por descontar no alcanza un punto, o la cuenta no admite canje (abono, pagada, anulada o ya sin nada).
+ */
+fun motivoSinRecompensas(
+    tieneCliente: Boolean?,
+    lealtad: CustomerLoyalty?,
+    fallo: com.avoqado.pos.core.data.network.FalloDeLectura?,
+    enLinea: Boolean = true,
+    actualizandoCuenta: Boolean = false,
+    cuentaCancelada: Boolean = false,
+    cuentaCambioAlLeer: Boolean = false,
+): String? = when {
+    // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea. Va antes
+    // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
+    !enLinea || (lealtad == null && fallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED) -> RECOMPENSAS_SIN_RED
+    // Una mutación propia (asignar la clienta, una ronda…) espera su relectura: el detalle que se ve es viejo (Codex android r7 #4).
+    actualizandoCuenta -> "Actualizando la cuenta…"
+    // La cuenta va antes que `canRedeem`: un saldo sólo se ofrece sobre una cuenta con cliente (Codex android r4 #1).
+    tieneCliente == null -> "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento."
+    // Anulada: el canje la rechaza; no es «tiene un pago registrado» (Codex android r7 #5).
+    cuentaCancelada -> "La cuenta está cancelada: no se pueden canjear puntos."
+    !tieneCliente -> "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente»."
+    lealtad?.canRedeem == true -> null
+    lealtad == null && fallo != null -> "No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo."
+    lealtad == null -> "Leyendo los puntos del cliente…"
+    !lealtad.active -> "El programa de lealtad está apagado en esta sucursal. Se prende desde el panel web."
+    lealtad.balance < lealtad.minPointsRedeem ->
+        "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos; se necesitan al menos ${lealtad.minPointsRedeem} para canjear."
+    // Mínimo 0 y saldo 0 (Codex android r3 #1).
+    lealtad.balance <= 0 -> "${lealtad.customerName ?: "El cliente"} no tiene puntos para canjear."
+    // El saldo vale $0.00 al redondear (40 puntos a $0.0001), o el valor por punto es 0 (Codex android r3 #1).
+    lealtad.balanceValue <= 0 ->
+        "Los ${lealtad.balance} puntos ${lealtad.customerName?.let { "de $it" } ?: "del cliente"} valen $0.00: no alcanzan para descontar nada."
+    // Queda algo por descontar, pero ningún número de puntos cabe sin prometer más de lo que el canje descuenta (cuenta de $100 con
+    // $99.99 de descuento y $0.10 por punto) (Codex android r2 #1).
+    lealtad.maxRedeemablePoints == 0 && lealtad.maxRedeemableValue > 0 ->
+        "Lo que queda por descontar en esta cuenta (${com.avoqado.pos.core.util.formatMoney(lealtad.maxRedeemableValue)}) no alcanza para canjear puntos."
+    // La GET dijo «máximo $0» pero la cuenta recién leída no tiene abono y sí tiene algo que descontar: algo cambió entre las dos
+    // lecturas (otra caja cambió la clienta…). No es «tiene un pago registrado» (Codex android r8 #2); tocar el botón vuelve a leer.
+    cuentaCambioAlLeer -> "La cuenta cambió mientras se leían los puntos. Toca «Recompensas» para volver a leerlos."
+    // Con puntos que sí valen dinero, `maxRedeemableValue` sale en $0 sólo si la cuenta no admite canje (el SERVIDOR pone la base en 0
+    // con abono, pagada o anulada) o ya no queda nada que descontar.
+    lealtad.maxRedeemableValue <= 0 ->
+        "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar."
+    // El SERVIDOR de hoy no llega aquí (con puntos que caben, el mínimo de la cuenta nunca pasa de ellos); un texto que no inventa causa.
+    else -> "${lealtad.customerName ?: "El cliente"} tiene ${lealtad.balance} puntos, pero en esta cuenta no se pueden canjear."
+}
 
 @Serializable
 data class CustomerLoyaltyResponse(val success: Boolean = true, val data: CustomerLoyalty? = null)
 
 /** POST .../orders/:orderId/loyalty/redeem body. */
 @Serializable
-data class RedeemPointsRequest(val customerId: String, val points: Int)
+data class RedeemPointsRequest(val customerId: String, val points: Int, val expectedDiscountAmount: Double? = null)
+
+/** Lo que el SERVIDOR aplicó de verdad: el «aplicada» dice esto, nunca lo pedido. */
+@Serializable
+data class RedeemPointsData(val pointsRedeemed: Int = 0, val discountAmount: Double = 0.0, val newBalance: Int? = null)
+
+@Serializable
+data class RedeemPointsResponse(val success: Boolean = true, val data: RedeemPointsData? = null)
+
+/** 409 del candado de la oferta: la cuenta ya no da lo que enseñó el diálogo; el SERVIDOR no canjeó nada. */
+const val LOYALTY_OFFER_CHANGED = "LOYALTY_OFFER_CHANGED"
+
+/** El rechazo del canje (4xx) con su código y el mensaje del SERVIDOR, leídos una sola vez del cuerpo. */
+class CanjeRechazado(val code: String?, override val message: String) : Exception(message) {
+    val ofertaCambio: Boolean get() = code == LOYALTY_OFFER_CHANGED
+}
+
+private val jsonDelRechazo = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+/** PURA: el cuerpo de un rechazo del canje → su código y mensaje (vacíos si no se puede leer). */
+fun canjeRechazadoDe(cuerpo: String?): CanjeRechazado {
+    val raiz = runCatching { cuerpo?.let { jsonDelRechazo.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject } }.getOrNull()
+    fun texto(llave: String) = (raiz?.get(llave) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    return CanjeRechazado(texto("code"), texto("message").orEmpty())
+}
 
 // MARK: - Cobros por servicio (propina automática por grupo, descorche…)
 

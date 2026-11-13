@@ -26,8 +26,12 @@ class PayloadCache @Inject constructor(
     }
 
     suspend fun load(type: String, venueId: String): Cached? = runCatching {
-        dao.get(key(type, venueId))?.let { Cached(it.json, it.updatedAt) }
+        loadDurable(type, venueId)
     }.onFailure { Log.e(TAG, "❌ load $type falló: ${it.message}") }.getOrNull()
+
+    /** Como [load], pero LANZA si la lectura falla: aquí `null` es sólo «no hay nada guardado». */
+    suspend fun loadDurable(type: String, venueId: String): Cached? =
+        dao.get(key(type, venueId))?.let { Cached(it.json, it.updatedAt) }
 
     suspend fun save(type: String, venueId: String, json: String) {
         runCatching { saveDurable(type, venueId, json) }
@@ -70,5 +74,23 @@ class PayloadCache @Inject constructor(
 
         /** Plano en el POS (spec 2026-10-09 §4.1). Mismo nombre que iOS `CachedPayloadStore.typeFloorPlan`. */
         const val TYPE_FLOOR_PLAN = "floor_plan"
+
+        /** D12: copia de las cuentas abiertas de «Pedidos», para cobrarlas en efectivo sin red (`orders.data.CopiaDeCuentas`). */
+        const val TYPE_COPIA_DE_PEDIDOS = "copia_de_pedidos"
+
+        /** D12: las cuentas que abrió ESTE aparato, por sucursal (`orders.data.CuentasAbiertasAqui`). */
+        const val TYPE_CUENTAS_ABIERTAS_AQUI = "cuentas_abiertas_aqui"
+
+        /** D12 · Opción D: el registro de la caja DUEÑA de cada cuenta que abrió (`core.data.lan.DuenoDeCuentas`). */
+        const val TYPE_REGISTRO_DE_CUENTAS = "registro_de_cuentas"
+
+        /** D12 · Opción D: quién abrió cada cuenta ajena y los avisos «cobrada»/«suelta» pendientes (`core.data.lan.CuentasEntreCajas`). */
+        const val TYPE_CUENTAS_ENTRE_CAJAS = "cuentas_entre_cajas"
+
+        /** D12 · tubería: las cajas que NSD resolvió en la sucursal, para seguir hablándoles por TCP si NSD las pierde (`core.data.lan.CajasRecordadas`). */
+        const val TYPE_CAJAS_RECORDADAS = "cajas_recordadas"
+
+        /** D12 · tubería, ronda 1: el último puerto propio en la sucursal, para que las otras cajas lo sigan encontrando tras reiniciar la app. */
+        const val TYPE_PUERTO_PROPIO = "puerto_propio"
     }
 }

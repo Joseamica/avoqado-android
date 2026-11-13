@@ -62,11 +62,18 @@ object NetworkModule {
         // → SecureStorage, y el repositorio construye su PROPIO OkHttpClient.
         managerOverrideCoordinator: ManagerOverrideCoordinator,
         secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
+        /** D5 · B2b (piloto): las fotos de mesas que borra el punto de paso ①. Sin fotos ni lecturas, no hace nada. */
+        fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas,
     ): OkHttpClient {
         val logging = registroDeRed(BuildConfig.DEBUG)
 
         // Nace del cliente base compartido (ver ConexionesCompartidas): el refresco de sesión reusa estas conexiones.
         return com.avoqado.pos.core.data.network.ConexionesCompartidas.base.newBuilder()
+            // D5 · B2b, punto de paso ①: el PRIMERO, para ver cada petición una vez y su respuesta final (reintentos y PIN de
+            // gerente incluidos). Los clientes derivados (`newBuilder()`) lo heredan; `RedSoloPorElClientePrincipalTest` lo vigila.
+            .addInterceptor(com.avoqado.pos.core.data.network.PuertaDeLaFoto(fotosDeMesas))
+            // D12 (hz:e5ee98bc): la ruta del dinero y abrir mesa se rinden rápido y recuerdan que nadie contesta (sólo las marcadas).
+            .addInterceptor(com.avoqado.pos.core.data.network.RendirseRapido(connectivityMonitor))
             .addInterceptor(authInterceptor)
             // Registro pasivo de dispositivos (estilo Square Device Management): manda
             // los headers X-Device-* para que el server registre este aparato en el
@@ -102,13 +109,20 @@ object NetworkModule {
 
 /**
  * El log de red de depuración (en release no registra nada). 🔴 Tapa los dos headers que valen algo por sí solos: la sesión y la
- * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11).
+ * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11). Y la del descuento del cliente, que vive 7 días y viaja en
+ * el CUERPO de la venta (`autorizacionDelDescuento`, D2): la tapa en el texto que se registra, así vale para todo cliente que nace
+ * del compartido (crear la venta, «Pagar después», `pay-new-order` y la cola sin red).
  */
 internal fun registroDeRed(
     depuracion: Boolean,
     logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT,
-): HttpLoggingInterceptor = HttpLoggingInterceptor(logger).apply {
+): HttpLoggingInterceptor = HttpLoggingInterceptor { linea -> logger.log(taparAutorizacionDelDescuento(linea)) }.apply {
     redactHeader("Authorization")
     redactHeader(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
     level = if (depuracion) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
 }
+
+private val AUTORIZACION_DEL_DESCUENTO = Regex("(\"autorizacionDelDescuento\"\\s*:\\s*)\"(?:[^\"\\\\]|\\\\.)*\"")
+
+private fun taparAutorizacionDelDescuento(linea: String): String =
+    if ("autorizacionDelDescuento" !in linea) linea else AUTORIZACION_DEL_DESCUENTO.replace(linea, "$1\"██\"")

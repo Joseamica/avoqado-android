@@ -78,6 +78,8 @@ data class SaldoDelPedido(
     val precios: List<PrecioDeRenglon>? = null,
     val estadoDeLaCuenta: String? = null,
     val pagadoA: Instant? = null,
+    /** D13: los ids de los pagos COMPLETADOS que trajo esta MISMA respuesta (lo que [saldoCents] ya cuenta). null = no vino la lista. */
+    val pagos: Set<String>? = null,
 )
 
 /**

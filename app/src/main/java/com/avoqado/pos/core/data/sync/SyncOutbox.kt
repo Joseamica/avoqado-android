@@ -6,6 +6,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.IntentSinResolver
 import com.avoqado.pos.core.data.local.database.SyncIntentDao
 import com.avoqado.pos.core.data.local.database.SyncIntentEntity
+import com.avoqado.pos.core.data.local.database.esMesaConSaldo
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -43,6 +44,9 @@ private const val TAG = "🔁 SyncOutbox"
 data class TrabajoSinResolver(val intents: Int, val rechazados: Int, val tipos: Set<String>, val cobradoEnColaCents: Int) {
     val enCamino: Int get() = intents - rechazados
 }
+
+/** D5 · B2a: una fila sin resolver de la cola que toca la orden. `importeCents` sólo en el efectivo. B2b: `seq` (0 = no se leyó). */
+data class FilaDeLaOrden(val id: String, val tipo: String, val estado: String, val importeCents: Int?, val seq: Long = 0)
 
 /**
  * Offline-first Corte B — el OUTBOX del POS.
@@ -82,6 +86,8 @@ class SyncOutbox @Inject constructor(
     private val tableSession: com.avoqado.pos.tables.data.TableSession = com.avoqado.pos.tables.data.TableSession(),
     /** D22: «el servidor ya confirmó una operación de esta sucursal»; Ventas e Informes se recargan solos con esto. */
     private val avisosDeVentas: AvisosDeVentasSubidas = AvisosDeVentasSubidas(),
+    /** D5 · B2b (piloto): punto de paso ② — lo que entra a la cola y no es ronda, cobro ni cocina borra la foto de su mesa. */
+    private val fotos: FotosDeMesas? = null,
 ) {
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** Se fija antes de start; producción conserva IO. Permite probar el drenaje real sin timers concurrentes. */
@@ -307,6 +313,11 @@ class SyncOutbox @Inject constructor(
             require(!retenido && preparationSnapshots != null)
         } else require(preparationSnapshots == null)
         val originalPayload = json.encodeToString(JsonObject.serializer(), payload)
+        // D5 · B2b, punto de paso ②: antes de escribirse. Si el disco falla, no se encola (y el llamador lo dice).
+        if (type !in TIPOS_QUE_NO_TOCAN_LA_FOTO) fotos?.let { f ->
+            f.conFotoEn(originalPayload).takeIf { it.isNotEmpty() }?.let { Log.d(TAG, "📸 Foto borrada al encolar $type: $it") }
+            f.borrarAntesDe(originalPayload)
+        }
         val capture = if(type == SyncIntentTypes.PAY_CASH) com.avoqado.pos.payment.data.ConciliacionDelCobro.capturarIntent(
             venueId,id,originalPayload,cashTenderedCents,changeCents,splitType,restanteEsperadoCents,
             restanteEsperadoCents?.let { toleranciaSinRedQ16(venueId, payload) }) else null
@@ -447,11 +458,12 @@ class SyncOutbox @Inject constructor(
      * (falso positivo para el gerente; nunca esconde dinero). Salida: que la ronda lleve las unidades de cada opción (Codex r4).
      */
     private suspend fun toleranciaSinRedQ16(venueId: String, payload: JsonObject): Int {
-        val ref = (payload["localOrderId"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return 0
+        // D5 · B1: la mesa del servidor cobrada por la cola de mesas lleva `orderId`, igual que sus rondas.
+        val ref = ((payload["localOrderId"] ?: payload["orderId"]) as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return 0
         return dao.pendingFifo(venueId, 1000).filter { it.type == SyncIntentTypes.OPEN_TABLE || it.type == SyncIntentTypes.ADD_ITEMS }
             .sumOf { row -> runCatching {
                 val p = json.decodeFromString(JsonObject.serializer(), row.payloadJson)
-                if ((p["localOrderId"] as? JsonPrimitive)?.content != ref) 0
+                if (((p["localOrderId"] ?: p["orderId"]) as? JsonPrimitive)?.content != ref) 0
                 else (p["items"] as? kotlinx.serialization.json.JsonArray)?.sumOf { item ->
                     val combo = (item as? JsonObject)?.get("promotionRef") as? JsonObject ?: return@sumOf 0
                     ((combo["selections"] as? kotlinx.serialization.json.JsonArray)?.size ?: 1).coerceAtLeast(1) } ?: 0
@@ -678,6 +690,10 @@ class SyncOutbox @Inject constructor(
     /** Both HTTP replay and readonly recovery must use this same local commit before emitting ACK. */
     internal suspend fun conservarAck(ack: SyncAck, row: SyncIntentEntity, venueId: String, sentDeviceId: String, currentDeviceId: String) {
         val resultJson = ack.result?.let { json.encodeToString(JsonObject.serializer(), it) }
+        // D5 · B2b (R5-1): un rechazo de algo de la mesa (su ronda, sobre todo) mata su foto: si el gerente la descarta y el borrador
+        // la vuelve a encolar, nunca suma sobre la foto. Si el disco no deja borrarla, queda muerta en memoria y el rechazo se guarda
+        // igual (Codex b2b-r1 #1): la fila rechazada pone gris, y con el piloto prendido «Marcar resuelta» no la quita hasta borrarla.
+        if (!ack.isAcked) runCatching { fotos?.invalidar(row.payloadJson) }
         if(ack.status == "REJECTED" && ack.errorCode == "STALE_DEVICE_SEQUENCE") {
             require(row.venueId == venueId && sentDeviceId.isNotBlank() && sentDeviceId == currentDeviceId)
             dao.resolveStaleSequence(ack.id,venueId,row.seq,
@@ -711,30 +727,88 @@ class SyncOutbox @Inject constructor(
     )
 
     suspend fun rejectedIntents(venueId: String): List<QuarantinedIntent> =
-        dao.rejectedIntents(venueId).map {
+        // D5 · B3 (C3): el mismo «Liberar mesa» rechazado dos veces porque la mesa sigue debiendo se ve una vez: el más reciente.
+        dao.rejectedIntents(venueId).distinctBy { if (it.esMesaConSaldo()) "CLEAR_TABLE|${it.payloadJson}" else it.id }.map {
             QuarantinedIntent(it.id, it.type, it.errorCode, it.message, it.createdAt)
         }
 
     /** El gerente resolvió el rechazo a mano y lo descarta de la cuarentena. */
     suspend fun dismissRejected(venueId: String, id: String) {
+        // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Con el piloto prendido, si el disco no
+        // deja borrarla, lanza y la fila rechazada se queda (la mesa sigue en gris); apagado, sigue como hoy (la foto queda muerta).
+        val fila = dao.findForVenue(venueId, id)
+        fotos?.let { f -> fila?.let { f.borrarAntesDe(it.payloadJson) } }
+        // D29 (deuda A4): la ronda sale del borrador de su mesa ANTES que su fila. Sin esto, al reabrir la mesa `restoreDraft` la
+        // volvía a encolar con el mismo id (una ronda del borrador sin fila es la que la app no alcanzó a encolar). Si la app muere
+        // entre los dos pasos, la fila sigue y se vuelve a marcar; si el disco no deja, lanza y la fila se queda.
+        if (fila?.type == SyncIntentTypes.ADD_ITEMS) cuentaDeLaRonda(fila.payloadJson)?.let { cuenta ->
+            withContext(Dispatchers.IO) { tableDrafts.descartarRonda(venueId, cuenta, id) }
+        }
         dao.dismiss(id)
+        // D5 · B3 (C3): resolver el «Liberar mesa» que se ve resuelve también sus gemelos escondidos (misma mesa, mismo motivo).
+        if (fila?.esMesaConSaldo() == true) dao.rejectedIntents(venueId)
+            .filter { it.id != id && it.esMesaConSaldo() && it.payloadJson == fila.payloadJson }.forEach { dao.dismiss(it.id) }
         refreshCounts(venueId)
     }
 
+    /** La cuenta de una ronda encolada: `orderId` (mesa del servidor) o `localOrderId` (abierta sin red; el borrador sigue su alias). */
+    private fun cuentaDeLaRonda(payloadJson: String): String? = runCatching {
+        val payload = Json.parseToJsonElement(payloadJson) as JsonObject
+        listOf("orderId", "localOrderId").firstNotNullOfOrNull { campo ->
+            (payload[campo] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+        }
+    }.getOrNull()
+
     /**
-     * Lectura persistida usada por las guardas de sesión y cambio de venue. Cuenta PENDING + HELD —
-     * una ronda en vuelo (Task 7 review, 2026-09-28) también bloquea salir, aunque el badge visible
-     * ([pendingCount]) no la muestre.
+     * Lectura persistida usada por las guardas de cerrar sesión y cambiar de venue: lo que falta enviar ([sinEnviarCount]) más
+     * lo rechazado, que tampoco se deja atrás sin resolver.
      */
-    suspend fun blockingWorkCount(venueId: String): Int =
-        dao.pendingCount(venueId) + dao.heldCount(venueId) + dao.rejectedCount(venueId)
+    suspend fun blockingWorkCount(venueId: String): Int = sinEnviarCount(venueId) + rechazadasCount(venueId)
+
+    /** Lo REJECTED de [venueId]: no vuelve a salir solo y lo resuelve un gerente (D34 lo cuenta aparte para el texto del freno). */
+    suspend fun rechazadasCount(venueId: String): Int = dao.rejectedCount(venueId)
+
+    /**
+     * Lo que todavía va a salir con la sesión abierta: PENDING + HELD — una ronda en vuelo (Task 7 review, 2026-09-28) también
+     * cuenta, aunque el badge visible ([pendingCount]) no la muestre. Lo usa el cambio de usuario por PIN (D28): lo REJECTED no
+     * vuelve a salir solo y sólo un gerente lo resuelve en la sesión abierta, así que frenarlo dejaba al mesero sin salida.
+     */
+    suspend fun sinEnviarCount(venueId: String): Int = dao.pendingCount(venueId) + dao.heldCount(venueId)
 
     suspend fun trabajoSinResolverDeLaOrden(venueId: String, ids: Set<String>): TrabajoSinResolver = withContext(Dispatchers.IO) {
         val filas = dao.sinResolver(venueId)
+        resumirTrabajo(filas, conAlias(venueId, ids, filas.map { it.payloadJson }))
+    }
+
+    /** D5 · B2a: las filas sin resolver de la orden con su id, y el importe de cada efectivo (ilegible ⇒ falla, nunca cero). */
+    suspend fun filasSinResolverDeLaOrden(venueId: String, ids: Set<String>): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
+        val filas = dao.filasSinResolver(venueId)
+        val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
+        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+            FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null)
+        }
+    }
+
+    /**
+     * D5 · B2b: las filas de la orden posteriores a [desdeSeq] en cualquier estado, más las que siguen sin resolver, con su
+     * secuencia. El efectivo con importe ilegible hace fallar la lectura (nunca cero).
+     */
+    suspend fun filasDeLaOrdenDesde(venueId: String, ids: Set<String>, desdeSeq: Long): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
+        val filas = dao.filasDesde(venueId, desdeSeq)
+        val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
+        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+            FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null, it.seq)
+        }
+    }
+
+    /** D5 · B2b: la secuencia de la cola ahora; lo que se encole después tendrá una mayor. */
+    suspend fun secuenciaActual(): Long = withContext(Dispatchers.IO) { maxOf(dao.sequenceState() ?: 0L, dao.maxSeq()) }
+
+    private fun conAlias(venueId: String, ids: Set<String>, payloads: List<String>): Set<String> {
         val expanded = ids.toMutableSet()
-        val localIds = filas.mapNotNull { fila ->
+        val localIds = payloads.mapNotNull { payloadJson ->
             runCatching {
-                val payload = Json.parseToJsonElement(fila.payloadJson) as? JsonObject
+                val payload = Json.parseToJsonElement(payloadJson) as? JsonObject
                 (payload?.get("localOrderId") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
             }.getOrNull()
         }.toSet()
@@ -742,7 +816,7 @@ class SyncOutbox @Inject constructor(
         for (local in localIds - ids) {
             if (tableDrafts.loadResolved(venueId, local).first in ids) expanded += local
         }
-        resumirTrabajo(filas, expanded)
+        return expanded
     }
 
     companion object {
@@ -756,16 +830,18 @@ class SyncOutbox @Inject constructor(
                 intents++
                 if (fila.status == SyncIntentEntity.STATUS_REJECTED) rechazados++
                 tipos += fila.type
-                if (fila.type == TIPO_PAGO_EN_EFECTIVO) {
-                    val payload = Json.parseToJsonElement(fila.payloadJson) as JsonObject
-                    val amount = payload["amountCents"] as? JsonPrimitive ?: error("Importe de pago ilegible")
-                    require(!amount.isString) { "Importe de pago ilegible" }
-                    val cents = amount.content.toBigDecimal().intValueExact()
-                    require(cents >= 0) { "Importe de pago negativo" }
-                    cobrado = Math.addExact(cobrado, cents)
-                }
+                if (fila.type == TIPO_PAGO_EN_EFECTIVO) cobrado = Math.addExact(cobrado, importeDelEfectivo(fila.payloadJson))
             }
             return TrabajoSinResolver(intents, rechazados, tipos, cobrado)
+        }
+
+        internal fun importeDelEfectivo(payloadJson: String): Int {
+            val payload = Json.parseToJsonElement(payloadJson) as JsonObject
+            val amount = payload["amountCents"] as? JsonPrimitive ?: error("Importe de pago ilegible")
+            require(!amount.isString) { "Importe de pago ilegible" }
+            val cents = amount.content.toBigDecimal().intValueExact()
+            require(cents >= 0) { "Importe de pago negativo" }
+            return cents
         }
 
         internal fun tocaLaOrden(payloadJson: String, ids: Set<String>): Boolean {
@@ -779,6 +855,12 @@ class SyncOutbox @Inject constructor(
         }
 
         const val LOCAL_DRAFT_RECOVERY_FAILED = "LOCAL_DRAFT_RECOVERY_FAILED"
+        /**
+         * D5 · B2b: lo que la foto de la mesa ya sabe contar (ronda y cobro posteriores) o no cambia su dinero (cocina, y liberar la
+         * MESA: el SERVIDOR la rechaza si la cuenta debe y si no sólo cambia el estado de la mesa; B3 C1).
+         */
+        internal val TIPOS_QUE_NO_TOCAN_LA_FOTO = setOf(SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH,
+            SyncIntentTypes.KDS_ITEM_PROGRESS, SyncIntentTypes.KDS_TICKET_MARK, "CLEAR_TABLE")
         /** El tipo de intent que MUEVE DINERO EN EFECTIVO. Espejo exacto del `SyncIntentType` del server. */
         internal const val TIPO_PAGO_EN_EFECTIVO = "PAY_CASH"
 

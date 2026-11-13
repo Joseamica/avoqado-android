@@ -499,6 +499,28 @@ class SecureStorage @Inject constructor(
         }
 
     /**
+     * D12 (final fix ronda 2, R2-1): los cobros NO efectivo que ESTE aparato confirmó sobre una orden y que la copia de «Pedidos»
+     * todavía no aplicó (`orders.data.CuentasCobradasAqui`). En `commit()` y **NO se limpia en `clearSession`**, como la lista de
+     * cobros pendientes.
+     */
+    val cuentasCobradasAquiJson: String?
+        @Synchronized get() = prefs.getString(KEY_CUENTAS_COBRADAS_AQUI, null)
+
+    @Synchronized
+    fun escribirCuentasCobradasAqui(nueva: (String?) -> String): Boolean =
+        prefs.edit().putString(KEY_CUENTAS_COBRADAS_AQUI, nueva(cuentasCobradasAquiJson)).commit()
+
+    /**
+     * R2-1: un cobro con tarjeta que SÍ pasó sale de la lista de pendientes y, en el MISMO `commit`, deja su marca para la copia de
+     * «Pedidos» ([marcas]). Como [quitarCobroYAnotarFolio]: no hay instante en que el aparato sepa del cobro y la copia lo ofrezca.
+     */
+    @Synchronized
+    fun quitarCobroYAnotarCuenta(requestId: String, marcas: (String?) -> String): Boolean =
+        escribirPendientes(ademas = { it.putString(KEY_CUENTAS_COBRADAS_AQUI, marcas(cuentasCobradasAquiJson)) }) {
+            PendientesDeTarjeta.quitar(it, requestId)
+        }
+
+    /**
      * La lista nueva, en UN commit. M-10: si la que había no se pudo leer, en ese MISMO commit se guarda tal cual en
      * [KEY_PENDING_CARD_CHARGES_ILEGIBLE] — antes se leía como vacía y la escritura siguiente la borraba de verdad.
      */
@@ -963,6 +985,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PENDING_CARD_CHARGE_CONTEXT = "pendingCardChargeContext"
         private const val KEY_PENDING_CARD_CHARGES = "pendingCardCharges"
         private const val KEY_FOLIOS_COBRADOS_CON_TARJETA = "foliosCobradosConTarjeta"
+        private const val KEY_CUENTAS_COBRADAS_AQUI = "cuentasCobradasAqui"
         /** M-10: el último blob de la lista que no se pudo leer, tal cual, para conciliar. No lo borra `clearSession`. */
         private const val KEY_PENDING_CARD_CHARGES_ILEGIBLE = "pendingCardChargesIlegible"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"

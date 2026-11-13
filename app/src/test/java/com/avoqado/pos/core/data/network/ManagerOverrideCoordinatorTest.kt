@@ -36,7 +36,7 @@ class ManagerOverrideCoordinatorTest {
     private fun repoReturning(vararg results: OverrideResult): PermissionOverrideRepository {
         val repo = mockk<PermissionOverrideRepository>()
         var i = 0
-        coEvery { repo.requestToken(any(), any(), any()) } answers {
+        coEvery { repo.requestToken(any(), any(), any(), any()) } answers {
             results[minOf(i++, results.size - 1)]
         }
         return repo
@@ -164,6 +164,91 @@ class ManagerOverrideCoordinatorTest {
 
         assertTrue(listo.await(3, TimeUnit.SECONDS))
         assertEquals(true, autorizado)
+    }
+
+    /** Autoriza el teclado que esté a la vista y devuelve lo que preauthorize respondió. */
+    private fun preautorizar(
+        coordinator: ManagerOverrideCoordinator,
+        permiso: String,
+        llave: String? = null,
+        contexto: String? = null,
+    ): Boolean? {
+        var autorizado: Boolean? = null
+        val listo = CountDownLatch(1)
+        thread { autorizado = runBlocking { coordinator.preauthorize(permiso, llave, contexto) }; listo.countDown() }
+        coordinator.esperarTeclado()
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+        return autorizado
+    }
+
+    @Test
+    fun `5b el operationKey viaja al servidor y la preautorizacion se guarda con su llave`() {
+        val repo = mockk<PermissionOverrideRepository>()
+        val llaves = mutableListOf<String?>()
+        coEvery { repo.requestToken(any(), any(), any(), any()) } answers {
+            llaves.add(arg<String?>(3))
+            OverrideResult.Granted("tok${llaves.size}", "Laura")
+        }
+        val coordinator = TestCoordinator(repo)
+
+        assertEquals(true, preautorizar(coordinator, "discounts:apply", "descuento-cliente:c:d:1000"))
+        assertEquals(listOf<String?>("descuento-cliente:c:d:1000"), llaves)
+
+        // Otra llave (otro monto) no reusa la anterior: pide su propio PIN y su propio token.
+        assertNull(coordinator.tomarPreautorizado("discounts:apply", "descuento-cliente:c:d:1200"))
+        assertEquals(true, preautorizar(coordinator, "discounts:apply", "descuento-cliente:c:d:1200"))
+        assertEquals(2, llaves.size)
+
+        // La de :1000 fue reemplazada por la de :1200 (una sola preautorización viva), y se entrega una vez.
+        assertEquals("tok2", coordinator.tomarPreautorizado("discounts:apply", "descuento-cliente:c:d:1200"))
+        assertNull(coordinator.tomarPreautorizado("discounts:apply", "descuento-cliente:c:d:1200"))
+    }
+
+    @Test
+    fun `5b preauthorize con la misma llave viva no vuelve a pedir PIN`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok", "Laura")))
+        preautorizar(coordinator, "discounts:apply", "k1")
+
+        assertEquals(true, runBlocking { coordinator.preauthorize("discounts:apply", "k1") })
+        assertNull(coordinator.prompt.value)
+    }
+
+    @Test
+    fun `5c cortesia sin operationKey funciona igual`() {
+        val repo = mockk<PermissionOverrideRepository>()
+        val llaves = mutableListOf<String?>()
+        coEvery { repo.requestToken(any(), any(), any(), any()) } answers {
+            llaves.add(arg<String?>(3))
+            OverrideResult.Granted("tok", "Laura")
+        }
+        val coordinator = TestCoordinator(repo)
+
+        assertEquals(true, preautorizar(coordinator, "orders:comp"))
+        assertEquals(listOf<String?>(null), llaves)
+        assertEquals("tok", coordinator.tomarPreautorizado("orders:comp"))
+    }
+
+    @Test
+    fun `5d el contexto llega al teclado, y sin contexto queda el texto de hoy`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok", "Laura")))
+        var visto: ManagerOverrideCoordinator.Prompt? = null
+        val listo = CountDownLatch(1)
+        thread {
+            runBlocking { coordinator.preauthorize("discounts:apply", "k", "Descuento de Cecilia −\$10.00") }
+            listo.countDown()
+        }
+        visto = coordinator.esperarTeclado()
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+        assertEquals("Descuento de Cecilia −\$10.00", visto?.contexto)
+
+        val otro = TestCoordinator(repoReturning(OverrideResult.Granted("tok", "Laura")))
+        val l2 = CountDownLatch(1)
+        thread { runBlocking { otro.preauthorize("payments:refund") }; l2.countDown() }
+        assertNull(otro.esperarTeclado().contexto)
+        runBlocking { otro.submitPin("venue_1", "1234") }
+        assertTrue(l2.await(3, TimeUnit.SECONDS))
     }
 
     /** Si canceló, quien llamó tiene que poder NO abrir el formulario. */

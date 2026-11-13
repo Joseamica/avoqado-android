@@ -44,6 +44,8 @@ class OrderRepository @Inject constructor(
     private val salida: SalidaDelApartado? = null,
     /** D22: «el servidor ya confirmó un cobro de esta sucursal»; Ventas e Informes se recargan solos con esto. */
     private val avisosDeVentas: com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas = com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas(),
+    /** D12: la marca «la abrió aquí» de la orden que [createOrder] crea (venta dividida o con tarjeta). */
+    private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
 ) {
     /**
      * Cliente SOLO para la ruta del dinero (crear orden, cobrar efectivo, fast).
@@ -84,6 +86,9 @@ class OrderRepository @Inject constructor(
                 chain.proceed(
                     chain.request().newBuilder()
                         .header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
+                        // D12: el interceptor del principal da a esta ruta el plazo corto y la saca directo a la cola si la
+                        // anterior se quedó sin respuesta y el servidor sigue sin contestar (`RendirseRapido`).
+                        .header(com.avoqado.pos.core.data.network.RendirseRapido.HEADER, "1")
                         .build(),
                 )
             })
@@ -499,11 +504,23 @@ class OrderRepository @Inject constructor(
          * siendo cobro rápido. Deciden con ESTA regla crear la orden ([createOrder]) y la fila de la cola sin red
          * ([CashPaymentRepository]): así la parte guardada sin red se reproduce contra la misma orden por su `externalId`.
          * D5: también con cupón: un cobro rápido no tiene orden donde ligarlo y el cupón nunca contaría.
+         * D2 (spec punto 15): y con el descuento del cliente: un cobro rápido no lleva descuento ni etiqueta ni PIN.
          */
         fun aceptaCrearOrden(request: CreateOrderRequest): Boolean =
             hasProductItems(request) ||
                 (request.items.isNotEmpty() && !request.couponCode.isNullOrBlank()) ||
-                (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT")
+                (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT") ||
+                (request.items.isNotEmpty() && llevaDescuentoDelCliente(request)) ||
+                // D4: `/fast` no lleva descuento ni etiqueta: con un descuento que pide aprobación, la venta crea su orden.
+                (request.items.isNotEmpty() && llevaDescuentoDeCatalogo(request) && request.descuentoDeCatalogoPideAprobacion)
+
+        /** D2: la etiqueta del descuento del cliente sólo viaja con monto (el SERVIDOR exige `montoCents == discount`). */
+        private fun llevaDescuentoDelCliente(request: CreateOrderRequest): Boolean =
+            request.discount > 0 && !request.descuentoDelClienteId.isNullOrBlank()
+
+        /** D4: la etiqueta del descuento de cuenta del catálogo sólo viaja con importe (y nunca con la del cliente). */
+        private fun llevaDescuentoDeCatalogo(request: CreateOrderRequest): Boolean =
+            request.discount > 0 && !request.descuentoDeCatalogoId.isNullOrBlank() && !llevaDescuentoDelCliente(request)
 
         /**
          * El cuerpo EXACTO que viaja en `POST /mobile/venues/:id/fast`.
@@ -746,6 +763,18 @@ class OrderRepository @Inject constructor(
                     // exige el SERVIDOR `orders:comp` en línea (una app vieja, no). ADITIVO: sin descuento de cuenta el cuerpo no cambia.
                     put("cortesiaDeCuentaConPin", true)
                 }
+                // D2: ese descuento es el del cliente. La etiqueta dice de quién y cuánto (= `discount`); el PIN del gerente va en el
+                // CUERPO, nunca en `X-Permission-Override` ni en la llave. ADITIVO: sin etiqueta el cuerpo queda byte a byte igual.
+                if (llevaDescuentoDelCliente(request)) {
+                    put("descuentoDelCliente", buildJsonObject {
+                        put("discountId", request.descuentoDelClienteId)
+                        put("montoCents", request.discount)
+                    })
+                    request.autorizacionDelDescuento?.takeIf { it.isNotBlank() }?.let { put("autorizacionDelDescuento", it) }
+                }
+                // D4: el descuento de cuenta del catálogo. Sólo etiqueta (el SERVIDOR revisa su aprobación): el importe sigue siendo `discount`.
+                // ADITIVO: sin él el cuerpo queda byte a byte igual.
+                if (llevaDescuentoDeCatalogo(request)) put("descuentoDeCatalogoId", request.descuentoDeCatalogoId)
                 // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
                 request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
@@ -929,6 +958,8 @@ class OrderRepository @Inject constructor(
                 }
                 val orderResponse = parseCreateOrderResponse(responseBody)
                 Log.d("📦", "✅ Order created: ${orderResponse.data?.id}")
+                // D12: la abrió esta caja (con la sucursal de la PETICIÓN); la marca va antes de que nadie la cobre.
+                orderResponse.data?.id?.takeIf { it.isNotBlank() }?.let { cuentasAbiertasAqui?.marcar(venueId, it) }
                 Result.success(orderResponse)
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")
@@ -1282,6 +1313,11 @@ class OrderRepository @Inject constructor(
          * válido y dentro de los topes). Viaja tal cual como `lineasDelTicket`. null = no viaja y el body queda byte a byte como hoy.
          */
         lineasDelTicket: String? = null,
+        /**
+         * D12 (Codex r1 #4): la caja de la venta, YA con el id del servidor (`CashDrawerRepository.idDeCajaParaElServidor`). Viaja sólo
+         * con [capturaPrevia], igual que en el replay: el servidor saca de ahí el turno del efectivo ya recibido. null = no viaja.
+         */
+        cashDrawerSessionId: String? = null,
     ): Result<CashPayResult> {
         if (capturedVenueId != null && capturedVenueId.isBlank()) return Result.failure(Exception("No venue"))
         val venueId = capturedVenueId ?: secureStorage.venueId ?: return Result.failure(Exception("No venue"))
@@ -1307,6 +1343,9 @@ class OrderRepository @Inject constructor(
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
                 if (capturaPrevia) append("\"isOfflineReplay\":true,")
+                // Un id inválido para el servidor no viaja (sería un 400 permanente), como `PaymentSyncService.cajaDelCobroParaElServidor`.
+                cashDrawerSessionId?.takeIf { capturaPrevia && it.isNotBlank() && it.length <= 64 }
+                    ?.let { append("\"cashDrawerSessionId\":${JsonPrimitive(it)},") }
                 // Un OBJETO JSON (sus textos ya vienen escapados): se pega como valor. Se vuelve a leer antes, porque un texto roto
                 // dejaría el body inválido y el cobro rebotaría por una copia que es sólo texto del ticket: sin objeto, no viaja.
                 lineasDelTicket?.let { runCatching { Json.parseToJsonElement(it) as JsonObject }.getOrNull() }
