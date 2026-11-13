@@ -53,7 +53,7 @@ class RendirseRapido(
                 .withWriteTimeout(leerMs.toInt(), TimeUnit.MILLISECONDS)
                 .proceed(request.newBuilder().removeHeader(HEADER).build())
         } catch (e: IOException) {
-            if (nadieContesto(e, chain.call().timeout().timeoutNanos(), chain.call().isCanceled())) sinRespuestaEnMs = ahoraMs()
+            if (nadieContesto(e, chain.call().timeout().timeoutNanos())) sinRespuestaEnMs = ahoraMs()
             throw e
         }
         sinRespuestaEnMs = null
@@ -76,17 +76,17 @@ class RendirseRapido(
     /**
      * ¿Esta falla dice que NADIE contestó? Sin ruta, sin conexión o el plazo de un socket. El plazo TOTAL del cliente cuenta sólo si
      * es al menos el de leer (el del dinero, 15 s): uno más corto (la consulta del saldo, 2 s) no prueba que nadie conteste (familia C
-     * del D12). Codex r4 #1: si el plazo total vence mientras OkHttp todavía resuelve o conecta, aquí llega «Canceled» (la conversión a
-     * «timeout» ocurre después, afuera): una llamada cancelada con plazo total largo es ese vencimiento. Con plazo total 0 (el cliente
-     * principal) una cancelación es de la app —se cerró la pantalla— y no cuenta.
+     * del D12). Cerrar una pantalla cancela con «Canceled», que no es nada de esto.
+     *
+     * ponytail (Codex r4 #1 y r5): si el plazo total vence mientras OkHttp resuelve o conecta, aquí llega «Canceled» y no se anota; la
+     * siguiente marcada lo intenta otra vez, y el ping de 10 s (que ya arrancó: `ConnectivityInterceptor` apagó «alcanzable») deja la
+     * noticia. Contar «Canceled» con plazo largo como «nadie contestó» se probó y se quitó: un 401 + renovación que suman más de 15 s
+     * también terminan en «Canceled» con el servidor contestando. Si se ve en un aparato: un `EventListener` que sepa si hubo respuesta.
      */
-    private fun nadieContesto(e: IOException, plazoTotalNs: Long, cancelada: Boolean): Boolean {
-        val plazoLargo = plazoTotalNs >= TimeUnit.MILLISECONDS.toNanos(leerMs)
-        return when (e) {
-            is SocketTimeoutException, is ConnectException, is UnknownHostException, is NoRouteToHostException -> true
-            is InterruptedIOException -> plazoLargo
-            else -> cancelada && plazoLargo
-        }
+    private fun nadieContesto(e: IOException, plazoTotalNs: Long): Boolean = when (e) {
+        is SocketTimeoutException, is ConnectException, is UnknownHostException, is NoRouteToHostException -> true
+        is InterruptedIOException -> plazoTotalNs >= TimeUnit.MILLISECONDS.toNanos(leerMs)
+        else -> false
     }
 
     /** Salió sin tocar la red: la última marcada se quedó sin respuesta y el servidor sigue sin contestar. Nada se mandó. */

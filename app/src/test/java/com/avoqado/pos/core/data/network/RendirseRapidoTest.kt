@@ -261,30 +261,6 @@ class RendirseRapidoTest {
         assertEquals(2, server.requestCount)
     }
 
-    /**
-     * Codex r4 #1: el plazo TOTAL del dinero (15 s) vence mientras OkHttp todavía resuelve o conecta: aquí llega «Canceled» y la
-     * conversión a «timeout» pasa afuera. Ese vencimiento también es «nadie contestó». (Un DNS lento simulado antes del interceptor.)
-     */
-    @Test fun `P1 el plazo total largo vencido tambien deja el recuerdo`() {
-        mudo()
-        val lento = OkHttpClient.Builder()
-            .addInterceptor { cadena -> Thread.sleep(250); cadena.proceed(cadena.request()) }
-            .addInterceptor(rendirse)
-            .addInterceptor(ConnectivityInterceptor(monitor))
-            .callTimeout(400, TimeUnit.MILLISECONDS) // ≥ el plazo de leer de la prueba (300 ms), como los 15 s del dinero frente a 10
-            .build()
-        try {
-            lento.newCall(peticion()).execute().close()
-            fail("debía vencer")
-        } catch (_: IOException) {
-        }
-
-        val (ms, falla) = mandar()
-
-        assertTrue("la siguiente va directo a la cola: $falla", falla is RendirseRapido.SinRespuestaReciente)
-        assertTrue("tardó $ms ms", ms < 1_000)
-    }
-
     /** El plazo TOTAL corto de la consulta del saldo (2 s) no prueba que nadie conteste (familia C del D12). */
     @Test fun `un plazo total corto no cuenta como nadie contesta`() {
         mudo()
