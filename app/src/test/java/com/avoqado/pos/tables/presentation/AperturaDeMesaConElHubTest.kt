@@ -361,6 +361,59 @@ class AperturaDeMesaConElHubTest {
         }
     }
 
+    // MARK: - Codex código r2 H3: entrar a una cuenta y salir mientras se abría no es «nunca entró» (la sesión vuelve a null)
+
+    @Test fun `r2-H3 con openTable retenido entra a la mesa ocupada y sale - la respuesta vieja no la reactiva ni navega`() = runTest {
+        val respuesta = CompletableDeferred<Result<OpenedOrder>>()
+        coEvery { repository.openTable(any(), any(), any()) } coAnswers { respuesta.await() }
+        val subject = vm()
+        var navego = 0
+        try {
+            subject.openTableAndStartOrdering(m13Libre, 2) { navego++ }; runCurrent()
+            coVerify(exactly = 1) { repository.openTable(any(), any(), any()) }
+
+            // El refresco ya la muestra ocupada: «Agregar productos» entra a su cuenta y la flecha regresa al plano.
+            subject.startOrdering(m13Ocupada) {}; runCurrent()
+            assertEquals("m13", session.current()?.tableId)
+            subject.exitTableMode(); runCurrent()
+            assertNull(session.current())
+
+            respuesta.complete(Result.success(OpenedOrder("o-13", "13"))); advanceUntilIdle()
+            assertNull("la mesa que dejó no se vuelve a activar", session.current())
+            assertEquals(0, navego)
+            assertEquals(TableActionState.Idle, subject.actionState.value)
+            unTicketTerminadoUnaVez()
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `r2-H3 sin red, con la escritura retenida entra a otra mesa y sale - la mesa queda ocupada en el plano, sin activar ni navegar`() = runTest {
+        coEvery { repository.openTable(any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        val escritura = CompletableDeferred<String>()
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            escritura.await()
+        }
+        val subject = vm()
+        var navego = 0
+        try {
+            subject.openTableAndStartOrdering(mesaB, 2) { navego++ }; runCurrent()
+            coVerify(exactly = 1) { outbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+
+            subject.startOrdering(m13Ocupada) {}; runCurrent()
+            assertEquals("m13", session.current()?.tableId)
+            subject.exitTableMode(); runCurrent()
+
+            escritura.complete("intent-B"); advanceUntilIdle()
+            assertNull("la apertura vieja no activa t-B", session.current())
+            assertEquals(0, navego)
+            // El OPEN_TABLE ya está en la cola y abrirá la cuenta al reproducirse: el plano dice la verdad.
+            coVerify(exactly = 1) {
+                repository.markTableOccupiedLocally("t-B", 2, venue, match { it != null && it.tableId == "t-B" && it.isProvisional })
+            }
+            assertEquals(TableActionState.Idle, subject.actionState.value)
+            unTicketTerminadoUnaVez()
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     // MARK: - p20b (Codex plan r1 #4): cerrar la hoja después de Granted, con openTable retenido
 
     @Test fun `p20b cerrar la hoja con openTable retenido termina el ticket en ese momento y el exito tardio no abre`() = runTest {

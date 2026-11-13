@@ -314,9 +314,11 @@ class TablesViewModel @Inject constructor(
         if (_actionState.value is TableActionState.Working) return
         val original = tableSession.current()
         val sessionEpoch = tableSession.contextoActual()
+        // Codex código r2 H3: el valor solo no basta (null → otra cuenta → null vuelve a ser «igual»); también cuántas veces se entró.
+        val entradas = tableSession.entradasActuales()
         val apertura = ++aperturaGeneration
         fun vigente(expected: TableSession.Active?) = apertura == aperturaGeneration && venueId == vId &&
-            tableSession.contextoActual() == sessionEpoch && tableSession.current() == expected
+            tableSession.contextoActual() == sessionEpoch && tableSession.entradasActuales() == entradas && tableSession.current() == expected
         fun vigenteAbierta(expected: TableSession.Active): Boolean {
             val current = tableSession.current() ?: return false
             return apertura == aperturaGeneration && venueId == vId && tableSession.contextoActual() == sessionEpoch &&
@@ -383,7 +385,7 @@ class TablesViewModel @Inject constructor(
                                 totalCents = 0,
                                 mode = TableSession.Mode.ORDERING,
                         )
-                        if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) { desistir(); return@launch }
+                        if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch, entradas)) { desistir(); return@launch }
                         enCurso.comprometida = true // la sesión ya declara la mesa: cerrar la hoja ya no la suelta
                         soltarTicket()
                         repository.refresh(vId)
@@ -401,7 +403,7 @@ class TablesViewModel @Inject constructor(
                         if (isNetworkError(e)) {
                             var aperturaLocal: TableSession.Active? = null
                             try {
-                                val opened = openTableOffline(vId, table, covers, original, sessionEpoch,
+                                val opened = openTableOffline(vId, table, covers, original, sessionEpoch, entradas,
                                     onActivated = { aperturaLocal = it; soltarTicket() }, sigueOriginal = { vigente(original) },
                                     alComprometer = { enCurso.comprometida = true })
                                 if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
@@ -429,7 +431,7 @@ class TablesViewModel @Inject constructor(
 
     /** Apertura provisional sin red (el server la confirma en el replay). */
     private suspend fun openTableOffline(vId: String, table: DiningTable, covers: Int,
-        original: TableSession.Active?, sessionEpoch: Long,
+        original: TableSession.Active?, sessionEpoch: Long, entradas: Long,
         onActivated: (TableSession.Active) -> Unit, sigueOriginal: () -> Boolean, alComprometer: () -> Unit): TableSession.Active? {
         val localOrderId = java.util.UUID.randomUUID().toString()
         // 🔴 La caja abierta AHORA va en el `OPEN_TABLE` (efectivo sin red en el turno correcto, Codex r4 #1): la cuenta nace en
@@ -462,7 +464,12 @@ class TablesViewModel @Inject constructor(
                 isProvisional = true,
                 localOrderId = localOrderId,
         )
-        if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) return null
+        if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch, entradas)) {
+            // Codex código r2 H3: el OPEN_TABLE ya está en la cola y abrirá la cuenta al reproducirse, pero se entró a otra cuenta mientras
+            // se escribía: no se activa ni se navega. El plano dice la verdad (ocupada por esta caja), no una mesa libre.
+            mutar { repository.markTableOccupiedLocally(table.id, covers, vId, opened) }
+            return null
+        }
         onActivated(opened)
         mutar { repository.markTableOccupiedLocally(table.id, covers, vId) }
         android.util.Log.w("TablesViewModel", "📴 Mesa ${table.number} abierta OFFLINE (folio $folio)")

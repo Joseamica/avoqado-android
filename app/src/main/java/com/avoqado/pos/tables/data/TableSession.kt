@@ -81,7 +81,11 @@ class TableSession @Inject constructor() {
     val contextEpoch: StateFlow<Long> = _contextEpoch.asStateFlow()
     // Un ACK idéntico también invalida una lectura anterior; epoch sigue siendo identidad.
     private var revision = 0L
+    // Codex código r2 H3: cuántas veces se activó una cuenta ([start], [abrirDesdePiso]). Con el valor distingue «nunca entró a otra
+    // mesa» de «entró y volvió a salir» (null → m13 → null). Aparte de `revision`: los acuses de la cola no la mueven.
+    private var entradas = 0L
     fun contextoActual(): Long = synchronized(lock) { epoch }
+    fun entradasActuales(): Long = synchronized(lock) { entradas }
     fun revisionParaPreCuenta(venueId: String, ids: Set<String>): Long? = synchronized(lock) {
         if (!acepta(venueId) || (activeVenue != null && activeVenue != venueId) || ids.any { (venueId to it) in finalizadas }) null else revision
     }
@@ -109,15 +113,16 @@ class TableSession @Inject constructor() {
         val previous = _active.value
         val owner = venueId ?: activeVenue?.takeIf { previous != null && misma(previous, session.idsDeLaOrden) }
             ?: contexto?.second
-        revision++
+        revision++; entradas++
         _active.value = session
         activeVenue = owner
         if (owner != null) estacionadas.entries.removeAll { it.key.first == owner && misma(it.value, session.idsDeLaOrden) }
     }
 
-    /** La respuesta de apertura no puede sustituir una cuenta activada mientras esperaba. */
-    fun startIfCurrent(session: Active, expected: Active?, venueId: String, expectedEpoch: Long): Boolean = synchronized(lock) {
-        if(epoch != expectedEpoch || !acepta(venueId) || (activeVenue != null && activeVenue != venueId) || _active.value != expected) return@synchronized false
+    /** La respuesta de apertura no puede sustituir una cuenta activada mientras esperaba, ni reactivar una mesa ya dejada ([expectedEntradas]). */
+    fun startIfCurrent(session: Active, expected: Active?, venueId: String, expectedEpoch: Long, expectedEntradas: Long): Boolean = synchronized(lock) {
+        if(epoch != expectedEpoch || !acepta(venueId) || (activeVenue != null && activeVenue != venueId) || _active.value != expected ||
+            entradas != expectedEntradas) return@synchronized false
         start(session, venueId)
         true
     }
@@ -162,7 +167,7 @@ class TableSession @Inject constructor() {
     /** Sólo los callers del piso/selector llaman este método; start nunca restaura automáticamente. */
     fun abrirDesdePiso(venueId: String, resumen: Active): Active? = synchronized(lock) {
         if (!acepta(venueId)) return@synchronized null
-        revision++
+        revision++; entradas++
         val live = _active.value?.takeIf { (activeVenue == null || activeVenue == venueId) && it.tableId == resumen.tableId && misma(it, resumen.idsDeLaOrden) }
         val entry = estacionadas.entries.firstOrNull { it.key.first == venueId && it.value.tableId == resumen.tableId && misma(it.value, resumen.idsDeLaOrden) }
         val wasFinalized = resumen.idsDeLaOrden.any { (venueId to it) in finalizadas }
