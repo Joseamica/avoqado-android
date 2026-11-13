@@ -64,6 +64,35 @@ class NadieContestaTest {
         assertEquals("contestó bien: ya no es «nadie contesta»", false, m.sinRespuesta.value)
     }
 
+    // MARK: - D12 · RendirseRapido: las fechas de «contestó» y «nadie contestó» (hz:e5ee98bc)
+
+    @Test fun `el ping anota cuando contesta y cuando nadie contesta`() {
+        val server = MockWebServer().also { it.start() }
+        val m = monitor(server)
+        m.reportServerError()
+        server.enqueue(MockResponse().setResponseCode(503))
+        m.pingServer()
+        assertTrue("un 503 es una respuesta", m.ultimaRespuestaMs > m.ultimaSinRespuestaMs)
+
+        server.shutdown()
+        m.pingServer()
+        assertTrue("nadie contestó después", m.ultimaSinRespuestaMs > m.ultimaRespuestaMs)
+    }
+
+    /** Codex D12 r4 #2: la salud contestó un 200 y luego se cortó el cuerpo: alguien SÍ contestó; no es noticia de «nadie contesta». */
+    @Test fun `la salud que contesta y corta el cuerpo no anota nadie contesta`() = runBlocking {
+        val server = MockWebServer().also { it.start() }
+        val m = monitor(server)
+        m.reportServerError()
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"status":"ok","database":"connected"}""")
+            .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+
+        m.nadieContesta()
+
+        assertTrue("contestó: ${m.ultimaRespuestaMs} vs ${m.ultimaSinRespuestaMs}", m.ultimaRespuestaMs > m.ultimaSinRespuestaMs)
+        server.shutdown()
+    }
+
     // MARK: - D12 · familia C (Codex r4 #2): la salud que pregunta la puerta de las cuentas
 
     /**

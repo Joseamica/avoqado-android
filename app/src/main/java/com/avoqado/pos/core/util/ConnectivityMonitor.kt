@@ -224,6 +224,7 @@ class ConnectivityMonitor @Inject constructor(
     private suspend fun consultarSalud(plazo: PlazoDeLaSalud? = null): Boolean? = kotlinx.coroutines.withContext(Dispatchers.IO) {
         if (!_isConnected.value) return@withContext null
         var connection: HttpURLConnection? = null
+        var contesto = false // Codex D12 r4 #2: ya llegó un código; si después falla el cuerpo, eso no es «nadie contestó»
         try {
             val url = java.net.URI(urlBase).resolve("/api/public/healthcheck").toURL()
             connection = (url.openConnection() as HttpURLConnection).apply {
@@ -238,6 +239,7 @@ class ConnectivityMonitor @Inject constructor(
             }
             plazo?.revisar() // la consulta tardó en arrancar y el plazo ya venció: no se conecta
             val code = connection.responseCode
+            contesto = true
             anotarRespuesta()
             _sinRespuesta.value = false // alguien contestó, aunque sea mal
             val cuerpo = if (code == 200) leerCuerpo(connection, plazo) else null
@@ -247,7 +249,7 @@ class ConnectivityMonitor @Inject constructor(
         } catch (e: java.io.IOException) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
             if (plazo == null) {
-                anotarSinRespuesta()
+                if (!contesto) anotarSinRespuesta()
                 _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
             }
             null
