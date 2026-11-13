@@ -20,14 +20,19 @@ import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.kds.data.ComandaImpresa
 import com.avoqado.pos.kds.data.VigilanteDeReparto
+import com.avoqado.pos.kds.data.nombreDeProveedor
 
-/** Texto de la franja: el pedido más reciente, cuántos van y si alguno no salió completo en papel. PURA. */
+/**
+ * Texto de la franja: el pedido más reciente (con SU proveedor; sin él, [proveedor], el de los canales conectados),
+ * cuántos van y si alguno no salió completo en papel. PURA.
+ */
 internal fun textoDeLaFranjaDeReparto(avisos: List<ComandaImpresa>, proveedor: String): String {
     val ultimo = avisos.maxByOrNull { it.createdAt } ?: return ""
+    val nombre = ultimo.proveedor?.let(::nombreDeProveedor) ?: proveedor
     val base = if (avisos.size == 1) {
-        "Nuevo pedido de $proveedor #${ultimo.orderNumber}"
+        "Nuevo pedido de $nombre #${ultimo.orderNumber}"
     } else {
-        "Nuevo pedido de $proveedor #${ultimo.orderNumber} (${avisos.size} nuevos)"
+        "Nuevo pedido de $nombre #${ultimo.orderNumber} (${avisos.size} nuevos)"
     }
     return if (avisos.any { !it.salioEnPapel }) "$base · no salió en papel, revisa la impresora" else base
 }

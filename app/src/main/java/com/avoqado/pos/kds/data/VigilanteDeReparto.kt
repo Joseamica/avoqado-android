@@ -45,7 +45,8 @@ private const val TAG = "🛵 VigilanteReparto"
  *   otro aparato). Lo PARCIAL no se reintenta solo: la franja ofrece «Reimprimir lo que faltó» ([reimprimir]).
  * - Los avisos viven en la pizarra [AvisosDeReparto] (los apunta la impresión, de este vigilante o de «Pantalla de
  *   cocina»): se conservan aunque la app pase a segundo plano a media impresión.
- * - Los pedidos MANUAL (`needsAcceptance`) no se tocan: se aceptan y se imprimen en «Pantalla de cocina», como hoy.
+ * - Los pedidos MANUAL que faltan aceptar (`needsAcceptance`) no se imprimen aquí ni en «Pantalla de cocina»: salen al
+ *   aceptarlos (el filtro también vive en [ImpresionDeComandasDeReparto.imprimirPendientes]).
  * - Sin red el sondeo falla en silencio y los avisos se quedan: el pedido vive en el servidor y sale al volver la red.
  */
 @Singleton
@@ -102,7 +103,7 @@ class VigilanteDeReparto internal constructor(
 
     private val _proveedor = MutableStateFlow(nombreDelProveedor(emptyList()))
 
-    /** «Rappi», «Uber Eats», «DiDi Food» o «delivery»: para el texto de la franja. */
+    /** «Rappi», «Uber Eats», «DiDi Food» o «delivery»: la franja lo usa si el pedido no trae su proveedor. */
     val proveedor: StateFlow<String> = _proveedor.asStateFlow()
 
     @Volatile private var canales: List<CanalReparto>? = null
@@ -243,9 +244,12 @@ class VigilanteDeReparto internal constructor(
 
 /** El nombre que dice la franja: el del único proveedor conectado, o «delivery» si hay varios o ninguno conocido. */
 internal fun nombreDelProveedor(canales: List<CanalReparto>): String =
-    when (canales.map { it.proveedor }.distinct().singleOrNull()) {
-        "RAPPI" -> "Rappi"
-        "UBER_EATS" -> "Uber Eats"
-        "DIDI_FOOD" -> "DiDi Food"
-        else -> "delivery"
-    }
+    nombreDeProveedor(canales.map { it.proveedor }.distinct().singleOrNull())
+
+/** `RAPPI` → «Rappi», `UBER_EATS` → «Uber Eats», `DIDI_FOOD` → «DiDi Food»; otro o `null` → «delivery». */
+internal fun nombreDeProveedor(codigo: String?): String = when (codigo) {
+    "RAPPI" -> "Rappi"
+    "UBER_EATS" -> "Uber Eats"
+    "DIDI_FOOD" -> "DiDi Food"
+    else -> "delivery"
+}
