@@ -2485,234 +2485,241 @@ internal fun TableActionsPanel(
     printBlockedReason: String? = null,
 ) {
     val motivoPreCuenta = motivoPreCuentaEnPanel(hasSent,printBlockedReason)
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(AvoqadoTheme.spacing.md),
-        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-    ) {
-        // El "por qué está gris" aparece AQUÍ, junto al botón que el mesero
-        // acaba de tocar, y se queda hasta que lo cierre.
-        BlockedNoticeCard(blockedNotice, onDismissNotice)
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Borrar nuevos artículos",
-                enabled = hasPending,
-                blockedReason = "No hay artículos nuevos que borrar.",
-                onBlocked = onBlocked,
-                onClick = onClearPending,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Mover",
-                enabled = true,
-                onClick = onMover,
-                modifier = Modifier.weight(1f),
-            )
+    Column(modifier = Modifier.fillMaxSize()) {
+        // El "por qué está gris" va FIJO encima de la lista y se queda hasta que lo cierren. D653 (12-nov): iba dentro de
+        // la lista; en horizontal la lista se desplaza y el aviso de un botón de abajo («Recompensas») salía fuera de la
+        // vista: la cajera creía que el toque no hizo nada. Como en «Cuenta», donde el aviso tampoco se desplaza.
+        if (blockedNotice != null) {
+            Box(modifier = Modifier.padding(start = AvoqadoTheme.spacing.md, end = AvoqadoTheme.spacing.md, top = AvoqadoTheme.spacing.md)) {
+                BlockedNoticeCard(blockedNotice, onDismissNotice)
+            }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Anular cuenta",
-                enabled = true,
-                destructive = true,
-                onClick = onAnular,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Asignar",
-                enabled = true,
-                onClick = onAsignar,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Cortesía en la cuenta",
-                enabled = hasSent,
-                blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
-                    else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
-                onBlocked = onBlocked,
-                onClick = onCompWhole,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Dividir la cuenta",
-                enabled = hasSent,
-                blockedReason = if (isOffline) {
-                    "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
-                } else if (cuentaSinLeer) {
-                    CUENTA_SIN_LEER_ESPERA
-                } else {
-                    "Primero envía la ronda a cocina."
-                },
-                blockedByConnection = isOffline,
-                onBlocked = onBlocked,
-                onClick = onDividir,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Separar en otra cuenta",
-                enabled = canSeparar,
-                // 🔴 Separar exige AL MENOS DOS artículos: uno se va a la cuenta
-                // nueva y otro tiene que quedarse. Con uno solo, el diálogo abría
-                // y "Separar (0)" NUNCA podía habilitarse — el mesero quedaba en
-                // un callejón sin salida. (Encontrado en la D3, mesa M2.)
-                blockedReason = separarBlockedReason,
-                onBlocked = onBlocked,
-                onClick = onSepararCuenta,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Fusionar cuentas",
-                enabled = true,
-                onClick = onFusionar,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Ordenar carrito",
-                enabled = hasPending,
-                blockedReason = "No hay artículos nuevos que ordenar.",
-                onBlocked = onBlocked,
-                onClick = onOrdenarCarrito,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Imprimir cuenta",
-                enabled = motivoPreCuenta == null,
-                blockedReason = motivoPreCuenta,
-                onBlocked = onBlocked,
-                onClick = onPrintPreBill,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
-                enabled = hasSent && !isReprinting,
-                blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
-                    else "Aún no se ha enviado ningún pedido a cocina.",
-                onBlocked = onBlocked,
-                onClick = onReprintComandas,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Escanear",
-                enabled = true,
-                onClick = onEscanear,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(AvoqadoTheme.spacing.md),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Borrar nuevos artículos",
+                    enabled = hasPending,
+                    blockedReason = "No hay artículos nuevos que borrar.",
+                    onBlocked = onBlocked,
+                    onClick = onClearPending,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Mover",
+                    enabled = true,
+                    onClick = onMover,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Anular cuenta",
+                    enabled = true,
+                    destructive = true,
+                    onClick = onAnular,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Asignar",
+                    enabled = true,
+                    onClick = onAsignar,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Cortesía en la cuenta",
+                    enabled = hasSent,
+                    blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                        else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
+                    onBlocked = onBlocked,
+                    onClick = onCompWhole,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Dividir la cuenta",
+                    enabled = hasSent,
+                    blockedReason = if (isOffline) {
+                        "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
+                    } else if (cuentaSinLeer) {
+                        CUENTA_SIN_LEER_ESPERA
+                    } else {
+                        "Primero envía la ronda a cocina."
+                    },
+                    blockedByConnection = isOffline,
+                    onBlocked = onBlocked,
+                    onClick = onDividir,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Separar en otra cuenta",
+                    enabled = canSeparar,
+                    // 🔴 Separar exige AL MENOS DOS artículos: uno se va a la cuenta
+                    // nueva y otro tiene que quedarse. Con uno solo, el diálogo abría
+                    // y "Separar (0)" NUNCA podía habilitarse — el mesero quedaba en
+                    // un callejón sin salida. (Encontrado en la D3, mesa M2.)
+                    blockedReason = separarBlockedReason,
+                    onBlocked = onBlocked,
+                    onClick = onSepararCuenta,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Fusionar cuentas",
+                    enabled = true,
+                    onClick = onFusionar,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Ordenar carrito",
+                    enabled = hasPending,
+                    blockedReason = "No hay artículos nuevos que ordenar.",
+                    onBlocked = onBlocked,
+                    onClick = onOrdenarCarrito,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Imprimir cuenta",
+                    enabled = motivoPreCuenta == null,
+                    blockedReason = motivoPreCuenta,
+                    onBlocked = onBlocked,
+                    onClick = onPrintPreBill,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
+                    enabled = hasSent && !isReprinting,
+                    blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                        else "Aún no se ha enviado ningún pedido a cocina.",
+                    onBlocked = onBlocked,
+                    onClick = onReprintComandas,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Escanear",
+                    enabled = true,
+                    onClick = onEscanear,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.weight(1f))
+            }
 
-        Text(
-            text = "Detalles",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
-        )
-        HorizontalDivider()
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Nombre y notas",
-                enabled = true,
-                onClick = onNameNotes,
-                modifier = Modifier.weight(1f),
+            Text(
+                text = "Detalles",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
             )
-            ActionPill(
-                label = "Conteo de clientes",
-                enabled = true,
-                onClick = onCovers,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Cumplimiento",
-                enabled = true,
-                onClick = onCumplimiento,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Descuentos",
-                enabled = true,
-                onClick = onDescuentos,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Recompensas",
-                enabled = hasLoyalty,
-                // El motivo verdadero (motivoSinRecompensas): sin red, sin cliente, programa apagado, pocos puntos o cuenta con
-                // abono. Un solo texto para todo mentía (nube, 12-nov).
-                blockedReason = rewardsBlockedReason
-                    ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
-                blockedByConnection = rewardsBlockedByConnection,
-                onBlocked = onRewardsBlocked,
-                onClick = onRecompensas,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Cobros por servicio",
-                enabled = true,
-                onClick = onCobrosServicio,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Menús",
-                enabled = true,
-                onClick = onMenus,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-        }
+            HorizontalDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Nombre y notas",
+                    enabled = true,
+                    onClick = onNameNotes,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Conteo de clientes",
+                    enabled = true,
+                    onClick = onCovers,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Cumplimiento",
+                    enabled = true,
+                    onClick = onCumplimiento,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Descuentos",
+                    enabled = true,
+                    onClick = onDescuentos,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Recompensas",
+                    enabled = hasLoyalty,
+                    // El motivo verdadero (motivoSinRecompensas): sin red, sin cliente, programa apagado, pocos puntos o cuenta con
+                    // abono. Un solo texto para todo mentía (nube, 12-nov).
+                    blockedReason = rewardsBlockedReason
+                        ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
+                    blockedByConnection = rewardsBlockedByConnection,
+                    onBlocked = onRewardsBlocked,
+                    onClick = onRecompensas,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Cobros por servicio",
+                    enabled = true,
+                    onClick = onCobrosServicio,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Menús",
+                    enabled = true,
+                    onClick = onMenus,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.weight(1f))
+            }
 
-        Text(
-            text = "Otras acciones",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
-        )
-        HorizontalDivider()
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Calculadora",
-                enabled = true,
-                onClick = onCalculadora,
-                modifier = Modifier.weight(1f),
+            Text(
+                text = "Otras acciones",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
             )
-            ActionPill(
-                label = "Importe personalizado",
-                enabled = true,
-                onClick = onCustomAmount,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Marcar entrada/salida",
-                enabled = true,
-                onClick = onMarcarEntrada,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Caja abierta",
-                enabled = hasCashDrawer,
-                blockedReason = "No hay impresora de recibos con cajón en esta caja. Agrégala en Más › Impresoras y cajón.",
-                onBlocked = onBlocked,
-                onClick = onCajaAbierta,
-                modifier = Modifier.weight(1f),
-            )
+            HorizontalDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Calculadora",
+                    enabled = true,
+                    onClick = onCalculadora,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Importe personalizado",
+                    enabled = true,
+                    onClick = onCustomAmount,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Marcar entrada/salida",
+                    enabled = true,
+                    onClick = onMarcarEntrada,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Caja abierta",
+                    enabled = hasCashDrawer,
+                    blockedReason = "No hay impresora de recibos con cajón en esta caja. Agrégala en Más › Impresoras y cajón.",
+                    onBlocked = onBlocked,
+                    onClick = onCajaAbierta,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }
