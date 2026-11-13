@@ -648,6 +648,68 @@ class ImpresionDeComandasDeRepartoTest {
     }
 
     @Test
+    fun `mezcla con empaque que sale y comanda sin hojas - se confirma con Cocina por reimprimir`() = runTest {
+        config = negocio(packing = "st-empaque")
+        val sut = armar()
+        val trabajoCocina = mockk<TrabajoPendiente>(relaxed = true)
+        estadoComanda = { EstadoDeComanda.NoSalio(listOf("Cocina"), "sin papel", "N-a", trabajoCocina, algoSalio = false) }
+
+        sut.imprimirPendientes(listOf(pedido("a", items = listOf(taco, refresco))))
+
+        assertEquals(listOf("empaque", "comanda"), orden)
+        assertTrue(despachos.single().omitir)
+        coVerify { repo.marcarImpresion("a", "dev-1", "confirm-print") }
+        coVerify(exactly = 0) { repo.marcarImpresion("a", any(), "release-print") }
+        val aviso = pizarra.avisos.value.single()
+        assertFalse(aviso.salioEnPapel)
+        assertEquals(listOf("Cocina"), aviso.faltaron)
+        assertEquals(listOf(trabajoCocina), aviso.porReimprimir)
+    }
+
+    @Test
+    fun `el empaque truena en el camino Sin comanda - la comanda conserva lo Sin comanda y el empaque falta sin boton`() = runTest {
+        config = negocio(packing = "st-empaque")
+        val sut = armar()
+        estadoEmpaque = { throw IllegalStateException("boom") }
+
+        sut.imprimirPendientes(listOf(pedido("a", items = listOf(taco, refresco))))
+
+        assertEquals(listOf("empaque", "comanda"), orden)
+        assertFalse(despachos.single().omitir)
+        coVerify { repo.marcarImpresion("a", "dev-1", "confirm-print") }
+        val aviso = pizarra.avisos.value.single()
+        assertFalse(aviso.salioEnPapel)
+        assertEquals(listOf("Empaque"), aviso.faltaron)
+        assertEquals(listOf("Empaque"), aviso.sinReimprimir)
+        assertTrue(aviso.porReimprimir.isEmpty())
+    }
+
+    @Test
+    fun `una comanda que truena tras el empaque falta con su etiqueta y sin boton`() = runTest {
+        config = negocio(packing = "st-empaque")
+        val sut = armar()
+        estadoComanda = { throw IllegalStateException("boom") }
+
+        sut.imprimirPendientes(listOf(pedido("a", items = listOf(taco, refresco))))
+
+        coVerify { repo.marcarImpresion("a", "dev-1", "confirm-print") }
+        val aviso = pizarra.avisos.value.single()
+        assertFalse(aviso.salioEnPapel)
+        assertEquals(listOf("Comanda"), aviso.faltaron)
+        assertEquals(listOf("Comanda"), aviso.sinReimprimir)
+    }
+
+    @Test
+    fun `un empaque del canal en una estacion activa Sin comanda cae al del negocio`() = runTest {
+        config = negocio(packing = "st-empaque")
+        val sut = armar()
+
+        sut.imprimirPendientes(listOf(pedido("a", impresion = ImpresionReparto("RAPPI", empaque = true, empaqueEstacionId = "st-tienda"))))
+
+        assertEquals(listOf("st-empaque"), tickets.map { it.estacion })
+    }
+
+    @Test
     fun `el aviso lleva el proveedor del pedido`() = runTest {
         val sut = armar()
 

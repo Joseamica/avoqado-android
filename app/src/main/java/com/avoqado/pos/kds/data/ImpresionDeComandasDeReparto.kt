@@ -70,6 +70,11 @@ class ImpresionDeComandasDeReparto @Inject constructor(
      * 🔴 Si salió una PARTE (Cocina sí, Barra no) se CONFIRMA: soltarla haría que el siguiente sondeo reimprimiera
      * TODO, y la cocina recibiría dos veces lo que ya salió. Lo que faltó se apunta en [avisos] para que una
      * persona lo reimprima con [reimprimirLoQueFalto], que manda sólo eso.
+     *
+     * Asimetría a propósito: con renglones «Sin comanda» el empaque sale PRIMERO, y si salió pero la comanda de cocina no
+     * sacó ni una hoja, el pedido se CONFIRMA (el empaque ya es un papel con todo el pedido) con la cocina en «Reimprimir»
+     * y la franja diciendo «no salió en papel», como un parcial del Bloque 1. En el orden de siempre, una comanda sin
+     * hojas se suelta ANTES de intentar el empaque.
      */
     suspend fun imprimirPendientes(pedidos: List<KDSOrder>) {
         // Un pedido MANUAL que falta aceptar no sale en papel desde NINGÚN llamador (vigilante o pantalla de cocina): sale
