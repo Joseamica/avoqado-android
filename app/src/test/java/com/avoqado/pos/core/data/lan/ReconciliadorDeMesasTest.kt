@@ -536,6 +536,25 @@ class ReconciliadorDeMesasTest {
     }
 
     @Test
+    fun `p_err2 - un error del árbitro manda a isla sólo las aperturas que viajaron, no las nacidas después`() = runTest {
+        val red = red(arbitro("X")).also { it.fija = { LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "x") } }
+        val mesas = caja()
+        coordinador(red, mesas).start()
+        runCurrent()
+
+        red.retener = Red.Retener.VUELTA
+        val a = mesas.abrirApertura("m13", "s1", "Ana", v)
+        runCurrent() // la declaración con A sale y su error se queda en el camino
+        mesas.abrirApertura("m14", "s1", "Ana", v) // B nace después: el árbitro no la ha visto
+        runCurrent()
+        red.soltarTodo() // llega el error de la declaración que sólo traía A
+        runCurrent()
+
+        assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { true })
+        assertTrue("B quedó resuelta por un error que no era suyo", mesas.hayPendientes(v))
+    }
+
+    @Test
     fun `p_solo - sin peers, esperar da NoHub en menos de 1 s`() = runTest {
         discovery.peers.value = emptyList()
         val mesas = caja()

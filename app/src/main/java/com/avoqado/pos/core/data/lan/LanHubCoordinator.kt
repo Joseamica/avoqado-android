@@ -199,10 +199,12 @@ class LanHubCoordinator(
             return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
         }
 
-        // 7. `stale` o `error` (y cualquier otra cosa que no sea `ok`): ante la duda, isla.
+        // 7. `stale` o `error` (y cualquier otra cosa que no sea `ok`): ante la duda, isla, pero sólo para las aperturas que viajaron en
+        //    ESTA declaración (Codex código r2, misma familia que H1): una apertura nacida después no la vio el árbitro y se le pregunta.
         if (resp.status != LeaseProtocol.STATUS_OK) {
             Log.w(TAG, "🏝️ El árbitro ${arbitro.deviceId.take(6)} contestó ${resp.status} (${resp.message}) — aperturas en isla")
-            return enIsla()
+            declaracion.aperturas.forEach { mesas.resolver(it.id, LeaseOutcome.NoHub) }
+            return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
         }
 
         // 9. Cada veredicto, por id (`MesasDeEstaCaja` ignora los ids que ya no viven y se queda con la PRIMERA resolución).
