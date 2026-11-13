@@ -49,8 +49,12 @@ data class CobroSinReproducir(
  *   mostrador es la orden que creó ÉL, un id que este aparato nunca vio.
  * @param totalCents el importe con propina, el mismo número que escribe el cajón
  *   (`postCashSaleToDrawer` suma `amount + tipAmount`).
+ * @param deOtroCobro D23: la venta trae la llave de su cobro (`paymentIdempotencyKey`) y ninguna copia de este aparato la adoptó por
+ *   esa llave. Toda copia `idDeLaVentaEnEfectivo(K)` es del cobro K, cuyo pago lleva K; así que esta venta no es ninguna de ellas y no
+ *   puede reclamarlas. `false` = sin llave (servidor de antes de D23, no pudo leer el pago, o el pago no tiene llave): se adivina como
+ *   siempre. Un `null` no prueba nada: un camino que no guardara K dejaría la copia sin dueño (Codex r2).
  */
-data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: Int)
+data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: Int, val deOtroCobro: Boolean = false)
 
 /**
  * Los cobros en efectivo que este aparato YA cobró y que el server TODAVÍA no ha
@@ -432,17 +436,23 @@ class PendingCashSales @Inject constructor(
             // las que no encontraron orden compiten por monto — el mismo orden con el
             // que se decide la protección, para que las dos listas no se contradigan.
             val reclamadas = mutableSetOf<String>()
+            // 🔴 D23 (F2): una venta con la llave de su cobro que ninguna copia adoptó no es la copia de ningún cobro de este
+            // aparato: la venta de otro aparato del mismo importe (o de la misma mesa) ya no se lleva la copia de un cobro mío que
+            // sigue en la cola, tenga o no pareja exacta. Las filas que no son copia de un cobro (sin llave, de antes) y las ventas
+            // sin llave siguen como siempre.
+            fun puedeReclamar(confirmada: VentaConfirmadaPorPrimeraVez, copia: CashDrawerEventEntity) = copia.id !in reclamadas &&
+                !(confirmada.deOtroCobro && CashDrawerRepository.esCopiaDeUnCobro(copia.id))
             val sinOrdenQueParear = mutableListOf<VentaConfirmadaPorPrimeraVez>()
             for (confirmada in ventasConfirmadasPorPrimeraVez) {
                 val orderId = confirmada.orderId?.takeIf(String::isNotBlank)
                 val porOrden = orderId?.let { buscada ->
-                    deLaMasViejaHaciaAdelante.firstOrNull { it.id !in reclamadas && it.orderId == buscada }
+                    deLaMasViejaHaciaAdelante.firstOrNull { puedeReclamar(confirmada, it) && it.orderId == buscada }
                 }
                 if (porOrden != null) reclamadas += porOrden.id else sinOrdenQueParear += confirmada
             }
             for (confirmada in sinOrdenQueParear) {
                 val porMonto = deLaMasViejaHaciaAdelante.firstOrNull {
-                    it.id !in reclamadas && it.amountCents == confirmada.totalCents
+                    puedeReclamar(confirmada, it) && it.amountCents == confirmada.totalCents
                 }
                 if (porMonto != null) reclamadas += porMonto.id
             }

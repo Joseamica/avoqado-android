@@ -1502,14 +1502,22 @@ class CashDrawerRepository @Inject constructor(
             // server. La llave es un hecho, no una inferencia — por eso vence a la
             // ventana de arriba: un movimiento mal archivado en la caja vieja que el
             // server cuenta en la de hoy tiene que venirse, o lo perderíamos.
-            val adoptada = promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id) != null
+            // 🔴 D23: la venta que escribe el servidor no se llama como mi copia (`srv-cash-sale:<pago>` contra
+            // `idDeLaVentaEnEfectivo(K)`), pero trae la llave K del cobro que la originó: mi copia de ESE cobro adopta su id, también
+            // cuando la escribí DESPUÉS de que un refresco ya trajo la venta (F1). Sin llave (el campo no viene, o viene `null`) no se
+            // sabe de quién es: se adivina como antes.
+            val esVenta = event.type == CashDrawerEventType.CASH_SALE.name
+            val llaveDelCobro = obj[CAMPO_LLAVE_DEL_COBRO]?.jsonPrimitive?.contentOrNull?.takeIf { esVenta && it.isNotBlank() }
+            val adoptada = promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id) != null ||
+                (llaveDelCobro != null && promoteEvent(idDeLaVentaEnEfectivo(llaveDelCobro), event.id) != null)
             if (event.type == CashDrawerEventType.CLOSE.name) servidorConfirmaCierre = true
-            if (event.type == CashDrawerEventType.CASH_SALE.name) {
+            if (esVenta) {
                 servidorConfirmaVentas = true
                 if (!yaEstaba && !adoptada) {
                     ventasNuevasDelServer += VentaConfirmadaPorPrimeraVez(
                         orderId = event.orderId,
                         totalCents = event.amountCents,
+                        deOtroCobro = llaveDelCobro != null,
                     )
                 }
             }
@@ -3265,6 +3273,15 @@ class CashDrawerRepository @Inject constructor(
          */
         internal fun idDeLaVentaEnEfectivo(llave: String): String =
             UUID.nameUUIDFromBytes("CASH_SALE:$llave".toByteArray(Charsets.UTF_8)).toString()
+
+        /** D23: el campo de la venta del servidor con la llave del cobro que la originó (`Payment.idempotencyKey`). */
+        internal const val CAMPO_LLAVE_DEL_COBRO = "paymentIdempotencyKey"
+
+        /**
+         * D23: ¿esta fila del cajón es la copia de un cobro, `idDeLaVentaEnEfectivo(K)`? Esos ids son UUID versión 3 (`nameUUIDFromBytes`)
+         * y ningún otro movimiento del cajón la usa: los locales sin llave son versión 4 y los del servidor, cuid.
+         */
+        internal fun esCopiaDeUnCobro(id: String): Boolean = runCatching { UUID.fromString(id).version() == 3 }.getOrDefault(false)
 
         /**
          * 🔴 Tipos que el SERVER escribe POR SU CUENTA, y de los que esta app sólo
