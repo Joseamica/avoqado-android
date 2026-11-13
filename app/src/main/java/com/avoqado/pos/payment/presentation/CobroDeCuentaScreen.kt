@@ -203,8 +203,11 @@ class CobroDeCuentaViewModel @Inject constructor(
         if (pedidoEnVuelo?.second?.isActive == true) return
         val datos = datosSinRed(orderId)
         val nueva = decidirCobroSinRed(datos, permiso = null)
-        // Sólo tapa la MISMA causa (la caja que la abrió sigue sin verse); un motivo nuevo se ve en el acto (Codex sobre la D5).
-        val mismaCausa = nueva == DecisionSinRed.Gris(TextosDeCuentaSinRed.noLaEncuentro(datos.cajaQueLaAbrio))
+        // Sólo tapa la MISMA causa: el aviso guardado es de contacto perdido Y la caja que la abrió sigue sin verse. Un motivo nuevo, o un
+        // aviso guardado por otra causa (el saldo cambió), deja ver lo vigente (Codex r1 y r2 sobre la D5).
+        val avisosDeContacto = setOfNotNull(datos.cajaQueLaAbrio?.let { TextosDeCuentaSinRed.sePerdioElContacto(it) }, TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
+        val mismaCausa = grisDeLaPuerta in avisosDeContacto &&
+            nueva == DecisionSinRed.Gris(TextosDeCuentaSinRed.noLaEncuentro(datos.cajaQueLaAbrio))
         val d = grisDeLaPuerta?.takeIf { mismaCausa }?.let { DecisionSinRed.Gris(it) } ?: nueva.also { grisDeLaPuerta = null }
         if (pedidoEnVuelo?.second?.isActive != true) decisionSinRed.value = d
     }

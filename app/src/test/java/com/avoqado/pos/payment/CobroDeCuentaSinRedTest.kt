@@ -385,6 +385,22 @@ class CobroDeCuentaSinRedTest {
         assertEquals(Gris(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR), m.sinRed.value)
     }
 
+    /** Codex r2 sobre la D5: un aviso guardado por OTRA causa (el saldo cambió) no tapa el «no la encuentro» que llega después. */
+    @Test fun `el aviso de saldo cambiado no tapa que despues se perdio el contacto`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Sunmi D3"
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Concedida, "d3", "Sunmi D3", 0L) }
+        val m = vm()
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        assertEquals(TextosDeCuentaSinRed.saldoCambio(6000), m.revalidarCobroSinRed("o1", 5000))
+        assertEquals(false, m.alVolverDelCobroSinRed("o1"))
+
+        otraCaja = false
+        m.consultarSinRed("o1")
+        assertEquals(Gris(TextosDeCuentaSinRed.noLaEncuentro("Sunmi D3")), m.sinRed.value)
+    }
+
     /** Caso 4, el otro lado: sin apartado vivo con la dueña (nunca se pidió, o ya se soltó) sigue el texto de «no la encuentro». */
     @Test fun `sin apartado con la duena la revalidacion sigue diciendo que no la encuentra`() = runTest {
         enLaCopia(cuenta())
