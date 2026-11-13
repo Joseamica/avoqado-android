@@ -470,7 +470,9 @@ fun LealtadLeida?.paraLaCuenta(cuenta: OrderDetail?): LealtadLeida? =
  */
 fun maximoCeroContradiceLaCuenta(lealtad: CustomerLoyalty, cuenta: OrderDetail): Boolean =
     lealtad.maxRedeemableValue <= 0 && lealtad.active && lealtad.balance > 0 && lealtad.balance >= lealtad.minPointsRedeem &&
-        lealtad.balanceValue > 0 && cuenta.payments.isEmpty() && cuenta.paymentStatus != "PAID" && cuenta.paymentStatus != "PARTIAL" &&
+        // Lo que dice si hubo abono es `paymentStatus`, como en el SERVIDOR: un intento de pago fallido en `payments` no lo es (Codex
+        // android r10 #2).
+        lealtad.balanceValue > 0 && cuenta.paymentStatus != "PAID" && cuenta.paymentStatus != "PARTIAL" &&
         cuenta.status != "CANCELLED" && cuenta.status != "DELETED" && cuenta.subtotal - cuenta.discountAmount > 0
 
 /** El texto de «Recompensas» sin red: el del botón gris y el del diálogo abierto. */

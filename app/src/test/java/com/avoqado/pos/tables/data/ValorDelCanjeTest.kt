@@ -88,7 +88,8 @@ class ValorDelCanjeTest {
         assertEquals(false, maximoCeroContradiceLaCuenta(l, abierta.copy(paymentStatus = "PAID")))
         assertEquals(false, maximoCeroContradiceLaCuenta(l, abierta.copy(status = "CANCELLED")))
         assertEquals(false, maximoCeroContradiceLaCuenta(l, abierta.copy(subtotal = 50.0, discountAmount = 50.0)))
-        assertEquals(false, maximoCeroContradiceLaCuenta(l, abierta.copy(payments = listOf(OrderDetailPayment()))))
+        // Un intento de pago fallido no es un abono: la regla es la del SERVIDOR (`paymentStatus`), no la lista (Codex android r10 #2).
+        assertEquals(true, maximoCeroContradiceLaCuenta(l, abierta.copy(payments = listOf(OrderDetailPayment(status = "FAILED")))))
         // El 0 lo explican los puntos (pocos, valen $0.00, programa apagado) o hay algo que descontar: nada que contradecir.
         assertEquals(false, maximoCeroContradiceLaCuenta(l.copy(balance = 5), abierta))
         assertEquals(false, maximoCeroContradiceLaCuenta(l.copy(balanceValue = 0.0), abierta))
