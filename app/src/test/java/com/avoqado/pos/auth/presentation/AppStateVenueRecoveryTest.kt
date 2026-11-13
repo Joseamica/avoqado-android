@@ -521,7 +521,7 @@ class AppStateVenueRecoveryTest {
         assertTrue(cerro)
         assertEquals(
             "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si " +
-                "queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+                "queda por revisar, un gerente de Sucursal Centro la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             aviso,
         )
         io.mockk.coVerify { daos.first.getUnsyncedPayments(); daos.first.enVueloDeTodas(); daos.first.getFailedPayments() }

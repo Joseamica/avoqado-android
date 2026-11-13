@@ -98,11 +98,11 @@ class FrenoConRechazosTest {
     @Test fun `P1 D52 lo que queda de otra sucursal se dice con su nombre y donde aparece`() {
         val nombres = mapOf("v-centro" to "Sucursal Centro", "v-norte" to "Sucursal Norte")
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, un gerente de Sucursal Centro la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), nombres),
         )
         assertEquals(
-            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, un gerente de cada sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), nombres),
         )
         assertEquals(null, textoDeLoQueQuedaDeOtrasSucursales(emptyMap(), nombres))
@@ -111,16 +111,16 @@ class FrenoConRechazosTest {
     /** D52 (a): una sucursal que esta sesión no tiene se dice sin nombre; las conocidas conservan el suyo (Codex r2). */
     @Test fun `P1 D52 lo que queda de una sucursal sin acceso se dice sin nombre`() {
         assertEquals(
-            "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, un gerente de esa sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
         assertEquals(
-            "Quedan 2 operaciones de otras sucursales en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Quedan 2 operaciones de otras sucursales en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, un gerente de cada sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1, "v-otra" to 1), emptyMap()),
         )
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores». " +
-                "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, un gerente de Sucursal Centro la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores». " +
+                "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, un gerente de esa sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
     }

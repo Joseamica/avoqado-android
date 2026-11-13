@@ -640,16 +640,16 @@ internal suspend fun rechazadasPorRevisar(
  * D52 (a) de la conversación principal: lo de OTRAS sucursales ya no frena cerrar sesión (no se borra: se queda en el aparato). Al
  * salir se avisa, honesto, qué queda y dónde. Codex r4 #1, r5 #1 y r6 #1 (la misma familia tres veces; r6 fue la pasada exhaustiva
  * por estado): si una fila sube sola, la resuelve un gerente o se queda retenida sin salida (deuda previa) lo decide el drenado
- * después. Lo único cierto para TODO estado es que no se borra y que, al entrar alguien de su sucursal, se sube o aparece en la hoja;
- * eso dice, sin prometer quién la resuelve. Las sucursales que esta sesión no tiene (no están en [nombres], `venuesList`) se dicen sin
- * nombre. PURA.
+ * después. Lo único cierto para TODO estado es que no se borra y que, al entrar alguien de su sucursal, se sube o la ve un GERENTE
+ * en la hoja (r7: «Pendientes» es de gerente para arriba, `SalesNoticesViewModel.canRead`); eso dice, sin prometer quién la resuelve.
+ * Las sucursales que esta sesión no tiene (no están en [nombres], `venuesList`) se dicen sin nombre. PURA.
  */
 internal fun textoDeLoQueQuedaDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
     fun frase(n: Int, de: String, quien: String): String {
         val (queda, borra, sube, alguna) = if (n == 1) listOf("Queda 1 operación", "no se borra", "se sube", "queda")
             else listOf("Quedan $n operaciones", "no se borran", "se suben", "alguna queda")
-        return "$queda de $de en este aparato ($borra): al entrar alguien de $quien $sube o, si $alguna por revisar, aparece en " +
-            "$DONDE_SE_RESUELVE."
+        return "$queda de $de en este aparato ($borra): al entrar alguien de $quien $sube o, si $alguna por revisar, un gerente de " +
+            "$quien la ve en $DONDE_SE_RESUELVE."
     }
     val (conocidas, sinAcceso) = porSucursal.filterValues { it > 0 }.entries.partition { it.key in nombres }
     val deConocidas = conocidas.takeIf { it.isNotEmpty() }?.let { c ->
