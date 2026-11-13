@@ -26,6 +26,10 @@ data class SaleStampOutcome(
     val rewardReady: Boolean = false,
     /** La cartilla donde cayó el sello de ESTA venta (21-oct). null = no sumó, servidor viejo, o la llenó otra venta. */
     val saleCard: SaleStampCard? = null,
+    /** Cuántos sellos dio ESTA venta en total (1, o más con una promoción). null = servidor viejo: se pinta como hoy. */
+    val stampsAdded: Int? = null,
+    /** Nombre de la promoción que aplicó, si hubo. */
+    val promotionName: String? = null,
 ) {
     val reasonCode: SaleStampReason?
         get() = SaleStampReason.entries.firstOrNull { it.name == reason }

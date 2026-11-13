@@ -126,7 +126,8 @@ private fun FilaDeCirculos(tarjeta: TarjetaDelSello, tamano: Dp) {
         for (numero in 1..tarjeta.total) {
             val lleno = numero <= tarjeta.llenos
             // El sello de ESTA venta es el último lleno: entra con un «pop», una sola vez.
-            val escala = remember { Animatable(if (numero == tarjeta.llenos) 0.3f else 1f) }
+            val esNuevo = numero > tarjeta.llenos - tarjeta.sellosNuevos && numero <= tarjeta.llenos
+            val escala = remember { Animatable(if (esNuevo) 0.3f else 1f) }
             LaunchedEffect(Unit) {
                 if (escala.value < 1f) escala.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
             }
@@ -164,7 +165,7 @@ private fun FilaDeCirculos(tarjeta: TarjetaDelSello, tamano: Dp) {
 @Composable
 private fun BarraDeSellos(tarjeta: TarjetaDelSello) {
     // Arranca donde estaba antes de ESTA venta y avanza al nuevo total: el mismo «pop» que los círculos, en barra.
-    var avance by remember { mutableStateOf((tarjeta.llenos - 1).coerceAtLeast(0) / tarjeta.total.toFloat()) }
+    var avance by remember { mutableStateOf((tarjeta.llenos - tarjeta.sellosNuevos).coerceAtLeast(0) / tarjeta.total.toFloat()) }
     LaunchedEffect(Unit) { avance = tarjeta.llenos / tarjeta.total.toFloat() }
     val visible by animateFloatAsState(avance, label = "avanceDeSellos")
     Row(
