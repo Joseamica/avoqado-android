@@ -13,6 +13,11 @@ internal const val SALDO_NO_RECUPERADO =
     "No se pudo recuperar el saldo completo de esta cuenta. Conéctate y reabre la cuenta antes de cobrar; tus productos siguen guardados."
 internal const val CUENTA_SE_ACTUALIZA = "La cuenta se está actualizando. Intenta en un momento."
 internal const val CAMBIOS_SIN_SINCRONIZAR = "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
+/** D45: un cobro de la cuenta que ESTE aparato guardó en la cola de COBROS y el SERVIDOR todavía no cuenta (la regla de la bandeja). */
+internal const val MESA_COBRO_SIN_SINCRONIZAR = "Esta mesa tiene un cobro sin sincronizar: cóbrala cuando se sincronice."
+internal const val MESA_COBRO_POR_REVISAR =
+    "Esta mesa tiene un cobro por revisar: un gerente lo resuelve en Operaciones por revisar antes de cobrarla otra vez."
+internal const val MESA_COBROS_SIN_LEER = "No se pudo revisar si esta mesa tiene cobros sin sincronizar. Intenta de nuevo."
 
 internal sealed interface SaldoSinRed {
     /** [hayCobro]: hay al menos un `PAY_CASH` de la orden en la cola (también un cierre de $0). */

@@ -174,6 +174,9 @@ class PaymentSyncService @Inject constructor(
              */
             cajaParaElServidor: String? = null,
         ): String = buildJsonObject {
+            // La hora de la PRIMERA captura (Q15); fila heredada sin ella: el `createdAt`. Un «Reintentar» reescribe `createdAt`, no la captura.
+            val horaDeLaVenta = ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id)
+                ?.primeraCapturaEn ?: payment.createdAt
             put("venueId", venueId)
             put("amount", payment.amountCents)
             put("tip", payment.tipCents)
@@ -213,6 +216,10 @@ class PaymentSyncService @Inject constructor(
             // ruido que promete algo que ese endpoint no hace.
             if (!esCobroDeOrden) {
                 payment.customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+                // La hora de la venta, sólo en EFECTIVO (sin tipo del catálogo): el SERVIDOR fecha la lealtad con ella (promoción
+                // vigente y tope diario de sellos) en vez de con la hora del reenvío. Es la de la fila (se guarda ANTES de la red), así
+                // que cada reintento manda la misma. Tarjeta y demás: sin campo, como hoy. Un SERVIDOR viejo lo ignora.
+                if (tenderId == null && payment.method == "CASH") put("createdAtLocal", horaDeLaVenta)
             }
             // 🔴 LA CAJA DE LA VENTA (efectivo sin red en el turno correcto): el servidor saca de ahí el turno de la venta, y una
             // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con
@@ -226,8 +233,7 @@ class PaymentSyncService @Inject constructor(
                 // folio cobrado antes de vencer revive con su comanda, y el sello cae en el día de la venta. Como la TPV. Producción la
                 // acepta y la ignora (`/pay` no tiene esquema). Codex r1: la PRIMERA captura (la de la captura Q15, que manda); el
                 // `createdAt` de la fila es la del último intento con la misma llave. Fila heredada sin esa hora: el `createdAt`.
-                put("createdAtLocal", ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id)
-                    ?.primeraCapturaEn ?: payment.createdAt)
+                put("createdAtLocal", horaDeLaVenta)
                 payment.lineasDelTicketJson
                     ?.let { runCatching { RESPONSE_JSON.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull() }
                     ?.let { put("lineasDelTicket", it) }
@@ -1257,8 +1263,54 @@ class PaymentSyncService @Inject constructor(
     }
 
     /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto: lo que falta enviar y los cobros por revisar. */
-    suspend fun blockingWorkCount(): Int =
-        sinEnviarCount() + dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) }
+    suspend fun blockingWorkCount(): Int = sinEnviarCount() + porRevisarCount()
+
+    /** Los cobros fallidos que un gerente todavía no revisa, de todas las sucursales: no salen solos. */
+    suspend fun porRevisarCount(): Int = dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) }
+
+    /**
+     * D34 (Codex r2 #2 y r3): [porRevisarCount] partido, en UNA lectura, en los de [venueId] (los que «Operaciones por revisar» le enseña)
+     * y los de otras sucursales (sólo se ven con esa sucursal abierta).
+     */
+    suspend fun porRevisarPorSucursal(venueId: String): PorRevisar {
+        val filas = dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)
+        val aqui = filas.count { it.venueId == venueId }
+        return PorRevisar(aqui = aqui, deOtraSucursal = filas.size - aqui)
+    }
+
+    /** Ver [porRevisarPorSucursal]. */
+    data class PorRevisar(val aqui: Int, val deOtraSucursal: Int)
+
+    /** Los cobros fallidos sin revisar de [venueId]: los que «Operaciones por revisar» le enseña a esa sucursal (D34). */
+    suspend fun porRevisarDeLaSucursal(venueId: String): Int = porRevisarPorSucursal(venueId).aqui
+
+    /**
+     * D52: las MISMAS filas que cuenta [blockingWorkCount] (la cola PENDING/SYNCING, los `EN_VUELO` sin la cortesía ya revisada y los
+     * FAILED sin revisar), con su sucursal. `""` = filas viejas sin sucursal: salen con la que esté abierta. Codex D52 r1 #3: una fila que
+     * cambia de estado entre dos lecturas no se cuenta dos veces.
+     */
+    private suspend fun filasQueFrenan(): List<PendingPaymentEntity> =
+        (dao.getUnsyncedPayments() + dao.enVueloDeTodas().filterNot(RevisionCanceladoCero::revisado) +
+            dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)).distinctBy { it.id }
+
+    /** D52: lo que frena, de UNA foto: lo de [deAqui] (la sucursal abierta y lo viejo sin sucursal) y lo de otras, por sucursal. */
+    data class FrenoPorSucursal(val deAqui: Int, val deOtras: Map<String, Int>)
+
+    /** D52: [blockingWorkCount] partido por sucursal en UNA foto (Codex r1 #4: restar dos lecturas inventaba trabajo de aquí). */
+    suspend fun frenoPorSucursal(venueId: String): FrenoPorSucursal {
+        val (aqui, otras) = filasQueFrenan().partition { it.venueId == venueId || it.venueId.isBlank() }
+        return FrenoPorSucursal(aqui.size, otras.groupingBy { it.venueId }.eachCount())
+    }
+
+    /**
+     * D52: lo que frena DEJAR la sucursal [venueId] (cambiar de sucursal): lo suyo y lo viejo sin sucursal. Lo de otra sucursal ya espera
+     * a la suya; ir hacia ella es justo la salida.
+     */
+    suspend fun bloqueantesDeLaSucursal(venueId: String): Int = frenoPorSucursal(venueId).deAqui
+
+    /** D52: las filas de otras sucursales, para que «Operaciones por revisar» las enseñe con su nombre (sin acciones). */
+    suspend fun pendientesDeOtrasSucursales(venueId: String): List<PendingPaymentEntity> =
+        filasQueFrenan().filter { it.venueId != venueId && it.venueId.isNotBlank() }
 
     /**
      * Lo que todavía va a salir: la cola y un cobro interrumpido (la app murió a media petición), que tampoco puede irse con la
@@ -1266,6 +1318,19 @@ class PaymentSyncService @Inject constructor(
      * lo reintenta o descarta un gerente, y el reintento manda el `staffId` original.
      */
     suspend fun sinEnviarCount(): Int = dao.getUnsyncedPayments().size + dao.enVueloCount()
+
+    /**
+     * D53: lo que frena el cambio de usuario por PIN: la cola ([sinEnviarCount] sin los `EN_VUELO`) y los apartados que se resuelven SOLOS
+     * ([CashPaymentRepository.enVueloQueSeResuelveSolo]). Un apartado que espera a una persona («Ya pagó de otra forma» a medias, uno de la
+     * app de antes) ya no lo frena: no sale solo y el gerente tiene que poder entrar a resolverlo; conserva su `staffId`. «Cerrar sesión» y
+     * cambiar de sucursal siguen contándolos todos ([blockingWorkCount]).
+     */
+    // ponytail (Codex D52 r1 #1): la cola de OTRA sucursal también frena el relevo. La cola la manda con la sesión vigente, y si quien
+    // entra no tiene esa sucursal el servidor contesta 403 y el cobro queda FAILED (anotado como AJENO en la deuda).
+    suspend fun sinEnviarParaElRelevo(): Int = dao.getUnsyncedPayments().size + cashPaymentRepository.enVueloQueSeResuelveSolo()
+
+    /** D53: los apartados del local que esperan a una persona ([CashPaymentRepository.enVueloPorRevisar]); el aviso los cuenta «por revisar». */
+    suspend fun sinConfirmarPorRevisar(): Int = cashPaymentRepository.enVueloPorRevisar()
 
     private fun calculateBackoff(retryCount: Int): Long {
         return minOf(

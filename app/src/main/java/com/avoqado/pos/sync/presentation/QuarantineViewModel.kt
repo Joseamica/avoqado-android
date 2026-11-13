@@ -192,6 +192,9 @@ class QuarantineViewModel @Inject constructor(
     private val _items = MutableStateFlow<List<SyncOutbox.QuarantinedIntent>>(emptyList())
     val items: StateFlow<List<SyncOutbox.QuarantinedIntent>> = _items.asStateFlow()
 
+    private val _deOtrasSucursales = MutableStateFlow<List<CobroDeOtraSucursal>>(emptyList())
+    val deOtrasSucursales: StateFlow<List<CobroDeOtraSucursal>> = _deOtrasSucursales.asStateFlow()
+
     private val _failedPayments = MutableStateFlow<List<PendingPaymentEntity>>(emptyList())
     val failedPayments: StateFlow<List<PendingPaymentEntity>> = _failedPayments.asStateFlow()
 
@@ -254,11 +257,15 @@ class QuarantineViewModel @Inject constructor(
             val items = syncOutbox.rejectedIntents(venueId)
             val failed = paymentSyncService.failedPayments().filter {it.venueId==venueId}
             val reservations = reservationRepository.quarantinedActions()
+            // D52: lo pendiente de OTRAS sucursales de este aparato, con su nombre; se resuelve sólo con su sucursal abierta.
+            val nombres = secureStorage.venuesList.associate { it.id to it.name }
+            val deOtras = paymentSyncService.pendientesDeOtrasSucursales(venueId).map { CobroDeOtraSucursal(it, nombres[it.venueId]) }
             if (secureStorage.venueId != venueId || secureStorage.userId != actor ||
                 secureStorage.userRole != role || syncOutbox.contextoDeSesionQ15() != epoch) return@launch
             _items.value = items
             _failedPayments.value = failed
             _failedReservationActions.value = reservations
+            _deOtrasSucursales.value = deOtras
         }
     }
 
@@ -598,3 +605,11 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 }
+
+/** D52: un cobro pendiente de otra sucursal de este aparato; [sucursal] = su nombre si esta persona la tiene, si no null. */
+data class CobroDeOtraSucursal(val cobro: PendingPaymentEntity, val sucursal: String?)
+
+/** D52: qué hacer con un cobro de otra sucursal. Sin botones: los permisos son por sucursal. PURA. */
+fun textoDeCobroDeOtraSucursal(sucursal: String?): String =
+    if (sucursal != null) "Es de $sucursal. Cambia a $sucursal para resolverla (Más › Cambiar de establecimiento)."
+    else "Es de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal."

@@ -86,6 +86,9 @@ class OrderRepository @Inject constructor(
                 chain.proceed(
                     chain.request().newBuilder()
                         .header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
+                        // D12: el interceptor del principal da a esta ruta el plazo corto y la saca directo a la cola si la
+                        // anterior se quedó sin respuesta y el servidor sigue sin contestar (`RendirseRapido`).
+                        .header(com.avoqado.pos.core.data.network.RendirseRapido.HEADER, "1")
                         .build(),
                 )
             })
@@ -507,11 +510,17 @@ class OrderRepository @Inject constructor(
             hasProductItems(request) ||
                 (request.items.isNotEmpty() && !request.couponCode.isNullOrBlank()) ||
                 (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT") ||
-                (request.items.isNotEmpty() && llevaDescuentoDelCliente(request))
+                (request.items.isNotEmpty() && llevaDescuentoDelCliente(request)) ||
+                // D4: `/fast` no lleva descuento ni etiqueta: con un descuento que pide aprobación, la venta crea su orden.
+                (request.items.isNotEmpty() && llevaDescuentoDeCatalogo(request) && request.descuentoDeCatalogoPideAprobacion)
 
         /** D2: la etiqueta del descuento del cliente sólo viaja con monto (el SERVIDOR exige `montoCents == discount`). */
         private fun llevaDescuentoDelCliente(request: CreateOrderRequest): Boolean =
             request.discount > 0 && !request.descuentoDelClienteId.isNullOrBlank()
+
+        /** D4: la etiqueta del descuento de cuenta del catálogo sólo viaja con importe (y nunca con la del cliente). */
+        private fun llevaDescuentoDeCatalogo(request: CreateOrderRequest): Boolean =
+            request.discount > 0 && !request.descuentoDeCatalogoId.isNullOrBlank() && !llevaDescuentoDelCliente(request)
 
         /**
          * El cuerpo EXACTO que viaja en `POST /mobile/venues/:id/fast`.
@@ -763,6 +772,9 @@ class OrderRepository @Inject constructor(
                     })
                     request.autorizacionDelDescuento?.takeIf { it.isNotBlank() }?.let { put("autorizacionDelDescuento", it) }
                 }
+                // D4: el descuento de cuenta del catálogo. Sólo etiqueta (el SERVIDOR revisa su aprobación): el importe sigue siendo `discount`.
+                // ADITIVO: sin él el cuerpo queda byte a byte igual.
+                if (llevaDescuentoDeCatalogo(request)) put("descuentoDeCatalogoId", request.descuentoDeCatalogoId)
                 // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
                 request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }

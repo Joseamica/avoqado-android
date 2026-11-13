@@ -61,7 +61,7 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
         coEvery {repo.removeOrderDiscount(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.applyServiceCharge(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.removeServiceCharge(any(),any(),any())} answers {writes++;Result.success(Unit)}
-        coEvery {repo.redeemLoyaltyPoints(any(),any(),any(),any())} answers {writes++;Result.success(Unit)}
+        coEvery {repo.redeemLoyaltyPoints(any(),any(),any(),any(),any())} answers {writes++;Result.success(com.avoqado.pos.tables.data.RedeemPointsData(10,1.0))}
         coEvery {repo.moveOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.assignOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.updateOrderDetails(any(),any(),any())} answers {writes++;Result.success(Unit)}
@@ -89,7 +89,7 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
                 "removeDiscount"->order.removeDiscount("discount")
                 "applyServiceCharge"->order.applyServiceCharge("charge")
                 "removeServiceCharge"->order.removeServiceCharge("charge")
-                "redeemPoints"->order.redeemPoints(10)
+                "redeemPoints"->order.redeemPoints(10,1.0)
                 "anularCuenta"->order.anularCuenta("reason"){_,_->}
                 "moveTable"->order.moveTable("target"){_,_->}
                 "assignWaiter"->order.assignWaiter("staff","Name")

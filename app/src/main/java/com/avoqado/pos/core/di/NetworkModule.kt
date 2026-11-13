@@ -72,6 +72,8 @@ object NetworkModule {
             // D5 · B2b, punto de paso ①: el PRIMERO, para ver cada petición una vez y su respuesta final (reintentos y PIN de
             // gerente incluidos). Los clientes derivados (`newBuilder()`) lo heredan; `RedSoloPorElClientePrincipalTest` lo vigila.
             .addInterceptor(com.avoqado.pos.core.data.network.PuertaDeLaFoto(fotosDeMesas))
+            // D12 (hz:e5ee98bc): la ruta del dinero y abrir mesa se rinden rápido y recuerdan que nadie contesta (sólo las marcadas).
+            .addInterceptor(com.avoqado.pos.core.data.network.RendirseRapido(connectivityMonitor))
             .addInterceptor(authInterceptor)
             // Registro pasivo de dispositivos (estilo Square Device Management): manda
             // los headers X-Device-* para que el server registre este aparato en el

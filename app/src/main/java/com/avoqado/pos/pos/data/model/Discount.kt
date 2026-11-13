@@ -47,7 +47,16 @@ data class Discount(
      * liga la fila, y el uso cuenta al quedar pagada. Sin él se quedaba como un descuento libre y el cupón nunca contaba.
      */
     val couponCode: String? = null,
+    /**
+     * D4 (hz:f34960c5:D4): «Requiere aprobación» del catálogo (en un % o fijo; una cortesía la cubre su propio permiso). Lo aplica
+     * quien tiene «Aplicar descuentos en TPV» (`tpv-orders:discount`) o, sin él, con el PIN de un gerente; sin red no entra. El
+     * SERVIDOR lo vuelve a revisar. Ausente = false (servidor viejo, carrito guardado de antes).
+     */
+    val requiresApproval: Boolean = false,
 ) {
+    /** D4: un % o fijo que pide aprobación de un gerente (una cortesía la decide `orders:comp`). */
+    val pideAprobacion: Boolean get() = requiresApproval && !type.equals("COMP", ignoreCase = true)
+
     val discountScope: DiscountScope
         get() = when (scope.uppercase()) {
             "ITEM" -> DiscountScope.ITEM
@@ -200,6 +209,8 @@ data class CouponCode(
     val estimatedSavings: Double? = null,
     /** Descuento máximo del catálogo, en pesos: sin él, la caja cobraría de menos (como [Discount.maxDiscountAmount]). */
     val maxDiscountAmount: Double? = null,
+    /** D4: el descuento del cupón pide la aprobación de un gerente ([Discount.requiresApproval]). */
+    val requiresApproval: Boolean = false,
 ) {
     /** Misma razón que en [Discount.discountType]: el server dice `FIXED_AMOUNT`. */
     val discountType: DiscountType
@@ -224,6 +235,7 @@ data class CouponCode(
         scope = "ORDER",
         maxDiscountAmount = maxDiscountAmount,
         couponCode = code,
+        requiresApproval = requiresApproval,
     )
 }
 
@@ -260,6 +272,8 @@ data class CuponDelServidor(
         type = if (discount.type.equals("COMP", ignoreCase = true)) "PERCENTAGE" else discount.type,
         value = if (discount.type.equals("COMP", ignoreCase = true)) 100.0 else discount.value,
         maxDiscountAmount = discount.maxDiscountAmount,
+        // D4: una cortesía la decide su propio permiso; un % o fijo con «Requiere aprobación» pide la de un gerente.
+        requiresApproval = discount.requiresApproval && !discount.type.equals("COMP", ignoreCase = true),
     )
 }
 
@@ -271,6 +285,8 @@ data class DescuentoDelCupon(
     val value: Double,
     val scope: String = "ORDER",
     val maxDiscountAmount: Double? = null,
+    /** D4: el SERVIDOR lo manda al validar el cupón (`coupon.dashboard.service`). */
+    val requiresApproval: Boolean = false,
 )
 
 // MARK: - Create Product response

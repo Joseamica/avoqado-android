@@ -108,6 +108,52 @@ class KDSRepository @Inject constructor(
         }.onFailure { Log.d(TAG, "Tablero no leído: ${it.message}") }
     }
 
+    /**
+     * Las 100 comandas activas MÁS NUEVAS, de todas las estaciones: lo que lee el vigilante de reparto.
+     *
+     * 🔴 Sin `urgencyVersion` a propósito. Con él el servidor ordena de la MÁS VIEJA a la más nueva (100 por página), y en un
+     * negocio sin pantalla de cocina las comandas de reparto nunca se marcan LISTO: se acumulan y un pedido nuevo quedaría
+     * fuera de la primera página. Sin él contesta la forma de las apps viejas: las 100 más nuevas (`listKdsOrders`).
+     * Límite declarado: si llegan más de 100 mientras el aparato no ve al servidor, las de antes no entran.
+     */
+    suspend fun fetchLasMasNuevas(): Result<List<KDSOrder>> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val request = Request.Builder().url(ruta(venueId, "kds/orders?status=NEW,PREPARING,READY"))
+            .header("Authorization", "Bearer $token").header(ForbiddenInterceptor.BACKGROUND_HEADER, "1").get().build()
+        return ejecutar(request).mapCatching { comandas(it) }
+            .onFailure { Log.d(TAG, "Comandas de reparto no leídas: ${it.message}") }
+    }
+
+    /**
+     * Los canales de reparto para decidir si el vigilante lee comandas. A diferencia de [fetchDeliveryChannels] (que la
+     * pantalla de cocina usa para el botón de pausa y por eso lee un 403 como «sin control»), aquí CUALQUIER no-2xx es
+     * un fallo: confundirlo con «no hay canales» apagaría la impresión en silencio. Con la cabecera de fondo: un 403 no
+     * abre el diálogo global de permisos sobre la pantalla de cobro.
+     */
+    suspend fun leerCanalesParaImprimir(): Result<List<CanalReparto>> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val request = Request.Builder().url(ruta(venueId, "delivery/channels"))
+            .header("Authorization", "Bearer $token").header(ForbiddenInterceptor.BACKGROUND_HEADER, "1").get().build()
+        return ejecutar(request).mapCatching { canales(it) }
+    }
+
+    private fun canales(body: String): List<CanalReparto> {
+        val arreglo = JSONObject(body).optJSONArray("channels")
+        return (0 until (arreglo?.length() ?: 0)).mapNotNull { i ->
+            arreglo?.optJSONObject(i)?.let { o ->
+                CanalReparto(
+                    id = o.optString("id"),
+                    proveedor = o.optString("provider"),
+                    pausado = o.optString("status") == "PAUSED",
+                    // `null` con pausado=true es la pausa INDEFINIDA del dashboard: se pinta como pausado pero SIN
+                    // cuenta regresiva, porque no se va a reactivar sola y un reloj que no corre es una mentira.
+                    pausadoHasta = o.optString("snoozedUntil").takeIf { it.isNotBlank() && it != "null" },
+                    estado = o.optString("status").takeIf { it.isNotBlank() && it != "null" } ?: "ACTIVE",
+                )
+            }
+        }
+    }
+
     /** «Recientes»: las últimas 20 terminadas en 60 min, para deshacer un LISTO por error. */
     suspend fun fetchRecientes(stationId: String?): Result<List<KDSOrder>> {
         val (venueId, token) = sesion() ?: return sinSesion()
@@ -401,21 +447,7 @@ class KDSRepository @Inject constructor(
                 return Result.success(emptyList())
             }
 
-            val arreglo = JSONObject(body).optJSONArray("channels")
-            val canales = (0 until (arreglo?.length() ?: 0)).mapNotNull { i ->
-                arreglo?.optJSONObject(i)?.let { o ->
-                    CanalReparto(
-                        id = o.optString("id"),
-                        proveedor = o.optString("provider"),
-                        pausado = o.optString("status") == "PAUSED",
-                        // `null` con pausado=true es la pausa INDEFINIDA del dashboard: se
-                        // pinta como pausado pero SIN cuenta regresiva, porque no se va a
-                        // reactivar sola y un reloj que no corre es una mentira.
-                        pausadoHasta = o.optString("snoozedUntil").takeIf { it.isNotBlank() && it != "null" },
-                    )
-                }
-            }
-            Result.success(canales)
+            Result.success(canales(body))
         } catch (e: Exception) {
             Log.e(TAG, "fetchDeliveryChannels falló", e)
             Result.failure(e)

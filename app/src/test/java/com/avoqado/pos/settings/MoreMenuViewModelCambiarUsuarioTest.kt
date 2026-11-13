@@ -110,6 +110,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
         Q16PrecioCapturadoTest.Fixture().use { f ->
             cobrosSinNada(f)
             coEvery { f.dao.enVueloCount() } returns 1
+            coEvery { f.cash.enVueloQueSeResuelveSolo() } returns 1 // D53: el de un flujo vivo (o que el barrido da por cobrado)
             coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido())
             val vm = construir(cola(retenidas = 1), f.service)
 
@@ -123,6 +124,26 @@ class MoreMenuViewModelCambiarUsuarioTest {
         }
     }
 
+    /**
+     * D53: un «Ya pagó de otra forma» que quedó a medias (la app murió con el POST en vuelo) espera a una PERSONA: el barrido no lo da por
+     * cobrado (podría ser una venta que la cajera ya cobró de otra forma). No sale solo, así que no frena el relevo: el gerente tiene que
+     * poder entrar a resolverlo. Cerrar sesión sí lo sigue contando.
+     */
+    @Test
+    fun `P1 D53 un cobro de otra forma a medias no frena el cambio de usuario`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.enVueloCount() } returns 1
+            coEvery { f.cash.enVueloQueSeResuelveSolo() } returns 0
+            val vm = construir(cola(), f.service)
+
+            vm.switchUser("1234")
+
+            coVerify(exactly = 1) { auth.switchUser("1234") }
+            assertEquals("cerrar sesión lo sigue contando", 1, f.service.blockingWorkCount())
+        }
+    }
+
     /** Sin cambio: cambiar de sucursal (y cerrar sesión, misma cuenta) sigue esperando a que se resuelva lo rechazado. */
     @Test
     fun `cambiar de sucursal sigue frenando con una operacion rechazada`() = runTest {
@@ -133,11 +154,105 @@ class MoreMenuViewModelCambiarUsuarioTest {
             vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
 
             coVerify(exactly = 0) { auth.switchVenue(any()) }
-            assertTrue(vm.sessionGuardMessage.value.orEmpty().contains("1 operación offline"))
+            // D34: el freno sigue; el texto ya no le pide «resuélvela» a quien no puede (un mesero, por default).
+            assertEquals(
+                "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+                vm.sessionGuardMessage.value,
+            )
         }
     }
 
-    private fun construir(syncOutbox: SyncOutbox, pagos: PaymentSyncService): MoreMenuViewModel {
+    /** D34: lo rechazado se cuenta aparte de lo que sólo espera a la red, con la cola y los cobros de verdad. */
+    @Test
+    fun `P1 cambiar de sucursal con un cobro rechazado y una ronda sin enviar dice las dos cosas`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido())
+            val vm = construir(cola(pendientes = 1), f.service, puedeResolver = true)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            coVerify(exactly = 0) { auth.switchVenue(any()) }
+            assertEquals(
+                "Hay 2 operaciones pendientes: 1 operación por revisar y 1 más. Sincroniza o resuelve lo demás y " +
+                    "resuelve lo rechazado en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cambiar de establecimiento.",
+                vm.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    /**
+     * D52: un cobro fallido de OTRA sucursal ya no impide cambiar de sucursal (la salida es justo ir a esa sucursal a resolverlo). El
+     * freno de cambiar de sucursal sólo cuenta lo de la sucursal que se deja.
+     */
+    @Test
+    fun `P1 D52 un cobro fallido de otra sucursal no impide cambiar a esa sucursal`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido().copy(venueId = "otra-sucursal"))
+            val vm = construir(cola(), f.service)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            coVerify(exactly = 1) { auth.switchVenue(any()) }
+            assertEquals(null, vm.sessionGuardMessage.value)
+        }
+    }
+
+    /** D52: lo de ESTA sucursal (y una fila vieja sin sucursal, que sale con la que esté abierta) sí frena cambiar de sucursal. */
+    @Test
+    fun `P1 D52 un cobro de esta sucursal o sin sucursal sigue frenando cambiar de sucursal`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido(), cobroFallido().copy(id = "sin-sucursal", venueId = ""))
+            val vm = construir(cola(), f.service)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            coVerify(exactly = 0) { auth.switchVenue(any()) }
+            // La fila sin sucursal frena, pero la hoja no la enseña: queda en «lo demás».
+            assertEquals(
+                "Hay 2 operaciones pendientes: 1 operación por revisar y 1 más. Sincroniza o resuelve lo demás y " +
+                    "pídele a un gerente que resuelva lo rechazado: Más › Cambiar usuario.",
+                vm.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    /**
+     * Codex D52 r1 #1: un cobro por enviar de OTRA sucursal SÍ sigue frenando el relevo: la cola lo manda con la sesión vigente y, si quien
+     * entra no tiene esa sucursal, el servidor contesta 403 y el cobro queda FAILED.
+     */
+    @Test
+    fun `P1 D52 un cobro por enviar de otra sucursal sigue frenando cambiar de usuario`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getUnsyncedPayments() } returns listOf(cobroFallido().copy(id = "por-enviar", venueId = "otra-sucursal", syncStatus = "PENDING"))
+            val vm = construir(cola(), f.service)
+
+            vm.switchUser("1234")
+
+            coVerify(exactly = 0) { auth.switchUser(any()) }
+        }
+    }
+
+    /** Sin nada rechazado, el texto de siempre. */
+    @Test
+    fun `cambiar de sucursal con solo una ronda sin enviar conserva su aviso`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            val vm = construir(cola(pendientes = 1), f.service)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            assertEquals(
+                "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento.",
+                vm.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    private fun construir(syncOutbox: SyncOutbox, pagos: PaymentSyncService, puedeResolver: Boolean = false): MoreMenuViewModel {
         val tpv = mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
         }
@@ -147,7 +262,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
             timeEntryRepository = mockk(relaxed = true),
             printerService = mockk(relaxed = true),
             printConfigRepository = mockk(relaxed = true),
-            roleManager = mockk(relaxed = true),
+            roleManager = mockk(relaxed = true) { every { canResolveQuarantine } returns puedeResolver },
             planManager = mockk(relaxed = true),
             posModeManager = mockk(relaxed = true),
             addonsManager = mockk(relaxed = true),

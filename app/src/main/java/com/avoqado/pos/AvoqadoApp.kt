@@ -35,6 +35,9 @@ class AvoqadoApp : Application() {
      */
     @Inject lateinit var vigilanteDePedidosEnLinea: com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 
+    /** Rappi/Uber: imprime solo y avisa el pedido de reparto desde cualquier pantalla (vive con el PROCESO, como el de arriba). */
+    @Inject lateinit var vigilanteDeReparto: com.avoqado.pos.kds.data.VigilanteDeReparto
+
     /**
      * 🔴 Las cancelaciones de cobro se reproducen desde el ARRANQUE DEL PROCESO, no desde la
      * pantalla de cobro ni desde la sesión: una cancelación que quedó a medias cuando la app murió
@@ -59,6 +62,7 @@ class AvoqadoApp : Application() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(deviceCapabilitySyncCoordinator)
         ProcessLifecycleOwner.get().lifecycle.addObserver(refrescoDelCatalogo)
         ProcessLifecycleOwner.get().lifecycle.addObserver(vigilanteDePedidosEnLinea)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(vigilanteDeReparto)
         // Hydrate the global venue timezone holder so DTO-level formatters
         // (TransactionModel.timeDisplay etc.) work from the very first compose.
         VenueTimeZone.set(secureStorage.venueTimezone)
