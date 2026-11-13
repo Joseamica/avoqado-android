@@ -27,7 +27,6 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -378,16 +377,18 @@ class AppStateVenueRecoveryTest {
 
     /** D40: «N por sincronizar» cuenta también el ingreso, el retiro y el cierre de caja hechos sin red. */
     @Test
-    fun `P1 la banda por sincronizar suma los movimientos de caja sin subir`() = runTest {
-        var recuentos = 0
-        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, movimientosDeCaja = 2, alRecontarCaja = { recuentos++ })
-        advanceUntilIdle()
-        val antes = recuentos
-        backgroundScope.launch { appState.offlinePendingCount.collect {} }
-        advanceUntilIdle()
+    fun `P1 la banda por sincronizar suma los movimientos de caja sin subir`() {
+        val recuentos = java.util.concurrent.atomic.AtomicInteger()
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {}, movimientosDeCaja = 2, alRecontarCaja = { recuentos.incrementAndGet() },
+        )
+        val antes = recuentos.get()
 
-        org.junit.Assert.assertEquals(2, appState.offlinePendingCount.value)
-        org.junit.Assert.assertTrue("al suscribirse la banda recuenta la cola guardada", recuentos > antes)
+        // Con tope, como la de la banda de cocina: si la cuenta nunca llega a 2, falla en vez de colgar la corrida.
+        val cuenta = runBlocking { withTimeout(10_000) { appState.offlinePendingCount.first { it == 2 } } }
+
+        org.junit.Assert.assertEquals("la banda suma los 2 movimientos de caja", 2, cuenta)
+        org.junit.Assert.assertTrue("al suscribirse la banda recuenta la cola guardada (${recuentos.get()} vs $antes)", recuentos.get() > antes)
     }
 
     @Test
