@@ -44,7 +44,9 @@ internal class Presencias {
         asumido = true
     }
 
+    /** Lo que concedió como árbitro tampoco vale después: un reenvío ya no lo reconfirma. */
     fun dejarArbitraje() {
+        porCaja.values.forEach { it.vencida = true }
         asumido = false
         pendientes = emptySet()
     }
@@ -54,7 +56,7 @@ internal class Presencias {
         val aperturas = r.aperturas.orEmpty()
         val ids = mesas + aperturas.flatMap { listOf(it.id, it.tableId) }
         if (r.deviceId.isEmpty() || r.gen <= 0 || r.seq <= 0 || mesas.size > MAX_MESAS || aperturas.size > MAX_APERTURAS ||
-            ids.any { it.isEmpty() || it.length > MAX_ID }
+            ids.any { it.isEmpty() || it.length > MAX_ID } || aperturas.distinctBy { it.id }.size != aperturas.size
         ) {
             return LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Estado inválido")
         }

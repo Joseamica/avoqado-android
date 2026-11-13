@@ -138,8 +138,17 @@ class PresenciaEnElArbitroTest {
         assertEquals(APERTURA_ESPERAR, r.resultado)
         assertEquals(1_000L, r.esperarMs)
 
+        // Al dejar el arbitraje, la a1 que concedió ya no se reconfirma.
         server.dejarArbitraje()
-        assertEquals(1_000L, abre("A", 1, 3, "a2", "m6").esperarMs)
+        val reenvio = abre("A", 1, 3, "a1", "m5")
+        assertEquals(APERTURA_ESPERAR, reenvio.resultado)
+        assertEquals(1_000L, reenvio.esperarMs)
+    }
+
+    @Test
+    fun `p11b la caja esperada que abre en su primer estado sale concedida en el acto`() {
+        server.asumirArbitraje(setOf("A"))
+        assertEquals(APERTURA_CONCEDIDA, abre("A", 1, 1, "u1", "m5").resultado)
     }
 
     @Test
@@ -182,6 +191,7 @@ class PresenciaEnElArbitroTest {
             estado("A", 1, 2, aperturas = listOf(WireApertura("x".repeat(65), "m1"))),
             estado("A", 1, 2, aperturas = listOf(WireApertura("u1", "m".repeat(65)))),
             estado("A", 1, 2, mesas = listOf("")),
+            estado("A", 1, 2, aperturas = listOf(WireApertura("u1", "m1"), WireApertura("u1", "m2"))),
         )
         malos.forEach { assertEquals(LeaseProtocol.STATUS_ERROR, it.status) }
         assertEquals(APERTURA_OCUPADA, abre("C", 1, 1, "c1", "m13").resultado)

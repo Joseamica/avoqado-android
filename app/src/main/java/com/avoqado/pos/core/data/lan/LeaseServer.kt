@@ -37,7 +37,7 @@ class LeaseServer(
         synchronized(lock) { presencias.asumirArbitraje(esperados, monoMillis()) }
     }
 
-    /** Deja de arbitrar: toda apertura que no estuviera ya concedida contesta «esperar» 1 s. */
+    /** Deja de arbitrar: lo concedido antes deja de valer y toda apertura contesta «esperar» 1 s. */
     fun dejarArbitraje() {
         synchronized(lock) { presencias.dejarArbitraje() }
     }
