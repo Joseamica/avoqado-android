@@ -69,6 +69,23 @@ class MesasDeEstaCajaTest {
     }
 
     @Test
+    fun `p20b - si sigue cambia a false a media espera, da NoHub en 250 ms o menos`() = runTest {
+        val mesas = caja()
+        val a = mesas.abrirApertura("m5", "s1", "Juan", "V1")
+        var vivo = true
+        val e = async { mesas.esperar(a) { vivo } }
+        advanceTimeBy(1_000)
+
+        vivo = false
+        advanceTimeBy(250)
+        runCurrent()
+
+        assertTrue(e.isCompleted)
+        assertEquals(LeaseOutcome.NoHub, e.await())
+        assertTrue("tardó ${testScheduler.currentTime} ms", testScheduler.currentTime <= 1_250)
+    }
+
+    @Test
     fun `p24a - el plazo de 15 s cuenta desde la apertura, no desde la llamada`() = runTest {
         val mesas = caja()
         val a = mesas.abrirApertura("m5", "s1", "Juan", "V1")
@@ -101,6 +118,12 @@ class MesasDeEstaCajaTest {
         assertNull(isla.vida)
         assertNull(MesasDeEstaCaja(TableSession(), isla).gen)
         assertEquals("un commit fallido no avanza el disco", 2L, disco["gen"])
+
+        // Isla para toda la vida del proceso: aunque el disco se recupere, no reintenta ni cambia de número.
+        val commitsDeLaIsla = commits
+        commitOk = true
+        assertNull(isla.vida)
+        assertEquals(commitsDeLaIsla, commits)
     }
 
     @Test
