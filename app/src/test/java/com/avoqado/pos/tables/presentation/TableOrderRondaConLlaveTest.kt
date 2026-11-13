@@ -754,15 +754,21 @@ class TableOrderRondaConLlaveTest {
             vm.updatePendingQuantity(cafeLibre, 3)
             assertEquals("lo que va en la ronda no cambia", enVuelo, vm.pending.value)
             assertEquals(TableOrderViewModel.RENGLON_EN_VUELO, vm.blockedNotice.value)
+            vm.clearPending()
+            assertEquals("Borrar nuevos artículos deja lo que se está mandando", enVuelo, vm.pending.value)
+            org.junit.Assert.assertNotEquals("no dice que borró lo que dejó", "Artículos sin enviar borrados", vm.actionMessage.value)
             vm.addCustomAmount("Agua", 2000)
             val agua = vm.pending.value.last().item.id
             vm.cyclePendingSeat(agua, 4)
             assertEquals("lo agregado durante el envío sí se cambia", 1, vm.pending.value.last().seat)
             vm.clearPending()
-            assertEquals("Borrar nuevos artículos deja lo que se está mandando", enVuelo, vm.pending.value)
+            assertEquals("y sí se borra", enVuelo, vm.pending.value)
+            assertEquals("Artículos sin enviar borrados", vm.actionMessage.value)
+            assertEquals("y dice qué quedó", TableOrderViewModel.RENGLON_EN_VUELO, vm.blockedNotice.value)
             puerta.complete(Unit)
             advanceUntilIdle()
             assertEquals("el rechazo devuelve lo que se mandó, sin cambios", enVuelo, vm.pending.value)
+            org.junit.Assert.assertNull("al terminar, «Ya se está enviando…» ya no es cierto", vm.blockedNotice.value)
         } finally { vm.viewModelScope.cancel() }
     }
 }

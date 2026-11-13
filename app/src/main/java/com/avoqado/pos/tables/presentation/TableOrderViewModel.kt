@@ -963,8 +963,11 @@ class TableOrderViewModel @Inject constructor(
 
     /** "Borrar nuevos artículos" (Acciones): drops every unsent line. */
     fun clearPending() {
-        pendingLines = _pending.value.filter { vaEnLaRonda(it.item.id) } // D55: lo que se está mandando lo decide «Enviar»
-        _actionMessage.value = "Artículos sin enviar borrados"
+        // D55: lo que se está mandando lo decide «Enviar»; se borra sólo lo demás y se dice qué quedó (Codex r1 #1).
+        val (enVuelo, nuevos) = _pending.value.partition { vaEnLaRonda(it.item.id) }
+        pendingLines = enVuelo
+        if (nuevos.isNotEmpty() || enVuelo.isEmpty()) _actionMessage.value = "Artículos sin enviar borrados"
+        if (enVuelo.isNotEmpty()) showBlockedReason(RENGLON_EN_VUELO)
     }
 
     /** Criterios de "Ordenar carrito" (Square). */
@@ -1300,6 +1303,11 @@ class TableOrderViewModel @Inject constructor(
      * segundos y en plena comida nadie alcanza a leer.
      */
     val blockedNotice: StateFlow<String?> = _blockedNotice.asStateFlow()
+
+    init {
+        // D55 (Codex r1 #2): «Ya se está enviando…» describe el envío; al terminar deja de ser cierto y se quita (sólo ESE aviso).
+        viewModelScope.launch { _isSending.collect { if (!it && _blockedNotice.value == RENGLON_EN_VUELO) invalidateBlockedNotice() } }
+    }
 
     /**
      * Aviso para el mesero: sale por el Snackbar de la pantalla.
