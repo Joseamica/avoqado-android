@@ -1682,6 +1682,13 @@ class TableOrderViewModel @Inject constructor(
      * Una cuenta abierta sin red en este aparato (provisional) todavía no existe en el servidor: no tiene saldo que leer.
      */
     fun releerRecompensas() {
+        // Una lectura que pide la persona vuelve a permitir la relectura por «máximo $0»: la clienta pudo cambiar otra vez con la misma
+        // versión de la cuenta («Detalles» no la sube) (Codex android r8 #2).
+        releidaPorMaximoCero = null
+        releer()
+    }
+
+    private fun releer() {
         val session = tableSession.current() ?: return
         olvidarLealtad()
         if (!session.isProvisional) loadCheck()
@@ -1720,7 +1727,7 @@ class TableOrderViewModel @Inject constructor(
                     val esDeLaQueSeVe = tableSession.current()?.orderId == session.orderId && _check.value?.customerId == customerId
                     if (esDeLaQueSeVe && com.avoqado.pos.tables.data.maximoCeroContradiceLaCuenta(it, cuenta) && releidaPorMaximoCero != llave) {
                         releidaPorMaximoCero = llave
-                        releerRecompensas()
+                        releer()
                         return@launch
                     }
                     // Etiquetado con la cuenta que se pidió: si para entonces se ve otra, no se ofrece (Codex android r4 #1).
@@ -1774,8 +1781,11 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points, montoMostrado)  }}.fold(
                 onSuccess = { aplicado ->
-                    _actionMessage.value = "Recompensa aplicada — ${aplicado.pointsRedeemed} puntos por " +
-                        com.avoqado.pos.core.util.formatMoney(aplicado.discountAmount)
+                    // `showMessage`, no `_actionMessage`: un rechazo anterior dejaba el éxito pintado como error (Codex android r8 #3).
+                    showMessage(
+                        "Recompensa aplicada — ${aplicado.pointsRedeemed} puntos por " +
+                            com.avoqado.pos.core.util.formatMoney(aplicado.discountAmount),
+                    )
                     // El saldo nuevo lo relee la recarga de la cuenta que hace `mutar` al terminar (con la versión nueva).
                     repository.refresh(vId)
                 },

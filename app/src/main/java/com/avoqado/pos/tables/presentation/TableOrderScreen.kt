@@ -189,6 +189,7 @@ fun TableOrderScreen(
         // Mientras se relee la cuenta (una mutación propia, un acuse, el toque) el detalle que se ve es viejo (Codex android r7 #4).
         actualizandoCuenta = !cuentaCompletaAqui && cargandoCuenta,
         cuentaCancelada = check?.status == "CANCELLED" || check?.status == "DELETED",
+        cuentaCambioAlLeer = loyalty?.let { l -> check?.let { com.avoqado.pos.tables.data.maximoCeroContradiceLaCuenta(l, it) } } == true,
     )
     val recompensasSinRed =
         !recompensasEnLinea || (loyalty == null && loyaltyFallo == com.avoqado.pos.core.data.network.FalloDeLectura.SIN_RED)

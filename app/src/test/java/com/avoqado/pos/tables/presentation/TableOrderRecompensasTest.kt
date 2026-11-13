@@ -289,4 +289,32 @@ class TableOrderRecompensasTest {
         assertEquals("Puntos insuficientes: el cliente tiene 400", s.actionMessage.value)
         assertEquals(400, s.loyalty.value?.balance)
     }
+
+    @Test
+    fun `la relectura por máximo $0 se permite otra vez en cada lectura que pide la persona (Codex android r8 2)`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3)
+        coEvery { repository.getCustomerLoyalty(any(), "ana", any()) } returns Result.success(
+            saldo("ana", 500).copy(maxRedeemablePoints = 0, maxRedeemableValue = 0.0, canRedeem = false),
+        )
+        s.loadCheck(); advanceUntilIdle()
+        coVerify(exactly = 2) { repository.getOrderDetail(any(), any()) } // la carga y UNA relectura
+        // La persona toca «Recompensas» otra vez (la clienta pudo cambiar de nuevo con la misma versión): se vuelve a permitir.
+        s.releerRecompensas(); advanceUntilIdle()
+        coVerify(exactly = 4) { repository.getOrderDetail(any(), any()) }
+    }
+
+    @Test
+    fun `un canje que sale bien después de un rechazo no se pinta como error (Codex android r8 3)`() = runTest {
+        val s = vm()
+        cuentaDe("ana", version = 3); saldoDe("ana", 500)
+        s.loadCheck(); advanceUntilIdle()
+        canjeDa(Result.failure(CanjeRechazado(null, "No se pudo")))
+        s.redeemPoints(500, 50.0); advanceUntilIdle()
+        assertTrue(s.actionIsError.value)
+        canjeDa(Result.success(RedeemPointsData(pointsRedeemed = 500, discountAmount = 50.0, newBalance = 0)))
+        s.redeemPoints(500, 50.0); advanceUntilIdle()
+        assertFalse(s.actionIsError.value)
+        assertEquals("Recompensa aplicada — 500 puntos por ${'$'}50.00", s.actionMessage.value)
+    }
 }

@@ -183,6 +183,14 @@ class MotivoSinRecompensasTest {
     }
 
     @Test
+    fun `máximo $0 que la cuenta recién leída contradice - dice que la cuenta cambió, no «tiene un pago» (Codex android r8 2)`() {
+        assertEquals(
+            "La cuenta cambió mientras se leían los puntos. Toca «Recompensas» para volver a leerlos.",
+            motivoSinRecompensas(true, lealtad(balance = 500, max = 0), null, cuentaCambioAlLeer = true),
+        )
+    }
+
+    @Test
     fun `cuenta con abono, pagada o sin nada que descontar - no dice que falta el cliente`() {
         assertEquals(
             "En esta cuenta ya no se pueden canjear puntos: tiene un pago registrado o no queda nada que descontar.",

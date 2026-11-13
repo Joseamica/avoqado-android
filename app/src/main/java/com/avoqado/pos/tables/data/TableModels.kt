@@ -495,6 +495,7 @@ fun motivoSinRecompensas(
     enLinea: Boolean = true,
     actualizandoCuenta: Boolean = false,
     cuentaCancelada: Boolean = false,
+    cuentaCambioAlLeer: Boolean = false,
 ): String? = when {
     // Primero la red: sin internet la cuenta no llega completa (no se sabe si tiene cliente) y el canje es sólo en línea. Va antes
     // que `canRedeem`: un saldo leído con red no prende el botón ya sin red (Codex android r1 #3).
@@ -521,6 +522,9 @@ fun motivoSinRecompensas(
     // $99.99 de descuento y $0.10 por punto) (Codex android r2 #1).
     lealtad.maxRedeemablePoints == 0 && lealtad.maxRedeemableValue > 0 ->
         "Lo que queda por descontar en esta cuenta (${com.avoqado.pos.core.util.formatMoney(lealtad.maxRedeemableValue)}) no alcanza para canjear puntos."
+    // La GET dijo «máximo $0» pero la cuenta recién leída no tiene abono y sí tiene algo que descontar: algo cambió entre las dos
+    // lecturas (otra caja cambió la clienta…). No es «tiene un pago registrado» (Codex android r8 #2); tocar el botón vuelve a leer.
+    cuentaCambioAlLeer -> "La cuenta cambió mientras se leían los puntos. Toca «Recompensas» para volver a leerlos."
     // Con puntos que sí valen dinero, `maxRedeemableValue` sale en $0 sólo si la cuenta no admite canje (el SERVIDOR pone la base en 0
     // con abono, pagada o anulada) o ya no queda nada que descontar.
     lealtad.maxRedeemableValue <= 0 ->
