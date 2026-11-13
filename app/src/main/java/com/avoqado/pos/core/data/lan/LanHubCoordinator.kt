@@ -70,6 +70,9 @@ class LanHubCoordinator(
     /** Peers, cambios y el reconciliador: `stop` los cancela juntos. */
     private var trabajos: Job? = null
 
+    /** Sólo pruebas (Codex código r1 #3): suena dentro del candado de la época, con la respuesta ya validada y antes de aplicarla. */
+    internal var trasValidar: () -> Unit = {}
+
     /** Desde la 3.5 (D1) el hub NO abre socket ni descubrimiento: se engancha al transporte único y consume sus peers. */
     fun start() {
         discovery.conectarHub(server::respondTo)
@@ -172,9 +175,16 @@ class LanHubCoordinator(
         val resp = if (soyYo) server.respondTo(LeaseProtocol.encode(pedido)) else client.estado(arbitro, pedido)
 
         // 5. Primero el contexto local: si cambió la época o el árbitro elegido, nada de lo que volvió vale (ni null, ni stale, ni
-        //    error). Es un mensaje nuevo para otro árbitro, no un reintento al mismo.
-        if (mesas.epoca() != epoca || ArbiterElection.pick(discovery.peers.value)?.deviceId != arbitro.deviceId) return 0
+        //    error). Es un mensaje nuevo para otro árbitro, no un reintento al mismo. Revisar y aplicar son UNA operación (Codex código
+        //    r1 #3): una época nueva de otro hilo espera a que esto termine o lo encuentra ya invalidado.
+        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro) }) {
+            trasValidar()
+            aplicarRespuesta(resp, arbitro, declaracion)
+        } ?: 0
+    }
 
+    /** Pasos 6 a 11 de [reconciliarUnaVez], dentro del candado de la época: nada de red ni de suspensión aquí. */
+    private fun aplicarRespuesta(resp: LeaseResponse?, arbitro: LanPeer, declaracion: MesasDeEstaCaja.Declaracion): Long {
         // 6 y 8. Sin respuesta, u `ok` de otro árbitro: lo conocido no cambia. Nunca 0: un rechazo instantáneo no hace un bucle sin pausa.
         if (resp == null || (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro != arbitro.deviceId)) {
             return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
@@ -205,6 +215,9 @@ class LanHubCoordinator(
         return minOf(LATIDO_MS, esperar ?: LATIDO_MS).coerceAtLeast(1)
     }
 
+    /** ¿[arbitro] sigue siendo el elegido? (la época la revisa quien llama). */
+    private fun sigueElegido(arbitro: LanPeer) = ArbiterElection.pick(discovery.peers.value)?.deviceId == arbitro.deviceId
+
     // ── Modo compatible (spec §3.5): con un árbitro VIEJO (sin `pm=1`) la declaración se traduce a permisos viejos ──────────────
     /**
      * Su único estado: mesa → época de cada permiso concedido, válido sólo con [arbitroDeRetenidas] en [epocaDeRetenidas] (también el
@@ -226,7 +239,7 @@ class LanHubCoordinator(
             epocaDeRetenidas = epoca
             arbitroDeRetenidas = arbitro.deviceId
         }
-        fun sigue() = mesas.epoca() == epoca && ArbiterElection.pick(discovery.peers.value)?.deviceId == arbitro.deviceId
+        fun sigue() = mesas.epoca() == epoca && sigueElegido(arbitro)
         val deseadas = d.mesas + d.aperturas.map { it.tableId }
         val ocupadas = HashMap<String, String>() // mesa → quién la tiene, sólo en esta vuelta
 
@@ -261,13 +274,17 @@ class LanHubCoordinator(
             } // null o `error` (p. ej. un árbitro nuevo que me ve «en presencia»): pendiente; a los 15 s, NoHub
         }
 
-        d.aperturas.forEach { a ->
-            if (a.tableId in retenidas) mesas.resolver(a.id, LeaseOutcome.Granted)
-            ocupadas[a.tableId]?.let { mesas.resolver(a.id, LeaseOutcome.Taken(it)) }
-        }
-        _myTables.value = d.mesas + d.aperturas.filter { it.tableId in retenidas }.map { it.tableId }
-        if (mesas.hayPendientes(venueId)) return REINTENTO_MS
-        return (ultimaRenovacionMs + LATIDO_MS - relojMs()).coerceIn(1, LATIDO_MS) // la siguiente renovación, a tiempo
+        // Revisar y aplicar, UNA operación (Codex código r1 #3): sin esto, una época nueva podía caer entre el último `sigue()` y aquí.
+        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro) }) {
+            trasValidar()
+            d.aperturas.forEach { a ->
+                if (a.tableId in retenidas) mesas.resolver(a.id, LeaseOutcome.Granted)
+                ocupadas[a.tableId]?.let { mesas.resolver(a.id, LeaseOutcome.Taken(it)) }
+            }
+            _myTables.value = d.mesas + d.aperturas.filter { it.tableId in retenidas }.map { it.tableId }
+            if (mesas.hayPendientes(venueId)) REINTENTO_MS
+            else (ultimaRenovacionMs + LATIDO_MS - relojMs()).coerceIn(1, LATIDO_MS) // la siguiente renovación, a tiempo
+        } ?: 0
     }
 
     private fun enIsla(): Long {

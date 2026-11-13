@@ -127,6 +127,21 @@ class MesasDeEstaCajaTest {
     }
 
     @Test
+    fun `p29b - si abrir las preferencias truena (WINDOWS, archivo bloqueado), armar el hub no truena y la caja queda en isla`() = runTest {
+        // En WINDOWS `getSharedPreferences` LEE el archivo al abrirlo y relanza si no puede (Codex código r1 #1).
+        val bloqueado = mockk<Context> {
+            every { getSharedPreferences(any(), any()) } throws java.nio.file.AccessDeniedException("hub_presencia.json")
+        }
+
+        val vidas = ContadorDeVidas(bloqueado)
+        val mesas = MesasDeEstaCaja(TableSession(), vidas)
+        LanHubService(mockk(relaxed = true), mockk(relaxed = true), mesas = mesas)
+
+        assertNull(vidas.vida)
+        assertNull(mesas.gen)
+    }
+
+    @Test
     fun `p34 - fijar otro venue suelta las aperturas del anterior y su espera da NoHub enseguida`() = runTest {
         val mesas = caja()
         val a = mesas.abrirApertura("m5", "s1", "Juan", "V1")

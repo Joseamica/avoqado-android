@@ -25,15 +25,21 @@ data class Apertura(val id: String, val tableId: String, val staffId: String, va
 
 /**
  * El número de VIDA del proceso (spec §3.2): al primer uso, lo guardado + 1, escrito con `commit()` ANTES del primer mensaje. Así un
- * mensaje de una vida anterior siempre pierde, aunque la anterior muriera sin mandar nada. Si no se puede guardar, `null`: la caja no
- * declara presencia y trabaja como isla.
+ * mensaje de una vida anterior siempre pierde, aunque la anterior muriera sin mandar nada. Si no se puede abrir, leer o guardar, `null`:
+ * la caja no declara presencia y trabaja como isla.
  */
 @Singleton
 class ContadorDeVidas internal constructor(private val leer: () -> Long, private val guardar: (Long) -> Boolean) {
 
-    @Inject constructor(@ApplicationContext context: Context) : this(context.getSharedPreferences("hub_presencia", Context.MODE_PRIVATE))
+    /**
+     * Sólo guarda el Context (Codex código r1 #1): en WINDOWS abrir las preferencias YA lee el archivo y puede lanzar, y eso tumbaba la
+     * inyección del Hub aunque estuviera apagado. Abrirlas, leer y guardar pasa en [vida], protegido y en el scope de IO del reconciliador.
+     */
+    @Inject constructor(@ApplicationContext context: Context) :
+        this(lazy { context.getSharedPreferences("hub_presencia", Context.MODE_PRIVATE) })
 
-    private constructor(prefs: SharedPreferences) : this({ prefs.getLong("gen", 0L) }, { prefs.edit().putLong("gen", it).commit() })
+    private constructor(prefs: Lazy<SharedPreferences>) :
+        this({ prefs.value.getLong("gen", 0L) }, { prefs.value.edit().putLong("gen", it).commit() })
 
     val vida: Long? by lazy {
         runCatching { (leer() + 1).takeIf(guardar) }.getOrNull()
@@ -76,9 +82,20 @@ class MesasDeEstaCaja internal constructor(
 
     val gen: Long? get() = vidas.vida
 
+    /** Uno para «¿sigue vigente?» + aplicar y para cambiar de época (Codex código r1 #3). Adentro, nada de red ni de suspensión. */
+    private val candadoDeEpoca = Any()
+
     fun siguienteSeq(): Long = seq.incrementAndGet()
     fun epoca(): Long = epoca.get()
-    fun nuevaEpoca(): Long = epoca.incrementAndGet()
+    fun nuevaEpoca(): Long = synchronized(candadoDeEpoca) { epoca.incrementAndGet() }
+
+    /**
+     * Aplica una respuesta del árbitro sólo si la época sigue siendo [epocaAlMandar] y [sigue] da `true`, sin soltar el candado de
+     * [nuevaEpoca]: una época nueva de otro hilo no puede caer entre revisar y aplicar (espera a que termine, o la encuentra ya
+     * invalidada). `null` = ya no vale. [aplicar] no toca la red ni suspende.
+     */
+    fun <T> aplicarSiVigente(epocaAlMandar: Long, sigue: () -> Boolean, aplicar: () -> T): T? =
+        synchronized(candadoDeEpoca) { if (epoca.get() == epocaAlMandar && sigue()) aplicar() else null }
 
     /** Suena cuando cambia la mesa actual o el conjunto de aperturas; una resolución no cambia lo declarado. */
     val cambios: Flow<Unit> = combine(

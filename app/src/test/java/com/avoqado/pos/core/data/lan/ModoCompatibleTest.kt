@@ -81,6 +81,23 @@ class ModoCompatibleTest {
 
     private fun Red.ops(desde: Int = 0) = recibidos.drop(desde).map { it.op to it.tableId }
 
+    // MARK: - Codex código r1 #3: con un árbitro viejo, revisar la época y aplicar también son UNA operación
+
+    @Test
+    fun `r1-3 compat - otro hilo cambia la época justo después de validar - nada de X se aplica después de la época nueva`() = runTest {
+        val x = arbitro("X")
+        x.tomaB("m6")
+        val mesas = caja()
+        val c = coordinador(red(mapOf("X" to x)), mesas) // sin start(): la vuelta se corre a mano
+        val apertura = mesas.abrirApertura("m6", "s1", "Ana", v)
+        val epocaNueva = EpocaDesdeOtroHilo(c, mesas, v)
+
+        c.reconciliarUnaVez()
+
+        assertEquals("nuevaEpoca() regresó con la apertura pendiente y luego X la resolvió", false, epocaNueva.terminar())
+        assertEquals("X la resolvió antes de la época nueva", LeaseOutcome.Taken("Beto"), mesas.esperar(apertura) { false })
+    }
+
     // MARK: - p12a (spec-12)
 
     @Test

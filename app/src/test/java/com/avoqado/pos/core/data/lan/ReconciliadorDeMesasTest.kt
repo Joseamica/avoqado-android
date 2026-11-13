@@ -623,10 +623,40 @@ class ReconciliadorDeMesasTest {
         assertTrue("los latidos siguen: ${red.envios}", red.envios.size >= enviados + 3)
     }
 
-    // MARK: - Spec 14: el plazo TOTAL por mensaje, con el LeaseClient real (reloj real, fuera del hilo de la prueba)
+    // MARK: - Codex código r1 #3: revisar la época y aplicar la respuesta son UNA operación
 
     @Test
-    fun `p14c - un árbitro que gotea byte por byte - estado da null en 3 s o menos y la vuelta siguiente sale, en IO`() = runBlocking {
+    fun `r1-3 - otro hilo cambia la época justo después de validar - nada de X se aplica después de la época nueva`() = runTest {
+        val x = arbitro("X")
+        x.declara("B", "m14")
+        val mesas = caja()
+        val c = coordinador(red(x), mesas) // sin start(): la vuelta se corre a mano y la época la cambia el otro hilo
+        val apertura = mesas.abrirApertura("m14", "s1", "Ana", v)
+        val epocaNueva = EpocaDesdeOtroHilo(c, mesas, v)
+
+        c.reconciliarUnaVez()
+
+        assertEquals("nuevaEpoca() regresó con la apertura pendiente y luego X la resolvió", false, epocaNueva.terminar())
+        assertEquals("X la resolvió antes de la época nueva", LeaseOutcome.Taken("Beto"), mesas.esperar(apertura) { false })
+    }
+
+    // MARK: - Spec 14: el plazo TOTAL por mensaje
+    // Codex código r1 #5: el plazo exacto (3 s) lo fija la vuelta con tiempo virtual (`p14a`); las de socket real sólo acreditan lo que
+    // necesita un socket (que se cierra y que la llamada termina), con un presupuesto amplio contra un goteo que sin el vigía duraría 40 s.
+
+    @Test
+    fun `p14a - cada estado sale con el plazo total de 3 s (el ritmo tras un null lo fija p_null)`() = runTest {
+        val red = red(arbitro("X"))
+        coordinador(red, caja()).start()
+        runCurrent()
+        advanceTimeBy(25_000)
+
+        coVerify(atLeast = 3) { red.client.estado(any(), any(), LeaseClient.PLAZO_HUB_MS) }
+        coVerify(exactly = 0) { red.client.estado(any(), any(), neq(LeaseClient.PLAZO_HUB_MS)) }
+    }
+
+    @Test
+    fun `p14c - un árbitro que gotea byte por byte - el vigía cierra el socket, estado da null y la vuelta siguiente sale, en IO`() = runBlocking {
         Goteo().use { goteo ->
             val arbitro = LanPeer("X", "127.0.0.1", goteo.puerto, isWired = true, presencia = true)
             val hilos = CopyOnWriteArrayList<Thread>()
@@ -645,7 +675,7 @@ class ReconciliadorDeMesasTest {
 
             c.start()
             try {
-                val hasta = ahora() + 8_000
+                val hasta = ahora() + ESPERA_MS
                 while (goteo.conexiones.size < 2 && ahora() < hasta) delay(20)
             } finally {
                 c.stop()
@@ -653,44 +683,53 @@ class ReconciliadorDeMesasTest {
 
             assertTrue("la segunda vuelta salió", goteo.conexiones.size >= 2)
             val primera = goteo.conexiones.first()
-            val hasta = ahora() + 2_000
+            val hasta = ahora() + ESPERA_MS
             while (primera.cerrada == 0L && ahora() < hasta) delay(10)
             assertNotEquals("el servidor vio el cierre", 0L, primera.cerrada)
-            assertTrue("cerrada a los ${primera.cerrada - primera.aceptada} ms", primera.cerrada - primera.aceptada <= PLAZO_CON_MARGEN)
+            assertTrue("cerrada a los ${primera.cerrada - primera.aceptada} ms", primera.cerrada - primera.aceptada <= PRESUPUESTO_MS)
             val (duracion, respuesta) = llamadas.first()
             assertEquals(null, respuesta)
-            assertTrue("estado tardó $duracion ms", duracion <= PLAZO_CON_MARGEN)
+            assertTrue("estado tardó $duracion ms", duracion <= PRESUPUESTO_MS)
             val prueba = Thread.currentThread()
             assertTrue(hilos.all { it != prueba && it.name.startsWith("DefaultDispatcher") })
         }
     }
 
     @Test
-    fun `p14d - cancelar a quien llama a media lectura igual cierra el socket a los 3 s y la llamada termina`() = runBlocking {
+    fun `p14d - cancelar a quien llama a media lectura igual cierra el socket y la llamada termina`() = runBlocking {
         Goteo().use { goteo ->
             val arbitro = LanPeer("X", "127.0.0.1", goteo.puerto)
             val pedido = LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "A", gen = 1, seq = 1, mesas = listOf("m13"))
-            val inicio = ahora()
-            val llamada = CoroutineScope(Dispatchers.IO).launch { LeaseClient().estado(arbitro, pedido) }
-            while (goteo.conexiones.isEmpty() && ahora() - inicio < 2_000) delay(10)
+            val arranco = CompletableDeferred<Long>()
+            val llamada = CoroutineScope(Dispatchers.IO).launch { arranco.complete(ahora()); LeaseClient().estado(arbitro, pedido) }
+            // El cronómetro arranca cuando ya corre la corrutina que abre el socket, no antes (una cola del planificador no cuenta).
+            val inicio = withTimeoutOrNull(ESPERA_MS) { arranco.await() } ?: error("la llamada nunca arrancó")
+            val hastaConexion = ahora() + ESPERA_MS
+            while (goteo.conexiones.isEmpty() && ahora() < hastaConexion) delay(10)
             delay(1_000) // ya está goteando
 
             llamada.cancel()
-            withTimeoutOrNull(8_000) { llamada.join() }
+            withTimeoutOrNull(ESPERA_MS) { llamada.join() }
             val fin = ahora()
-            val hasta = ahora() + 8_000
+            val hasta = ahora() + ESPERA_MS
             while (goteo.conexiones.single().cerrada == 0L && ahora() < hasta) delay(10)
 
-            assertTrue("la llamada terminó a los ${fin - inicio} ms", fin - inicio <= PLAZO_CON_MARGEN)
+            assertTrue("la llamada terminó a los ${fin - inicio} ms", fin - inicio <= PRESUPUESTO_MS)
             val c = goteo.conexiones.single()
             assertNotEquals("el servidor vio el cierre", 0L, c.cerrada)
-            assertTrue("cerrada a los ${c.cerrada - inicio} ms", c.cerrada - inicio <= PLAZO_CON_MARGEN)
+            assertTrue("cerrada a los ${c.cerrada - c.aceptada} ms", c.cerrada - c.aceptada <= PRESUPUESTO_MS)
         }
     }
 
     private companion object {
-        /** El plazo total de un mensaje al árbitro, más holgura para una máquina cargada. */
-        const val PLAZO_CON_MARGEN = LeaseClient.PLAZO_HUB_MS + 700
+        /**
+         * Lo más que se acepta, en reloj real, para que el vigía cierre un socket de 3 s: amplio para un CI cargado y muy por debajo de
+         * los 40 s que gotea [Goteo] (sin el vigía, la lectura seguiría todo ese tiempo).
+         */
+        const val PRESUPUESTO_MS = 10_000L
+
+        /** Cuánto se espera algo que debe pasar (una conexión, un cierre) antes de declararlo perdido. */
+        const val ESPERA_MS = 25_000L
 
         fun ahora() = System.nanoTime() / 1_000_000
     }
@@ -766,7 +805,35 @@ internal class Red(private val arbitros: Map<String, LeaseServer>, private val r
     private suspend fun esperarTurno(pedido: LeaseRequest) = Vuelo(pedido).also { retenidos += it }.compuerta.await()
 }
 
-/** Un «árbitro» que contesta un byte cada 500 ms y nunca termina la línea; anota cuándo acepta cada conexión y cuándo ve su cierre. */
+/**
+ * Codex código r1 #3: arma `trasValidar` para que, con la respuesta ya validada y antes de aplicarla, OTRO hilo cambie la época (como
+ * el colector de peers) y espera a que ese hilo termine o se quede esperando su turno. [terminar] dice si la apertura seguía
+ * pendiente cuando `nuevaEpoca()` regresó: si sí, lo que se aplique después es de la época vieja.
+ */
+internal class EpocaDesdeOtroHilo(c: LanHubCoordinator, mesas: MesasDeEstaCaja, venue: String) {
+    @Volatile private var pendienteTrasLaEpoca: Boolean? = null
+    @Volatile private var hilo: Thread? = null
+
+    init {
+        c.trasValidar = {
+            c.trasValidar = {}
+            hilo = thread { mesas.nuevaEpoca(); pendienteTrasLaEpoca = mesas.hayPendientes(venue) }.also { t ->
+                val hasta = System.nanoTime() + 10_000_000_000L
+                while (t.state != Thread.State.BLOCKED && t.state != Thread.State.TERMINATED && System.nanoTime() < hasta) Thread.sleep(1)
+            }
+        }
+    }
+
+    fun terminar(): Boolean? {
+        hilo?.join(10_000)
+        return pendienteTrasLaEpoca
+    }
+}
+
+/**
+ * Un «árbitro» que contesta un byte cada 500 ms durante 40 s y nunca termina la línea (nunca calla 3 s, así que el `soTimeout` no lo
+ * corta: sólo el vigía); anota cuándo acepta cada conexión y cuándo ve su cierre.
+ */
 private class Goteo : AutoCloseable {
     class Conexion(val aceptada: Long) {
         @Volatile var cerrada = 0L
@@ -786,7 +853,7 @@ private class Goteo : AutoCloseable {
                         val entrada = BufferedInputStream(it.getInputStream())
                         LineaAcotada.leer(entrada) // la petición
                         val salida = it.getOutputStream()
-                        thread(isDaemon = true) { runCatching { repeat(20) { salida.write('x'.code); salida.flush(); Thread.sleep(500) } } }
+                        thread(isDaemon = true) { runCatching { repeat(80) { salida.write('x'.code); salida.flush(); Thread.sleep(500) } } }
                         runCatching { entrada.read() } // -1 o excepción: el cliente cerró
                         c.cerrada = System.nanoTime() / 1_000_000
                     }

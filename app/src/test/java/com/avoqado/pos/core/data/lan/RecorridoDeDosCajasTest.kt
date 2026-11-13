@@ -31,6 +31,9 @@ import org.junit.Test
 
 private const val V = "V1"
 
+/** Escenario 1 (reloj real): lo más que se acepta entre la flecha de A y la apertura de B. Amplio, y lejos del vencimiento de 30 s. */
+private const val LIMITE_REAL_MS = 10_000L
+
 /**
  * Hub D3 · el recorrido de la promesa (`docs/audit/2026-11-12-mesa-permiso-hub/promesa.md`) con TRES aparatos, para no mezclar el
  * vencimiento con el cambio de árbitro (Codex plan r2 R2-6): C arbitra y no se toca; A y B son cajas, cada una con su sesión de mesa,
@@ -97,7 +100,7 @@ class RecorridoDeDosCajasTest {
     // MARK: - Escenario 1: la promesa, con reloj real
 
     @Test
-    fun `escenario 1 - A abre m13, B la ve de Ana y, cuando A sale con la flecha, B la abre en menos de 3 s de reloj real`() = runBlocking {
+    fun `escenario 1 - A abre m13, B la ve de Ana y, cuando A sale con la flecha, B la abre mucho antes del vencimiento de 30 s`() = runBlocking {
         val c = LeaseServer(deviceId = "C").also { it.asumirArbitraje(emptySet()) }
         val printConfig = mockk<PrintConfigRepository> {
             every { config } returns MutableStateFlow(PrintConfig())
@@ -122,11 +125,12 @@ class RecorridoDeDosCajasTest {
             val flecha = reloj()
             a.sale()
             // B pide cuando la salida de A ya llegó a C (si pidiera antes, «ocupada» también sería correcto).
-            withTimeoutOrNull(3_000) { while ("m13" in c.mesasListadas()) delay(5) }
+            withTimeoutOrNull(LIMITE_REAL_MS) { while ("m13" in c.mesasListadas()) delay(5) }
             assertEquals(LeaseOutcome.Granted, b.abre("m13"))
             val ms = reloj() - flecha
-            // El «en seguida» de la promesa se mide en el aparato; aquí sólo se cuida que no caiga al vencimiento de 30 s.
-            assertTrue("B la abrió a los $ms ms de la flecha", ms < 3_000)
+            // El «en seguida» de la promesa se mide en el aparato; aquí sólo se cuida que no caiga al vencimiento de 30 s (Codex código
+            // r1 #5: con reloj real, un límite apretado falla en un CI cargado con el código correcto).
+            assertTrue("B la abrió a los $ms ms de la flecha", ms < LIMITE_REAL_MS)
         } finally {
             scope.cancel()
             transporteC.detener()
