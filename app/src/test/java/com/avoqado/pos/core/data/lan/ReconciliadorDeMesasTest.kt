@@ -544,6 +544,85 @@ class ReconciliadorDeMesasTest {
         assertTrue(testScheduler.currentTime < 1_000)
     }
 
+    // MARK: - Endurecimiento (revisión de la Task 5)
+
+    @Test
+    fun `h1 - stop con un estado en vuelo - el bucle cancelado no da otra vuelta ni toca myTables`() = runTest {
+        val x = arbitro("X")
+        val red = red(x)
+        val a = coordinador(red, caja())
+        a.start()
+        runCurrent()
+        red.retener = Red.Retener.IDA
+        entra("m13")
+        runCurrent()
+        assertEquals("el estado de m13, en vuelo", 1, red.retenidos.size)
+
+        a.stop()
+        runCurrent()
+        assertEquals("y la despedida", 2, red.retenidos.size)
+        val enviados = red.envios.size
+        red.retener = Red.Retener.NADA
+        red.soltarTodo()
+        runCurrent()
+        advanceTimeBy(30_000)
+
+        assertEquals("después de la despedida no sale nada", enviados, red.envios.size)
+        assertTrue(a.myTables.value.isEmpty())
+    }
+
+    @Test
+    fun `h2 - un esperarMs de 0 o negativo del árbitro no hace un bucle sin pausa`() = runTest {
+        val red = red(arbitro("X"))
+        val mesas = caja()
+        coordinador(red, mesas).start()
+        runCurrent()
+        val desde = red.envios.size
+        val apertura = mesas.abrirApertura("m14", "s1", "Ana", v)
+        var n = 0
+        red.fija = {
+            // Tope: sin el arreglo, estas vueltas salen todas en el mismo instante y la prueba roja no debe girar para siempre.
+            if (++n > 50) null
+            else LeaseResponse(
+                status = LeaseProtocol.STATUS_OK,
+                arbitro = "X",
+                aperturas = listOf(WireResultadoApertura(apertura.id, LeaseProtocol.APERTURA_ESPERAR, esperarMs = if (n % 2 == 0) 0L else -5L)),
+            )
+        }
+        advanceTimeBy(100)
+
+        val envios = red.envios.drop(desde)
+        assertTrue("hubo vueltas: $envios", envios.size >= 10)
+        envios.zipWithNext().forEach { (antes, despues) -> assertTrue("$antes → $despues", despues > antes) }
+    }
+
+    @Test
+    fun `h4 - una vuelta que truena (el nombre sale de SecureStorage) no mata al coordinador`() = runTest {
+        val red = red(arbitro("X"))
+        val mesas = caja()
+        var llamadas = 0
+        val a = LanHubCoordinator(
+            discovery = discovery,
+            mesas = mesas,
+            deviceId = "A",
+            venueId = v,
+            nombre = { if (llamadas++ == 0) error("SecureStorage no contestó") else "Ana" },
+            client = red.client,
+            relojMs = { testScheduler.currentTime },
+            scope = backgroundScope,
+        )
+        a.start()
+        runCurrent()
+        assertTrue("la primera vuelta tronó", llamadas >= 1)
+
+        val apertura = mesas.abrirApertura("m14", "s1", "Ana", v)
+        assertEquals(LeaseOutcome.Granted, mesas.esperar(apertura) { true })
+        val enviados = red.envios.size
+        advanceTimeBy(30_000)
+        runCurrent() // el latido de los 30 s
+        assertTrue("los latidos siguen: ${red.envios}", red.envios.size >= enviados + 3)
+    }
+
     // MARK: - Spec 14: el plazo TOTAL por mensaje, con el LeaseClient real (reloj real, fuera del hilo de la prueba)
 
     @Test
@@ -618,11 +697,12 @@ class ReconciliadorDeMesasTest {
 }
 
 /**
- * La «red» entre la caja A y los árbitros: el mock de [LeaseClient] entrega cada `estado` al [LeaseServer] del árbitro al que se
- * mandó. Con [retener], IDA retiene el pedido antes de que llegue (y llega aunque cancelen a quien lo mandó: ya salió por el cable)
- * y VUELTA retiene la respuesta ya decidida. [fija] reemplaza al árbitro (null = conexión rechazada).
+ * La «red» entre la caja A y los árbitros: el mock de [LeaseClient] entrega cada `estado` (y cada `acquire`/`renew`/`release` del
+ * modo compatible, `ModoCompatibleTest`) al [LeaseServer] del árbitro al que se mandó. Con [retener], IDA retiene el pedido antes de
+ * que llegue (y llega aunque cancelen a quien lo mandó: ya salió por el cable) y VUELTA retiene la respuesta ya decidida. [fija]
+ * reemplaza al árbitro (null = conexión rechazada). [arbitros] se lee en cada envío: cambiar un valor es reiniciar ese árbitro.
  */
-private class Red(private val arbitros: Map<String, LeaseServer>, private val reloj: () -> Long) {
+internal class Red(private val arbitros: Map<String, LeaseServer>, private val reloj: () -> Long) {
     enum class Retener { NADA, IDA, VUELTA }
 
     class Vuelo(val pedido: LeaseRequest) {
@@ -642,6 +722,15 @@ private class Red(private val arbitros: Map<String, LeaseServer>, private val re
 
     val client = mockk<LeaseClient>().also { c ->
         coEvery { c.estado(any(), any(), any()) } coAnswers { pasar(firstArg(), secondArg()) }
+        coEvery { c.acquire(any(), any(), any(), any(), any()) } coAnswers {
+            pasar(firstArg(), LeaseRequest(op = LeaseProtocol.OP_ACQUIRE, tableId = arg(1), deviceId = arg(2), staffId = arg(3), staffName = arg(4)))
+        }
+        coEvery { c.renew(any(), any(), any(), any()) } coAnswers {
+            pasar(firstArg(), LeaseRequest(op = LeaseProtocol.OP_RENEW, tableId = arg(1), deviceId = arg(2), epoch = arg(3)))
+        }
+        coEvery { c.release(any(), any(), any(), any()) } coAnswers {
+            pasar(firstArg(), LeaseRequest(op = LeaseProtocol.OP_RELEASE, tableId = arg(1), deviceId = arg(2), epoch = arg(3)))
+        }
     }
 
     fun respuestaA(pedido: LeaseRequest) = respuestas.lastOrNull { it.first === pedido }?.second

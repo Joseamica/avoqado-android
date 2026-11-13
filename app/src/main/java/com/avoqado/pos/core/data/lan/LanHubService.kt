@@ -92,11 +92,12 @@ class LanHubService @Inject constructor(
         mesas.abrirApertura(tableId, staffId, staffName, secureStorage.venueId.orEmpty())
 
     /**
-     * Espera el veredicto, hasta 15 s desde el toque. Sin hub, [LeaseOutcome.NoHub] al instante: modo isla, NUNCA bloquea al mesero.
+     * Espera el veredicto, hasta 15 s desde el toque. Sin hub, o con un ticket de otra sucursal (nadie lo va a resolver),
+     * [LeaseOutcome.NoHub] al instante: modo isla, NUNCA bloquea al mesero.
      * [alEsperar] suena cuando el árbitro pide esperar («Revisando con las otras cajas…»); [sigue] en `false` suelta la espera.
      */
     suspend fun esperarApertura(ticket: Apertura, alEsperar: () -> Unit = {}, sigue: () -> Boolean = { true }): LeaseOutcome =
-        if (coordinator == null) LeaseOutcome.NoHub else mesas.esperar(ticket, alEsperar, sigue)
+        if (coordinator == null || ticket.venueId != venueActivo) LeaseOutcome.NoHub else mesas.esperar(ticket, alEsperar, sigue)
 
     /** Idempotente, por id: nunca por nombre de mesa. */
     fun terminarApertura(ticket: Apertura) = mesas.terminarApertura(ticket)

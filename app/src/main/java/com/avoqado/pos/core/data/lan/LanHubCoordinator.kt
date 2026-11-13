@@ -4,6 +4,7 @@ import android.util.Log
 import com.avoqado.pos.core.data.lan.LeaseProtocol.APERTURA_CONCEDIDA
 import com.avoqado.pos.core.data.lan.LeaseProtocol.APERTURA_ESPERAR
 import com.avoqado.pos.core.data.lan.LeaseProtocol.APERTURA_OCUPADA
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -12,6 +13,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -32,6 +34,9 @@ private const val TAG = "LanHubCoordinator"
  * caja ([MesasDeEstaCaja]: su mesa actual y sus aperturas) cuando cambia, cada 10 s y cuando cambia el árbitro; nunca hay dos
  * mensajes de esta caja en vuelo. Cada respuesta se valida contra el árbitro y la época capturados al mandarla, y las aperturas se
  * resuelven por id. Las esperas viven en [MesasDeEstaCaja] (del proceso): un coordinador apagado no resuelve nada.
+ *
+ * Con un árbitro VIEJO (sin `pm=1`: ANDROID previo o iOS) el mismo reconciliador entra en modo compatible ([vueltaCompat]) y traduce
+ * la declaración a los `acquire`/`renew`/`release` de siempre, uno a la vez.
  */
 class LanHubCoordinator(
     private val discovery: LanDiscoveryPort,
@@ -42,7 +47,7 @@ class LanHubCoordinator(
     private val nombre: () -> String,
     private val client: LeaseClient = LeaseClient(),
     server: LeaseServer? = null,
-    relojMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val relojMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
 ) {
     /** Contesta cuando me eligen árbitro; con el mismo reloj monotónico que la caja. */
@@ -94,8 +99,18 @@ class LanHubCoordinator(
             }
             launch { mesas.cambios.collect { despertar() } }
             launch {
-                while (true) {
-                    val ms = reconciliarUnaVez()
+                // `isActive` arriba de cada vuelta: tras `stop()` una vuelta devuelve 0 y `withTimeoutOrNull(0)` no suspende, así que
+                // sin esto el bucle cancelado daba UNA vuelta completa más (y hasta mandaba otro `estado`).
+                while (isActive) {
+                    val ms = try {
+                        reconciliarUnaVez()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Una vuelta que truena (p. ej. `nombre()` leyendo SecureStorage) no mata al coordinador: espera el latido.
+                        Log.w(TAG, "⚠️ La vuelta del reconciliador falló; reintento al latido", e)
+                        LATIDO_MS
+                    }
                     withTimeoutOrNull(ms) { despertador.receive() }
                 }
             }
@@ -149,8 +164,8 @@ class LanHubCoordinator(
         val declaracion = mesas.declaracion(venueId)
         val soyYo = arbitro.deviceId == deviceId
 
-        // 3. Árbitro viejo (sin `pm=1`): el modo compatible es la Task 6 y recibe lo capturado. Mientras, se trata como «sin árbitro».
-        if (!soyYo && !arbitro.presencia) return enIsla()
+        // 3. Árbitro viejo (sin `pm=1`): el modo compatible traduce la declaración a permisos viejos, con lo capturado.
+        if (!soyYo && !arbitro.presencia) return vueltaCompat(arbitro, epoca, declaracion)
 
         // 4. Yo soy el árbitro: en local, sin dar la vuelta por la red.
         val pedido = pedido(gen, seq, declaracion)
@@ -185,9 +200,69 @@ class LanHubCoordinator(
         val concedidas = resultados.filter { it.resultado == APERTURA_CONCEDIDA }.mapTo(HashSet()) { it.id }
         _myTables.value = declaracion.mesas + declaracion.aperturas.filter { it.id in concedidas }.map { it.tableId }
 
-        // 11. El árbitro que calienta dice cuándo volver a preguntar.
+        // 11. El árbitro que calienta dice cuándo volver a preguntar; un 0 o un negativo de otro aparato no hace un bucle sin pausa.
         val esperar = resultados.filter { it.resultado == APERTURA_ESPERAR }.mapNotNull { it.esperarMs }.minOrNull()
-        return minOf(LATIDO_MS, esperar ?: LATIDO_MS)
+        return minOf(LATIDO_MS, esperar ?: LATIDO_MS).coerceAtLeast(1)
+    }
+
+    // ── Modo compatible (spec §3.5): con un árbitro VIEJO (sin `pm=1`) la declaración se traduce a permisos viejos ──────────────
+    /** Su único estado: mesa → época de cada permiso concedido, válido sólo en [epocaDeRetenidas]. Lo toca sólo el reconciliador. */
+    private val retenidas = HashMap<String, Long>()
+    private var epocaDeRetenidas = -1L
+    private var ultimaRenovacionMs = 0L
+
+    /**
+     * Una vuelta con un árbitro viejo: `release` de lo que ya no se desea, `renew` cada 10 s y `acquire` de lo deseado sin permiso, en
+     * ese orden y un mensaje a la vez. Después de CADA espera de red se revisa que la época y el árbitro sigan siendo los capturados
+     * (Codex plan r1 #2); si no, la vuelta se abandona sin aplicar esa respuesta (0). Un `denied` sólo vale en ESTA vuelta (r1 #3).
+     */
+    private suspend fun vueltaCompat(arbitro: LanPeer, epoca: Long, d: MesasDeEstaCaja.Declaracion): Long {
+        if (epoca != epocaDeRetenidas) {
+            retenidas.clear() // lo concedido por el árbitro anterior vence solo a los 30 s
+            epocaDeRetenidas = epoca
+        }
+        fun sigue() = mesas.epoca() == epoca && ArbiterElection.pick(discovery.peers.value)?.deviceId == arbitro.deviceId
+        val deseadas = d.mesas + d.aperturas.map { it.tableId }
+        val ocupadas = HashMap<String, String>() // mesa → quién la tiene, sólo en esta vuelta
+
+        // Lo que ya no se desea sale de `retenidas` sin importar la respuesta: sin ella, el permiso vence a los 30 s.
+        for ((mesa, ep) in retenidas.filterKeys { it !in deseadas }) {
+            client.release(arbitro, mesa, deviceId, ep)
+            if (!sigue()) return 0
+            retenidas.remove(mesa)
+        }
+        val ahora = relojMs()
+        if (retenidas.isEmpty()) {
+            ultimaRenovacionMs = ahora // nada que renovar: el reloj de renovación empieza con el primer permiso
+        } else if (ahora - ultimaRenovacionMs >= LATIDO_MS) {
+            for ((mesa, ep) in retenidas.toList()) {
+                val r = client.renew(arbitro, mesa, deviceId, ep)
+                if (!sigue()) return 0
+                when (r?.status) {
+                    LeaseProtocol.STATUS_GRANTED -> r.lease?.let { retenidas[mesa] = it.epoch }
+                    LeaseProtocol.STATUS_STALE -> retenidas.remove(mesa) // el árbitro la olvidó (se reinició): el acquire de abajo, ya
+                    LeaseProtocol.STATUS_DENIED -> { retenidas.remove(mesa); ocupadas[mesa] = r.holder?.holderName ?: "otro mesero" }
+                }
+            }
+            ultimaRenovacionMs = ahora
+        }
+        for (mesa in deseadas - retenidas.keys - ocupadas.keys) {
+            val a = d.aperturas.firstOrNull { it.tableId == mesa } // una mesa en la que sólo estoy va sin staffId
+            val r = client.acquire(arbitro, mesa, deviceId, a?.staffId.orEmpty(), a?.staffName ?: nombre())
+            if (!sigue()) return 0
+            when (r?.status) {
+                LeaseProtocol.STATUS_GRANTED -> r.lease?.let { retenidas[mesa] = it.epoch }
+                LeaseProtocol.STATUS_DENIED -> ocupadas[mesa] = r.holder?.holderName ?: "otro mesero"
+            } // null o `error` (p. ej. un árbitro nuevo que me ve «en presencia»): pendiente; a los 15 s, NoHub
+        }
+
+        d.aperturas.forEach { a ->
+            if (a.tableId in retenidas) mesas.resolver(a.id, LeaseOutcome.Granted)
+            ocupadas[a.tableId]?.let { mesas.resolver(a.id, LeaseOutcome.Taken(it)) }
+        }
+        _myTables.value = d.mesas + d.aperturas.filter { it.tableId in retenidas }.map { it.tableId }
+        if (mesas.hayPendientes(venueId)) return REINTENTO_MS
+        return (ultimaRenovacionMs + LATIDO_MS - relojMs()).coerceIn(1, LATIDO_MS) // la siguiente renovación, a tiempo
     }
 
     private fun enIsla(): Long {
