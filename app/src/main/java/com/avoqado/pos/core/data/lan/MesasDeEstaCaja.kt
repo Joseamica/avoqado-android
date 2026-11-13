@@ -113,6 +113,9 @@ class MesasDeEstaCaja internal constructor(
         m.mapValues { (_, t) -> if (t.apertura.venueId == venueId && t.resultado == null) t.copy(resultado = resultado) else t }
     }
 
+    /** ¿Alguna apertura de [venueId] sigue sin resolver? Sin respuesta del árbitro, el reconciliador reintenta en 1 s en vez de 10. */
+    fun hayPendientes(venueId: String): Boolean = tickets.value.values.any { it.apertura.venueId == venueId && it.resultado == null }
+
     /** Cambio de sucursal: las aperturas de otro venue se sueltan (su espera da `NoHub`). */
     fun fijarVenue(venueId: String) = tickets.update { m -> m.filterValues { it.apertura.venueId == venueId } }
 

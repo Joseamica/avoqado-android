@@ -590,8 +590,9 @@ class AppState @Inject constructor(
             pendingGrantQueue?.stop()
             stopInventorySync()
             syncOutbox.stop()
-            detenerRedLocal()
+            // Hub D3: la sesión de mesa se borra ANTES de apagar el hub, así su despedida declara «ninguna» y la libera enseguida.
             tableSyncCoordinator.onSessionInvalidated()
+            detenerRedLocal()
             soltarAjustesDeLaSesion()
             // ponytail: los `stop()` de arriba y este borrado no son un solo paso; entre la comprobación y aquí no hay
             // espera, y el borrado igual sólo sale si la sesión sigue siendo la que se cerraba.

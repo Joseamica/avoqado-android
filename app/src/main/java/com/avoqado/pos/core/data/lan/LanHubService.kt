@@ -5,6 +5,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,7 +27,13 @@ class LanHubService @Inject constructor(
     private val transporte: TransporteLan,
     /** D12 · Opción D: las cuentas abiertas entre cajas viven con el hub Premium (contesta las suyas y pregunta las ajenas). */
     private val cuentas: CuentasEntreCajas? = null,
+    /** Hub D3: lo que esta caja declara (su mesa y sus aperturas), del PROCESO para que un rearme no lo pierda. */
+    mesas: MesasDeEstaCaja? = null,
 ) {
+    /** null (pruebas viejas) ⇒ una caja sin mesa actual y con vida 1. */
+    private val mesas = mesas
+        ?: MesasDeEstaCaja({ null }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { System.nanoTime() / 1_000_000 }
+
     private var coordinator: LanHubCoordinator? = null
     private var venueActivo: String? = null
 
@@ -51,7 +58,14 @@ class LanHubService @Inject constructor(
         if (coordinator != null && venueActivo == venueId) return
         stop()
         transporte.iniciar(venueId)
-        val hub = LanHubCoordinator(discovery = transporte, deviceId = transporte.deviceId)
+        // Su `start()` también fija la sucursal de las aperturas (`mesas.fijarVenue`): las de otra se sueltan.
+        val hub = LanHubCoordinator(
+            discovery = transporte,
+            mesas = mesas,
+            deviceId = transporte.deviceId,
+            venueId = venueId,
+            nombre = { secureStorage.selectedStaffNameForCurrentVenue ?: secureStorage.userFirstName.orEmpty() },
+        )
         coordinator = hub
         venueActivo = venueId
         hub.start()
@@ -73,14 +87,33 @@ class LanHubService @Inject constructor(
         if (coordinator != null && venueActivo != venueId) stop()
     }
 
-    /**
-     * Pide la mesa antes de abrirla. Si el hub está apagado devuelve
-     * [LeaseOutcome.NoHub] — modo isla, NUNCA bloquea al mesero.
-     */
-    suspend fun acquire(tableId: String, staffId: String, staffName: String): LeaseOutcome =
-        coordinator?.acquire(tableId, staffId, staffName) ?: LeaseOutcome.NoHub
+    /** Hub D3: el ticket de un intento de abrir una mesa LIBRE, al instante (despierta al reconciliador). Su dueño lo termina. */
+    fun abrirApertura(tableId: String, staffId: String, staffName: String): Apertura =
+        mesas.abrirApertura(tableId, staffId, staffName, secureStorage.venueId.orEmpty())
 
+    /**
+     * Espera el veredicto, hasta 15 s desde el toque. Sin hub, [LeaseOutcome.NoHub] al instante: modo isla, NUNCA bloquea al mesero.
+     * [alEsperar] suena cuando el árbitro pide esperar («Revisando con las otras cajas…»); [sigue] en `false` suelta la espera.
+     */
+    suspend fun esperarApertura(ticket: Apertura, alEsperar: () -> Unit = {}, sigue: () -> Boolean = { true }): LeaseOutcome =
+        if (coordinator == null) LeaseOutcome.NoHub else mesas.esperar(ticket, alEsperar, sigue)
+
+    /** Idempotente, por id: nunca por nombre de mesa. */
+    fun terminarApertura(ticket: Apertura) = mesas.terminarApertura(ticket)
+
+    /** ADAPTADOR TEMPORAL sólo para `TablesViewModel` (abrir → esperar → terminar); la Task 7 lo borra. */
+    suspend fun acquire(tableId: String, staffId: String, staffName: String): LeaseOutcome {
+        val ticket = abrirApertura(tableId, staffId, staffName)
+        return try {
+            esperarApertura(ticket)
+        } finally {
+            terminarApertura(ticket)
+        }
+    }
+
+    /** Misma firma de siempre (cuatro llamadores y las pruebas de D12). Lo declarado sale de la sesión de mesa: sólo despierta al reconciliador. */
+    @Suppress("UNUSED_PARAMETER")
     suspend fun release(tableId: String) {
-        coordinator?.release(tableId)
+        coordinator?.despertar()
     }
 }
