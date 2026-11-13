@@ -509,7 +509,7 @@ class AppStateVenueRecoveryTest {
 
     /**
      * D52 (a) de la conversación principal: lo ÚNICO que frena es de otra sucursal → se puede cerrar sesión (no borra nada, pruebas de
-     * arriba) y el aviso dice, honesto, que queda en el aparato: un cobro fallido lo revisa un gerente de su sucursal (Codex r4 #1).
+     * arriba) y el aviso dice, honesto, que queda en el aparato y sus dos salidas (un fallido lo resuelve un gerente, Codex r4 #1).
      */
     @Test
     fun `P1 D52 con lo pendiente solo de otra sucursal se puede cerrar sesion y avisa que queda`() = runTest {
@@ -520,8 +520,8 @@ class AppStateVenueRecoveryTest {
 
         assertTrue(cerro)
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato: la revisa un gerente de Sucursal Centro al entrar, en " +
-                "Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de Sucursal Centro en este aparato: al entrar alguien de Sucursal Centro se sube, y si queda por " +
+                "revisar, la resuelve un gerente de Sucursal Centro en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             aviso,
         )
         io.mockk.coVerify { daos.first.getUnsyncedPayments(); daos.first.enVueloDeTodas(); daos.first.getFailedPayments() }

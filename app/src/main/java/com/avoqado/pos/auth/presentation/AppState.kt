@@ -584,9 +584,7 @@ class AppState @Inject constructor(
                 }
                 return@launch
             }
-            val loQueQueda = textoDeLoQueQuedaDeOtrasSucursales(
-                deOtras, cobros?.deOtrasPorRevisar.orEmpty(), secureStorage.venuesList.associate { it.id to it.name },
-            )
+            val loQueQueda = textoDeLoQueQuedaDeOtrasSucursales(deOtras, secureStorage.venuesList.associate { it.id to it.name })
 
             // Spec §5: lo PROPIO se intenta subir antes de soltar el token (que el servidor usa como
             // autor), con un plazo corto. Sin red no retiene el cierre: se queda, con su dueño.
@@ -640,33 +638,29 @@ internal suspend fun rechazadasPorRevisar(
 
 /**
  * D52 (a) de la conversación principal: lo de OTRAS sucursales ya no frena cerrar sesión (no se borra: se queda en el aparato). Al
- * salir se avisa, honesto, qué queda y cómo se resuelve: lo que sale solo se sube con un usuario de su sucursal; si algo está por
- * revisar ([porRevisar]: FAILED o `EN_VUELO`), lo revisa un gerente de su sucursal (Codex r4 #1: un cajero no puede). Una frase por
- * sucursal; las que esta sesión no tiene (no están en [nombres], `venuesList`) van juntas y sin nombre. PURA.
+ * salir se avisa, honesto, qué queda y cómo se resuelve. Codex r4 #1 y r5 #1 (la misma familia dos veces → pasada exhaustiva): si
+ * una fila sube sola o espera a un gerente depende de lo que el drenado decida después (sin captura, prueba de precio, resultado sin
+ * comprobar, FAILED, `EN_VUELO` manual), así que la frase no adivina: dice las dos salidas, que valen para todo estado. Las sucursales
+ * que esta sesión no tiene (no están en [nombres], `venuesList`) se dicen sin nombre. PURA.
  */
-internal fun textoDeLoQueQuedaDeOtrasSucursales(
-    porSucursal: Map<String, Int>,
-    porRevisar: Map<String, Int>,
-    nombres: Map<String, String>,
-): String? {
-    fun frase(n: Int, de: String, quien: String, revisar: Boolean): String {
-        val queda = if (n == 1) "Queda 1 operación" else "Quedan $n operaciones"
-        val como = if (revisar) {
-            "${if (n == 1) "la" else "las"} revisa un gerente de $quien al entrar, en $DONDE_SE_RESUELVE"
-        } else {
-            "${if (n == 1) "se sube" else "se suben"} al entrar con un usuario de $quien"
-        }
-        return "$queda de $de en este aparato: $como."
+internal fun textoDeLoQueQuedaDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
+    fun frase(n: Int, de: String, quien: String): String {
+        val (queda, sube, alguna) = if (n == 1) Triple("Queda 1 operación", "se sube", "queda")
+            else Triple("Quedan $n operaciones", "se suben", "alguna queda")
+        return "$queda de $de en este aparato: al entrar alguien de $quien $sube, y si $alguna por revisar, la resuelve un gerente " +
+            "de $quien en $DONDE_SE_RESUELVE."
     }
-    fun revisar(id: String) = (porRevisar[id] ?: 0) > 0
     val (conocidas, sinAcceso) = porSucursal.filterValues { it > 0 }.entries.partition { it.key in nombres }
-    val deConocidas = conocidas.map { (id, n) -> nombres.getValue(id).let { frase(n, it, it, revisar(id)) } }
-    val deSinAcceso = sinAcceso.takeIf { it.isNotEmpty() }?.let { s ->
-        val algoPorRevisar = s.any { revisar(it.key) }
-        if (s.size == 1) frase(s.single().value, "otra sucursal", "esa sucursal", algoPorRevisar)
-        else frase(s.sumOf { it.value }, "otras sucursales", "cada sucursal", algoPorRevisar)
+    val deConocidas = conocidas.takeIf { it.isNotEmpty() }?.let { c ->
+        val n = c.map { nombres.getValue(it.key) }
+        val cuales = if (n.size == 1) n.single() else n.dropLast(1).joinToString(", ") + " y " + n.last()
+        frase(c.sumOf { it.value }, cuales, if (n.size == 1) n.single() else "cada sucursal")
     }
-    return (deConocidas + listOfNotNull(deSinAcceso)).takeIf { it.isNotEmpty() }?.joinToString(" ")
+    val deSinAcceso = sinAcceso.takeIf { it.isNotEmpty() }?.let { s ->
+        if (s.size == 1) frase(s.single().value, "otra sucursal", "esa sucursal")
+        else frase(s.sumOf { it.value }, "otras sucursales", "cada sucursal")
+    }
+    return listOfNotNull(deConocidas, deSinAcceso).takeIf { it.isNotEmpty() }?.joinToString(" ")
 }
 
 /**
